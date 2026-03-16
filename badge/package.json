@@ -1,0 +1,46 @@
+{
+  "name": "@tip-protocol/badge",
+  "version": "2.0.0",
+  "description": "TIP Protocol Badge Web Component — drop-in <tip-badge> custom element for trust seals and marks",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "author": "Dinesh Mendhe <chairman@theailab.org>",
+  "license": "SEE LICENSE IN ../LICENSE.txt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theailab/tip-protocol.git"
+  },
+  "keywords": [
+    "tip-protocol",
+    "web-component",
+    "custom-element",
+    "trust-badge"
+  ],
+  "files": [
+    "src/",
+    "dist/"
+  ],
+  "dependencies": {},
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "echo 'Badge tests are visual — open test/index.html in a browser'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publisher": "The AI Lab Intelligence Unobscured, Inc.",
+  "contributors": [
+    {
+      "name": "Dinesh Mendhe",
+      "email": "chairman@theailab.org",
+      "role": "Inventor and Author"
+    },
+    {
+      "name": "The AI Lab Intelligence Unobscured, Inc.",
+      "email": "chairman@theailab.org",
+      "url": "https://theailab.org"
+    }
+  ]
+}

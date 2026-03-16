@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name            = "tip-protocol"
+version         = "2.0.0"
+description     = "Trust Identity Protocol — Full Python Implementation"
+readme          = "README.md"
+license         = { text = "SEE LICENSE IN LICENSE.txt" }
+authors         = [{ name = "Dinesh Mendhe", email = "chairman@theailab.org" }]
+maintainers     = [{ name = "The AI Lab Intelligence Unobscured, Inc.", email = "chairman@theailab.org" }]
+requires-python = ">=3.11"
+keywords        = ["tip-protocol", "identity", "trust", "provenance", "post-quantum"]
+classifiers     = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Internet",
+]
+
+dependencies = [
+    "cryptography>=41.0.0",
+    "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.6.0",
+    "websockets>=12.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+tip = "cli.main:cli"
+tip-node = "node.main:main"
+tip-seed = "scripts.seed:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shared*", "node*", "sdk*", "cli*", "scripts*"]
+
+[project.urls]
+Homepage    = "https://theailab.org/trust-identity-protocol"
+Repository  = "https://github.com/theailab/tip-protocol"
+"Bug Tracker" = "https://github.com/theailab/tip-protocol/issues"

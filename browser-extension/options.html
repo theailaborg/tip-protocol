@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>TIP™ Extension Settings</title>
+  <style>
+    body { font-family: 'Libre Franklin', sans-serif; padding: 24px; max-width: 500px; color: #0C1A3A; font-size: 14px; }
+    h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .sub { font-size: 11px; color: #8895A7; letter-spacing: 1px; margin-bottom: 28px; }
+    label { display: block; font-size: 11px; font-weight: 600; color: #4A5568; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+    input[type=text], input[type=url] { width: 100%; padding: 10px 12px; border: 1px solid #E2E6EE; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0C1A3A; margin-bottom: 20px; outline: none; }
+    input:focus { border-color: #B8942E; }
+    .btn { padding: 10px 20px; border-radius: 6px; border: none; background: #0C1A3A; color: #B8942E; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .btn:hover { opacity: 0.9; }
+    .status { margin-top: 12px; font-size: 12px; color: #1A8A5C; display: none; }
+    .node-test { margin-top: 8px; font-size: 11px; color: #8895A7; }
+    hr { border: none; border-top: 1px solid #E2E6EE; margin: 24px 0; }
+    .about { font-size: 11px; color: #8895A7; line-height: 1.7; }
+    .about a { color: #B8942E; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>TIP™ Extension Settings</h1>
+  <div class="sub">TRUST IDENTITY PROTOCOL v2.0 · THE AI LAB</div>
+
+  <label for="nodeUrl">TIP Node URL</label>
+  <input type="url" id="nodeUrl" placeholder="http://localhost:4000" />
+
+  <button class="btn" id="save">Save Settings</button>
+  <div class="status" id="status">Settings saved.</div>
+  <div class="node-test" id="nodeTest"></div>
+
+  <hr/>
+  <div class="about">
+    <strong>About TIP™</strong><br/>
+    This extension reads Trust Identity Protocol headers and meta tags to display
+    AI Trust ID™ badges for verified authors and content origin labels.<br/><br/>
+    Protocol specification: <a href="https://theailab.org/trust-identity-protocol" target="_blank">theailab.org/trust-identity-protocol</a><br/>
+    The TIP™ Powered Mark displayed by this extension is Apache 2.0 — free for all implementers.<br/><br/>
+    &copy; 2026 The AI Lab Intelligence Unobscured, Inc.
+  </div>
+
+  <script>
+    const nodeInput = document.getElementById("nodeUrl");
+    const saveBtn   = document.getElementById("save");
+    const status    = document.getElementById("status");
+    const nodeTest  = document.getElementById("nodeTest");
+
+    // Load saved settings
+    chrome.storage.sync.get(["nodeUrl"]).then(s => {
+      nodeInput.value = s.nodeUrl || "http://localhost:4000";
+    });
+
+    saveBtn.addEventListener("click", async () => {
+      const url = nodeInput.value.trim().replace(/\/$/, "");
+      await chrome.storage.sync.set({ nodeUrl: url });
+      status.style.display = "block";
+      setTimeout(() => status.style.display = "none", 2000);
+
+      // Test the connection
+      nodeTest.textContent = "Testing connection...";
+      try {
+        const res = await fetch(url + "/health", { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        nodeTest.style.color = "#1A8A5C";
+        nodeTest.textContent = `Connected. Node ID: ${data.node_id} | DAG transactions: ${data.dag_count}`;
+      } catch (e) {
+        nodeTest.style.color = "#C53030";
+        nodeTest.textContent = `Could not connect to node: ${e.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

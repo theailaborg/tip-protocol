@@ -1,0 +1,87 @@
+================================================================================
+TIP PROTOCOL -- NOTICE FILE
+================================================================================
+
+TIP Protocol (Trust Identity Protocol)
+Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
+Authored by Dinesh Mendhe
+131 Continental Dr, Suite 305, Newark, DE 19713, United States
+theailab.org | chairman@theailab.org
+
+This software implements the TIP Protocol, a federated, post-quantum
+cryptographic system for verifiable human identity, content provenance
+declaration, and deterministic trust scoring on a Directed Acyclic Graph
+network.
+
+--------------------------------------------------------------------------------
+LICENSE
+--------------------------------------------------------------------------------
+
+This software is licensed under the TIP Community License v1.0 (TIPCL-1.0).
+See LICENSE.txt for full terms.
+
+Summary:
+  - Free for individuals, nonprofits, journalists, governments, education,
+    and businesses with Annual Revenue under USD $500,000.
+  - Commercial use above $500,000 Annual Revenue requires a Commercial
+    License from The AI Lab (licensing@theailab.org).
+  - Mandatory attribution: "Built on TIP Protocol by The AI Lab
+    Intelligence Unobscured, Inc. (theailab.org)"
+  - Converts to Apache License 2.0 on January 1, 2031.
+  - NOTICE file preservation and trademark restrictions survive permanently.
+
+--------------------------------------------------------------------------------
+TRADEMARKS
+--------------------------------------------------------------------------------
+
+The following are trademarks of The AI Lab Intelligence Unobscured, Inc.
+This software license does not grant any rights to use these marks:
+
+  TIP(tm)
+  AI Trust ID(tm)
+  AI Trust Registry(tm)
+  The Global Seal of Trust(tm)
+  AI Trust ID Seal (visual design)
+
+Use of these marks requires a separate trademark license from The AI Lab.
+Trademark inquiries: legal@theailab.org
+
+--------------------------------------------------------------------------------
+PATENTS
+--------------------------------------------------------------------------------
+
+This software implements inventions that are the subject of pending or issued U.S.
+patent applications or patents filed by Dinesh Mendhe and assigned to The AI Lab
+Intelligence Unobscured, Inc. Patent rights are described in PATENTS.md.
+
+A patent license for Compliant Implementations is granted as part of TIPCL-1.0
+(see LICENSE.txt Section 8). Commercial use requires a Commercial License
+which includes a broader patent license.
+
+--------------------------------------------------------------------------------
+PROTOCOL SPECIFICATION
+--------------------------------------------------------------------------------
+
+The TIP Protocol Specification (spec/TIP_Protocol_Specification_v4.0.md)
+is separately licensed under Creative Commons Attribution 4.0 International
+(CC-BY 4.0). You may implement TIP Protocol from the specification alone
+without being subject to TIPCL-1.0. Attribution required: credit The AI Lab
+Intelligence Unobscured, Inc. as the author of the specification.
+
+--------------------------------------------------------------------------------
+REQUIRED ATTRIBUTION
+--------------------------------------------------------------------------------
+
+All implementations using this software must display the following attribution
+in a user-visible location (footer, About page, Help page, or equivalent):
+
+    "Built on TIP Protocol by The AI Lab Intelligence Unobscured, Inc.
+     (theailab.org) | Licensed under TIPCL-1.0"
+
+Or in one of the permitted short forms described in LICENSE.txt Section 4.2.
+
+This attribution requirement applies to all licensees, free and commercial.
+
+================================================================================
+END OF NOTICE
+================================================================================

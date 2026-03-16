@@ -1,0 +1,757 @@
+"""
+node/api.py
+TIP Protocol Python — REST API
+
+# Author:    Dinesh Mendhe <chairman@theailab.org>
+Runs on stdlib http.server by default.
+If fastapi + uvicorn are installed, uses them for async + OpenAPI docs.
+All endpoints are identical regardless of backend.
+
+© 2026 The AI Lab Intelligence Unobscured, Inc.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+import threading
+import traceback
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any, Optional
+from urllib.parse import urlparse, parse_qs
+
+from shared.crypto import (
+    generate_mldsa_keypair, mldsa_sign, verify_tx_signature,
+    hash_content, perceptual_hash_text,
+    generate_tip_id, generate_ctid,
+    generate_tx_id, shake256, shake256_multi,
+    compute_zk_proof,
+)
+from shared.constants import (
+    TxType, Origin, Protocol, HttpHeaders,
+    JurisdictionTier, get_tier, ScoreEvent,
+)
+from tip_node.validators.tx_validator import validate_transaction
+from tip_node.logger import get_logger
+
+log = get_logger("api")
+
+
+# ─── Pre-scan (v2 FIX-03 — calibrated thresholds) ────────────────────────────
+
+def _prescan_content(content: Optional[str], origin_code: str, creator_history: dict) -> dict:
+    """
+    Heuristic AI content pre-scan.
+    In production: replace with a real ML-based classifier.
+    """
+    if origin_code != Origin.OH or not content:
+        return {"flagged": False, "probability": 0.0, "threshold": 0.85}
+
+    words      = content.split()
+    word_count = len(words)
+    if word_count < 20:
+        return {"flagged": False, "probability": 0.1, "threshold": 0.85}
+
+    unique_ratio = len(set(words)) / word_count
+    avg_len      = sum(len(w) for w in words) / word_count
+    sent_count   = max(1, content.count(".") + content.count("!") + content.count("?"))
+    long_sents   = (word_count / sent_count) > 25
+
+    prob = 0.0
+    if unique_ratio < 0.55: prob += 0.20
+    if avg_len > 5.5:        prob += 0.15
+    if long_sents:           prob += 0.10
+
+    # Creator calibration
+    verified_oh = creator_history.get("verified_oh_count", 0)
+    from shared.constants import PreScan
+    if verified_oh > 200:
+        threshold = PreScan.CEILING
+    elif verified_oh > 50:
+        threshold = 0.90
+    else:
+        threshold = PreScan.DEFAULT
+
+    return {
+        "flagged":     prob > threshold,
+        "probability": round(prob, 4),
+        "threshold":   threshold,
+    }
+
+
+def _merkle_root(dag) -> str:
+    count    = dag.dedup_count()
+    id_count = len(dag.get_txs_by_type(TxType.REGISTER_IDENTITY))
+    return shake256_multi(str(count), str(id_count),
+                          datetime.now(timezone.utc).isoformat()[:13])
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ─── Rate limiter ─────────────────────────────────────────────────────────────
+
+class _RateLimiter:
+    def __init__(self, window: int = 60, max_req: int = 200) -> None:
+        self._window  = window
+        self._max     = max_req
+        self._buckets: dict[str, list[float]] = {}
+        self._lock    = threading.Lock()
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            bucket = [t for t in self._buckets.get(key, []) if now - t < self._window]
+            if len(bucket) >= self._max:
+                self._buckets[key] = bucket
+                return False
+            bucket.append(now)
+            self._buckets[key] = bucket
+            return True
+
+
+# ─── Request router ───────────────────────────────────────────────────────────
+
+class TIPAPIHandler(BaseHTTPRequestHandler):
+    """
+    HTTP request handler for TIP Protocol REST API.
+    Thread-safe: dag, scoring, config are shared across threads (they are each thread-safe).
+    """
+    dag     = None  # injected via create_server()
+    scoring = None
+    config  = None
+    limiter = None
+
+    log_message = lambda self, fmt, *args: None  # silence stdlib access log
+
+    # ── CORS + standard headers ───────────────────────────────────────────────
+    def _send_json(self, status: int, body: Any) -> None:
+        payload = json.dumps(body, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type",  "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Access-Control-Allow-Origin",  "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-TIP-API-Key")
+        self.send_header(HttpHeaders.NODE_ID,      self.config["node_id"])
+        self.send_header(HttpHeaders.NODE_VERSION, self.config["node_version"])
+        self.send_header(HttpHeaders.PROTOCOL,     Protocol.HEADER)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _read_body(self) -> Optional[dict]:
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, Exception):
+            return None
+
+    def _rate_check(self) -> bool:
+        ip = self.client_address[0]
+        return self.limiter.is_allowed(ip)
+
+    # ── Method dispatch ───────────────────────────────────────────────────────
+    def do_OPTIONS(self):
+        self._send_json(204, {})
+
+    def do_GET(self):
+        if not self._rate_check():
+            self._send_json(429, {"error": "Rate limit exceeded"})
+            return
+        try:
+            self._route("GET")
+        except Exception:
+            log.error(traceback.format_exc())
+            self._send_json(500, {"error": "Internal server error"})
+
+    def do_POST(self):
+        if not self._rate_check():
+            self._send_json(429, {"error": "Rate limit exceeded"})
+            return
+        try:
+            self._route("POST")
+        except Exception:
+            log.error(traceback.format_exc())
+            self._send_json(500, {"error": "Internal server error"})
+
+    def _route(self, method: str) -> None:
+        parsed = urlparse(self.path)
+        path   = parsed.path.rstrip("/")
+        qs     = parse_qs(parsed.query)
+
+        # ── GET routes ──────────────────────────────────────────────────────
+        if method == "GET":
+            if path == "/health":
+                return self._health()
+            if path == "/v1/node/info":
+                return self._node_info()
+            if path == "/v1/node/peers":
+                return self._node_peers()
+            if path == "/v1/dedup/merkle-root":
+                return self._merkle_root()
+            if path == "/v1/revocations":
+                since = qs.get("since", [None])[0]
+                return self._revocations_list(since)
+
+            m = re.match(r"^/v1/identity/([^/]+)$", path)
+            if m:
+                return self._identity_resolve(_decode(m.group(1)))
+            m = re.match(r"^/v1/identity/([^/]+)/score$", path)
+            if m:
+                return self._identity_score(_decode(m.group(1)))
+            m = re.match(r"^/v1/identity/([^/]+)/history$", path)
+            if m:
+                return self._identity_history(_decode(m.group(1)))
+            m = re.match(r"^/v1/content/([^/]+)$", path)
+            if m:
+                return self._content_resolve(_decode(m.group(1)))
+            m = re.match(r"^/v1/dag/tx/([^/]+)$", path)
+            if m:
+                return self._dag_tx(_decode(m.group(1)))
+            m = re.match(r"^/v1/vp/([^/]+)$", path)
+            if m:
+                return self._vp_resolve(_decode(m.group(1)))
+
+            self._send_json(404, {"error": "Endpoint not found"})
+            return
+
+        # ── POST routes ──────────────────────────────────────────────────────
+        body = self._read_body()
+        if body is None:
+            self._send_json(400, {"error": "Invalid JSON body"})
+            return
+
+        if path == "/v1/identity/register":
+            return self._identity_register(body)
+        if path == "/v1/content/register":
+            return self._content_register(body)
+        if path == "/v1/dedup/check":
+            return self._dedup_check(body)
+        if path == "/v1/revocations":
+            return self._revocations_create(body)
+        if path == "/v1/vp/register":
+            return self._vp_register(body)
+
+        m = re.match(r"^/v1/content/([^/]+)/verify$", path)
+        if m:
+            return self._content_verify(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/dispute$", path)
+        if m:
+            return self._content_dispute(_decode(m.group(1)), body)
+
+        self._send_json(404, {"error": "Endpoint not found"})
+
+    # ── Endpoint implementations ──────────────────────────────────────────────
+
+    def _health(self):
+        self._send_json(200, {
+            "status":      "ok",
+            "node_id":     self.config["node_id"],
+            "node_type":   self.config["node_type"],
+            "dag_count":   self.dag.count(),
+            "version":     self.config["node_version"],
+            "protocol":    Protocol.VERSION,
+            "timestamp":   _utc_now(),
+        })
+
+    def _node_info(self):
+        self._send_json(200, {
+            "node_id":           self.config["node_id"],
+            "node_type":         self.config["node_type"],
+            "region":            self.config["region"],
+            "public_url":        self.config["public_url"],
+            "protocol_version":  Protocol.VERSION,
+            "node_version":      self.config["node_version"],
+            "dag_tx_count":      self.dag.count(),
+            "identity_count":    len(self.dag.get_txs_by_type(TxType.REGISTER_IDENTITY)),
+            "content_count":     len(self.dag.get_txs_by_type(TxType.REGISTER_CONTENT)),
+            "dedup_count":       self.dag.dedup_count(),
+            "peer_count":        len(self.config.get("peers", [])),
+            "spec_url":          Protocol.SPEC_URL,
+            "issuer":            Protocol.ISSUER,
+        })
+
+    def _node_peers(self):
+        peers = self.config.get("peers", [])
+        self._send_json(200, {"peers": peers, "count": len(peers),
+                              "node_id": self.config["node_id"]})
+
+    def _merkle_root(self):
+        count    = self.dag.dedup_count()
+        id_count = len(self.dag.get_txs_by_type(TxType.REGISTER_IDENTITY))
+        self._send_json(200, {
+            "merkle_root":    _merkle_root(self.dag),
+            "dedup_count":    count,
+            "identity_count": id_count,
+            "node_id":        self.config["node_id"],
+            "generated":      _utc_now(),
+        })
+
+    def _revocations_list(self, since: Optional[str]):
+        revocs = self.dag.get_revocations(since)
+        self._send_json(200, {
+            "revocations": revocs,
+            "count":       len(revocs),
+            "node_id":     self.config["node_id"],
+            "generated":   _utc_now(),
+            "next_since":  _utc_now(),
+        })
+
+    def _identity_register(self, body: dict):
+        region   = body.get("region", "US")
+        vp_id    = body.get("vp_id") or body.get("vpId")
+        zk_proof = body.get("zk_dedup_proof") or body.get("zkDedupProof")
+        tier     = body.get("verification_tier", "T1")
+        attested = bool(body.get("social_attested") or body.get("socialAttested"))
+        founding = bool(body.get("founding"))
+
+        if not vp_id:
+            self._send_json(400, {"error": "vp_id is required"}); return
+        if not zk_proof:
+            self._send_json(400, {"error": "zk_dedup_proof is required"}); return
+        if not zk_proof.startswith("zkp:"):
+            self._send_json(400, {"error": "zk_dedup_proof must start with 'zkp:'"}); return
+
+        vp = self.dag.get_vp(vp_id)
+        if not vp:
+            self._send_json(403, {"error": f"VP not found: {vp_id}"}); return
+        if vp.get("status") != "active":
+            self._send_json(403, {"error": f"VP is not active: {vp_id}"}); return
+
+        kp          = generate_mldsa_keypair()
+        tip_id      = generate_tip_id(region, kp["publicKey"])
+        registered_at = _utc_now()
+
+        # Pre-validate
+        tx = {
+            "tx_id":     generate_tx_id(),
+            "tx_type":   TxType.REGISTER_IDENTITY,
+            "timestamp": registered_at,
+            "prev":      self.dag.get_recent_prev(),
+            "data": {
+                "tip_id":            tip_id,
+                "region":            region.upper(),
+                "public_key":        kp["publicKey"],
+                "vp_id":             vp_id,
+                "verification_tier": tier,
+                "social_attested":   attested,
+                "founding":          founding,
+                "zk_dedup_proof":    zk_proof,
+            },
+        }
+        result = validate_transaction(tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0],
+                                  "errors": result.errors,
+                                  "layer": result.layer}); return
+
+        self.dag.add_tx(tx)
+        self.dag.save_identity({
+            "tip_id":            tip_id,
+            "region":            region.upper(),
+            "public_key":        kp["publicKey"],
+            "vp_id":             vp_id,
+            "verification_tier": tier,
+            "founding":          founding,
+            "status":            "active",
+            "registered_at":     registered_at,
+            "tx_id":             tx["tx_id"],
+        })
+        initial_score = ScoreEvent.INITIAL_WITH_ATTESTATION if attested else ScoreEvent.INITIAL_NO_ATTESTATION
+        self.dag.set_score(tip_id, initial_score, 0)
+        log.info(f"Identity registered: {tip_id} (tier={tier}, vp={vp_id})")
+
+        self._send_json(201, {
+            "tip_id":           tip_id,
+            "public_key":       kp["publicKey"],
+            "private_key":      kp["privateKey"],   # NEVER stored server-side
+            "tx_id":            tx["tx_id"],
+            "score":            initial_score,
+            "registered_at":    registered_at,
+            "message":          "Store your private key securely. It is never stored by this node.",
+        })
+
+    def _identity_resolve(self, tip_id: str):
+        rec = self.dag.get_identity(tip_id)
+        if not rec:
+            self._send_json(404, {"error": f"TIP-ID not found: {tip_id}"}); return
+        score_data = self.scoring.get_score(tip_id)
+        content    = self.dag.get_content_by_author(tip_id)
+        revoked    = self.dag.is_revoked(tip_id)
+        self._send_json(200, {
+            "tip_id":            rec["tip_id"],
+            "region":            rec.get("region"),
+            "public_key":        rec.get("public_key"),
+            "vp_id":             rec.get("vp_id"),
+            "verification_tier": rec.get("verification_tier"),
+            "founding":          bool(rec.get("founding")),
+            "status":            "revoked" if revoked else rec.get("status", "active"),
+            "score":             score_data["score"],
+            "tier":              score_data["tier"],
+            "tier_color":        score_data["tier_color"],
+            "content_count":     len(content),
+            "registered_at":     rec.get("registered_at"),
+        })
+
+    def _identity_score(self, tip_id: str):
+        rec = self.dag.get_identity(tip_id)
+        if not rec:
+            self._send_json(404, {"error": f"TIP-ID not found: {tip_id}"}); return
+        score_data = self.scoring.get_score(tip_id)
+        content    = self.dag.get_content_by_author(tip_id)
+        self._send_json(200, {
+            "tip_id":         tip_id,
+            "tier":           score_data["tier"],
+            "tier_label":     score_data["tier_label"],
+            "tier_color":     score_data["tier_color"],
+            "score":          score_data["score"],
+            "offense_count":  score_data.get("offense_count", 0),
+            "verified_since": rec.get("registered_at"),
+            "content_count":  len(content),
+            "status":         "revoked" if self.dag.is_revoked(tip_id) else rec.get("status", "active"),
+        })
+
+    def _identity_history(self, tip_id: str):
+        rec = self.dag.get_identity(tip_id)
+        if not rec:
+            self._send_json(404, {"error": f"TIP-ID not found: {tip_id}"}); return
+        result = self.scoring.compute_score(tip_id)
+        self._send_json(200, {
+            "tip_id":  tip_id,
+            "score":   result["score"],
+            "history": result.get("history", []),
+        })
+
+    def _content_register(self, body: dict):
+        author_tip_id  = body.get("author_tip_id") or body.get("authorTipId")
+        origin_code    = body.get("origin_code")   or body.get("originCode")
+        content        = body.get("content")
+        provided_hash  = body.get("content_hash")  or body.get("contentHash")
+        signature      = body.get("signature", "unsigned")
+
+        if not author_tip_id:
+            self._send_json(400, {"error": "author_tip_id is required"}); return
+        if not origin_code:
+            self._send_json(400, {"error": "origin_code is required (OH|AA|AG|MX)"}); return
+        if not Origin.is_valid(origin_code):
+            self._send_json(400, {"error": f"Invalid origin_code: {origin_code}"}); return
+        if not content and not provided_hash:
+            self._send_json(400, {"error": "content or content_hash is required"}); return
+
+        identity = self.dag.get_identity(author_tip_id)
+        if not identity:
+            self._send_json(404, {"error": f"Author TIP-ID not found: {author_tip_id}"}); return
+        if self.dag.is_revoked(author_tip_id):
+            self._send_json(403, {"error": f"Author TIP-ID is revoked: {author_tip_id}"}); return
+
+        content_hash  = provided_hash or hash_content(content or "")
+        percept_hash  = perceptual_hash_text(content) if content else None
+        ctid          = generate_ctid(origin_code, content_hash, author_tip_id)
+        registered_at = _utc_now()
+
+        # Pre-scan (v2 FIX-03)
+        author_content = self.dag.get_content_by_author(author_tip_id)
+        verified_oh    = sum(1 for c in author_content
+                             if c.get("origin_code") == Origin.OH
+                             and c.get("status") == "verified")
+        prescan = _prescan_content(content, origin_code,
+                                   {"verified_oh_count": verified_oh})
+
+        tx = {
+            "tx_id":     generate_tx_id(),
+            "tx_type":   TxType.REGISTER_CONTENT,
+            "timestamp": registered_at,
+            "prev":      self.dag.get_recent_prev(),
+            "data": {
+                "ctid":              ctid,
+                "origin_code":       origin_code,
+                "origin_label":      Origin.label(origin_code),
+                "content_hash":      content_hash,
+                "perceptual_hash":   percept_hash,
+                "author_tip_id":     author_tip_id,
+                "signature":         signature,
+                "prescan_flagged":   prescan["flagged"],
+                "prescan_probability": prescan["probability"],
+            },
+        }
+        result = validate_transaction(tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0],
+                                  "errors": result.errors,
+                                  "layer": result.layer}); return
+
+        status = "pending_review" if prescan["flagged"] else "verified"
+        self.dag.add_tx(tx)
+        self.dag.save_content({
+            "ctid":             ctid,
+            "origin_code":      origin_code,
+            "content_hash":     content_hash,
+            "perceptual_hash":  percept_hash,
+            "author_tip_id":    author_tip_id,
+            "status":           status,
+            "prescan_flagged":  prescan["flagged"],
+            "registered_at":    registered_at,
+            "tx_id":            tx["tx_id"],
+        })
+
+        if prescan["flagged"]:
+            self.dag.add_tx({
+                "tx_type":   TxType.CONTENT_DISPUTED,
+                "timestamp": _utc_now(),
+                "data":      {"ctid": ctid, "reason": "pre_scan_flag",
+                              "probability": prescan["probability"], "auto": True},
+            })
+            log.info(f"Pre-scan flagged {ctid} — auto Stage 1 adjudication queued")
+
+        score_data = self.scoring.get_score(author_tip_id)
+        http_headers = {
+            HttpHeaders.AUTHOR:      author_tip_id,
+            HttpHeaders.CONTENT:     ctid,
+            HttpHeaders.ORIGIN:      Origin.label(origin_code).lower().replace(" ", "-"),
+            HttpHeaders.TRUST_SCORE: str(score_data["score"]),
+            HttpHeaders.SIGNATURE:   signature,
+        }
+        log.info(f"Content registered: {ctid} (origin={origin_code}, author={author_tip_id})")
+
+        self._send_json(201, {
+            "ctid":             ctid,
+            "origin_code":      origin_code,
+            "origin_label":     Origin.label(origin_code),
+            "content_hash":     content_hash,
+            "author_tip_id":    author_tip_id,
+            "tx_id":            tx["tx_id"],
+            "status":           status,
+            "registered_at":    registered_at,
+            "prescan_flagged":  prescan["flagged"],
+            "prescan_note":     ("Flagged by AI pre-scan — Stage 1 adjudication queued. "
+                                 "No penalty if cleared." if prescan["flagged"] else None),
+            "http_headers":     http_headers,
+            "meta_tags": {
+                "tip:author":  author_tip_id,
+                "tip:content": ctid,
+                "tip:origin":  Origin.label(origin_code).lower().replace(" ", "-"),
+                "tip:score":   str(score_data["score"]),
+                "tip:status":  "PENDING" if prescan["flagged"] else "VERIFIED",
+            },
+        })
+
+    def _content_resolve(self, ctid: str):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content record not found: {ctid}"}); return
+        score_data = self.scoring.get_score(rec.get("author_tip_id", ""))
+        self._send_json(200, {
+            **rec,
+            "origin_label": Origin.label(rec.get("origin_code", "")),
+            "author_score": score_data.get("score", 0),
+        })
+
+    def _content_verify(self, ctid: str, body: dict):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+        verifier_tip_id = body.get("verifier_tip_id")
+        if not verifier_tip_id:
+            self._send_json(400, {"error": "verifier_tip_id required"}); return
+        if not self.scoring.is_jury_eligible(verifier_tip_id):
+            self._send_json(403, {"error": "Verifier not jury eligible (score < 700 or revoked)"}); return
+
+        verifier_score = self.scoring.get_score(verifier_tip_id)["score"]
+        weighted_delta = max(1, min(5, int(verifier_score / 200)))
+        self.dag.add_tx({
+            "tx_type": TxType.CONTENT_VERIFIED,
+            "data": {
+                "ctid": ctid,
+                "verifier_tip_id": verifier_tip_id,
+                "verdict": body.get("verdict", "ORIGIN_CONFIRMED"),
+                "weighted_delta": weighted_delta,
+                "author_tip_id": rec.get("author_tip_id"),
+            },
+        })
+        self.scoring.apply_score_event(
+            rec.get("author_tip_id", ""), weighted_delta,
+            f"Content verified by {verifier_tip_id}"
+        )
+        self._send_json(200, {"success": True, "delta_applied": weighted_delta})
+
+    def _content_dispute(self, ctid: str, body: dict):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+        disputer = body.get("disputer_tip_id")
+        if not disputer:
+            self._send_json(400, {"error": "disputer_tip_id required"}); return
+        self.dag.add_tx({
+            "tx_type": TxType.CONTENT_DISPUTED,
+            "data": {
+                "ctid": ctid,
+                "disputer_tip_id": disputer,
+                "reason": body.get("reason"),
+                "evidence_hash": body.get("evidence_hash"),
+                "author_tip_id": rec.get("author_tip_id"),
+            },
+        })
+        self._send_json(200, {
+            "success": True,
+            "message": "Dispute filed. Stage 1 AI classifier will run within 60 seconds.",
+        })
+
+    def _dag_tx(self, tx_id: str):
+        tx = self.dag.get_tx(tx_id)
+        if not tx:
+            self._send_json(404, {"error": f"Transaction not found: {tx_id}"}); return
+        self._send_json(200, tx)
+
+    def _revocations_create(self, body: dict):
+        tip_id       = body.get("tip_id")
+        tx_type      = body.get("tx_type")
+        reason_code  = body.get("reason_code")
+        evidence_hash = body.get("evidence_hash")
+        issuing_vp_id = body.get("issuing_vp_id")
+        signature     = body.get("signature")
+
+        if not tip_id:
+            self._send_json(400, {"error": "tip_id is required"}); return
+        if not tx_type:
+            self._send_json(400, {"error": "tx_type is required"}); return
+        if tx_type not in TxType.REVOCATION_TYPES:
+            self._send_json(400, {"error": f"tx_type must be one of {sorted(TxType.REVOCATION_TYPES)}"}); return
+        if not issuing_vp_id:
+            self._send_json(400, {"error": "issuing_vp_id is required"}); return
+
+        identity = self.dag.get_identity(tip_id)
+        if not identity:
+            self._send_json(404, {"error": f"TIP-ID not found: {tip_id}"}); return
+        if self.dag.is_revoked(tip_id):
+            self._send_json(409, {"error": f"TIP-ID already revoked: {tip_id}"}); return
+
+        timestamp = _utc_now()
+        tx = self.dag.add_tx({
+            "tx_type":   tx_type,
+            "timestamp": timestamp,
+            "data": {
+                "tip_id":        tip_id,
+                "reason_code":   reason_code,
+                "evidence_hash": evidence_hash,
+                "issuing_vp_id": issuing_vp_id,
+                "signature":     signature,
+            },
+        })
+        self.dag.add_revocation(tip_id, tx_type, timestamp, tx["tx_id"])
+
+        # Cascade: flag recent content for REVOKE_VP
+        if tx_type == TxType.REVOKE_VP:
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+            recent = [c for c in self.dag.get_content_by_author(tip_id)
+                      if (c.get("registered_at") or "") > cutoff]
+            for c in recent:
+                self.dag.add_tx({
+                    "tx_type": TxType.CONTENT_DISPUTED,
+                    "data":    {"ctid": c["ctid"], "reason": "issuer_revocation_cascade", "auto": True},
+                })
+            log.info(f"Revocation cascade: {len(recent)} records flagged for {tip_id}")
+
+        log.info(f"Revocation: {tip_id} (type={tx_type}, by={issuing_vp_id})")
+        self._send_json(201, {
+            "tx_id":     tx["tx_id"],
+            "tip_id":    tip_id,
+            "tx_type":   tx_type,
+            "timestamp": timestamp,
+        })
+
+    def _dedup_check(self, body: dict):
+        zk_proof         = body.get("zk_proof")
+        hash_commitment  = body.get("hash_commitment", "")
+        if not zk_proof:
+            self._send_json(400, {"error": "zk_proof is required"}); return
+        proof_hash   = shake256_multi(zk_proof, hash_commitment)
+        is_duplicate = self.dag.has_dedup(proof_hash)
+        if not is_duplicate:
+            self.dag.add_dedup(proof_hash)
+        self._send_json(200, {
+            "unique":    not is_duplicate,
+            "duplicate": is_duplicate,
+            "message":   ("Identity already registered." if is_duplicate
+                          else "Uniqueness confirmed. Proceed with registration."),
+        })
+
+    def _vp_register(self, body: dict):
+        name   = body.get("name")
+        tier   = body.get("jurisdiction_tier", "green")
+        pubkey = body.get("public_key")
+        if not name:
+            self._send_json(400, {"error": "name is required"}); return
+        if not pubkey:
+            self._send_json(400, {"error": "public_key is required"}); return
+        if not JurisdictionTier.can_accredit(tier):
+            self._send_json(400, {"error": f"Cannot accredit VPs in '{tier}' jurisdiction"}); return
+
+        vp_id = generate_tip_id("VP", pubkey)
+        registered_at = _utc_now()
+        self.dag.add_tx({
+            "tx_type": TxType.VP_REGISTERED,
+            "data": {
+                "vp_id":             vp_id,
+                "name":              name,
+                "jurisdiction_tier": tier,
+                "public_key":        pubkey,
+            },
+        })
+        self.dag.save_vp({
+            "vp_id":             vp_id,
+            "name":              name,
+            "jurisdiction_tier": tier,
+            "public_key":        pubkey,
+            "status":            "active",
+            "registered_at":     registered_at,
+        })
+        self._send_json(201, {
+            "vp_id": vp_id, "name": name,
+            "jurisdiction_tier": tier,
+            "registered_at": registered_at,
+        })
+
+    def _vp_resolve(self, vp_id: str):
+        vp = self.dag.get_vp(vp_id)
+        if not vp:
+            self._send_json(404, {"error": f"VP not found: {vp_id}"}); return
+        self._send_json(200, dict(vp))
+
+
+def _decode(s: str) -> str:
+    from urllib.parse import unquote
+    return unquote(s)
+
+
+# ─── Server factory ───────────────────────────────────────────────────────────
+
+def create_server(dag, scoring, config: dict) -> HTTPServer:
+    """Create a threaded HTTPServer with the TIP API handler."""
+    from socketserver import ThreadingMixIn
+
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+    limiter = _RateLimiter(
+        window=config.get("rate_limit_window", 60),
+        max_req=config.get("rate_limit_max", 200),
+    )
+
+    class BoundHandler(TIPAPIHandler):
+        pass
+
+    BoundHandler.dag     = dag
+    BoundHandler.scoring = scoring
+    BoundHandler.config  = config
+    BoundHandler.limiter = limiter
+
+    host = config.get("host", "0.0.0.0")
+    port = config.get("port", 4000)
+    server = ThreadingHTTPServer((host, port), BoundHandler)
+    return server

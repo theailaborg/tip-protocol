@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TIP™ Trust Identity Protocol</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 300px; min-height: 200px; max-height: 500px;
+      font-family: 'Libre Franklin', sans-serif;
+      background: #FFFFFF; color: #0C1A3A;
+      font-size: 13px; overflow-y: auto;
+    }
+    .header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 14px; border-bottom: 1px solid #E2E6EE;
+      background: #0C1A3A;
+    }
+    .header .title   { font-size: 12px; font-weight: 700; color: #FFFFFF; letter-spacing: 1px; }
+    .header .sub     { font-size: 9px; color: #B8942E; letter-spacing: 2px; font-weight: 500; }
+    .section { padding: 12px 14px; border-bottom: 1px solid #E2E6EE; }
+    .section:last-child { border-bottom: none; }
+    .section-label   { font-size: 9px; font-weight: 600; color: #8895A7; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px; }
+    .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .key { font-size: 11px; color: #4A5568; }
+    .val { font-size: 11px; font-weight: 600; color: #0C1A3A; font-family: 'JetBrains Mono', monospace; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .score-bar { height: 4px; border-radius: 2px; background: #E2E6EE; margin: 4px 0 8px; }
+    .score-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+    .status-badge { padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
+    .no-tip { text-align: center; padding: 28px 14px; color: #8895A7; font-size: 12px; line-height: 1.6; }
+    .no-tip .icon { font-size: 28px; margin-bottom: 8px; }
+    .footer { padding: 8px 14px; background: #F8F9FB; display: flex; justify-content: space-between; align-items: center; }
+    .footer a { font-size: 10px; color: #B8942E; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    .btn { padding: 5px 10px; border-radius: 4px; font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit; border: 1px solid #E2E6EE; background: white; color: #0C1A3A; transition: all 0.2s; }
+    .btn:hover { background: #F1F3F7; }
+    #loading { text-align: center; padding: 32px; color: #8895A7; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
+      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z" fill="#B8942E20" stroke="#B8942E" stroke-width="2"/>
+      <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <div class="title">THE AI LAB</div>
+      <div class="sub">TRUST IDENTITY PROTOCOL</div>
+    </div>
+  </div>
+
+  <div id="loading">Loading TIP™ data...</div>
+  <div id="main" style="display:none;"></div>
+
+  <div class="footer">
+    <a href="https://theailab.org/trust-identity-protocol" target="_blank">theailab.org</a>
+    <button class="btn" id="optionsBtn">Settings</button>
+  </div>
+
+  <script>
+    const COLORS = {
+      green: "#1A8A5C", blue: "#2563A8", yellow: "#A88B15", orange: "#C07318", red: "#C53030"
+    };
+
+    function tierColor(s) {
+      return s>=800?COLORS.green:s>=600?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
+    }
+
+    function tierLabel(s) {
+      return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
+    }
+
+    async function load() {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) return;
+
+      // Get tab data from background
+      const { data } = await chrome.runtime.sendMessage({ type: "GET_TAB_DATA", tabId: tab.id });
+      const main = document.getElementById("main");
+      const loading = document.getElementById("loading");
+
+      if (!data || (!data.tipAuthor && !data.tipContent)) {
+        loading.style.display = "none";
+        main.style.display = "block";
+        main.innerHTML = `<div class="no-tip">
+          <div class="icon">🔍</div>
+          <strong>No TIP™ headers found</strong><br/>
+          This page has not implemented the Trust Identity Protocol.<br/><br/>
+          <a href="https://theailab.org/trust-identity-protocol" target="_blank" style="color:#B8942E;font-size:11px;">Learn how to add TIP™ headers →</a>
+        </div>`;
+        return;
+      }
+
+      // Fetch detailed identity if we have an author
+      let identData = null;
+      if (data.tipAuthor) {
+        const r = await chrome.runtime.sendMessage({ type: "FETCH_IDENTITY", tipId: data.tipAuthor });
+        identData = r.data;
+      }
+
+      // Check revocation
+      let revoked = false;
+      if (data.tipAuthor) {
+        const r = await chrome.runtime.sendMessage({ type: "IS_REVOKED", tipId: data.tipAuthor });
+        revoked = r.revoked;
+      }
+
+      const score  = identData?.score || data.tipScore || 0;
+      const tier   = identData?.tier  || tierLabel(score);
+      const color  = tierColor(score);
+      const pct    = (score / 1000 * 100).toFixed(1);
+
+      let html = "";
+
+      // Author section
+      if (data.tipAuthor) {
+        html += `<div class="section">
+          <div class="section-label">Author Identity</div>
+          <div class="row">
+            <span class="key">TIP-ID</span>
+            <span class="val">${data.tipAuthor}</span>
+          </div>
+          <div class="row">
+            <span class="key">Trust score</span>
+            <span style="font-size:16px;font-weight:700;color:${color};font-family:'Cormorant Garamond',serif;">${score}<span style="font-size:11px;color:#8895A7;font-weight:400;"> / 1000</span></span>
+          </div>
+          <div class="score-bar">
+            <div class="score-fill" style="width:${pct}%;background:${color};"></div>
+          </div>
+          <div class="row">
+            <span class="key">Tier</span>
+            <span class="status-badge" style="background:${color}12;color:${color};border:1px solid ${color}25;">${tier}</span>
+          </div>
+          ${revoked ? `<div class="row"><span style="font-size:11px;color:#C53030;font-weight:600;">⚠ This identity has been revoked</span></div>` : ""}
+          ${identData?.verified_since ? `<div class="row"><span class="key">Verified since</span><span class="val">${identData.verified_since?.slice(0,10)}</span></div>` : ""}
+          ${identData?.content_count !== undefined ? `<div class="row"><span class="key">Content count</span><span class="val">${identData.content_count}</span></div>` : ""}
+        </div>`;
+      }
+
+      // Content section
+      if (data.tipContent) {
+        const originMap = { "original-human":"OH", "ai-assisted":"AA", "ai-generated":"AG", "mixed":"MX" };
+        const originCode = originMap[data.tipOrigin] || data.tipOrigin?.toUpperCase() || "";
+        const originColors = {OH:"#2563A8",AA:"#7C3AED",AG:"#C07318",MX:"#8895A7"};
+        const originLabels = {OH:"Original Human",AA:"AI-Assisted",AG:"AI-Generated",MX:"Mixed"};
+        const oc = originColors[originCode] || "#8895A7";
+        html += `<div class="section">
+          <div class="section-label">Content Provenance</div>
+          <div class="row">
+            <span class="key">CTID</span>
+            <span class="val">${data.tipContent}</span>
+          </div>
+          ${originCode ? `<div class="row">
+            <span class="key">Origin</span>
+            <span class="status-badge" style="background:${oc}12;color:${oc};border:1px solid ${oc}25;">${originCode} — ${originLabels[originCode]||""}</span>
+          </div>` : ""}
+        </div>`;
+      }
+
+      loading.style.display = "none";
+      main.style.display = "block";
+      main.innerHTML = html;
+    }
+
+    document.getElementById("optionsBtn").addEventListener("click", () => {
+      chrome.runtime.openOptionsPage();
+    });
+
+    load().catch(e => {
+      document.getElementById("loading").textContent = "Error: " + e.message;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "name": "@tip-protocol/sdk",
+  "version": "2.0.0",
+  "description": "TIP Protocol JavaScript SDK — integrate trust badges, verify identities, and register content",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./identity": "./src/identity.js",
+    "./content": "./src/content.js",
+    "./trust": "./src/trust.js",
+    "./badges": "./src/badges.js",
+    "./crypto": "./src/crypto.js"
+  },
+  "author": "Dinesh Mendhe <chairman@theailab.org>",
+  "license": "SEE LICENSE IN ../LICENSE.txt",
+  "keywords": [
+    "tip-protocol",
+    "trust",
+    "identity",
+    "provenance",
+    "badges"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theailab/tip-protocol.git"
+  },
+  "homepage": "https://theailab.org",
+  "dependencies": {},
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "scripts": {
+    "test": "jest",
+    "build": "echo 'SDK is pure CommonJS — no build step required'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publisher": "The AI Lab Intelligence Unobscured, Inc.",
+  "contributors": [
+    {
+      "name": "Dinesh Mendhe",
+      "email": "chairman@theailab.org",
+      "role": "Inventor and Author"
+    },
+    {
+      "name": "The AI Lab Intelligence Unobscured, Inc.",
+      "email": "chairman@theailab.org",
+      "url": "https://theailab.org"
+    }
+  ]
+}

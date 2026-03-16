@@ -1,0 +1,114 @@
+# ─── CRITICAL: Never commit these ────────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.staging
+
+# Keypairs and secrets
+*.keypair.json
+*_keypair.json
+node_keypair.json
+genesis_root_key.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Genesis production data
+genesis-data/
+seed-output-production.json
+
+# ─── Node.js ─────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+.pnp.*
+dist/
+build/
+.next/
+out/
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+.env/
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# ─── Database ────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+data/
+!data/.gitkeep
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ─── IDEs and editors ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+test-results/
+junit.xml
+
+# ─── CI/CD ───────────────────────────────────────────────────────────────────
+.env.ci
+
+# ─── Temporary ───────────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ─── Package locks (commit these for apps, not libraries) ────────────────────
+# Uncomment the lines below if this is a library package:
+# package-lock.json
+# yarn.lock

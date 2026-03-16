@@ -1,0 +1,29 @@
+# TIP Protocol Python Implementation
+# Core requirements
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIRED (install before running):
+cryptography>=41.0.0       # Ed25519 / ML-DSA-65 stub + AES for future use
+
+# OPTIONAL but strongly recommended for production:
+# fastapi>=0.110.0          # High-performance async REST API
+# uvicorn[standard]>=0.29.0 # ASGI server (needed for FastAPI)
+# pydantic>=2.6.0           # Data validation (used by FastAPI)
+# websockets>=12.0          # P2P gossip WebSocket client
+
+# CLI
+click>=8.1.7               # Command-line interface
+
+# OPTIONAL (development / testing):
+# pytest>=8.0.0
+# httpx>=0.27.0             # Async HTTP client for tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The node runs without FastAPI/uvicorn using the stdlib http.server.
+# For production deployments, install fastapi + uvicorn for:
+#   - Async request handling (10x throughput improvement)
+#   - Auto-generated OpenAPI/Swagger docs at /docs
+#   - Pydantic request validation
+#   - Middleware support
+#
+# Install: pip install fastapi uvicorn[standard] pydantic websockets
+# ─────────────────────────────────────────────────────────────────────────────

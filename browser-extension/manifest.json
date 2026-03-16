@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "TIP™ Trust Identity Protocol",
+  "short_name": "TIP™ Badge",
+  "version": "2.0.0",
+  "description": "Displays AI Trust ID™ badges on verified content across the web. Reads TIP™ HTTP headers and meta tags to show origin and trust scores.",
+  "homepage_url": "https://theailab.org/trust-identity-protocol",
+
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "background": {
+    "service_worker": "src/background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TIP™ Trust Identity Protocol",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "32":  "icons/icon32.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "32":  "icons/icon32.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "options_page": "options.html",
+
+  "web_accessible_resources": [
+    {
+      "resources": ["src/badge-widget.js"],
+      "matches":   ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,659 @@
+TIP COMMUNITY LICENSE
+Version 1.0 (TIPCL-1.0)
+Effective Date: January 1, 2026
+Last Revised: March 2026
+
+Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
+131 Continental Dr, Suite 305, Newark, DE 19713, United States
+theailab.org | licensing@theailab.org
+
+================================================================================
+PREAMBLE
+================================================================================
+
+This TIP Community License v1.0 ("License") governs the use, reproduction,
+modification, and distribution of the TIP Protocol Reference Implementation
+(the "Software") authored by Dinesh Mendhe and owned by The AI Lab
+Intelligence Unobscured, Inc. ("The AI Lab", "Licensor").
+
+IMPORTANT: The TIP Protocol Specification Document is separately licensed
+under Creative Commons Attribution 4.0 International (CC-BY 4.0). This
+License governs only the Reference Implementation software (source code,
+SDKs, CLI tools, browser extension, and badge web component). You can always
+implement TIP Protocol from scratch using the CC-BY 4.0 specification without
+being subject to this License.
+
+The AI Lab believes:
+  (1) Open protocols create stronger, more trusted ecosystems than
+      proprietary ones.
+  (2) Attribution is not a courtesy -- it is a structural truth. The AI Lab
+      invented TIP Protocol, and every implementation should be honest
+      about that fact.
+  (3) Commercial enterprises that build revenue-generating products on this
+      technology should share in sustaining its development.
+  (4) Individuals, journalists, nonprofits, educators, and governments should
+      never face a paywall to participate in a trust protocol that is meant
+      to protect the public interest.
+
+================================================================================
+SECTION 1: DEFINITIONS
+================================================================================
+
+"Software" means the TIP Protocol Reference Implementation, including the
+Node.js implementation, Python implementation, SDK, CLI tools, browser
+extension, badge web component, and all associated source code files
+published by The AI Lab under this License.
+
+"Licensor" means The AI Lab Intelligence Unobscured, Inc.
+
+"You" or "Licensee" means any individual or legal entity exercising rights
+granted by this License.
+
+"Contributor" means any individual or legal entity that submits a
+modification, addition, or Derivative Work to The AI Lab for inclusion in
+the Software. Contributors grant The AI Lab the rights described in
+Section 15.6 (Contributor License).
+
+"Use" means to copy, execute, run, deploy, modify, distribute, sublicense,
+or incorporate the Software or Derivative Works into a product or service.
+
+"Derivative Work" means any work based on or derived from the Software in
+whole or in part, including modifications, translations, adaptations, or
+integrations.
+
+"Annual Revenue" means the total gross revenue of You and all entities
+under Common Control with You, in the twelve (12) calendar months
+immediately preceding the first day of Use or the date a Commercial License
+is required, whichever is earlier. Revenue is measured globally across all
+products and services, not limited to revenue attributable to TIP Protocol.
+
+"Common Control" means ownership of more than fifty percent (50%) of the
+outstanding voting securities or equity interests of an entity, or the
+contractual or practical ability to direct or cause the direction of the
+management and policies of an entity.
+
+"Commercial Use" means any Use of the Software in connection with a product
+or service where Your Annual Revenue exceeds USD $500,000 (five hundred
+thousand United States dollars). Use by an entity with Annual Revenue of
+exactly USD $500,000 does not constitute Commercial Use.
+
+"Free Use" means any Use that does not constitute Commercial Use and that
+qualifies under one of the categories in Section 2.1.
+
+"Compliant Implementation" means an implementation that (a) correctly
+implements the TIP Protocol Specification in the version current at the
+time of initial deployment, or any later version, (b) displays the required
+attribution per Section 4, and (c) preserves the NOTICE file per Section 5.
+An implementation remains Compliant if updated to a newer Specification
+version, provided it continues to satisfy conditions (b) and (c).
+
+"Essential Patent Claims" means those patent claims owned or controlled by
+The AI Lab that would necessarily be infringed by making, using, selling, or
+distributing a Compliant Implementation of the Software, where there is no
+commercially reasonable, technically equivalent alternative way to implement
+the relevant feature without infringing the claim. Essential Patent Claims
+do not include claims that cover only implementation choices beyond what is
+required for compliance, design-arounds, or unrelated functionality.
+
+"NOTICE file" means the file named NOTICE.txt included with the Software.
+
+"The Marks" means TIP(tm), AI Trust ID(tm), AI Trust Registry(tm), The
+Global Seal of Trust(tm), and the AI Trust ID Seal visual design, all owned
+by The AI Lab Intelligence Unobscured, Inc.
+
+"Conversion Date" means January 1, 2031.
+
+"Protocol Core" means the functional components of the Software that:
+(a) validate or process transactions on the federated DAG ledger;
+(b) compute trust scores from DAG transaction history;
+(c) register, verify, or deduplicate identities; or
+(d) verify cryptographic signatures on protocol messages.
+The Protocol Core is defined by function, not by file name. Renaming or
+reorganizing files does not remove a component from the Protocol Core if
+it performs these functions.
+
+================================================================================
+SECTION 2: FREE USE GRANT
+================================================================================
+
+2.1  WHO QUALIFIES FOR FREE USE
+
+Subject to the conditions of this License, The AI Lab grants You a
+worldwide, royalty-free, non-exclusive, non-transferable license to Use
+the Software if You fall into any of the following categories at the time
+of Use:
+
+(a) Individual Person. You are a natural person and Your Annual Revenue
+    does not exceed USD $500,000. An individual whose Annual Revenue
+    exceeds USD $500,000 may qualify under category (b) if a business
+    entity they operate meets that definition.
+
+(b) Small Business. Your Annual Revenue does not exceed USD $500,000 in
+    the preceding twelve (12) calendar months.
+
+(c) Nonprofit Organization. You are a nonprofit organization, NGO, charity,
+    foundation, or other entity exempt from income tax under the laws of
+    your jurisdiction of incorporation, or holding equivalent charitable
+    or nonprofit status under the laws of any jurisdiction, regardless
+    of revenue.
+
+(d) Educational Institution. You are a university, college, school,
+    accredited educational institution, or a research institute affiliated
+    with such an institution, regardless of revenue.
+
+(e) Government Entity. You are a local, regional, or national government
+    body, government agency, ministry, or state-owned enterprise operating
+    in its governmental capacity, regardless of revenue.
+
+(f) Journalism Organization. You are a news publisher, journalism nonprofit,
+    press freedom organization, or individual journalist, regardless of
+    revenue, provided that the Software is used solely for editorial
+    identity verification and content provenance purposes and not for
+    commercial advertising, data brokering, or other non-editorial
+    revenue-generating activities.
+
+(g) Research and Development. You are using the Software solely for
+    internal research, development, testing, security evaluation, or
+    academic study, where the Software is not deployed to external end
+    users. For this category, a limited beta or pilot program involving
+    no more than five hundred (500) external users, conducted for no more
+    than twelve (12) consecutive months, qualifies as internal testing.
+
+2.2  SCOPE OF FREE USE GRANT
+
+The Free Use grant includes the right to:
+(a) Execute, run, deploy, and operate TIP nodes connected to the TIP
+    Protocol network;
+(b) Modify the Software to build custom implementations and integrations;
+(c) Distribute the Software or Derivative Works to others who also qualify
+    for Free Use under Section 2.1, provided that the NOTICE file and
+    attribution requirements are preserved; and
+(d) Apply for TIP-VP accreditation to issue TIP-IDs on the network,
+    subject to the TIP-VP Code of Conduct.
+
+This grant is a license only. It does not transfer ownership or any other
+property right in the Software. The license is non-exclusive and
+non-transferable except as expressly permitted by Section 2.2(c).
+
+================================================================================
+SECTION 3: COMMERCIAL LICENSE REQUIREMENT
+================================================================================
+
+3.1  REQUIREMENT
+
+Any Use of the Software that does not qualify as Free Use under Section 2.1
+requires a Commercial License from The AI Lab prior to Use. Using the
+Software commercially without a Commercial License constitutes copyright
+infringement. A Commercial License may be obtained by contacting
+licensing@theailab.org or through theailab.org/licensing.
+
+3.2  COMMERCIAL LICENSE TIERS
+
+Annual fees are denominated in United States Dollars (USD):
+
+  Sentinel   Over $500K up to and including $10M rev/yr    USD $2,750/year
+  Guardian   Over $10M up to and including $50M rev/yr    USD $11,000/year
+  Silver     Over $50M up to and including $500M rev/yr   USD $55,000/year
+  Gold       Over $500M up to and including $5B rev/yr   USD $165,000/year
+  Platinum   Over $5B rev/yr                             USD $550,000/year
+
+For the avoidance of doubt: Annual Revenue of exactly USD $10,000,000
+falls in the Sentinel tier. Annual Revenue exceeding USD $10,000,000 falls
+in the Guardian tier. The same inclusive/exclusive principle applies at
+each tier boundary: "up to and including" the upper bound falls in the
+lower tier; any amount strictly above the upper bound falls in the next
+higher tier.
+
+Annual fees are fixed for the current license year. The AI Lab will provide
+at least ninety (90) days written notice of any fee increase before it
+takes effect at renewal.
+
+3.3  GRACE PERIOD
+
+You have ninety (90) days from the date Your Annual Revenue first exceeds
+USD $500,000 to obtain a Commercial License. Use during this period is
+provisionally licensed. If You do not obtain a Commercial License within
+ninety (90) days, the provisional license is void retroactively from the
+date Your Annual Revenue first exceeded USD $500,000, and all use during
+that period is unlicensed.
+
+3.4  ANTI-CIRCUMVENTION
+
+You may not structure business activities, corporate entities, or revenue
+arrangements for the primary purpose of circumventing the Annual Revenue
+threshold. If a court or arbitrator determines that the use of multiple
+legal entities was structured primarily to reduce measured Annual Revenue
+below USD $500,000 in order to avoid this License's commercial requirements,
+all such entities shall be treated as a single Licensee for purposes of
+this License.
+
+================================================================================
+SECTION 4: ATTRIBUTION REQUIREMENT (MANDATORY FOR ALL USERS)
+================================================================================
+
+IMPORTANT: Attribution is a condition of this License, not a courtesy. It
+applies to ALL Licensees, including Free Use Licensees. Failure to comply
+constitutes a material breach subject to termination under Section 11.
+
+4.1  USER INTERFACE ATTRIBUTION
+
+Any user-facing implementation must display the following attribution notice
+in a location that a reasonable user would encounter in the normal course
+of using the application, without requiring deliberate search. Suitable
+locations include a footer present on all pages, an About page, a Help or
+Settings page, or a credits section. The attribution must not be hidden
+behind multiple navigation steps or presented only in source code:
+
+    "Built on TIP Protocol by The AI Lab Intelligence Unobscured, Inc.
+     (theailab.org) | Licensed under TIPCL-1.0"
+
+This attribution must also be:
+(a) Machine-readable: the text "TIP Protocol" and "theailab.org" must
+    appear in the rendered HTML source or HTTP response metadata; and
+(b) Preserved in all Derivative Works and their documentation.
+
+If Your implementation has no user-facing component (for example, a pure
+server-side API or a backend data pipeline), the API response form in
+Section 4.2 satisfies the attribution requirement.
+
+4.2  PERMITTED ATTRIBUTION FORMATS
+
+The following formats are legally equivalent. Choose the one that fits:
+
+Full form:
+    "Built on TIP Protocol by The AI Lab Intelligence Unobscured, Inc.
+     (theailab.org) | Licensed under TIPCL-1.0"
+
+Short form (with working hyperlink to theailab.org):
+    "Powered by TIP Protocol: theailab.org"
+
+Badge form:
+    TIP Powered Mark per TIP Powered Mark Display Guidelines,
+    with hyperlink to theailab.org/tip
+
+API response form (non-user-facing implementations):
+    X-Powered-By: TIP-Protocol/theailab.org
+    (included in all HTTP responses)
+
+================================================================================
+SECTION 5: NOTICE FILE (MANDATORY IN ALL DISTRIBUTIONS)
+================================================================================
+
+You must include the NOTICE.txt file, verbatim and unmodified, in all copies
+of the Software or Derivative Works that You distribute. You may append Your
+own attribution notices after the required text but may not modify or remove
+the required text.
+
+The minimum required NOTICE file text is:
+
+  -----------------------------------------------------------------------
+  TIP Protocol (Trust Identity Protocol)
+  Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
+  Authored by Dinesh Mendhe
+  theailab.org | Licensed under TIPCL-1.0
+
+  TIP(tm), AI Trust ID(tm), AI Trust Registry(tm), and
+  The Global Seal of Trust(tm) are trademarks of
+  The AI Lab Intelligence Unobscured, Inc.
+
+  This software implements inventions subject to pending or issued
+  U.S. patent applications or patents filed by Dinesh Mendhe and
+  assigned to The AI Lab Intelligence Unobscured, Inc.
+  -----------------------------------------------------------------------
+
+The full NOTICE.txt in this repository contains the complete required text
+and must be preserved in its entirety in all distributions.
+
+================================================================================
+SECTION 6: COPYLEFT ON PROTOCOL CORE
+================================================================================
+
+6.1  COPYLEFT OBLIGATION
+
+If You distribute a Derivative Work that modifies any component of the
+Protocol Core (as defined in Section 1), You must make the complete
+corresponding source code of those modifications publicly available under
+this License or a later version of TIPCL, on terms that allow any recipient
+to obtain, modify, and redistribute it.
+
+6.2  HOW TO MAKE SOURCE AVAILABLE
+
+You must fulfill the copyleft obligation by one of:
+
+(a) Alongside Distribution: Include the complete corresponding Protocol Core
+    modification source code in the same distribution; or
+
+(b) Written Offer: Accompany the distribution with a written offer, valid
+    for at least three (3) years from distribution, to provide the complete
+    corresponding source code upon request at no charge beyond the actual
+    cost of transmission; or
+
+(c) Repository Publication: Publish the source code in a publicly accessible
+    version control repository under this License or a later version of
+    TIPCL and include the repository URL in the distribution.
+
+6.3  SAAS AND NETWORK SERVICES EXCEPTION
+
+The copyleft obligation is triggered by distribution to third parties, not
+by running the Software as a hosted service. Operating TIP Protocol nodes,
+APIs, or infrastructure for remote access does not constitute distribution
+and does not trigger the copyleft obligation. This is intentional.
+
+6.4  SCOPE LIMITATION
+
+The copyleft obligation applies only to Protocol Core modifications. It does
+NOT apply to applications that interact with the Protocol Core via API calls
+or imports, to the SDK, CLI tools, browser extension, or badge component, or
+to any code that is not itself a modification of a Protocol Core function.
+
+================================================================================
+SECTION 7: RESTRICTIONS (ABSOLUTE -- FREE AND COMMERCIAL)
+================================================================================
+
+You may NOT, under any circumstances:
+
+(1) Remove, alter, or obscure the NOTICE file or required attribution text
+    in any distribution of the Software or Derivative Works.
+
+(2) Use the Marks (TIP(tm), AI Trust ID(tm), AI Trust Registry(tm), The
+    Global Seal of Trust(tm)) in your product name, domain name, marketing
+    materials, or user interface without a separate written trademark
+    license from The AI Lab. Descriptive fair use (stating that your product
+    "implements TIP Protocol" or "is compatible with TIP Protocol") is
+    permitted without a trademark license.
+
+(3) Issue the AI Trust ID(tm) Seal on behalf of users. Only The AI Lab's
+    registry may issue the Seal. You may display Seals that The AI Lab has
+    already issued directly to users.
+
+(4) Represent that The AI Lab endorses or is affiliated with your product
+    without prior written consent from The AI Lab.
+
+(5) Present your implementation to users as participating in the TIP
+    Protocol network while operating on a separate DAG not anchored to the
+    canonical genesis block published by The AI Lab at theailab.org/genesis.
+
+(6) Grant Commercial Use rights to third parties. A Commercial License is
+    personal to the named Licensee and may not be sublicensed, transferred,
+    or assigned without The AI Lab's prior written consent.
+
+================================================================================
+SECTION 8: PATENTS
+================================================================================
+
+8.1  FREE USE PATENT LICENSE
+
+For Free Use under Section 2.1, The AI Lab grants You a non-exclusive,
+royalty-free, worldwide patent license under The AI Lab's Essential Patent
+Claims to make, use, and distribute Compliant Implementations of the
+Software, including updates and Derivative Works that remain Compliant.
+
+This patent license does NOT extend to: (a) any product, service, or
+technology that is not a Compliant Implementation; (b) any claims beyond
+the Essential Patent Claims; or (c) any third-party patents.
+
+8.2  COMMERCIAL USE PATENT LICENSE
+
+A Commercial License under Section 3 includes a non-exclusive,
+non-transferable patent license under The AI Lab's Essential Patent Claims
+to make, use, sell, and distribute Compliant Implementations in the
+Licensee's commercial product or service. This license is limited to the
+specific implementation and does not extend to any other products or
+services of the Licensee.
+
+8.3  DEFENSIVE TERMINATION
+
+If You, or any entity under Common Control with You, institute or threaten
+patent litigation against The AI Lab, any Contributor, or any user of the
+Software, alleging that the Software or any Compliant Implementation
+infringes a patent, then all patent licenses granted to You under Sections
+8.1 and 8.2 terminate as of the date such litigation is filed or threatened.
+
+================================================================================
+SECTION 9: NETWORK PARTICIPATION
+================================================================================
+
+9.1  Any Compliant Implementation may connect to the original TIP Protocol
+network as a node operator without a Commercial License or VP accreditation,
+subject to the obligations in Section 9.3.
+
+9.2  Issuing TIP-IDs requires separate VP accreditation from The AI Lab under
+the TIP-VP Code of Conduct. Apply at theailab.org/accreditation.
+
+9.3  Node operators must: (a) implement the Specification correctly and in
+good faith; (b) not deliberately propagate invalid or fraudulent transactions;
+(c) process revocation broadcasts issued by The AI Lab or accredited VPs
+within twenty-four (24) hours of receipt; and (d) not represent to users
+that their node participates in the TIP Protocol network while their DAG is
+not anchored to the canonical genesis chain. Violation of these obligations
+constitutes a material breach under Section 11.
+
+================================================================================
+SECTION 10: DISCLAIMER OF WARRANTIES AND LIMITATION OF LIABILITY
+================================================================================
+
+10.1  DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT. THE AI LAB
+DOES NOT WARRANT THAT THE SOFTWARE WILL MEET YOUR REQUIREMENTS, OPERATE
+WITHOUT INTERRUPTION, OR BE ERROR-FREE.
+
+10.2  LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AI LAB AND ITS
+OFFICERS, DIRECTORS, EMPLOYEES, CONTRIBUTORS, AND LICENSORS SHALL NOT BE
+LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR
+CONSEQUENTIAL DAMAGES, INCLUDING BUT NOT LIMITED TO: LOSS OF PROFITS,
+LOSS OF REVENUE, LOSS OF DATA, LOSS OF GOODWILL, BUSINESS INTERRUPTION,
+COST OF SUBSTITUTE GOODS OR SERVICES, OR OTHER COMMERCIAL LOSSES, ARISING
+OUT OF OR RELATED TO THIS LICENSE OR THE USE OR INABILITY TO USE THE
+SOFTWARE, HOWEVER CAUSED AND UNDER ANY THEORY OF LIABILITY, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+10.3  CONSUMER STATUTORY RIGHTS
+
+Sections 10.1 and 10.2 do not limit statutory rights that cannot be
+excluded under applicable consumer protection law in Your jurisdiction.
+
+10.4  INDEMNIFICATION
+
+You agree to indemnify, defend, and hold harmless The AI Lab Intelligence
+Unobscured, Inc. and its officers, directors, employees, contributors, and
+licensors from and against all third-party claims, damages, losses, costs,
+and expenses (including reasonable attorneys' fees) arising from or related
+to: (a) Your use of the Software; (b) Your violation of this License;
+(c) Your deployment of the Software to process personal or biometric data
+of third parties; or (d) Your Derivative Works. The AI Lab may assume
+exclusive defense of any indemnifiable matter, in which case You will
+cooperate as reasonably requested.
+
+================================================================================
+SECTION 11: TERMINATION
+================================================================================
+
+11.1  TERMINATION FOR MATERIAL BREACH
+
+Your rights under this License terminate automatically if You commit a
+material breach and fail to cure it within the period in Section 11.2.
+Material breach includes: (a) Commercial Use without a required license;
+(b) removing or altering the NOTICE file; (c) using the Marks without
+authorization; (d) issuing AI Trust ID Seals without registry authorization;
+or (e) deliberate non-compliance with the attribution requirement in
+Section 4. Minor or inadvertent technical non-compliance that does not
+deprive The AI Lab of a material benefit of this License is not a material
+breach.
+
+11.2  CURE PERIOD
+
+Upon written notice of material breach from The AI Lab, You have thirty
+(30) days to cure. If You cure within that period, Your license reinstates
+automatically. If You independently discover and cure a breach before
+receiving notice, the 30-day cure period runs from when You first knew or
+reasonably should have known of the breach.
+
+The AI Lab may seek injunctive or other equitable relief without prior
+notice for willful trademark infringement or deliberate network manipulation.
+
+11.3  SURVIVAL
+
+Upon termination, the following survive: (a) NOTICE file preservation
+(Section 5) for copies already distributed; (b) attribution obligations
+(Section 4) for implementations already deployed until taken offline;
+(c) outstanding Commercial License fees accrued before termination;
+(d) all restrictions in Section 7; and (e) Sections 10, 12, 13, and 15.
+
+================================================================================
+SECTION 12: GOVERNING LAW AND DISPUTE RESOLUTION
+================================================================================
+
+12.1  GOVERNING LAW. This License is governed by the laws of the State of
+Delaware, United States of America, without regard to conflict of laws
+principles.
+
+12.2  INFORMAL RESOLUTION. Before initiating formal dispute resolution,
+the parties will attempt good-faith negotiation for at least thirty (30)
+days after written notice of the dispute.
+
+12.3  ARBITRATION. Disputes that cannot be resolved informally shall be
+submitted to binding arbitration administered by JAMS under its
+Comprehensive Arbitration Rules in Wilmington, Delaware, before a single
+arbitrator. The arbitrator's decision is final and may be entered as a
+judgment in any court of competent jurisdiction.
+
+12.4  SMALL CLAIMS EXCEPTION. Either party may bring claims in small
+claims court for disputes involving USD $10,000 or less.
+
+12.5  CLASS ACTION WAIVER. ALL PROCEEDINGS SHALL BE CONDUCTED INDIVIDUALLY.
+YOU AND THE AI LAB EACH WAIVE ANY RIGHT TO PARTICIPATE AS A PLAINTIFF OR
+CLASS MEMBER IN ANY CLASS, COLLECTIVE, OR REPRESENTATIVE ACTION. THE
+ARBITRATOR MAY NOT CONSOLIDATE CLAIMS OR PRESIDE OVER ANY CLASS PROCEEDING.
+
+12.6  ATTORNEYS' FEES. The prevailing party in any arbitration or litigation
+to enforce this License is entitled to recover reasonable attorneys' fees
+and costs.
+
+12.7  ARBITRATION SEVERABILITY. If Section 12.5 is found unenforceable in
+a particular context, that finding shall not affect the remainder of Section
+12. If Section 12.3 is found wholly unenforceable, disputes shall be
+resolved in the state or federal courts located in Wilmington, Delaware.
+
+================================================================================
+SECTION 13: EXPORT COMPLIANCE
+================================================================================
+
+The Software includes cryptographic algorithms (including ML-DSA-65,
+SLH-DSA-128s, ML-KEM-768, and SHAKE-256) that are subject to export
+controls under the U.S. Export Administration Regulations (EAR),
+15 C.F.R. Parts 730-774, and may be subject to export controls in other
+jurisdictions. Classification under EAR ECCN 5D002 applies; applicable
+license exceptions (such as ENC or TSU) should be verified by You.
+
+You represent and warrant that:
+(a) You are not located in, and will not export or re-export the Software
+    to, any country subject to a U.S. embargo or comprehensive sanctions,
+    including Cuba, Iran, North Korea, Russia (for controlled items),
+    Syria, or the sanctioned regions of Ukraine;
+(b) You are not listed on the U.S. Specially Designated Nationals List,
+    Entity List, or Denied Persons List; and
+(c) You will comply with all applicable export control and sanctions laws.
+
+You agree to indemnify The AI Lab against any liability or sanction arising
+from Your violation of applicable export control laws.
+
+================================================================================
+SECTION 14: CONVERSION TO APACHE 2.0 AND SURVIVING TERMS
+================================================================================
+
+14.1  ADVANCE NOTICE. The AI Lab will publish written notice of the
+upcoming conversion at theailab.org/license no later than October 3, 2030
+(ninety (90) days before the Conversion Date).
+
+14.2  CONVERSION. On the Conversion Date (January 1, 2031), this License
+automatically converts to the Apache License, Version 2.0. The Commercial
+License requirement in Section 3 no longer applies after the Conversion Date.
+
+14.3  EXISTING COMMERCIAL LICENSES. Commercial Licenses issued before the
+Conversion Date remain valid through the end of their current license year.
+No new Commercial Licenses are required after the Conversion Date.
+
+14.4  SURVIVING TERMS. The following survive the Conversion Date permanently:
+(a) NOTICE file preservation (Section 5) in all distributions;
+(b) All trademark restrictions in Section 7(2); and
+(c) The prohibition on AI Trust ID Seal issuance in Section 7(3).
+
+14.5  WHAT ENDS AFTER CONVERSION. After January 1, 2031: the Commercial
+License requirement (Section 3), mandatory UI attribution in running
+applications (Section 4.1), the copyleft obligation (Section 6), and the
+indemnification obligation (Section 10.4) for post-conversion use no longer
+apply. NOTICE file preservation and trademark restrictions remain.
+
+================================================================================
+SECTION 15: MISCELLANEOUS
+================================================================================
+
+15.1  Entire Agreement. This License, together with any executed Commercial
+License Agreement, constitutes the entire agreement between the parties
+regarding the Software and supersedes all prior agreements.
+
+15.2  Severability. If any provision is held invalid or unenforceable, it
+shall be reformed to the minimum extent necessary or severed if reformation
+is not possible, without affecting the remaining provisions.
+
+15.3  No Waiver. Failure to enforce any provision does not waive The AI
+Lab's right to enforce it in the future. No waiver is effective unless made
+in writing and signed by an authorized representative of The AI Lab.
+
+15.4  Updates to This License. The AI Lab may publish updated TIPCL versions
+with distinguishing version numbers. You may continue using the Software
+under the version in effect when it was distributed to you. The AI Lab will
+not reduce rights granted in this version without at least twelve (12)
+months advance notice. Existing Commercial License terms are not altered
+by new TIPCL versions until their current term expires.
+
+15.5  Assignment. The AI Lab may assign this License and its rights to any
+successor or acquirer of The AI Lab's business or the Software, provided
+the successor agrees in writing to be bound by these terms. You may not
+assign, transfer, or sublicense your rights without The AI Lab's prior
+written consent, except as expressly permitted under Section 2.2(c).
+
+15.6  Contributor License. By submitting a contribution to The AI Lab for
+inclusion in the Software, You grant The AI Lab a perpetual, worldwide,
+non-exclusive, royalty-free, irrevocable license to reproduce, modify,
+distribute, and sublicense Your contribution as part of the Software under
+this License or any successor license. You represent that You have the right
+to make this grant and that Your contribution does not infringe third-party
+rights.
+
+15.7  Force Majeure. Neither party is liable for failure or delay in
+performance due to causes beyond that party's reasonable control, including
+acts of God, war, terrorism, labor disputes, government actions, or internet
+infrastructure failures, provided the affected party gives prompt notice and
+uses reasonable efforts to resume performance.
+
+15.8  Relationship of Parties. This License does not create any employment,
+partnership, joint venture, or agency relationship between the parties.
+
+15.9  Contact.
+  Commercial licensing:  licensing@theailab.org
+  VP accreditation:      accreditation@theailab.org
+  Legal notices:         legal@theailab.org
+  Security:              security@theailab.org
+  Export compliance:     legal@theailab.org
+  General:               chairman@theailab.org
+
+  The AI Lab Intelligence Unobscured, Inc.
+  131 Continental Dr, Suite 305
+  Newark, DE 19713
+  United States
+  theailab.org
+
+================================================================================
+END OF TIP COMMUNITY LICENSE v1.0
+================================================================================
+
+Copyright 2026 The AI Lab Intelligence Unobscured, Inc. All rights reserved.
+TIP(tm), AI Trust ID(tm), AI Trust Registry(tm), The Global Seal of Trust(tm)
+are trademarks of The AI Lab Intelligence Unobscured, Inc.
+Authored by Dinesh Mendhe.

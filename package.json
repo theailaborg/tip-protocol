@@ -1,0 +1,64 @@
+{
+  "name": "tip-protocol",
+  "version": "2.0.0",
+  "description": "TIP Protocol — Trust Identity Protocol. Open, federated, post-quantum identity verification, content provenance, and deterministic trust scoring.",
+  "private": true,
+  "author": "Dinesh Mendhe <chairman@theailab.org> (https://theailab.org)",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "homepage": "https://theailab.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theailab/tip-protocol.git"
+  },
+  "bugs": {
+    "url": "https://github.com/theailab/tip-protocol/issues",
+    "email": "security@theailab.org"
+  },
+  "keywords": [
+    "identity",
+    "trust",
+    "provenance",
+    "post-quantum",
+    "DAG",
+    "federated",
+    "biometric",
+    "content-authentication",
+    "AI",
+    "protocol"
+  ],
+  "workspaces": [
+    "node",
+    "sdk",
+    "cli",
+    "badge"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd python && pip install -r requirements.txt --break-system-packages",
+    "test": "npm run test:node && npm run test:python",
+    "test:node": "cd node && npm test",
+    "test:python": "cd python && python -m pytest tests/ -v",
+    "lint": "npm run lint:node",
+    "lint:node": "cd node && npx eslint src/ --ext .js",
+    "seed:node": "cd scripts && node seed.js",
+    "seed:python": "cd python && python -m scripts.seed",
+    "start": "cd node && npm start",
+    "dev": "cd node && npm run dev"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "publisher": "The AI Lab Intelligence Unobscured, Inc.",
+  "contributors": [
+    {
+      "name": "Dinesh Mendhe",
+      "email": "chairman@theailab.org",
+      "role": "Inventor and Author"
+    },
+    {
+      "name": "The AI Lab Intelligence Unobscured, Inc.",
+      "email": "chairman@theailab.org",
+      "url": "https://theailab.org"
+    }
+  ]
+}
