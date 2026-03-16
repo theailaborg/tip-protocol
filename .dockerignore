@@ -1,0 +1,59 @@
+# TIP Protocol -- Docker ignore file
+# Files not needed in the Docker image
+
+# Git
+.git
+.gitignore
+
+# Development configs
+.env
+.env.*
+!.env.example
+
+# Test and dev files
+node/tests/
+node/coverage/
+**/__tests__/
+**/*.test.js
+**/*.spec.js
+
+# Python
+python/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+
+# Interface (React UI -- not needed in node image)
+interface/
+
+# Documentation (not needed in node image)
+docs/
+spec/
+*.md
+!NOTICE.txt
+
+# Legal (NOTICE.txt is kept; others are not needed at runtime)
+LICENSE.txt
+PATENTS.md
+TRADEMARKS.md
+CHANGELOG.md
+GOVERNANCE.md
+SECURITY.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+
+# GitHub workflows
+.github/
+
+# Docker files themselves (prevent recursion)
+Dockerfile*
+docker-compose*.yml
+docker/
+
+# Data directory (mounted as volume at runtime)
+data/
+
+# Node development artifacts
+node/node_modules/
+node/.eslintrc*

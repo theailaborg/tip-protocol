@@ -1,0 +1,79 @@
+# TIP Protocol Node -- Production Dockerfile (Python)
+#
+# Builds a minimal, production-ready image of the TIP Protocol full node
+# using the Python reference implementation with FastAPI and uvicorn.
+#
+# Usage:
+#   docker build -f Dockerfile.python -t tip-node-python .
+#   docker run -p 4000:4000 -p 4001:4001 --env-file .env tip-node-python
+#
+# Author: Dinesh Mendhe <chairman@theailab.org>
+# Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
+# Licensed under TIPCL-1.0
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM python:3.12-slim AS build
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libffi-dev libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY python/requirements.txt ./requirements.txt
+
+# Install core + production server stack
+RUN pip install --no-cache-dir \
+    cryptography>=41.0.0 \
+    click>=8.1.7 \
+    fastapi>=0.110.0 \
+    "uvicorn[standard]>=0.29.0" \
+    pydantic>=2.6.0 \
+    websockets>=12.0
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+LABEL org.opencontainers.image.title="TIP Protocol Node (Python)"
+LABEL org.opencontainers.image.description="Trust Identity Protocol -- Python full node"
+LABEL org.opencontainers.image.version="2.0.0"
+LABEL org.opencontainers.image.authors="Dinesh Mendhe <chairman@theailab.org>"
+LABEL org.opencontainers.image.vendor="The AI Lab Intelligence Unobscured, Inc."
+LABEL org.opencontainers.image.licenses="TIPCL-1.0"
+
+# Create non-root user
+RUN groupadd -g 1001 tipnode && \
+    useradd  -u 1001 -g tipnode -s /bin/sh tipnode
+
+WORKDIR /app
+
+# Copy installed packages from build stage
+COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=build /usr/local/bin /usr/local/bin
+
+# Copy application source
+COPY python/tip_node/   ./tip_node/
+COPY python/node/       ./node/
+COPY python/shared/     ./shared/
+COPY python/sdk/        ./sdk/
+COPY python/cli/        ./cli/
+COPY python/scripts/    ./scripts/
+COPY NOTICE.txt         ./NOTICE.txt
+COPY LICENSE.txt        ./LICENSE.txt
+
+# Create data directory
+RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
+
+USER tipnode
+
+EXPOSE 4000
+EXPOSE 4001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')" || exit 1
+
+VOLUME ["/app/data"]
+
+CMD ["python", "-m", "tip_node.main"]
