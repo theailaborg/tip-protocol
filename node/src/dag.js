@@ -24,7 +24,7 @@
 
 const path   = require("path");
 const fs     = require("fs");
-const { shake256, generateTxId } = require("../../shared/crypto");
+const { shake256, computeTxId } = require("../../shared/crypto");
 const { TX_TYPES }               = require("../../shared/constants");
 const { log }                    = require("./logger");
 
@@ -132,7 +132,6 @@ class SQLiteStore {
         timestamp      TEXT NOT NULL,
         prev           TEXT NOT NULL DEFAULT '[]',
         signature      TEXT,
-        canonical_hash TEXT,
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
@@ -213,8 +212,8 @@ class SQLiteStore {
     this._stmts = {
       saveTx: this.db.prepare(
         `INSERT OR REPLACE INTO transactions
-           (tx_id,tx_type,data,timestamp,prev,signature,canonical_hash)
-         VALUES (?,?,?,?,?,?,?)`
+           (tx_id,tx_type,data,timestamp,prev,signature)
+         VALUES (?,?,?,?,?,?)`
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY created_at ASC"),
@@ -286,8 +285,7 @@ class SQLiteStore {
       JSON.stringify(tx.data),
       tx.timestamp,
       JSON.stringify(tx.prev || []),
-      tx.signature    || null,
-      tx.canonical_hash || null
+      tx.signature || null
     );
   }
   getTx(id)    { return this._parseTx(this._stmts.getTx.get(id)); }
@@ -406,9 +404,13 @@ function initDAG(config) {
   const dag = {
     // ── Core transaction ops ───────────────────────────────────────────────
     addTx(tx) {
-      if (!tx.tx_id)    tx.tx_id    = generateTxId();
+      // Order matters:
+      // 1. timestamp first (part of canonical form)
+      // 2. prev refs second (part of canonical form — must precede tx_id)
+      // 3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
       if (!tx.timestamp) tx.timestamp = new Date().toISOString();
       if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
+      if (!tx.tx_id) tx.tx_id = computeTxId(tx);
       store.saveTx(tx);
       _updatePrev(tx.tx_id);
       return tx;
@@ -476,7 +478,6 @@ function _writeGenesisBlock(store, config) {
       spec_url:       "https://theailab.org/trust-identity-protocol",
     },
     signature:      "genesis-self-signed",
-    canonical_hash: GENESIS_HASH,
   };
   store.saveTx(genesisTx);
 
@@ -494,8 +495,7 @@ function _writeGenesisBlock(store, config) {
   });
 
   // VP registration transaction
-  store.saveTx({
-    tx_id:     require("../../shared/crypto").shake256("VP_REGISTER" + foundingVP.vp_id),
+  const vpTx = {
     tx_type:   TX_TYPES.VP_REGISTERED,
     timestamp: GENESIS_TIMESTAMP,
     prev:      [GENESIS_TX_ID, GENESIS_TX_ID],
@@ -505,9 +505,9 @@ function _writeGenesisBlock(store, config) {
       jurisdiction_tier: foundingVP.jurisdiction_tier,
       public_key:        vpKeypair.publicKey,
     },
-    signature:      "genesis-vp-bootstrap",
-    canonical_hash: null,
-  });
+    signature: "genesis-vp-bootstrap",
+  };
+  store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx) });
 
   log.info(`Genesis block written. Chain: tip-mainnet-v2 | Hash: ${GENESIS_HASH.slice(0, 16)}...`);
   log.info(`Founding VP registered: ${foundingVP.vp_id}`);

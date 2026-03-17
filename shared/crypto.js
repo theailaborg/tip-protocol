@@ -218,17 +218,17 @@ function generateCTID(originCode, contentHash, tipId) {
  * @returns {Object} tx with signature attached
  */
 function signTransaction(tx, privateKeyHex) {
-  // Auto-assign tx_id and timestamp if not provided
-  if (!tx.tx_id)     tx = { ...tx, tx_id:    generateTxId() };
   if (!tx.timestamp) tx = { ...tx, timestamp: new Date().toISOString() };
-  const canonical = JSON.stringify({
-    tx_type:   tx.tx_type,
-    data:      tx.data,
-    timestamp: tx.timestamp,
-    prev:      tx.prev || [],
-  });
+  // NOTE: prev must be set before calling this so tx_id commits to chain position.
+  // dag.addTx() sets prev first, then calls computeTxId — do not reverse that order.
+  const canonical = canonicalTx(tx);
   const sig = mldsaSign(canonical, privateKeyHex);
-  return { ...tx, signature: sig, canonical_hash: shake256(canonical) };
+  const signed = { ...tx, signature: sig };
+  // Compute content-addressed tx_id only if prev is already attached
+  if (!signed.tx_id && Array.isArray(signed.prev) && signed.prev.length > 0) {
+    signed.tx_id = computeTxId(signed);
+  }
+  return signed;
 }
 
 /**
@@ -238,13 +238,7 @@ function signTransaction(tx, privateKeyHex) {
  * @returns {boolean}
  */
 function verifyTransaction(tx, publicKeyHex) {
-  const canonical = JSON.stringify({
-    tx_type: tx.tx_type,
-    data: tx.data,
-    timestamp: tx.timestamp,
-    prev: tx.prev || [],
-  });
-  return mldsaVerify(canonical, tx.signature, publicKeyHex);
+  return mldsaVerify(canonicalTx(tx), tx.signature, publicKeyHex);
 }
 
 // ─── RANDOM UTILS ─────────────────────────────────────────────────────────────
@@ -254,9 +248,80 @@ function randomHex(bytes = 16) {
   return crypto.randomBytes(bytes).toString("hex");
 }
 
-/** Generate a random transaction ID (used as DAG node ID). */
-function generateTxId() {
-  return shake256(randomHex(32) + Date.now().toString());
+// ─── CONTENT-ADDRESSED TRANSACTION ID ────────────────────────────────────────
+
+/**
+ * Recursively sort all object keys alphabetically for deterministic JSON serialisation.
+ * Arrays preserve their original order (order matters for prev refs).
+ * This ensures two nodes constructing the same tx always produce the same canonical string,
+ * regardless of the order keys were inserted into the object.
+ *
+ * Example:
+ *   Input:  { tx_type: "SCORE_UPDATE", data: { delta: 5, tip_id: "x" } }
+ *   Output: { data: { delta: 5, tip_id: "x" }, tx_type: "SCORE_UPDATE" }
+ *            ^--- "data" sorts before "tx_type"   ^--- "delta" sorts before "tip_id"
+ *
+ * Without this, JSON.stringify key order is insertion-order (not stable across nodes),
+ * so SHAKE-256(tx) would differ between nodes even for identical transactions.
+ */
+function _sortObjectKeys(val) {
+  if (Array.isArray(val)) return val.map(_sortObjectKeys);
+  if (val !== null && typeof val === "object") {
+    return Object.keys(val).sort().reduce((acc, k) => {
+      acc[k] = _sortObjectKeys(val[k]);
+      return acc;
+    }, {});
+  }
+  return val;
+}
+
+/**
+ * Produce the canonical JSON string for a transaction.
+ * Covers exactly 4 fields: tx_type, data, timestamp, prev.
+ * tx_id and signature are intentionally excluded:
+ *   - tx_id  would be circular (it IS the hash of this string)
+ *   - signature is computed over this same string, added after
+ *
+ * All object keys are sorted recursively so the output is identical
+ * regardless of insertion order on any compliant node.
+ *
+ * @param {Object} tx
+ * @returns {string}
+ */
+function canonicalTx(tx) {
+  return JSON.stringify(_sortObjectKeys({
+    data:      tx.data,
+    prev:      tx.prev || [],
+    timestamp: tx.timestamp,
+    tx_type:   tx.tx_type,
+  }));
+}
+
+/**
+ * Compute the content-addressed tx_id for a transaction.
+ * tx_id = SHAKE-256(canonicalTx(tx))  — always 64 hex chars (256 bits).
+ *
+ * IMPORTANT: tx.prev must already be set before calling this.
+ * Calling it before prev is attached gives a tx_id that doesn't commit
+ * to the chain position, breaking tamper-evidence.
+ *
+ * @param {Object} tx  — must have tx_type, data, timestamp, prev
+ * @returns {string}   — 64-char hex string
+ */
+function computeTxId(tx) {
+  return shake256(canonicalTx(tx));
+}
+
+/**
+ * Verify that a stored tx_id matches the tx content.
+ * Use this when receiving a tx via gossip to detect tampering.
+ *
+ * @param {Object} tx
+ * @returns {boolean}
+ */
+function verifyTxId(tx) {
+  if (tx.tx_type === "GENESIS") return true; // genesis tx is self-certified
+  return computeTxId(tx) === tx.tx_id;
 }
 
 module.exports = {
@@ -275,5 +340,7 @@ module.exports = {
   signTransaction,
   verifyTransaction,
   randomHex,
-  generateTxId,
+  canonicalTx,
+  computeTxId,
+  verifyTxId,
 };

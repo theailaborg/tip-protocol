@@ -31,7 +31,7 @@ const SRC    = path.resolve(__dirname, "../src");
 const {
   shake256, shake256Multi,
   hashContent, perceptualHashText,
-  generateTIPID, generateCTID, generateTxId,
+  generateTIPID, generateCTID, computeTxId,
   computeDedupHash, generatePepper,
   generateMLDSAKeypair, signTransaction, verifyTransaction,
 } = require(path.join(SHARED, "crypto"));
@@ -149,10 +149,13 @@ describe("Crypto Layer", () => {
     expect(h1).toHaveLength(64);
   });
 
-  test("1.10 generateTxId produces unique IDs", () => {
-    const id1 = generateTxId({ data: "a", ts: Date.now() });
-    const id2 = generateTxId({ data: "b", ts: Date.now() });
-    expect(id1).not.toBe(id2);
+  test("1.10 computeTxId is content-addressed and deterministic", () => {
+    const base = { tx_type: "SCORE_UPDATE", data: { tip_id: "x", delta: 5 }, timestamp: "2026-01-01T00:00:00.000Z", prev: [] };
+    const id1 = computeTxId({ ...base, data: { tip_id: "x", delta: 5 } });
+    const id2 = computeTxId({ ...base, data: { tip_id: "x", delta: 6 } }); // different content
+    const id3 = computeTxId({ ...base, data: { tip_id: "x", delta: 5 } }); // same as id1
+    expect(id1).not.toBe(id2);   // different content → different id
+    expect(id1).toBe(id3);        // same content → same id (deterministic)
     expect(id1).toHaveLength(64);
   });
 
@@ -246,14 +249,14 @@ describe("DAG Engine", () => {
   });
 
   test("3.3 saveTx and getTx roundtrip", () => {
-    const tx = {
-      tx_id:     generateTxId({ tip_id: TIP_ID_1, ts: Date.now() }),
+    const txBody = {
       tx_type:   TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
       data:      { tip_id: TIP_ID_1, attested: false },
       prev:      [],
       signature: signTransaction(TIP_ID_1, keypair1.privateKey),
     };
+    const tx = { ...txBody, tx_id: computeTxId(txBody) };
     dag.saveTx(tx);
     const retrieved = dag.getTx(tx.tx_id);
     expect(retrieved).not.toBeNull();
@@ -291,12 +294,13 @@ describe("DAG Engine", () => {
   });
 
   test("3.7 saveRevocation and getRevocation roundtrip", () => {
+    const revTs = new Date().toISOString();
     dag.saveRevocation({
       tip_id:    TIP_ID_2,
       tx_type:   TX_TYPES.REVOKE_VOLUNTARY,
       reason:    "User requested revocation",
-      timestamp: new Date().toISOString(),
-      tx_id:     generateTxId({ tip_id: TIP_ID_2, action: "revoke" }),
+      timestamp: revTs,
+      tx_id:     computeTxId({ tx_type: TX_TYPES.REVOKE_VOLUNTARY, data: { tip_id: TIP_ID_2 }, timestamp: revTs, prev: [] }),
     });
     const rev = dag.getRevocation(TIP_ID_2);
     expect(rev).not.toBeNull();
@@ -330,8 +334,7 @@ describe("Trust Scoring Engine", () => {
       verified_at: new Date().toISOString(),
     });
     // Register transaction
-    dag.saveTx({
-      tx_id:     generateTxId({ tip_id: TIP_ID_SCORE_TEST, ts: Date.now() }),
+    dag.addTx({
       tx_type:   TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
       data:      { tip_id: TIP_ID_SCORE_TEST, attested: false },
@@ -347,8 +350,7 @@ describe("Trust Scoring Engine", () => {
   });
 
   test("4.2 Score penalty for OH declared as AG", () => {
-    dag.saveTx({
-      tx_id:     generateTxId({ tip_id: TIP_ID_SCORE_TEST, penalty: 1 }),
+    dag.addTx({
       tx_type:   TX_TYPES.SCORE_UPDATE,
       timestamp: new Date().toISOString(),
       data:      {
@@ -386,8 +388,7 @@ describe("Trust Scoring Engine", () => {
     dag.saveScore(richId, 990, 0);
     // Apply multiple bonuses
     for (let i = 0; i < 20; i++) {
-      dag.saveTx({
-        tx_id:     generateTxId({ tip_id: richId, i }),
+      dag.addTx({
         tx_type:   TX_TYPES.CONTENT_VERIFIED,
         timestamp: new Date().toISOString(),
         data:      { tip_id: richId, delta: 5 },
@@ -403,8 +404,7 @@ describe("Trust Scoring Engine", () => {
   test("4.6 Score does not go below 0", () => {
     const poorId = generateTIPID("NG", generateMLDSAKeypair().publicKey);
     dag.saveScore(poorId, 10, 5);
-    dag.saveTx({
-      tx_id:     generateTxId({ tip_id: poorId, penalty: "big" }),
+    dag.addTx({
       tx_type:   TX_TYPES.SCORE_UPDATE,
       timestamp: new Date().toISOString(),
       data:      { tip_id: poorId, delta: -500, reason: "Major violation" },
@@ -438,10 +438,10 @@ describe("Transaction Validator", () => {
 
   test("5.1 Valid REGISTER_IDENTITY tx passes validation", () => {
     const tipId = generateTIPID("US", keypair1.publicKey);
-    const tx = {
-      tx_id:     generateTxId({ tipId, ts: Date.now() }),
+    const ts = new Date().toISOString();
+    const txBody = {
       tx_type:   TX_TYPES.REGISTER_IDENTITY,
-      timestamp: new Date().toISOString(),
+      timestamp: ts,
       data: {
         tip_id:     tipId,
         region:     "US",
@@ -451,21 +451,20 @@ describe("Transaction Validator", () => {
         zk_proof:   "valid_zk_proof_placeholder",
       },
       prev:      [],
-      signature: signTransaction(tipId, vpKeypair.privateKey),
     };
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: signTransaction(tipId, vpKeypair.privateKey) };
     const result = validateTx(tx, dag);
     expect(result.valid).toBe(true);
   });
 
   test("5.2 REGISTER_IDENTITY with missing vp_id fails", () => {
-    const tx = {
-      tx_id:     generateTxId({ ts: Date.now() }),
+    const txBody = {
       tx_type:   TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
       data:      { tip_id: "tip://id/US-abc", region: "US" }, // missing vp_id
       prev:      [],
-      signature: "sig",
     };
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTx(tx, dag);
     expect(result.valid).toBe(false);
     expect(result.error).toBeDefined();
@@ -478,8 +477,7 @@ describe("Transaction Validator", () => {
       status: "active", vp_id: VP_ID, verified_at: new Date().toISOString(),
     });
     const ctid = generateCTID(ORIGIN.OH, "content here", tipId.slice(-8));
-    const tx = {
-      tx_id:     generateTxId({ ctid, ts: Date.now() }),
+    const txBody = {
       tx_type:   TX_TYPES.CONTENT_REGISTERED,
       timestamp: new Date().toISOString(),
       data: {
@@ -488,15 +486,14 @@ describe("Transaction Validator", () => {
         author_tip_id: tipId, pre_scan_passed: true,
       },
       prev:      [],
-      signature: signTransaction(ctid + ORIGIN.OH, keypair1.privateKey),
     };
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: signTransaction(ctid + ORIGIN.OH, keypair1.privateKey) };
     const result = validateTx(tx, dag);
     expect(result.valid).toBe(true);
   });
 
   test("5.4 Invalid origin code fails validation", () => {
-    const tx = {
-      tx_id:     generateTxId({ ts: Date.now() }),
+    const txBody = {
       tx_type:   TX_TYPES.CONTENT_REGISTERED,
       timestamp: new Date().toISOString(),
       data: {
@@ -506,15 +503,14 @@ describe("Transaction Validator", () => {
         author_tip_id: "tip://id/US-abc123",
       },
       prev:      [],
-      signature: "sig",
     };
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTx(tx, dag);
     expect(result.valid).toBe(false);
   });
 
   test("5.5 REVOKE_VP requires evidence_hash", () => {
-    const tx = {
-      tx_id:    generateTxId({ ts: Date.now() }),
+    const txBody = {
       tx_type:  TX_TYPES.REVOKE_VP,
       timestamp: new Date().toISOString(),
       data: {
@@ -524,6 +520,8 @@ describe("Transaction Validator", () => {
         // missing evidence_hash
       },
       prev:      [],
+    };
+    const tx = { ...txBody, tx_id: computeTxId(txBody),
       signature: signTransaction("revoke", vpKeypair.privateKey),
     };
     const result = validateTx(tx, dag);
