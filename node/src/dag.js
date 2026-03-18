@@ -24,7 +24,7 @@
 
 const path   = require("path");
 const fs     = require("fs");
-const { shake256, computeTxId } = require("../../shared/crypto");
+const { shake256, computeTxId, verifyTxId } = require("../../shared/crypto");
 const { TX_TYPES }               = require("../../shared/constants");
 const { log }                    = require("./logger");
 
@@ -410,6 +410,9 @@ function initDAG(config) {
       // 3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
       if (!tx.timestamp) tx.timestamp = new Date().toISOString();
       if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
+      const hadTxId = !!tx.tx_id;
+      if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
+      
       if (!tx.tx_id) tx.tx_id = computeTxId(tx);
       store.saveTx(tx);
       _updatePrev(tx.tx_id);

@@ -18,7 +18,7 @@
 
 "use strict";
 
-const { verifyTransaction, mldsaVerify, shake256 } = require("../../../shared/crypto");
+const { verifyTransaction, mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN } = require("../../../shared/constants");
 
 // ─── Validation result helper ─────────────────────────────────────────────────
@@ -95,8 +95,8 @@ function validateStructure(tx) {
   // tx_id: non-empty string; if hex must be 16-64 lowercase hex chars
   if (typeof tx.tx_id !== "string" || tx.tx_id.length < 8) {
     errors.push("tx_id must be a non-empty string (min 8 chars)");
-  } else if (!tx.tx_id.startsWith("genesis") && !/^[0-9a-f]{16,64}$/.test(tx.tx_id)) {
-    errors.push(`tx_id must be lowercase hex (16-64 chars), got: "${tx.tx_id.slice(0,24)}..."`);
+  } else if (!tx.tx_id.startsWith("genesis") && !/^[0-9a-f]{64}$/.test(tx.tx_id)) {
+    errors.push(`tx_id must be 64-char lowercase hex (SHAKE-256), got: "${tx.tx_id}"`);
   }
 
   // Timestamp must be a valid ISO string
@@ -228,14 +228,7 @@ function validateCryptography(tx, authorPublicKey) {
   if (skipSigTypes.has(tx.tx_type)) return pass();
 
   try {
-    const canonical = JSON.stringify({
-      tx_type:   tx.tx_type,
-      data:      tx.data,
-      timestamp: tx.timestamp,
-      prev:      tx.prev || [],
-    });
-
-    const valid = mldsaVerify(canonical, tx.signature, authorPublicKey);
+    const valid = mldsaVerify(canonicalTx(tx), tx.signature, authorPublicKey);
     return valid ? pass() : fail("Signature verification failed — transaction may have been tampered with");
   } catch (err) {
     return fail(`Cryptographic verification error: ${err.message}`);
@@ -248,6 +241,11 @@ function validateDAGIntegrity(tx, dag) {
   if (tx.tx_type === "GENESIS") return pass();
 
   const errors = [];
+
+  // tx_id must match content — detects any field-level tampering
+  if (!verifyTxId(tx)) {
+    errors.push(`tx_id does not match transaction content — transaction may have been tampered with`);
+  }
 
   // Genesis tx is special — check for the special genesis ID pattern
   const isGenesisTxId = (id) => id === "genesis-" + "0".repeat(48) || id.startsWith("genesis-");

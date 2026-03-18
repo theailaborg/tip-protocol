@@ -14,9 +14,9 @@
 
 "use strict";
 
-const WebSocket     = require("ws");
-const { TX_TYPES }  = require("../../shared/constants");
-const { log }       = require("./logger");
+const WebSocket              = require("ws");
+const { validateTransaction } = require("./validators/tx-validator");
+const { log }                = require("./logger");
 
 const MSG_TYPES = {
   TX_BROADCAST:  "TX_BROADCAST",
@@ -81,6 +81,11 @@ function initGossip(server, dag, config) {
           setTimeout(() => seenTx.delete(msg.tx.tx_id), 60_000); // TTL 60s
           const existing = dag.getTx(msg.tx.tx_id);
           if (!existing) {
+            const result = validateTransaction(msg.tx, dag, { skipCrypto: true, skipState: true });
+            if (!result.valid) {
+              log.warn(`Gossip: rejected tx ${msg.tx.tx_id} (${result.layer}): ${result.errors.join(", ")}`);
+              break;
+            }
             dag.addTx(msg.tx);
             log.info(`Gossip: received tx ${msg.tx.tx_id} (${msg.tx.tx_type})`);
             // Relay to other peers (TTL = 1 more hop)
@@ -103,6 +108,11 @@ function initGossip(server, dag, config) {
           let imported = 0;
           for (const tx of msg.txs) {
             if (!dag.getTx(tx.tx_id)) {
+              const result = validateTransaction(tx, dag, { skipCrypto: true, skipState: true });
+              if (!result.valid) {
+                log.warn(`Gossip: rejected sync tx ${tx.tx_id} (${result.layer}): ${result.errors.join(", ")}`);
+                continue;
+              }
               dag.addTx(tx);
               imported++;
             }

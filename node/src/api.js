@@ -40,8 +40,10 @@ const {
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
-  generateTxId, computeDedupHash, generatePepper,
+  computeTxId, computeDedupHash, generatePepper,
 } = require("../../shared/crypto");
+
+const { validateTransaction } = require("./validators/tx-validator");
 
 const {
   TX_TYPES, ORIGIN, ORIGIN_LABELS,
@@ -183,9 +185,10 @@ function createApp({ dag, scoring, config }) {
 
       const registeredAt = new Date().toISOString();
 
-      const tx = dag.addTx({
+      const txBody = {
         tx_type:   TX_TYPES.REGISTER_IDENTITY,
         timestamp: registeredAt,
+        prev:      dag.getRecentPrev(),
         data: {
           tip_id:            tipId,
           region:            region.toUpperCase(),
@@ -195,9 +198,17 @@ function createApp({ dag, scoring, config }) {
           verification_tier,
           social_attested,
           founding,
-          zk_dedup_proof,    // stored on DAG (not the raw hash)
+          zk_dedup_proof,
         },
-      });
+      };
+      txBody.tx_id = computeTxId(txBody);
+
+      const identityValidation = validateTransaction(txBody, dag, { skipCrypto: true });
+      if (!identityValidation.valid) {
+        return res.status(400).json({ error: identityValidation.errors, layer: identityValidation.layer });
+      }
+
+      const tx = dag.addTx(txBody);
 
       dag.saveIdentity({
         tip_id:          tipId,
@@ -361,9 +372,10 @@ function createApp({ dag, scoring, config }) {
       const registeredAt = new Date().toISOString();
       const ctid         = generateCTID(origin_code, contentHash, author_tip_id);
 
-      const tx = dag.addTx({
+      const contentTxBody = {
         tx_type:   TX_TYPES.REGISTER_CONTENT,
         timestamp: registeredAt,
+        prev:      dag.getRecentPrev(),
         data: {
           ctid,
           origin_code,
@@ -375,7 +387,15 @@ function createApp({ dag, scoring, config }) {
           prescan_flagged:    preScan.flagged,
           prescan_probability: preScan.probability,
         },
-      });
+      };
+      contentTxBody.tx_id = computeTxId(contentTxBody);
+
+      const contentValidation = validateTransaction(contentTxBody, dag, { skipCrypto: true });
+      if (!contentValidation.valid) {
+        return res.status(400).json({ error: contentValidation.errors, layer: contentValidation.layer });
+      }
+
+      const tx = dag.addTx(contentTxBody);
 
       dag.saveContent({
         ctid,
@@ -468,9 +488,10 @@ function createApp({ dag, scoring, config }) {
     const verifierScore = scoring.getScore(verifier_tip_id).score;
     const weightedDelta = Math.ceil((verifierScore / 1000) * 5); // 1-5 based on verifier trust
 
-    dag.addTx({
+    const verifyTxBody = {
       tx_type:   TX_TYPES.CONTENT_VERIFIED,
       timestamp: new Date().toISOString(),
+      prev:      dag.getRecentPrev(),
       data: {
         ctid:              req.params.ctid,
         verifier_tip_id,
@@ -478,7 +499,15 @@ function createApp({ dag, scoring, config }) {
         weighted_delta:    weightedDelta,
         author_tip_id:     rec.author_tip_id,
       },
-    });
+    };
+    verifyTxBody.tx_id = computeTxId(verifyTxBody);
+
+    const verifyValidation = validateTransaction(verifyTxBody, dag, { skipCrypto: true });
+    if (!verifyValidation.valid) {
+      return res.status(400).json({ error: verifyValidation.errors, layer: verifyValidation.layer });
+    }
+
+    dag.addTx(verifyTxBody);
 
     scoring.applyScoreEvent(rec.author_tip_id, weightedDelta, `Content verified by ${verifier_tip_id}`);
     res.json({ success: true, delta_applied: weightedDelta });
@@ -495,11 +524,20 @@ function createApp({ dag, scoring, config }) {
     const { disputer_tip_id, reason, evidence_hash } = req.body;
     if (!disputer_tip_id) return res.status(400).json({ error: "disputer_tip_id required" });
 
-    dag.addTx({
+    const disputeTxBody = {
       tx_type:   TX_TYPES.CONTENT_DISPUTED,
       timestamp: new Date().toISOString(),
+      prev:      dag.getRecentPrev(),
       data: { ctid: req.params.ctid, disputer_tip_id, reason, evidence_hash, author_tip_id: rec.author_tip_id },
-    });
+    };
+    disputeTxBody.tx_id = computeTxId(disputeTxBody);
+
+    const disputeValidation = validateTransaction(disputeTxBody, dag, { skipCrypto: true });
+    if (!disputeValidation.valid) {
+      return res.status(400).json({ error: disputeValidation.errors, layer: disputeValidation.layer });
+    }
+
+    dag.addTx(disputeTxBody);
 
     res.json({ success: true, message: "Dispute filed. Stage 1 AI classifier will run within 60 seconds." });
   });
@@ -555,11 +593,20 @@ function createApp({ dag, scoring, config }) {
       if (!identity) return res.status(404).json({ error: "TIP-ID not found" });
 
       const timestamp = new Date().toISOString();
-      const tx = dag.addTx({
+      const revokeTxBody = {
         tx_type,
         timestamp,
+        prev: dag.getRecentPrev(),
         data: { tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
-      });
+      };
+      revokeTxBody.tx_id = computeTxId(revokeTxBody);
+
+      const revokeValidation = validateTransaction(revokeTxBody, dag, { skipCrypto: true });
+      if (!revokeValidation.valid) {
+        return res.status(400).json({ error: revokeValidation.errors, layer: revokeValidation.layer });
+      }
+
+      const tx = dag.addTx(revokeTxBody);
 
       dag.addRevocation(tip_id, tx_type, timestamp, tx.tx_id);
 
@@ -648,11 +695,20 @@ function createApp({ dag, scoring, config }) {
       const vpId       = generateTIPID("VP", public_key);
       const registeredAt = new Date().toISOString();
 
-      dag.addTx({
+      const vpTxBody = {
         tx_type:   TX_TYPES.VP_REGISTERED,
         timestamp: registeredAt,
+        prev:      dag.getRecentPrev(),
         data:      { vp_id: vpId, name, jurisdiction_tier, public_key, council_signature },
-      });
+      };
+      vpTxBody.tx_id = computeTxId(vpTxBody);
+
+      const vpValidation = validateTransaction(vpTxBody, dag, { skipCrypto: true });
+      if (!vpValidation.valid) {
+        return res.status(400).json({ error: vpValidation.errors, layer: vpValidation.layer });
+      }
+
+      dag.addTx(vpTxBody);
 
       dag.saveVP({ vp_id: vpId, name, jurisdiction_tier, public_key, status: "active", registered_at: registeredAt });
 
