@@ -95,7 +95,6 @@ def test_crypto() -> None:
     kp2  = generate_mldsa_keypair()
     tx   = {"tx_type": "TEST", "data": {"x": 1}, "prev": []}
     signed = sign_transaction(tx, kp2["privateKey"])
-    check("tx_id auto-assigned on sign",     bool(signed.get("tx_id")))
     check("timestamp auto-assigned on sign", bool(signed.get("timestamp")))
     check("Sign + verify cycle (ML-DSA-65)", verify_tx_signature(signed, kp2["publicKey"]))
 
@@ -369,14 +368,16 @@ def test_validator() -> None:
     tid  = generate_tip_id("DE", kp["publicKey"])
 
     def mk(**data):
-        """Build a minimal valid-looking tx."""
-        return {
-            "tx_id":     rh(),
-            "tx_type":   data.pop("tx_type", TxType.REGISTER_IDENTITY),
+        """Build a minimal valid-looking tx with correct content-addressed tx_id."""
+        tx_type = data.pop("tx_type", TxType.REGISTER_IDENTITY)
+        tx = {
+            "tx_type":   tx_type,
             "timestamp": "2026-03-14T12:00:00+00:00",
             "prev":      [],
             "data":      data,
         }
+        tx["tx_id"] = compute_tx_id(tx)
+        return tx
 
     # Structure
     r = validate_transaction(None, dag)
@@ -409,12 +410,13 @@ def test_validator() -> None:
     check("Future timestamp rejected [structure]", not r.valid and r.layer == "structure")
 
     # Valid identity
-    valid_id_tx = {
-        "tx_id":     rh(), "tx_type": TxType.REGISTER_IDENTITY,
+    _valid_id_body = {
+        "tx_type":   TxType.REGISTER_IDENTITY,
         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
         "data":      {"tip_id": tid, "region": "DE", "public_key": kp["publicKey"],
                       "vp_id": vpid, "verification_tier": "T1", "zk_dedup_proof": "zkp:valid123"},
     }
+    valid_id_tx = {**_valid_id_body, "tx_id": compute_tx_id(_valid_id_body)}
     r = validate_transaction(valid_id_tx, dag, skip_crypto=True)
     check("Valid identity tx accepted [all layers]", r.valid, str(r.errors))
 
@@ -453,11 +455,14 @@ def test_validator() -> None:
           not r.valid and r.layer == "business_rules")
 
     # Valid content
+    _valid_content_body = {
+        "tx_type":   TxType.REGISTER_CONTENT,
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "data":      {"ctid": ctid, "origin_code": "OH", "content_hash": h,
+                      "author_tip_id": tid, "signature": "s"},
+    }
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.REGISTER_CONTENT,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"ctid": ctid, "origin_code": "OH", "content_hash": h,
-                  "author_tip_id": tid, "signature": "s"}},
+        {**_valid_content_body, "tx_id": compute_tx_id(_valid_content_body)},
         dag, skip_crypto=True,
     )
     check("Valid content tx accepted [all layers]", r.valid, str(r.errors))
@@ -467,10 +472,7 @@ def test_validator() -> None:
                       "author_tip_id": tid, "status": "verified",
                       "registered_at": "2026-03-15T00:00:00+00:00"})
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.REGISTER_CONTENT,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"ctid": ctid, "origin_code": "OH", "content_hash": h,
-                  "author_tip_id": tid, "signature": "s"}},
+        {**_valid_content_body, "tx_id": compute_tx_id(_valid_content_body)},
         dag, skip_crypto=True,
     )
     check("Duplicate CTID rejected [state]", not r.valid and r.layer == "state")
@@ -485,30 +487,39 @@ def test_validator() -> None:
     check("score_after > 1000 rejected [business]", not r.valid)
 
     # Score in valid range
+    _score_body = {
+        "tx_type":   TxType.SCORE_UPDATE,
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "data":      {"tip_id": tid, "delta": 10, "score_after": 600, "reason": "test"},
+    }
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.SCORE_UPDATE,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"tip_id": tid, "delta": 10, "score_after": 600, "reason": "test"}},
+        {**_score_body, "tx_id": compute_tx_id(_score_body)},
         dag, skip_crypto=True,
     )
     check("score_after in range accepted [business]", r.valid)
 
     # Revoke non-existent identity
+    _revoke_nonexist_body = {
+        "tx_type":   TxType.REVOKE_VP,
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "data":      {"tip_id": "tip://id/US-doesnotexist0000",
+                      "issuing_vp_id": vpid, "reason_code": "FRAUD", "evidence_hash": "x"},
+    }
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.REVOKE_VP,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"tip_id": "tip://id/US-doesnotexist0000",
-                  "issuing_vp_id": vpid, "reason_code": "FRAUD", "evidence_hash": "x"}},
+        {**_revoke_nonexist_body, "tx_id": compute_tx_id(_revoke_nonexist_body)},
         dag, skip_crypto=True,
     )
     check("Revoke non-existent identity rejected [state]", not r.valid and r.layer == "state")
 
     # Double revocation
     dag.add_revocation(tid, "REVOKE_VOLUNTARY", "2026-03-15T00:00:00+00:00", rh())
+    _double_revoke_body = {
+        "tx_type":   TxType.REVOKE_VOLUNTARY,
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "data":      {"tip_id": tid},
+    }
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.REVOKE_VOLUNTARY,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"tip_id": tid}},
+        {**_double_revoke_body, "tx_id": compute_tx_id(_double_revoke_body)},
         dag, skip_crypto=True,
     )
     check("Double revocation rejected [state]", not r.valid and r.layer == "state")
@@ -524,25 +535,30 @@ def test_validator() -> None:
     check("Red-tier VP rejected [business]", not r.valid and r.layer == "business_rules")
 
     # Green-tier VP
+    _green_vp_body = {
+        "tx_type":   TxType.VP_REGISTERED,
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "data":      {"vp_id": "tip://id/VP-FR-good", "name": "French VP",
+                      "jurisdiction_tier": "green", "public_key": "aabb"},
+    }
     r = validate_transaction(
-        {"tx_id": rh(), "tx_type": TxType.VP_REGISTERED,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
-         "data": {"vp_id": "tip://id/VP-FR-good", "name": "French VP",
-                  "jurisdiction_tier": "green", "public_key": "aabb"}},
+        {**_green_vp_body, "tx_id": compute_tx_id(_green_vp_body)},
         dag, skip_crypto=True,
     )
     check("Green-tier VP accepted [all layers]", r.valid, str(r.errors))
 
     # Real ML-DSA-65 signature: valid
     ctid2  = generate_ctid("AA", hash_content("signed content for crypto test"), tid)
-    signed_tx = sign_transaction(
-        {"tx_type": TxType.REGISTER_CONTENT,
-         "data":    {"ctid": ctid2, "origin_code": "AA",
-                     "content_hash": hash_content("signed content for crypto test"),
-                     "author_tip_id": tid, "signature": "placeholder"},
-         "prev":    []},
-        kp["privateKey"],
-    )
+    _signed_body = {
+        "tx_type":   TxType.REGISTER_CONTENT,
+        "timestamp": "2026-03-14T12:00:00+00:00",
+        "prev":      [],
+        "data":      {"ctid": ctid2, "origin_code": "AA",
+                      "content_hash": hash_content("signed content for crypto test"),
+                      "author_tip_id": tid, "signature": "placeholder"},
+    }
+    _signed_body["tx_id"] = compute_tx_id(_signed_body)
+    signed_tx = sign_transaction(_signed_body, kp["privateKey"])
     r = validate_transaction(signed_tx, dag, author_public_key=kp["publicKey"], skip_state=True)
     check("Valid ML-DSA-65 signature accepted [crypto]", r.valid, str(r.errors))
 
