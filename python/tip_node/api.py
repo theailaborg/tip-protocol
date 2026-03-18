@@ -26,7 +26,7 @@ from shared.crypto import (
     generate_mldsa_keypair, mldsa_sign, verify_tx_signature,
     hash_content, perceptual_hash_text,
     generate_tip_id, generate_ctid,
-    generate_tx_id, shake256, shake256_multi,
+    compute_tx_id, shake256, shake256_multi,
     compute_zk_proof,
 )
 from shared.constants import (
@@ -329,7 +329,6 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         # Pre-validate
         tx = {
-            "tx_id":     generate_tx_id(),
             "tx_type":   TxType.REGISTER_IDENTITY,
             "timestamp": registered_at,
             "prev":      self.dag.get_recent_prev(),
@@ -344,6 +343,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "zk_dedup_proof":    zk_proof,
             },
         }
+        tx["tx_id"] = compute_tx_id(tx)
         result = validate_transaction(tx, self.dag, skip_crypto=True)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0],
@@ -463,7 +463,6 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                                    {"verified_oh_count": verified_oh})
 
         tx = {
-            "tx_id":     generate_tx_id(),
             "tx_type":   TxType.REGISTER_CONTENT,
             "timestamp": registered_at,
             "prev":      self.dag.get_recent_prev(),
@@ -479,6 +478,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "prescan_probability": prescan["probability"],
             },
         }
+        tx["tx_id"] = compute_tx_id(tx)
         result = validate_transaction(tx, self.dag, skip_crypto=True)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0],
@@ -563,16 +563,23 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         verifier_score = self.scoring.get_score(verifier_tip_id)["score"]
         weighted_delta = max(1, min(5, int(verifier_score / 200)))
-        self.dag.add_tx({
-            "tx_type": TxType.CONTENT_VERIFIED,
+        verify_tx = {
+            "tx_type":   TxType.CONTENT_VERIFIED,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
             "data": {
-                "ctid": ctid,
-                "verifier_tip_id": verifier_tip_id,
-                "verdict": body.get("verdict", "ORIGIN_CONFIRMED"),
-                "weighted_delta": weighted_delta,
-                "author_tip_id": rec.get("author_tip_id"),
+                "ctid":             ctid,
+                "verifier_tip_id":  verifier_tip_id,
+                "verdict":          body.get("verdict", "ORIGIN_CONFIRMED"),
+                "weighted_delta":   weighted_delta,
+                "author_tip_id":    rec.get("author_tip_id"),
             },
-        })
+        }
+        verify_tx["tx_id"] = compute_tx_id(verify_tx)
+        result = validate_transaction(verify_tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
+        self.dag.add_tx(verify_tx)
         self.scoring.apply_score_event(
             rec.get("author_tip_id", ""), weighted_delta,
             f"Content verified by {verifier_tip_id}"
@@ -586,16 +593,23 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         disputer = body.get("disputer_tip_id")
         if not disputer:
             self._send_json(400, {"error": "disputer_tip_id required"}); return
-        self.dag.add_tx({
-            "tx_type": TxType.CONTENT_DISPUTED,
+        dispute_tx = {
+            "tx_type":   TxType.CONTENT_DISPUTED,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
             "data": {
-                "ctid": ctid,
-                "disputer_tip_id": disputer,
-                "reason": body.get("reason"),
-                "evidence_hash": body.get("evidence_hash"),
-                "author_tip_id": rec.get("author_tip_id"),
+                "ctid":             ctid,
+                "disputer_tip_id":  disputer,
+                "reason":           body.get("reason"),
+                "evidence_hash":    body.get("evidence_hash"),
+                "author_tip_id":    rec.get("author_tip_id"),
             },
-        })
+        }
+        dispute_tx["tx_id"] = compute_tx_id(dispute_tx)
+        result = validate_transaction(dispute_tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
+        self.dag.add_tx(dispute_tx)
         self._send_json(200, {
             "success": True,
             "message": "Dispute filed. Stage 1 AI classifier will run within 60 seconds.",
@@ -631,9 +645,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(409, {"error": f"TIP-ID already revoked: {tip_id}"}); return
 
         timestamp = _utc_now()
-        tx = self.dag.add_tx({
+        revoke_tx = {
             "tx_type":   tx_type,
             "timestamp": timestamp,
+            "prev":      self.dag.get_recent_prev(),
             "data": {
                 "tip_id":        tip_id,
                 "reason_code":   reason_code,
@@ -641,7 +656,12 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "issuing_vp_id": issuing_vp_id,
                 "signature":     signature,
             },
-        })
+        }
+        revoke_tx["tx_id"] = compute_tx_id(revoke_tx)
+        result = validate_transaction(revoke_tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
+        tx = self.dag.add_tx(revoke_tx)
         self.dag.add_revocation(tip_id, tx_type, timestamp, tx["tx_id"])
 
         # Cascade: flag recent content for REVOKE_VP
@@ -694,15 +714,22 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         vp_id = generate_tip_id("VP", pubkey)
         registered_at = _utc_now()
-        self.dag.add_tx({
-            "tx_type": TxType.VP_REGISTERED,
+        vp_tx = {
+            "tx_type":   TxType.VP_REGISTERED,
+            "timestamp": registered_at,
+            "prev":      self.dag.get_recent_prev(),
             "data": {
                 "vp_id":             vp_id,
                 "name":              name,
                 "jurisdiction_tier": tier,
                 "public_key":        pubkey,
             },
-        })
+        }
+        vp_tx["tx_id"] = compute_tx_id(vp_tx)
+        result = validate_transaction(vp_tx, self.dag, skip_crypto=True)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
+        self.dag.add_tx(vp_tx)
         self.dag.save_vp({
             "vp_id":             vp_id,
             "name":              name,

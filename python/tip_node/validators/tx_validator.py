@@ -21,7 +21,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from shared.crypto import verify_tx_signature
+from shared.crypto import verify_tx_signature, verify_tx_id
 from shared.constants import TxType, Origin, JurisdictionTier
 
 
@@ -51,7 +51,7 @@ class ValidationResult:
 _TIP_ID_RE   = re.compile(r"^tip://id/[A-Z]{2,}-[0-9a-f]{16}$")
 _CTID_RE     = re.compile(r"^tip://c/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$")
 _HASH14_RE   = re.compile(r"^[0-9a-f]{14}$")
-_HEX_TX_RE   = re.compile(r"^[0-9a-f]{16,64}$")
+_HEX_TX_RE   = re.compile(r"^[0-9a-f]{64}$")
 _VP_ID_RE    = re.compile(r"^tip://id/VP-")
 _ISO_TS_RE   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
@@ -144,7 +144,7 @@ def _validate_structure(tx: Any) -> ValidationResult:
         errors.append(f"tx_id must be a non-empty string, got: {repr(tx_id)[:30]}")
     elif not tx_id.startswith("genesis") and not _HEX_TX_RE.match(tx_id):
         errors.append(
-            f"tx_id must be lowercase hex (16-64 chars), got: '{tx_id[:24]}...'"
+            f"tx_id must be 64-char lowercase hex (SHAKE-256), got: '{tx_id}'"
         )
 
     # tx_type known
@@ -320,6 +320,10 @@ def _validate_dag_integrity(tx: dict, dag) -> ValidationResult:
 
     errors = []
     tx_id  = tx.get("tx_id", "")
+
+    # tx_id must match content — detects any field-level tampering
+    if not verify_tx_id(tx):
+        errors.append("tx_id does not match transaction content — transaction may have been tampered with")
 
     # Duplicate check
     if not tx_id.startswith("genesis"):

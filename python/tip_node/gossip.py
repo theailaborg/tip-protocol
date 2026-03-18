@@ -19,6 +19,7 @@ import time
 from typing import Any
 
 from tip_node.logger import get_logger
+from tip_node.validators.tx_validator import validate_transaction
 
 log = get_logger("gossip")
 
@@ -137,8 +138,12 @@ class GossipServer:
                     with self._lock:
                         self._seen.add(tx_id)
                     if not self._dag.get_tx(tx_id):
-                        self._dag.add_tx(tx)
-                        log.debug(f"Gossip: imported tx {tx_id[:16]}... ({tx.get('tx_type')})")
+                        result = validate_transaction(tx, self._dag, skip_crypto=True, skip_state=True)
+                        if not result.valid:
+                            log.warning(f"Gossip: rejected tx {tx_id[:16]}... ({result.layer}): {result.errors[0]}")
+                        else:
+                            self._dag.add_tx(tx)
+                            log.debug(f"Gossip: imported tx {tx_id[:16]}... ({tx.get('tx_type')})")
                     if ttl > 0:
                         self._broadcast(tx, exclude=conn, ttl=ttl - 1)
 
@@ -156,6 +161,10 @@ class GossipServer:
             imported = 0
             for tx in msg.get("txs", []):
                 if tx.get("tx_id") and not self._dag.get_tx(tx["tx_id"]):
+                    result = validate_transaction(tx, self._dag, skip_crypto=True, skip_state=True)
+                    if not result.valid:
+                        log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... ({result.layer}): {result.errors[0]}")
+                        continue
                     self._dag.add_tx(tx)
                     imported += 1
             if imported:
