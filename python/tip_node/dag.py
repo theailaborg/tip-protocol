@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from shared.crypto import (
-    shake256, generate_mldsa_keypair, generate_tx_id, canonical_json
+    shake256, generate_mldsa_keypair, compute_tx_id, verify_tx_id, canonical_json
 )
 from shared.constants import TxType
 from tip_node.logger import get_logger
@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS transactions (
     timestamp       TEXT NOT NULL,
     prev            TEXT NOT NULL DEFAULT '[]',
     signature       TEXT,
-    canonical_hash  TEXT,
     created_at      REAL NOT NULL DEFAULT (unixepoch('now','subsec'))
 );
 CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
@@ -315,8 +314,8 @@ class SQLiteStore:
         conn = self._conn()
         conn.execute(
             """INSERT OR REPLACE INTO transactions
-               (tx_id, tx_type, data, timestamp, prev, signature, canonical_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (tx_id, tx_type, data, timestamp, prev, signature)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 tx["tx_id"],
                 tx["tx_type"],
@@ -324,7 +323,6 @@ class SQLiteStore:
                 tx["timestamp"],
                 json.dumps(tx.get("prev", [])),
                 tx.get("signature"),
-                tx.get("canonical_hash"),
             ),
         )
         conn.commit()
@@ -585,7 +583,6 @@ class DAG:
                 "spec_url":      "https://theailab.org/trust-identity-protocol",
             },
             "signature":      "genesis-self-signed",
-            "canonical_hash": GENESIS_HASH,
         }
         self._store.save_tx(genesis_tx)
 
@@ -602,9 +599,7 @@ class DAG:
         })
 
         # VP registration transaction
-        vp_tx_id = shake256("VP_REGISTER" + founding_vp["vp_id"])
-        self._store.save_tx({
-            "tx_id":     vp_tx_id,
+        vp_tx = {
             "tx_type":   TxType.VP_REGISTERED,
             "timestamp": GENESIS_TIMESTAMP,
             "prev":      [GENESIS_TX_ID, GENESIS_TX_ID],
@@ -614,12 +609,12 @@ class DAG:
                 "jurisdiction_tier": founding_vp["jurisdiction_tier"],
                 "public_key":        vp_keypair["publicKey"],
             },
-            "signature":      "genesis-vp-bootstrap",
-            "canonical_hash": None,
-        })
+            "signature": "genesis-vp-bootstrap",
+        }
+        self._store.save_tx({**vp_tx, "tx_id": compute_tx_id(vp_tx)})
 
         with self._prev_lock:
-            self._prev_ring = [vp_tx_id, GENESIS_TX_ID]
+            self._prev_ring = [compute_tx_id(vp_tx), GENESIS_TX_ID]
 
         log.info(f"Genesis bootstrap: {GENESIS_HASH[:16]}... | VP: {founding_vp['vp_id']}")
 
@@ -630,17 +625,27 @@ class DAG:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def add_tx(self, tx: dict) -> dict:
-        """Add a transaction to the DAG. Auto-assigns tx_id, timestamp, prev[]."""
+        """Add a transaction to the DAG. Auto-assigns timestamp, prev[], tx_id.
+
+        Order matters:
+          1. timestamp first (part of canonical form)
+          2. prev refs second (part of canonical form — must precede tx_id)
+          3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
+        """
         import copy
         tx = copy.deepcopy(tx)
 
-        if not tx.get("tx_id"):
-            tx["tx_id"] = generate_tx_id()
         if not tx.get("timestamp"):
             tx["timestamp"] = _utc_now()
         if not tx.get("prev"):
             with self._prev_lock:
                 tx["prev"] = list(self._prev_ring)
+
+        had_tx_id = bool(tx.get("tx_id"))
+        if not tx.get("tx_id"):
+            tx["tx_id"] = compute_tx_id(tx)
+        if had_tx_id and not verify_tx_id(tx):
+            raise ValueError(f"add_tx: tx_id mismatch — rejecting tampered tx {tx['tx_id']}")
 
         self._store.save_tx(tx)
         self._update_prev(tx["tx_id"])

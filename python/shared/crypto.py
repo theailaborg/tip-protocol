@@ -191,18 +191,60 @@ def generate_ctid(origin_code: str, content_hash: str, tip_id: str) -> str:
     return f"tip://c/{origin_code}-{content_hash}-{id_short}"
 
 
-# ─── Transaction ID ────────────────────────────────────────────────────────────
-
-def generate_tx_id() -> str:
-    """Generate a unique 64-char hex transaction ID."""
-    return shake256_multi(secrets.token_hex(32), str(time.time_ns()))
-
-
 # ─── Canonical serialisation ──────────────────────────────────────────────────
 
 def canonical_json(obj: Any) -> str:
-    """Deterministic JSON serialisation with sorted keys."""
+    """Deterministic JSON serialisation with sorted keys (all levels)."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+# ─── Content-addressed transaction ID ─────────────────────────────────────────
+
+def canonical_tx(tx: dict) -> str:
+    """
+    Produce the canonical JSON string for a transaction.
+    Covers exactly 4 fields: tx_type, data, timestamp, prev.
+    tx_id and signature are intentionally excluded:
+      - tx_id  would be circular (it IS the hash of this string)
+      - signature is computed over this same string, added after
+
+    Python's json.dumps(sort_keys=True) sorts all nested object keys
+    recursively, so no manual key-sorting helper is needed.
+
+    Example:
+      Input:  {"tx_type": "SCORE_UPDATE", "data": {"delta": 5, "tip_id": "x"}, ...}
+      Output: {"data":{"delta":5,"tip_id":"x"},"prev":[],"timestamp":"...","tx_type":"SCORE_UPDATE"}
+               ^--- all keys sorted alphabetically at every level
+    """
+    return canonical_json({
+        "data":      tx.get("data", {}),
+        "prev":      tx.get("prev", []),
+        "timestamp": tx.get("timestamp", ""),
+        "tx_type":   tx.get("tx_type", ""),
+    })
+
+
+def compute_tx_id(tx: dict) -> str:
+    """
+    Compute the content-addressed tx_id for a transaction.
+    tx_id = SHAKE-256(canonical_tx(tx)) — always 64 hex chars (256 bits).
+
+    IMPORTANT: tx["prev"] must already be set before calling this.
+    Calling it before prev is attached gives a tx_id that doesn't commit
+    to the chain position, breaking tamper-evidence.
+    """
+    return shake256(canonical_tx(tx))
+
+
+def verify_tx_id(tx: dict) -> bool:
+    """
+    Verify that a stored tx_id matches the tx content.
+    Use this when receiving a tx via gossip to detect tampering.
+    Returns True unconditionally for GENESIS (self-certified).
+    """
+    if tx.get("tx_type") == "GENESIS":
+        return True
+    return compute_tx_id(tx) == tx.get("tx_id")
 
 
 # ─── Transaction signing ──────────────────────────────────────────────────────
@@ -210,28 +252,19 @@ def canonical_json(obj: Any) -> str:
 def sign_transaction(tx: dict, private_key_hex: str) -> dict:
     """
     Sign a DAG transaction.
-    The signature covers: tx_type + data + timestamp + prev (canonical JSON).
-    Auto-assigns tx_id and timestamp if missing.
-    Returns the tx dict with signature and canonical_hash added.
+    The signature covers canonical_tx(tx): {tx_type, data, timestamp, prev}.
+    tx_id and timestamp must be set by the caller before signing.
+    Returns the tx dict with signature attached.
     """
     import copy
     tx = copy.deepcopy(tx)
 
-    if not tx.get("tx_id"):
-        tx["tx_id"] = generate_tx_id()
     if not tx.get("timestamp"):
         from datetime import datetime, timezone
         tx["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-    payload = canonical_json({
-        "tx_type":   tx["tx_type"],
-        "data":      tx.get("data", {}),
-        "timestamp": tx["timestamp"],
-        "prev":      tx.get("prev", []),
-    })
-
-    tx["signature"]      = mldsa_sign(payload, private_key_hex)
-    tx["canonical_hash"] = shake256(payload)
+    # NOTE: prev must be set before calling this so tx_id commits to chain position.
+    tx["signature"] = mldsa_sign(canonical_tx(tx), private_key_hex)
     return tx
 
 
