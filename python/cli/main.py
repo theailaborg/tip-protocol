@@ -25,8 +25,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 import click
 from shared.crypto import (
     generate_mldsa_keypair, generate_tip_id,
-    generate_pepper, shake256,
-    compute_zk_proof, shake256_multi,
+    shake256, shake256_multi,
+    compute_zk_proof,
 )
 from shared.constants import Origin, get_tier, Protocol
 
@@ -149,9 +149,10 @@ def identity_generate_keypair():
 def identity_register(vp_id, region, tier, attested, founding):
     """Register a new TIP-ID on the node."""
     client = _get_client()
-    # Build stub ZK proof (production: use real biometric pipeline)
-    pepper  = generate_pepper()
-    zk_proof = f"zkp:{shake256_multi('cli-registration', region, vp_id, pepper)}"
+    # CLI uses a mock dedup_hash and zk_proof — real flow requires the VP SDK
+    # running generateDedupProof(govId, dob, country) on the user's device (shared/zk.js).
+    mock_dedup_hash = shake256_multi("cli-registration", region, vp_id)
+    mock_zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]], "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
 
     click.echo(f"\n  Registering TIP-ID...")
     click.echo(f"  {'Region':<20} {region}")
@@ -160,7 +161,7 @@ def identity_register(vp_id, region, tier, attested, founding):
 
     try:
         res = client.identity.register(
-            vp_id=vp_id, zk_dedup_proof=zk_proof,
+            vp_id=vp_id, dedup_hash=mock_dedup_hash, zk_proof=mock_zk_proof,
             region=region, verification_tier=tier,
             social_attested=attested, founding=founding,
         )

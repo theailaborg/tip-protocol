@@ -32,9 +32,16 @@ const {
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID, computeTxId,
-  computeDedupHash, generatePepper,
+  computeDedupHash,
   generateMLDSAKeypair, signTransaction, verifyTransaction,
 } = require(path.join(SHARED, "crypto"));
+
+// Skip real ZK verification in tests — circuit artifacts not present in test env
+process.env.ZK_SKIP_VERIFY = "true";
+
+// Mock Groth16 proof for tests (accepted when ZK_SKIP_VERIFY=true)
+const MOCK_ZK_PROOF   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
+const MOCK_DEDUP_HASH = "12345678901234567890123456789012345678901234567890123456789012345";
 
 const {
   TX_TYPES, ORIGIN, ORIGIN_LABELS, SCORE_EVENTS,
@@ -138,14 +145,12 @@ describe("Crypto Layer", () => {
     expect(hashContent("different")).not.toBe(h1);
   });
 
-  test("1.9 computeDedupHash includes pepper", () => {
-    const pepper = generatePepper();
-    expect(typeof pepper).toBe("string");
-    expect(pepper.length).toBeGreaterThan(16);
-
-    const h1 = computeDedupHash("ID001", "1990-01-01", "US", "face_hash_abc", pepper);
-    const h2 = computeDedupHash("ID001", "1990-01-01", "US", "face_hash_abc", "different_pepper");
-    expect(h1).not.toBe(h2); // pepper changes the hash
+  test("1.9 computeDedupHash is deterministic per identity", () => {
+    const h1 = computeDedupHash("ID001", "1990-01-01", "US");
+    const h2 = computeDedupHash("ID001", "1990-01-01", "US");
+    const h3 = computeDedupHash("ID002", "1990-01-01", "US");
+    expect(h1).toBe(h2);          // same inputs → same hash
+    expect(h1).not.toBe(h3);      // different govId → different hash
     expect(h1).toHaveLength(64);
   });
 
@@ -286,11 +291,10 @@ describe("DAG Engine", () => {
   });
 
   test("3.6 Deduplication hash check and registration", () => {
-    const pepper = generatePepper();
-    const dedupHash = computeDedupHash("ID12345", "1985-06-15", "US", "face_hash_xyz", pepper);
-    expect(dag.isDuplicate(dedupHash)).toBe(false);
-    dag.registerDedup(dedupHash);
-    expect(dag.isDuplicate(dedupHash)).toBe(true);
+    const dedupHash = computeDedupHash("ID12345", "1985-06-15", "US");
+    expect(dag.hasDedupHash(dedupHash)).toBe(false);
+    dag.addDedupHash(dedupHash);
+    expect(dag.hasDedupHash(dedupHash)).toBe(true);
   });
 
   test("3.7 saveRevocation and getRevocation roundtrip", () => {
@@ -587,24 +591,17 @@ describe("REST API", () => {
   });
 
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
-    const kp     = generateMLDSAKeypair();
-    const tipId  = generateTIPID("DE", kp.publicKey);
-    const pepper = generatePepper();
-    const dedup  = computeDedupHash("DE9876543", "1992-04-10", "DE", "face_hash_unique_test_api", pepper);
     const res = await request(app)
       .post("/v1/identity/register")
       .send({
-        tip_id:       tipId,
         region:       "DE",
-        public_key:   kp.publicKey,
         vp_id:        "tip://id/VP-UK-testapi",
-        dedup_hash:   dedup,
-        zk_proof:     "zk_proof_placeholder_for_api_test",
-        vp_signature: signTransaction(tipId + dedup, kp.privateKey),
+        dedup_hash:   MOCK_DEDUP_HASH,
+        zk_proof:     MOCK_ZK_PROOF,
         attested:     false,
       });
     expect([200, 201]).toContain(res.status);
-    expect(res.body.tip_id).toBe(tipId);
+    expect(res.body.tip_id).toBeDefined();
   });
 
   test("6.8 GET /v1/identity/:tipId returns identity", async () => {
@@ -738,15 +735,9 @@ describe("REST API", () => {
     expect(res.body.count).toBeGreaterThanOrEqual(0);
   });
 
-  test("6.17 POST /v1/dedup/check returns uniqueness boolean", async () => {
-    const pepper    = generatePepper();
-    const dedupHash = computeDedupHash("NEWID99", "2000-01-01", "NZ", "face_hash_new", pepper);
-    const res = await request(app)
-      .post("/v1/dedup/check")
-      .send({ dedup_hash: dedupHash, zk_proof: "zk_proof_test" });
-    expect(res.status).toBe(200);
-    expect(typeof res.body.is_unique).toBe("boolean");
-    expect(res.body.is_unique).toBe(true); // fresh hash, not registered
+  test("6.17 POST /v1/dedup/check is removed — dedup now inside register", async () => {
+    const res = await request(app).post("/v1/dedup/check").send({});
+    expect(res.status).toBe(404); // endpoint no longer exists
   });
 
   test("6.18 Admin endpoint rejects missing auth token", async () => {
@@ -784,28 +775,23 @@ describe("Integration: Full Registration Flow", () => {
     expect([200, 201]).toContain(vpRes.status);
 
     // Step 2: Register Identity
-    const authorKp = generateMLDSAKeypair();
-    integrationTipId = generateTIPID("SG", authorKp.publicKey);
-    const pepper   = generatePepper();
-    const dedup    = computeDedupHash("SG123456", "1988-11-22", "SG", "face_hash_integration", pepper);
-
+    const idDedup = computeDedupHash("SG123456", "1988-11-22", "SG");
     const idRes = await request(app)
       .post("/v1/identity/register")
       .send({
-        tip_id:       integrationTipId,
         region:       "SG",
-        public_key:   authorKp.publicKey,
         vp_id:        "tip://id/VP-SG-integration",
-        dedup_hash:   dedup,
-        zk_proof:     "zk_proof_integration",
-        vp_signature: signTransaction(integrationTipId, integrationKp.privateKey),
+        dedup_hash:   idDedup,
+        zk_proof:     MOCK_ZK_PROOF,
         attested:     false,
       });
     expect([200, 201]).toContain(idRes.status);
-    expect(idRes.body.tip_id).toBe(integrationTipId);
+    integrationTipId = idRes.body.tip_id;
+    expect(integrationTipId).toBeDefined();
 
     // Step 3: Register Content
-    const content = "An original human-written article about trust and identity on the internet.";
+    const authorKp = generateMLDSAKeypair();
+    const content  = "An original human-written article about trust and identity on the internet.";
     const contentRes = await request(app)
       .post("/v1/content/register")
       .send({
@@ -828,24 +814,17 @@ describe("Integration: Full Registration Flow", () => {
   });
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
-    const pepper = generatePepper();
-    const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG", "face_hash_integration", pepper);
-    dag.registerDedup(dedup);
+    const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
+    dag.addDedupHash(dedup);
 
     // Try registering the same person twice
-    const kp2   = generateMLDSAKeypair();
-    const tipId2 = generateTIPID("SG", kp2.publicKey);
-
     const res = await request(app)
       .post("/v1/identity/register")
       .send({
-        tip_id:       tipId2,
         region:       "SG",
-        public_key:   kp2.publicKey,
         vp_id:        "tip://id/VP-SG-integration",
-        dedup_hash:   dedup, // same dedup hash
-        zk_proof:     "zk_proof_dup",
-        vp_signature: signTransaction(tipId2, integrationKp.privateKey),
+        dedup_hash:   dedup,    // same dedup hash — should be rejected
+        zk_proof:     MOCK_ZK_PROOF,
         attested:     false,
       });
     expect([400, 409, 422]).toContain(res.status);

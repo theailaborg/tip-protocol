@@ -192,12 +192,168 @@ def canonical_json(obj):
 
 ---
 
+## ZK Proof System — Identity Deduplication
+
+TIP Protocol uses Groth16 zero-knowledge proofs (snarkjs) with a Poseidon(3) circuit
+to enforce one-human-one-identity without storing any biometric or document data on the DAG.
+
+### How it works
+
+```
+User's device (VP SDK):
+  private inputs:  govId, dob, country   ← never leave the device
+        ↓
+  Poseidon(govId, dob, country) = dedup_hash
+        ↓
+  Groth16 proof: "I know inputs that hash to dedup_hash"
+        ↓
+  { dedup_hash, proof }  ──── sent to node ────►  TIP Node:
+                                                    verifies proof with vkey.json
+                                                    checks dedup_registry for duplicate
+                                                    mints TIP-ID if unique
+```
+
+The node never sees `govId`, `dob`, or `country`. The proof is ~200 bytes. Verification takes ~5ms.
+
+### Circuit
+
+**File:** `circuits/dedup.circom`
+
+```
+private inputs:  gov_id   (passport/national ID encoded as BN128 field element)
+                 dob      (YYYYMMDD integer, e.g. 19900515)
+                 country  (ISO-3166-1 alpha-2 encoded as integer)
+public output:   dedup_hash  (Poseidon field element, stored in dedup_registry)
+
+constraints: ~264  (Poseidon(3) — ZK-friendly, well within pot18 capacity)
+```
+
+### Artifacts
+
+| File | Purpose | Ship to users? |
+|---|---|---|
+| `circuits/dedup.circom` | Circuit source | In repo |
+| `circuits/dedup_js/dedup.wasm` | Compiled circuit — used by SDK to generate proofs | In repo / SDK package |
+| `circuits/dedup_final.zkey` | Proving key — used by SDK to generate proofs | In repo / SDK package |
+| `circuits/vkey.json` | Verification key — loaded by node to verify proofs | In repo |
+| `circuits/*.ptau` | Powers of Tau ceremony file | **Not in repo** (too large — see below) |
+
+---
+
+### One-Time Setup (run before first launch or after circuit changes)
+
+#### Prerequisites
+
+```bash
+# 1. Install circom (Rust binary — required to compile the circuit)
+cargo install circom
+# or if cargo is not installed: https://rustup.rs
+
+# 2. Install npm dependencies (from the node/ directory)
+cd node && npm install
+```
+
+#### Step 1 — Download the Powers of Tau file
+
+The ptau file is Phase 1 of the trusted setup. We use the publicly-audited Hermez
+ceremony file with 54 contributors. It is not included in the repo (288MB).
+
+Download from the snarkjs GitHub repository:
+**https://github.com/iden3/snarkjs** → README → "Prepared (phase2) Ptau files for bn128"
+
+We use: `powersOfTau28_hez_final_18.ptau`
+
+Place it in `circuits/`:
+
+```bash
+mv powersOfTau28_hez_final_18.ptau circuits/
+```
+
+#### Step 2 — Run the setup script
+
+```bash
+node scripts/zk-setup.js --ptau circuits/powersOfTau28_hez_final_18.ptau
+```
+
+This performs 4 steps automatically:
+
+**Step 1/4 — Compile circuit**
+Runs `circom dedup.circom` to produce:
+- `circuits/dedup.r1cs` — constraint system (intermediate, not shipped)
+- `circuits/dedup.sym` — symbol file (debug only, not shipped)
+- `circuits/dedup_js/dedup.wasm` — WebAssembly circuit (shipped in SDK)
+
+**Step 2/4 — Powers of Tau**
+Uses the provided Hermez ptau file directly — skips local generation.
+The Hermez file was contributed to by 54 independent participants.
+Security property: proof system is secure as long as at least one contributor
+deleted their randomness honestly.
+
+**Step 3/4 — Groth16 trusted setup (Phase 2)**
+Combines `dedup.r1cs` + ptau → generates the circuit-specific proving key:
+- `circuits/dedup_0000.zkey` → contribute randomness → `circuits/dedup_final.zkey`
+- Intermediate `dedup_0000.zkey` is deleted automatically
+
+**Step 4/4 — Export verification key**
+Extracts `circuits/vkey.json` from `dedup_final.zkey`.
+The node loads this at startup to verify every incoming proof.
+
+#### Step 3 — Verify outputs
+
+After setup, you should have:
+
+```
+circuits/
+  dedup_js/dedup.wasm     ✓  SDK — generates proofs
+  dedup_final.zkey        ✓  SDK — generates proofs  (~278KB)
+  vkey.json               ✓  Node — verifies proofs  (~3KB)
+```
+
+#### Without --ptau (dev/local only)
+
+If no `--ptau` is provided, the script generates a local single-contributor pot12 file.
+**Do not use for production** — single contributor means single point of trust.
+
+```bash
+node scripts/zk-setup.js   # dev only — single contributor
+```
+
+---
+
+### Runtime
+
+**Client (VP SDK)** — `shared/zk.js → generateDedupProof(govId, dob, country)`
+- Loads `dedup.wasm` and `dedup_final.zkey`
+- Runs Groth16 proof generation in ~1–3 seconds
+- Returns `{ dedup_hash, proof }` — only these are sent to the node
+
+**Server (TIP Node)** — `shared/zk.js → verifyDedupProof(dedupHash, proof)`
+- Loads `vkey.json` once at startup
+- Verifies Groth16 proof in ~5ms
+- Returns `true` / `false`
+
+Environment variable `ZK_SKIP_VERIFY=true` bypasses proof verification — for tests only.
+
+---
+
+### Security properties
+
+| Threat | Protection |
+|---|---|
+| Node learns govId/dob/country | ZK proof — private inputs never leave device |
+| Duplicate registration (same person) | `dedup_hash` stored in `dedup_registry` — 409 on duplicate |
+| Fake proof (forged) | Groth16 verification against `vkey.json` — computationally infeasible to forge |
+| Fake dedup_hash (proof-swap) | Proof is cryptographically bound to `dedup_hash` — cannot reuse proof with different hash |
+| Government enumeration | Accepted limitation — issuing gov can compute hashes from own database. See `todo.md` → "Dedup Hash — Pepper" for future mitigation |
+
+---
+
 ## Production Deployment Checklist
 
 Before processing real biometric data:
 
 - [ ] Replace Ed25519 stub with ML-DSA-65 (liboqs or @noble/post-quantum)
-- [ ] Replace ZK proof stub with snarkjs/Groth16 or arkworks
+- [x] ZK proof system implemented — Groth16/snarkjs with Poseidon(3) circuit (see ZK section above)
 - [ ] Move genesis root keypair to FIPS 140-3 Level 3 HSM
 - [ ] Implement two-of-three custodian policy for root key
 - [ ] Verify device FIDO2/WebAuthn integration with pepper generation in enclave

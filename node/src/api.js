@@ -15,7 +15,6 @@
  *   GET  /v1/dag/tx/:txId
  *   GET  /v1/revocations
  *   POST /v1/revocations
- *   POST /v1/dedup/check          (ZK proof — returns boolean only, never hash)
  *   GET  /v1/dedup/merkle-root
  *   POST /v1/vp/register
  *   GET  /v1/vp/:vpId
@@ -40,8 +39,10 @@ const {
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
-  computeTxId, computeDedupHash, generatePepper,
+  computeTxId,
 } = require("../../shared/crypto");
+
+const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
 
@@ -142,19 +143,21 @@ function createApp({ dag, scoring, config }) {
    * Register a new TIP-ID on the DAG.
    *
    * Body:
-   *   region          string   e.g. "US"
-   *   zk_dedup_proof  string   ZK proof of uniqueness (v2 FIX-02)
-   *   verification_tier string "T1"|"T2"|"T3"|"T4"
-   *   vp_id           string   ID of issuing VP
-   *   vp_signature    string   VP's ML-DSA-65 signature
-   *   social_attested boolean  true if 3 vouchers provided
-   *   founding        boolean  optional, for genesis ring
+   *   region            string   e.g. "US"
+   *   dedup_hash        string   Poseidon(govId, dob, country) — decimal field element
+   *   zk_proof          object   Groth16 proof { pi_a, pi_b, pi_c, protocol, curve }
+   *   verification_tier string   "T1"|"T2"|"T3"|"T4"
+   *   vp_id             string   ID of issuing VP
+   *   vp_signature      string   VP's ML-DSA-65 signature
+   *   social_attested   boolean  true if 3 vouchers provided
+   *   founding          boolean  optional, for genesis ring
    */
-  app.post("/v1/identity/register", (req, res) => {
+  app.post("/v1/identity/register", async (req, res) => {
     try {
       const {
         region = "US",
-        zk_dedup_proof,
+        dedup_hash,
+        zk_proof,
         verification_tier = "T1",
         vp_id,
         vp_signature,
@@ -162,8 +165,9 @@ function createApp({ dag, scoring, config }) {
         founding = false,
       } = req.body;
 
-      if (!zk_dedup_proof)  return res.status(400).json({ error: "zk_dedup_proof is required" });
-      if (!vp_id)           return res.status(400).json({ error: "vp_id is required" });
+      if (!dedup_hash) return res.status(400).json({ error: "dedup_hash is required" });
+      if (!zk_proof)   return res.status(400).json({ error: "zk_proof is required" });
+      if (!vp_id)      return res.status(400).json({ error: "vp_id is required" });
 
       // Verify VP exists and is active
       const vp = dag.getVP(vp_id);
@@ -171,17 +175,24 @@ function createApp({ dag, scoring, config }) {
         return res.status(403).json({ error: "Verification provider not found or suspended" });
       }
 
+      // Verify ZK proof: proves prover knows (govId, dob, country) that Poseidon-hash to dedup_hash
+      const proofValid = await verifyDedupProof(dedup_hash, zk_proof);
+      if (!proofValid) {
+        return res.status(400).json({ error: "ZK proof verification failed — invalid or tampered proof" });
+      }
+
+      // Dedup check: reject if this identity has registered before
+      if (dag.hasDedupHash(dedup_hash)) {
+        return res.status(409).json({
+          error:   "Identity already registered. Each human may hold exactly one TIP-ID.",
+          code:    "DUPLICATE_IDENTITY",
+        });
+      }
+
       // Generate post-quantum keypair for this identity
       const keypair     = generateMLDSAKeypair();
       const rootKeypair = generateSLHDSAKeypair();
       const tipId       = generateTIPID(region, keypair.publicKey);
-
-      // Check revocation / duplicate (we check the dedup proof, not the hash itself)
-      // In production: verify the ZK proof cryptographically
-      // Here: accept a well-formed proof string
-      if (!zk_dedup_proof.startsWith("zkp:") || zk_dedup_proof.length < 12) {
-        return res.status(400).json({ error: "Invalid ZK dedup proof format" });
-      }
 
       const registeredAt = new Date().toISOString();
 
@@ -198,7 +209,8 @@ function createApp({ dag, scoring, config }) {
           verification_tier,
           social_attested,
           founding,
-          zk_dedup_proof,
+          dedup_hash,
+          zk_proof,
         },
       };
       txBody.tx_id = computeTxId(txBody);
@@ -223,22 +235,25 @@ function createApp({ dag, scoring, config }) {
         tx_id:           tx.tx_id,
       });
 
+      // Store dedup_hash — prevents this identity from registering again
+      dag.addDedupHash(dedup_hash);
+
       // Initialise score
       dag.setScore(tipId, social_attested ? 550 : 500, 0);
 
       log.info(`Identity registered: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
 
       res.status(201).json({
-        tip_id:          tipId,
-        public_key:      keypair.publicKey,
+        tip_id:           tipId,
+        public_key:       keypair.publicKey,
         // Private key returned ONLY at registration — never stored server-side
-        private_key:     keypair.privateKey,
-        root_public_key: rootKeypair.publicKey,
+        private_key:      keypair.privateKey,
+        root_public_key:  rootKeypair.publicKey,
         root_private_key: rootKeypair.privateKey,
-        tx_id:           tx.tx_id,
-        score:           social_attested ? 550 : 500,
-        registered_at:   registeredAt,
-        message:         "Store your private keys securely. They are never stored by this node.",
+        tx_id:            tx.tx_id,
+        score:            social_attested ? 550 : 500,
+        registered_at:    registeredAt,
+        message:          "Store your private keys securely. They are never stored by this node.",
       });
 
     } catch (err) {
@@ -636,37 +651,6 @@ function createApp({ dag, scoring, config }) {
   // ─────────────────────────────────────────────────────────────────────────
   // DEDUP — ZK PROOF (v2 FIX-02)
   // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * POST /v1/dedup/check
-   * Check uniqueness via ZK proof. Returns boolean only — NEVER the hash.
-   *
-   * Body:
-   *   zk_proof   string   ZK proof of uniqueness (from client device)
-   *   hash_commitment string  Pedersen commitment of the dedup hash
-   */
-  app.post("/v1/dedup/check", (req, res) => {
-    const { zk_proof, hash_commitment } = req.body;
-    if (!zk_proof) return res.status(400).json({ error: "zk_proof is required" });
-
-    // In production: cryptographically verify the ZK proof against hash_commitment
-    // Here: extract a commitment hash from the proof and check it
-    const proofHash = shake256(zk_proof + (hash_commitment || ""));
-    const isDuplicate = dag.hasDedup(proofHash);
-
-    if (!isDuplicate) {
-      dag.addDedup(proofHash);
-    }
-
-    res.json({
-      unique:    !isDuplicate,
-      duplicate:  isDuplicate,
-      // Never return the hash itself — only the boolean answer
-      message:   isDuplicate
-        ? "Identity already registered. Each human may hold exactly one TIP-ID."
-        : "Uniqueness confirmed. Proceed with registration.",
-    });
-  });
 
   /**
    * GET /v1/dedup/merkle-root

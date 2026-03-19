@@ -29,8 +29,8 @@ function merge(a, b)        { return { valid: a.valid && b.valid, errors: [...a.
 // ─── Schema rules per transaction type ────────────────────────────────────────
 const SCHEMA = {
   [TX_TYPES.REGISTER_IDENTITY]: {
-    required: ["tip_id", "region", "public_key", "vp_id", "verification_tier", "zk_dedup_proof"],
-    types:    { tip_id: "string", region: "string", public_key: "string", vp_id: "string" },
+    required: ["tip_id", "region", "public_key", "vp_id", "verification_tier", "dedup_hash", "zk_proof"],
+    types:    { tip_id: "string", region: "string", public_key: "string", vp_id: "string", dedup_hash: "string" },
   },
   [TX_TYPES.REGISTER_CONTENT]: {
     required: ["ctid", "origin_code", "content_hash", "author_tip_id", "signature"],
@@ -158,9 +158,17 @@ function validateBusinessRules(tx) {
       if (d.verification_tier && !["T1","T2","T3","T4"].includes(d.verification_tier)) {
         errors.push(`Invalid verification_tier: "${d.verification_tier}". Must be T1, T2, T3, or T4`);
       }
-      // ZK proof must start with "zkp:" (protocol prefix)
-      if (d.zk_dedup_proof && !d.zk_dedup_proof.startsWith("zkp:")) {
-        errors.push(`zk_dedup_proof must start with "zkp:" prefix`);
+      // dedup_hash must be a decimal string (BN128 field element from Poseidon circuit)
+      if (d.dedup_hash && !/^\d{1,78}$/.test(d.dedup_hash)) {
+        errors.push(`dedup_hash must be a decimal field element string (Poseidon output)`);
+      }
+      // zk_proof must be a Groth16 proof object
+      if (d.zk_proof !== undefined) {
+        if (typeof d.zk_proof !== "object" || Array.isArray(d.zk_proof)) {
+          errors.push(`zk_proof must be a Groth16 proof object`);
+        } else if (!d.zk_proof.pi_a || !d.zk_proof.pi_b || !d.zk_proof.pi_c) {
+          errors.push(`zk_proof must have pi_a, pi_b, pi_c fields`);
+        }
       }
       break;
     }

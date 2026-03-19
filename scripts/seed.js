@@ -42,7 +42,6 @@ const {
   mldsaSign,
   shake256,
   shake256Multi,
-  generatePepper,
   generateTIPID,
   generateCTID,
   hashContent,
@@ -303,12 +302,11 @@ async function createGenesisRing(vpRecord, vpKeypair) {
   for (const member of foundingMembers) {
     const keypair   = generateMLDSAKeypair();
     const rootKp    = generateSLHDSAKeypair();
-    const pepper    = generatePepper();
     const tipId     = generateTIPID(member.region, keypair.publicKey);
 
-    // Build ZK proof (stub for seed — production would use real biometric pipeline)
-    const mockDedupInputs = shake256Multi("seed", member.name, member.region, pepper);
-    const zkProof = `zkp:${shake256Multi(mockDedupInputs, "seed-zk")}`;
+    // Seed uses mock proof — production would call generateDedupProof() from shared/zk.js
+    const mockDedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
+    const mockZkProof   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
 
     let regResult;
 
@@ -328,7 +326,8 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         regResult = await post(`${nodeUrl}/v1/identity/register`, {
           region:            member.region,
           vp_id:             vpRecord.vp_id,
-          zk_dedup_proof:    zkProof,
+          dedup_hash:        mockDedupHash,
+          zk_proof:          mockZkProof,
           verification_tier: "T1",
           social_attested:   true,
           founding:          true,

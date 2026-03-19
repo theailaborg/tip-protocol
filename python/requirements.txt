@@ -3,6 +3,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # REQUIRED (install before running):
 cryptography>=41.0.0       # Ed25519 / ML-DSA-65 stub + AES for future use
+py_ecc>=8.0.0              # BN128 elliptic curve pairings — Groth16 ZK proof verification
 
 # OPTIONAL but strongly recommended for production:
 # fastapi>=0.110.0          # High-performance async REST API

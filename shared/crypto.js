@@ -149,36 +149,21 @@ function perceptualHashText(text) {
   return shake256(norm, 16).slice(0, 16);
 }
 
-// ─── DEDUPLICATION HASH (v2 PEPPERED) ────────────────────────────────────────
+// ─── DEDUPLICATION HASH (ZK Poseidon — production) ───────────────────────────
+// In production this is computed inside the Groth16 circuit (shared/zk.js).
+// This SHAKE-256 version is provided for reference and offline testing only.
 
 /**
- * Compute v2 peppered deduplication hash.
- * The pepper is generated in the device secure enclave and NEVER stored server-side.
- * @param {Object} inputs
- * @param {string} inputs.govIdNormalized
- * @param {string} inputs.dateOfBirthISO    "YYYY-MM-DD"
- * @param {string} inputs.countryCode       "US"
- * @param {string} inputs.facialEmbeddingHash
- * @param {string} inputs.pepper            256-bit hex, device-held
+ * Compute a reference dedup hash (SHAKE-256).
+ * NOTE: The production ZK circuit uses Poseidon(gov_id, dob, country) —
+ *       see shared/zk.js generateDedupProof() for the real implementation.
+ * @param {string} govIdNormalized
+ * @param {string} dateOfBirthISO   "YYYY-MM-DD"
+ * @param {string} countryCode      "US"
  * @returns {string} hex hash
  */
-function computeDedupHash({ govIdNormalized, dateOfBirthISO, countryCode, facialEmbeddingHash, pepper }) {
-  return shake256Multi(
-    govIdNormalized,
-    dateOfBirthISO,
-    countryCode,
-    facialEmbeddingHash,
-    pepper
-  );
-}
-
-/**
- * Generate a secure random pepper (256-bit).
- * In production this runs inside the device secure enclave.
- * @returns {string} hex
- */
-function generatePepper() {
-  return crypto.randomBytes(32).toString("hex");
+function computeDedupHash(govIdNormalized, dateOfBirthISO, countryCode) {
+  return shake256Multi(govIdNormalized, dateOfBirthISO, countryCode.toUpperCase());
 }
 
 // ─── URI GENERATION ───────────────────────────────────────────────────────────
@@ -334,7 +319,6 @@ module.exports = {
   hashContent,
   perceptualHashText,
   computeDedupHash,
-  generatePepper,
   generateTIPID,
   generateCTID,
   signTransaction,

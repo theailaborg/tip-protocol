@@ -102,8 +102,8 @@ CREATE TABLE IF NOT EXISTS scores (
     last_updated    TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS dedup_hashes (
-    hash            TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS dedup_registry (
+    dedup_hash      TEXT PRIMARY KEY,
     created_at      REAL NOT NULL DEFAULT (unixepoch('now','subsec'))
 );
 
@@ -207,12 +207,12 @@ class MemoryStore:
         with self._lock:
             return dict(self._scores[tip_id]) if tip_id in self._scores else None
 
-    # ── Dedup ─────────────────────────────────────────────────────────────────
-    def add_dedup(self, h: str) -> None:
+    # ── Dedup registry ────────────────────────────────────────────────────────
+    def add_dedup_hash(self, h: str) -> None:
         with self._lock:
             self._dedup.add(h)
 
-    def has_dedup(self, h: str) -> bool:
+    def has_dedup_hash(self, h: str) -> bool:
         with self._lock:
             return h in self._dedup
 
@@ -444,21 +444,21 @@ class SQLiteStore:
         ).fetchone()
         return dict(row) if row else None
 
-    # ── Dedup ─────────────────────────────────────────────────────────────────
-    def add_dedup(self, h: str) -> None:
+    # ── Dedup registry ────────────────────────────────────────────────────────
+    def add_dedup_hash(self, h: str) -> None:
         conn = self._conn()
-        conn.execute("INSERT OR IGNORE INTO dedup_hashes (hash) VALUES (?)", (h,))
+        conn.execute("INSERT OR IGNORE INTO dedup_registry (dedup_hash) VALUES (?)", (h,))
         conn.commit()
 
-    def has_dedup(self, h: str) -> bool:
+    def has_dedup_hash(self, h: str) -> bool:
         row = self._conn().execute(
-            "SELECT 1 FROM dedup_hashes WHERE hash = ?", (h,)
+            "SELECT 1 FROM dedup_registry WHERE dedup_hash = ?", (h,)
         ).fetchone()
         return row is not None
 
     def dedup_count(self) -> int:
         return self._conn().execute(
-            "SELECT COUNT(*) FROM dedup_hashes"
+            "SELECT COUNT(*) FROM dedup_registry"
         ).fetchone()[0]
 
     # ── Revocations ───────────────────────────────────────────────────────────
@@ -695,12 +695,12 @@ class DAG:
     def get_score(self, tip_id: str) -> Optional[dict]:
         return self._store.get_score(tip_id)
 
-    # Dedup (v2 FIX-02)
-    def add_dedup(self, h: str) -> None:
-        self._store.add_dedup(h)
+    # Dedup registry
+    def add_dedup_hash(self, h: str) -> None:
+        self._store.add_dedup_hash(h)
 
-    def has_dedup(self, h: str) -> bool:
-        return self._store.has_dedup(h)
+    def has_dedup_hash(self, h: str) -> bool:
+        return self._store.has_dedup_hash(h)
 
     def dedup_count(self) -> int:
         return self._store.dedup_count()

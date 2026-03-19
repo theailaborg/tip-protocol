@@ -29,6 +29,7 @@ from shared.crypto import (
     compute_tx_id, shake256, shake256_multi,
     compute_zk_proof,
 )
+from shared.zk import verify_dedup_proof
 from shared.constants import (
     TxType, Origin, Protocol, HttpHeaders,
     JurisdictionTier, get_tier, ScoreEvent,
@@ -303,19 +304,20 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         })
 
     def _identity_register(self, body: dict):
-        region   = body.get("region", "US")
-        vp_id    = body.get("vp_id") or body.get("vpId")
-        zk_proof = body.get("zk_dedup_proof") or body.get("zkDedupProof")
-        tier     = body.get("verification_tier", "T1")
-        attested = bool(body.get("social_attested") or body.get("socialAttested"))
-        founding = bool(body.get("founding"))
+        region     = body.get("region", "US")
+        vp_id      = body.get("vp_id") or body.get("vpId")
+        dedup_hash = body.get("dedup_hash") or body.get("dedupHash")
+        zk_proof   = body.get("zk_proof") or body.get("zkProof")
+        tier       = body.get("verification_tier", "T1")
+        attested   = bool(body.get("social_attested") or body.get("socialAttested"))
+        founding   = bool(body.get("founding"))
 
         if not vp_id:
             self._send_json(400, {"error": "vp_id is required"}); return
+        if not dedup_hash:
+            self._send_json(400, {"error": "dedup_hash is required"}); return
         if not zk_proof:
-            self._send_json(400, {"error": "zk_dedup_proof is required"}); return
-        if not zk_proof.startswith("zkp:"):
-            self._send_json(400, {"error": "zk_dedup_proof must start with 'zkp:'"}); return
+            self._send_json(400, {"error": "zk_proof is required"}); return
 
         vp = self.dag.get_vp(vp_id)
         if not vp:
@@ -323,8 +325,19 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if vp.get("status") != "active":
             self._send_json(403, {"error": f"VP is not active: {vp_id}"}); return
 
-        kp          = generate_mldsa_keypair()
-        tip_id      = generate_tip_id(region, kp["publicKey"])
+        # Verify ZK proof: proves prover knows (govId, dob, country) that Poseidon-hash to dedup_hash
+        if not verify_dedup_proof(dedup_hash, zk_proof):
+            self._send_json(400, {"error": "ZK proof verification failed — invalid or tampered proof"}); return
+
+        # Dedup check
+        if self.dag.has_dedup_hash(dedup_hash):
+            self._send_json(409, {
+                "error": "Identity already registered. Each human may hold exactly one TIP-ID.",
+                "code":  "DUPLICATE_IDENTITY",
+            }); return
+
+        kp            = generate_mldsa_keypair()
+        tip_id        = generate_tip_id(region, kp["publicKey"])
         registered_at = _utc_now()
 
         # Pre-validate
@@ -340,7 +353,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "verification_tier": tier,
                 "social_attested":   attested,
                 "founding":          founding,
-                "zk_dedup_proof":    zk_proof,
+                "dedup_hash":        dedup_hash,
+                "zk_proof":          zk_proof,
             },
         }
         tx["tx_id"] = compute_tx_id(tx)
@@ -362,6 +376,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "registered_at":     registered_at,
             "tx_id":             tx["tx_id"],
         })
+        self.dag.add_dedup_hash(dedup_hash)
         initial_score = ScoreEvent.INITIAL_WITH_ATTESTATION if attested else ScoreEvent.INITIAL_NO_ATTESTATION
         self.dag.set_score(tip_id, initial_score, 0)
         log.info(f"Identity registered: {tip_id} (tier={tier}, vp={vp_id})")
@@ -685,21 +700,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "timestamp": timestamp,
         })
 
-    def _dedup_check(self, body: dict):
-        zk_proof         = body.get("zk_proof")
-        hash_commitment  = body.get("hash_commitment", "")
-        if not zk_proof:
-            self._send_json(400, {"error": "zk_proof is required"}); return
-        proof_hash   = shake256_multi(zk_proof, hash_commitment)
-        is_duplicate = self.dag.has_dedup(proof_hash)
-        if not is_duplicate:
-            self.dag.add_dedup(proof_hash)
-        self._send_json(200, {
-            "unique":    not is_duplicate,
-            "duplicate": is_duplicate,
-            "message":   ("Identity already registered." if is_duplicate
-                          else "Uniqueness confirmed. Proceed with registration."),
-        })
+    def _dedup_check(self, _body: dict):
+        # Removed: dedup is now checked inside _identity_register via dag.has_dedup_hash()
+        self._send_json(410, {"error": "Endpoint removed. Dedup is checked during registration."})
 
     def _vp_register(self, body: dict):
         name   = body.get("name")

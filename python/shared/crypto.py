@@ -157,21 +157,16 @@ def compute_dedup_hash(
     gov_id_normalized: str,
     date_of_birth_iso: str,
     country_code: str,
-    facial_embedding_hash: str,
-    pepper: str,
 ) -> str:
     """
-    Compute v2 peppered deduplication hash.
-    The pepper NEVER leaves the user's device / secure enclave.
-    Without the pepper this hash cannot be recomputed even with full
-    government database access.
+    Compute a reference dedup hash (SHAKE-256).
+    NOTE: The production ZK circuit uses Poseidon(gov_id, dob, country) —
+          see shared/zk.js generateDedupProof() for the real implementation.
     """
     return shake256_multi(
         gov_id_normalized,
         date_of_birth_iso,
         country_code.upper(),
-        facial_embedding_hash,
-        pepper,
     )
 
 

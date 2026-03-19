@@ -41,7 +41,7 @@ class MemoryStore {
     this._identities  = new Map();  // tip_id -> record
     this._content     = new Map();  // ctid -> record
     this._scores      = new Map();  // tip_id -> { score, offense_count, last_updated }
-    this._dedup       = new Set();  // peppered-hash strings
+    this._dedup       = new Set();  // dedup_hash strings (Poseidon field elements)
     this._revocations = new Map();  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
     this._vps         = new Map();  // vp_id -> record
   }
@@ -82,10 +82,10 @@ class MemoryStore {
   }
   getScore(tipId) { return this._scores.get(tipId) || null; }
 
-  // ── Dedup ─────────────────────────────────────────────────────────────────
-  addDedup(hash)  { this._dedup.add(hash); }
-  hasDedup(hash)  { return this._dedup.has(hash); }
-  dedupCount()    { return this._dedup.size; }
+  // ── Dedup registry ────────────────────────────────────────────────────────
+  addDedupHash(hash)  { this._dedup.add(hash); }
+  hasDedupHash(hash)  { return this._dedup.has(hash); }
+  dedupCount()        { return this._dedup.size; }
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
@@ -181,9 +181,9 @@ class SQLiteStore {
         last_updated   TEXT NOT NULL
       );
 
-      -- ── Dedup hashes (ZK — never contains raw inputs) ────────────────
-      CREATE TABLE IF NOT EXISTS dedup_hashes (
-        hash        TEXT PRIMARY KEY,
+      -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──
+      CREATE TABLE IF NOT EXISTS dedup_registry (
+        dedup_hash  TEXT PRIMARY KEY,
         created_at  INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
@@ -249,9 +249,9 @@ class SQLiteStore {
       ),
       getScore: this.db.prepare("SELECT * FROM scores WHERE tip_id=?"),
 
-      addDedup:   this.db.prepare("INSERT OR IGNORE INTO dedup_hashes (hash) VALUES (?)"),
-      hasDedup:   this.db.prepare("SELECT 1 FROM dedup_hashes WHERE hash=?"),
-      dedupCount: this.db.prepare("SELECT COUNT(*) AS n FROM dedup_hashes"),
+      addDedupHash:   this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash) VALUES (?)"),
+      hasDedupHash:   this.db.prepare("SELECT 1 FROM dedup_registry WHERE dedup_hash=?"),
+      dedupCount:     this.db.prepare("SELECT COUNT(*) AS n FROM dedup_registry"),
 
       addRevoc:    this.db.prepare(
         `INSERT OR REPLACE INTO revocations (tip_id,tx_type,timestamp,tx_id)
@@ -335,10 +335,10 @@ class SQLiteStore {
   }
   getScore(tipId) { return this._stmts.getScore.get(tipId) || null; }
 
-  // ── Dedup ─────────────────────────────────────────────────────────────────
-  addDedup(hash)  { this._stmts.addDedup.run(hash); }
-  hasDedup(hash)  { return !!this._stmts.hasDedup.get(hash); }
-  dedupCount()    { return this._stmts.dedupCount.get().n; }
+  // ── Dedup registry ────────────────────────────────────────────────────────
+  addDedupHash(hash)  { this._stmts.addDedupHash.run(hash); }
+  hasDedupHash(hash)  { return !!this._stmts.hasDedupHash.get(hash); }
+  dedupCount()        { return this._stmts.dedupCount.get().n; }
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
@@ -438,9 +438,9 @@ function initDAG(config) {
     setScore:        (id, s, o) => store.setScore(id, s, o),
     getScore:        (id)       => store.getScore(id),
 
-    // ── Dedup (v2 FIX-02) ─────────────────────────────────────────────────
-    addDedup:        (h)        => store.addDedup(h),
-    hasDedup:        (h)        => store.hasDedup(h),
+    // ── Dedup registry ────────────────────────────────────────────────────
+    addDedupHash:    (h)        => store.addDedupHash(h),
+    hasDedupHash:    (h)        => store.hasDedupHash(h),
     dedupCount:      ()         => store.dedupCount(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────

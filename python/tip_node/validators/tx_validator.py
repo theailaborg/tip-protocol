@@ -60,9 +60,9 @@ _ISO_TS_RE   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 _SCHEMA: dict[str, dict] = {
     TxType.REGISTER_IDENTITY: {
         "required": ["tip_id", "region", "public_key", "vp_id",
-                     "verification_tier", "zk_dedup_proof"],
+                     "verification_tier", "dedup_hash", "zk_proof"],
         "types":    {"tip_id": str, "region": str, "public_key": str,
-                     "vp_id": str, "zk_dedup_proof": str},
+                     "vp_id": str, "dedup_hash": str},
     },
     TxType.REGISTER_CONTENT: {
         "required": ["ctid", "origin_code", "content_hash", "author_tip_id", "signature"],
@@ -235,9 +235,15 @@ def _validate_business(tx: dict) -> ValidationResult:
             errors.append(
                 f"Invalid verification_tier: '{tier}'. Must be T1, T2, T3, or T4"
             )
-        zk = data.get("zk_dedup_proof", "")
-        if zk and not zk.startswith("zkp:"):
-            errors.append("zk_dedup_proof must start with 'zkp:' prefix")
+        dedup_hash = data.get("dedup_hash", "")
+        if dedup_hash and not dedup_hash.isdigit():
+            errors.append("dedup_hash must be a decimal field element string (Poseidon output)")
+        zk_proof = data.get("zk_proof")
+        if zk_proof is not None:
+            if not isinstance(zk_proof, dict):
+                errors.append("zk_proof must be a Groth16 proof object")
+            elif not all(k in zk_proof for k in ("pi_a", "pi_b", "pi_c")):
+                errors.append("zk_proof must have pi_a, pi_b, pi_c fields")
 
     elif tx_type == TxType.REGISTER_CONTENT:
         ctid = data.get("ctid", "")

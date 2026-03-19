@@ -106,13 +106,13 @@ def test_crypto() -> None:
     pepper = generate_pepper()
     check("256-bit pepper (64 hex chars)",   len(pepper) == 64)
 
-    # Peppered dedup hash: deterministic + pepper-sensitive
-    args = dict(gov_id_normalized="P12345", date_of_birth_iso="1985-06-15",
-                country_code="US", facial_embedding_hash="abc", pepper="d"*64)
+    # Dedup hash: deterministic for same inputs, different for different inputs
+    args = dict(gov_id_normalized="P12345", date_of_birth_iso="1985-06-15", country_code="US")
     h1 = compute_dedup_hash(**args)
     h2 = compute_dedup_hash(**args)
-    h3 = compute_dedup_hash(**{**args, "pepper": "e"*64})
-    check("Dedup hash deterministic + pepper-sensitive (v2 FIX-02)", h1 == h2 and h1 != h3)
+    h3 = compute_dedup_hash(**{**args, "gov_id_normalized": "P99999"})
+    check("Dedup hash deterministic (same inputs → same hash)", h1 == h2)
+    check("Dedup hash unique (different govId → different hash)", h1 != h3)
 
     # TIP-ID format
     tip_id = generate_tip_id("US", kp["publicKey"])
@@ -225,13 +225,13 @@ def test_dag() -> None:
     by_author = dag.get_content_by_author(tip_id)
     check("Content retrieval by author",        len(by_author) == 1)
 
-    # Dedup (v2 FIX-02)
-    dag.add_dedup("pepper-hash-001")
-    dag.add_dedup("pepper-hash-002")
-    check("Dedup hash stored",                 dag.has_dedup("pepper-hash-001"))
-    check("Unknown dedup hash absent",         not dag.has_dedup("not-stored-999"))
+    # Dedup registry
+    dag.add_dedup_hash("11111111111111111111")
+    dag.add_dedup_hash("22222222222222222222")
+    check("Dedup hash stored",                 dag.has_dedup_hash("11111111111111111111"))
+    check("Unknown dedup hash absent",         not dag.has_dedup_hash("99999999999999999999"))
     check("Dedup count correct",               dag.dedup_count() == 2)
-    dag.add_dedup("pepper-hash-001")  # idempotent
+    dag.add_dedup_hash("11111111111111111111")  # idempotent
     check("Dedup add is idempotent",           dag.dedup_count() == 2)
 
     # Revocations (v2 FIX-05)
@@ -367,6 +367,10 @@ def test_validator() -> None:
     kp   = generate_mldsa_keypair()
     tid  = generate_tip_id("DE", kp["publicKey"])
 
+    # Mock Groth16 proof object for tests (ZK_SKIP_VERIFY=true bypasses verification)
+    MOCK_DEDUP_HASH = "12345678901234567890123456789012345678901234567890123456789012345678"
+    MOCK_ZK_PROOF   = {"pi_a": ["1", "2", "3"], "pi_b": [["1","2"],["3","4"],["5","6"]], "pi_c": ["1", "2", "3"], "protocol": "groth16", "curve": "bn128"}
+
     def mk(**data):
         """Build a minimal valid-looking tx with correct content-addressed tx_id."""
         tx_type = data.pop("tx_type", TxType.REGISTER_IDENTITY)
@@ -390,19 +394,13 @@ def test_validator() -> None:
                               "data": {}, "prev": []}, dag, skip_state=True)
     check("Missing tx_type rejected [structure]", not r.valid and r.layer == "structure")
 
-    r = validate_transaction(mk(tx_type=TxType.REGISTER_IDENTITY,
-                                timestamp_override=True,
-                                **{"tip_id": tid, "zk_dedup_proof": "zkp:x",
-                                   "vp_id": vpid, "verification_tier": "T1",
-                                   "region": "DE", "public_key": kp["publicKey"]}), dag,
-                             skip_crypto=True, skip_state=True)
-    # This one is tricky — let's build it properly
+    # Future timestamp test
     future_tx = {
         "tx_id":     rh(),
         "tx_type":   TxType.REGISTER_IDENTITY,
         "timestamp": "2099-01-01T00:00:00+00:00",
         "prev":      [],
-        "data":      {"tip_id": tid, "zk_dedup_proof": "zkp:x",
+        "data":      {"tip_id": tid, "dedup_hash": MOCK_DEDUP_HASH, "zk_proof": MOCK_ZK_PROOF,
                       "vp_id": vpid, "verification_tier": "T1",
                       "region": "DE", "public_key": kp["publicKey"]},
     }
@@ -414,7 +412,8 @@ def test_validator() -> None:
         "tx_type":   TxType.REGISTER_IDENTITY,
         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
         "data":      {"tip_id": tid, "region": "DE", "public_key": kp["publicKey"],
-                      "vp_id": vpid, "verification_tier": "T1", "zk_dedup_proof": "zkp:valid123"},
+                      "vp_id": vpid, "verification_tier": "T1",
+                      "dedup_hash": MOCK_DEDUP_HASH, "zk_proof": MOCK_ZK_PROOF},
     }
     valid_id_tx = {**_valid_id_body, "tx_id": compute_tx_id(_valid_id_body)}
     r = validate_transaction(valid_id_tx, dag, skip_crypto=True)
@@ -427,11 +426,18 @@ def test_validator() -> None:
     check("Bad TIP-ID format rejected [business]",
           not r.valid and r.layer == "business_rules")
 
-    # Bad ZK proof prefix
+    # Bad dedup_hash (non-decimal)
     r = validate_transaction({**valid_id_tx, "tx_id": rh(),
-                               "data": {**valid_id_tx["data"], "zk_dedup_proof": "invalid-no-prefix"}},
+                               "data": {**valid_id_tx["data"], "dedup_hash": "not-a-decimal"}},
                               dag, skip_crypto=True)
-    check("ZK proof without 'zkp:' prefix rejected [business]",
+    check("Non-decimal dedup_hash rejected [business]",
+          not r.valid and r.layer == "business_rules")
+
+    # Bad zk_proof (not an object)
+    r = validate_transaction({**valid_id_tx, "tx_id": rh(),
+                               "data": {**valid_id_tx["data"], "zk_proof": "not-an-object"}},
+                              dag, skip_crypto=True)
+    check("Non-object zk_proof rejected [business]",
           not r.valid and r.layer == "business_rules")
 
     # Setup identity for content tests
