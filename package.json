@@ -60,5 +60,8 @@
       "email": "chairman@theailab.org",
       "url": "https://theailab.org"
     }
-  ]
+  ],
+  "dependencies": {
+    "@noble/post-quantum": "^0.5.4"
+  }
 }

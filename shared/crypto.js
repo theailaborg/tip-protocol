@@ -52,39 +52,54 @@ function shake256Multi(...parts) {
 }
 
 // ─── ML-DSA-65 KEYPAIR (Dilithium, FIPS 204) ─────────────────────────────────
-// Production: replace with @noble/post-quantum or liboqs bindings.
-// This implementation generates a deterministic Ed25519 keypair as a stand-in
-// during development. The API surface is identical to the real implementation.
+// Uses @noble/post-quantum (ESM) via a lazy async initialiser.
+// Call `await initCrypto()` once at process startup before using any PQ function.
+
+/** @type {import('@noble/post-quantum/ml-dsa.js').ml_dsa65 | null} */
+let _mlDsa = null;
+
+/**
+ * Initialise the post-quantum crypto layer.
+ * Must be awaited once before calling generateMLDSAKeypair / mldsaSign / mldsaVerify.
+ * Safe to call multiple times (no-op after first call).
+ */
+async function initCrypto() {
+  if (_mlDsa) return;
+  const { ml_dsa65 } = await import("@noble/post-quantum/ml-dsa.js");
+  _mlDsa = ml_dsa65;
+}
+
+function _requirePQ() {
+  if (!_mlDsa) throw new Error("PQ crypto not initialised — await initCrypto() first");
+  return _mlDsa;
+}
 
 /**
  * Generate an ML-DSA-65 keypair.
  * Returns { publicKey: hex, privateKey: hex, algorithm: 'ML-DSA-65' }
+ * publicKey: 1952 bytes, privateKey (secretKey): 4032 bytes, sigSize: 3309 bytes
  */
 function generateMLDSAKeypair() {
-  // Development stub using Ed25519 with ML-DSA-compatible field names
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const mlDsa = _requirePQ();
+  const { publicKey, secretKey } = mlDsa.keygen();
   return {
     algorithm: "ML-DSA-65",
-    publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("hex"),
-    // In production: publicKeySize = 1952 bytes, sigSize = 3309 bytes
+    publicKey: Buffer.from(publicKey).toString("hex"),
+    privateKey: Buffer.from(secretKey).toString("hex"),
   };
 }
 
 /**
- * Sign data with an ML-DSA-65 private key.
+ * Sign data with an ML-DSA-65 private key (secretKey).
  * @param {string|Buffer} data
  * @param {string} privateKeyHex
  * @returns {string} signature hex
  */
 function mldsaSign(data, privateKeyHex) {
-  const keyObj = crypto.createPrivateKey({
-    key: Buffer.from(privateKeyHex, "hex"),
-    type: "pkcs8",
-    format: "der",
-  });
-  const sig = crypto.sign(null, typeof data === "string" ? Buffer.from(data) : data, keyObj);
-  return sig.toString("hex");
+  const mlDsa = _requirePQ();
+  const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
+  const msg = typeof data === "string" ? Buffer.from(data) : data;
+  return Buffer.from(mlDsa.sign(msg, secretKey)).toString("hex");
 }
 
 /**
@@ -96,17 +111,11 @@ function mldsaSign(data, privateKeyHex) {
  */
 function mldsaVerify(data, signatureHex, publicKeyHex) {
   try {
-    const keyObj = crypto.createPublicKey({
-      key: Buffer.from(publicKeyHex, "hex"),
-      type: "spki",
-      format: "der",
-    });
-    return crypto.verify(
-      null,
-      typeof data === "string" ? Buffer.from(data) : data,
-      keyObj,
-      Buffer.from(signatureHex, "hex")
-    );
+    const mlDsa = _requirePQ();
+    const publicKey = new Uint8Array(Buffer.from(publicKeyHex, "hex"));
+    const sig = new Uint8Array(Buffer.from(signatureHex, "hex"));
+    const msg = typeof data === "string" ? Buffer.from(data) : data;
+    return mlDsa.verify(sig, msg, publicKey);
   } catch {
     return false;
   }
@@ -310,6 +319,7 @@ function verifyTxId(tx) {
 }
 
 module.exports = {
+  initCrypto,
   shake256,
   shake256Multi,
   generateMLDSAKeypair,
