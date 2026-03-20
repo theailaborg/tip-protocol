@@ -25,9 +25,20 @@ const { initGossip }       = require("./gossip");
 const { scheduledTasks }   = require("./scheduler");
 const { loadConfig }       = require("./config");
 const { log }              = require("./logger");
+const { generateMLDSAKeypair } = require("../../shared/crypto");
 
 async function main() {
   const config = loadConfig();
+
+  // Load or generate node signing keypair
+  if (config.nodePrivateKey && config.nodePublicKey) {
+    log.info("Node signing keys loaded from environment");
+  } else {
+    const kp = generateMLDSAKeypair();
+    config.nodePrivateKey = kp.privateKey;
+    config.nodePublicKey  = kp.publicKey;
+    log.warn("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.");
+  }
 
   log.info("=== TIP Protocol Node v2.0.0 ===");
   log.info(`Node ID     : ${config.nodeId}`);

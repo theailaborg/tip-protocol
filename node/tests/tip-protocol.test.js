@@ -59,19 +59,25 @@ let keypair1, keypair2, vpKeypair;
 let dag, scoring;
 let app;
 
-const TEST_CONFIG = {
-  jwtSecret:    "test_jwt_secret_tip_protocol_2026",
-  adminApiKey:  "test_admin_api_key_tip_2026",
-  genesisHash:  "52f08c352f8866b400000000000000000000000000000000",
-  chainId:      "tip-testnet",
-  vpMode:       false,
-  corsOrigins:  "*",
-};
+let TEST_CONFIG;
 
 beforeAll(() => {
   keypair1  = generateMLDSAKeypair();
   keypair2  = generateMLDSAKeypair();
   vpKeypair = generateMLDSAKeypair();
+
+  // Node keypair for tx-level signing
+  const nodeKp = generateMLDSAKeypair();
+  TEST_CONFIG = {
+    jwtSecret:      "test_jwt_secret_tip_protocol_2026",
+    adminApiKey:    "test_admin_api_key_tip_2026",
+    genesisHash:    "52f08c352f8866b400000000000000000000000000000000",
+    chainId:        "tip-testnet",
+    vpMode:         false,
+    corsOrigins:    "*",
+    nodePrivateKey: nodeKp.privateKey,
+    nodePublicKey:  nodeKp.publicKey,
+  };
 
   dag     = createDAG({ dbPath: ":memory:" });
   scoring = initScoring(dag, TEST_CONFIG);

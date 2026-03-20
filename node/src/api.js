@@ -43,6 +43,12 @@ const {
   computeTxId,
 } = require("../../shared/crypto");
 
+// Helper: sign a tx with the node's private key
+function nodeSigned(txBody, config) {
+  txBody.tx_id = computeTxId(txBody);
+  return signTransaction(txBody, config.nodePrivateKey);
+}
+
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
@@ -226,14 +232,14 @@ function createApp({ dag, scoring, config }) {
           zk_proof,
         },
       };
-      txBody.tx_id = computeTxId(txBody);
+      const signedTx = nodeSigned(txBody, config);
 
-      const identityValidation = validateTransaction(txBody, dag, { skipCrypto: true });
+      const identityValidation = validateTransaction(signedTx, dag, { authorPublicKey: config.nodePublicKey });
       if (!identityValidation.valid) {
         return res.status(400).json({ error: identityValidation.errors, layer: identityValidation.layer });
       }
 
-      const tx = dag.addTx(txBody);
+      const tx = dag.addTx(signedTx);
 
       dag.saveIdentity({
         tip_id:          tipId,
@@ -416,14 +422,14 @@ function createApp({ dag, scoring, config }) {
           prescan_probability: preScan.probability,
         },
       };
-      contentTxBody.tx_id = computeTxId(contentTxBody);
+      const signedContentTx = nodeSigned(contentTxBody, config);
 
-      const contentValidation = validateTransaction(contentTxBody, dag, { skipCrypto: true });
+      const contentValidation = validateTransaction(signedContentTx, dag, { authorPublicKey: config.nodePublicKey });
       if (!contentValidation.valid) {
         return res.status(400).json({ error: contentValidation.errors, layer: contentValidation.layer });
       }
 
-      const tx = dag.addTx(contentTxBody);
+      const tx = dag.addTx(signedContentTx);
 
       dag.saveContent({
         ctid,
@@ -439,11 +445,13 @@ function createApp({ dag, scoring, config }) {
       // Auto-schedule Stage 1 adjudication if pre-scan flagged
       if (preScan.flagged) {
         log.info(`Pre-scan flagged ${ctid} — auto-scheduling Stage 1 adjudication`);
-        dag.addTx({
+        const flagTx = nodeSigned({
           tx_type:   TX_TYPES.CONTENT_DISPUTED,
           timestamp: new Date().toISOString(),
+          prev:      dag.getRecentPrev(),
           data: { ctid, reason: "pre_scan_flag", probability: preScan.probability, auto: true },
-        });
+        }, config);
+        dag.addTx(flagTx);
       }
 
       log.info(`Content registered: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
@@ -528,14 +536,14 @@ function createApp({ dag, scoring, config }) {
         author_tip_id:     rec.author_tip_id,
       },
     };
-    verifyTxBody.tx_id = computeTxId(verifyTxBody);
+    const signedVerifyTx = nodeSigned(verifyTxBody, config);
 
-    const verifyValidation = validateTransaction(verifyTxBody, dag, { skipCrypto: true });
+    const verifyValidation = validateTransaction(signedVerifyTx, dag, { authorPublicKey: config.nodePublicKey });
     if (!verifyValidation.valid) {
       return res.status(400).json({ error: verifyValidation.errors, layer: verifyValidation.layer });
     }
 
-    dag.addTx(verifyTxBody);
+    dag.addTx(signedVerifyTx);
 
     scoring.applyScoreEvent(rec.author_tip_id, weightedDelta, `Content verified by ${verifier_tip_id}`);
     res.json({ success: true, delta_applied: weightedDelta });
@@ -558,14 +566,14 @@ function createApp({ dag, scoring, config }) {
       prev:      dag.getRecentPrev(),
       data: { ctid: req.params.ctid, disputer_tip_id, reason, evidence_hash, author_tip_id: rec.author_tip_id },
     };
-    disputeTxBody.tx_id = computeTxId(disputeTxBody);
+    const signedDisputeTx = nodeSigned(disputeTxBody, config);
 
-    const disputeValidation = validateTransaction(disputeTxBody, dag, { skipCrypto: true });
+    const disputeValidation = validateTransaction(signedDisputeTx, dag, { authorPublicKey: config.nodePublicKey });
     if (!disputeValidation.valid) {
       return res.status(400).json({ error: disputeValidation.errors, layer: disputeValidation.layer });
     }
 
-    dag.addTx(disputeTxBody);
+    dag.addTx(signedDisputeTx);
 
     res.json({ success: true, message: "Dispute filed. Stage 1 AI classifier will run within 60 seconds." });
   });
@@ -627,14 +635,14 @@ function createApp({ dag, scoring, config }) {
         prev: dag.getRecentPrev(),
         data: { tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
       };
-      revokeTxBody.tx_id = computeTxId(revokeTxBody);
+      const signedRevokeTx = nodeSigned(revokeTxBody, config);
 
-      const revokeValidation = validateTransaction(revokeTxBody, dag, { skipCrypto: true });
+      const revokeValidation = validateTransaction(signedRevokeTx, dag, { authorPublicKey: config.nodePublicKey });
       if (!revokeValidation.valid) {
         return res.status(400).json({ error: revokeValidation.errors, layer: revokeValidation.layer });
       }
 
-      const tx = dag.addTx(revokeTxBody);
+      const tx = dag.addTx(signedRevokeTx);
 
       dag.addRevocation(tip_id, tx_type, timestamp, tx.tx_id);
 
@@ -643,11 +651,13 @@ function createApp({ dag, scoring, config }) {
         const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
         const recentContent = dag.getContentByAuthor(tip_id).filter(c => c.registered_at > cutoff);
         recentContent.forEach(c => {
-          dag.addTx({
-            tx_type: TX_TYPES.CONTENT_DISPUTED,
+          const cascadeTx = nodeSigned({
+            tx_type:   TX_TYPES.CONTENT_DISPUTED,
             timestamp: new Date().toISOString(),
+            prev:      dag.getRecentPrev(),
             data: { ctid: c.ctid, reason: "issuer_revocation_cascade", auto: true },
-          });
+          }, config);
+          dag.addTx(cascadeTx);
         });
         log.info(`Revocation cascade: ${recentContent.length} recent content records flagged for ${tip_id}`);
       }
@@ -698,14 +708,14 @@ function createApp({ dag, scoring, config }) {
         prev:      dag.getRecentPrev(),
         data:      { vp_id: vpId, name, jurisdiction_tier, public_key, council_signature },
       };
-      vpTxBody.tx_id = computeTxId(vpTxBody);
+      const signedVpTx = nodeSigned(vpTxBody, config);
 
-      const vpValidation = validateTransaction(vpTxBody, dag, { skipCrypto: true });
+      const vpValidation = validateTransaction(signedVpTx, dag, { authorPublicKey: config.nodePublicKey });
       if (!vpValidation.valid) {
         return res.status(400).json({ error: vpValidation.errors, layer: vpValidation.layer });
       }
 
-      dag.addTx(vpTxBody);
+      dag.addTx(signedVpTx);
 
       dag.saveVP({ vp_id: vpId, name, jurisdiction_tier, public_key, status: "active", registered_at: registeredAt });
 

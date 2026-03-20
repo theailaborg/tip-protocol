@@ -24,6 +24,7 @@ from urllib.parse import urlparse, parse_qs
 
 from shared.crypto import (
     generate_mldsa_keypair, mldsa_sign, mldsa_verify, verify_tx_signature,
+    sign_transaction,
     hash_content, perceptual_hash_text,
     generate_tip_id, generate_ctid,
     compute_tx_id, shake256, shake256_multi,
@@ -121,10 +122,12 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
     HTTP request handler for TIP Protocol REST API.
     Thread-safe: dag, scoring, config are shared across threads (they are each thread-safe).
     """
-    dag     = None  # injected via create_server()
-    scoring = None
-    config  = None
-    limiter = None
+    dag              = None  # injected via create_server()
+    scoring          = None
+    config           = None
+    limiter          = None
+    node_private_key = None
+    node_public_key  = None
 
     log_message = lambda self, fmt, *args: None  # silence stdlib access log
 
@@ -151,6 +154,11 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, Exception):
             return None
+
+    def _node_sign(self, tx: dict) -> dict:
+        """Compute tx_id and sign with node private key."""
+        tx["tx_id"] = compute_tx_id(tx)
+        return sign_transaction(tx, self.node_private_key)
 
     def _rate_check(self) -> bool:
         ip = self.client_address[0]
@@ -365,8 +373,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "zk_proof":          zk_proof,
             },
         }
-        tx["tx_id"] = compute_tx_id(tx)
-        result = validate_transaction(tx, self.dag, skip_crypto=True)
+        tx = self._node_sign(tx)
+        result = validate_transaction(tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0],
                                   "errors": result.errors,
@@ -501,8 +509,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "prescan_probability": prescan["probability"],
             },
         }
-        tx["tx_id"] = compute_tx_id(tx)
-        result = validate_transaction(tx, self.dag, skip_crypto=True)
+        tx = self._node_sign(tx)
+        result = validate_transaction(tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0],
                                   "errors": result.errors,
@@ -523,12 +531,14 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         })
 
         if prescan["flagged"]:
-            self.dag.add_tx({
+            flag_tx = self._node_sign({
                 "tx_type":   TxType.CONTENT_DISPUTED,
                 "timestamp": _utc_now(),
+                "prev":      self.dag.get_recent_prev(),
                 "data":      {"ctid": ctid, "reason": "pre_scan_flag",
                               "probability": prescan["probability"], "auto": True},
             })
+            self.dag.add_tx(flag_tx)
             log.info(f"Pre-scan flagged {ctid} — auto Stage 1 adjudication queued")
 
         score_data = self.scoring.get_score(author_tip_id)
@@ -598,8 +608,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "author_tip_id":    rec.get("author_tip_id"),
             },
         }
-        verify_tx["tx_id"] = compute_tx_id(verify_tx)
-        result = validate_transaction(verify_tx, self.dag, skip_crypto=True)
+        verify_tx = self._node_sign(verify_tx)
+        result = validate_transaction(verify_tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(verify_tx)
@@ -628,8 +638,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "author_tip_id":    rec.get("author_tip_id"),
             },
         }
-        dispute_tx["tx_id"] = compute_tx_id(dispute_tx)
-        result = validate_transaction(dispute_tx, self.dag, skip_crypto=True)
+        dispute_tx = self._node_sign(dispute_tx)
+        result = validate_transaction(dispute_tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(dispute_tx)
@@ -680,8 +690,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "signature":     signature,
             },
         }
-        revoke_tx["tx_id"] = compute_tx_id(revoke_tx)
-        result = validate_transaction(revoke_tx, self.dag, skip_crypto=True)
+        revoke_tx = self._node_sign(revoke_tx)
+        result = validate_transaction(revoke_tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         tx = self.dag.add_tx(revoke_tx)
@@ -694,10 +704,13 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             recent = [c for c in self.dag.get_content_by_author(tip_id)
                       if (c.get("registered_at") or "") > cutoff]
             for c in recent:
-                self.dag.add_tx({
-                    "tx_type": TxType.CONTENT_DISPUTED,
-                    "data":    {"ctid": c["ctid"], "reason": "issuer_revocation_cascade", "auto": True},
+                cascade_tx = self._node_sign({
+                    "tx_type":   TxType.CONTENT_DISPUTED,
+                    "timestamp": _utc_now(),
+                    "prev":      self.dag.get_recent_prev(),
+                    "data":      {"ctid": c["ctid"], "reason": "issuer_revocation_cascade", "auto": True},
                 })
+                self.dag.add_tx(cascade_tx)
             log.info(f"Revocation cascade: {len(recent)} records flagged for {tip_id}")
 
         log.info(f"Revocation: {tip_id} (type={tx_type}, by={issuing_vp_id})")
@@ -736,8 +749,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "public_key":        pubkey,
             },
         }
-        vp_tx["tx_id"] = compute_tx_id(vp_tx)
-        result = validate_transaction(vp_tx, self.dag, skip_crypto=True)
+        vp_tx = self._node_sign(vp_tx)
+        result = validate_transaction(vp_tx, self.dag, author_public_key=self.node_public_key)
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(vp_tx)
@@ -784,10 +797,12 @@ def create_server(dag, scoring, config: dict) -> HTTPServer:
     class BoundHandler(TIPAPIHandler):
         pass
 
-    BoundHandler.dag     = dag
-    BoundHandler.scoring = scoring
-    BoundHandler.config  = config
-    BoundHandler.limiter = limiter
+    BoundHandler.dag              = dag
+    BoundHandler.scoring          = scoring
+    BoundHandler.config           = config
+    BoundHandler.limiter          = limiter
+    BoundHandler.node_private_key = config.get("node_private_key")
+    BoundHandler.node_public_key  = config.get("node_public_key")
 
     host = config.get("host", "0.0.0.0")
     port = config.get("port", 4000)

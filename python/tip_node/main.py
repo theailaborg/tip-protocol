@@ -26,6 +26,7 @@ import sys
 # Allow running as: python -m node.main from the project root
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+from shared.crypto import generate_mldsa_keypair
 from node.config   import load_config
 from node.dag      import DAG
 from node.scoring  import ScoringEngine
@@ -49,6 +50,15 @@ def main() -> None:
     log.info(f"  Node type  : {config['node_type']}")
     log.info(f"  DB path    : {config['db_path']}")
     log.info("=" * 56)
+
+    # Load or generate node signing keypair
+    if config["node_private_key"] and config["node_public_key"]:
+        log.info("Node signing keys loaded from environment")
+    else:
+        kp = generate_mldsa_keypair()
+        config["node_private_key"] = kp["privateKey"]
+        config["node_public_key"]  = kp["publicKey"]
+        log.warning("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.")
 
     # Warn about insecure defaults
     if config["jwt_secret"] == "CHANGE_THIS_IN_PRODUCTION":
