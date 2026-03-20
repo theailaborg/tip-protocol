@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import click
 from shared.crypto import (
-    generate_mldsa_keypair, generate_tip_id,
+    generate_mldsa_keypair, mldsa_sign, generate_tip_id,
     shake256, shake256_multi,
     compute_zk_proof,
 )
@@ -142,17 +142,22 @@ def identity_generate_keypair():
 
 @identity.command("register")
 @click.option("--vp-id",   required=True,  help="Verification Provider ID")
+@click.option("--vp-key",  required=True,  help="VP private key (hex) for signing the registration")
 @click.option("--region",  default="US",   help="Region code (default: US)")
 @click.option("--tier",    default="T1",   help="Verification tier T1-T4 (default: T1)")
 @click.option("--attested", is_flag=True,  help="Has social attestation (3 vouchers)")
 @click.option("--founding", is_flag=True,  help="Founding member (Genesis Ring)")
-def identity_register(vp_id, region, tier, attested, founding):
-    """Register a new TIP-ID on the node."""
+def identity_register(vp_id, vp_key, region, tier, attested, founding):
+    """[DEV ONLY] Register a TIP-ID with mock ZK proof (production: use VP SDK)."""
     client = _get_client()
     # CLI uses a mock dedup_hash and zk_proof — real flow requires the VP SDK
     # running generateDedupProof(govId, dob, country) on the user's device (shared/zk.js).
     mock_dedup_hash = shake256_multi("cli-registration", region, vp_id)
     mock_zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]], "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
+
+    # VP signs: dedup_hash + verification_tier + vp_id
+    vp_payload   = mock_dedup_hash + tier + vp_id
+    vp_signature = mldsa_sign(vp_payload, vp_key)
 
     click.echo(f"\n  Registering TIP-ID...")
     click.echo(f"  {'Region':<20} {region}")
@@ -161,7 +166,8 @@ def identity_register(vp_id, region, tier, attested, founding):
 
     try:
         res = client.identity.register(
-            vp_id=vp_id, dedup_hash=mock_dedup_hash, zk_proof=mock_zk_proof,
+            vp_id=vp_id, vp_signature=vp_signature,
+            dedup_hash=mock_dedup_hash, zk_proof=mock_zk_proof,
             region=region, verification_tier=tier,
             social_attested=attested, founding=founding,
         )

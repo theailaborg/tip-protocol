@@ -323,9 +323,14 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       };
     } else {
       try {
+        // VP signs: dedup_hash + verification_tier + vp_id
+        const vpPayload   = mockDedupHash + "T1" + vpRecord.vp_id;
+        const vpSignature = mldsaSign(vpPayload, vpKeypair.privateKey);
+
         regResult = await post(`${nodeUrl}/v1/identity/register`, {
           region:            member.region,
           vp_id:             vpRecord.vp_id,
+          vp_signature:      vpSignature,
           dedup_hash:        mockDedupHash,
           zk_proof:          mockZkProof,
           verification_tier: "T1",

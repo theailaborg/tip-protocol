@@ -33,7 +33,7 @@ const {
   hashContent, perceptualHashText,
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
-  generateMLDSAKeypair, signTransaction, verifyTransaction,
+  generateMLDSAKeypair, mldsaSign, signTransaction, verifyTransaction,
 } = require(path.join(SHARED, "crypto"));
 
 // Skip real ZK verification in tests — circuit artifacts not present in test env
@@ -567,17 +567,18 @@ describe("REST API", () => {
     expect(typeof res.body.tx_count).toBe("number");
   });
 
+  let testVpKp; // VP keypair shared across tests 6.5–6.7
+
   test("6.5 POST /v1/vp/register registers a VP", async () => {
-    const kp = generateMLDSAKeypair();
+    testVpKp = generateMLDSAKeypair();
     const res = await request(app)
       .post("/v1/vp/register")
       .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
       .send({
-        vp_id:             "tip://id/VP-UK-testapi",
-        public_key:        kp.publicKey,
+        name:              "Test VP UK",
+        public_key:        testVpKp.publicKey,
         jurisdiction_tier: "GREEN",
         country:           "GB",
-        operator_name:     "Test VP UK",
       });
     expect([200, 201]).toContain(res.status);
     expect(res.body.vp_id).toBeDefined();
@@ -591,14 +592,22 @@ describe("REST API", () => {
   });
 
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
+    // VP signs: dedup_hash + verification_tier + vp_id
+    const vpId      = "tip://id/VP-UK-testapi";
+    const tier      = "T1";
+    const vpPayload = MOCK_DEDUP_HASH + tier + vpId;
+    const vpSig     = mldsaSign(vpPayload, testVpKp.privateKey);
+
     const res = await request(app)
       .post("/v1/identity/register")
       .send({
-        region:       "DE",
-        vp_id:        "tip://id/VP-UK-testapi",
-        dedup_hash:   MOCK_DEDUP_HASH,
-        zk_proof:     MOCK_ZK_PROOF,
-        attested:     false,
+        region:            "DE",
+        vp_id:             vpId,
+        vp_signature:      vpSig,
+        dedup_hash:        MOCK_DEDUP_HASH,
+        zk_proof:          MOCK_ZK_PROOF,
+        verification_tier: tier,
+        attested:          false,
       });
     expect([200, 201]).toContain(res.status);
     expect(res.body.tip_id).toBeDefined();
@@ -775,15 +784,21 @@ describe("Integration: Full Registration Flow", () => {
     expect([200, 201]).toContain(vpRes.status);
 
     // Step 2: Register Identity
-    const idDedup = computeDedupHash("SG123456", "1988-11-22", "SG");
+    const idDedup   = computeDedupHash("SG123456", "1988-11-22", "SG");
+    const intVpId   = "tip://id/VP-SG-integration";
+    const intTier   = "T1";
+    const intVpSig  = mldsaSign(idDedup + intTier + intVpId, integrationKp.privateKey);
+
     const idRes = await request(app)
       .post("/v1/identity/register")
       .send({
-        region:       "SG",
-        vp_id:        "tip://id/VP-SG-integration",
-        dedup_hash:   idDedup,
-        zk_proof:     MOCK_ZK_PROOF,
-        attested:     false,
+        region:            "SG",
+        vp_id:             intVpId,
+        vp_signature:      intVpSig,
+        dedup_hash:        idDedup,
+        zk_proof:          MOCK_ZK_PROOF,
+        verification_tier: intTier,
+        attested:          false,
       });
     expect([200, 201]).toContain(idRes.status);
     integrationTipId = idRes.body.tip_id;
@@ -814,18 +829,24 @@ describe("Integration: Full Registration Flow", () => {
   });
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
-    const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
+    const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG");
     dag.addDedupHash(dedup);
+
+    const dupVpId  = "tip://id/VP-SG-integration";
+    const dupTier  = "T1";
+    const dupVpSig = mldsaSign(dedup + dupTier + dupVpId, integrationKp.privateKey);
 
     // Try registering the same person twice
     const res = await request(app)
       .post("/v1/identity/register")
       .send({
-        region:       "SG",
-        vp_id:        "tip://id/VP-SG-integration",
-        dedup_hash:   dedup,    // same dedup hash — should be rejected
-        zk_proof:     MOCK_ZK_PROOF,
-        attested:     false,
+        region:            "SG",
+        vp_id:             dupVpId,
+        vp_signature:      dupVpSig,
+        dedup_hash:        dedup,    // same dedup hash — should be rejected
+        zk_proof:          MOCK_ZK_PROOF,
+        verification_tier: dupTier,
+        attested:          false,
       });
     expect([400, 409, 422]).toContain(res.status);
   });

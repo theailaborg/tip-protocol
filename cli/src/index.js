@@ -33,8 +33,9 @@ const path                  = require("path");
 const { TIPClient }         = require("../../sdk/src/index");
 const {
   generateMLDSAKeypair,
-  generatePepper,
+  mldsaSign,
   shake256,
+  shake256Multi,
 }                           = require("../../shared/crypto");
 const { ORIGIN, ORIGIN_LABELS, getTier } = require("../../shared/constants");
 
@@ -159,17 +160,22 @@ identityCmd
 
 identityCmd
   .command("register")
-  .description("Register a new TIP-ID on the node")
+  .description("[DEV ONLY] Register a TIP-ID with mock ZK proof (production: use VP SDK)")
   .requiredOption("--vp-id <vpId>",       "Verification Provider ID")
   .option("--region <region>",             "Region code (default: US)", "US")
   .option("--tier <tier>",                 "Verification tier T1|T2|T3|T4 (default: T1)", "T1")
   .option("--attested",                    "Has social attestation (3 vouchers)")
   .option("--founding",                    "Founding member (Genesis Block)")
+  .requiredOption("--vp-key <vpPrivateKey>", "VP private key (hex) for signing the registration")
   .action(async (opts) => {
     const client = getClient();
-    // Generate ZK proof stub (in production: full biometric pipeline)
-    const pepper  = generatePepper();
-    const zkProof = `zkp:${shake256("demo-registration-" + Date.now())}`;
+    // Mock dedup hash and ZK proof — production: VP SDK calls generateDedupProof() on-device
+    const mockDedupHash = shake256Multi("cli-registration", opts.region, opts.vpId);
+    const mockZkProof   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
+
+    // VP signs canonical payload: dedup_hash + verification_tier + vp_id
+    const vpPayload   = mockDedupHash + opts.tier + opts.vpId;
+    const vpSignature = mldsaSign(vpPayload, opts.vpKey);
 
     console.log(`\n${C.bold}Registering TIP-ID...${C.reset}`);
     info(`Node:   ${loadCLIConfig().nodeUrl || "http://localhost:4000"}`);
@@ -181,7 +187,9 @@ identityCmd
       const res = await client.identity.register({
         region:           opts.region,
         vpId:             opts.vpId,
-        zkDedupProof:     zkProof,
+        vpSignature,
+        dedupHash:        mockDedupHash,
+        zkProof:          mockZkProof,
         verificationTier: opts.tier,
         socialAttested:   !!opts.attested,
         founding:         !!opts.founding,

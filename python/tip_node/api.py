@@ -23,7 +23,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 
 from shared.crypto import (
-    generate_mldsa_keypair, mldsa_sign, verify_tx_signature,
+    generate_mldsa_keypair, mldsa_sign, mldsa_verify, verify_tx_signature,
     hash_content, perceptual_hash_text,
     generate_tip_id, generate_ctid,
     compute_tx_id, shake256, shake256_multi,
@@ -304,16 +304,19 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         })
 
     def _identity_register(self, body: dict):
-        region     = body.get("region", "US")
-        vp_id      = body.get("vp_id") or body.get("vpId")
-        dedup_hash = body.get("dedup_hash") or body.get("dedupHash")
-        zk_proof   = body.get("zk_proof") or body.get("zkProof")
-        tier       = body.get("verification_tier", "T1")
-        attested   = bool(body.get("social_attested") or body.get("socialAttested"))
-        founding   = bool(body.get("founding"))
+        region       = body.get("region", "US")
+        vp_id        = body.get("vp_id") or body.get("vpId")
+        vp_signature = body.get("vp_signature") or body.get("vpSignature")
+        dedup_hash   = body.get("dedup_hash") or body.get("dedupHash")
+        zk_proof     = body.get("zk_proof") or body.get("zkProof")
+        tier         = body.get("verification_tier", "T1")
+        attested     = bool(body.get("social_attested") or body.get("socialAttested"))
+        founding     = bool(body.get("founding"))
 
         if not vp_id:
             self._send_json(400, {"error": "vp_id is required"}); return
+        if not vp_signature:
+            self._send_json(400, {"error": "vp_signature is required"}); return
         if not dedup_hash:
             self._send_json(400, {"error": "dedup_hash is required"}); return
         if not zk_proof:
@@ -324,6 +327,11 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(403, {"error": f"VP not found: {vp_id}"}); return
         if vp.get("status") != "active":
             self._send_json(403, {"error": f"VP is not active: {vp_id}"}); return
+
+        # Verify VP signature: VP must sign (dedup_hash + verification_tier + vp_id)
+        vp_payload = dedup_hash + tier + vp_id
+        if not mldsa_verify(vp_payload, vp_signature, vp.get("public_key", "")):
+            self._send_json(403, {"error": "VP signature verification failed — signature does not match VP public key"}); return
 
         # Verify ZK proof: proves prover knows (govId, dob, country) that Poseidon-hash to dedup_hash
         if not verify_dedup_proof(dedup_hash, zk_proof):

@@ -36,6 +36,7 @@ const morgan     = require("morgan");
 const {
   generateMLDSAKeypair, generateSLHDSAKeypair,
   signTransaction, verifyTransaction,
+  mldsaVerify,
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
@@ -173,6 +174,18 @@ function createApp({ dag, scoring, config }) {
       const vp = dag.getVP(vp_id);
       if (!vp || vp.status !== "active") {
         return res.status(403).json({ error: "Verification provider not found or suspended" });
+      }
+
+      // Verify VP signature: VP must sign (dedup_hash + verification_tier + vp_id)
+      // This proves the registration was submitted by a legitimate VP, not someone
+      // who just knows a valid vp_id.
+      if (!vp_signature) {
+        return res.status(400).json({ error: "vp_signature is required" });
+      }
+      const vpPayload = dedup_hash + verification_tier + vp_id;
+      const vpSigValid = mldsaVerify(vpPayload, vp_signature, vp.public_key);
+      if (!vpSigValid) {
+        return res.status(403).json({ error: "VP signature verification failed — signature does not match VP public key" });
       }
 
       // Verify ZK proof: proves prover knows (govId, dob, country) that Poseidon-hash to dedup_hash

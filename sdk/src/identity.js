@@ -88,22 +88,28 @@ class TIPIdentityClient {
    * @param {Object} options
    * @param {string} options.region           e.g. "US"
    * @param {string} options.vpId             ID of issuing VP
-   * @param {string} options.zkDedupProof     ZK proof of uniqueness
+   * @param {string} options.vpSignature      VP's ML-DSA-65 signature over (dedupHash + verificationTier + vpId)
+   * @param {string} options.dedupHash        Poseidon(govId, dob, country) — decimal field element
+   * @param {Object} options.zkProof          Groth16 proof { pi_a, pi_b, pi_c, protocol, curve }
    * @param {string} [options.verificationTier] "T1"|"T2"|"T3"|"T4" (default: T1)
    * @param {boolean} [options.socialAttested]  (default: false)
    * @param {boolean} [options.founding]        (default: false)
    * @returns {Promise<Object>} identity record including tip_id and keypair
    */
-  async register({ region = "US", vpId, zkDedupProof, verificationTier = "T1", socialAttested = false, founding = false }) {
-    if (!vpId)        throw new Error("vpId is required");
-    if (!zkDedupProof) throw new Error("zkDedupProof is required. Compute this on-device before calling register().");
+  async register({ region = "US", vpId, vpSignature, dedupHash, zkProof, verificationTier = "T1", socialAttested = false, founding = false }) {
+    if (!vpId)         throw new Error("vpId is required");
+    if (!vpSignature)  throw new Error("vpSignature is required. VP must sign (dedupHash + verificationTier + vpId).");
+    if (!dedupHash)    throw new Error("dedupHash is required. Compute via generateDedupProof() on-device.");
+    if (!zkProof)      throw new Error("zkProof is required. Compute via generateDedupProof() on-device.");
 
     const res = await this._fetch("/v1/identity/register", {
       method: "POST",
       body: {
         region,
         vp_id:              vpId,
-        zk_dedup_proof:     zkDedupProof,
+        vp_signature:       vpSignature,
+        dedup_hash:         dedupHash,
+        zk_proof:           zkProof,
         verification_tier:  verificationTier,
         social_attested:    socialAttested,
         founding,

@@ -210,7 +210,7 @@ def step3_founding_vp(
 # ─── Step 4: Genesis Ring ─────────────────────────────────────────────────────
 
 def step4_genesis_ring(
-    vp_record: dict, node_url: str | None, direct: bool
+    vp_record: dict, vp_keypair: dict, node_url: str | None, direct: bool
 ) -> list[dict]:
     sep("STEP 4: Creating Genesis Ring (Founding Identities)")
 
@@ -243,10 +243,16 @@ def step4_genesis_ring(
             }
         else:
             try:
+                # VP signs: dedup_hash + verification_tier + vp_id
+                vp_payload   = mock_hash + "T1" + vp_record["vp_id"]
+                vp_signature = mldsa_sign(vp_payload, vp_keypair["privateKey"])
+
                 reg_result = _post(f"{node_url}/v1/identity/register", {
                     "region":            m["region"],
                     "vp_id":             vp_record["vp_id"],
-                    "zk_dedup_proof":    zk_proof,
+                    "vp_signature":      vp_signature,
+                    "dedup_hash":        mock_hash,
+                    "zk_proof":          zk_proof,
                     "verification_tier": "T1",
                     "social_attested":   True,
                     "founding":          True,
@@ -528,7 +534,7 @@ def main() -> None:
 
         genesis_block       = step2_genesis_block(data_dir, root_keys)
         vp_record, vp_kp    = step3_founding_vp(genesis_block, node_url, direct)
-        identities          = step4_genesis_ring(vp_record, node_url, direct)
+        identities          = step4_genesis_ring(vp_record, vp_kp, node_url, direct)
         content             = step5_sample_content(identities, node_url, direct)
         all_pass            = step6_verify(genesis_block, vp_record, identities, content, node_url, direct)
         output              = step7_write_output(data_dir, genesis_block, vp_record, vp_kp, identities, content)
