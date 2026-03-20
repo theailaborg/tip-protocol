@@ -16,6 +16,7 @@
 
 const WebSocket              = require("ws");
 const { validateTransaction } = require("./validators/tx-validator");
+const { TX_TYPES }           = require("../../shared/constants");
 const { log }                = require("./logger");
 
 const MSG_TYPES = {
@@ -26,6 +27,73 @@ const MSG_TYPES = {
   PING:          "PING",
   PONG:          "PONG",
 };
+
+// ─── Replay derived state from a synced tx ──────────────────────────────────
+// When a tx arrives via gossip, only dag.addTx() is called. Derived tables
+// (identities, content, dedup_registry, revocations) must be updated manually
+// since the original API endpoint logic doesn't run during sync.
+function replayDerivedState(dag, tx) {
+  const d = tx.data || {};
+
+  switch (tx.tx_type) {
+    case TX_TYPES.REGISTER_IDENTITY:
+      if (d.dedup_hash && !dag.hasDedupHash(d.dedup_hash)) {
+        dag.addDedupHash(d.dedup_hash);
+      }
+      if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+        dag.saveIdentity({
+          tip_id:          d.tip_id,
+          region:          d.region || "US",
+          public_key:      d.public_key || "",
+          root_public_key: d.root_public_key || "",
+          vp_id:           d.vp_id || "",
+          verification_tier: d.verification_tier || "T1",
+          founding:        d.founding || false,
+          status:          "active",
+          registered_at:   tx.timestamp,
+          tx_id:           tx.tx_id,
+        });
+      }
+      break;
+
+    case TX_TYPES.REGISTER_CONTENT:
+      if (d.ctid && !dag.getContent(d.ctid)) {
+        dag.saveContent({
+          ctid:            d.ctid,
+          origin_code:     d.origin_code,
+          content_hash:    d.content_hash,
+          perceptual_hash: d.perceptual_hash || null,
+          author_tip_id:   d.author_tip_id,
+          status:          d.prescan_flagged ? "pending_review" : "verified",
+          registered_at:   tx.timestamp,
+          tx_id:           tx.tx_id,
+        });
+      }
+      break;
+
+    case TX_TYPES.REVOKE_VOLUNTARY:
+    case TX_TYPES.REVOKE_VP:
+    case TX_TYPES.REVOKE_DECEASED:
+    case TX_TYPES.REVOKE_DEVICE:
+      if (d.tip_id && !dag.isRevoked(d.tip_id)) {
+        dag.addRevocation(d.tip_id, tx.tx_type, tx.timestamp, tx.tx_id);
+      }
+      break;
+
+    case TX_TYPES.VP_REGISTERED:
+      if (d.vp_id && !dag.getVP(d.vp_id)) {
+        dag.saveVP({
+          vp_id:             d.vp_id,
+          name:              d.name || "",
+          jurisdiction_tier: d.jurisdiction_tier || "green",
+          public_key:        d.public_key || "",
+          status:            "active",
+          registered_at:     tx.timestamp,
+        });
+      }
+      break;
+  }
+}
 
 function initGossip(server, dag, config) {
   const wss     = new WebSocket.Server({ server, path: "/gossip" });
@@ -87,6 +155,7 @@ function initGossip(server, dag, config) {
               break;
             }
             dag.addTx(msg.tx);
+            replayDerivedState(dag, msg.tx);
             log.info(`Gossip: received tx ${msg.tx.tx_id} (${msg.tx.tx_type})`);
             // Relay to other peers (TTL = 1 more hop)
             if ((msg.ttl || 2) > 0) {
@@ -114,6 +183,7 @@ function initGossip(server, dag, config) {
                 continue;
               }
               dag.addTx(tx);
+              replayDerivedState(dag, tx);
               imported++;
             }
           }

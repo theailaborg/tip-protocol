@@ -20,8 +20,68 @@ from typing import Any
 
 from tip_node.logger import get_logger
 from tip_node.validators.tx_validator import validate_transaction
+from shared.constants import TxType
 
 log = get_logger("gossip")
+
+def _replay_derived_state(dag, tx: dict) -> None:
+    """Update derived tables (identities, content, dedup, revocations, VPs)
+    when a tx arrives via gossip. The original API endpoint logic does not run
+    during sync, so derived state must be replayed manually."""
+    d = tx.get("data") or {}
+    tt = tx.get("tx_type", "")
+
+    if tt == TxType.REGISTER_IDENTITY:
+        dh = d.get("dedup_hash")
+        if dh and not dag.has_dedup_hash(dh):
+            dag.add_dedup_hash(dh)
+        tid = d.get("tip_id")
+        if tid and not dag.get_identity(tid):
+            dag.save_identity({
+                "tip_id":            tid,
+                "region":            d.get("region", "US"),
+                "public_key":        d.get("public_key", ""),
+                "root_public_key":   d.get("root_public_key", ""),
+                "vp_id":             d.get("vp_id", ""),
+                "verification_tier": d.get("verification_tier", "T1"),
+                "founding":          d.get("founding", False),
+                "status":            "active",
+                "registered_at":     tx.get("timestamp", ""),
+                "tx_id":             tx.get("tx_id", ""),
+            })
+
+    elif tt == TxType.REGISTER_CONTENT:
+        ctid = d.get("ctid")
+        if ctid and not dag.get_content(ctid):
+            dag.save_content({
+                "ctid":            ctid,
+                "origin_code":     d.get("origin_code"),
+                "content_hash":    d.get("content_hash"),
+                "perceptual_hash": d.get("perceptual_hash"),
+                "author_tip_id":   d.get("author_tip_id"),
+                "status":          "pending_review" if d.get("prescan_flagged") else "verified",
+                "registered_at":   tx.get("timestamp", ""),
+                "tx_id":           tx.get("tx_id", ""),
+            })
+
+    elif tt in (TxType.REVOKE_VOLUNTARY, TxType.REVOKE_VP,
+                TxType.REVOKE_DECEASED, TxType.REVOKE_DEVICE):
+        tid = d.get("tip_id")
+        if tid and not dag.is_revoked(tid):
+            dag.add_revocation(tid, tt, tx.get("timestamp", ""), tx.get("tx_id", ""))
+
+    elif tt == TxType.VP_REGISTERED:
+        vp_id = d.get("vp_id")
+        if vp_id and not dag.get_vp(vp_id):
+            dag.save_vp({
+                "vp_id":             vp_id,
+                "name":              d.get("name", ""),
+                "jurisdiction_tier": d.get("jurisdiction_tier", "green"),
+                "public_key":        d.get("public_key", ""),
+                "status":            "active",
+                "registered_at":     tx.get("timestamp", ""),
+            })
+
 
 MSG_TX_BROADCAST  = "TX_BROADCAST"
 MSG_HANDSHAKE     = "HANDSHAKE"
@@ -143,6 +203,7 @@ class GossipServer:
                             log.warning(f"Gossip: rejected tx {tx_id[:16]}... ({result.layer}): {result.errors[0]}")
                         else:
                             self._dag.add_tx(tx)
+                            _replay_derived_state(self._dag, tx)
                             log.debug(f"Gossip: imported tx {tx_id[:16]}... ({tx.get('tx_type')})")
                     if ttl > 0:
                         self._broadcast(tx, exclude=conn, ttl=ttl - 1)
@@ -166,6 +227,7 @@ class GossipServer:
                         log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... ({result.layer}): {result.errors[0]}")
                         continue
                     self._dag.add_tx(tx)
+                    _replay_derived_state(self._dag, tx)
                     imported += 1
             if imported:
                 log.info(f"Gossip: sync imported {imported} transactions")
