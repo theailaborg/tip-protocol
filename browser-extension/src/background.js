@@ -1,189 +1,317 @@
 /**
- * @file browser-extension/src/background.js
+ * @file src/background.js
  * @description TIP™ Extension — Background Service Worker (Manifest V3)
  *
- * Responsibilities:
- *   - Intercept HTTP responses and read TIP-* headers
- *   - Cache TIP data per tab for popup display
- *   - Fetch identity/content records from the configured TIP node
- *   - Maintain local revocation list cache (polled every 5 minutes)
- *   - Handle messages from content script and popup
+ * Dual-mode responsibilities:
+ *
+ * VIEWER MODE (existing platforms that publish TIP headers):
+ *   - Read TIP-* HTTP response headers per tab
+ *   - Cache identity and content records from TIP node
+ *   - Poll revocation list every 5 minutes
+ *   - Update toolbar badge color by trust tier
+ *
+ * CREATOR MODE (before platforms implement TIP natively):
+ *   - Detect upload pages (YouTube, Instagram, TikTok, X, Facebook, LinkedIn)
+ *   - Hash content and sign with creator's private key (via crypto.js)
+ *   - Call POST /v1/content/register on TIP node
+ *   - Return CTID and copy to clipboard
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * Author: Dinesh Mendhe <chairman@theailab.org>
+ * License: TIPCL-1.0
  */
 
 "use strict";
 
-const DEFAULT_NODE = "http://localhost:4000";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
 
-// ── In-memory tab data cache ──────────────────────────────────────────────────
-const tabData    = new Map();   // tabId -> { tipAuthor, tipContent, tipScore, tipOrigin, identityRecord }
-const identCache = new Map();   // tipId -> { data, fetchedAt }
-const contentCache = new Map(); // ctid -> { data, fetchedAt }
-let   revocationCache = [];     // [{tip_id, tx_type, timestamp}]
-let   revocationLastFetch = 0;
+const DEFAULT_NODE = "https://node.theailab.org";
+const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
+const REVOC_POLL   = 5 * 60 * 1000;   // 5 min
 
-const CACHE_TTL       = 5 * 60 * 1000;  // 5 min
-const REVOC_INTERVAL  = 5 * 60 * 1000;  // 5 min
+// ── In-memory caches ──────────────────────────────────────────────────────────
+const tabData      = new Map();  // tabId → parsed TIP header data
+const identCache   = new Map();  // tipId → { data, ts }
+const contentCache = new Map();  // ctid  → { data, ts }
+let   revocList    = [];
+let   revocLastTs  = 0;
 
-// ── Get configured node URL ──────────────────────────────────────────────────
+// ── Upload page patterns ──────────────────────────────────────────────────────
+const UPLOAD_PATTERNS = [
+  { pattern: /studio\.youtube\.com|youtube\.com\/upload/,    platform: "YouTube"    },
+  { pattern: /instagram\.com\/(create|p\/|reels\/|stories\/)/,  platform: "Instagram" },
+  { pattern: /tiktok\.com\/upload/,                          platform: "TikTok"     },
+  { pattern: /facebook\.com\/(video\/upload|photo|stories\/)/,  platform: "Facebook"  },
+  { pattern: /twitter\.com\/compose|x\.com\/compose/,        platform: "X"          },
+  { pattern: /linkedin\.com\/post\/new|linkedin\.com\/feed\//,  platform: "LinkedIn"  },
+  { pattern: /substack\.com\/publish|substack\.com\/.*\/write/, platform: "Substack"  },
+  { pattern: /medium\.com\/new-story|medium\.com\/@.*\/new/,    platform: "Medium"    },
+];
+
+// ── Node URL ─────────────────────────────────────────────────────────────────
 async function getNodeUrl() {
   const s = await chrome.storage.sync.get(["nodeUrl"]);
-  return s.nodeUrl || DEFAULT_NODE;
+  return (s.nodeUrl || DEFAULT_NODE).replace(/\/$/, "");
 }
 
-// ── Fetch with timeout ────────────────────────────────────────────────────────
-async function tipFetch(path) {
-  const nodeUrl = await getNodeUrl();
+// ── Fetch helper ──────────────────────────────────────────────────────────────
+async function tipFetch(path, options = {}) {
+  const nodeUrl    = await getNodeUrl();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer      = setTimeout(() => controller.abort(), 10000);
   try {
-    const res  = await fetch(nodeUrl + path, { signal: controller.signal });
+    const res = await fetch(nodeUrl + path, {
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      ...options,
+    });
     clearTimeout(timer);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
     return res.json();
-  } catch {
+  } catch (e) {
     clearTimeout(timer);
-    return null;
+    throw e;
   }
 }
 
-// ── Read TIP-* headers from a web request ────────────────────────────────────
+// ── Parse TIP-* HTTP headers ──────────────────────────────────────────────────
 function parseTIPHeaders(headers) {
-  const result = {};
+  const r = {};
   for (const h of headers) {
-    const name = h.name.toLowerCase();
-    if (name === "tip-author")       result.tipAuthor     = h.value;
-    if (name === "tip-content")      result.tipContent    = h.value;
-    if (name === "tip-origin")       result.tipOrigin     = h.value;
-    if (name === "tip-trust-score")  result.tipScore      = parseInt(h.value, 10);
-    if (name === "tip-tier")         result.tipTier       = h.value;
-    if (name === "tip-signature")    result.tipSignature  = h.value;
+    const n = h.name.toLowerCase();
+    if (n === "tip-author")       r.tipAuthor  = h.value;
+    if (n === "tip-content")      r.tipContent = h.value;
+    if (n === "tip-origin")       r.tipOrigin  = h.value;
+    if (n === "tip-trust-score")  r.tipScore   = parseInt(h.value, 10);
+    if (n === "tip-trust-tier")   r.tipTier    = h.value;
+    if (n === "tip-signature")    r.tipSig     = h.value;
   }
-  return result;
+  return r;
 }
 
-// ── Intercept responses for TIP-* headers ────────────────────────────────────
+// ── HTTP header listener ──────────────────────────────────────────────────────
 chrome.webRequest?.onHeadersReceived?.addListener(
   (details) => {
     const parsed = parseTIPHeaders(details.responseHeaders || []);
     if (parsed.tipAuthor || parsed.tipContent) {
-      tabData.set(details.tabId, { ...parsed, url: details.url, ts: Date.now() });
-      // Update badge icon
-      updateBadgeIcon(details.tabId, parsed.tipScore);
+      tabData.set(details.tabId, { ...parsed, url: details.url, ts: Date.now(), fromHeaders: true });
+      updateBadge(details.tabId, parsed.tipScore || 0, true);
     }
   },
   { urls: ["<all_urls>"] },
   ["responseHeaders"]
 );
 
-// ── Update toolbar badge ─────────────────────────────────────────────────────
-function updateBadgeIcon(tabId, score) {
+// ── Toolbar badge ─────────────────────────────────────────────────────────────
+function updateBadge(tabId, score, verified = false) {
   const color = score >= 800 ? "#1A8A5C"
     : score >= 600 ? "#2563A8"
     : score >= 400 ? "#A88B15"
     : score >= 200 ? "#C07318"
     : score > 0    ? "#C53030"
     : "#8895A7";
-
-  chrome.action.setBadgeText({ tabId, text: score > 0 ? "✓" : "?" });
-  chrome.action.setBadgeBackgroundColor({ tabId, color });
+  const text = verified ? "✓" : score > 0 ? String(Math.round(score / 100)) : "";
+  chrome.action.setBadgeText({ tabId, text }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {});
 }
 
-// ── Revocation list refresh ──────────────────────────────────────────────────
-async function refreshRevocations() {
-  const since = revocationLastFetch > 0 ? new Date(revocationLastFetch).toISOString() : null;
-  const qs    = since ? `?since=${encodeURIComponent(since)}` : "";
-  const data  = await tipFetch(`/v1/revocations${qs}`);
-  if (data && data.revocations) {
-    const newRevoc = data.revocations;
-    // Merge with existing cache
-    const existing = new Set(revocationCache.map(r => r.tip_id));
-    newRevoc.forEach(r => { if (!existing.has(r.tip_id)) revocationCache.push(r); });
-    revocationLastFetch = Date.now();
+// ── Detect upload page for a URL ─────────────────────────────────────────────
+function detectUploadPlatform(url) {
+  for (const { pattern, platform } of UPLOAD_PATTERNS) {
+    if (pattern.test(url)) return platform;
   }
+  return null;
 }
 
-// Poll revocations
-setInterval(refreshRevocations, REVOC_INTERVAL);
-refreshRevocations();
+// ── Revocation polling ────────────────────────────────────────────────────────
+async function pollRevocations() {
+  try {
+    const since = revocLastTs > 0 ? `?since=${new Date(revocLastTs).toISOString()}` : "";
+    const data  = await tipFetch(`/v1/revocations${since}`);
+    if (data?.revocations) {
+      const existing = new Set(revocList.map(r => r.tip_id));
+      data.revocations.forEach(r => { if (!existing.has(r.tip_id)) revocList.push(r); });
+      revocLastTs = Date.now();
+    }
+  } catch { /* silent — node may be offline */ }
+}
+setInterval(pollRevocations, REVOC_POLL);
+pollRevocations();
 
-// ── Message handler (from content script and popup) ──────────────────────────
+// ── Creator: register content on TIP node ────────────────────────────────────
+async function registerContent({ tipId, originCode, content, title, password }) {
+  // 1. Get encrypted private key from storage
+  const stored = await chrome.storage.local.get(["encryptedKey", "tipId"]);
+  if (!stored.encryptedKey) throw new Error("No TIP-ID configured. Please set up your identity in Settings.");
+  if (!password)            throw new Error("Password required to sign content.");
+
+  // 2. Decrypt private key
+  let privateKey;
+  try {
+    privateKey = await decryptPrivateKey(stored.encryptedKey, password);
+  } catch {
+    throw new Error("Wrong password. Cannot decrypt your signing key.");
+  }
+
+  // 3. Hash the content
+  const contentToHash = title ? `${title}\n${content}` : content;
+  const contentHash   = await shake256(contentToHash);
+
+  // 4. Sign: payload = contentHash + originCode
+  const payload   = contentHash + originCode;
+  const signature = await signData(payload, privateKey);
+
+  // 5. POST to TIP node
+  const result = await tipFetch("/v1/content/register", {
+    method: "POST",
+    body:   JSON.stringify({
+      author_tip_id:    tipId || stored.tipId,
+      origin_code:      originCode,
+      content:          contentToHash.slice(0, 10000), // cap for API
+      content_hash:     contentHash,
+      author_signature: signature,
+      title:            title || "",
+    }),
+  });
+
+  return result; // { ctid, status, pre_scan_flagged, ... }
+}
+
+// ── Creator: generate and store a new keypair ────────────────────────────────
+async function setupIdentity({ tipId, password, existingPrivateKey }) {
+  if (!password) throw new Error("Password is required to secure your key.");
+
+  let privateKey;
+  let publicKey;
+
+  if (existingPrivateKey) {
+    // User is importing an existing key
+    privateKey = existingPrivateKey;
+    publicKey  = "imported"; // public key derivation from stored hex not needed for signing
+  } else {
+    // Generate fresh keypair
+    const kp   = await generateKeypair();
+    privateKey = kp.privateKey;
+    publicKey  = kp.publicKey;
+  }
+
+  const encryptedKey = await encryptPrivateKey(privateKey, password);
+
+  await chrome.storage.local.set({
+    tipId,
+    publicKey,
+    encryptedKey,
+    setupComplete: true,
+    setupDate:     new Date().toISOString(),
+  });
+
+  return { tipId, publicKey };
+}
+
+// ── Message handler ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const respond = (promise) => {
+    promise.then(data => sendResponse({ ok: true, data }))
+           .catch(err  => sendResponse({ ok: false, error: err.message }));
+    return true; // async
+  };
 
   switch (msg.type) {
 
+    // ── Viewer: get TIP data for current tab ──────────────────────────────────
     case "GET_TAB_DATA": {
       const tabId = msg.tabId || sender.tab?.id;
-      const data  = tabData.get(tabId) || null;
-      sendResponse({ data });
-      return true;
+      sendResponse({ data: tabData.get(tabId) || null });
+      return false;
     }
 
+    // ── Viewer: fetch identity record ─────────────────────────────────────────
     case "FETCH_IDENTITY": {
-      const tipId = msg.tipId;
-      const cached = identCache.get(tipId);
-      if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL) {
-        sendResponse({ data: cached.data });
-        return true;
-      }
-      tipFetch(`/v1/identity/${encodeURIComponent(tipId)}/score`).then(data => {
-        if (data) identCache.set(tipId, { data, fetchedAt: Date.now() });
-        sendResponse({ data });
-      });
-      return true;
+      return respond((async () => {
+        const cached = identCache.get(msg.tipId);
+        if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+        const data = await tipFetch(`/v1/identity/${encodeURIComponent(msg.tipId)}/score`);
+        identCache.set(msg.tipId, { data, ts: Date.now() });
+        return data;
+      })());
     }
 
+    // ── Viewer: fetch content record ──────────────────────────────────────────
     case "FETCH_CONTENT": {
-      const ctid = msg.ctid;
-      const cached = contentCache.get(ctid);
-      if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL) {
-        sendResponse({ data: cached.data });
-        return true;
-      }
-      tipFetch(`/v1/content/${encodeURIComponent(ctid)}`).then(data => {
-        if (data) contentCache.set(ctid, { data, fetchedAt: Date.now() });
-        sendResponse({ data });
-      });
-      return true;
+      return respond((async () => {
+        const cached = contentCache.get(msg.ctid);
+        if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+        const data = await tipFetch(`/v1/content/${encodeURIComponent(msg.ctid)}`);
+        contentCache.set(msg.ctid, { data, ts: Date.now() });
+        return data;
+      })());
     }
 
-    case "IS_REVOKED": {
-      const revoked = revocationCache.some(r => r.tip_id === msg.tipId);
-      sendResponse({ revoked });
-      return true;
+    // ── Viewer: check revocation ──────────────────────────────────────────────
+    case "IS_REVOKED":
+      sendResponse({ revoked: revocList.some(r => r.tip_id === msg.tipId) });
+      return false;
+
+    // ── Creator: register content on DAG ─────────────────────────────────────
+    case "REGISTER_CONTENT":
+      return respond(registerContent(msg.payload));
+
+    // ── Creator: setup / import identity ─────────────────────────────────────
+    case "SETUP_IDENTITY":
+      return respond(setupIdentity(msg.payload));
+
+    // ── Creator: get stored identity ──────────────────────────────────────────
+    case "GET_IDENTITY":
+      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate"]));
+
+    // ── Creator: clear identity (logout) ─────────────────────────────────────
+    case "CLEAR_IDENTITY":
+      return respond(chrome.storage.local.remove(["tipId", "publicKey", "encryptedKey", "setupComplete", "setupDate"]));
+
+    // ── Detect upload platform for a URL ─────────────────────────────────────
+    case "DETECT_PLATFORM": {
+      const platform = detectUploadPlatform(msg.url);
+      sendResponse({ platform });
+      return false;
     }
 
-    case "GET_NODE_URL": {
-      getNodeUrl().then(url => sendResponse({ url }));
-      return true;
-    }
+    // ── Node health check ─────────────────────────────────────────────────────
+    case "NODE_HEALTH":
+      return respond(tipFetch("/health"));
 
-    case "SET_NODE_URL": {
-      chrome.storage.sync.set({ nodeUrl: msg.url }).then(() => sendResponse({ ok: true }));
-      return true;
-    }
+    // ── Node URL management ───────────────────────────────────────────────────
+    case "GET_NODE_URL":
+      return respond(getNodeUrl());
 
-    case "NODE_INFO": {
-      tipFetch("/v1/node/info").then(data => sendResponse({ data }));
-      return true;
-    }
+    case "SET_NODE_URL":
+      return respond(chrome.storage.sync.set({ nodeUrl: msg.url }));
   }
 
   return false;
 });
 
-// ── Tab cleanup ───────────────────────────────────────────────────────────────
+// ── Tab lifecycle cleanup ─────────────────────────────────────────────────────
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabData.delete(tabId);
-  chrome.action.setBadgeText({ tabId, text: "" });
+  chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "loading") {
     tabData.delete(tabId);
-    chrome.action.setBadgeText({ tabId, text: "" });
+    chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  }
+  // Set creator badge on upload pages
+  if (changeInfo.status === "complete" && tab.url) {
+    const platform = detectUploadPlatform(tab.url);
+    if (platform) {
+      chrome.action.setBadgeText({ tabId, text: "+" }).catch(() => {});
+      chrome.action.setBadgeBackgroundColor({ tabId, color: "#B8942E" }).catch(() => {});
+    }
   }
 });
 
-console.log("[TIP™] Background service worker started.");
+console.log("[TIP™] Background service worker v2.1.0 ready.");

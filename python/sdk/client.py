@@ -138,7 +138,7 @@ class TIPIdentityClient:
         from shared.crypto import compute_dedup_hash
         dedup_hash = compute_dedup_hash(
             gov_id_normalized, date_of_birth_iso,
-            country_code, facial_embedding_hash, pepper,
+            country_code,
         )
         return compute_zk_proof(dedup_hash)
 

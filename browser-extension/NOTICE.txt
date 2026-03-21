@@ -1,0 +1,20 @@
+TIP Protocol Browser Extension
+Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
+Authored by Dinesh Mendhe <chairman@theailab.org>
+
+theailab.org | accreditation@theailab.org
+131 Continental Dr, Suite 305, Newark, DE 19713, United States
+
+Licensed under the TIP Community License v1.0 (TIPCL-1.0).
+See LICENSE.txt for full terms.
+
+Trademarks:
+  TIP™, AI Trust ID™, AI Trust Registry™, and The Global Seal of Trust™
+  are trademarks of The AI Lab Intelligence Unobscured, Inc.
+  Unauthorized use of these marks is prohibited.
+
+TIPCL-1.0 converts to Apache License 2.0 on January 1, 2031.
+This NOTICE file and all trademark restrictions survive that conversion permanently.
+
+Protocol specification: CC-BY 4.0
+Reference implementation: TIPCL-1.0
