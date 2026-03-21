@@ -59,6 +59,7 @@ const { createApp }     = require(path.join(SRC, "api"));
 let keypair1, keypair2, vpKeypair;
 let dag, scoring;
 let app;
+let foundingVpId, foundingVpKp;
 
 let TEST_CONFIG;
 
@@ -91,6 +92,13 @@ beforeAll(async () => {
 
   dag     = initDAG({ dbPath: ":memory:" });
   scoring = initScoring(dag, TEST_CONFIG);
+
+  // Get the founding VP and replace its public key with a known keypair
+  // so tests can sign council approvals
+  foundingVpKp = generateMLDSAKeypair();
+  const allVps = dag.getAllVPs();
+  foundingVpId = allVps[0].vp_id;
+  dag.saveVP({ ...allVps[0], public_key: foundingVpKp.publicKey });
 
   app = createApp({ dag, scoring, config: TEST_CONFIG });
 });
@@ -599,14 +607,18 @@ describe("REST API", () => {
 
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
+    const councilSig = mldsaSign(
+      "Test VP UK" + "green" + testVpKp.publicKey,
+      foundingVpKp.privateKey
+    );
     const res = await request(app)
       .post("/v1/vp/register")
-      .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
       .send({
         name:              "Test VP UK",
         public_key:        testVpKp.publicKey,
         jurisdiction_tier: "green",
-        country:           "GB",
+        council_signature: councilSig,
+        approving_vp_id:   foundingVpId,
       });
     expect([200, 201]).toContain(res.status);
     expect(res.body.vp_id).toBeDefined();
@@ -806,7 +818,11 @@ describe("Integration: Full Registration Flow", () => {
   test("7.1 Register VP -> Register Identity -> Register Content -> Score", async () => {
     integrationKp = generateMLDSAKeypair();
 
-    // Step 1: Register VP
+    // Step 1: Register VP (approved by founding VP)
+    const intCouncilSig = mldsaSign(
+      "Integration Test VP" + "green" + integrationKp.publicKey,
+      foundingVpKp.privateKey
+    );
     const vpRes = await request(app)
       .post("/v1/vp/register")
       .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
@@ -815,6 +831,8 @@ describe("Integration: Full Registration Flow", () => {
         public_key:        integrationKp.publicKey,
         jurisdiction_tier: "green",
         country:           "SG",
+        council_signature: intCouncilSig,
+        approving_vp_id:   foundingVpId,
       });
     expect([200, 201]).toContain(vpRes.status);
     integrationVpId = vpRes.body.vp_id;

@@ -59,6 +59,7 @@ const {
 } = require("../../shared/constants");
 
 const { log }  = require("./logger");
+const { getFoundingVP } = require("./genesis");
 
 // ─── Simple AI pre-scan (v2 FIX-03 calibrated thresholds) ────────────────────
 // Production: replace with a real ML-based AI content detector
@@ -695,9 +696,28 @@ function createApp({ dag, scoring, config }) {
 
   app.post("/v1/vp/register", (req, res) => {
     try {
-      const { name, jurisdiction_tier = "green", public_key, council_signature } = req.body;
-      if (!name)       return res.status(400).json({ error: "name is required" });
-      if (!public_key) return res.status(400).json({ error: "public_key is required" });
+      const { name, jurisdiction_tier = "green", public_key, council_signature, approving_vp_id } = req.body;
+      if (!name)              return res.status(400).json({ error: "name is required" });
+      if (!public_key)        return res.status(400).json({ error: "public_key is required" });
+      if (!council_signature) return res.status(400).json({ error: "council_signature is required" });
+      if (!approving_vp_id)   return res.status(400).json({ error: "approving_vp_id is required" });
+
+      // Only the founding VP can approve new VPs
+      const foundingVpId = getFoundingVP().vp_id;
+      if (approving_vp_id !== foundingVpId) {
+        return res.status(403).json({ error: `Only the founding VP (${foundingVpId}) can approve new VPs` });
+      }
+
+      // Verify the approving VP exists and is active
+      const approvingVp = dag.getVP(approving_vp_id);
+      if (!approvingVp) return res.status(403).json({ error: `Approving VP not found: ${approving_vp_id}` });
+      if (approvingVp.status !== "active") return res.status(403).json({ error: `Approving VP is not active: ${approving_vp_id}` });
+
+      // Verify council signature: approving VP must sign (name + jurisdiction_tier + public_key)
+      const signedPayload = name + jurisdiction_tier + public_key;
+      if (!mldsaVerify(signedPayload, council_signature, approvingVp.public_key)) {
+        return res.status(403).json({ error: "Council signature verification failed — signature does not match approving VP public key" });
+      }
 
       const vpId       = generateTIPID("VP", public_key);
       const registeredAt = new Date().toISOString();
@@ -706,7 +726,7 @@ function createApp({ dag, scoring, config }) {
         tx_type:   TX_TYPES.VP_REGISTERED,
         timestamp: registeredAt,
         prev:      dag.getRecentPrev(),
-        data:      { vp_id: vpId, name, jurisdiction_tier, public_key, council_signature },
+        data:      { vp_id: vpId, name, jurisdiction_tier, public_key, council_signature, approving_vp_id },
       };
       const signedVpTx = nodeSigned(vpTxBody, config);
 

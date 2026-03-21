@@ -726,15 +726,40 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self._send_json(410, {"error": "Endpoint removed. Dedup is checked during registration."})
 
     def _vp_register(self, body: dict):
-        name   = body.get("name")
-        tier   = body.get("jurisdiction_tier", "green")
-        pubkey = body.get("public_key")
+        name              = body.get("name")
+        tier              = body.get("jurisdiction_tier", "green")
+        pubkey            = body.get("public_key")
+        council_signature = body.get("council_signature")
+        approving_vp_id   = body.get("approving_vp_id")
+
         if not name:
             self._send_json(400, {"error": "name is required"}); return
         if not pubkey:
             self._send_json(400, {"error": "public_key is required"}); return
+        if not council_signature:
+            self._send_json(400, {"error": "council_signature is required"}); return
+        if not approving_vp_id:
+            self._send_json(400, {"error": "approving_vp_id is required"}); return
         if not JurisdictionTier.can_accredit(tier):
             self._send_json(400, {"error": f"Cannot accredit VPs in '{tier}' jurisdiction"}); return
+
+        # Only the founding VP can approve new VPs
+        from tip_node.genesis import get_founding_vp
+        founding_vp_id = get_founding_vp()["vp_id"]
+        if approving_vp_id != founding_vp_id:
+            self._send_json(403, {"error": f"Only the founding VP ({founding_vp_id}) can approve new VPs"}); return
+
+        # Verify the approving VP exists and is active
+        approving_vp = self.dag.get_vp(approving_vp_id)
+        if not approving_vp:
+            self._send_json(403, {"error": f"Approving VP not found: {approving_vp_id}"}); return
+        if approving_vp.get("status") != "active":
+            self._send_json(403, {"error": f"Approving VP is not active: {approving_vp_id}"}); return
+
+        # Verify council signature: approving VP must sign (name + jurisdiction_tier + public_key)
+        signed_payload = name + tier + pubkey
+        if not mldsa_verify(signed_payload, council_signature, approving_vp.get("public_key", "")):
+            self._send_json(403, {"error": "Council signature verification failed — signature does not match approving VP public key"}); return
 
         vp_id = generate_tip_id("VP", pubkey)
         registered_at = _utc_now()
@@ -747,6 +772,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "name":              name,
                 "jurisdiction_tier": tier,
                 "public_key":        pubkey,
+                "council_signature": council_signature,
+                "approving_vp_id":   approving_vp_id,
             },
         }
         vp_tx = self._node_sign(vp_tx)

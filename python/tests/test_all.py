@@ -810,7 +810,7 @@ from urllib.parse import quote
 
 
 def _make_server():
-    """Start a TIP API server on a random port, return (base_url, server, dag)."""
+    """Start a TIP API server on a random port, return (base_url, server, dag, founding_vp_id, founding_vp_kp)."""
     os.environ["ZK_SKIP_VERIFY"] = "true"
     from tip_node.api import create_server
     from tip_node.scoring import ScoringEngine
@@ -826,12 +826,19 @@ def _make_server():
 
     dag     = DAG(cfg)
     scoring = ScoringEngine(dag, cfg)
+
+    # Replace founding VP's public key with a known keypair so tests can sign council approvals
+    founding_vp_kp = generate_mldsa_keypair()
+    all_vps = dag.get_all_vps()
+    founding_vp_id = all_vps[0]["vp_id"]
+    dag.save_vp({**all_vps[0], "public_key": founding_vp_kp["publicKey"]})
+
     server  = create_server(dag, scoring, cfg)
 
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     host, port = server.server_address
-    return f"http://{host}:{port}", server, dag
+    return f"http://{host}:{port}", server, dag, founding_vp_id, founding_vp_kp
 
 
 def _get(url: str) -> tuple:
@@ -858,7 +865,7 @@ def _post(url: str, body: dict) -> tuple:
 def test_api_endpoints() -> None:
     section("9. REST API ENDPOINTS")
 
-    base, server, dag = _make_server()
+    base, server, dag, founding_vp_id, founding_vp_kp = _make_server()
 
     # 9.1 GET /health
     st, body = _get(f"{base}/health")
@@ -885,12 +892,18 @@ def test_api_endpoints() -> None:
     st, body = _post(f"{base}/v1/vp/register", {})
     check("VP register rejects empty body",   st == 400)
 
-    # 9.5 POST /v1/vp/register
+    # 9.5 POST /v1/vp/register (approved by founding VP)
     vp_kp = generate_mldsa_keypair()
+    council_sig = mldsa_sign(
+        "Test VP" + "green" + vp_kp["publicKey"],
+        founding_vp_kp["privateKey"]
+    )
     st, body = _post(f"{base}/v1/vp/register", {
         "name":              "Test VP",
         "public_key":        vp_kp["publicKey"],
         "jurisdiction_tier": "green",
+        "council_signature": council_sig,
+        "approving_vp_id":   founding_vp_id,
     })
     check("POST /v1/vp/register returns 201", st == 201)
     test_vp_id = body.get("vp_id", "")
@@ -1025,14 +1038,20 @@ def test_api_endpoints() -> None:
 def test_integration_flow() -> None:
     section("10. INTEGRATION: VP → Identity → Content → Score")
 
-    base, server, dag = _make_server()
+    base, server, dag, founding_vp_id, founding_vp_kp = _make_server()
 
-    # Step 1: Register VP
+    # Step 1: Register VP (approved by founding VP)
     vp_kp = generate_mldsa_keypair()
+    council_sig = mldsa_sign(
+        "Integration Test VP" + "green" + vp_kp["publicKey"],
+        founding_vp_kp["privateKey"]
+    )
     st, vp_body = _post(f"{base}/v1/vp/register", {
         "name":              "Integration Test VP",
         "public_key":        vp_kp["publicKey"],
         "jurisdiction_tier": "green",
+        "council_signature": council_sig,
+        "approving_vp_id":   founding_vp_id,
     })
     check("Integration: VP registered",        st == 201)
     vp_id = vp_body["vp_id"]
