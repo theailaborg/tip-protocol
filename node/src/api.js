@@ -620,10 +620,22 @@ function createApp({ dag, scoring, config }) {
       if (!tip_id)        return res.status(400).json({ error: "tip_id is required" });
       if (!tx_type)       return res.status(400).json({ error: "tx_type is required" });
       if (!issuing_vp_id) return res.status(400).json({ error: "issuing_vp_id is required" });
+      if (!signature)     return res.status(400).json({ error: "signature is required" });
 
       const validRevocTypes = [TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP, TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE];
       if (!validRevocTypes.includes(tx_type)) {
         return res.status(400).json({ error: `Invalid tx_type. Must be one of: ${validRevocTypes.join(", ")}` });
+      }
+
+      // Verify the issuing VP exists and is active
+      const issuingVp = dag.getVP(issuing_vp_id);
+      if (!issuingVp) return res.status(403).json({ error: `Issuing VP not found: ${issuing_vp_id}` });
+      if (issuingVp.status !== "active") return res.status(403).json({ error: `Issuing VP is not active: ${issuing_vp_id}` });
+
+      // Verify VP signature: VP must sign (tip_id + tx_type + reason_code)
+      const signedPayload = tip_id + tx_type + (reason_code || "");
+      if (!mldsaVerify(signedPayload, signature, issuingVp.public_key)) {
+        return res.status(403).json({ error: "VP signature verification failed — signature does not match issuing VP public key" });
       }
 
       const identity = dag.getIdentity(tip_id);

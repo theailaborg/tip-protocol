@@ -670,6 +670,20 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"tx_type must be one of {sorted(TxType.REVOCATION_TYPES)}"}); return
         if not issuing_vp_id:
             self._send_json(400, {"error": "issuing_vp_id is required"}); return
+        if not signature:
+            self._send_json(400, {"error": "signature is required"}); return
+
+        # Verify the issuing VP exists and is active
+        issuing_vp = self.dag.get_vp(issuing_vp_id)
+        if not issuing_vp:
+            self._send_json(403, {"error": f"Issuing VP not found: {issuing_vp_id}"}); return
+        if issuing_vp.get("status") != "active":
+            self._send_json(403, {"error": f"Issuing VP is not active: {issuing_vp_id}"}); return
+
+        # Verify VP signature: VP must sign (tip_id + tx_type + reason_code)
+        signed_payload = tip_id + tx_type + (reason_code or "")
+        if not mldsa_verify(signed_payload, signature, issuing_vp.get("public_key", "")):
+            self._send_json(403, {"error": "VP signature verification failed — signature does not match issuing VP public key"}); return
 
         identity = self.dag.get_identity(tip_id)
         if not identity:

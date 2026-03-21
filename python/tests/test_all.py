@@ -998,14 +998,18 @@ def test_api_endpoints() -> None:
         "region": "EU", "verification_tier": "T1",
     })
     if st2 == 201:
-        revoke_tip = id2["tip_id"]
-        founding_vps = dag.get_all_vps()
-        issuing_vp = founding_vps[0]["vp_id"] if founding_vps else test_vp_id
+        revoke_tip   = id2["tip_id"]
+        reason_code  = "USER_REQUEST"
+        revoke_sig   = mldsa_sign(
+            revoke_tip + "REVOKE_VOLUNTARY" + reason_code,
+            vp_kp["privateKey"]
+        )
         st, body = _post(f"{base}/v1/revocations", {
             "tip_id":        revoke_tip,
             "tx_type":       "REVOKE_VOLUNTARY",
-            "reason_code":   "USER_REQUEST",
-            "issuing_vp_id": issuing_vp,
+            "reason_code":   reason_code,
+            "issuing_vp_id": test_vp_id,
+            "signature":     revoke_sig,
         })
         check("POST /v1/revocations returns 201",  st == 201)
         check("Revocation returns tx_id",          bool(body.get("tx_id")))
