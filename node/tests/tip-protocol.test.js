@@ -771,15 +771,16 @@ describe("REST API", () => {
       status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
+    const reasonCode = "VOLUNTARY";
+    const vpSig = mldsaSign(tipId + TX_TYPES.REVOKE_VOLUNTARY + reasonCode, testVpKp.privateKey);
     const res = await request(app)
       .post("/v1/revocations")
-      .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
       .send({
         tip_id:        tipId,
         tx_type:       TX_TYPES.REVOKE_VOLUNTARY,
-        reason_code:   "VOLUNTARY",
+        reason_code:   reasonCode,
         issuing_vp_id: testVpId,
-        signature:     mldsaSign(tipId + "REVOKE_VOLUNTARY", kp.privateKey),
+        signature:     vpSig,
       });
     expect([200, 201]).toContain(res.status);
   });
@@ -820,7 +821,7 @@ describe("Integration: Full Registration Flow", () => {
 
     // Step 1: Register VP (approved by founding VP)
     const intCouncilSig = mldsaSign(
-      "Integration Test VP" + "green" + integrationKp.publicKey,
+      "Integration Test VP SG" + "green" + integrationKp.publicKey,
       foundingVpKp.privateKey
     );
     const vpRes = await request(app)
