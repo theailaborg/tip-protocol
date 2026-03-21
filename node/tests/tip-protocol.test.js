@@ -759,10 +759,18 @@ describe("REST API", () => {
       tx_type: TX_TYPES.REVOKE_VOLUNTARY, tip_id: tipId,
       reason_code: "VOLUNTARY", issuing_vp_id: testVpId,
     };
-    const vpSig = signBody(revokeFields, testVpKp.privateKey);
+    const reasonCode = "VOLUNTARY";
+    const vpSig = mldsaSign(tipId + TX_TYPES.REVOKE_VOLUNTARY + reasonCode, testVpKp.privateKey);
     const res = await request(app)
       .post("/v1/revocations")
-      .send({ ...revokeFields, signature: vpSig });
+      .send({
+        ...revokeFields,
+        tip_id:        tipId,
+        tx_type:       TX_TYPES.REVOKE_VOLUNTARY,
+        reason_code:   reasonCode,
+        issuing_vp_id: testVpId,
+        signature:     vpSig,
+      });
     expect([200, 201]).toContain(res.status);
   });
 
