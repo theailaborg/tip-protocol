@@ -30,6 +30,7 @@ dist/
 build/
 .next/
 out/
+package-lock.json
 
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
