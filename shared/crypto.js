@@ -57,21 +57,32 @@ function shake256Multi(...parts) {
 
 /** @type {import('@noble/post-quantum/ml-dsa.js').ml_dsa65 | null} */
 let _mlDsa = null;
+/** @type {import('@noble/post-quantum/slh-dsa.js').slh_dsa_shake_128s | null} */
+let _slhDsa = null;
 
 /**
  * Initialise the post-quantum crypto layer.
- * Must be awaited once before calling generateMLDSAKeypair / mldsaSign / mldsaVerify.
+ * Must be awaited once before calling any PQ keygen / sign / verify function.
  * Safe to call multiple times (no-op after first call).
  */
 async function initCrypto() {
-  if (_mlDsa) return;
-  const { ml_dsa65 } = await import("@noble/post-quantum/ml-dsa.js");
+  if (_mlDsa && _slhDsa) return;
+  const [{ ml_dsa65 }, { slh_dsa_shake_128s }] = await Promise.all([
+    import("@noble/post-quantum/ml-dsa.js"),
+    import("@noble/post-quantum/slh-dsa.js"),
+  ]);
   _mlDsa = ml_dsa65;
+  _slhDsa = slh_dsa_shake_128s;
 }
 
 function _requirePQ() {
   if (!_mlDsa) throw new Error("PQ crypto not initialised — await initCrypto() first");
   return _mlDsa;
+}
+
+function _requireSLH() {
+  if (!_slhDsa) throw new Error("PQ crypto not initialised — await initCrypto() first");
+  return _slhDsa;
 }
 
 /**
@@ -123,15 +134,54 @@ function mldsaVerify(data, signatureHex, publicKeyHex) {
 
 // ─── SLH-DSA-128s ROOT KEY (SPHINCS+, FIPS 205) ──────────────────────────────
 // Used for root identity keys and VP certificates.
-// Production stub — same API surface as real SLH-DSA.
+// FIPS 205 compliant via @noble/post-quantum.
+// publicKey: 32 bytes, secretKey: 64 bytes, signature: 7856 bytes
 
+/**
+ * Generate an SLH-DSA-SHAKE-128s keypair (FIPS 205).
+ * Returns { publicKey: hex, privateKey: hex, algorithm: 'SLH-DSA-128s' }
+ */
 function generateSLHDSAKeypair() {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const slhDsa = _requireSLH();
+  const seed = crypto.getRandomValues(new Uint8Array(48)); // 3 × N (N=16)
+  const { publicKey, secretKey } = slhDsa.keygen(seed);
   return {
     algorithm: "SLH-DSA-128s",
-    publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("hex"),
+    publicKey: Buffer.from(publicKey).toString("hex"),
+    privateKey: Buffer.from(secretKey).toString("hex"),
   };
+}
+
+/**
+ * Sign data with an SLH-DSA-SHAKE-128s secret key.
+ * @param {string|Buffer} data
+ * @param {string} privateKeyHex
+ * @returns {string} signature hex
+ */
+function slhdsaSign(data, privateKeyHex) {
+  const slhDsa = _requireSLH();
+  const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
+  const msg = typeof data === "string" ? Buffer.from(data) : data;
+  return Buffer.from(slhDsa.sign(msg, secretKey)).toString("hex");
+}
+
+/**
+ * Verify an SLH-DSA-SHAKE-128s signature.
+ * @param {string|Buffer} data
+ * @param {string} signatureHex
+ * @param {string} publicKeyHex
+ * @returns {boolean}
+ */
+function slhdsaVerify(data, signatureHex, publicKeyHex) {
+  try {
+    const slhDsa = _requireSLH();
+    const publicKey = new Uint8Array(Buffer.from(publicKeyHex, "hex"));
+    const sig = new Uint8Array(Buffer.from(signatureHex, "hex"));
+    const msg = typeof data === "string" ? Buffer.from(data) : data;
+    return slhDsa.verify(sig, msg, publicKey);
+  } catch {
+    return false;
+  }
 }
 
 // ─── CONTENT HASHING ─────────────────────────────────────────────────────────
@@ -326,6 +376,8 @@ module.exports = {
   mldsaSign,
   mldsaVerify,
   generateSLHDSAKeypair,
+  slhdsaSign,
+  slhdsaVerify,
   hashContent,
   perceptualHashText,
   computeDedupHash,
