@@ -52,39 +52,65 @@ function shake256Multi(...parts) {
 }
 
 // ─── ML-DSA-65 KEYPAIR (Dilithium, FIPS 204) ─────────────────────────────────
-// Production: replace with @noble/post-quantum or liboqs bindings.
-// This implementation generates a deterministic Ed25519 keypair as a stand-in
-// during development. The API surface is identical to the real implementation.
+// Uses @noble/post-quantum (ESM) via a lazy async initialiser.
+// Call `await initCrypto()` once at process startup before using any PQ function.
+
+/** @type {import('@noble/post-quantum/ml-dsa.js').ml_dsa65 | null} */
+let _mlDsa = null;
+/** @type {import('@noble/post-quantum/slh-dsa.js').slh_dsa_shake_128s | null} */
+let _slhDsa = null;
+
+/**
+ * Initialise the post-quantum crypto layer.
+ * Must be awaited once before calling any PQ keygen / sign / verify function.
+ * Safe to call multiple times (no-op after first call).
+ */
+async function initCrypto() {
+  if (_mlDsa && _slhDsa) return;
+  const [{ ml_dsa65 }, { slh_dsa_shake_128s }] = await Promise.all([
+    import("@noble/post-quantum/ml-dsa.js"),
+    import("@noble/post-quantum/slh-dsa.js"),
+  ]);
+  _mlDsa = ml_dsa65;
+  _slhDsa = slh_dsa_shake_128s;
+}
+
+function _requirePQ() {
+  if (!_mlDsa) throw new Error("PQ crypto not initialised — await initCrypto() first");
+  return _mlDsa;
+}
+
+function _requireSLH() {
+  if (!_slhDsa) throw new Error("PQ crypto not initialised — await initCrypto() first");
+  return _slhDsa;
+}
 
 /**
  * Generate an ML-DSA-65 keypair.
  * Returns { publicKey: hex, privateKey: hex, algorithm: 'ML-DSA-65' }
+ * publicKey: 1952 bytes, privateKey (secretKey): 4032 bytes, sigSize: 3309 bytes
  */
 function generateMLDSAKeypair() {
-  // Development stub using Ed25519 with ML-DSA-compatible field names
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const mlDsa = _requirePQ();
+  const { publicKey, secretKey } = mlDsa.keygen();
   return {
     algorithm: "ML-DSA-65",
-    publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("hex"),
-    // In production: publicKeySize = 1952 bytes, sigSize = 3309 bytes
+    publicKey: Buffer.from(publicKey).toString("hex"),
+    privateKey: Buffer.from(secretKey).toString("hex"),
   };
 }
 
 /**
- * Sign data with an ML-DSA-65 private key.
+ * Sign data with an ML-DSA-65 private key (secretKey).
  * @param {string|Buffer} data
  * @param {string} privateKeyHex
  * @returns {string} signature hex
  */
 function mldsaSign(data, privateKeyHex) {
-  const keyObj = crypto.createPrivateKey({
-    key: Buffer.from(privateKeyHex, "hex"),
-    type: "pkcs8",
-    format: "der",
-  });
-  const sig = crypto.sign(null, typeof data === "string" ? Buffer.from(data) : data, keyObj);
-  return sig.toString("hex");
+  const mlDsa = _requirePQ();
+  const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
+  const msg = typeof data === "string" ? Buffer.from(data) : data;
+  return Buffer.from(mlDsa.sign(msg, secretKey)).toString("hex");
 }
 
 /**
@@ -96,17 +122,11 @@ function mldsaSign(data, privateKeyHex) {
  */
 function mldsaVerify(data, signatureHex, publicKeyHex) {
   try {
-    const keyObj = crypto.createPublicKey({
-      key: Buffer.from(publicKeyHex, "hex"),
-      type: "spki",
-      format: "der",
-    });
-    return crypto.verify(
-      null,
-      typeof data === "string" ? Buffer.from(data) : data,
-      keyObj,
-      Buffer.from(signatureHex, "hex")
-    );
+    const mlDsa = _requirePQ();
+    const publicKey = new Uint8Array(Buffer.from(publicKeyHex, "hex"));
+    const sig = new Uint8Array(Buffer.from(signatureHex, "hex"));
+    const msg = typeof data === "string" ? Buffer.from(data) : data;
+    return mlDsa.verify(sig, msg, publicKey);
   } catch {
     return false;
   }
@@ -114,15 +134,54 @@ function mldsaVerify(data, signatureHex, publicKeyHex) {
 
 // ─── SLH-DSA-128s ROOT KEY (SPHINCS+, FIPS 205) ──────────────────────────────
 // Used for root identity keys and VP certificates.
-// Production stub — same API surface as real SLH-DSA.
+// FIPS 205 compliant via @noble/post-quantum.
+// publicKey: 32 bytes, secretKey: 64 bytes, signature: 7856 bytes
 
+/**
+ * Generate an SLH-DSA-SHAKE-128s keypair (FIPS 205).
+ * Returns { publicKey: hex, privateKey: hex, algorithm: 'SLH-DSA-128s' }
+ */
 function generateSLHDSAKeypair() {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const slhDsa = _requireSLH();
+  const seed = crypto.getRandomValues(new Uint8Array(48)); // 3 × N (N=16)
+  const { publicKey, secretKey } = slhDsa.keygen(seed);
   return {
     algorithm: "SLH-DSA-128s",
-    publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("hex"),
+    publicKey: Buffer.from(publicKey).toString("hex"),
+    privateKey: Buffer.from(secretKey).toString("hex"),
   };
+}
+
+/**
+ * Sign data with an SLH-DSA-SHAKE-128s secret key.
+ * @param {string|Buffer} data
+ * @param {string} privateKeyHex
+ * @returns {string} signature hex
+ */
+function slhdsaSign(data, privateKeyHex) {
+  const slhDsa = _requireSLH();
+  const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
+  const msg = typeof data === "string" ? Buffer.from(data) : data;
+  return Buffer.from(slhDsa.sign(msg, secretKey)).toString("hex");
+}
+
+/**
+ * Verify an SLH-DSA-SHAKE-128s signature.
+ * @param {string|Buffer} data
+ * @param {string} signatureHex
+ * @param {string} publicKeyHex
+ * @returns {boolean}
+ */
+function slhdsaVerify(data, signatureHex, publicKeyHex) {
+  try {
+    const slhDsa = _requireSLH();
+    const publicKey = new Uint8Array(Buffer.from(publicKeyHex, "hex"));
+    const sig = new Uint8Array(Buffer.from(signatureHex, "hex"));
+    const msg = typeof data === "string" ? Buffer.from(data) : data;
+    return slhDsa.verify(sig, msg, publicKey);
+  } catch {
+    return false;
+  }
 }
 
 // ─── CONTENT HASHING ─────────────────────────────────────────────────────────
@@ -310,12 +369,15 @@ function verifyTxId(tx) {
 }
 
 module.exports = {
+  initCrypto,
   shake256,
   shake256Multi,
   generateMLDSAKeypair,
   mldsaSign,
   mldsaVerify,
   generateSLHDSAKeypair,
+  slhdsaSign,
+  slhdsaVerify,
   hashContent,
   perceptualHashText,
   computeDedupHash,

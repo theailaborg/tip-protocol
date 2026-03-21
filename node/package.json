@@ -8,9 +8,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --runInBand --forceExit",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage --forceExit",
+    "test": "node --experimental-vm-modules ../node_modules/.bin/jest --runInBand --forceExit",
+    "test:watch": "../node_modules/.bin/jest --watch",
+    "test:coverage": "../node_modules/.bin/jest --coverage --forceExit",
     "lint": "eslint src/ tests/ --ext .js"
   },
   "dependencies": {

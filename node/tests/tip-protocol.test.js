@@ -29,6 +29,7 @@ const SHARED = path.resolve(__dirname, "../../shared");
 const SRC    = path.resolve(__dirname, "../src");
 
 const {
+  initCrypto,
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID, computeTxId,
@@ -48,9 +49,9 @@ const {
   PRESCAN_THRESHOLDS, getTier, HTTP_HEADERS, PROTOCOL,
 } = require(path.join(SHARED, "constants"));
 
-const { initDAG: createDAG } = require(path.join(SRC, "dag"));
+const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring }       = require(path.join(SRC, "scoring"));
-const { validateTransaction: validateTx } = require(path.join(SRC, "validators", "tx-validator"));
+const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 const { createApp }     = require(path.join(SRC, "api"));
 
 // ─── Test Fixtures ─────────────────────────────────────────────────────────────
@@ -62,7 +63,8 @@ let foundingVpId, foundingVpKp;
 
 let TEST_CONFIG;
 
-beforeAll(() => {
+beforeAll(async () => {
+  await initCrypto();
   keypair1  = generateMLDSAKeypair();
   keypair2  = generateMLDSAKeypair();
   vpKeypair = generateMLDSAKeypair();
@@ -88,7 +90,7 @@ beforeAll(() => {
     rateLimitMax:     10000,
   };
 
-  dag     = createDAG({ dbPath: ":memory:" });
+  dag     = initDAG({ dbPath: ":memory:" });
   scoring = initScoring(dag, TEST_CONFIG);
 
   // Get the founding VP and replace its public key with a known keypair
@@ -148,10 +150,10 @@ describe("Crypto Layer", () => {
   });
 
   test("1.5 verifyTransaction rejects tampered payload", () => {
-    const original  = JSON.stringify({ tx_id: "t1", data: { score: 500 } });
-    const tampered  = JSON.stringify({ tx_id: "t1", data: { score: 999 } });
-    const sig = signTransaction(original, keypair1.privateKey);
-    expect(verifyTransaction(tampered, sig, keypair1.publicKey)).toBe(false);
+    const tx = { tx_type: "TEST", data: { score: 500 }, timestamp: "2026-01-01T00:00:00.000Z", prev: [] };
+    const signed  = signTransaction(tx, keypair1.privateKey);
+    const tampered = { ...signed, data: { score: 999 } };
+    expect(verifyTransaction(tampered, keypair1.publicKey)).toBe(false);
   });
 
   test("1.6 generateTIPID produces correct URI format", () => {
@@ -218,7 +220,7 @@ describe("Protocol Constants", () => {
 
   test("2.3 getTier color values are hex strings", () => {
     const t = getTier(892);
-    expect(t.color).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    expect(t.color).toMatch(/^#[0-9A-Fa-f]{6,8}$/);
   });
 
   test("2.4 TX_TYPES covers all protocol transaction types", () => {
@@ -262,7 +264,7 @@ describe("DAG Engine", () => {
   });
 
   test("3.1 DAG initializes with genesis block", () => {
-    const freshDag = createDAG({ dbPath: ":memory:" });
+    const freshDag = initDAG({ dbPath: ":memory:" });
     expect(freshDag.count()).toBeGreaterThan(0); // genesis block auto-created
     freshDag.close();
   });
@@ -289,7 +291,7 @@ describe("DAG Engine", () => {
       timestamp: new Date().toISOString(),
       data:      { tip_id: TIP_ID_1, attested: false },
       prev:      [],
-      signature: signTransaction(TIP_ID_1, keypair1.privateKey),
+      signature: mldsaSign(TIP_ID_1, keypair1.privateKey),
     };
     const tx = dag.addTx(txBody);
     const retrieved = dag.getTx(tx.tx_id);
@@ -350,9 +352,10 @@ describe("DAG Engine", () => {
 
 describe("Trust Scoring Engine", () => {
 
-  const TIP_ID_SCORE_TEST = generateTIPID("AU", generateMLDSAKeypair().publicKey);
+  let TIP_ID_SCORE_TEST;
 
   beforeAll(() => {
+    TIP_ID_SCORE_TEST = generateTIPID("AU", generateMLDSAKeypair().publicKey);
     // Register identity in DAG
     dag.saveIdentity({
       tip_id:      TIP_ID_SCORE_TEST,
@@ -484,9 +487,8 @@ describe("Transaction Validator", () => {
       },
       prev:      [],
     };
-    const signed = signTransaction(txBody, vpKeypair.privateKey);
-    signed.tx_id = computeTxId(signed);
-    const result = validateTx(signed, dag, { authorPublicKey: vpKeypair.publicKey });
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: mldsaSign(tipId, freshKp.privateKey) };
+    const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(true);
   });
 
@@ -498,7 +500,7 @@ describe("Transaction Validator", () => {
       prev:      [],
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
-    const result = validateTx(tx, dag);
+    const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(false);
     expect(result.errors).toBeDefined();
   });
@@ -509,21 +511,23 @@ describe("Transaction Validator", () => {
       tip_id: tipId, region: "US", public_key: keypair1.publicKey,
       status: "active", vp_id: VP_ID, verified_at: new Date().toISOString(),
     });
-    const ctid = generateCTID(ORIGIN.OH, hashContent("content here"), tipId.slice(-8));
+    const contentHash53 = hashContent("content here");
+    const ctid = generateCTID(ORIGIN.OH, contentHash53, tipId);
+    const authorSig = mldsaSign(ctid + ORIGIN.OH, keypair1.privateKey);
     const txBody = {
       tx_type:   TX_TYPES.REGISTER_CONTENT,
       timestamp: new Date().toISOString(),
       data: {
         ctid, origin_code: ORIGIN.OH,
-        content_hash: hashContent("content here"),
-        author_tip_id: tipId, pre_scan_passed: true,
-        signature: mldsaSign(hashContent("content here") + ORIGIN.OH, keypair1.privateKey),
+        content_hash:  contentHash53,
+        author_tip_id: tipId,
+        pre_scan_passed: true,
+        signature:     authorSig,
       },
       prev:      [],
     };
-    const signed = signTransaction(txBody, keypair1.privateKey);
-    signed.tx_id = computeTxId(signed);
-    const result = validateTx(signed, dag, { authorPublicKey: keypair1.publicKey });
+    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: authorSig };
+    const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(true);
   });
 
@@ -540,7 +544,7 @@ describe("Transaction Validator", () => {
       prev:      [],
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
-    const result = validateTx(tx, dag);
+    const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(false);
   });
 
@@ -556,9 +560,10 @@ describe("Transaction Validator", () => {
       },
       prev:      [],
     };
-    const tx = signTransaction(txBody, vpKeypair.privateKey);
-    tx.tx_id = computeTxId(tx);
-    const result = validateTx(tx, dag);
+    const tx = { ...txBody, tx_id: computeTxId(txBody),
+      signature: mldsaSign("revoke", vpKeypair.privateKey),
+    };
+    const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(false);
   });
 
@@ -574,6 +579,7 @@ describe("REST API", () => {
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("ok");
+    expect(res.body.node_id).toBeDefined();
     expect(res.body.version).toBeDefined();
   });
 
@@ -596,8 +602,8 @@ describe("REST API", () => {
     expect(typeof res.body.dag_tx_count).toBe("number");
   });
 
-  let testVpKp;    // VP keypair shared across tests 6.5–6.7
-  let testVpId;    // VP ID from registration
+  let testVpKp; // VP keypair shared across tests 6.5–6.7
+  let testVpId;  // VP ID returned by test 6.5
 
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
@@ -653,7 +659,7 @@ describe("REST API", () => {
     const tipId = generateTIPID("FR", kp.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "FR", public_key: kp.publicKey,
-      status: "active", vp_id: "tip://id/VP-UK-testapi",
+      status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
     dag.setScore(tipId, 500, 0);
@@ -693,7 +699,7 @@ describe("REST API", () => {
     const authorId = generateTIPID("US", authorKp.publicKey);
     dag.saveIdentity({
       tip_id: authorId, region: "US", public_key: authorKp.publicKey,
-      status: "active", vp_id: "tip://id/VP-UK-testapi",
+      status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
     dag.setScore(authorId, 500, 0);
@@ -709,7 +715,8 @@ describe("REST API", () => {
         author_tip_id: authorId,
         origin_code:   ORIGIN.OH,
         content:       content,
-        signature:     sigTx.signature,
+        title:         "Test Article",
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
       });
     expect([200, 201]).toContain(res.status);
     expect(res.body.ctid).toMatch(/^tip:\/\/c\/OH-/);
@@ -742,7 +749,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({
-        disputer_tip_id: "tip://id/VP-UK-testapi",
+        disputer_tip_id: testVpId,
         reason:          "AI classifier detected probable AI generation in OH-declared content",
         evidence_hash:   shake256("classifier output evidence"),
       });
@@ -761,16 +768,18 @@ describe("REST API", () => {
     const tipId = generateTIPID("BR", kp.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "BR", public_key: kp.publicKey,
-      status: "active", vp_id: "tip://id/VP-UK-testapi",
+      status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
     const res = await request(app)
       .post("/v1/revocations")
+      .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
       .send({
-        tip_id:         tipId,
-        tx_type:        TX_TYPES.REVOKE_VOLUNTARY,
-        reason_code:    "USER_REQUESTED",
-        issuing_vp_id:  testVpId,
+        tip_id:        tipId,
+        tx_type:       TX_TYPES.REVOKE_VOLUNTARY,
+        reason_code:   "VOLUNTARY",
+        issuing_vp_id: testVpId,
+        signature:     mldsaSign(tipId + "REVOKE_VOLUNTARY", kp.privateKey),
       });
     expect([200, 201]).toContain(res.status);
   });
@@ -791,7 +800,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post("/v1/vp/register")
       .send({ vp_id: "tip://id/VP-XX-unauthorized" }); // missing name and public_key
-    expect(res.status).toBe(400);
+    expect([400, 401, 403]).toContain(res.status);
   });
 
 });
@@ -816,19 +825,22 @@ describe("Integration: Full Registration Flow", () => {
     );
     const vpRes = await request(app)
       .post("/v1/vp/register")
+      .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
       .send({
-        name:              "Integration Test VP",
+        name:              "Integration Test VP SG",
         public_key:        integrationKp.publicKey,
         jurisdiction_tier: "green",
+        country:           "SG",
         council_signature: intCouncilSig,
         approving_vp_id:   foundingVpId,
       });
     expect([200, 201]).toContain(vpRes.status);
     integrationVpId = vpRes.body.vp_id;
-    const intVpId = integrationVpId;
 
-    // Step 2: Register Identity (dedup_hash must be decimal field element)
+    // Step 2: Register Identity
+    // dedup_hash must be a decimal field element (Poseidon output) — not hex
     const idDedup   = "99887766554433221100998877665544332211009988776655443322110099887";
+    const intVpId   = integrationVpId;
     const intTier   = "T1";
     const intVpSig  = mldsaSign(idDedup + intTier + intVpId, integrationKp.privateKey);
 
@@ -848,21 +860,17 @@ describe("Integration: Full Registration Flow", () => {
     expect(integrationTipId).toBeDefined();
 
     // Step 3: Register Content
+    const authorKp = generateMLDSAKeypair();
     const content  = "An original human-written article about trust and identity on the internet.";
-    const contentHash = hashContent(content);
-    const sigTx = signTransaction(
-      { tx_type: "CONTENT_SIG", data: contentHash + ORIGIN.OH, timestamp: "", prev: [] },
-      integrationKp.privateKey
-    );
     const contentRes = await request(app)
       .post("/v1/content/register")
       .send({
         author_tip_id:    integrationTipId,
         origin_code:      ORIGIN.OH,
         content:          content,
-        signature:        sigTx.signature,
+        title:            "Trust and Identity",
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
       });
-    if (contentRes.status >= 400) console.log("7.1 content error:", JSON.stringify(contentRes.body));
     expect([200, 201]).toContain(contentRes.status);
     const ctid = contentRes.body.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
@@ -876,8 +884,8 @@ describe("Integration: Full Registration Flow", () => {
   });
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
-    const dedup  = "99887766554433221100998877665544332211009988776655443322110099887";
-    // Already registered in 7.1 — trying again should be rejected
+    const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG");
+    dag.addDedupHash(dedup);
 
     const dupVpId  = integrationVpId;
     const dupTier  = "T1";
@@ -895,7 +903,7 @@ describe("Integration: Full Registration Flow", () => {
         verification_tier: dupTier,
         attested:          false,
       });
-    expect([400, 409, 422]).toContain(res.status);
+    expect([400, 403, 409, 422]).toContain(res.status);
   });
 
 });

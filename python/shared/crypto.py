@@ -26,17 +26,7 @@ import secrets
 import time
 from typing import Any
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    PublicFormat,
-    PrivateFormat,
-    NoEncryption,
-)
-from cryptography.exceptions import InvalidSignature
+import oqs
 
 
 # ─── SHAKE-256 (FIPS 202) ─────────────────────────────────────────────────────
@@ -64,13 +54,13 @@ def shake256_multi(*parts: bytes | str, output_bytes: int = 32) -> str:
 
 def generate_mldsa_keypair() -> dict:
     """Generate an ML-DSA-65 keypair. Returns dict with publicKey, privateKey, algorithm."""
-    private_key = Ed25519PrivateKey.generate()
-    public_key  = private_key.public_key()
+    with oqs.Signature("ML-DSA-65") as signer:
+        public_key_bytes  = signer.generate_keypair()
+        private_key_bytes = signer.export_secret_key()
     return {
         "algorithm":  "ML-DSA-65",
-        "publicKey":  public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo).hex(),
-        "privateKey": private_key.private_bytes(Encoding.DER, PrivateFormat.PKCS8, NoEncryption()).hex(),
-        # In production: publicKeySize = 1952 bytes, sigSize = 3309 bytes
+        "publicKey":  public_key_bytes.hex(),   # 1952 bytes
+        "privateKey": private_key_bytes.hex(),  # 4032 bytes
     }
 
 
@@ -79,11 +69,9 @@ def mldsa_sign(data: bytes | str, private_key_hex: str) -> str:
     if isinstance(data, str):
         data = data.encode("utf-8")
     try:
-        key_bytes = bytes.fromhex(private_key_hex)
-        private_key = Ed25519PrivateKey.from_private_bytes(
-            _extract_ed25519_private_raw(key_bytes)
-        )
-        return private_key.sign(data).hex()
+        private_key_bytes = bytes.fromhex(private_key_hex)
+        with oqs.Signature("ML-DSA-65", secret_key=private_key_bytes) as signer:
+            return signer.sign(data).hex()
     except Exception as exc:
         raise ValueError(f"Signing failed: {exc}") from exc
 
@@ -93,42 +81,54 @@ def mldsa_verify(data: bytes | str, signature_hex: str, public_key_hex: str) -> 
     if isinstance(data, str):
         data = data.encode("utf-8")
     try:
-        key_bytes = bytes.fromhex(public_key_hex)
-        sig_bytes  = bytes.fromhex(signature_hex)
-        public_key = Ed25519PublicKey.from_public_bytes(
-            _extract_ed25519_public_raw(key_bytes)
-        )
-        public_key.verify(sig_bytes, data)
-        return True
-    except (InvalidSignature, ValueError, Exception):
+        public_key_bytes = bytes.fromhex(public_key_hex)
+        sig_bytes        = bytes.fromhex(signature_hex)
+        with oqs.Signature("ML-DSA-65") as verifier:
+            return verifier.verify(data, sig_bytes, public_key_bytes)
+    except Exception:
         return False
 
 
 # ─── SLH-DSA-128s ROOT KEY (SPHINCS+, FIPS 205) ───────────────────────────────
 
+_SLHDSA_ALG = "SPHINCS+-SHA2-128s-simple"
+
+
 def generate_slhdsa_keypair() -> dict:
-    """Generate an SLH-DSA-128s keypair (Ed25519 stub)."""
-    kp = generate_mldsa_keypair()
-    kp["algorithm"] = "SLH-DSA-128s"
-    return kp
+    """Generate an SLH-DSA-128s keypair. Returns dict with publicKey, privateKey, algorithm."""
+    with oqs.Signature(_SLHDSA_ALG) as signer:
+        public_key_bytes  = signer.generate_keypair()
+        private_key_bytes = signer.export_secret_key()
+    return {
+        "algorithm":  "SLH-DSA-128s",
+        "publicKey":  public_key_bytes.hex(),   # 32 bytes
+        "privateKey": private_key_bytes.hex(),  # 64 bytes
+    }
 
 
-# ─── Ed25519 DER helpers ──────────────────────────────────────────────────────
+def slhdsa_sign(data: bytes | str, private_key_hex: str) -> str:
+    """Sign data with SLH-DSA-128s private key. Returns hex signature."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    try:
+        private_key_bytes = bytes.fromhex(private_key_hex)
+        with oqs.Signature(_SLHDSA_ALG, secret_key=private_key_bytes) as signer:
+            return signer.sign(data).hex()
+    except Exception as exc:
+        raise ValueError(f"SLH-DSA signing failed: {exc}") from exc
 
-def _extract_ed25519_private_raw(der_bytes: bytes) -> bytes:
-    """Extract 32-byte raw private key from PKCS8 DER encoding."""
-    # PKCS8 Ed25519 DER: last 32 bytes after a 2-byte OCTET STRING header
-    if len(der_bytes) >= 34:
-        return der_bytes[-32:]
-    return der_bytes
 
-
-def _extract_ed25519_public_raw(der_bytes: bytes) -> bytes:
-    """Extract 32-byte raw public key from SubjectPublicKeyInfo DER encoding."""
-    # SPKI Ed25519 DER: last 32 bytes
-    if len(der_bytes) >= 32:
-        return der_bytes[-32:]
-    return der_bytes
+def slhdsa_verify(data: bytes | str, signature_hex: str, public_key_hex: str) -> bool:
+    """Verify SLH-DSA-128s signature. Returns True if valid."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    try:
+        public_key_bytes = bytes.fromhex(public_key_hex)
+        sig_bytes        = bytes.fromhex(signature_hex)
+        with oqs.Signature(_SLHDSA_ALG) as verifier:
+            return verifier.verify(data, sig_bytes, public_key_bytes)
+    except Exception:
+        return False
 
 
 # ─── Content hashing ──────────────────────────────────────────────────────────
@@ -157,6 +157,8 @@ def compute_dedup_hash(
     gov_id_normalized: str,
     date_of_birth_iso: str,
     country_code: str,
+    facial_embedding_hash: str = "",
+    pepper: str = "",
 ) -> str:
     """
     Compute a reference dedup hash (SHAKE-256).
@@ -167,6 +169,8 @@ def compute_dedup_hash(
         gov_id_normalized,
         date_of_birth_iso,
         country_code.upper(),
+        facial_embedding_hash,
+        pepper,
     )
 
 
