@@ -11,6 +11,8 @@ Sections:
   6. Genesis File Integrity
   7. SDK Modules
   8. Protocol Constants
+  9. REST API Endpoints
+  10. Integration — Full Registration Flow
 
 Run:  python tests/test_all.py
       python -m pytest tests/test_all.py -v   (if pytest installed)
@@ -795,6 +797,313 @@ def test_constants() -> None:
     check("ScoreDisplay.ALL has 3 modes",           len(ScoreDisplay.ALL) == 3)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 9: REST API Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json as _json
+import os
+import threading
+import urllib.request
+import urllib.error
+from urllib.parse import quote
+
+
+def _make_server():
+    """Start a TIP API server on a random port, return (base_url, server, dag)."""
+    os.environ["ZK_SKIP_VERIFY"] = "true"
+    from tip_node.api import create_server
+    from tip_node.scoring import ScoringEngine
+
+    kp  = generate_mldsa_keypair()
+    cfg = load_config()
+    cfg["db_path"]          = ":memory:"
+    cfg["host"]             = "127.0.0.1"
+    cfg["port"]             = 0          # OS picks a free port
+    cfg["node_private_key"] = kp["privateKey"]
+    cfg["node_public_key"]  = kp["publicKey"]
+    cfg["rate_limit_max"]   = 10000
+
+    dag     = DAG(cfg)
+    scoring = ScoringEngine(dag, cfg)
+    server  = create_server(dag, scoring, cfg)
+
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    host, port = server.server_address
+    return f"http://{host}:{port}", server, dag
+
+
+def _get(url: str) -> tuple:
+    """GET request, return (status, body_dict)."""
+    try:
+        with urllib.request.urlopen(url) as r:
+            return r.status, _json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, _json.loads(e.read())
+
+
+def _post(url: str, body: dict) -> tuple:
+    """POST JSON request, return (status, body_dict)."""
+    data = _json.dumps(body).encode()
+    req  = urllib.request.Request(url, data=data,
+                                  headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, _json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, _json.loads(e.read())
+
+
+def test_api_endpoints() -> None:
+    section("9. REST API ENDPOINTS")
+
+    base, server, dag = _make_server()
+
+    # 9.1 GET /health
+    st, body = _get(f"{base}/health")
+    check("GET /health returns 200",          st == 200)
+    check("/health has status=ok",            body.get("status") == "ok")
+    check("/health has node_id",              bool(body.get("node_id")))
+    check("/health has dag_count",            isinstance(body.get("dag_count"), int))
+    check("/health has version",              body.get("version") == "2.0.0")
+
+    # 9.2 GET /v1/node/info
+    st, body = _get(f"{base}/v1/node/info")
+    check("GET /v1/node/info returns 200",    st == 200)
+    check("/node/info has node_id",           bool(body.get("node_id")))
+    check("/node/info has dag_tx_count",      isinstance(body.get("dag_tx_count"), int))
+    check("/node/info has protocol_version",  body.get("protocol_version") == "2.0.0")
+
+    # 9.3 GET /v1/node/peers
+    st, body = _get(f"{base}/v1/node/peers")
+    check("GET /v1/node/peers returns 200",   st == 200)
+    check("/node/peers has peers array",      isinstance(body.get("peers"), list))
+    check("/node/peers has count",            isinstance(body.get("count"), int))
+
+    # 9.4 VP register — missing fields
+    st, body = _post(f"{base}/v1/vp/register", {})
+    check("VP register rejects empty body",   st == 400)
+
+    # 9.5 POST /v1/vp/register
+    vp_kp = generate_mldsa_keypair()
+    st, body = _post(f"{base}/v1/vp/register", {
+        "name":              "Test VP",
+        "public_key":        vp_kp["publicKey"],
+        "jurisdiction_tier": "green",
+    })
+    check("POST /v1/vp/register returns 201", st == 201)
+    test_vp_id = body.get("vp_id", "")
+    check("VP register returns vp_id",        test_vp_id.startswith("tip://id/VP-"))
+
+    # 9.6 GET /v1/vp/:vpId
+    st, body = _get(f"{base}/v1/vp/{quote(test_vp_id, safe='')}")
+    check("GET /v1/vp/:vpId returns 200",    st == 200)
+    check("VP record has name",              body.get("name") == "Test VP")
+    check("VP record has status=active",     body.get("status") == "active")
+
+    # 9.7 POST /v1/identity/register
+    dedup_hash = "12345678901234567890123456789012345678901234567890123456789012345678"
+    zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
+                  "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
+    vp_payload = dedup_hash + "T1" + test_vp_id
+    vp_sig     = mldsa_sign(vp_payload, vp_kp["privateKey"])
+
+    st, body = _post(f"{base}/v1/identity/register", {
+        "vp_id":             test_vp_id,
+        "vp_signature":      vp_sig,
+        "dedup_hash":        dedup_hash,
+        "zk_proof":          zk_proof,
+        "region":            "US",
+        "verification_tier": "T1",
+    })
+    check("POST /v1/identity/register returns 201", st == 201)
+    test_tip_id = body.get("tip_id", "")
+    check("Identity register returns tip_id",       test_tip_id.startswith("tip://id/US-"))
+    check("Identity register returns public_key",   bool(body.get("public_key")))
+    check("Identity register returns score",        body.get("score") == 500)
+
+    # 9.8 GET /v1/identity/:tipId
+    st, body = _get(f"{base}/v1/identity/{quote(test_tip_id, safe='')}")
+    check("GET /v1/identity/:tipId returns 200",    st == 200)
+    check("Identity has tip_id",                    body.get("tip_id") == test_tip_id)
+    check("Identity has score",                     isinstance(body.get("score"), int))
+    check("Identity has tier",                      bool(body.get("tier")))
+
+    # 9.9 GET /v1/identity/:tipId/score
+    st, body = _get(f"{base}/v1/identity/{quote(test_tip_id, safe='')}/score")
+    check("GET /v1/identity/:tipId/score returns 200", st == 200)
+    check("Score response has tier",                   bool(body.get("tier")))
+    check("Score response has score",                  isinstance(body.get("score"), int))
+
+    # 9.10 GET /v1/identity/:tipId returns 404 for unknown
+    st, body = _get(f"{base}/v1/identity/{quote('tip://id/US-0000000000000000', safe='')}")
+    check("Unknown TIP-ID returns 404",               st == 404)
+
+    # 9.11 POST /v1/content/register
+    content_text = "This is a test article for the Python API endpoint tests"
+    content_hash = hash_content(content_text)
+    st, body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": test_tip_id,
+        "origin_code":   "OH",
+        "content_hash":  content_hash,
+        "signature":     "test-sig",
+    })
+    check("POST /v1/content/register returns 201",  st == 201)
+    test_ctid = body.get("ctid", "")
+    check("Content register returns ctid",          test_ctid.startswith("tip://c/OH-"))
+    check("Content register returns origin_label",  body.get("origin_label") == "Original Human")
+    check("Content register returns http_headers",  isinstance(body.get("http_headers"), dict))
+
+    # 9.12 GET /v1/content/:ctid
+    st, body = _get(f"{base}/v1/content/{quote(test_ctid, safe='')}")
+    check("GET /v1/content/:ctid returns 200",      st == 200)
+    check("Content record has origin_code",         body.get("origin_code") == "OH")
+    check("Content record has author_tip_id",       body.get("author_tip_id") == test_tip_id)
+
+    # 9.13 POST /v1/content/:ctid/dispute
+    st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/dispute", {
+        "disputer_tip_id": test_tip_id,
+        "reason":          "suspicious",
+        "evidence_hash":   "abc123",
+    })
+    check("POST /v1/content/:ctid/dispute returns 200", st == 200)
+    check("Dispute returns success",                    body.get("success") is True)
+
+    # 9.14 GET /v1/revocations
+    st, body = _get(f"{base}/v1/revocations")
+    check("GET /v1/revocations returns 200",        st == 200)
+    check("Revocations has list",                   isinstance(body.get("revocations"), list))
+    check("Revocations has count",                  isinstance(body.get("count"), int))
+
+    # 9.15 POST /v1/revocations
+    dedup2   = "99887766554433221100998877665544332211009988776655443322110099887"
+    vp_sig2  = mldsa_sign(dedup2 + "T1" + test_vp_id, vp_kp["privateKey"])
+    st2, id2 = _post(f"{base}/v1/identity/register", {
+        "vp_id": test_vp_id, "vp_signature": vp_sig2,
+        "dedup_hash": dedup2, "zk_proof": zk_proof,
+        "region": "EU", "verification_tier": "T1",
+    })
+    if st2 == 201:
+        revoke_tip = id2["tip_id"]
+        founding_vps = dag.get_all_vps()
+        issuing_vp = founding_vps[0]["vp_id"] if founding_vps else test_vp_id
+        st, body = _post(f"{base}/v1/revocations", {
+            "tip_id":        revoke_tip,
+            "tx_type":       "REVOKE_VOLUNTARY",
+            "reason_code":   "USER_REQUEST",
+            "issuing_vp_id": issuing_vp,
+        })
+        check("POST /v1/revocations returns 201",  st == 201)
+        check("Revocation returns tx_id",          bool(body.get("tx_id")))
+
+    # 9.16 GET /v1/dedup/merkle-root
+    st, body = _get(f"{base}/v1/dedup/merkle-root")
+    check("GET /v1/dedup/merkle-root returns 200",  st == 200)
+    check("Merkle root has dedup_count",            isinstance(body.get("dedup_count"), int))
+    check("Merkle root has merkle_root",            bool(body.get("merkle_root")))
+
+    # 9.17 POST /v1/dedup/check removed
+    st, body = _post(f"{base}/v1/dedup/check", {"dedup_hash": "x"})
+    check("POST /v1/dedup/check returns 410 (removed)", st == 410)
+
+    # 9.18 Duplicate dedup_hash rejected
+    st, body = _post(f"{base}/v1/identity/register", {
+        "vp_id": test_vp_id, "vp_signature": vp_sig,
+        "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+        "region": "US", "verification_tier": "T1",
+    })
+    check("Duplicate dedup_hash returns 409",       st == 409)
+
+    server.shutdown()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 10: Integration — Full Registration Flow
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_integration_flow() -> None:
+    section("10. INTEGRATION: VP → Identity → Content → Score")
+
+    base, server, dag = _make_server()
+
+    # Step 1: Register VP
+    vp_kp = generate_mldsa_keypair()
+    st, vp_body = _post(f"{base}/v1/vp/register", {
+        "name":              "Integration Test VP",
+        "public_key":        vp_kp["publicKey"],
+        "jurisdiction_tier": "green",
+    })
+    check("Integration: VP registered",        st == 201)
+    vp_id = vp_body["vp_id"]
+
+    # Step 2: Register Identity
+    dedup_hash = "11223344556677889900112233445566778899001122334455667788990011223"
+    zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
+                  "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
+    vp_sig     = mldsa_sign(dedup_hash + "T1" + vp_id, vp_kp["privateKey"])
+
+    st, id_body = _post(f"{base}/v1/identity/register", {
+        "vp_id":             vp_id,
+        "vp_signature":      vp_sig,
+        "dedup_hash":        dedup_hash,
+        "zk_proof":          zk_proof,
+        "region":            "US",
+        "verification_tier": "T1",
+        "social_attested":   True,
+    })
+    check("Integration: Identity registered",  st == 201)
+    tip_id = id_body["tip_id"]
+    check("Integration: Attested score = 550", id_body.get("score") == 550)
+
+    # Step 3: Register Content
+    content_hash = hash_content("Integration test: original human content for full flow")
+    st, ct_body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": tip_id,
+        "origin_code":   "OH",
+        "content_hash":  content_hash,
+        "signature":     "integration-sig",
+    })
+    check("Integration: Content registered",   st == 201)
+    ctid = ct_body["ctid"]
+    check("Integration: CTID format valid",    ctid.startswith("tip://c/OH-"))
+    check("Integration: Content status",       ct_body.get("status") == "verified")
+
+    # Step 4: Check score via API
+    st, score_body = _get(f"{base}/v1/identity/{quote(tip_id, safe='')}/score")
+    check("Integration: Score endpoint 200",   st == 200)
+    check("Integration: Score has tier",       bool(score_body.get("tier")))
+    check("Integration: Score >= 500",         score_body.get("score", 0) >= 500)
+
+    # Step 5: Resolve content via API
+    st, content_body = _get(f"{base}/v1/content/{quote(ctid, safe='')}")
+    check("Integration: Content resolves",     st == 200)
+    check("Integration: Author matches",       content_body.get("author_tip_id") == tip_id)
+
+    # Step 6: Dispute content
+    st, disp_body = _post(f"{base}/v1/content/{quote(ctid, safe='')}/dispute", {
+        "disputer_tip_id": tip_id,
+        "reason":          "test dispute",
+        "evidence_hash":   "evidence123",
+    })
+    check("Integration: Dispute filed",        st == 200 and disp_body.get("success"))
+
+    # Step 7: Check identity history
+    st, hist_body = _get(f"{base}/v1/identity/{quote(tip_id, safe='')}/history")
+    check("Integration: History endpoint 200", st == 200)
+    check("Integration: History has score",    isinstance(hist_body.get("score"), int))
+
+    # Step 8: Duplicate identity rejected
+    st, dup_body = _post(f"{base}/v1/identity/register", {
+        "vp_id": vp_id, "vp_signature": vp_sig,
+        "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+        "region": "US", "verification_tier": "T1",
+    })
+    check("Integration: Duplicate identity 409", st == 409)
+
+    server.shutdown()
+
+
 # ─── Runner ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -810,6 +1119,8 @@ if __name__ == "__main__":
     test_genesis_files()
     test_sdk()
     test_constants()
+    test_api_endpoints()
+    test_integration_flow()
 
     total = _passed + _failed
     print()
