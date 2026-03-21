@@ -3,174 +3,745 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TIP™ Trust Identity Protocol</title>
+  <title>TIP™ — AI Trust ID</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 300px; min-height: 200px; max-height: 500px;
-      font-family: 'Libre Franklin', sans-serif;
-      background: #FFFFFF; color: #0C1A3A;
-      font-size: 13px; overflow-y: auto;
+      width: 340px; min-height: 200px; max-height: 580px;
+      font-family: 'Libre Franklin', 'Helvetica Neue', sans-serif;
+      background: #FFFFFF; color: #0C1A3A; font-size: 13px;
+      overflow-y: auto; overflow-x: hidden;
     }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #E2E6EE; border-radius: 2px; }
+
+    /* ── Header ── */
     .header {
+      background: #0C1A3A; padding: 12px 14px;
       display: flex; align-items: center; gap: 10px;
-      padding: 12px 14px; border-bottom: 1px solid #E2E6EE;
-      background: #0C1A3A;
     }
-    .header .title   { font-size: 12px; font-weight: 700; color: #FFFFFF; letter-spacing: 1px; }
-    .header .sub     { font-size: 9px; color: #B8942E; letter-spacing: 2px; font-weight: 500; }
-    .section { padding: 12px 14px; border-bottom: 1px solid #E2E6EE; }
+    .header-text .title { font-size: 11px; font-weight: 700; color: #FFF; letter-spacing: 1.5px; }
+    .header-text .sub   { font-size: 9px; color: #B8942E; letter-spacing: 2px; font-weight: 500; }
+
+    /* ── Mode tabs ── */
+    .mode-tabs {
+      display: flex; border-bottom: 1px solid #E2E6EE;
+      background: #F8F9FB;
+    }
+    .mode-tab {
+      flex: 1; padding: 9px 6px; text-align: center;
+      font-size: 11px; font-weight: 500; cursor: pointer;
+      border: none; background: none; color: #8895A7;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s; font-family: inherit;
+    }
+    .mode-tab.active { color: #0C1A3A; border-bottom-color: #B8942E; font-weight: 600; }
+    .mode-tab:hover:not(.active) { color: #4A5568; background: #F1F3F7; }
+
+    /* ── Sections ── */
+    .section { padding: 14px; border-bottom: 1px solid #E2E6EE; }
     .section:last-child { border-bottom: none; }
-    .section-label   { font-size: 9px; font-weight: 600; color: #8895A7; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px; }
-    .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-    .key { font-size: 11px; color: #4A5568; }
-    .val { font-size: 11px; font-weight: 600; color: #0C1A3A; font-family: 'JetBrains Mono', monospace; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .score-bar { height: 4px; border-radius: 2px; background: #E2E6EE; margin: 4px 0 8px; }
-    .score-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
-    .status-badge { padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
-    .no-tip { text-align: center; padding: 28px 14px; color: #8895A7; font-size: 12px; line-height: 1.6; }
-    .no-tip .icon { font-size: 28px; margin-bottom: 8px; }
-    .footer { padding: 8px 14px; background: #F8F9FB; display: flex; justify-content: space-between; align-items: center; }
+    .section-label {
+      font-size: 9px; font-weight: 600; color: #8895A7;
+      letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px;
+    }
+
+    /* ── Buttons ── */
+    .btn-primary {
+      width: 100%; padding: 10px; border-radius: 8px;
+      background: #0C1A3A; color: #B8942E;
+      border: none; font-family: inherit; font-size: 12px;
+      font-weight: 600; cursor: pointer; letter-spacing: 0.5px;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+      transition: opacity 0.2s;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 7px 12px; border-radius: 6px;
+      background: none; border: 1px solid #E2E6EE;
+      color: #4A5568; font-family: inherit; font-size: 11px;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .btn-secondary:hover { background: #F1F3F7; border-color: #D0D5E0; }
+    .btn-green {
+      width: 100%; padding: 8px; border-radius: 6px;
+      background: #1A8A5C15; color: #1A8A5C;
+      border: 1px solid #1A8A5C40;
+      font-family: inherit; font-size: 11px; font-weight: 600;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .btn-green:hover { background: #1A8A5C25; }
+
+    /* ── Origin buttons ── */
+    .origin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .origin-btn {
+      padding: 8px; border-radius: 7px; border: 1.5px solid #E2E6EE;
+      background: #FFF; cursor: pointer; text-align: left;
+      font-family: inherit; transition: all 0.15s;
+    }
+    .origin-btn:hover { border-color: #CBD5E0; background: #F8F9FB; }
+    .origin-btn.selected-OH { background: #2563A815; border-color: #2563A860; }
+    .origin-btn.selected-AA { background: #7C3AED15; border-color: #7C3AED60; }
+    .origin-btn.selected-AG { background: #C0731815; border-color: #C0731860; }
+    .origin-btn.selected-MX { background: #8895A715; border-color: #8895A760; }
+    .origin-code { font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+    .origin-label { font-size: 10px; color: #8895A7; margin-top: 1px; }
+
+    /* ── Score display ── */
+    .score-bar { height: 4px; background: #E2E6EE; border-radius: 2px; margin: 5px 0 8px; }
+    .score-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+    .tier-badge {
+      display: inline-block; padding: 3px 8px; border-radius: 3px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+    }
+
+    /* ── Help tip box ── */
+    .help-tip {
+      background: #EFF6FF; border: 1px solid #BFDBFE;
+      border-radius: 7px; padding: 9px 11px;
+      font-size: 11px; color: #1E40AF; line-height: 1.55;
+      margin-bottom: 12px;
+    }
+    .help-tip a { color: #B8942E; text-decoration: none; }
+    .help-tip a:hover { text-decoration: underline; }
+
+    /* ── Status ── */
+    .status-msg {
+      padding: 8px 10px; border-radius: 6px; font-size: 11px;
+      font-weight: 500; margin-bottom: 10px; display: none;
+    }
+    .status-error { background: #FFF5F5; border: 1px solid #C5303030; color: #C53030; }
+    .status-info  { background: #EFF6FF; border: 1px solid #2563A830; color: #1E40AF; }
+    .status-ok    { background: #F0FDF4; border: 1px solid #1A8A5C30; color: #1A8A5C; }
+
+    /* ── Form inputs ── */
+    .input-field {
+      width: 100%; padding: 8px 10px; border: 1px solid #E2E6EE;
+      border-radius: 6px; font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: #0C1A3A; outline: none; transition: border-color 0.2s;
+    }
+    .input-field:focus { border-color: #B8942E; }
+    .input-label {
+      font-size: 10px; font-weight: 600; color: #8895A7;
+      letter-spacing: 1px; text-transform: uppercase;
+      display: flex; align-items: center; gap: 5px; margin-bottom: 5px;
+    }
+    .help-icon {
+      font-size: 10px; background: #0C1A3A10; color: #0C1A3A;
+      border-radius: 50%; width: 14px; height: 14px;
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: help; font-weight: 700;
+    }
+
+    /* ── CTID display ── */
+    .ctid-box {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: #0C1A3A; background: #F8F9FB; padding: 8px 10px;
+      border-radius: 6px; border: 1px solid #E2E6EE;
+      word-break: break-all; margin: 8px 0; line-height: 1.6;
+    }
+
+    /* ── Identity card ── */
+    .id-card {
+      display: flex; align-items: center; gap: 9px;
+      padding: 9px 11px; background: #F8F9FB;
+      border: 1px solid #E2E6EE; border-radius: 7px; margin-bottom: 10px;
+    }
+
+    /* ── No TIP state ── */
+    .no-tip { text-align: center; padding: 30px 14px; color: #8895A7; }
+    .no-tip-icon { font-size: 32px; margin-bottom: 8px; }
+    .no-tip h3 { font-size: 14px; font-weight: 600; color: #0C1A3A; margin-bottom: 5px; }
+    .no-tip p { font-size: 11px; line-height: 1.6; }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 8px 14px; background: #F8F9FB; border-top: 1px solid #E2E6EE;
+      display: flex; justify-content: space-between; align-items: center;
+    }
     .footer a { font-size: 10px; color: #B8942E; text-decoration: none; }
     .footer a:hover { text-decoration: underline; }
-    .btn { padding: 5px 10px; border-radius: 4px; font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit; border: 1px solid #E2E6EE; background: white; color: #0C1A3A; transition: all 0.2s; }
-    .btn:hover { background: #F1F3F7; }
-    #loading { text-align: center; padding: 32px; color: #8895A7; font-size: 12px; }
+
+    /* ── Loading ── */
+    #loading-state { text-align: center; padding: 36px; color: #8895A7; font-size: 12px; }
+    .spinner { display: inline-block; width: 20px; height: 20px;
+      border: 2px solid #E2E6EE; border-top-color: #B8942E;
+      border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 10px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Upload page CTA ── */
+    .upload-cta {
+      background: linear-gradient(135deg, #0C1A3A, #1B2A4A);
+      border-radius: 9px; padding: 14px; margin-bottom: 12px; color: #FFF;
+    }
+    .upload-cta h3 { font-size: 13px; font-weight: 700; color: #B8942E; margin-bottom: 4px; }
+    .upload-cta p { font-size: 11px; color: #94A3B8; line-height: 1.5; }
   </style>
 </head>
 <body>
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
   <div class="header">
     <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
-      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z" fill="#B8942E20" stroke="#B8942E" stroke-width="2"/>
-      <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+        fill="#B8942E20" stroke="#B8942E" stroke-width="2.2"/>
+      <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
-    <div>
+    <div class="header-text">
       <div class="title">THE AI LAB</div>
       <div class="sub">TRUST IDENTITY PROTOCOL</div>
     </div>
+    <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+      <div id="node-status" title="TIP Node connection status"
+        style="width:8px;height:8px;border-radius:50%;background:#8895A7;"></div>
+      <button id="settings-btn" title="Settings"
+        style="background:none;border:none;cursor:pointer;padding:2px;color:#B8942E;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
   </div>
 
-  <div id="loading">Loading TIP™ data...</div>
-  <div id="main" style="display:none;"></div>
+  <!-- ── Mode tabs ────────────────────────────────────────────────────────── -->
+  <div class="mode-tabs">
+    <button class="mode-tab active" id="tab-creator">
+      ✏️ Register Content
+    </button>
+    <button class="mode-tab" id="tab-viewer">
+      🛡 View Trust Badge
+    </button>
+  </div>
 
+  <!-- ── Loading ──────────────────────────────────────────────────────────── -->
+  <div id="loading-state">
+    <div class="spinner"></div>
+    <div>Loading TIP data...</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CREATOR TAB
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <div id="creator-pane" style="display:none;">
+
+    <!-- No identity set up -->
+    <div id="creator-no-id" class="section" style="display:none;">
+      <div class="no-tip">
+        <div class="no-tip-icon">🆔</div>
+        <h3>Set up your TIP-ID first</h3>
+        <p>You need a verified TIP-ID to register content.<br>
+           Click Settings to connect your identity.</p>
+        <button class="btn-primary" id="creator-goto-settings" style="margin-top:14px;max-width:200px;">
+          Open Settings →
+        </button>
+      </div>
+    </div>
+
+    <!-- Upload page detected -->
+    <div id="creator-upload-detected" style="display:none;">
+      <div class="section">
+        <div class="upload-cta">
+          <h3>📤 Upload page detected!</h3>
+          <p>The TIP panel has appeared on this page.<br>
+             Use it to register your content directly in the upload form.</p>
+        </div>
+        <div class="help-tip">
+          💡 The <strong>TIP panel</strong> (bottom-right of the page) is ready.
+          Select your origin code, enter your password, and click Register.
+        </div>
+        <div id="creator-identity-card" class="id-card">
+          <svg width="16" height="16" viewBox="0 0 48 48" fill="none">
+            <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+              fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
+            <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+          <div>
+            <div style="font-size:9px;color:#8895A7;letter-spacing:1px;font-weight:600;">YOUR TIP-ID</div>
+            <div id="creator-tipid-upload" style="font-size:10px;font-family:monospace;color:#0C1A3A;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual registration form (non-upload pages) -->
+    <div id="creator-manual-form" style="display:none;">
+      <div class="section">
+        <div class="help-tip">
+          💡 <strong>How it works:</strong> Paste your title + description below.
+          We hash and sign it, then register it on the TIP DAG. You get a CTID
+          to paste in your video description for viewer verification.
+          <a href="https://theailab.org/trust-identity-protocol" target="_blank">Learn more →</a>
+        </div>
+
+        <div id="creator-status" class="status-msg"></div>
+
+        <div class="id-card" style="margin-bottom:12px;">
+          <svg width="14" height="14" viewBox="0 0 48 48" fill="none">
+            <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+              fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
+            <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+          <div>
+            <div style="font-size:9px;color:#8895A7;letter-spacing:1px;font-weight:600;">SIGNING AS</div>
+            <div id="creator-tipid-manual" style="font-size:10px;font-family:monospace;color:#0C1A3A;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"></div>
+          </div>
+        </div>
+
+        <!-- Title -->
+        <div style="margin-bottom:10px;">
+          <div class="input-label">Title (optional)</div>
+          <input class="input-field" id="manual-title" type="text"
+            placeholder="e.g. How Quantum Computing Works"/>
+        </div>
+
+        <!-- Description -->
+        <div style="margin-bottom:12px;">
+          <div class="input-label">
+            Content description
+            <span class="help-icon" title="Paste your video description, article text, or post content. This gets hashed — the actual text is not stored anywhere.">?</span>
+          </div>
+          <textarea class="input-field" id="manual-content" rows="3"
+            placeholder="Paste your description, caption, or article text here..."
+            style="resize:vertical;font-family:inherit;font-size:12px;line-height:1.5;"></textarea>
+        </div>
+
+        <!-- Origin -->
+        <div style="margin-bottom:12px;">
+          <div class="input-label">
+            Content Origin
+            <span class="help-icon" title="How was this content created? Over-declaring AI involvement is always safe — there's zero penalty. Under-declaring OH when it's AI-generated has penalties.">?</span>
+          </div>
+          <div class="origin-grid" id="popup-origin-btns">
+            <button class="origin-btn" data-code="OH" data-color="#2563A8">
+              <div class="origin-code" style="color:#2563A8;">OH</div>
+              <div class="origin-label">Original Human</div>
+            </button>
+            <button class="origin-btn" data-code="AA" data-color="#7C3AED">
+              <div class="origin-code" style="color:#7C3AED;">AA</div>
+              <div class="origin-label">AI-Assisted</div>
+            </button>
+            <button class="origin-btn" data-code="AG" data-color="#C07318">
+              <div class="origin-code" style="color:#C07318;">AG</div>
+              <div class="origin-label">AI-Generated</div>
+            </button>
+            <button class="origin-btn" data-code="MX" data-color="#8895A7">
+              <div class="origin-code" style="color:#8895A7;">MX</div>
+              <div class="origin-label">Mixed</div>
+            </button>
+          </div>
+          <div id="popup-origin-hint" style="display:none;font-size:10px;color:#2563A8;
+            margin-top:6px;padding:5px 8px;background:#EFF6FF;border-radius:4px;"></div>
+        </div>
+
+        <!-- Password -->
+        <div style="margin-bottom:12px;">
+          <div class="input-label">
+            Signing Password
+            <span class="help-icon" title="This unlocks your private signing key stored locally in your browser. Your key never leaves your device.">?</span>
+          </div>
+          <input class="input-field" id="popup-password" type="password"
+            placeholder="Your TIP signing password" autocomplete="current-password"/>
+          <div style="font-size:9px;color:#8895A7;margin-top:3px;">🔒 Your key never leaves this browser.</div>
+        </div>
+
+        <!-- Register button -->
+        <button class="btn-primary" id="popup-register-btn" disabled>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2.5" stroke-linecap="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          Select an origin code to continue
+        </button>
+      </div>
+
+      <!-- Success -->
+      <div id="creator-success" class="section" style="display:none;text-align:center;padding:20px 14px;">
+        <div style="font-size:28px;margin-bottom:8px;">✅</div>
+        <div style="font-size:14px;font-weight:700;color:#1A8A5C;margin-bottom:4px;">Registered on TIP DAG!</div>
+        <div style="font-size:11px;color:#8895A7;margin-bottom:10px;">
+          Your content is now verifiable by anyone on the TIP network.
+        </div>
+        <div class="ctid-box" id="popup-ctid-display"></div>
+        <button class="btn-green" id="popup-copy-ctid" style="margin-bottom:8px;">
+          📋 Copy CTID to clipboard
+        </button>
+        <div style="font-size:10px;color:#8895A7;line-height:1.55;text-align:left;
+          padding:8px 10px;background:#F8F9FB;border-radius:6px;border:1px solid #E2E6EE;">
+          📌 <strong>Next step:</strong> Paste this CTID in your video description, article,
+          or post caption. Viewers with the TIP extension will see your verified trust badge.
+        </div>
+        <button class="btn-secondary" id="popup-register-another" style="margin-top:10px;width:100%;">
+          Register another piece of content
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       VIEWER TAB
+  ═══════════════════════════════════════════════════════════════════════════ -->
+  <div id="viewer-pane" style="display:none;">
+
+    <!-- No TIP data on this page -->
+    <div id="viewer-no-tip" class="section" style="display:none;">
+      <div class="no-tip">
+        <div class="no-tip-icon">🔍</div>
+        <h3>No TIP data on this page</h3>
+        <p>This page has no TIP Protocol headers or meta tags.<br>
+           When creators register their content, you'll see<br>
+           their trust badge here automatically.</p>
+      </div>
+      <div class="help-tip" style="margin-top:0;">
+        💡 <strong>Look for CTIDs</strong> in descriptions:<br>
+        <code style="font-size:10px;color:#0C1A3A;">tip://c/OH-7f2a91bc-a3f8</code><br>
+        Click any CTID link to verify it on theailab.org.
+      </div>
+    </div>
+
+    <!-- TIP data found -->
+    <div id="viewer-tip-data" style="display:none;">
+      <div class="section">
+        <!-- Author trust card -->
+        <div class="section-label">Author Identity</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <div id="viewer-shield" style="flex-shrink:0;"></div>
+          <div>
+            <div id="viewer-tier-badge" class="tier-badge" style="margin-bottom:4px;"></div>
+            <div id="viewer-score-text" style="font-size:11px;color:#4A5568;"></div>
+            <div id="viewer-tip-id" style="font-size:10px;font-family:'JetBrains Mono',monospace;
+              color:#8895A7;margin-top:2px;word-break:break-all;"></div>
+          </div>
+        </div>
+        <div class="score-bar">
+          <div class="score-fill" id="viewer-score-fill"></div>
+        </div>
+      </div>
+
+      <!-- Content record -->
+      <div class="section" id="viewer-content-section" style="display:none;">
+        <div class="section-label">Content Record</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <div id="viewer-origin-pill"></div>
+          <div id="viewer-content-status" class="tier-badge"></div>
+        </div>
+        <div id="viewer-ctid" style="font-size:10px;font-family:'JetBrains Mono',monospace;
+          color:#8895A7;margin-bottom:8px;word-break:break-all;"></div>
+        <a id="viewer-verify-link" href="#" target="_blank"
+          style="font-size:11px;color:#B8942E;text-decoration:none;display:flex;align-items:center;gap:4px;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+          Verify on theailab.org →
+        </a>
+      </div>
+
+      <!-- Revocation warning -->
+      <div id="viewer-revoked-warning" class="section" style="display:none;
+        background:#FFF5F5;border-left:3px solid #C53030;">
+        <div style="font-size:11px;font-weight:600;color:#C53030;margin-bottom:4px;">
+          ⚠️ Identity Revoked
+        </div>
+        <div style="font-size:11px;color:#4A5568;line-height:1.55;">
+          This TIP-ID has been revoked. Content from this identity should be
+          treated with caution until the creator re-verifies.
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Footer ────────────────────────────────────────────────────────────── -->
   <div class="footer">
-    <a href="https://theailab.org/trust-identity-protocol" target="_blank">theailab.org</a>
-    <button class="btn" id="optionsBtn">Settings</button>
+    <a href="https://theailab.org" target="_blank">theailab.org</a>
+    <span style="font-size:9px;color:#8895A7;">TIP™ v2.1 · TIPCL-1.0</span>
   </div>
 
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       POPUP SCRIPT
+  ═══════════════════════════════════════════════════════════════════════════ -->
   <script>
-    const COLORS = {
-      green: "#1A8A5C", blue: "#2563A8", yellow: "#A88B15", orange: "#C07318", red: "#C53030"
-    };
+  "use strict";
 
-    function tierColor(s) {
-      return s>=800?COLORS.green:s>=600?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
-    }
+  // ── Constants ─────────────────────────────────────────────────────────────
+  const COLORS = {
+    green:"#1A8A5C", blue:"#2563A8", yellow:"#A88B15",
+    orange:"#C07318", red:"#C53030", gray:"#8895A7",
+    navy:"#0C1A3A", gold:"#B8942E",
+  };
+  const ORIGIN_COLORS = { OH:"#2563A8", AA:"#7C3AED", AG:"#C07318", MX:"#8895A7" };
+  const ORIGIN_LABELS = {
+    OH:"Original Human", AA:"AI-Assisted", AG:"AI-Generated", MX:"Mixed"
+  };
+  const ORIGIN_HINTS = {
+    OH:"✅ Declaring Original Human means you created this without AI. If an AI classifier later challenges this, your trust score may be affected.",
+    AA:"✅ AI-Assisted is honest and safe. No penalty for over-declaring AI involvement. Use this when AI helped but you led the work.",
+    AG:"✅ AI-Generated is always accepted. Full transparency builds long-term trust with your audience.",
+    MX:"✅ Mixed is a safe default when you're unsure. It covers anything combining human and AI contributions.",
+  };
 
-    function tierLabel(s) {
-      return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
-    }
+  function tierColor(s) {
+    return s>=800?COLORS.green:s>=600?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
+  }
+  function tierLabel(s) {
+    return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
+  }
 
-    async function load() {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) return;
+  function shieldSVG(score, size=36) {
+    const c = tierColor(score);
+    const icon = score>=600
+      ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
+      : score>=400
+        ? `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`
+        : `<line x1="17" y1="19" x2="31" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>
+           <line x1="31" y1="19" x2="17" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>`;
+    return `<svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none">
+      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+        fill="${c}15" stroke="${c}" stroke-width="2.2"/>
+      ${icon}
+    </svg>`;
+  }
 
-      // Get tab data from background
-      const { data } = await chrome.runtime.sendMessage({ type: "GET_TAB_DATA", tabId: tab.id });
-      const main = document.getElementById("main");
-      const loading = document.getElementById("loading");
+  function originPillHTML(code) {
+    const c = ORIGIN_COLORS[code]||COLORS.gray;
+    const l = ORIGIN_LABELS[code]||code;
+    return `<span style="display:inline-flex;align-items:center;gap:3px;padding:3px 8px;
+      border-radius:3px;background:${c}15;border:1px solid ${c}30;
+      font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:700;color:${c};">
+      ${code}<span style="font-family:inherit;font-weight:400;opacity:0.75;font-size:10px;"> ${l}</span></span>`;
+  }
 
-      if (!data || (!data.tipAuthor && !data.tipContent)) {
-        loading.style.display = "none";
-        main.style.display = "block";
-        main.innerHTML = `<div class="no-tip">
-          <div class="icon">🔍</div>
-          <strong>No TIP™ headers found</strong><br/>
-          This page has not implemented the Trust Identity Protocol.<br/><br/>
-          <a href="https://theailab.org/trust-identity-protocol" target="_blank" style="color:#B8942E;font-size:11px;">Learn how to add TIP™ headers →</a>
-        </div>`;
-        return;
+  function msg(type, payload) {
+    return new Promise(r => chrome.runtime.sendMessage({ type, ...payload }, r));
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let activeTab = "creator";
+  let selectedOrigin = null;
+  let currentCTID = "";
+
+  function show(id)  { const el = document.getElementById(id); if(el) el.style.display = "block"; }
+  function hide(id)  { const el = document.getElementById(id); if(el) el.style.display = "none"; }
+  function setHTML(id, html) { const el = document.getElementById(id); if(el) el.innerHTML = html; }
+  function setText(id, t)    { const el = document.getElementById(id); if(el) el.textContent = t; }
+
+  function showStatus(id, type, msg) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!msg) { el.style.display = "none"; return; }
+    const classes = { error:"status-error", info:"status-info", ok:"status-ok" };
+    el.className = "status-msg " + (classes[type]||classes.info);
+    el.textContent = msg;
+    el.style.display = "block";
+  }
+
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  document.getElementById("tab-creator").addEventListener("click", () => switchTab("creator"));
+  document.getElementById("tab-viewer").addEventListener("click",  () => switchTab("viewer"));
+
+  function switchTab(tab) {
+    activeTab = tab;
+    document.getElementById("tab-creator").classList.toggle("active", tab === "creator");
+    document.getElementById("tab-viewer").classList.toggle("active", tab === "viewer");
+    document.getElementById("creator-pane").style.display = tab === "creator" ? "block" : "none";
+    document.getElementById("viewer-pane").style.display  = tab === "viewer"  ? "block" : "none";
+  }
+
+  // ── Settings button ───────────────────────────────────────────────────────
+  document.getElementById("settings-btn").addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
+  });
+  document.getElementById("creator-goto-settings")?.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
+  });
+
+  // ── Origin button selection ───────────────────────────────────────────────
+  document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(b => {
+        b.className = "origin-btn";
+      });
+      selectedOrigin = btn.dataset.code;
+      btn.classList.add(`selected-${selectedOrigin}`);
+      const hint = document.getElementById("popup-origin-hint");
+      if (hint) { hint.textContent = ORIGIN_HINTS[selectedOrigin]; hint.style.display="block"; }
+      const regBtn = document.getElementById("popup-register-btn");
+      if (regBtn) {
+        regBtn.disabled = false;
+        regBtn.innerHTML = `
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2.5" stroke-linecap="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}
+        `;
       }
-
-      // Fetch detailed identity if we have an author
-      let identData = null;
-      if (data.tipAuthor) {
-        const r = await chrome.runtime.sendMessage({ type: "FETCH_IDENTITY", tipId: data.tipAuthor });
-        identData = r.data;
-      }
-
-      // Check revocation
-      let revoked = false;
-      if (data.tipAuthor) {
-        const r = await chrome.runtime.sendMessage({ type: "IS_REVOKED", tipId: data.tipAuthor });
-        revoked = r.revoked;
-      }
-
-      const score  = identData?.score || data.tipScore || 0;
-      const tier   = identData?.tier  || tierLabel(score);
-      const color  = tierColor(score);
-      const pct    = (score / 1000 * 100).toFixed(1);
-
-      let html = "";
-
-      // Author section
-      if (data.tipAuthor) {
-        html += `<div class="section">
-          <div class="section-label">Author Identity</div>
-          <div class="row">
-            <span class="key">TIP-ID</span>
-            <span class="val">${data.tipAuthor}</span>
-          </div>
-          <div class="row">
-            <span class="key">Trust score</span>
-            <span style="font-size:16px;font-weight:700;color:${color};font-family:'Cormorant Garamond',serif;">${score}<span style="font-size:11px;color:#8895A7;font-weight:400;"> / 1000</span></span>
-          </div>
-          <div class="score-bar">
-            <div class="score-fill" style="width:${pct}%;background:${color};"></div>
-          </div>
-          <div class="row">
-            <span class="key">Tier</span>
-            <span class="status-badge" style="background:${color}12;color:${color};border:1px solid ${color}25;">${tier}</span>
-          </div>
-          ${revoked ? `<div class="row"><span style="font-size:11px;color:#C53030;font-weight:600;">⚠ This identity has been revoked</span></div>` : ""}
-          ${identData?.verified_since ? `<div class="row"><span class="key">Verified since</span><span class="val">${identData.verified_since?.slice(0,10)}</span></div>` : ""}
-          ${identData?.content_count !== undefined ? `<div class="row"><span class="key">Content count</span><span class="val">${identData.content_count}</span></div>` : ""}
-        </div>`;
-      }
-
-      // Content section
-      if (data.tipContent) {
-        const originMap = { "original-human":"OH", "ai-assisted":"AA", "ai-generated":"AG", "mixed":"MX" };
-        const originCode = originMap[data.tipOrigin] || data.tipOrigin?.toUpperCase() || "";
-        const originColors = {OH:"#2563A8",AA:"#7C3AED",AG:"#C07318",MX:"#8895A7"};
-        const originLabels = {OH:"Original Human",AA:"AI-Assisted",AG:"AI-Generated",MX:"Mixed"};
-        const oc = originColors[originCode] || "#8895A7";
-        html += `<div class="section">
-          <div class="section-label">Content Provenance</div>
-          <div class="row">
-            <span class="key">CTID</span>
-            <span class="val">${data.tipContent}</span>
-          </div>
-          ${originCode ? `<div class="row">
-            <span class="key">Origin</span>
-            <span class="status-badge" style="background:${oc}12;color:${oc};border:1px solid ${oc}25;">${originCode} — ${originLabels[originCode]||""}</span>
-          </div>` : ""}
-        </div>`;
-      }
-
-      loading.style.display = "none";
-      main.style.display = "block";
-      main.innerHTML = html;
-    }
-
-    document.getElementById("optionsBtn").addEventListener("click", () => {
-      chrome.runtime.openOptionsPage();
     });
+  });
 
-    load().catch(e => {
-      document.getElementById("loading").textContent = "Error: " + e.message;
+  // ── Register button ───────────────────────────────────────────────────────
+  document.getElementById("popup-register-btn")?.addEventListener("click", async () => {
+    if (!selectedOrigin) return;
+    const password = document.getElementById("popup-password").value;
+    const title    = document.getElementById("manual-title").value.trim();
+    const content  = document.getElementById("manual-content").value.trim();
+    if (!password) { showStatus("creator-status","error","Enter your signing password."); return; }
+    if (!content && !title) { showStatus("creator-status","error","Add some content to register."); return; }
+
+    const btn = document.getElementById("popup-register-btn");
+    btn.disabled = true;
+    btn.innerHTML = "⏳ Registering...";
+    showStatus("creator-status","info","Hashing and signing your content...");
+
+    const res = await msg("REGISTER_CONTENT", { payload: { originCode: selectedOrigin, content: content||title, title, password } });
+
+    if (res?.ok && res.data?.ctid) {
+      currentCTID = res.data.ctid;
+      setText("popup-ctid-display", currentCTID);
+      hide("creator-manual-form");
+      show("creator-success");
+      showStatus("creator-status","","");
+      navigator.clipboard?.writeText(currentCTID).catch(()=>{});
+    } else {
+      showStatus("creator-status","error", res?.error || "Registration failed. Check Settings → TIP Node connection.");
+      btn.disabled = false;
+      btn.innerHTML = `Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}`;
+    }
+  });
+
+  // ── Copy CTID ─────────────────────────────────────────────────────────────
+  document.getElementById("popup-copy-ctid")?.addEventListener("click", () => {
+    navigator.clipboard.writeText(currentCTID).then(() => {
+      const btn = document.getElementById("popup-copy-ctid");
+      btn.textContent = "✓ Copied!";
+      setTimeout(() => { btn.textContent = "📋 Copy CTID to clipboard"; }, 2000);
     });
+  });
+
+  // ── Register another ──────────────────────────────────────────────────────
+  document.getElementById("popup-register-another")?.addEventListener("click", () => {
+    hide("creator-success");
+    show("creator-manual-form");
+    selectedOrigin = null;
+    document.getElementById("popup-password").value = "";
+    document.getElementById("manual-title").value = "";
+    document.getElementById("manual-content").value = "";
+    document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(b => b.className = "origin-btn");
+    document.getElementById("popup-origin-hint").style.display = "none";
+    const btn = document.getElementById("popup-register-btn");
+    btn.disabled = true;
+    btn.innerHTML = `
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      Select an origin code to continue
+    `;
+  });
+
+  // ── Load viewer data ──────────────────────────────────────────────────────
+  async function loadViewerData(tab) {
+    const r = await msg("GET_TAB_DATA", { tabId: tab.id });
+    const data = r?.data;
+    if (!data?.tipAuthor) { show("viewer-no-tip"); return; }
+    show("viewer-tip-data");
+
+    // Fetch full identity
+    const identity = await msg("FETCH_IDENTITY", { tipId: data.tipAuthor });
+    const idata = identity?.data;
+    const score = idata?.score || data.tipScore || 0;
+    const tier  = idata?.tier?.label || tierLabel(score);
+    const c     = tierColor(score);
+
+    setHTML("viewer-shield", shieldSVG(score, 44));
+    setHTML("viewer-tier-badge", tier);
+    const tierEl = document.getElementById("viewer-tier-badge");
+    if (tierEl) { tierEl.style.background = `${c}15`; tierEl.style.color = c; }
+    setText("viewer-score-text", `Score: ${score} / 1000`);
+    setText("viewer-tip-id", data.tipAuthor);
+    const fillEl = document.getElementById("viewer-score-fill");
+    if (fillEl) { fillEl.style.width = `${score/10}%`; fillEl.style.background = c; }
+
+    // Revocation check
+    const revRes = await msg("IS_REVOKED", { tipId: data.tipAuthor });
+    if (revRes?.revoked) show("viewer-revoked-warning");
+
+    // Content record
+    if (data.tipContent) {
+      show("viewer-content-section");
+      const originCode = data.tipOrigin
+        ? data.tipOrigin.toUpperCase().replace("ORIGINAL-HUMAN","OH")
+            .replace("AI-ASSISTED","AA").replace("AI-GENERATED","AG").replace("MIXED","MX").slice(0,2)
+        : null;
+      if (originCode) setHTML("viewer-origin-pill", originPillHTML(originCode));
+      setText("viewer-ctid", data.tipContent);
+      const statusEl = document.getElementById("viewer-content-status");
+      if (statusEl) {
+        statusEl.textContent = "Verified";
+        statusEl.style.background = "#1A8A5C15";
+        statusEl.style.color = "#1A8A5C";
+      }
+      const link = document.getElementById("viewer-verify-link");
+      if (link) link.href = `https://theailab.org/verify/${encodeURIComponent(data.tipContent)}`;
+    }
+  }
+
+  // ── Node health indicator ─────────────────────────────────────────────────
+  async function checkNode() {
+    const res = await msg("NODE_HEALTH");
+    const dot = document.getElementById("node-status");
+    if (dot) dot.style.background = res?.ok ? "#1A8A5C" : "#C53030";
+    if (dot) dot.title = res?.ok ? `TIP Node online — ${res.data?.dag_count || 0} transactions` : "TIP Node offline";
+  }
+
+  // ── Main init ─────────────────────────────────────────────────────────────
+  async function init() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) { hide("loading-state"); return; }
+
+    hide("loading-state");
+
+    // Check identity
+    const idRes = await msg("GET_IDENTITY");
+    const hasId = idRes?.ok && idRes.data?.setupComplete;
+
+    // Creator tab setup
+    if (!hasId) {
+      show("creator-no-id");
+    } else {
+      // Check if on an upload page
+      const platform = await msg("DETECT_PLATFORM", { url: tab.url });
+      if (platform?.platform) {
+        show("creator-upload-detected");
+        setText("creator-tipid-upload", idRes.data.tipId || "");
+      } else {
+        show("creator-manual-form");
+        setText("creator-tipid-manual", idRes.data.tipId || "");
+      }
+    }
+
+    // Viewer tab setup
+    await loadViewerData(tab);
+    checkNode();
+  }
+
+  // Show creator by default for upload pages, viewer otherwise
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (!tab) return;
+    const isUpload = /studio\.youtube\.com|youtube\.com\/upload|instagram\.com\/(create|reels)|tiktok\.com\/upload|twitter\.com\/compose|x\.com\/compose|substack\.com\/publish|medium\.com\/new-story/.test(tab.url || "");
+    if (isUpload) switchTab("creator");
+  });
+
+  init();
   </script>
 </body>
 </html>

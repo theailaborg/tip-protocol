@@ -1,25 +1,20 @@
 {
   "name": "@tip-protocol/browser-extension",
-  "version": "2.0.0",
-  "description": "TIP Protocol Browser Extension — automatic trust badge overlay for Manifest V3 (Chrome, Firefox, Edge)",
-  "author": "Dinesh Mendhe <chairman@theailab.org>",
-  "license": "SEE LICENSE IN ../LICENSE.txt",
+  "version": "2.1.0",
+  "description": "TIP Protocol Browser Extension — dual-mode creator registration and viewer badge overlay. Works on YouTube, Instagram, TikTok, X, Facebook, LinkedIn, Substack, and Medium. Manifest V3 (Chrome, Edge, Brave) and Firefox compatible.",
+  "author": "Dinesh Mendhe <chairman@theailab.org> (https://theailab.org)",
+  "publisher": "The AI Lab Intelligence Unobscured, Inc.",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "homepage": "https://theailab.org/trust-identity-protocol",
   "repository": {
     "type": "git",
-    "url": "https://github.com/theailab/tip-protocol.git"
+    "url": "https://github.com/theailab-org/tip-sdk.git",
+    "directory": "browser-extension"
   },
-  "scripts": {
-    "build:chrome": "node scripts/build.js --target=chrome",
-    "build:firefox": "node scripts/build.js --target=firefox",
-    "lint": "eslint src/ --ext .js"
+  "bugs": {
+    "url": "https://github.com/theailab-org/tip-sdk/issues",
+    "email": "security@theailab.org"
   },
-  "devDependencies": {
-    "eslint": "^8.57.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "publisher": "The AI Lab Intelligence Unobscured, Inc.",
   "contributors": [
     {
       "name": "Dinesh Mendhe",
@@ -31,5 +26,24 @@
       "email": "chairman@theailab.org",
       "url": "https://theailab.org"
     }
+  ],
+  "scripts": {
+    "build:chrome":  "node scripts/build.js --target=chrome",
+    "build:firefox": "node scripts/build.js --target=firefox",
+    "build:all":     "npm run build:chrome && npm run build:firefox",
+    "zip:chrome":    "cd dist/chrome && zip -r ../../tip-extension-chrome-v2.1.0.zip .",
+    "zip:firefox":   "cd dist/firefox && zip -r ../../tip-extension-firefox-v2.1.0.zip .",
+    "lint":          "eslint src/ --ext .js"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "tip-protocol", "browser-extension", "trust", "identity",
+    "content-authentication", "badges", "chrome-extension", "firefox-addon",
+    "youtube", "instagram", "tiktok", "creator-tools"
   ]
 }
