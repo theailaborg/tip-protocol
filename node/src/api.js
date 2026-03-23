@@ -100,7 +100,13 @@ function computeMerkleRoot(dag) {
 }
 
 // ─── Build Express app ────────────────────────────────────────────────────────
-function createApp({ dag, scoring, config }) {
+function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
+  // gossipRef is { current: GossipServer } — resolved after init due to circular dep
+  const _broadcast = (tx) => {
+    if (!gossipRef || !gossipRef.current) return;
+    try { gossipRef.current.broadcast(tx); }
+    catch (err) { log.error(`Gossip broadcast failed for tx ${tx.tx_id}: ${err.message}`); }
+  };
   const app = express();
 
   // ── Middleware ──────────────────────────────────────────────────────────────
@@ -241,6 +247,7 @@ function createApp({ dag, scoring, config }) {
       }
 
       const tx = dag.addTx(signedTx);
+      _broadcast(tx);
 
       dag.saveIdentity({
         tip_id:          tipId,
@@ -431,6 +438,7 @@ function createApp({ dag, scoring, config }) {
       }
 
       const tx = dag.addTx(signedContentTx);
+      _broadcast(tx);
 
       dag.saveContent({
         ctid,
@@ -452,7 +460,8 @@ function createApp({ dag, scoring, config }) {
           prev:      dag.getRecentPrev(),
           data: { ctid, reason: "pre_scan_flag", probability: preScan.probability, auto: true },
         }, config);
-        dag.addTx(flagTx);
+        const fTx = dag.addTx(flagTx);
+        _broadcast(fTx);
       }
 
       log.info(`Content registered: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
@@ -544,7 +553,8 @@ function createApp({ dag, scoring, config }) {
       return res.status(400).json({ error: verifyValidation.errors, layer: verifyValidation.layer });
     }
 
-    dag.addTx(signedVerifyTx);
+    const verifyTx = dag.addTx(signedVerifyTx);
+    _broadcast(verifyTx);
 
     scoring.applyScoreEvent(rec.author_tip_id, weightedDelta, `Content verified by ${verifier_tip_id}`);
     res.json({ success: true, delta_applied: weightedDelta });
@@ -574,7 +584,8 @@ function createApp({ dag, scoring, config }) {
       return res.status(400).json({ error: disputeValidation.errors, layer: disputeValidation.layer });
     }
 
-    dag.addTx(signedDisputeTx);
+    const disputeTx = dag.addTx(signedDisputeTx);
+    _broadcast(disputeTx);
 
     res.json({ success: true, message: "Dispute filed. Stage 1 AI classifier will run within 60 seconds." });
   });
@@ -656,6 +667,7 @@ function createApp({ dag, scoring, config }) {
       }
 
       const tx = dag.addTx(signedRevokeTx);
+      _broadcast(tx);
 
       dag.addRevocation(tip_id, tx_type, timestamp, tx.tx_id);
 
@@ -670,7 +682,8 @@ function createApp({ dag, scoring, config }) {
             prev:      dag.getRecentPrev(),
             data: { ctid: c.ctid, reason: "issuer_revocation_cascade", auto: true },
           }, config);
-          dag.addTx(cascadeTx);
+          const cTx = dag.addTx(cascadeTx);
+          _broadcast(cTx);
         });
         log.info(`Revocation cascade: ${recentContent.length} recent content records flagged for ${tip_id}`);
       }
@@ -747,7 +760,8 @@ function createApp({ dag, scoring, config }) {
         return res.status(400).json({ error: vpValidation.errors, layer: vpValidation.layer });
       }
 
-      dag.addTx(signedVpTx);
+      const vpTx = dag.addTx(signedVpTx);
+      _broadcast(vpTx);
 
       dag.saveVP({ vp_id: vpId, name, jurisdiction_tier, public_key, status: "active", registered_at: registeredAt });
 

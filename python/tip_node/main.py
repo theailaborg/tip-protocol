@@ -89,7 +89,7 @@ def main() -> None:
     start_scheduled_tasks(dag, scoring, gossip, config)
 
     # 6. HTTP API server (blocking)
-    server = create_server(dag, scoring, config)
+    server = create_server(dag, scoring, config, gossip=gossip)
     host   = config["host"]
     port   = config["port"]
     log.info(f"REST API listening on  http://{host}:{port}")

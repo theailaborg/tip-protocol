@@ -1127,6 +1127,115 @@ def test_integration_flow() -> None:
     server.shutdown()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. GOSSIP BROADCAST WIRING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_gossip_broadcast_wiring() -> None:
+    section("11. GOSSIP BROADCAST WIRING")
+
+    os.environ["ZK_SKIP_VERIFY"] = "true"
+    from tip_node.api import create_server
+    from tip_node.scoring import ScoringEngine
+
+    # Track broadcast calls with a mock gossip object
+    broadcast_calls = []
+
+    class MockGossip:
+        def broadcast_tx(self, tx):
+            broadcast_calls.append(tx)
+
+    kp  = generate_mldsa_keypair()
+    cfg = load_config()
+    cfg["db_path"]          = ":memory:"
+    cfg["host"]             = "127.0.0.1"
+    cfg["port"]             = 0
+    cfg["node_private_key"] = kp["privateKey"]
+    cfg["node_public_key"]  = kp["publicKey"]
+    cfg["rate_limit_max"]   = 10000
+
+    dag     = DAG(cfg)
+    scoring = ScoringEngine(dag, cfg)
+
+    # Replace founding VP key with known keypair
+    founding_vp_kp = generate_mldsa_keypair()
+    all_vps = dag.get_all_vps()
+    founding_vp_id = all_vps[0]["vp_id"]
+    dag.save_vp({**all_vps[0], "public_key": founding_vp_kp["publicKey"]})
+
+    mock_gossip = MockGossip()
+    server = create_server(dag, scoring, cfg, gossip=mock_gossip)
+
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    host, port = server.server_address
+    base = f"http://{host}:{port}"
+
+    zk_proof = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]], "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
+
+    # 11.1 VP register triggers broadcast
+    vp_kp = generate_mldsa_keypair()
+    vp_name = "Gossip Wiring VP"
+    vp_tier = "green"
+    vp_council_sig = mldsa_sign(vp_name + vp_tier + vp_kp["publicKey"], founding_vp_kp["privateKey"])
+    broadcast_calls.clear()
+    st, body = _post(f"{base}/v1/vp/register", {
+        "name": vp_name, "public_key": vp_kp["publicKey"],
+        "jurisdiction_tier": vp_tier,
+        "council_signature": vp_council_sig,
+        "approving_vp_id": founding_vp_id,
+    })
+    check("11.1 VP register broadcasts",     st == 201 and len(broadcast_calls) >= 1)
+    vp_id = body["vp_id"]
+
+    # 11.2 Identity register triggers broadcast
+    dedup = "88881111222233334444555566667777888899990000111122223333444455556"
+    tier  = "T1"
+    vp_sig = mldsa_sign(dedup + tier + vp_id, vp_kp["privateKey"])
+    broadcast_calls.clear()
+    st, body = _post(f"{base}/v1/identity/register", {
+        "region": "US", "dedup_hash": dedup, "zk_proof": zk_proof,
+        "verification_tier": tier, "vp_id": vp_id, "vp_signature": vp_sig,
+    })
+    check("11.2 Identity register broadcasts", st == 201 and len(broadcast_calls) >= 1)
+    check("11.2 Broadcast has tx_id",          len(broadcast_calls) >= 1 and "tx_id" in broadcast_calls[0])
+    tip_id = body.get("tip_id", "")
+
+    # 11.3 Content register triggers broadcast
+    broadcast_calls.clear()
+    content_text = "Gossip broadcast wiring test content article."
+    content_hash = hash_content(content_text)
+    st, body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": tip_id, "origin_code": "OH",
+        "content": content_text,
+        "signature": mldsa_sign(content_hash + "OH", kp["privateKey"]),
+    })
+    check("11.3 Content register broadcasts", st == 201 and len(broadcast_calls) >= 1)
+    ctid = body.get("ctid", "")
+
+    # 11.4 Dispute triggers broadcast
+    broadcast_calls.clear()
+    if ctid:
+        st, body = _post(f"{base}/v1/content/{quote(ctid, safe='')}/dispute", {
+            "disputer_tip_id": tip_id, "reason": "gossip wiring test",
+        })
+        check("11.4 Dispute broadcasts",      st == 200 and len(broadcast_calls) >= 1)
+    else:
+        check("11.4 Dispute broadcasts",      False)  # skipped — no ctid
+
+    # 11.5 Revocation triggers broadcast
+    revoke_sig = mldsa_sign(tip_id + "REVOKE_VOLUNTARY" + "gossip_test", vp_kp["privateKey"])
+    broadcast_calls.clear()
+    st, body = _post(f"{base}/v1/revocations", {
+        "tip_id": tip_id, "tx_type": "REVOKE_VOLUNTARY",
+        "reason_code": "gossip_test", "issuing_vp_id": vp_id,
+        "signature": revoke_sig,
+    })
+    check("11.5 Revocation broadcasts",       st == 201 and len(broadcast_calls) >= 1)
+
+    server.shutdown()
+
+
 # ─── Runner ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1144,6 +1253,7 @@ if __name__ == "__main__":
     test_constants()
     test_api_endpoints()
     test_integration_flow()
+    test_gossip_broadcast_wiring()
 
     total = _passed + _failed
     print()

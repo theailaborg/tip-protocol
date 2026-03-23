@@ -57,14 +57,16 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 3. Build Express app
-  const app = createApp({ dag, scoring, config });
+  // 3. Build Express app (gossip ref injected after init — circular dep: gossip needs server needs app)
+  const gossipRef = { current: null };
+  const app = createApp({ dag, scoring, config, gossip: gossipRef });
 
   // 4. HTTP server
   const server = http.createServer(app);
 
   // 5. WebSocket gossip layer
   const gossip = initGossip(server, dag, config);
+  gossipRef.current = gossip;
   log.info(`Gossip server ready (WebSocket)`);
 
   // 6. Scheduled tasks (Merkle root publish, score recomputation, etc.)
