@@ -908,3 +908,172 @@ describe("Integration: Full Registration Flow", () => {
   });
 
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BLOCK 8: GOSSIP BROADCAST WIRING
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("Gossip Broadcast Wiring", () => {
+  let gossipApp, gossipDag, gossipScoring, broadcastCalls;
+  let gFoundingVpId, gFoundingVpKp;
+
+  beforeAll(async () => {
+    broadcastCalls = [];
+    const mockGossipRef = {
+      current: {
+        broadcast: (tx) => { broadcastCalls.push(tx); },
+      },
+    };
+
+    // Fresh DAG so no collisions with earlier test blocks
+    gossipDag     = initDAG({ dbPath: ":memory:" });
+    gossipScoring = initScoring(gossipDag, TEST_CONFIG);
+
+    gFoundingVpKp = generateMLDSAKeypair();
+    const allVps  = gossipDag.getAllVPs();
+    gFoundingVpId = allVps[0].vp_id;
+    gossipDag.saveVP({ ...allVps[0], public_key: gFoundingVpKp.publicKey });
+
+    gossipApp = createApp({ dag: gossipDag, scoring: gossipScoring, config: TEST_CONFIG, gossip: mockGossipRef });
+  });
+
+  afterAll(() => {
+    if (gossipDag && typeof gossipDag.close === "function") gossipDag.close();
+  });
+
+  beforeEach(() => {
+    broadcastCalls = [];
+  });
+
+  test("8.1 VP register triggers gossip broadcast", async () => {
+    const vpKp = generateMLDSAKeypair();
+    const name = "Gossip Test VP";
+    const tier = "green";
+    const sig  = mldsaSign(name + tier + vpKp.publicKey, gFoundingVpKp.privateKey);
+
+    const res = await request(gossipApp)
+      .post("/v1/vp/register")
+      .send({
+        name, public_key: vpKp.publicKey, jurisdiction_tier: tier,
+        council_signature: sig, approving_vp_id: gFoundingVpId,
+      });
+    expect([200, 201]).toContain(res.status);
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect(broadcastCalls[0]).toHaveProperty("tx_id");
+  });
+
+  test("8.2 Identity register triggers gossip broadcast", async () => {
+    const dedup = "88881111222233334444555566667777888899990000111122223333444455556";
+    const tier  = "T1";
+    const vpSig = mldsaSign(dedup + tier + gFoundingVpId, gFoundingVpKp.privateKey);
+
+    const res = await request(gossipApp)
+      .post("/v1/identity/register")
+      .send({
+        region: "US", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
+        verification_tier: tier, vp_id: gFoundingVpId, vp_signature: vpSig,
+      });
+    expect([200, 201]).toContain(res.status);
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("8.3 Content register triggers gossip broadcast", async () => {
+    // Use the identity we just registered
+    const allVps = gossipDag.getAllVPs();
+    const dedup  = "99991111222233334444555566667777888899990000111122223333444455556";
+    const tier   = "T1";
+    const vpSig  = mldsaSign(dedup + tier + gFoundingVpId, gFoundingVpKp.privateKey);
+
+    const idRes = await request(gossipApp)
+      .post("/v1/identity/register")
+      .send({
+        region: "US", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
+        verification_tier: tier, vp_id: gFoundingVpId, vp_signature: vpSig,
+      });
+    const tipId = idRes.body.tip_id;
+
+    broadcastCalls = [];
+    const content  = "Gossip broadcast wiring test content article.";
+    const authorKp = generateMLDSAKeypair();
+    const res = await request(gossipApp)
+      .post("/v1/content/register")
+      .send({
+        author_tip_id: tipId,
+        origin_code:   ORIGIN.OH,
+        content,
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
+      });
+    expect([200, 201]).toContain(res.status);
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("8.4 Revocation triggers gossip broadcast", async () => {
+    // Register a VP + identity, then revoke
+    const rVpKp  = generateMLDSAKeypair();
+    const rName  = "Revoke Broadcast VP";
+    const rTier  = "green";
+    const rSig   = mldsaSign(rName + rTier + rVpKp.publicKey, gFoundingVpKp.privateKey);
+
+    const vpRes = await request(gossipApp)
+      .post("/v1/vp/register")
+      .send({
+        name: rName, public_key: rVpKp.publicKey, jurisdiction_tier: rTier,
+        council_signature: rSig, approving_vp_id: gFoundingVpId,
+      });
+    const rVpId = vpRes.body.vp_id;
+
+    const rDedup = "77771111222233334444555566667777888899990000111122223333444455556";
+    const rIdTier = "T1";
+    const rVpSig  = mldsaSign(rDedup + rIdTier + rVpId, rVpKp.privateKey);
+    const idRes = await request(gossipApp)
+      .post("/v1/identity/register")
+      .send({
+        region: "US", dedup_hash: rDedup, zk_proof: MOCK_ZK_PROOF,
+        verification_tier: rIdTier, vp_id: rVpId, vp_signature: rVpSig,
+      });
+    const rTipId = idRes.body.tip_id;
+
+    broadcastCalls = [];
+    const revokeSig = mldsaSign(rTipId + TX_TYPES.REVOKE_VOLUNTARY + "gossip_test", rVpKp.privateKey);
+    const res = await request(gossipApp)
+      .post("/v1/revocations")
+      .send({
+        tip_id: rTipId, tx_type: TX_TYPES.REVOKE_VOLUNTARY,
+        reason_code: "gossip_test", issuing_vp_id: rVpId, signature: revokeSig,
+      });
+    expect([200, 201]).toContain(res.status);
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("8.5 Dispute triggers gossip broadcast", async () => {
+    // Register identity + content, then dispute
+    const dDedup = "66661111222233334444555566667777888899990000111122223333444455556";
+    const dTier  = "T1";
+    const dVpSig = mldsaSign(dDedup + dTier + gFoundingVpId, gFoundingVpKp.privateKey);
+
+    const idRes = await request(gossipApp)
+      .post("/v1/identity/register")
+      .send({
+        region: "US", dedup_hash: dDedup, zk_proof: MOCK_ZK_PROOF,
+        verification_tier: dTier, vp_id: gFoundingVpId, vp_signature: dVpSig,
+      });
+    const dTipId = idRes.body.tip_id;
+
+    const content  = "Dispute gossip broadcast test article.";
+    const authorKp = generateMLDSAKeypair();
+    const cRes = await request(gossipApp)
+      .post("/v1/content/register")
+      .send({
+        author_tip_id: dTipId, origin_code: ORIGIN.OH, content,
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
+      });
+    const ctid = cRes.body.ctid;
+
+    broadcastCalls = [];
+    const res = await request(gossipApp)
+      .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
+      .send({ disputer_tip_id: dTipId, reason: "gossip test" });
+    expect(res.status).toBe(200);
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});

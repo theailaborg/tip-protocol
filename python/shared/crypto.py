@@ -26,6 +26,17 @@ import secrets
 import time
 from typing import Any
 
+# liboqs shared library: tell liboqs-python where to find liboqs.dylib/.so
+# Homebrew (macOS) installs to /opt/homebrew; Linux typically to /usr/local
+import platform as _platform
+if "OQS_INSTALL_PATH" not in os.environ:
+    _candidates = ["/opt/homebrew", "/usr/local", "/usr"]
+    for _p in _candidates:
+        _lib_ext = ".dylib" if _platform.system() == "Darwin" else ".so"
+        if os.path.exists(os.path.join(_p, "lib", f"liboqs{_lib_ext}")):
+            os.environ["OQS_INSTALL_PATH"] = _p
+            break
+
 import oqs
 
 

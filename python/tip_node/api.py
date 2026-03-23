@@ -126,6 +126,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
     scoring          = None
     config           = None
     limiter          = None
+    gossip           = None
     node_private_key = None
     node_public_key  = None
 
@@ -159,6 +160,15 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         """Compute tx_id and sign with node private key."""
         tx["tx_id"] = compute_tx_id(tx)
         return sign_transaction(tx, self.node_private_key)
+
+    def _broadcast(self, tx: dict) -> None:
+        """Broadcast transaction to gossip peers (no-op if gossip not connected)."""
+        if not self.gossip:
+            return
+        try:
+            self.gossip.broadcast_tx(tx)
+        except Exception as exc:
+            log.error(f"Gossip broadcast failed for tx {tx.get('tx_id', '?')}: {exc}")
 
     def _rate_check(self) -> bool:
         ip = self.client_address[0]
@@ -381,6 +391,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                                   "layer": result.layer}); return
 
         self.dag.add_tx(tx)
+        self._broadcast(tx)
         self.dag.save_identity({
             "tip_id":            tip_id,
             "region":            region.upper(),
@@ -518,6 +529,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         status = "pending_review" if prescan["flagged"] else "verified"
         self.dag.add_tx(tx)
+        self._broadcast(tx)
         self.dag.save_content({
             "ctid":             ctid,
             "origin_code":      origin_code,
@@ -539,6 +551,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                               "probability": prescan["probability"], "auto": True},
             })
             self.dag.add_tx(flag_tx)
+            self._broadcast(flag_tx)
             log.info(f"Pre-scan flagged {ctid} — auto Stage 1 adjudication queued")
 
         score_data = self.scoring.get_score(author_tip_id)
@@ -613,6 +626,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(verify_tx)
+        self._broadcast(verify_tx)
         self.scoring.apply_score_event(
             rec.get("author_tip_id", ""), weighted_delta,
             f"Content verified by {verifier_tip_id}"
@@ -643,6 +657,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(dispute_tx)
+        self._broadcast(dispute_tx)
         self._send_json(200, {
             "success": True,
             "message": "Dispute filed. Stage 1 AI classifier will run within 60 seconds.",
@@ -709,6 +724,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         tx = self.dag.add_tx(revoke_tx)
+        self._broadcast(tx)
         self.dag.add_revocation(tip_id, tx_type, timestamp, tx["tx_id"])
 
         # Cascade: flag recent content for REVOKE_VP
@@ -725,6 +741,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                     "data":      {"ctid": c["ctid"], "reason": "issuer_revocation_cascade", "auto": True},
                 })
                 self.dag.add_tx(cascade_tx)
+                self._broadcast(cascade_tx)
             log.info(f"Revocation cascade: {len(recent)} records flagged for {tip_id}")
 
         log.info(f"Revocation: {tip_id} (type={tx_type}, by={issuing_vp_id})")
@@ -795,6 +812,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not result.valid:
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(vp_tx)
+        self._broadcast(vp_tx)
         self.dag.save_vp({
             "vp_id":             vp_id,
             "name":              name,
@@ -823,7 +841,7 @@ def _decode(s: str) -> str:
 
 # ─── Server factory ───────────────────────────────────────────────────────────
 
-def create_server(dag, scoring, config: dict) -> HTTPServer:
+def create_server(dag, scoring, config: dict, gossip=None) -> HTTPServer:
     """Create a threaded HTTPServer with the TIP API handler."""
     from socketserver import ThreadingMixIn
 
@@ -842,6 +860,7 @@ def create_server(dag, scoring, config: dict) -> HTTPServer:
     BoundHandler.scoring          = scoring
     BoundHandler.config           = config
     BoundHandler.limiter          = limiter
+    BoundHandler.gossip           = gossip
     BoundHandler.node_private_key = config.get("node_private_key")
     BoundHandler.node_public_key  = config.get("node_public_key")
 
