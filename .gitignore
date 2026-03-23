@@ -121,6 +121,8 @@ temp/
 *.temp
 *.bak
 *.backup
+issues.md
+todo.md
 
 # ─── Package locks (commit these for apps, not libraries) ────────────────────
 # Uncomment the lines below if this is a library package:

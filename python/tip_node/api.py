@@ -329,7 +329,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         zk_proof     = body.get("zk_proof") or body.get("zkProof")
         tier         = body.get("verification_tier", "T1")
         attested     = bool(body.get("social_attested") or body.get("socialAttested"))
-        founding     = bool(body.get("founding"))
+        # Founding status is determined by the genesis block, not the request.
+        # Only identities in genesis_ring (populated by seed script before launch)
+        # are founding members. The API always sets founding = false.
+        founding     = False
 
         if not vp_id:
             self._send_json(400, {"error": "vp_id is required"}); return
