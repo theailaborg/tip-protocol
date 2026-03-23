@@ -25,9 +25,10 @@ const { initGossip }       = require("./gossip");
 const { scheduledTasks }   = require("./scheduler");
 const { loadConfig }       = require("./config");
 const { log }              = require("./logger");
-const { generateMLDSAKeypair } = require("../../shared/crypto");
+const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 
 async function main() {
+  await initCrypto();
   const config = loadConfig();
 
   // Load or generate node signing keypair
