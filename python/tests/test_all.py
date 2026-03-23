@@ -1079,13 +1079,15 @@ def test_integration_flow() -> None:
     tip_id = id_body["tip_id"]
     check("Integration: Attested score = 550", id_body.get("score") == 550)
 
-    # Step 3: Register Content
-    content_hash = hash_content("Integration test: original human content for full flow")
+    # Step 3: Register Content (sign with author's private key from identity registration)
+    author_private_key = id_body["private_key"]
+    content_text = "Integration test: original human content for full flow"
+    content_hash = hash_content(content_text)
     st, ct_body = _post(f"{base}/v1/content/register", {
         "author_tip_id": tip_id,
         "origin_code":   "OH",
-        "content_hash":  content_hash,
-        "signature":     "integration-sig",
+        "content":       content_text,
+        "signature":     mldsa_sign(content_hash + "OH", author_private_key),
     })
     check("Integration: Content registered",   st == 201)
     ctid = ct_body["ctid"]

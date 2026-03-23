@@ -398,16 +398,11 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       const contentHash = providedHash || hashContent(content || "");
       const perceptHash = content ? perceptualHashText(content) : null;
 
-      // Verify signature: sig must cover (contentHash + origin_code)
+      // Verify signature: author must sign (contentHash + origin_code) with their private key
       const sigPayload = contentHash + origin_code;
-      const sigValid   = verifyTransaction(
-        { tx_type: "CONTENT_SIG", data: sigPayload, timestamp: "", prev: [] },
-        signature,
-        identity.public_key
-      );
-      // Note: in production enforce sigValid; here we accept but flag if invalid
+      const sigValid   = mldsaVerify(sigPayload, signature, identity.public_key);
       if (!sigValid) {
-        log.warn(`Content signature invalid for author ${author_tip_id}`);
+        return res.status(403).json({ error: "Content signature verification failed — signature does not match author public key" });
       }
 
       // v2 FIX-03: Pre-scan (calibrated thresholds, flag-but-mint)

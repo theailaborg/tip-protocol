@@ -860,8 +860,8 @@ describe("Integration: Full Registration Flow", () => {
     integrationTipId = idRes.body.tip_id;
     expect(integrationTipId).toBeDefined();
 
-    // Step 3: Register Content
-    const authorKp = generateMLDSAKeypair();
+    // Step 3: Register Content (sign with the author's private key from identity registration)
+    const authorPrivateKey = idRes.body.private_key;
     const content  = "An original human-written article about trust and identity on the internet.";
     const contentRes = await request(app)
       .post("/v1/content/register")
@@ -870,7 +870,7 @@ describe("Integration: Full Registration Flow", () => {
         origin_code:      ORIGIN.OH,
         content:          content,
         title:            "Trust and Identity",
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorPrivateKey),
       });
     expect([200, 201]).toContain(contentRes.status);
     const ctid = contentRes.body.ctid;
@@ -990,18 +990,18 @@ describe("Gossip Broadcast Wiring", () => {
         region: "US", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
         verification_tier: tier, vp_id: gFoundingVpId, vp_signature: vpSig,
       });
-    const tipId = idRes.body.tip_id;
+    const tipId         = idRes.body.tip_id;
+    const authorPrivKey = idRes.body.private_key;
 
     broadcastCalls = [];
     const content  = "Gossip broadcast wiring test content article.";
-    const authorKp = generateMLDSAKeypair();
     const res = await request(gossipApp)
       .post("/v1/content/register")
       .send({
         author_tip_id: tipId,
         origin_code:   ORIGIN.OH,
         content,
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorPrivKey),
       });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
@@ -1057,15 +1057,15 @@ describe("Gossip Broadcast Wiring", () => {
         region: "US", dedup_hash: dDedup, zk_proof: MOCK_ZK_PROOF,
         verification_tier: dTier, vp_id: gFoundingVpId, vp_signature: dVpSig,
       });
-    const dTipId = idRes.body.tip_id;
+    const dTipId      = idRes.body.tip_id;
+    const dAuthorPriv = idRes.body.private_key;
 
     const content  = "Dispute gossip broadcast test article.";
-    const authorKp = generateMLDSAKeypair();
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
       .send({
         author_tip_id: dTipId, origin_code: ORIGIN.OH, content,
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
+        signature: mldsaSign(hashContent(content) + ORIGIN.OH, dAuthorPriv),
       });
     const ctid = cRes.body.ctid;
 
