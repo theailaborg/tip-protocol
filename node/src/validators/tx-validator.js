@@ -150,6 +150,10 @@ function validateBusinessRules(tx) {
   switch (tx.tx_type) {
 
     case TX_TYPES.REGISTER_IDENTITY: {
+      // Founding members come only from genesis_ring (seed script), never from API transactions
+      if (d.founding === true) {
+        errors.push("founding flag cannot be set via transactions — founding members are defined in the genesis block");
+      }
       // TIP-ID format: tip://id/[REGION]-[16hex]
       if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
         errors.push(`Invalid TIP-ID format: "${d.tip_id}". Expected: tip://id/[REGION]-[16hex]`);

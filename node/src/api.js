@@ -164,7 +164,6 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
    *   vp_id             string   ID of issuing VP
    *   vp_signature      string   VP's ML-DSA-65 signature
    *   social_attested   boolean  true if 3 vouchers provided
-   *   founding          boolean  optional, for genesis ring
    */
   app.post("/v1/identity/register", async (req, res) => {
     try {
@@ -176,7 +175,6 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         vp_id,
         vp_signature,
         social_attested = false,
-        founding = false,
       } = req.body;
 
       if (!dedup_hash) return res.status(400).json({ error: "dedup_hash is required" });
@@ -221,6 +219,11 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       const tipId       = generateTIPID(region, keypair.publicKey);
 
       const registeredAt = new Date().toISOString();
+
+      // Founding status is determined by the genesis block, not the request.
+      // Only identities in GENESIS_PAYLOAD.genesis_ring (populated by seed script
+      // before launch) are founding members. The API always sets founding = false.
+      const founding = false;
 
       const txBody = {
         tx_type:   TX_TYPES.REGISTER_IDENTITY,

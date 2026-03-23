@@ -224,6 +224,9 @@ def _validate_business(tx: dict) -> ValidationResult:
     errors  = []
 
     if tx_type == TxType.REGISTER_IDENTITY:
+        # Founding members come only from genesis_ring (seed script), never from API transactions
+        if data.get("founding") is True:
+            errors.append("founding flag cannot be set via transactions — founding members are defined in the genesis block")
         tip_id = data.get("tip_id", "")
         if tip_id and not _TIP_ID_RE.match(tip_id):
             errors.append(
