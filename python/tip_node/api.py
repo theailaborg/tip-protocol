@@ -494,8 +494,17 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if self.dag.is_revoked(author_tip_id):
             self._send_json(403, {"error": f"Author TIP-ID is revoked: {author_tip_id}"}); return
 
+        if not signature or signature == "unsigned":
+            self._send_json(400, {"error": "signature is required (ML-DSA-65 over content_hash+origin_code)"}); return
+
         content_hash  = provided_hash or hash_content(content or "")
         percept_hash  = perceptual_hash_text(content) if content else None
+
+        # Verify signature: author must sign (content_hash + origin_code) with their private key
+        sig_payload = content_hash + origin_code
+        if not mldsa_verify(sig_payload, signature, identity.get("public_key", "")):
+            self._send_json(403, {"error": "Content signature verification failed — signature does not match author public key"}); return
+
         ctid          = generate_ctid(origin_code, content_hash, author_tip_id)
         registered_at = _utc_now()
 
