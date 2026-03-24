@@ -496,11 +496,12 @@ function initDAG(config) {
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
 function _writeGenesisBlock(store, config) {
   const {
-    GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH, getFoundingVP,
+    GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH,
+    GENESIS_TX_SIGNATURE, GENESIS_VP_TX_SIGNATURE, getFoundingVP,
   } = require("./genesis");
 
-  // Genesis transaction — content-addressed tx_id, full payload as data
-  store.saveTx({ ...GENESIS_TX, tx_id: GENESIS_TX_ID });
+  // Genesis transaction — content-addressed tx_id, pre-signed by founding VP
+  store.saveTx({ ...GENESIS_TX, tx_id: GENESIS_TX_ID, signature: GENESIS_TX_SIGNATURE });
 
   // Bootstrap founding VP from genesis payload (public key embedded by seed script)
   const foundingVP = getFoundingVP();
@@ -514,7 +515,7 @@ function _writeGenesisBlock(store, config) {
     registered_at:     GENESIS_TIMESTAMP,
   });
 
-  // VP registration transaction
+  // VP registration transaction — pre-signed by founding VP
   const vpTx = {
     tx_type:   TX_TYPES.VP_REGISTERED,
     timestamp: GENESIS_TIMESTAMP,
@@ -526,7 +527,7 @@ function _writeGenesisBlock(store, config) {
       public_key:        foundingVP.public_key,
     },
   };
-  store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx) });
+  store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx), signature: GENESIS_VP_TX_SIGNATURE });
 
   log.info(`Genesis block written. Chain: tip-mainnet-v2 | Hash: ${GENESIS_HASH.slice(0, 16)}...`);
   log.info(`Founding VP registered: ${foundingVP.vp_id}`);

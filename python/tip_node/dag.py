@@ -606,11 +606,11 @@ class DAG:
         """Write genesis block and founding VP on first boot."""
         from node.genesis import (
             GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH,
-            get_founding_vp,
+            GENESIS_TX_SIGNATURE, GENESIS_VP_TX_SIGNATURE, get_founding_vp,
         )
 
-        # Genesis transaction — content-addressed tx_id, full payload as data
-        self._store.save_tx({**GENESIS_TX, "tx_id": GENESIS_TX_ID})
+        # Genesis transaction — content-addressed tx_id, pre-signed by founding VP
+        self._store.save_tx({**GENESIS_TX, "tx_id": GENESIS_TX_ID, "signature": GENESIS_TX_SIGNATURE})
 
         # Bootstrap founding VP from genesis payload (public key embedded by seed script)
         founding_vp = get_founding_vp()
@@ -623,7 +623,7 @@ class DAG:
             "registered_at":     GENESIS_TIMESTAMP,
         })
 
-        # VP registration transaction
+        # VP registration transaction — pre-signed by founding VP
         vp_tx = {
             "tx_type":   TxType.VP_REGISTERED,
             "timestamp": GENESIS_TIMESTAMP,
@@ -635,7 +635,7 @@ class DAG:
                 "public_key":        founding_vp["public_key"],
             },
         }
-        self._store.save_tx({**vp_tx, "tx_id": compute_tx_id(vp_tx)})
+        self._store.save_tx({**vp_tx, "tx_id": compute_tx_id(vp_tx), "signature": GENESIS_VP_TX_SIGNATURE})
 
         with self._prev_lock:
             self._prev_ring = [compute_tx_id(vp_tx), GENESIS_TX_ID]

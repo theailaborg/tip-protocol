@@ -48,9 +48,15 @@ const {
   hashContent,
   perceptualHashText,
   signBody,
+  computeTxId,
+  signTransaction,
+  canonicalTx,
 } = require("../shared/crypto");
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL, getTier } = require("../shared/constants");
+const { initDAG }     = require("../node/src/dag");
+const { initScoring } = require("../node/src/scoring");
+const { loadConfig }  = require("../node/src/config");
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
@@ -196,14 +202,16 @@ async function embedFoundingVPKey() {
 
   for (const file of [genesisJsFile, genesisPyFile]) {
     let src = fs.readFileSync(file, "utf8");
-    if (src.includes("GENESIS_VP_PUBLIC_KEY_PLACEHOLDER")) {
-      src = src.replace("GENESIS_VP_PUBLIC_KEY_PLACEHOLDER", vpKeypair.publicKey);
-      fs.writeFileSync(file, src);
-      ok(`Embedded VP public key in ${path.basename(file)}`);
-    } else if (src.includes(vpKeypair.publicKey)) {
+    if (src.includes(vpKeypair.publicKey)) {
       info(`${path.basename(file)} already has the correct VP public key`);
     } else {
-      warn(`${path.basename(file)} has a different VP public key — not overwriting`);
+      // Replace placeholder or any existing key (hex string in quotes after public_key)
+      src = src.replace(
+        /(public_key['":\s]+)["']([a-f0-9]+|GENESIS_VP_PUBLIC_KEY_PLACEHOLDER)["']/,
+        `$1"${vpKeypair.publicKey}"`
+      );
+      fs.writeFileSync(file, src);
+      ok(`Embedded VP public key in ${path.basename(file)}`);
     }
   }
 
@@ -211,6 +219,44 @@ async function embedFoundingVPKey() {
   const genesisModule = require.resolve("../node/src/genesis");
   delete require.cache[genesisModule];
   // Also clear constants/crypto since genesis depends on them
+  Object.keys(require.cache).forEach(key => {
+    if (key.includes("genesis")) delete require.cache[key];
+  });
+
+  // Compute and embed bootstrap tx signatures (founding VP signs both)
+  // Re-read genesis module with the updated VP key
+  const freshGenesis = require("../node/src/genesis");
+
+  // Sign genesis tx
+  const genesisTxSig = mldsaSign(canonicalTx(freshGenesis.GENESIS_TX), vpKeypair.privateKey);
+  // Sign VP registration tx (same structure as initDAG builds)
+  const vpTxBody = {
+    tx_type:   "VP_REGISTERED",
+    timestamp: freshGenesis.GENESIS_TIMESTAMP,
+    prev:      [freshGenesis.GENESIS_TX_ID, freshGenesis.GENESIS_TX_ID],
+    data: {
+      vp_id:             freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
+      name:              freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
+      jurisdiction_tier: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction_tier,
+      public_key:        vpKeypair.publicKey,
+    },
+  };
+  const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey);
+
+  // Embed signatures in genesis.js
+  let gSrc = fs.readFileSync(genesisJsFile, "utf8");
+  gSrc = gSrc.replace(
+    /GENESIS_TX_SIGNATURE\s*=\s*"[^"]*"/,
+    `GENESIS_TX_SIGNATURE = "${genesisTxSig}"`
+  );
+  gSrc = gSrc.replace(
+    /GENESIS_VP_TX_SIGNATURE\s*=\s*"[^"]*"/,
+    `GENESIS_VP_TX_SIGNATURE = "${vpTxSig}"`
+  );
+  fs.writeFileSync(genesisJsFile, gSrc);
+  ok("Bootstrap tx signatures embedded in genesis.js");
+
+  // Clear require cache again so subsequent steps read updated signatures
   Object.keys(require.cache).forEach(key => {
     if (key.includes("genesis")) delete require.cache[key];
   });
@@ -275,6 +321,32 @@ async function mintGenesisBlock(rootKeys) {
   return genesisBlock;
 }
 
+// ─── Direct-mode DAG setup ──────────────────────────────────────────────────
+let _dag = null, _scoring = null, _nodeKp = null;
+
+function initDirectDAG() {
+  process.env.ZK_SKIP_VERIFY = "true";
+
+  _nodeKp = generateMLDSAKeypair();
+  const cfg = loadConfig();
+  cfg.dbPath         = path.join(DATA_DIR, "seed.db");
+  cfg.nodePrivateKey = _nodeKp.privateKey;
+  cfg.nodePublicKey  = _nodeKp.publicKey;
+
+  if (fs.existsSync(cfg.dbPath)) fs.unlinkSync(cfg.dbPath);
+
+  _dag     = initDAG(cfg);
+  _scoring = initScoring(_dag, cfg);
+
+  ok("Direct-mode DAG initialized");
+  label("DB path", cfg.dbPath);
+}
+
+function _nodeSigned(txBody) {
+  txBody.tx_id = computeTxId(txBody);
+  return signTransaction(txBody, _nodeKp.privateKey);
+}
+
 // ─── Step 4: Register The AI Lab as founding VP ───────────────────────────────
 async function registerFoundingVP(genesisBlock, vpKeypair) {
   head("STEP 4: Register The AI Lab Verification Provider");
@@ -288,36 +360,25 @@ async function registerFoundingVP(genesisBlock, vpKeypair) {
   let vpRecord;
 
   if (useDirectMode) {
-    // Direct mode: build the record locally
-    vpRecord = {
-      vp_id:             foundingVP.vp_id,
-      name:              foundingVP.name,
-      jurisdiction_tier: foundingVP.jurisdiction_tier,
-      public_key:        vpKeypair.publicKey,
-      status:            "active",
-      registered_at:     new Date().toISOString(),
-    };
-    ok("Founding VP record built (direct mode)");
+    // initDAG already bootstrapped the founding VP — update with real key
+    vpRecord = _dag.getVP(foundingVP.vp_id);
+    if (!vpRecord) throw new Error("Founding VP not found in DAG after bootstrap");
+    _dag.saveVP({ ...vpRecord, public_key: vpKeypair.publicKey });
+    vpRecord = _dag.getVP(foundingVP.vp_id);
+    ok("Founding VP updated in DAG (direct mode)");
   } else {
-    // API mode: register via REST endpoint
     try {
+      const vpFields = {
+        name: foundingVP.name, jurisdiction_tier: foundingVP.jurisdiction_tier,
+        public_key: vpKeypair.publicKey, approving_vp_id: foundingVP.vp_id,
+      };
       vpRecord = await post(`${nodeUrl}/v1/vp/register`, {
-        name:              foundingVP.name,
-        jurisdiction_tier: foundingVP.jurisdiction_tier,
-        public_key:        vpKeypair.publicKey,
+        ...vpFields, council_signature: signBody(vpFields, vpKeypair.privateKey),
       });
       ok("Founding VP registered via API");
     } catch (e) {
       warn(`API registration failed: ${e.message}`);
-      info("Continuing in direct mode...");
-      vpRecord = {
-        vp_id:             foundingVP.vp_id,
-        name:              foundingVP.name,
-        jurisdiction_tier: foundingVP.jurisdiction_tier,
-        public_key:        vpKeypair.publicKey,
-        status:            "active",
-        registered_at:     new Date().toISOString(),
-      };
+      throw e;
     }
   }
 
@@ -384,6 +445,50 @@ async function createGenesisRing(vpRecord, vpKeypair) {
     let regResult;
 
     if (useDirectMode) {
+      // VP signs the identity fields (same as API verifies)
+      const idFields = {
+        region: member.region, dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+        verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
+      };
+      const vpSignature = signBody(idFields, vpKeypair.privateKey);
+
+      const registeredAt = new Date().toISOString();
+      const txBody = {
+        tx_type:   TX_TYPES.REGISTER_IDENTITY,
+        timestamp: registeredAt,
+        prev:      _dag.getRecentPrev(),
+        data: {
+          tip_id:            tipId,
+          region:            member.region.toUpperCase(),
+          public_key:        keypair.publicKey,
+          root_public_key:   rootKp.publicKey,
+          vp_id:             vpRecord.vp_id,
+          verification_tier: "T1",
+          social_attested:   true,
+          founding:          false,
+          dedup_hash:        mockDedupHash,
+          zk_proof:          mockZkProof,
+          vp_signature:      vpSignature,
+        },
+      };
+      const signedTx = _nodeSigned(txBody);
+      const tx = _dag.addTx(signedTx);
+
+      _dag.saveIdentity({
+        tip_id:          tipId,
+        region:          member.region.toUpperCase(),
+        public_key:      keypair.publicKey,
+        root_public_key: rootKp.publicKey,
+        vp_id:           vpRecord.vp_id,
+        verification_tier: "T1",
+        founding:        false,
+        status:          "active",
+        registered_at:   registeredAt,
+        tx_id:           tx.tx_id,
+      });
+      _dag.addDedupHash(mockDedupHash);
+      _dag.setScore(tipId, 550, 0);
+
       regResult = {
         tip_id:          tipId,
         public_key:      keypair.publicKey,
@@ -391,8 +496,9 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         root_public_key: rootKp.publicKey,
         root_private_key: rootKp.privateKey,
         score:           550,
-        registered_at:   new Date().toISOString(),
+        registered_at:   registeredAt,
         vp_id:           vpRecord.vp_id,
+        tx_id:           tx.tx_id,
       };
     } else {
       try {
@@ -486,6 +592,39 @@ async function registerSampleContent(identities) {
     let result;
 
     if (useDirectMode) {
+      const registeredAt = new Date().toISOString();
+      const perceptHash  = perceptualHashText(sample.content);
+
+      const contentTxBody = {
+        tx_type:   TX_TYPES.REGISTER_CONTENT,
+        timestamp: registeredAt,
+        prev:      _dag.getRecentPrev(),
+        data: {
+          ctid,
+          origin_code:       sample.origin,
+          origin_label:      ORIGIN_LABELS[sample.origin],
+          content_hash:      contentHash,
+          perceptual_hash:   perceptHash,
+          author_tip_id:     author.tip_id,
+          signature,
+          prescan_flagged:   false,
+          prescan_probability: 0,
+        },
+      };
+      const signedContentTx = _nodeSigned(contentTxBody);
+      const tx = _dag.addTx(signedContentTx);
+
+      _dag.saveContent({
+        ctid,
+        origin_code:    sample.origin,
+        content_hash:   contentHash,
+        perceptual_hash: perceptHash,
+        author_tip_id:  author.tip_id,
+        status:         "verified",
+        registered_at:  registeredAt,
+        tx_id:          tx.tx_id,
+      });
+
       result = {
         ctid,
         origin_code:   sample.origin,
@@ -493,14 +632,8 @@ async function registerSampleContent(identities) {
         content_hash:  contentHash,
         author_tip_id: author.tip_id,
         status:        "verified",
-        registered_at: new Date().toISOString(),
-        http_headers: {
-          "TIP-Author":      author.tip_id,
-          "TIP-Content":     ctid,
-          "TIP-Origin":      ORIGIN_LABELS[sample.origin].toLowerCase().replace(/ /g, "-"),
-          "TIP-Trust-Score": author.score.toString(),
-          "TIP-Signature":   signature,
-        },
+        registered_at: registeredAt,
+        tx_id:         tx.tx_id,
       };
     } else {
       try {
@@ -525,10 +658,11 @@ async function registerSampleContent(identities) {
 }
 
 // ─── Step 7: Full DAG verification ────────────────────────────────────────────
-async function verifyDAGState(genesisBlock, vpRecord, identities, content) {
+async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content) {
   head("STEP 7: DAG State Verification");
 
   const checks = [];
+  const { mldsaVerify, verifyTxId } = require("../shared/crypto");
 
   // Genesis hash integrity
   const expectedHash = computeGenesisHash(GENESIS_PAYLOAD);
@@ -538,11 +672,12 @@ async function verifyDAGState(genesisBlock, vpRecord, identities, content) {
     detail: `${genesisBlock.genesis_hash.slice(0,32)}...`,
   });
 
-  // Genesis signature
+  // Genesis signature — real verification
+  const sigValid = mldsaVerify(genesisBlock.genesis_hash, genesisBlock.signature, genesisBlock.signer_public_key);
   checks.push({
-    name: "Genesis signature",
-    pass: !!genesisBlock.signature,
-    detail: `${(genesisBlock.signature||"").slice(0,24)}...`,
+    name: "Genesis signature verified",
+    pass: sigValid,
+    detail: sigValid ? "ML-DSA-65 valid" : "INVALID",
   });
 
   // Chain ID
@@ -558,6 +693,61 @@ async function verifyDAGState(genesisBlock, vpRecord, identities, content) {
     pass: !!vpRecord && !!vpRecord.vp_id,
     detail: vpRecord?.vp_id || "MISSING",
   });
+
+  // VP public key matches genesis
+  const updatedGenesis = require("../node/src/genesis");
+  const genesisVpKey = updatedGenesis.GENESIS_PAYLOAD.founding_vp.public_key;
+  checks.push({
+    name: "VP key matches genesis payload",
+    pass: (vpRecord.public_key || vpKeypair.publicKey) === genesisVpKey,
+    detail: genesisVpKey ? genesisVpKey.slice(0, 24) + "..." : "MISSING",
+  });
+
+  // DAG tx count (direct mode)
+  if (_dag) {
+    const txCount = _dag.count();
+    checks.push({
+      name: "DAG transaction count",
+      pass: txCount >= 2 + identities.length + content.length,
+      detail: `${txCount} txs (expected >= ${2 + identities.length + content.length})`,
+    });
+
+    // Verify each identity exists in DAG
+    let idOk = 0;
+    for (const id of identities) {
+      const rec = _dag.getIdentity(id.tip_id);
+      if (rec && rec.status === "active") idOk++;
+    }
+    checks.push({
+      name: "Identities in DAG",
+      pass: idOk === identities.length,
+      detail: `${idOk} / ${identities.length}`,
+    });
+
+    // Verify each content exists in DAG
+    let ctOk = 0;
+    for (const c of content) {
+      const rec = _dag.getContent(c.ctid);
+      if (rec) ctOk++;
+    }
+    checks.push({
+      name: "Content in DAG",
+      pass: ctOk === content.length,
+      detail: `${ctOk} / ${content.length}`,
+    });
+
+    // Verify tx_ids are content-addressed
+    const allTxs = _dag.getAllTxs();
+    let txIdOk = 0;
+    for (const tx of allTxs) {
+      if (verifyTxId(tx)) txIdOk++;
+    }
+    checks.push({
+      name: "All tx_ids content-addressed",
+      pass: txIdOk === allTxs.length,
+      detail: `${txIdOk} / ${allTxs.length}`,
+    });
+  }
 
   // Genesis ring
   checks.push({
@@ -715,6 +905,9 @@ async function main() {
     // Step 3: Genesis block (uses updated genesis payload with VP public key)
     const genesisBlock = await mintGenesisBlock(rootKeys);
 
+    // Step 3b: Initialize real DAG for direct mode
+    if (useDirectMode) initDirectDAG();
+
     // Step 4: Founding VP
     const { vpRecord } = await registerFoundingVP(genesisBlock, vpKeypair);
 
@@ -725,7 +918,7 @@ async function main() {
     const content = await registerSampleContent(identities);
 
     // Step 7: Verification
-    const allPass = await verifyDAGState(genesisBlock, vpRecord, identities, content);
+    const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
 
     // Step 8: Write output
     const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content);
@@ -737,6 +930,7 @@ async function main() {
     label("Founding VP",         output.founding_vp.vp_id);
     label("Genesis ring members", output.genesis_ring.length.toString());
     label("Sample content",      `${output.sample_content.length} records (OH, AA, AG, MX)`);
+    if (_dag) label("DAG transactions", `${_dag.count()}`);
     label("Validation",          allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
     console.log();
     ok(`${T.bold}TIP™ Protocol genesis complete.${T.reset}`);
@@ -746,7 +940,14 @@ async function main() {
       process.exit(1);
     }
 
+    // Close DAG
+    if (_dag) {
+      _dag.close();
+      ok(`DAG closed. Seed DB: ${path.join(DATA_DIR, "seed.db")}`);
+    }
+
   } catch (err) {
+    if (_dag) _dag.close();
     console.error(`\n${T.red}${T.bold}SEED FAILED:${T.reset} ${err.message}`);
     if (process.env.TIP_LOG_LEVEL === "debug") console.error(err.stack);
     process.exit(1);
