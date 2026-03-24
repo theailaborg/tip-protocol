@@ -208,6 +208,17 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def sign_body(fields: dict, private_key: str) -> str:
+    """Sign a set of fields: sign(shake256(canonicalJson(fields)), privateKey)."""
+    return mldsa_sign(shake256(canonical_json(fields)), private_key)
+
+
+def verify_body_signature(body: dict, signature: str, public_key: str, fields: list[str]) -> bool:
+    """Verify a body signature over only the specified fields."""
+    payload = {f: body[f] for f in fields if f in body}
+    return mldsa_verify(shake256(canonical_json(payload)), signature, public_key)
+
+
 # ─── Content-addressed transaction ID ─────────────────────────────────────────
 
 def canonical_tx(tx: dict) -> str:

@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from shared.crypto import (
-    shake256, generate_mldsa_keypair, compute_tx_id, verify_tx_id, canonical_json
+    shake256, compute_tx_id, verify_tx_id, canonical_json
 )
 from shared.constants import TxType
 from tip_node.logger import get_logger
@@ -626,14 +626,13 @@ class DAG:
         }
         self._store.save_tx(genesis_tx)
 
-        # Bootstrap founding VP
+        # Bootstrap founding VP from genesis payload (public key embedded by seed script)
         founding_vp = get_founding_vp()
-        vp_keypair  = generate_mldsa_keypair()
         self._store.save_vp({
             "vp_id":             founding_vp["vp_id"],
             "name":              founding_vp["name"],
             "jurisdiction_tier": founding_vp["jurisdiction_tier"],
-            "public_key":        vp_keypair["publicKey"],
+            "public_key":        founding_vp["public_key"],
             "status":            "active",
             "registered_at":     GENESIS_TIMESTAMP,
         })
@@ -647,7 +646,7 @@ class DAG:
                 "vp_id":             founding_vp["vp_id"],
                 "name":              founding_vp["name"],
                 "jurisdiction_tier": founding_vp["jurisdiction_tier"],
-                "public_key":        vp_keypair["publicKey"],
+                "public_key":        founding_vp["public_key"],
             },
             "signature": "genesis-vp-bootstrap",
         }
