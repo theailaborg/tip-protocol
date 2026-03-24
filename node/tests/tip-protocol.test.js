@@ -54,6 +54,19 @@ const { initScoring }       = require(path.join(SRC, "scoring"));
 const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 const { createApp }     = require(path.join(SRC, "api"));
 
+// ─── Full-body signature helpers ────────────────────────────────────────────
+function canonicalJson(obj) {
+  if (obj === null || obj === undefined) return String(obj);
+  if (typeof obj !== "object") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
+  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+}
+
+function signBody(body, privateKey) {
+  const hash = shake256(canonicalJson(body));
+  return mldsaSign(hash, privateKey);
+}
+
 // ─── Test Fixtures ─────────────────────────────────────────────────────────────
 
 let keypair1, keypair2, vpKeypair;
@@ -607,19 +620,14 @@ describe("REST API", () => {
 
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
-    const councilSig = mldsaSign(
-      "Test VP UK" + "green" + testVpKp.publicKey,
-      foundingVpKp.privateKey
-    );
+    const vpFields = {
+      name: "Test VP UK", jurisdiction_tier: "green",
+      public_key: testVpKp.publicKey, approving_vp_id: foundingVpId,
+    };
+    const councilSig = signBody(vpFields, foundingVpKp.privateKey);
     const res = await request(app)
       .post("/v1/vp/register")
-      .send({
-        name:              "Test VP UK",
-        public_key:        testVpKp.publicKey,
-        jurisdiction_tier: "green",
-        council_signature: councilSig,
-        approving_vp_id:   foundingVpId,
-      });
+      .send({ ...vpFields, council_signature: councilSig });
     expect([200, 201]).toContain(res.status);
     expect(res.body.vp_id).toBeDefined();
     testVpId = res.body.vp_id;
@@ -633,23 +641,15 @@ describe("REST API", () => {
   });
 
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
-    // VP signs: dedup_hash + verification_tier + vp_id
-    const vpId      = testVpId;
-    const tier      = "T1";
-    const vpPayload = MOCK_DEDUP_HASH + tier + vpId;
-    const vpSig     = mldsaSign(vpPayload, testVpKp.privateKey);
+    const idFields = {
+      region: "DE", dedup_hash: MOCK_DEDUP_HASH, zk_proof: MOCK_ZK_PROOF,
+      verification_tier: "T1", vp_id: testVpId, social_attested: false,
+    };
+    const vpSig = signBody(idFields, testVpKp.privateKey);
 
     const res = await request(app)
       .post("/v1/identity/register")
-      .send({
-        region:            "DE",
-        vp_id:             vpId,
-        vp_signature:      vpSig,
-        dedup_hash:        MOCK_DEDUP_HASH,
-        zk_proof:          MOCK_ZK_PROOF,
-        verification_tier: tier,
-        attested:          false,
-      });
+      .send({ ...idFields, vp_signature: vpSig, attested: false });
     expect([200, 201]).toContain(res.status);
     expect(res.body.tip_id).toBeDefined();
   });
@@ -704,20 +704,11 @@ describe("REST API", () => {
     });
     dag.setScore(authorId, 500, 0);
     const content = "This is a test article written by a human author with enough words to pass.";
-    const contentHash = hashContent(content);
-    const sigTx = signTransaction(
-      { tx_type: "CONTENT_SIG", data: contentHash + ORIGIN.OH, timestamp: "", prev: [] },
-      authorKp.privateKey
-    );
+    const signedFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content };
+    const body = { ...signedFields, title: "Test Article", signature: signBody(signedFields, authorKp.privateKey) };
     const res = await request(app)
       .post("/v1/content/register")
-      .send({
-        author_tip_id: authorId,
-        origin_code:   ORIGIN.OH,
-        content:       content,
-        title:         "Test Article",
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorKp.privateKey),
-      });
+      .send(body);
     expect([200, 201]).toContain(res.status);
     expect(res.body.ctid).toMatch(/^tip:\/\/c\/OH-/);
     expect(res.body.status).toBeDefined();
@@ -746,13 +737,21 @@ describe("REST API", () => {
       author_tip_id: "tip://id/US-disp001",
       status: "verified", registered_at: new Date().toISOString(),
     });
+    // Create a disputer identity with known keypair
+    const disputerKp = generateMLDSAKeypair();
+    const disputerId = generateTIPID("US", disputerKp.publicKey);
+    dag.saveIdentity({
+      tip_id: disputerId, region: "US", public_key: disputerKp.publicKey,
+      status: "active", vp_id: testVpId, verified_at: new Date().toISOString(),
+    });
+    const disputeFields = {
+      disputer_tip_id: disputerId,
+      reason: "AI classifier detected probable AI generation in OH-declared content",
+      evidence_hash: shake256("classifier output evidence"),
+    };
     const res = await request(app)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
-      .send({
-        disputer_tip_id: testVpId,
-        reason:          "AI classifier detected probable AI generation in OH-declared content",
-        evidence_hash:   shake256("classifier output evidence"),
-      });
+      .send({ ...disputeFields, signature: signBody(disputeFields, disputerKp.privateKey) });
     expect([200, 201]).toContain(res.status);
     expect(res.body.success).toBe(true);
   });
@@ -771,17 +770,14 @@ describe("REST API", () => {
       status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
-    const reasonCode = "VOLUNTARY";
-    const vpSig = mldsaSign(tipId + TX_TYPES.REVOKE_VOLUNTARY + reasonCode, testVpKp.privateKey);
+    const revokeFields = {
+      tx_type: TX_TYPES.REVOKE_VOLUNTARY, tip_id: tipId,
+      reason_code: "VOLUNTARY", issuing_vp_id: testVpId,
+    };
+    const vpSig = signBody(revokeFields, testVpKp.privateKey);
     const res = await request(app)
       .post("/v1/revocations")
-      .send({
-        tip_id:        tipId,
-        tx_type:       TX_TYPES.REVOKE_VOLUNTARY,
-        reason_code:   reasonCode,
-        issuing_vp_id: testVpId,
-        signature:     vpSig,
-      });
+      .send({ ...revokeFields, signature: vpSig });
     expect([200, 201]).toContain(res.status);
   });
 
@@ -820,42 +816,28 @@ describe("Integration: Full Registration Flow", () => {
     integrationKp = generateMLDSAKeypair();
 
     // Step 1: Register VP (approved by founding VP)
-    const intCouncilSig = mldsaSign(
-      "Integration Test VP SG" + "green" + integrationKp.publicKey,
-      foundingVpKp.privateKey
-    );
+    const vpFields = {
+      name: "Integration Test VP SG", jurisdiction_tier: "green",
+      public_key: integrationKp.publicKey, approving_vp_id: foundingVpId,
+    };
+    const intCouncilSig = signBody(vpFields, foundingVpKp.privateKey);
     const vpRes = await request(app)
       .post("/v1/vp/register")
-      .set("Authorization", `Bearer ${TEST_CONFIG.adminApiKey}`)
-      .send({
-        name:              "Integration Test VP SG",
-        public_key:        integrationKp.publicKey,
-        jurisdiction_tier: "green",
-        country:           "SG",
-        council_signature: intCouncilSig,
-        approving_vp_id:   foundingVpId,
-      });
+      .send({ ...vpFields, country: "SG", council_signature: intCouncilSig });
     expect([200, 201]).toContain(vpRes.status);
     integrationVpId = vpRes.body.vp_id;
 
     // Step 2: Register Identity
-    // dedup_hash must be a decimal field element (Poseidon output) — not hex
-    const idDedup   = "99887766554433221100998877665544332211009988776655443322110099887";
-    const intVpId   = integrationVpId;
-    const intTier   = "T1";
-    const intVpSig  = mldsaSign(idDedup + intTier + intVpId, integrationKp.privateKey);
+    const idFields = {
+      region: "SG", dedup_hash: "99887766554433221100998877665544332211009988776655443322110099887",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: integrationVpId, social_attested: false,
+    };
+    const intVpSig = signBody(idFields, integrationKp.privateKey);
 
     const idRes = await request(app)
       .post("/v1/identity/register")
-      .send({
-        region:            "SG",
-        vp_id:             intVpId,
-        vp_signature:      intVpSig,
-        dedup_hash:        idDedup,
-        zk_proof:          MOCK_ZK_PROOF,
-        verification_tier: intTier,
-        attested:          false,
-      });
+      .send({ ...idFields, vp_signature: intVpSig });
     expect([200, 201]).toContain(idRes.status);
     integrationTipId = idRes.body.tip_id;
     expect(integrationTipId).toBeDefined();
@@ -863,15 +845,10 @@ describe("Integration: Full Registration Flow", () => {
     // Step 3: Register Content (sign with the author's private key from identity registration)
     const authorPrivateKey = idRes.body.private_key;
     const content  = "An original human-written article about trust and identity on the internet.";
+    const contentFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content };
     const contentRes = await request(app)
       .post("/v1/content/register")
-      .send({
-        author_tip_id:    integrationTipId,
-        origin_code:      ORIGIN.OH,
-        content:          content,
-        title:            "Trust and Identity",
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorPrivateKey),
-      });
+      .send({ ...contentFields, title: "Trust and Identity", signature: signBody(contentFields, authorPrivateKey) });
     expect([200, 201]).toContain(contentRes.status);
     const ctid = contentRes.body.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
@@ -888,22 +865,16 @@ describe("Integration: Full Registration Flow", () => {
     const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG");
     dag.addDedupHash(dedup);
 
-    const dupVpId  = integrationVpId;
-    const dupTier  = "T1";
-    const dupVpSig = mldsaSign(dedup + dupTier + dupVpId, integrationKp.privateKey);
+    const dupFields = {
+      region: "SG", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
+      verification_tier: "T1", vp_id: integrationVpId, social_attested: false,
+    };
+    const dupVpSig = signBody(dupFields, integrationKp.privateKey);
 
     // Try registering the same person twice
     const res = await request(app)
       .post("/v1/identity/register")
-      .send({
-        region:            "SG",
-        vp_id:             dupVpId,
-        vp_signature:      dupVpSig,
-        dedup_hash:        dedup,    // same dedup hash — should be rejected
-        zk_proof:          MOCK_ZK_PROOF,
-        verification_tier: dupTier,
-        attested:          false,
-      });
+      .send({ ...dupFields, vp_signature: dupVpSig });
     expect([400, 403, 409, 422]).toContain(res.status);
   });
 
@@ -947,132 +918,118 @@ describe("Gossip Broadcast Wiring", () => {
 
   test("8.1 VP register triggers gossip broadcast", async () => {
     const vpKp = generateMLDSAKeypair();
-    const name = "Gossip Test VP";
-    const tier = "green";
-    const sig  = mldsaSign(name + tier + vpKp.publicKey, gFoundingVpKp.privateKey);
+    const vpFields = {
+      name: "Gossip Test VP", jurisdiction_tier: "green",
+      public_key: vpKp.publicKey, approving_vp_id: gFoundingVpId,
+    };
+    const sig = signBody(vpFields, gFoundingVpKp.privateKey);
 
     const res = await request(gossipApp)
       .post("/v1/vp/register")
-      .send({
-        name, public_key: vpKp.publicKey, jurisdiction_tier: tier,
-        council_signature: sig, approving_vp_id: gFoundingVpId,
-      });
+      .send({ ...vpFields, council_signature: sig });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
     expect(broadcastCalls[0]).toHaveProperty("tx_id");
   });
 
   test("8.2 Identity register triggers gossip broadcast", async () => {
-    const dedup = "88881111222233334444555566667777888899990000111122223333444455556";
-    const tier  = "T1";
-    const vpSig = mldsaSign(dedup + tier + gFoundingVpId, gFoundingVpKp.privateKey);
+    const idFields = {
+      region: "US", dedup_hash: "88881111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: gFoundingVpId, social_attested: false,
+    };
+    const vpSig = signBody(idFields, gFoundingVpKp.privateKey);
 
     const res = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({
-        region: "US", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
-        verification_tier: tier, vp_id: gFoundingVpId, vp_signature: vpSig,
-      });
+      .send({ ...idFields, vp_signature: vpSig });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test("8.3 Content register triggers gossip broadcast", async () => {
-    // Use the identity we just registered
-    const allVps = gossipDag.getAllVPs();
-    const dedup  = "99991111222233334444555566667777888899990000111122223333444455556";
-    const tier   = "T1";
-    const vpSig  = mldsaSign(dedup + tier + gFoundingVpId, gFoundingVpKp.privateKey);
+    const idFields = {
+      region: "US", dedup_hash: "99991111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: gFoundingVpId, social_attested: false,
+    };
+    const vpSig = signBody(idFields, gFoundingVpKp.privateKey);
 
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({
-        region: "US", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
-        verification_tier: tier, vp_id: gFoundingVpId, vp_signature: vpSig,
-      });
+      .send({ ...idFields, vp_signature: vpSig });
     const tipId         = idRes.body.tip_id;
     const authorPrivKey = idRes.body.private_key;
 
     broadcastCalls = [];
     const content  = "Gossip broadcast wiring test content article.";
+    const ctFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content };
     const res = await request(gossipApp)
       .post("/v1/content/register")
-      .send({
-        author_tip_id: tipId,
-        origin_code:   ORIGIN.OH,
-        content,
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, authorPrivKey),
-      });
+      .send({ ...ctFields, signature: signBody(ctFields, authorPrivKey) });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test("8.4 Revocation triggers gossip broadcast", async () => {
     // Register a VP + identity, then revoke
-    const rVpKp  = generateMLDSAKeypair();
-    const rName  = "Revoke Broadcast VP";
-    const rTier  = "green";
-    const rSig   = mldsaSign(rName + rTier + rVpKp.publicKey, gFoundingVpKp.privateKey);
-
+    const rVpKp = generateMLDSAKeypair();
+    const vpFields = {
+      name: "Revoke Broadcast VP", jurisdiction_tier: "green",
+      public_key: rVpKp.publicKey, approving_vp_id: gFoundingVpId,
+    };
     const vpRes = await request(gossipApp)
       .post("/v1/vp/register")
-      .send({
-        name: rName, public_key: rVpKp.publicKey, jurisdiction_tier: rTier,
-        council_signature: rSig, approving_vp_id: gFoundingVpId,
-      });
+      .send({ ...vpFields, council_signature: signBody(vpFields, gFoundingVpKp.privateKey) });
     const rVpId = vpRes.body.vp_id;
 
-    const rDedup = "77771111222233334444555566667777888899990000111122223333444455556";
-    const rIdTier = "T1";
-    const rVpSig  = mldsaSign(rDedup + rIdTier + rVpId, rVpKp.privateKey);
+    const idFields = {
+      region: "US", dedup_hash: "77771111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: rVpId, social_attested: false,
+    };
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({
-        region: "US", dedup_hash: rDedup, zk_proof: MOCK_ZK_PROOF,
-        verification_tier: rIdTier, vp_id: rVpId, vp_signature: rVpSig,
-      });
+      .send({ ...idFields, vp_signature: signBody(idFields, rVpKp.privateKey) });
     const rTipId = idRes.body.tip_id;
 
     broadcastCalls = [];
-    const revokeSig = mldsaSign(rTipId + TX_TYPES.REVOKE_VOLUNTARY + "gossip_test", rVpKp.privateKey);
+    const revokeFields = {
+      tx_type: TX_TYPES.REVOKE_VOLUNTARY, tip_id: rTipId,
+      reason_code: "gossip_test", issuing_vp_id: rVpId,
+    };
     const res = await request(gossipApp)
       .post("/v1/revocations")
-      .send({
-        tip_id: rTipId, tx_type: TX_TYPES.REVOKE_VOLUNTARY,
-        reason_code: "gossip_test", issuing_vp_id: rVpId, signature: revokeSig,
-      });
+      .send({ ...revokeFields, signature: signBody(revokeFields, rVpKp.privateKey) });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test("8.5 Dispute triggers gossip broadcast", async () => {
     // Register identity + content, then dispute
-    const dDedup = "66661111222233334444555566667777888899990000111122223333444455556";
-    const dTier  = "T1";
-    const dVpSig = mldsaSign(dDedup + dTier + gFoundingVpId, gFoundingVpKp.privateKey);
-
+    const dIdFields = {
+      region: "US", dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: gFoundingVpId, social_attested: false,
+    };
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({
-        region: "US", dedup_hash: dDedup, zk_proof: MOCK_ZK_PROOF,
-        verification_tier: dTier, vp_id: gFoundingVpId, vp_signature: dVpSig,
-      });
+      .send({ ...dIdFields, vp_signature: signBody(dIdFields, gFoundingVpKp.privateKey) });
     const dTipId      = idRes.body.tip_id;
     const dAuthorPriv = idRes.body.private_key;
 
     const content  = "Dispute gossip broadcast test article.";
+    const ctFields = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content };
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
-      .send({
-        author_tip_id: dTipId, origin_code: ORIGIN.OH, content,
-        signature: mldsaSign(hashContent(content) + ORIGIN.OH, dAuthorPriv),
-      });
+      .send({ ...ctFields, signature: signBody(ctFields, dAuthorPriv) });
     const ctid = cRes.body.ctid;
 
     broadcastCalls = [];
+    const disputeFields = { disputer_tip_id: dTipId, reason: "gossip test" };
     const res = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
-      .send({ disputer_tip_id: dTipId, reason: "gossip test" });
+      .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
     expect(res.status).toBe(200);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
   });

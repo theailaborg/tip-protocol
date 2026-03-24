@@ -49,6 +49,24 @@ function nodeSigned(txBody, config) {
   return signTransaction(txBody, config.nodePrivateKey);
 }
 
+// Deterministic JSON for full-body signature verification
+function canonicalJson(obj) {
+  if (obj === null || obj === undefined) return String(obj);
+  if (typeof obj !== "object") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
+  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+}
+
+// Verify body signature over required fields only (ignores extra client fields)
+function verifyBodySignature(body, signature, publicKey, fields) {
+  const payload = {};
+  for (const f of fields) {
+    if (body[f] !== undefined) payload[f] = body[f];
+  }
+  const hash = shake256(canonicalJson(payload));
+  return mldsaVerify(hash, signature, publicKey);
+}
+
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
@@ -193,9 +211,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!vp_signature) {
         return res.status(400).json({ error: "vp_signature is required" });
       }
-      const vpPayload = dedup_hash + verification_tier + vp_id;
-      const vpSigValid = mldsaVerify(vpPayload, vp_signature, vp.public_key);
-      if (!vpSigValid) {
+      const VP_IDENTITY_FIELDS = ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+      if (!verifyBodySignature(req.body, vp_signature, vp.public_key, VP_IDENTITY_FIELDS)) {
         return res.status(403).json({ error: "VP signature verification failed — signature does not match VP public key" });
       }
 
@@ -378,7 +395,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
    *   origin_code    string  OH|AA|AG|MX (required)
    *   content        string  (required for text; can be hash for binary)
    *   content_hash   string  optional pre-computed SHAKE-256 hash
-   *   signature      string  ML-DSA-65 sig over (content_hash + origin_code)
+   *   signature      string  ML-DSA-65 sig over shake256(canonical(body_without_signature))
    */
   app.post("/v1/content/register", (req, res) => {
     try {
@@ -388,22 +405,21 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!origin_code)         return res.status(400).json({ error: "origin_code is required" });
       if (!ORIGIN[origin_code]) return res.status(400).json({ error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` });
       if (!content && !providedHash) return res.status(400).json({ error: "content or content_hash is required" });
-      if (!signature)           return res.status(400).json({ error: "signature is required (ML-DSA-65 over content_hash+origin_code)" });
+      if (!signature)           return res.status(400).json({ error: "signature is required (ML-DSA-65 over full request body)" });
 
       const identity = dag.getIdentity(author_tip_id);
       if (!identity) return res.status(404).json({ error: "Author TIP-ID not found" });
       if (dag.isRevoked(author_tip_id)) return res.status(403).json({ error: "Author TIP-ID is revoked" });
 
+      // Verify body signature: author signs only the required fields
+      const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content", "content_hash"];
+      if (!verifyBodySignature(req.body, signature, identity.public_key, CONTENT_FIELDS)) {
+        return res.status(403).json({ error: "Content signature verification failed — signature does not match author public key" });
+      }
+
       // Compute content hash
       const contentHash = providedHash || hashContent(content || "");
       const perceptHash = content ? perceptualHashText(content) : null;
-
-      // Verify signature: author must sign (contentHash + origin_code) with their private key
-      const sigPayload = contentHash + origin_code;
-      const sigValid   = mldsaVerify(sigPayload, signature, identity.public_key);
-      if (!sigValid) {
-        return res.status(403).json({ error: "Content signature verification failed — signature does not match author public key" });
-      }
 
       // v2 FIX-03: Pre-scan (calibrated thresholds, flag-but-mint)
       const contentHistory = { verified_oh_count: dag.getContentByAuthor(author_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === "verified").length };
@@ -523,8 +539,18 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const rec = dag.getContent(req.params.ctid);
     if (!rec) return res.status(404).json({ error: "Content record not found" });
 
-    const { verifier_tip_id, verdict } = req.body;
+    const { verifier_tip_id, verdict, signature } = req.body;
     if (!verifier_tip_id) return res.status(400).json({ error: "verifier_tip_id required" });
+    if (!signature)       return res.status(400).json({ error: "signature is required" });
+
+    const verifier = dag.getIdentity(verifier_tip_id);
+    if (!verifier) return res.status(404).json({ error: "Verifier TIP-ID not found" });
+
+    const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
+    if (!verifyBodySignature(req.body, signature, verifier.public_key, VERIFY_FIELDS)) {
+      return res.status(403).json({ error: "Verifier signature verification failed — signature does not match verifier public key" });
+    }
+
     if (!scoring.isJuryEligible(verifier_tip_id)) {
       return res.status(403).json({ error: "Verifier not jury eligible (score < 700 or revoked)" });
     }
@@ -566,8 +592,17 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const rec = dag.getContent(req.params.ctid);
     if (!rec) return res.status(404).json({ error: "Content record not found" });
 
-    const { disputer_tip_id, reason, evidence_hash } = req.body;
+    const { disputer_tip_id, reason, evidence_hash, signature } = req.body;
     if (!disputer_tip_id) return res.status(400).json({ error: "disputer_tip_id required" });
+    if (!signature)       return res.status(400).json({ error: "signature is required" });
+
+    const disputer = dag.getIdentity(disputer_tip_id);
+    if (!disputer) return res.status(404).json({ error: "Disputer TIP-ID not found" });
+
+    const DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"];
+    if (!verifyBodySignature(req.body, signature, disputer.public_key, DISPUTE_FIELDS)) {
+      return res.status(403).json({ error: "Disputer signature verification failed — signature does not match disputer public key" });
+    }
 
     const disputeTxBody = {
       tx_type:   TX_TYPES.CONTENT_DISPUTED,
@@ -641,9 +676,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!issuingVp) return res.status(403).json({ error: `Issuing VP not found: ${issuing_vp_id}` });
       if (issuingVp.status !== "active") return res.status(403).json({ error: `Issuing VP is not active: ${issuing_vp_id}` });
 
-      // Verify VP signature: VP must sign (tip_id + tx_type + reason_code)
-      const signedPayload = tip_id + tx_type + (reason_code || "");
-      if (!mldsaVerify(signedPayload, signature, issuingVp.public_key)) {
+      // Verify VP signature over required fields
+      const REVOCATION_FIELDS = ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"];
+      if (!verifyBodySignature(req.body, signature, issuingVp.public_key, REVOCATION_FIELDS)) {
         return res.status(403).json({ error: "VP signature verification failed — signature does not match issuing VP public key" });
       }
 
@@ -736,9 +771,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!approvingVp) return res.status(403).json({ error: `Approving VP not found: ${approving_vp_id}` });
       if (approvingVp.status !== "active") return res.status(403).json({ error: `Approving VP is not active: ${approving_vp_id}` });
 
-      // Verify council signature: approving VP must sign (name + jurisdiction_tier + public_key)
-      const signedPayload = name + jurisdiction_tier + public_key;
-      if (!mldsaVerify(signedPayload, council_signature, approvingVp.public_key)) {
+      // Verify council signature over required fields
+      const VP_REGISTER_FIELDS = ["name", "jurisdiction_tier", "public_key", "approving_vp_id"];
+      if (!verifyBodySignature(req.body, council_signature, approvingVp.public_key, VP_REGISTER_FIELDS)) {
         return res.status(403).json({ error: "Council signature verification failed — signature does not match approving VP public key" });
       }
 

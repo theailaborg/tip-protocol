@@ -809,6 +809,32 @@ import urllib.error
 from urllib.parse import quote
 
 
+def _canonical_json(obj) -> str:
+    """Deterministic JSON (sorted keys at all levels) for body signatures."""
+    if obj is None:
+        return "null"
+    if isinstance(obj, bool):
+        return "true" if obj else "false"
+    if isinstance(obj, (int, float)):
+        return _json.dumps(obj)
+    if isinstance(obj, str):
+        return _json.dumps(obj)
+    if isinstance(obj, list):
+        return "[" + ",".join(_canonical_json(v) for v in obj) + "]"
+    if isinstance(obj, dict):
+        return "{" + ",".join(
+            _json.dumps(k) + ":" + _canonical_json(v)
+            for k, v in sorted(obj.items())
+        ) + "}"
+    return _json.dumps(obj)
+
+
+def _sign_body(fields: dict, private_key: str) -> str:
+    """Sign canonical JSON of the given fields dict."""
+    h = shake256(_canonical_json(fields))
+    return mldsa_sign(h, private_key)
+
+
 def _make_server():
     """Start a TIP API server on a random port, return (base_url, server, dag, founding_vp_id, founding_vp_kp)."""
     os.environ["ZK_SKIP_VERIFY"] = "true"
@@ -894,16 +920,11 @@ def test_api_endpoints() -> None:
 
     # 9.5 POST /v1/vp/register (approved by founding VP)
     vp_kp = generate_mldsa_keypair()
-    council_sig = mldsa_sign(
-        "Test VP" + "green" + vp_kp["publicKey"],
-        founding_vp_kp["privateKey"]
-    )
+    vp_fields = {"name": "Test VP", "jurisdiction_tier": "green",
+                 "public_key": vp_kp["publicKey"], "approving_vp_id": founding_vp_id}
+    council_sig = _sign_body(vp_fields, founding_vp_kp["privateKey"])
     st, body = _post(f"{base}/v1/vp/register", {
-        "name":              "Test VP",
-        "public_key":        vp_kp["publicKey"],
-        "jurisdiction_tier": "green",
-        "council_signature": council_sig,
-        "approving_vp_id":   founding_vp_id,
+        **vp_fields, "council_signature": council_sig,
     })
     check("POST /v1/vp/register returns 201", st == 201)
     test_vp_id = body.get("vp_id", "")
@@ -919,19 +940,16 @@ def test_api_endpoints() -> None:
     dedup_hash = "12345678901234567890123456789012345678901234567890123456789012345678"
     zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
                   "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
-    vp_payload = dedup_hash + "T1" + test_vp_id
-    vp_sig     = mldsa_sign(vp_payload, vp_kp["privateKey"])
+    id_fields = {"region": "US", "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+                 "verification_tier": "T1", "vp_id": test_vp_id, "social_attested": False}
+    vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
 
     st, body = _post(f"{base}/v1/identity/register", {
-        "vp_id":             test_vp_id,
-        "vp_signature":      vp_sig,
-        "dedup_hash":        dedup_hash,
-        "zk_proof":          zk_proof,
-        "region":            "US",
-        "verification_tier": "T1",
+        **id_fields, "vp_signature": vp_sig,
     })
     check("POST /v1/identity/register returns 201", st == 201)
     test_tip_id = body.get("tip_id", "")
+    test_author_priv = body.get("private_key", "")
     check("Identity register returns tip_id",       test_tip_id.startswith("tip://id/US-"))
     check("Identity register returns public_key",   bool(body.get("public_key")))
     check("Identity register returns score",        body.get("score") == 500)
@@ -956,11 +974,9 @@ def test_api_endpoints() -> None:
     # 9.11 POST /v1/content/register
     content_text = "This is a test article for the Python API endpoint tests"
     content_hash = hash_content(content_text)
+    ct_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": content_hash}
     st, body = _post(f"{base}/v1/content/register", {
-        "author_tip_id": test_tip_id,
-        "origin_code":   "OH",
-        "content_hash":  content_hash,
-        "signature":     "test-sig",
+        **ct_fields, "signature": _sign_body(ct_fields, test_author_priv),
     })
     check("POST /v1/content/register returns 201",  st == 201)
     test_ctid = body.get("ctid", "")
@@ -975,10 +991,9 @@ def test_api_endpoints() -> None:
     check("Content record has author_tip_id",       body.get("author_tip_id") == test_tip_id)
 
     # 9.13 POST /v1/content/:ctid/dispute
+    disp_fields = {"disputer_tip_id": test_tip_id, "reason": "suspicious", "evidence_hash": "abc123"}
     st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/dispute", {
-        "disputer_tip_id": test_tip_id,
-        "reason":          "suspicious",
-        "evidence_hash":   "abc123",
+        **disp_fields, "signature": _sign_body(disp_fields, test_author_priv),
     })
     check("POST /v1/content/:ctid/dispute returns 200", st == 200)
     check("Dispute returns success",                    body.get("success") is True)
@@ -990,26 +1005,20 @@ def test_api_endpoints() -> None:
     check("Revocations has count",                  isinstance(body.get("count"), int))
 
     # 9.15 POST /v1/revocations
-    dedup2   = "99887766554433221100998877665544332211009988776655443322110099887"
-    vp_sig2  = mldsa_sign(dedup2 + "T1" + test_vp_id, vp_kp["privateKey"])
+    dedup2 = "99887766554433221100998877665544332211009988776655443322110099887"
+    id2_fields = {"region": "EU", "dedup_hash": dedup2, "zk_proof": zk_proof,
+                  "verification_tier": "T1", "vp_id": test_vp_id, "social_attested": False}
+    vp_sig2 = _sign_body(id2_fields, vp_kp["privateKey"])
     st2, id2 = _post(f"{base}/v1/identity/register", {
-        "vp_id": test_vp_id, "vp_signature": vp_sig2,
-        "dedup_hash": dedup2, "zk_proof": zk_proof,
-        "region": "EU", "verification_tier": "T1",
+        **id2_fields, "vp_signature": vp_sig2,
     })
     if st2 == 201:
-        revoke_tip   = id2["tip_id"]
-        reason_code  = "USER_REQUEST"
-        revoke_sig   = mldsa_sign(
-            revoke_tip + "REVOKE_VOLUNTARY" + reason_code,
-            vp_kp["privateKey"]
-        )
+        revoke_tip  = id2["tip_id"]
+        revoke_fields = {"tx_type": "REVOKE_VOLUNTARY", "tip_id": revoke_tip,
+                         "reason_code": "USER_REQUEST", "issuing_vp_id": test_vp_id}
+        revoke_sig = _sign_body(revoke_fields, vp_kp["privateKey"])
         st, body = _post(f"{base}/v1/revocations", {
-            "tip_id":        revoke_tip,
-            "tx_type":       "REVOKE_VOLUNTARY",
-            "reason_code":   reason_code,
-            "issuing_vp_id": test_vp_id,
-            "signature":     revoke_sig,
+            **revoke_fields, "signature": revoke_sig,
         })
         check("POST /v1/revocations returns 201",  st == 201)
         check("Revocation returns tx_id",          bool(body.get("tx_id")))
@@ -1024,11 +1033,9 @@ def test_api_endpoints() -> None:
     st, body = _post(f"{base}/v1/dedup/check", {"dedup_hash": "x"})
     check("POST /v1/dedup/check returns 410 (removed)", st == 410)
 
-    # 9.18 Duplicate dedup_hash rejected
+    # 9.18 Duplicate dedup_hash rejected (re-use same id_fields + vp_sig from 9.7)
     st, body = _post(f"{base}/v1/identity/register", {
-        "vp_id": test_vp_id, "vp_signature": vp_sig,
-        "dedup_hash": dedup_hash, "zk_proof": zk_proof,
-        "region": "US", "verification_tier": "T1",
+        **id_fields, "vp_signature": vp_sig,
     })
     check("Duplicate dedup_hash returns 409",       st == 409)
 
@@ -1046,16 +1053,11 @@ def test_integration_flow() -> None:
 
     # Step 1: Register VP (approved by founding VP)
     vp_kp = generate_mldsa_keypair()
-    council_sig = mldsa_sign(
-        "Integration Test VP" + "green" + vp_kp["publicKey"],
-        founding_vp_kp["privateKey"]
-    )
+    vp_fields = {"name": "Integration Test VP", "jurisdiction_tier": "green",
+                 "public_key": vp_kp["publicKey"], "approving_vp_id": founding_vp_id}
+    council_sig = _sign_body(vp_fields, founding_vp_kp["privateKey"])
     st, vp_body = _post(f"{base}/v1/vp/register", {
-        "name":              "Integration Test VP",
-        "public_key":        vp_kp["publicKey"],
-        "jurisdiction_tier": "green",
-        "council_signature": council_sig,
-        "approving_vp_id":   founding_vp_id,
+        **vp_fields, "council_signature": council_sig,
     })
     check("Integration: VP registered",        st == 201)
     vp_id = vp_body["vp_id"]
@@ -1064,16 +1066,12 @@ def test_integration_flow() -> None:
     dedup_hash = "11223344556677889900112233445566778899001122334455667788990011223"
     zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
                   "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
-    vp_sig     = mldsa_sign(dedup_hash + "T1" + vp_id, vp_kp["privateKey"])
+    id_fields = {"region": "US", "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+                 "verification_tier": "T1", "vp_id": vp_id, "social_attested": True}
+    vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
 
     st, id_body = _post(f"{base}/v1/identity/register", {
-        "vp_id":             vp_id,
-        "vp_signature":      vp_sig,
-        "dedup_hash":        dedup_hash,
-        "zk_proof":          zk_proof,
-        "region":            "US",
-        "verification_tier": "T1",
-        "social_attested":   True,
+        **id_fields, "vp_signature": vp_sig,
     })
     check("Integration: Identity registered",  st == 201)
     tip_id = id_body["tip_id"]
@@ -1082,12 +1080,9 @@ def test_integration_flow() -> None:
     # Step 3: Register Content (sign with author's private key from identity registration)
     author_private_key = id_body["private_key"]
     content_text = "Integration test: original human content for full flow"
-    content_hash = hash_content(content_text)
+    ct_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content": content_text}
     st, ct_body = _post(f"{base}/v1/content/register", {
-        "author_tip_id": tip_id,
-        "origin_code":   "OH",
-        "content":       content_text,
-        "signature":     mldsa_sign(content_hash + "OH", author_private_key),
+        **ct_fields, "signature": _sign_body(ct_fields, author_private_key),
     })
     check("Integration: Content registered",   st == 201)
     ctid = ct_body["ctid"]
@@ -1106,10 +1101,9 @@ def test_integration_flow() -> None:
     check("Integration: Author matches",       content_body.get("author_tip_id") == tip_id)
 
     # Step 6: Dispute content
+    disp_fields = {"disputer_tip_id": tip_id, "reason": "test dispute", "evidence_hash": "evidence123"}
     st, disp_body = _post(f"{base}/v1/content/{quote(ctid, safe='')}/dispute", {
-        "disputer_tip_id": tip_id,
-        "reason":          "test dispute",
-        "evidence_hash":   "evidence123",
+        **disp_fields, "signature": _sign_body(disp_fields, author_private_key),
     })
     check("Integration: Dispute filed",        st == 200 and disp_body.get("success"))
 
@@ -1118,11 +1112,9 @@ def test_integration_flow() -> None:
     check("Integration: History endpoint 200", st == 200)
     check("Integration: History has score",    isinstance(hist_body.get("score"), int))
 
-    # Step 8: Duplicate identity rejected
+    # Step 8: Duplicate identity rejected (re-use same id_fields + vp_sig)
     st, dup_body = _post(f"{base}/v1/identity/register", {
-        "vp_id": vp_id, "vp_signature": vp_sig,
-        "dedup_hash": dedup_hash, "zk_proof": zk_proof,
-        "region": "US", "verification_tier": "T1",
+        **id_fields, "vp_signature": vp_sig,
     })
     check("Integration: Duplicate identity 409", st == 409)
 
@@ -1177,27 +1169,24 @@ def test_gossip_broadcast_wiring() -> None:
 
     # 11.1 VP register triggers broadcast
     vp_kp = generate_mldsa_keypair()
-    vp_name = "Gossip Wiring VP"
-    vp_tier = "green"
-    vp_council_sig = mldsa_sign(vp_name + vp_tier + vp_kp["publicKey"], founding_vp_kp["privateKey"])
+    vp_fields = {"name": "Gossip Wiring VP", "jurisdiction_tier": "green",
+                 "public_key": vp_kp["publicKey"], "approving_vp_id": founding_vp_id}
+    vp_council_sig = _sign_body(vp_fields, founding_vp_kp["privateKey"])
     broadcast_calls.clear()
     st, body = _post(f"{base}/v1/vp/register", {
-        "name": vp_name, "public_key": vp_kp["publicKey"],
-        "jurisdiction_tier": vp_tier,
-        "council_signature": vp_council_sig,
-        "approving_vp_id": founding_vp_id,
+        **vp_fields, "council_signature": vp_council_sig,
     })
     check("11.1 VP register broadcasts",     st == 201 and len(broadcast_calls) >= 1)
     vp_id = body["vp_id"]
 
     # 11.2 Identity register triggers broadcast
-    dedup = "88881111222233334444555566667777888899990000111122223333444455556"
-    tier  = "T1"
-    vp_sig = mldsa_sign(dedup + tier + vp_id, vp_kp["privateKey"])
+    id_fields = {"region": "US", "dedup_hash": "88881111222233334444555566667777888899990000111122223333444455556",
+                 "zk_proof": zk_proof, "verification_tier": "T1",
+                 "vp_id": vp_id, "social_attested": False}
+    vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
     broadcast_calls.clear()
     st, body = _post(f"{base}/v1/identity/register", {
-        "region": "US", "dedup_hash": dedup, "zk_proof": zk_proof,
-        "verification_tier": tier, "vp_id": vp_id, "vp_signature": vp_sig,
+        **id_fields, "vp_signature": vp_sig,
     })
     check("11.2 Identity register broadcasts", st == 201 and len(broadcast_calls) >= 1)
     check("11.2 Broadcast has tx_id",          len(broadcast_calls) >= 1 and "tx_id" in broadcast_calls[0])
@@ -1205,12 +1194,11 @@ def test_gossip_broadcast_wiring() -> None:
 
     # 11.3 Content register triggers broadcast
     broadcast_calls.clear()
+    author_priv = body.get("private_key", "")
     content_text = "Gossip broadcast wiring test content article."
-    content_hash = hash_content(content_text)
+    ct_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content": content_text}
     st, body = _post(f"{base}/v1/content/register", {
-        "author_tip_id": tip_id, "origin_code": "OH",
-        "content": content_text,
-        "signature": mldsa_sign(content_hash + "OH", kp["privateKey"]),
+        **ct_fields, "signature": _sign_body(ct_fields, author_priv),
     })
     check("11.3 Content register broadcasts", st == 201 and len(broadcast_calls) >= 1)
     ctid = body.get("ctid", "")
@@ -1218,20 +1206,20 @@ def test_gossip_broadcast_wiring() -> None:
     # 11.4 Dispute triggers broadcast
     broadcast_calls.clear()
     if ctid:
+        disp_fields = {"disputer_tip_id": tip_id, "reason": "gossip wiring test"}
         st, body = _post(f"{base}/v1/content/{quote(ctid, safe='')}/dispute", {
-            "disputer_tip_id": tip_id, "reason": "gossip wiring test",
+            **disp_fields, "signature": _sign_body(disp_fields, author_priv),
         })
         check("11.4 Dispute broadcasts",      st == 200 and len(broadcast_calls) >= 1)
     else:
         check("11.4 Dispute broadcasts",      False)  # skipped — no ctid
 
     # 11.5 Revocation triggers broadcast
-    revoke_sig = mldsa_sign(tip_id + "REVOKE_VOLUNTARY" + "gossip_test", vp_kp["privateKey"])
+    revoke_fields = {"tx_type": "REVOKE_VOLUNTARY", "tip_id": tip_id,
+                     "reason_code": "gossip_test", "issuing_vp_id": vp_id}
     broadcast_calls.clear()
     st, body = _post(f"{base}/v1/revocations", {
-        "tip_id": tip_id, "tx_type": "REVOKE_VOLUNTARY",
-        "reason_code": "gossip_test", "issuing_vp_id": vp_id,
-        "signature": revoke_sig,
+        **revoke_fields, "signature": _sign_body(revoke_fields, vp_kp["privateKey"]),
     })
     check("11.5 Revocation broadcasts",       st == 201 and len(broadcast_calls) >= 1)
 
