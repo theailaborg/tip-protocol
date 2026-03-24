@@ -72,6 +72,22 @@ class MemoryStore {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
   }
 
+  hasVerification(ctid, tipId) {
+    for (const tx of this._txs.values()) {
+      if (tx.tx_type === "CONTENT_VERIFIED" &&
+          tx.data?.ctid === ctid && tx.data?.verifier_tip_id === tipId) return true;
+    }
+    return false;
+  }
+
+  hasDispute(ctid, tipId) {
+    for (const tx of this._txs.values()) {
+      if (tx.tx_type === "CONTENT_DISPUTED" && !tx.data?.auto &&
+          tx.data?.ctid === ctid && tx.data?.disputer_tip_id === tipId) return true;
+    }
+    return false;
+  }
+
   // ── Scores ────────────────────────────────────────────────────────────────
   setScore(tipId, score, offenseCount = 0) {
     this._scores.set(tipId, {
@@ -242,6 +258,21 @@ class SQLiteStore {
       ),
       getContent:  this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
+      hasVerification: this.db.prepare(
+        `SELECT 1 FROM transactions
+         WHERE tx_type='CONTENT_VERIFIED'
+           AND json_extract(data,'$.ctid')=?
+           AND json_extract(data,'$.verifier_tip_id')=?
+         LIMIT 1`
+      ),
+      hasDispute: this.db.prepare(
+        `SELECT 1 FROM transactions
+         WHERE tx_type='CONTENT_DISPUTED'
+           AND json_extract(data,'$.ctid')=?
+           AND json_extract(data,'$.disputer_tip_id')=?
+           AND json_extract(data,'$.auto') IS NULL
+         LIMIT 1`
+      ),
 
       setScore: this.db.prepare(
         `INSERT OR REPLACE INTO scores (tip_id,score,offense_count,last_updated)
@@ -323,6 +354,8 @@ class SQLiteStore {
   }
   getContent(ctid)            { return this._stmts.getContent.get(ctid) || null; }
   getContentByAuthor(tipId)   { return this._stmts.contentByAuthor.all(tipId); }
+  hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
+  hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
   // ── Scores ────────────────────────────────────────────────────────────────
   setScore(tipId, score, offenseCount = 0) {
@@ -430,9 +463,11 @@ function initDAG(config) {
     getIdentity:     (id)      => store.getIdentity(id),
 
     // ── Content ───────────────────────────────────────────────────────────
-    saveContent:     (rec)     => store.saveContent(rec),
-    getContent:      (ctid)    => store.getContent(ctid),
-    getContentByAuthor: (id)   => store.getContentByAuthor(id),
+    saveContent:       (rec)         => store.saveContent(rec),
+    getContent:        (ctid)        => store.getContent(ctid),
+    getContentByAuthor: (id)         => store.getContentByAuthor(id),
+    hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
+    hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),
 
     // ── Scores ────────────────────────────────────────────────────────────
     setScore:        (id, s, o) => store.setScore(id, s, o),

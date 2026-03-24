@@ -655,6 +655,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not _verify_body_signature(body, signature, verifier.get("public_key", ""), _VERIFY_FIELDS):
             self._send_json(403, {"error": "Verifier signature verification failed — signature does not match verifier public key"}); return
 
+        if self.dag.has_verification(ctid, verifier_tip_id):
+            self._send_json(409, {"error": "You have already verified this content"}); return
+
         if not self.scoring.is_jury_eligible(verifier_tip_id):
             self._send_json(403, {"error": "Verifier not jury eligible (score < 700 or revoked)"}); return
 
@@ -702,6 +705,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"]
         if not _verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
             self._send_json(403, {"error": "Disputer signature verification failed — signature does not match disputer public key"}); return
+
+        if self.dag.has_dispute(ctid, disputer):
+            self._send_json(409, {"error": "You have already disputed this content"}); return
 
         dispute_tx = {
             "tx_type":   TxType.CONTENT_DISPUTED,
