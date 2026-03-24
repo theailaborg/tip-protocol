@@ -19,7 +19,6 @@ def load_config() -> dict:
         "peers":         _parse_list(os.environ.get("TIP_PEERS", "")),
         "data_dir":      data_dir,
         "db_path":       os.environ.get("TIP_DB_PATH", str(pathlib.Path(data_dir) / "tip.db")),
-        "genesis_dir":   os.environ.get("TIP_GENESIS_DIR", str(pathlib.Path(data_dir) / "genesis")),
         "node_private_key": os.environ.get("TIP_NODE_PRIVATE_KEY",  None),
         "node_public_key":  os.environ.get("TIP_NODE_PUBLIC_KEY",   None),
         "cors_origins":  _parse_list(os.environ.get("TIP_CORS_ORIGINS", "*")),

@@ -50,6 +50,16 @@ async function main() {
   log.info("================================");
 
   // 1. Initialise DAG store
+  // On first boot: if seed.db exists, copy it so founding data is available immediately
+  const fs   = require("fs");
+  const path = require("path");
+  const seedDb = path.resolve(__dirname, "../../genesis-data/seed.db");
+  if (!fs.existsSync(config.dbPath) && fs.existsSync(seedDb)) {
+    fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+    fs.copyFileSync(seedDb, config.dbPath);
+    log.info(`Copied seed DB to ${config.dbPath} (first boot with seeded data)`);
+  }
+
   const dag = initDAG(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
 

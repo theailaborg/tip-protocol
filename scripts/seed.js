@@ -89,7 +89,7 @@ const genesisKeysOnly = args.includes("--genesis-keys-only");
 const nodeUrl         = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
 const useDirectMode   = args.includes("--direct") || !args.includes("--node-url");
 
-const DATA_DIR    = path.resolve(__dirname, "../node/genesis-data");
+const DATA_DIR    = path.resolve(__dirname, "../genesis-data");
 const KEYS_FILE   = path.join(DATA_DIR, "genesis-keys.json");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
 const SEED_FILE   = path.join(DATA_DIR, "seed-output.json");

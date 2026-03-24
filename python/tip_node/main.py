@@ -33,7 +33,6 @@ from node.scoring  import ScoringEngine
 from node.api      import create_server
 from node.gossip   import GossipServer
 from node.scheduler import start_scheduled_tasks
-from node.genesis  import build_genesis_block
 from node.logger   import get_logger
 
 log = get_logger("main")
@@ -60,14 +59,16 @@ def main() -> None:
         config["node_public_key"]  = kp["publicKey"]
         log.warning("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.")
 
-    # 1. Ensure genesis block exists
-    try:
-        build_genesis_block(config["genesis_dir"])
-    except ValueError as exc:
-        log.error(str(exc))
-        sys.exit(1)
+    # 1. Initialise DAG store (genesis block written from hardcoded constants on first boot)
+    # On first boot: if seed.db exists, copy it so founding data is available immediately
+    import shutil
+    seed_db = pathlib.Path(__file__).parent.parent.parent / "genesis-data" / "seed.db"
+    db_path = pathlib.Path(config["db_path"])
+    if not db_path.exists() and seed_db.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(seed_db, db_path)
+        log.info(f"Copied seed DB to {db_path} (first boot with seeded data)")
 
-    # 2. Initialise DAG store
     dag = DAG(config)
     log.info(f"DAG initialised. Transactions: {dag.count()}")
 
