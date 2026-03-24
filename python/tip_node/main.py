@@ -60,12 +60,6 @@ def main() -> None:
         config["node_public_key"]  = kp["publicKey"]
         log.warning("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.")
 
-    # Warn about insecure defaults
-    if config["jwt_secret"] == "CHANGE_THIS_IN_PRODUCTION":
-        log.warning("TIP_JWT_SECRET is using the default value. Change it before production deployment.")
-    if config["admin_api_key"] == "CHANGE_THIS_IN_PRODUCTION":
-        log.warning("TIP_ADMIN_API_KEY is using the default value. Change it before production deployment.")
-
     # 1. Ensure genesis block exists
     try:
         build_genesis_block(config["genesis_dir"])
