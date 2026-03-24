@@ -29,6 +29,7 @@ from shared.crypto import (
     generate_tip_id, generate_ctid,
     compute_tx_id, shake256, shake256_multi,
     compute_zk_proof,
+    verify_body_signature,
 )
 from shared.zk import verify_dedup_proof
 from shared.constants import (
@@ -94,31 +95,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _canonical_json(obj) -> str:
-    """Deterministic JSON for body signature verification (sorted keys at all levels)."""
-    if obj is None:
-        return "null"
-    if isinstance(obj, bool):
-        return "true" if obj else "false"
-    if isinstance(obj, (int, float)):
-        return json.dumps(obj)
-    if isinstance(obj, str):
-        return json.dumps(obj)
-    if isinstance(obj, list):
-        return "[" + ",".join(_canonical_json(v) for v in obj) + "]"
-    if isinstance(obj, dict):
-        return "{" + ",".join(
-            json.dumps(k) + ":" + _canonical_json(v)
-            for k, v in sorted(obj.items())
-        ) + "}"
-    return json.dumps(obj)
-
-
-def _verify_body_signature(body: dict, signature: str, public_key: str, fields: list[str]) -> bool:
-    """Verify body signature over only the specified fields."""
-    payload = {f: body[f] for f in fields if f in body}
-    h = shake256(_canonical_json(payload))
-    return mldsa_verify(h, signature, public_key)
 
 
 # ─── Rate limiter ─────────────────────────────────────────────────────────────
@@ -378,7 +354,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         # Verify VP signature over required fields
         _VP_IDENTITY_FIELDS = ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]
-        if not _verify_body_signature(body, vp_signature, vp.get("public_key", ""), _VP_IDENTITY_FIELDS):
+        if not verify_body_signature(body, vp_signature, vp.get("public_key", ""), _VP_IDENTITY_FIELDS):
             self._send_json(403, {"error": "VP signature verification failed — signature does not match VP public key"}); return
 
         # Verify ZK proof: proves prover knows (govId, dob, country) that Poseidon-hash to dedup_hash
@@ -526,7 +502,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         # Verify body signature: author signs only the required fields
         _CONTENT_FIELDS = ["author_tip_id", "origin_code", "content", "content_hash"]
-        if not _verify_body_signature(body, signature, identity.get("public_key", ""), _CONTENT_FIELDS):
+        if not verify_body_signature(body, signature, identity.get("public_key", ""), _CONTENT_FIELDS):
             self._send_json(403, {"error": "Content signature verification failed — signature does not match author public key"}); return
 
         content_hash  = provided_hash or hash_content(content or "")
@@ -652,7 +628,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"Verifier TIP-ID not found: {verifier_tip_id}"}); return
 
         _VERIFY_FIELDS = ["verifier_tip_id", "verdict"]
-        if not _verify_body_signature(body, signature, verifier.get("public_key", ""), _VERIFY_FIELDS):
+        if not verify_body_signature(body, signature, verifier.get("public_key", ""), _VERIFY_FIELDS):
             self._send_json(403, {"error": "Verifier signature verification failed — signature does not match verifier public key"}); return
 
         if self.dag.has_verification(ctid, verifier_tip_id):
@@ -703,7 +679,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"Disputer TIP-ID not found: {disputer}"}); return
 
         _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"]
-        if not _verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
+        if not verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
             self._send_json(403, {"error": "Disputer signature verification failed — signature does not match disputer public key"}); return
 
         if self.dag.has_dispute(ctid, disputer):
@@ -766,7 +742,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         # Verify VP signature over required fields
         _REVOCATION_FIELDS = ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"]
-        if not _verify_body_signature(body, signature, issuing_vp.get("public_key", ""), _REVOCATION_FIELDS):
+        if not verify_body_signature(body, signature, issuing_vp.get("public_key", ""), _REVOCATION_FIELDS):
             self._send_json(403, {"error": "VP signature verification failed — signature does not match issuing VP public key"}); return
 
         identity = self.dag.get_identity(tip_id)
@@ -858,7 +834,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         # Verify council signature over required fields
         _VP_REGISTER_FIELDS = ["name", "jurisdiction_tier", "public_key", "approving_vp_id"]
-        if not _verify_body_signature(body, council_signature, approving_vp.get("public_key", ""), _VP_REGISTER_FIELDS):
+        if not verify_body_signature(body, council_signature, approving_vp.get("public_key", ""), _VP_REGISTER_FIELDS):
             self._send_json(403, {"error": "Council signature verification failed — signature does not match approving VP public key"}); return
 
         vp_id = generate_tip_id("VP", pubkey)

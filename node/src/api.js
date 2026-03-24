@@ -36,11 +36,11 @@ const morgan     = require("morgan");
 const {
   generateMLDSAKeypair, generateSLHDSAKeypair,
   signTransaction, verifyTransaction,
-  mldsaVerify,
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
   computeTxId,
+  verifyBodySignature,
 } = require("../../shared/crypto");
 
 // Helper: sign a tx with the node's private key
@@ -49,23 +49,6 @@ function nodeSigned(txBody, config) {
   return signTransaction(txBody, config.nodePrivateKey);
 }
 
-// Deterministic JSON for full-body signature verification
-function canonicalJson(obj) {
-  if (obj === null || obj === undefined) return String(obj);
-  if (typeof obj !== "object") return JSON.stringify(obj);
-  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
-  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
-}
-
-// Verify body signature over required fields only (ignores extra client fields)
-function verifyBodySignature(body, signature, publicKey, fields) {
-  const payload = {};
-  for (const f of fields) {
-    if (body[f] !== undefined) payload[f] = body[f];
-  }
-  const hash = shake256(canonicalJson(payload));
-  return mldsaVerify(hash, signature, publicKey);
-}
 
 const { verifyDedupProof } = require("../../shared/zk");
 
