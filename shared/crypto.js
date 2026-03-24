@@ -364,7 +364,6 @@ function computeTxId(tx) {
  * @returns {boolean}
  */
 function verifyTxId(tx) {
-  if (tx.tx_type === "GENESIS") return true; // genesis tx is self-certified
   return computeTxId(tx) === tx.tx_id;
 }
 

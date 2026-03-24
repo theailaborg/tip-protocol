@@ -496,26 +496,11 @@ function initDAG(config) {
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
 function _writeGenesisBlock(store, config) {
   const {
-    GENESIS_TX_ID, GENESIS_TIMESTAMP, GENESIS_HASH, getFoundingVP,
+    GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH, getFoundingVP,
   } = require("./genesis");
 
-  // Genesis transaction
-  const genesisTx = {
-    tx_id:      GENESIS_TX_ID,
-    tx_type:    "GENESIS",
-    timestamp:  GENESIS_TIMESTAMP,
-    prev:       [],
-    data: {
-      protocol:       "TIP",
-      version:        "2.0.0",
-      chain_id:       "tip-mainnet-v2",
-      genesis_hash:   GENESIS_HASH,
-      issuer:         "The AI Lab Intelligence Unobscured, Inc.",
-      spec_url:       "https://theailab.org/trust-identity-protocol",
-    },
-    signature:      "genesis-self-signed",
-  };
-  store.saveTx(genesisTx);
+  // Genesis transaction — content-addressed tx_id, full payload as data
+  store.saveTx({ ...GENESIS_TX, tx_id: GENESIS_TX_ID });
 
   // Bootstrap founding VP from genesis payload (public key embedded by seed script)
   const foundingVP = getFoundingVP();
@@ -540,7 +525,6 @@ function _writeGenesisBlock(store, config) {
       jurisdiction_tier: foundingVP.jurisdiction_tier,
       public_key:        foundingVP.public_key,
     },
-    signature: "genesis-vp-bootstrap",
   };
   store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx) });
 

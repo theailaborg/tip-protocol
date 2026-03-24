@@ -26,6 +26,7 @@ from shared.crypto import (
     mldsa_verify,
     generate_mldsa_keypair,
     generate_slhdsa_keypair,
+    compute_tx_id,
 )
 from shared.constants import Protocol, ScoreEvent, Origin, PreScan, JurisdictionTier
 
@@ -33,19 +34,15 @@ from shared.constants import Protocol, ScoreEvent, Origin, PreScan, Jurisdiction
 # ─── Genesis constants ────────────────────────────────────────────────────────
 # These are FIXED. Changing any value changes the genesis hash and forks the network.
 
-GENESIS_TX_ID    = "0" * 64
 GENESIS_TIMESTAMP = "2026-03-15T00:00:00.000000+00:00"
 GENESIS_CHAIN_ID  = Protocol.CHAIN_ID
 
 
 # ─── Canonical Genesis Payload ────────────────────────────────────────────────
-# Serialised with sorted keys for deterministic output.
+# Protocol definition data only. Tx-level fields (tx_type, timestamp, prev)
+# are on the genesis tx wrapper, not here.
 
 GENESIS_PAYLOAD: dict[str, Any] = {
-    "tx_id":      GENESIS_TX_ID,
-    "tx_type":    "GENESIS",
-    "timestamp":  GENESIS_TIMESTAMP,
-    "prev":       [],
     "version":    "2",
 
     "protocol": {
@@ -136,6 +133,16 @@ def _compute_genesis_hash(payload: dict | None = None) -> str:
 
 # Pre-computed at import time — compiled into the constant.
 GENESIS_HASH: str = _compute_genesis_hash()
+
+# ─── Content-addressed genesis tx ID ────────────────────────────────────────
+GENESIS_TX: dict = {
+    "tx_type":    "GENESIS",
+    "timestamp":  GENESIS_TIMESTAMP,
+    "prev":       [],
+    "data":       GENESIS_PAYLOAD,
+}
+
+GENESIS_TX_ID: str = compute_tx_id(GENESIS_TX)
 
 
 def get_founding_vp() -> dict:

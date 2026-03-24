@@ -594,7 +594,8 @@ class DAG:
                 self._store = MemoryStore()
 
         self._config = config
-        self._prev_ring: list[str] = [GENESIS_TX_ID_CONST, GENESIS_TX_ID_CONST]
+        from node.genesis import GENESIS_TX_ID as _GENESIS_TX_ID
+        self._prev_ring: list[str] = [_GENESIS_TX_ID, _GENESIS_TX_ID]
         self._prev_lock = threading.Lock()
 
         if self._store.count() == 0:
@@ -604,27 +605,12 @@ class DAG:
     def _bootstrap_genesis(self) -> None:
         """Write genesis block and founding VP on first boot."""
         from node.genesis import (
-            GENESIS_TX_ID, GENESIS_TIMESTAMP, GENESIS_HASH,
-            get_founding_vp, GENESIS_CHAIN_ID
+            GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH,
+            get_founding_vp,
         )
 
-        # Genesis transaction
-        genesis_tx = {
-            "tx_id":      GENESIS_TX_ID,
-            "tx_type":    TxType.GENESIS,
-            "timestamp":  GENESIS_TIMESTAMP,
-            "prev":       [],
-            "data": {
-                "protocol":      "TIP",
-                "version":       "2.0.0",
-                "chain_id":      GENESIS_CHAIN_ID,
-                "genesis_hash":  GENESIS_HASH,
-                "issuer":        "The AI Lab Intelligence Unobscured, Inc.",
-                "spec_url":      "https://theailab.org/trust-identity-protocol",
-            },
-            "signature":      "genesis-self-signed",
-        }
-        self._store.save_tx(genesis_tx)
+        # Genesis transaction — content-addressed tx_id, full payload as data
+        self._store.save_tx({**GENESIS_TX, "tx_id": GENESIS_TX_ID})
 
         # Bootstrap founding VP from genesis payload (public key embedded by seed script)
         founding_vp = get_founding_vp()
@@ -648,7 +634,6 @@ class DAG:
                 "jurisdiction_tier": founding_vp["jurisdiction_tier"],
                 "public_key":        founding_vp["public_key"],
             },
-            "signature": "genesis-vp-bootstrap",
         }
         self._store.save_tx({**vp_tx, "tx_id": compute_tx_id(vp_tx)})
 
@@ -778,7 +763,3 @@ class DAG:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-# Used by _bootstrap_genesis before genesis module is fully loaded
-GENESIS_TX_ID_CONST = "0" * 64
