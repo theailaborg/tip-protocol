@@ -20,8 +20,6 @@ def load_config() -> dict:
         "data_dir":      data_dir,
         "db_path":       os.environ.get("TIP_DB_PATH", str(pathlib.Path(data_dir) / "tip.db")),
         "genesis_dir":   os.environ.get("TIP_GENESIS_DIR", str(pathlib.Path(data_dir) / "genesis")),
-        "jwt_secret":       os.environ.get("TIP_JWT_SECRET",          "CHANGE_THIS_IN_PRODUCTION"),
-        "admin_api_key":    os.environ.get("TIP_ADMIN_API_KEY",     "CHANGE_THIS_IN_PRODUCTION"),
         "node_private_key": os.environ.get("TIP_NODE_PRIVATE_KEY",  None),
         "node_public_key":  os.environ.get("TIP_NODE_PUBLIC_KEY",   None),
         "cors_origins":  _parse_list(os.environ.get("TIP_CORS_ORIGINS", "*")),

@@ -43,8 +43,6 @@ function loadConfig() {
     // ── Security ──────────────────────────────────────────────────────────────
     nodePrivateKey:  process.env.TIP_NODE_PRIVATE_KEY || null,
     nodePublicKey:   process.env.TIP_NODE_PUBLIC_KEY  || null,
-    jwtSecret:       process.env.TIP_JWT_SECRET        || "CHANGE_THIS_IN_PRODUCTION",
-    adminApiKey:     process.env.TIP_ADMIN_API_KEY     || "CHANGE_THIS_IN_PRODUCTION",
 
     // ── Rate limiting ─────────────────────────────────────────────────────────
     rateLimitWindow:   60 * 1000,   // 1 minute
