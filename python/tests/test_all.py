@@ -809,30 +809,7 @@ import urllib.error
 from urllib.parse import quote
 
 
-def _canonical_json(obj) -> str:
-    """Deterministic JSON (sorted keys at all levels) for body signatures."""
-    if obj is None:
-        return "null"
-    if isinstance(obj, bool):
-        return "true" if obj else "false"
-    if isinstance(obj, (int, float)):
-        return _json.dumps(obj)
-    if isinstance(obj, str):
-        return _json.dumps(obj)
-    if isinstance(obj, list):
-        return "[" + ",".join(_canonical_json(v) for v in obj) + "]"
-    if isinstance(obj, dict):
-        return "{" + ",".join(
-            _json.dumps(k) + ":" + _canonical_json(v)
-            for k, v in sorted(obj.items())
-        ) + "}"
-    return _json.dumps(obj)
-
-
-def _sign_body(fields: dict, private_key: str) -> str:
-    """Sign canonical JSON of the given fields dict."""
-    h = shake256(_canonical_json(fields))
-    return mldsa_sign(h, private_key)
+from shared.crypto import sign_body as _sign_body
 
 
 def _make_server():

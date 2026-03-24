@@ -35,6 +35,7 @@ const {
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
   generateMLDSAKeypair, mldsaSign, signTransaction, verifyTransaction,
+  signBody,
 } = require(path.join(SHARED, "crypto"));
 
 // Skip real ZK verification in tests — circuit artifacts not present in test env
@@ -53,19 +54,6 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring }       = require(path.join(SRC, "scoring"));
 const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 const { createApp }     = require(path.join(SRC, "api"));
-
-// ─── Full-body signature helpers ────────────────────────────────────────────
-function canonicalJson(obj) {
-  if (obj === null || obj === undefined) return String(obj);
-  if (typeof obj !== "object") return JSON.stringify(obj);
-  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
-  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
-}
-
-function signBody(body, privateKey) {
-  const hash = shake256(canonicalJson(body));
-  return mldsaSign(hash, privateKey);
-}
 
 // ─── Test Fixtures ─────────────────────────────────────────────────────────────
 
