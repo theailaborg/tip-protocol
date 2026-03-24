@@ -207,7 +207,7 @@ class MemoryStore:
         with self._lock:
             for tx in self._txs.values():
                 d = tx.get("data", {})
-                if (tx.get("tx_type") == "CONTENT_DISPUTED" and not d.get("auto")
+                if (tx.get("tx_type") == "CONTENT_DISPUTED"
                         and d.get("ctid") == ctid and d.get("disputer_tip_id") == tip_id):
                     return True
             return False
@@ -463,7 +463,6 @@ class SQLiteStore:
                WHERE tx_type='CONTENT_DISPUTED'
                  AND json_extract(data,'$.ctid')=?
                  AND json_extract(data,'$.disputer_tip_id')=?
-                 AND json_extract(data,'$.auto') IS NULL
                LIMIT 1""",
             (ctid, tip_id),
         ).fetchone()

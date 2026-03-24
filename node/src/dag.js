@@ -82,7 +82,7 @@ class MemoryStore {
 
   hasDispute(ctid, tipId) {
     for (const tx of this._txs.values()) {
-      if (tx.tx_type === "CONTENT_DISPUTED" && !tx.data?.auto &&
+      if (tx.tx_type === "CONTENT_DISPUTED" &&
           tx.data?.ctid === ctid && tx.data?.disputer_tip_id === tipId) return true;
     }
     return false;
@@ -270,7 +270,6 @@ class SQLiteStore {
          WHERE tx_type='CONTENT_DISPUTED'
            AND json_extract(data,'$.ctid')=?
            AND json_extract(data,'$.disputer_tip_id')=?
-           AND json_extract(data,'$.auto') IS NULL
          LIMIT 1`
       ),
 
