@@ -551,6 +551,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(403).json({ error: "Verifier signature verification failed — signature does not match verifier public key" });
     }
 
+    if (dag.hasVerification(req.params.ctid, verifier_tip_id)) {
+      return res.status(409).json({ error: "You have already verified this content" });
+    }
+
     if (!scoring.isJuryEligible(verifier_tip_id)) {
       return res.status(403).json({ error: "Verifier not jury eligible (score < 700 or revoked)" });
     }
@@ -602,6 +606,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"];
     if (!verifyBodySignature(req.body, signature, disputer.public_key, DISPUTE_FIELDS)) {
       return res.status(403).json({ error: "Disputer signature verification failed — signature does not match disputer public key" });
+    }
+
+    if (dag.hasDispute(req.params.ctid, disputer_tip_id)) {
+      return res.status(409).json({ error: "You have already disputed this content" });
     }
 
     const disputeTxBody = {

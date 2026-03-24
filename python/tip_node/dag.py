@@ -194,6 +194,24 @@ class MemoryStore:
         with self._lock:
             return [dict(c) for c in self._content.values() if c.get("author_tip_id") == tip_id]
 
+    def has_verification(self, ctid: str, tip_id: str) -> bool:
+        with self._lock:
+            for tx in self._txs.values():
+                d = tx.get("data", {})
+                if (tx.get("tx_type") == "CONTENT_VERIFIED"
+                        and d.get("ctid") == ctid and d.get("verifier_tip_id") == tip_id):
+                    return True
+            return False
+
+    def has_dispute(self, ctid: str, tip_id: str) -> bool:
+        with self._lock:
+            for tx in self._txs.values():
+                d = tx.get("data", {})
+                if (tx.get("tx_type") == "CONTENT_DISPUTED" and not d.get("auto")
+                        and d.get("ctid") == ctid and d.get("disputer_tip_id") == tip_id):
+                    return True
+            return False
+
     # ── Scores ────────────────────────────────────────────────────────────────
     def set_score(self, tip_id: str, score: int, offense_count: int = 0) -> None:
         with self._lock:
@@ -427,6 +445,29 @@ class SQLiteStore:
             "SELECT * FROM content WHERE author_tip_id = ?", (tip_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def has_verification(self, ctid: str, tip_id: str) -> bool:
+        row = self._conn().execute(
+            """SELECT 1 FROM transactions
+               WHERE tx_type='CONTENT_VERIFIED'
+                 AND json_extract(data,'$.ctid')=?
+                 AND json_extract(data,'$.verifier_tip_id')=?
+               LIMIT 1""",
+            (ctid, tip_id),
+        ).fetchone()
+        return row is not None
+
+    def has_dispute(self, ctid: str, tip_id: str) -> bool:
+        row = self._conn().execute(
+            """SELECT 1 FROM transactions
+               WHERE tx_type='CONTENT_DISPUTED'
+                 AND json_extract(data,'$.ctid')=?
+                 AND json_extract(data,'$.disputer_tip_id')=?
+                 AND json_extract(data,'$.auto') IS NULL
+               LIMIT 1""",
+            (ctid, tip_id),
+        ).fetchone()
+        return row is not None
 
     # ── Scores ────────────────────────────────────────────────────────────────
     def set_score(self, tip_id: str, score: int, offense_count: int = 0) -> None:
@@ -687,6 +728,12 @@ class DAG:
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         return self._store.get_content_by_author(tip_id)
+
+    def has_verification(self, ctid: str, tip_id: str) -> bool:
+        return self._store.has_verification(ctid, tip_id)
+
+    def has_dispute(self, ctid: str, tip_id: str) -> bool:
+        return self._store.has_dispute(ctid, tip_id)
 
     # Scores
     def set_score(self, tip_id: str, score: int, offense_count: int = 0) -> None:

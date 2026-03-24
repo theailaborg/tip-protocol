@@ -1032,5 +1032,98 @@ describe("Gossip Broadcast Wiring", () => {
       .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
     expect(res.status).toBe(200);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Duplicate dispute should be rejected (semantic dedup)
+    broadcastCalls = [];
+    const res2 = await request(gossipApp)
+      .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
+      .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
+    expect(res2.status).toBe(409);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BLOCK 9: SEMANTIC DEDUP — ONE VERIFY/DISPUTE PER USER PER CONTENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("Semantic Dedup", () => {
+  let sdApp, sdDag, sdScoring;
+  let sdVpId, sdVpKp, sdTipId, sdAuthorPriv, sdCtid;
+
+  beforeAll(async () => {
+    sdDag     = initDAG({ dbPath: ":memory:" });
+    sdScoring = initScoring(sdDag, TEST_CONFIG);
+
+    sdVpKp = generateMLDSAKeypair();
+    const allVps = sdDag.getAllVPs();
+    sdVpId = allVps[0].vp_id;
+    sdDag.saveVP({ ...allVps[0], public_key: sdVpKp.publicKey });
+
+    sdApp = createApp({ dag: sdDag, scoring: sdScoring, config: TEST_CONFIG });
+
+    // Register identity
+    const idFields = {
+      region: "US", dedup_hash: "55551111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: sdVpId, social_attested: false,
+    };
+    const idRes = await request(sdApp)
+      .post("/v1/identity/register")
+      .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
+    sdTipId     = idRes.body.tip_id;
+    sdAuthorPriv = idRes.body.private_key;
+
+    // Set score high enough for jury eligibility
+    sdDag.setScore(sdTipId, 800, 0);
+
+    // Register content
+    const ctFields = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: "Semantic dedup test content." };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ ...ctFields, signature: signBody(ctFields, sdAuthorPriv) });
+    sdCtid = ctRes.body.ctid;
+  });
+
+  afterAll(() => { if (sdDag) sdDag.close(); });
+
+  test("9.1 First verify succeeds", async () => {
+    const fields = { verifier_tip_id: sdTipId, verdict: "ORIGIN_CONFIRMED" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  test("9.2 Duplicate verify returns 409", async () => {
+    const fields = { verifier_tip_id: sdTipId, verdict: "ORIGIN_CONFIRMED" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already verified/i);
+  });
+
+  test("9.3 First dispute succeeds", async () => {
+    // Register second content for dispute test
+    const ctFields2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: "Second content for dispute dedup." };
+    const ctRes2 = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ ...ctFields2, signature: signBody(ctFields2, sdAuthorPriv) });
+    const ctid2 = ctRes2.body.ctid;
+
+    const fields = { disputer_tip_id: sdTipId, reason: "test dispute" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    // Duplicate dispute
+    const res2 = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res2.status).toBe(409);
+    expect(res2.body.error).toMatch(/already disputed/i);
   });
 });
