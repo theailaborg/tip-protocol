@@ -261,10 +261,7 @@ def verify_tx_id(tx: dict) -> bool:
     """
     Verify that a stored tx_id matches the tx content.
     Use this when receiving a tx via gossip to detect tampering.
-    Returns True unconditionally for GENESIS (self-certified).
     """
-    if tx.get("tx_type") == "GENESIS":
-        return True
     return compute_tx_id(tx) == tx.get("tx_id")
 
 

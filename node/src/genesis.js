@@ -38,7 +38,7 @@
 const crypto = require("crypto");
 const path   = require("path");
 const fs     = require("fs");
-const { shake256, shake256Multi, generateSLHDSAKeypair, mldsaSign, mldsaVerify } = require("../../shared/crypto");
+const { shake256, shake256Multi, generateSLHDSAKeypair, mldsaSign, mldsaVerify, computeTxId } = require("../../shared/crypto");
 const { TX_TYPES, PROTOCOL, ORIGIN } = require("../../shared/constants");
 const { log } = require("./logger");
 
@@ -46,19 +46,15 @@ const { log } = require("./logger");
 // These are FIXED and must never change once the network is live.
 const GENESIS_TIMESTAMP  = "2026-03-15T00:00:00.000Z"; // Network launch date
 const GENESIS_CHAIN_ID   = "tip-mainnet-v2";
-const GENESIS_TX_ID      = "0000000000000000000000000000000000000000000000000000000000000000";
-const GENESIS_PREV       = []; // Genesis has no predecessors
 const GENESIS_VP_REGION  = "US";
 
 // ─── Canonical Genesis Payload ────────────────────────────────────────────────
-// This is the EXACT data hashed and signed. Must be byte-for-byte identical
-// across every node in the network.
+// Protocol definition data only. Tx-level fields (tx_type, timestamp, prev)
+// are on the genesis tx wrapper, not here.
+// This is the EXACT data hashed for GENESIS_HASH. Must be byte-for-byte
+// identical across every node in the network.
 
 const GENESIS_PAYLOAD = Object.freeze({
-  tx_id:      GENESIS_TX_ID,
-  tx_type:    "GENESIS",
-  timestamp:  GENESIS_TIMESTAMP,
-  prev:       GENESIS_PREV,
   version:    "2",
 
   protocol: {
@@ -156,6 +152,17 @@ function computeGenesisHash(payload) {
 }
 
 const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
+
+// ─── Content-addressed genesis tx ID ────────────────────────────────────────
+// Computed from the canonical form of the genesis tx, just like all other txs.
+const GENESIS_TX = Object.freeze({
+  tx_type:    "GENESIS",
+  timestamp:  GENESIS_TIMESTAMP,
+  prev:       [],
+  data:       GENESIS_PAYLOAD,
+});
+
+const GENESIS_TX_ID = computeTxId(GENESIS_TX);
 
 // ─── Load or create genesis block ────────────────────────────────────────────
 
@@ -258,6 +265,7 @@ function getInitialParams() {
 
 module.exports = {
   GENESIS_TX_ID,
+  GENESIS_TX,
   GENESIS_TIMESTAMP,
   GENESIS_CHAIN_ID,
   GENESIS_HASH,
