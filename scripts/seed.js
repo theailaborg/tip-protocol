@@ -37,6 +37,7 @@ const http  = require("http");
 const https = require("https");
 
 const {
+  initCrypto,
   generateMLDSAKeypair,
   generateSLHDSAKeypair,
   mldsaSign,
@@ -46,6 +47,7 @@ const {
   generateCTID,
   hashContent,
   perceptualHashText,
+  signBody,
 } = require("../shared/crypto");
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL, getTier } = require("../shared/constants");
@@ -132,7 +134,7 @@ function get(url) {
 
 // ─── Step 1: Generate (or load) genesis root keypair ─────────────────────────
 async function generateGenesisKeys() {
-  head("STEP 1: Genesis Root Keypair (SLH-DSA-128s)");
+  head("STEP 1: Genesis Root Keypair (ML-DSA-65)");
 
   if (fs.existsSync(KEYS_FILE)) {
     warn("genesis-keys.json already exists — loading existing keys");
@@ -143,8 +145,8 @@ async function generateGenesisKeys() {
     return keys;
   }
 
-  info("Generating SLH-DSA-128s root keypair...");
-  const keys = generateSLHDSAKeypair();
+  info("Generating ML-DSA-65 root keypair...");
+  const keys = generateMLDSAKeypair();
   label("Algorithm",                  keys.algorithm);
   label("Public key (first 32 chars)", keys.publicKey.slice(0, 32) + "...");
 
@@ -162,38 +164,99 @@ async function generateGenesisKeys() {
   return keys;
 }
 
-// ─── Step 2: Mint the Genesis Block ──────────────────────────────────────────
+// ─── Step 2: Generate founding VP keypair and embed in genesis ───────────────
+async function embedFoundingVPKey() {
+  head("STEP 2: Founding VP Keypair → Genesis Payload");
+
+  const vpKeysFile = path.join(DATA_DIR, "founding-vp-keys.json");
+
+  let vpKeypair;
+  if (fs.existsSync(vpKeysFile)) {
+    warn("founding-vp-keys.json already exists — loading existing keys");
+    vpKeypair = JSON.parse(fs.readFileSync(vpKeysFile, "utf8"));
+    label("Public key (first 32 chars)", vpKeypair.publicKey.slice(0, 32) + "...");
+  } else {
+    info("Generating ML-DSA-65 keypair for founding VP...");
+    vpKeypair = generateMLDSAKeypair();
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(vpKeysFile, JSON.stringify({
+      algorithm:  vpKeypair.algorithm,
+      publicKey:  vpKeypair.publicKey,
+      privateKey: vpKeypair.privateKey,
+      created_at: new Date().toISOString(),
+      purpose:    "TIP™ Protocol Founding VP signing key",
+    }, null, 2), { mode: 0o600 });
+    ok("Founding VP keypair generated and saved");
+    warn("SECURITY: founding-vp-keys.json is chmod 600. NEVER commit to git.");
+  }
+
+  // Embed public key into genesis.js and genesis.py source files
+  const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
+  const genesisPyFile = path.resolve(__dirname, "../python/tip_node/genesis.py");
+
+  for (const file of [genesisJsFile, genesisPyFile]) {
+    let src = fs.readFileSync(file, "utf8");
+    if (src.includes("GENESIS_VP_PUBLIC_KEY_PLACEHOLDER")) {
+      src = src.replace("GENESIS_VP_PUBLIC_KEY_PLACEHOLDER", vpKeypair.publicKey);
+      fs.writeFileSync(file, src);
+      ok(`Embedded VP public key in ${path.basename(file)}`);
+    } else if (src.includes(vpKeypair.publicKey)) {
+      info(`${path.basename(file)} already has the correct VP public key`);
+    } else {
+      warn(`${path.basename(file)} has a different VP public key — not overwriting`);
+    }
+  }
+
+  // Clear Node.js require cache so genesis.js is re-read with the updated key
+  const genesisModule = require.resolve("../node/src/genesis");
+  delete require.cache[genesisModule];
+  // Also clear constants/crypto since genesis depends on them
+  Object.keys(require.cache).forEach(key => {
+    if (key.includes("genesis")) delete require.cache[key];
+  });
+
+  label("VP public key embedded", vpKeypair.publicKey.slice(0, 32) + "...");
+  return vpKeypair;
+}
+
+// ─── Step 3: Mint the Genesis Block ──────────────────────────────────────────
 async function mintGenesisBlock(rootKeys) {
-  head("STEP 2: Minting Genesis Block");
+  head("STEP 3: Minting Genesis Block");
+
+  // Re-read genesis module after VP key embedding (cache was cleared)
+  const updatedGenesis = require("../node/src/genesis");
+  const updatedPayload = updatedGenesis.GENESIS_PAYLOAD;
 
   if (fs.existsSync(GENESIS_FILE)) {
     info("genesis.json already exists — validating...");
     const existing = JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8"));
-    const expectedHash = computeGenesisHash(GENESIS_PAYLOAD);
+    const expectedHash = updatedGenesis.computeGenesisHash(updatedPayload);
     if (existing.genesis_hash === expectedHash) {
       ok(`Genesis block valid. Hash: ${T.cyan}${existing.genesis_hash.slice(0,32)}...${T.reset}`);
       return existing;
     } else {
-      throw new Error(`FATAL: genesis.json hash mismatch!\nExpected: ${expectedHash}\nGot: ${existing.genesis_hash}`);
+      // Key may have changed — delete stale genesis.json and re-mint
+      warn("genesis.json hash mismatch (VP key changed?) — re-minting...");
+      fs.unlinkSync(GENESIS_FILE);
     }
   }
 
   info("Computing genesis hash...");
-  const genesisHash = computeGenesisHash(GENESIS_PAYLOAD);
+  const genesisHash = updatedGenesis.computeGenesisHash(updatedPayload);
   label("Genesis hash",     genesisHash.slice(0, 32) + "...");
   label("Chain ID",         GENESIS_CHAIN_ID);
   label("Protocol version", PROTOCOL.version);
   label("Timestamp",        GENESIS_TIMESTAMP);
   label("Issuer",           PROTOCOL.issuer);
 
-  info("Signing genesis block with SLH-DSA-128s root key...");
+  info("Signing genesis block with ML-DSA-65 root key...");
   const signature = mldsaSign(genesisHash, rootKeys.privateKey);
   ok("Signature computed");
 
   const genesisBlock = {
-    ...GENESIS_PAYLOAD,
+    ...updatedPayload,
     genesis_hash:         genesisHash,
-    canonical_hash:       shake256(canonicalSerialise(GENESIS_PAYLOAD)),
+    canonical_hash:       shake256(updatedGenesis.canonicalSerialise(updatedPayload)),
     signed_at:            new Date().toISOString(),
     signer_public_key:    rootKeys.publicKey,
     signature,
@@ -212,12 +275,10 @@ async function mintGenesisBlock(rootKeys) {
   return genesisBlock;
 }
 
-// ─── Step 3: Register The AI Lab as founding VP ───────────────────────────────
-async function registerFoundingVP(genesisBlock) {
-  head("STEP 3: Register The AI Lab Verification Provider");
+// ─── Step 4: Register The AI Lab as founding VP ───────────────────────────────
+async function registerFoundingVP(genesisBlock, vpKeypair) {
+  head("STEP 4: Register The AI Lab Verification Provider");
 
-  // Generate VP keypair
-  const vpKeypair = generateMLDSAKeypair();
   const foundingVP = getFoundingVP();
 
   info(`Registering VP: ${foundingVP.name}`);
@@ -266,9 +327,9 @@ async function registerFoundingVP(genesisBlock) {
   return { vpRecord, vpKeypair };
 }
 
-// ─── Step 4: Create founding identities (Genesis Ring) ───────────────────────
+// ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
 async function createGenesisRing(vpRecord, vpKeypair) {
-  head("STEP 4: Creating Genesis Ring (Founding Identities)");
+  head("STEP 5: Creating Genesis Ring (Founding Identities)");
 
   const foundingMembers = [
     {
@@ -276,6 +337,18 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       role:    "Founder & Sole Inventor",
       region:  "US",
       tag:     "founder",
+    },
+    {
+      name:    "Tushar Bhendarkar — Co-Founder",
+      role:    "Co-Founder & Core Engineer",
+      region:  "US",
+      tag:     "cofounder-tushar",
+    },
+    {
+      name:    "Vishal — Co-Founder",
+      role:    "Co-Founder & Core Engineer",
+      region:  "US",
+      tag:     "cofounder-vishal",
     },
     {
       name:    "The AI Lab — Protocol Bot",
@@ -323,19 +396,14 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       };
     } else {
       try {
-        // VP signs: dedup_hash + verification_tier + vp_id
-        const vpPayload   = mockDedupHash + "T1" + vpRecord.vp_id;
-        const vpSignature = mldsaSign(vpPayload, vpKeypair.privateKey);
+        const idFields = {
+          region: member.region, dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+          verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
+        };
+        const vpSignature = signBody(idFields, vpKeypair.privateKey);
 
         regResult = await post(`${nodeUrl}/v1/identity/register`, {
-          region:            member.region,
-          vp_id:             vpRecord.vp_id,
-          vp_signature:      vpSignature,
-          dedup_hash:        mockDedupHash,
-          zk_proof:          mockZkProof,
-          verification_tier: "T1",
-          social_attested:   true,
-          founding:          true,
+          ...idFields, vp_signature: vpSignature,
         });
       } catch (e) {
         warn(`API registration failed for ${member.name}: ${e.message}`);
@@ -376,9 +444,9 @@ async function createGenesisRing(vpRecord, vpKeypair) {
   return identities;
 }
 
-// ─── Step 5: Register sample content (all four origin types) ──────────────────
+// ─── Step 6: Register sample content (all four origin types) ──────────────────
 async function registerSampleContent(identities) {
-  head("STEP 5: Registering Sample Content (All Origin Types)");
+  head("STEP 6: Registering Sample Content (All Origin Types)");
 
   const author = identities.find(i => i.tag === "founder");
   if (!author) { warn("No founder identity found — skipping content registration"); return []; }
@@ -412,9 +480,8 @@ async function registerSampleContent(identities) {
     const contentHash = hashContent(sample.content);
     const ctid        = generateCTID(sample.origin, contentHash, author.tip_id);
 
-    // Sign (contentHash + originCode) with author's private key
-    const sigPayload = contentHash + sample.origin;
-    const signature  = mldsaSign(sigPayload, author.private_key);
+    const ctFields = { author_tip_id: author.tip_id, origin_code: sample.origin, content_hash: contentHash };
+    const signature = signBody(ctFields, author.private_key);
 
     let result;
 
@@ -438,10 +505,8 @@ async function registerSampleContent(identities) {
     } else {
       try {
         result = await post(`${nodeUrl}/v1/content/register`, {
-          author_tip_id: author.tip_id,
-          origin_code:   sample.origin,
-          content:       sample.content,
-          content_hash:  contentHash,
+          ...ctFields,
+          content:  sample.content,
           signature,
         });
       } catch (e) {
@@ -459,9 +524,9 @@ async function registerSampleContent(identities) {
   return registered;
 }
 
-// ─── Step 6: Full DAG verification ────────────────────────────────────────────
+// ─── Step 7: Full DAG verification ────────────────────────────────────────────
 async function verifyDAGState(genesisBlock, vpRecord, identities, content) {
-  head("STEP 6: DAG State Verification");
+  head("STEP 7: DAG State Verification");
 
   const checks = [];
 
@@ -556,9 +621,9 @@ async function verifyDAGState(genesisBlock, vpRecord, identities, content) {
   return allPass;
 }
 
-// ─── Step 7: Write seed output ────────────────────────────────────────────────
+// ─── Step 8: Write seed output ────────────────────────────────────────────────
 async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content) {
-  head("STEP 7: Writing Seed Output");
+  head("STEP 8: Writing Seed Output");
 
   const output = {
     seed_version:     "2.0.0",
@@ -634,6 +699,9 @@ async function main() {
   console.log();
 
   try {
+    // Initialize post-quantum crypto libraries
+    await initCrypto();
+
     // Step 1: Genesis root keys
     const rootKeys = await generateGenesisKeys();
     if (genesisKeysOnly) {
@@ -641,22 +709,25 @@ async function main() {
       return;
     }
 
-    // Step 2: Genesis block
+    // Step 2: Generate founding VP keypair and embed in genesis source files
+    const vpKeypair = await embedFoundingVPKey();
+
+    // Step 3: Genesis block (uses updated genesis payload with VP public key)
     const genesisBlock = await mintGenesisBlock(rootKeys);
 
-    // Step 3: Founding VP
-    const { vpRecord, vpKeypair } = await registerFoundingVP(genesisBlock);
+    // Step 4: Founding VP
+    const { vpRecord } = await registerFoundingVP(genesisBlock, vpKeypair);
 
-    // Step 4: Genesis Ring
+    // Step 5: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
-    // Step 5: Sample content
+    // Step 6: Sample content
     const content = await registerSampleContent(identities);
 
-    // Step 6: Verification
+    // Step 7: Verification
     const allPass = await verifyDAGState(genesisBlock, vpRecord, identities, content);
 
-    // Step 7: Write output
+    // Step 8: Write output
     const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content);
 
     // ── Final summary ────────────────────────────────────────────────────────

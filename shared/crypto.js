@@ -368,6 +368,37 @@ function verifyTxId(tx) {
   return computeTxId(tx) === tx.tx_id;
 }
 
+/**
+ * Deterministic JSON serialisation with sorted keys at all nesting levels.
+ * Used for body signature verification — ensures same object always produces
+ * the same hash regardless of key insertion order.
+ */
+function canonicalJson(obj) {
+  if (obj === null || obj === undefined) return String(obj);
+  if (typeof obj !== "object") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
+  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+}
+
+/**
+ * Sign a set of fields with ML-DSA-65: sign(shake256(canonicalJson(fields)), privateKey).
+ * Used by clients to sign request bodies and by tests to build signatures.
+ */
+function signBody(fields, privateKey) {
+  return mldsaSign(shake256(canonicalJson(fields)), privateKey);
+}
+
+/**
+ * Verify a body signature over specified fields only (ignores extra client fields).
+ */
+function verifyBodySignature(body, signature, publicKey, fields) {
+  const payload = {};
+  for (const f of fields) {
+    if (body[f] !== undefined) payload[f] = body[f];
+  }
+  return mldsaVerify(shake256(canonicalJson(payload)), signature, publicKey);
+}
+
 module.exports = {
   initCrypto,
   shake256,
@@ -389,4 +420,7 @@ module.exports = {
   canonicalTx,
   computeTxId,
   verifyTxId,
+  canonicalJson,
+  signBody,
+  verifyBodySignature,
 };

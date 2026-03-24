@@ -498,7 +498,6 @@ function _writeGenesisBlock(store, config) {
   const {
     GENESIS_TX_ID, GENESIS_TIMESTAMP, GENESIS_HASH, getFoundingVP,
   } = require("./genesis");
-  const { generateMLDSAKeypair } = require("../../shared/crypto");
 
   // Genesis transaction
   const genesisTx = {
@@ -518,15 +517,14 @@ function _writeGenesisBlock(store, config) {
   };
   store.saveTx(genesisTx);
 
-  // Bootstrap founding VP from genesis.js constants
+  // Bootstrap founding VP from genesis payload (public key embedded by seed script)
   const foundingVP = getFoundingVP();
-  const vpKeypair  = generateMLDSAKeypair();
 
   store.saveVP({
     vp_id:             foundingVP.vp_id,
     name:              foundingVP.name,
     jurisdiction_tier: foundingVP.jurisdiction_tier,
-    public_key:        vpKeypair.publicKey,
+    public_key:        foundingVP.public_key,
     status:            "active",
     registered_at:     GENESIS_TIMESTAMP,
   });
@@ -540,7 +538,7 @@ function _writeGenesisBlock(store, config) {
       vp_id:             foundingVP.vp_id,
       name:              foundingVP.name,
       jurisdiction_tier: foundingVP.jurisdiction_tier,
-      public_key:        vpKeypair.publicKey,
+      public_key:        foundingVP.public_key,
     },
     signature: "genesis-vp-bootstrap",
   };
