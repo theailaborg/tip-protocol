@@ -51,6 +51,7 @@ const {
   computeTxId,
   signTransaction,
   canonicalTx,
+  canonicalJson,
 } = require("../shared/crypto");
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL, getTier } = require("../shared/constants");
@@ -65,7 +66,6 @@ const {
   getFoundingVP,
   computeGenesisHash,
   GENESIS_PAYLOAD,
-  canonicalSerialise,
 } = require("../node/src/genesis");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
@@ -302,7 +302,7 @@ async function mintGenesisBlock(rootKeys) {
   const genesisBlock = {
     ...updatedPayload,
     genesis_hash:         genesisHash,
-    canonical_hash:       shake256(updatedGenesis.canonicalSerialise(updatedPayload)),
+    canonical_hash:       shake256(canonicalJson(updatedPayload)),
     signed_at:            new Date().toISOString(),
     signer_public_key:    rootKeys.publicKey,
     signature,
