@@ -122,6 +122,14 @@ CREATE TABLE IF NOT EXISTS verification_providers (
     status              TEXT NOT NULL DEFAULT 'active',
     registered_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS nodes (
+    node_id         TEXT PRIMARY KEY,
+    name            TEXT,
+    public_key      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active',
+    registered_at   TEXT NOT NULL
+);
 """
 
 
@@ -141,6 +149,7 @@ class MemoryStore:
         self._dedup:  set  = set()
         self._revocs: dict = {}
         self._vps:    dict = {}
+        self._nodes:  dict = {}
 
     # ── Transactions ─────────────────────────────────────────────────────────
     def save_tx(self, tx: dict) -> None:
@@ -274,6 +283,19 @@ class MemoryStore:
     def get_all_vps(self) -> list[dict]:
         with self._lock:
             return [dict(v) for v in self._vps.values()]
+
+    # ── Nodes ──────────────────────────────────────────────────────────────
+    def save_node(self, rec: dict) -> None:
+        with self._lock:
+            self._nodes[rec["node_id"]] = dict(rec)
+
+    def get_node(self, node_id: str) -> Optional[dict]:
+        with self._lock:
+            return dict(self._nodes[node_id]) if node_id in self._nodes else None
+
+    def get_all_nodes(self) -> list[dict]:
+        with self._lock:
+            return [dict(n) for n in self._nodes.values()]
 
     def close(self) -> None:
         pass  # no-op
@@ -561,6 +583,27 @@ class SQLiteStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Nodes ──────────────────────────────────────────────────────────────
+    def save_node(self, rec: dict) -> None:
+        conn = self._conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO nodes (node_id, name, public_key, status, registered_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (rec["node_id"], rec.get("name"), rec["public_key"],
+             rec.get("status", "active"), rec.get("registered_at", _utc_now())),
+        )
+        conn.commit()
+
+    def get_node(self, node_id: str) -> Optional[dict]:
+        row = self._conn().execute(
+            "SELECT * FROM nodes WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_nodes(self) -> list[dict]:
+        rows = self._conn().execute("SELECT * FROM nodes").fetchall()
+        return [dict(r) for r in rows]
+
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
             try:
@@ -754,6 +797,16 @@ class DAG:
 
     def get_all_vps(self) -> list[dict]:
         return self._store.get_all_vps()
+
+    # Nodes
+    def save_node(self, rec: dict) -> None:
+        self._store.save_node(rec)
+
+    def get_node(self, node_id: str) -> Optional[dict]:
+        return self._store.get_node(node_id)
+
+    def get_all_nodes(self) -> list[dict]:
+        return self._store.get_all_nodes()
 
     def close(self) -> None:
         self._store.close()

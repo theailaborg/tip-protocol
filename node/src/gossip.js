@@ -14,9 +14,11 @@
 
 "use strict";
 
+const crypto                 = require("crypto");
 const WebSocket              = require("ws");
 const { validateTransaction } = require("./validators/tx-validator");
 const { TX_TYPES }           = require("../../shared/constants");
+const { mldsaVerify, mldsaSign } = require("../../shared/crypto");
 const { log }                = require("./logger");
 
 const MSG_TYPES = {
@@ -24,6 +26,8 @@ const MSG_TYPES = {
   SYNC_REQUEST:  "SYNC_REQUEST",
   SYNC_RESPONSE: "SYNC_RESPONSE",
   HANDSHAKE:     "HANDSHAKE",
+  CHALLENGE:     "CHALLENGE",
+  CHALLENGE_RESPONSE: "CHALLENGE_RESPONSE",
   PING:          "PING",
   PONG:          "PONG",
 };
@@ -92,13 +96,26 @@ function replayDerivedState(dag, tx) {
         });
       }
       break;
+
+    case TX_TYPES.NODE_REGISTERED:
+      if (d.node_id && !dag.getNode(d.node_id)) {
+        dag.saveNode({
+          node_id:        d.node_id,
+          name:           d.name || "",
+          public_key:     d.public_key || "",
+          status:         "active",
+          registered_at:  tx.timestamp,
+        });
+      }
+      break;
   }
 }
 
 function initGossip(server, dag, config) {
   const wss     = new WebSocket.Server({ server, path: "/gossip" });
-  const peers   = new Map();    // peerId -> WebSocket
+  const peers   = new Map();    // nodeId -> { ws, authenticated }
   const seenTx  = new Set();    // dedup recently seen tx_ids
+  const pendingChallenges = new Map(); // ws -> nonce
 
   // ── Incoming connections (from peers connecting to us) ──────────────────
   wss.on("connection", (ws, req) => {
@@ -116,32 +133,57 @@ function initGossip(server, dag, config) {
 
     ws.on("close", () => {
       log.info(`Gossip: peer disconnected (${remoteAddr})`);
-      for (const [id, peerWs] of peers.entries()) {
-        if (peerWs === ws) peers.delete(id);
+      pendingChallenges.delete(ws);
+      for (const [id, peer] of peers.entries()) {
+        if (peer.ws === ws) peers.delete(id);
       }
     });
 
     ws.on("error", err => log.warn(`Gossip error (${remoteAddr}):`, err.message));
 
-    // Send handshake
-    send(ws, {
-      type:       MSG_TYPES.HANDSHAKE,
-      node_id:    config.nodeId,
-      node_type:  config.nodeType,
-      dag_count:  dag.count(),
-      public_url: config.publicUrl,
-      version:    "2.0.0",
-    });
+    // Send challenge nonce for authentication
+    const nonce = crypto.randomBytes(32).toString("hex");
+    pendingChallenges.set(ws, nonce);
+    send(ws, { type: MSG_TYPES.CHALLENGE, nonce });
   });
 
   function handleMessage(ws, msg) {
     switch (msg.type) {
-      case MSG_TYPES.HANDSHAKE:
-        if (msg.node_id) {
-          peers.set(msg.node_id, ws);
-          log.info(`Gossip: handshake accepted from node ${msg.node_id}`);
+      case MSG_TYPES.CHALLENGE: {
+        // We received a challenge from a peer we connected to — sign and respond
+        if (msg.nonce && config.nodePrivateKey) {
+          const nodeId = config.nodeRegisteredId || config.nodeId;
+          send(ws, {
+            type:      MSG_TYPES.CHALLENGE_RESPONSE,
+            node_id:   nodeId,
+            signature: mldsaSign(msg.nonce, config.nodePrivateKey),
+          });
         }
         break;
+      }
+
+      case MSG_TYPES.CHALLENGE_RESPONSE: {
+        // Peer responded to our challenge — verify against node registry
+        const nonce = pendingChallenges.get(ws);
+        if (!nonce || !msg.node_id || !msg.signature) {
+          log.warn("Gossip: invalid challenge response — missing fields");
+          break;
+        }
+        pendingChallenges.delete(ws);
+
+        const registeredNode = dag.getNode(msg.node_id);
+        if (registeredNode && mldsaVerify(nonce, msg.signature, registeredNode.public_key)) {
+          peers.set(msg.node_id, { ws, authenticated: true });
+          log.info(`Gossip: node ${msg.node_id} authenticated (registered)`);
+          // Send sync request after auth
+          const lastSeen = dag.getAllTxs().reduce((max, tx) => tx.timestamp > max ? tx.timestamp : max, "1970-01-01T00:00:00.000Z");
+          send(ws, { type: MSG_TYPES.SYNC_REQUEST, since: lastSeen });
+        } else {
+          log.warn(`Gossip: node ${msg.node_id} rejected — not in registry or invalid signature`);
+          ws.close(4001, "Node authentication failed");
+        }
+        break;
+      }
 
       case MSG_TYPES.TX_BROADCAST:
         if (msg.tx && msg.tx.tx_id && !seenTx.has(msg.tx.tx_id)) {
@@ -200,9 +242,9 @@ function initGossip(server, dag, config) {
   // ── Broadcast a new tx to all connected peers ─────────────────────────
   function broadcast(tx, excludeWs, ttl = 2) {
     const msg = JSON.stringify({ type: MSG_TYPES.TX_BROADCAST, tx, ttl });
-    for (const [, peerWs] of peers.entries()) {
-      if (peerWs !== excludeWs && peerWs.readyState === WebSocket.OPEN) {
-        peerWs.send(msg);
+    for (const [, peer] of peers.entries()) {
+      if (peer.ws !== excludeWs && peer.ws.readyState === WebSocket.OPEN) {
+        peer.ws.send(msg);
       }
     }
   }
@@ -221,11 +263,7 @@ function initGossip(server, dag, config) {
         const ws = new WebSocket(`${peerUrl}/gossip`);
         ws.on("open", () => {
           log.info(`Gossip: connected to peer ${peerUrl}`);
-          // Handshake
-          send(ws, { type: MSG_TYPES.HANDSHAKE, node_id: config.nodeId, node_type: config.nodeType, public_url: config.publicUrl });
-          // Request sync
-          const lastSeen = dag.getAllTxs().reduce((max, tx) => tx.timestamp > max ? tx.timestamp : max, "1970-01-01T00:00:00.000Z");
-          send(ws, { type: MSG_TYPES.SYNC_REQUEST, since: lastSeen });
+          // Wait for challenge from peer (handled in handleMessage CHALLENGE case)
         });
         ws.on("message", data => {
           try { handleMessage(ws, JSON.parse(data.toString())); } catch {}

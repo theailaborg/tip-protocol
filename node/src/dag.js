@@ -44,6 +44,7 @@ class MemoryStore {
     this._dedup       = new Set();  // dedup_hash strings (Poseidon field elements)
     this._revocations = new Map();  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
     this._vps         = new Map();  // vp_id -> record
+    this._nodes       = new Map();  // node_id -> record
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -119,6 +120,11 @@ class MemoryStore {
   saveVP(rec) { this._vps.set(rec.vp_id, { ...rec }); }
   getVP(vpId) { return this._vps.get(vpId) || null; }
   getAllVPs()  { return [...this._vps.values()]; }
+
+  // ── Nodes ───────────────────────────────────────────────────────────────
+  saveNode(rec) { this._nodes.set(rec.node_id, { ...rec }); }
+  getNode(nodeId) { return this._nodes.get(nodeId) || null; }
+  getAllNodes()  { return [...this._nodes.values()]; }
 
   close() { /* no-op for in-memory */ }
 }
@@ -220,6 +226,15 @@ class SQLiteStore {
         status             TEXT NOT NULL DEFAULT 'active',
         registered_at      TEXT NOT NULL
       );
+
+      -- ── Nodes ───────────────────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS nodes (
+        node_id         TEXT PRIMARY KEY,
+        name            TEXT,
+        public_key      TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'active',
+        registered_at   TEXT NOT NULL
+      );
     `);
   }
 
@@ -299,6 +314,13 @@ class SQLiteStore {
       ),
       getVP:    this.db.prepare("SELECT * FROM verification_providers WHERE vp_id=?"),
       getAllVPs: this.db.prepare("SELECT * FROM verification_providers"),
+
+      saveNode: this.db.prepare(
+        `INSERT OR REPLACE INTO nodes (node_id,name,public_key,status,registered_at)
+         VALUES (?,?,?,?,?)`
+      ),
+      getNode:    this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
+      getAllNodes: this.db.prepare("SELECT * FROM nodes"),
     };
   }
 
@@ -397,6 +419,18 @@ class SQLiteStore {
   getVP(vpId)  { return this._stmts.getVP.get(vpId) || null; }
   getAllVPs()   { return this._stmts.getAllVPs.all(); }
 
+  // ── Nodes ───────────────────────────────────────────────────────────────
+  saveNode(rec) {
+    this._stmts.saveNode.run(
+      rec.node_id, rec.name || null,
+      rec.public_key,
+      rec.status || "active",
+      rec.registered_at || new Date().toISOString()
+    );
+  }
+  getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
+  getAllNodes()    { return this._stmts.getAllNodes.all(); }
+
   close() {
     try { this.db.close(); } catch { /* ignore */ }
   }
@@ -486,6 +520,11 @@ function initDAG(config) {
     saveVP:          (rec)      => store.saveVP(rec),
     getVP:           (id)       => store.getVP(id),
     getAllVPs:        ()         => store.getAllVPs(),
+
+    // ── Nodes ────────────────────────────────────────────────────────────
+    saveNode:        (rec)      => store.saveNode(rec),
+    getNode:         (id)       => store.getNode(id),
+    getAllNodes:      ()         => store.getAllNodes(),
 
     close:           ()         => store.close(),
   };
