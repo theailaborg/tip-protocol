@@ -803,6 +803,71 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // NODE REGISTRY
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /v1/node/register
+   * Register a node on the DAG (approved by founding VP).
+   *
+   * Body:
+   *   name               string   optional label
+   *   public_key         string   node's ML-DSA-65 public key
+   *   council_signature  string   founding VP signs required fields
+   *   approving_vp_id    string   must be the founding VP
+   */
+  app.post("/v1/node/register", (req, res) => {
+    try {
+      const { name, public_key, council_signature, approving_vp_id } = req.body;
+      if (!public_key)        return res.status(400).json({ error: "public_key is required" });
+      if (!council_signature) return res.status(400).json({ error: "council_signature is required" });
+      if (!approving_vp_id)   return res.status(400).json({ error: "approving_vp_id is required" });
+
+      // Only the founding VP can approve new nodes
+      const foundingVpId = getFoundingVP().vp_id;
+      if (approving_vp_id !== foundingVpId) {
+        return res.status(403).json({ error: `Only the founding VP (${foundingVpId}) can approve new nodes` });
+      }
+
+      const approvingVp = dag.getVP(approving_vp_id);
+      if (!approvingVp) return res.status(403).json({ error: `Approving VP not found: ${approving_vp_id}` });
+      if (approvingVp.status !== "active") return res.status(403).json({ error: `Approving VP is not active: ${approving_vp_id}` });
+
+      // Verify council signature over required fields
+      const NODE_REGISTER_FIELDS = ["name", "public_key", "approving_vp_id"];
+      if (!verifyBodySignature(req.body, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
+        return res.status(403).json({ error: "Council signature verification failed — signature does not match approving VP public key" });
+      }
+
+      const nodeId       = generateTIPID("NODE", public_key);
+      const registeredAt = new Date().toISOString();
+
+      const nodeTxBody = {
+        tx_type:   TX_TYPES.NODE_REGISTERED,
+        timestamp: registeredAt,
+        prev:      dag.getRecentPrev(),
+        data:      { node_id: nodeId, name, public_key, council_signature, approving_vp_id },
+      };
+      const signedNodeTx = nodeSigned(nodeTxBody, config);
+
+      const nodeValidation = validateTransaction(signedNodeTx, dag, { authorPublicKey: config.nodePublicKey });
+      if (!nodeValidation.valid) {
+        return res.status(400).json({ error: nodeValidation.errors, layer: nodeValidation.layer });
+      }
+
+      const nodeTx = dag.addTx(signedNodeTx);
+      _broadcast(nodeTx);
+
+      dag.saveNode({ node_id: nodeId, name, public_key, status: "active", registered_at: registeredAt });
+
+      res.status(201).json({ node_id: nodeId, name, public_key, registered_at: registeredAt });
+
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // NODE INFO
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -827,6 +892,18 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
 
   app.get("/v1/node/peers", (req, res) => {
     res.json({ peers: config.peers, count: config.peers.length, node_id: config.nodeId });
+  });
+
+  app.get("/v1/node/registry", (req, res) => {
+    const nodes = dag.getAllNodes();
+    res.json({ nodes, count: nodes.length, node_id: config.nodeId });
+  });
+
+  // Node lookup (after /node/info, /node/peers, /node/registry to avoid route conflict)
+  app.get("/v1/node/:nodeId", (req, res) => {
+    const node = dag.getNode(req.params.nodeId);
+    if (!node) return res.status(404).json({ error: "Node not found" });
+    res.json(node);
   });
 
   // ─────────────────────────────────────────────────────────────────────────

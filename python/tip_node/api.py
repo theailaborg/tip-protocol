@@ -238,6 +238,11 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             m = re.match(r"^/v1/vp/([^/]+)$", path)
             if m:
                 return self._vp_resolve(_decode(m.group(1)))
+            if path == "/v1/node/registry":
+                return self._node_registry()
+            m = re.match(r"^/v1/node/([^/]+)$", path)
+            if m and m.group(1) not in ("info", "peers", "registry"):
+                return self._node_resolve(_decode(m.group(1)))
 
             self._send_json(404, {"error": "Endpoint not found"})
             return
@@ -258,6 +263,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             return self._revocations_create(body)
         if path == "/v1/vp/register":
             return self._vp_register(body)
+        if path == "/v1/node/register":
+            return self._node_register(body)
 
         m = re.match(r"^/v1/content/([^/]+)/verify$", path)
         if m:
@@ -877,6 +884,77 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not vp:
             self._send_json(404, {"error": f"VP not found: {vp_id}"}); return
         self._send_json(200, dict(vp))
+
+    def _node_register(self, body: dict):
+        name              = body.get("name")
+        pubkey            = body.get("public_key")
+        council_signature = body.get("council_signature")
+        approving_vp_id   = body.get("approving_vp_id")
+
+        if not pubkey:
+            self._send_json(400, {"error": "public_key is required"}); return
+        if not council_signature:
+            self._send_json(400, {"error": "council_signature is required"}); return
+        if not approving_vp_id:
+            self._send_json(400, {"error": "approving_vp_id is required"}); return
+
+        from tip_node.genesis import get_founding_vp
+        founding_vp_id = get_founding_vp()["vp_id"]
+        if approving_vp_id != founding_vp_id:
+            self._send_json(403, {"error": f"Only the founding VP ({founding_vp_id}) can approve new nodes"}); return
+
+        approving_vp = self.dag.get_vp(approving_vp_id)
+        if not approving_vp:
+            self._send_json(403, {"error": f"Approving VP not found: {approving_vp_id}"}); return
+        if approving_vp.get("status") != "active":
+            self._send_json(403, {"error": f"Approving VP is not active: {approving_vp_id}"}); return
+
+        _NODE_REGISTER_FIELDS = ["name", "public_key", "approving_vp_id"]
+        if not verify_body_signature(body, council_signature, approving_vp.get("public_key", ""), _NODE_REGISTER_FIELDS):
+            self._send_json(403, {"error": "Council signature verification failed — signature does not match approving VP public key"}); return
+
+        node_id = generate_tip_id("NODE", pubkey)
+        registered_at = _utc_now()
+        node_tx = {
+            "tx_type":   TxType.NODE_REGISTERED,
+            "timestamp": registered_at,
+            "prev":      self.dag.get_recent_prev(),
+            "data": {
+                "node_id":           node_id,
+                "name":              name,
+                "public_key":        pubkey,
+                "council_signature": council_signature,
+                "approving_vp_id":   approving_vp_id,
+            },
+        }
+        node_tx = self._node_sign(node_tx)
+        result = validate_transaction(node_tx, self.dag, author_public_key=self.node_public_key)
+        if not result.valid:
+            self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
+        self.dag.add_tx(node_tx)
+        self._broadcast(node_tx)
+        self.dag.save_node({
+            "node_id":        node_id,
+            "name":           name,
+            "public_key":     pubkey,
+            "status":         "active",
+            "registered_at":  registered_at,
+        })
+        self._send_json(201, {
+            "node_id": node_id, "name": name,
+            "public_key": pubkey, "registered_at": registered_at,
+        })
+
+    def _node_registry(self):
+        nodes = self.dag.get_all_nodes()
+        self._send_json(200, {"nodes": nodes, "count": len(nodes),
+                              "node_id": self.config["node_id"]})
+
+    def _node_resolve(self, node_id: str):
+        node = self.dag.get_node(node_id)
+        if not node:
+            self._send_json(404, {"error": f"Node not found: {node_id}"}); return
+        self._send_json(200, dict(node))
 
 
 def _decode(s: str) -> str:

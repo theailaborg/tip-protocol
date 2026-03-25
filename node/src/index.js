@@ -63,6 +63,18 @@ async function main() {
   const dag = initDAG(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
 
+  // Look up this node's registered ID from the node registry (by public key)
+  if (config.nodePublicKey) {
+    const allNodes = dag.getAllNodes();
+    const myNode = allNodes.find(n => n.public_key === config.nodePublicKey);
+    if (myNode) {
+      config.nodeRegisteredId = myNode.node_id;
+      log.info(`Node registered as: ${myNode.node_id}`);
+    } else {
+      log.warn("This node is not in the node registry — gossip auth will be unverified");
+    }
+  }
+
   // 2. Initialise trust scoring engine
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");

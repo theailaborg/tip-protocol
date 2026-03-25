@@ -76,6 +76,7 @@ const TX_TYPES = Object.freeze({
   // Governance
   VP_REGISTERED:            "VP_REGISTERED",
   VP_SUSPENDED:             "VP_SUSPENDED",
+  NODE_REGISTERED:          "NODE_REGISTERED",
   MERKLE_ROOT_PUBLISHED:    "MERKLE_ROOT_PUBLISHED",
 });
 

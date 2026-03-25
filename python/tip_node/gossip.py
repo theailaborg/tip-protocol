@@ -82,13 +82,26 @@ def _replay_derived_state(dag, tx: dict) -> None:
                 "registered_at":     tx.get("timestamp", ""),
             })
 
+    elif tt == TxType.NODE_REGISTERED:
+        node_id = d.get("node_id")
+        if node_id and not dag.get_node(node_id):
+            dag.save_node({
+                "node_id":        node_id,
+                "name":           d.get("name", ""),
+                "public_key":     d.get("public_key", ""),
+                "status":         "active",
+                "registered_at":  tx.get("timestamp", ""),
+            })
 
-MSG_TX_BROADCAST  = "TX_BROADCAST"
-MSG_HANDSHAKE     = "HANDSHAKE"
-MSG_SYNC_REQUEST  = "SYNC_REQUEST"
-MSG_SYNC_RESPONSE = "SYNC_RESPONSE"
-MSG_PING          = "PING"
-MSG_PONG          = "PONG"
+
+MSG_TX_BROADCAST      = "TX_BROADCAST"
+MSG_HANDSHAKE         = "HANDSHAKE"
+MSG_CHALLENGE         = "CHALLENGE"
+MSG_CHALLENGE_RESPONSE = "CHALLENGE_RESPONSE"
+MSG_SYNC_REQUEST      = "SYNC_REQUEST"
+MSG_SYNC_RESPONSE     = "SYNC_RESPONSE"
+MSG_PING              = "PING"
+MSG_PONG              = "PONG"
 
 
 class GossipServer:
@@ -100,9 +113,10 @@ class GossipServer:
     def __init__(self, dag, config: dict) -> None:
         self._dag      = dag
         self._config   = config
-        self._peers:   dict[str, socket.socket] = {}  # node_id -> socket
+        self._peers:   dict[str, dict] = {}  # node_id -> { "sock": socket, "authenticated": bool }
         self._seen:    set  = set()
         self._lock     = threading.Lock()
+        self._pending_challenges: dict[int, str] = {}  # sock id -> nonce
 
         # Inbound server socket
         self._server_sock: socket.socket | None = None
@@ -145,7 +159,14 @@ class GossipServer:
             log.warning(f"Gossip server error: {exc}")
 
     def _handle_peer(self, conn: socket.socket, addr: str) -> None:
+        import secrets
         log.info(f"Gossip: peer connected from {addr}")
+
+        # Send challenge nonce for authentication
+        nonce = secrets.token_hex(32)
+        self._pending_challenges[id(conn)] = nonce
+        self._send(conn, {"type": MSG_CHALLENGE, "nonce": nonce})
+
         buf = b""
         try:
             while self._running:
@@ -166,28 +187,54 @@ class GossipServer:
             log.warning(f"Gossip peer error ({addr}): {exc}")
         finally:
             conn.close()
+            self._pending_challenges.pop(id(conn), None)
             with self._lock:
                 for k, v in list(self._peers.items()):
-                    if v is conn:
+                    if v.get("sock") is conn:
                         del self._peers[k]
                         break
 
     def _handle_msg(self, conn: socket.socket, msg: dict) -> None:
+        from shared.crypto import mldsa_verify, mldsa_sign
         mtype = msg.get("type")
 
-        if mtype == MSG_HANDSHAKE:
+        if mtype == MSG_CHALLENGE:
+            # We received a challenge from a peer we connected to — sign and respond
+            nonce = msg.get("nonce")
+            priv_key = self._config.get("node_private_key")
+            if nonce and priv_key:
+                node_id = self._config.get("node_registered_id") or self._config["node_id"]
+                self._send(conn, {
+                    "type":      MSG_CHALLENGE_RESPONSE,
+                    "node_id":   node_id,
+                    "signature": mldsa_sign(nonce, priv_key),
+                })
+
+        elif mtype == MSG_CHALLENGE_RESPONSE:
+            # Peer responded to our challenge — verify against node registry
+            nonce = self._pending_challenges.pop(id(conn), None)
             node_id = msg.get("node_id")
-            if node_id:
+            signature = msg.get("signature")
+            if not nonce or not node_id or not signature:
+                log.warning("Gossip: invalid challenge response — missing fields")
+                conn.close()
+                return
+
+            registered = self._dag.get_node(node_id)
+            if registered and mldsa_verify(nonce, signature, registered["public_key"]):
                 with self._lock:
-                    self._peers[node_id] = conn
-            # Send our handshake back
-            self._send(conn, {
-                "type":       MSG_HANDSHAKE,
-                "node_id":    self._config["node_id"],
-                "node_type":  self._config.get("node_type", "full"),
-                "public_url": self._config.get("public_url", ""),
-                "dag_count":  self._dag.count(),
-            })
+                    self._peers[node_id] = {"sock": conn, "authenticated": True}
+                log.info(f"Gossip: node {node_id} authenticated (registered)")
+                # Send sync request after auth
+                last_ts = max(
+                    (t.get("timestamp", "") for t in self._dag.get_all_txs()),
+                    default="1970-01-01",
+                )
+                self._send(conn, {"type": MSG_SYNC_REQUEST, "since": last_ts})
+            else:
+                log.warning(f"Gossip: node {node_id} rejected — not in registry or invalid signature")
+                conn.close()
+                return
 
         elif mtype == MSG_TX_BROADCAST:
             tx  = msg.get("tx")
@@ -245,7 +292,8 @@ class GossipServer:
         msg = json.dumps({"type": MSG_TX_BROADCAST, "tx": tx, "ttl": ttl}) + "\n"
         data = msg.encode("utf-8")
         with self._lock:
-            for sock in list(self._peers.values()):
+            for peer in list(self._peers.values()):
+                sock = peer.get("sock") if isinstance(peer, dict) else peer
                 if sock is not exclude:
                     try:
                         sock.sendall(data)
@@ -275,21 +323,7 @@ class GossipServer:
             sock.settimeout(None)
 
             log.info(f"Gossip: connected to peer {peer_url}")
-
-            # Send handshake
-            self._send(sock, {
-                "type":       MSG_HANDSHAKE,
-                "node_id":    self._config["node_id"],
-                "node_type":  self._config.get("node_type", "full"),
-                "public_url": self._config.get("public_url", ""),
-            })
-
-            # Request sync
-            last_ts = max(
-                (t.get("timestamp", "") for t in self._dag.get_all_txs()),
-                default="1970-01-01",
-            )
-            self._send(sock, {"type": MSG_SYNC_REQUEST, "since": last_ts})
+            # Wait for challenge from peer (handled in _handle_msg CHALLENGE case)
 
             # Start listening thread for this peer
             threading.Thread(
