@@ -92,6 +92,7 @@ function verifyIncomingTx(tx, dag) {
   return true; // unknown tx type — accept
 }
 
+
 const MSG_TYPES = {
   TX_BROADCAST:  "TX_BROADCAST",
   SYNC_REQUEST:  "SYNC_REQUEST",
@@ -271,6 +272,7 @@ function initGossip(server, dag, config) {
               log.warn(`Gossip: rejected tx ${msg.tx.tx_id} — body signature verification failed`);
               break;
             }
+            // prev links already checked by validateTransaction Layer 5
             dag.addTx(msg.tx);
             replayDerivedState(dag, msg.tx);
             log.info(`Gossip: received tx ${msg.tx.tx_id} (${msg.tx.tx_type})`);
@@ -302,6 +304,7 @@ function initGossip(server, dag, config) {
                 log.warn(`Gossip: rejected sync tx ${tx.tx_id} — body signature verification failed`);
                 continue;
               }
+              // prev links checked by validateTransaction Layer 5
               dag.addTx(tx);
               replayDerivedState(dag, tx);
               imported++;

@@ -249,9 +249,6 @@ function validateCryptography(tx, authorPublicKey) {
 
 // ─── Layer 5: DAG integrity ───────────────────────────────────────────────────
 function validateDAGIntegrity(tx, dag) {
-  // Genesis block has no prev references
-  if (tx.tx_type === "GENESIS") return pass();
-
   const errors = [];
 
   // tx_id must match content — detects any field-level tampering
@@ -259,14 +256,18 @@ function validateDAGIntegrity(tx, dag) {
     errors.push(`tx_id does not match transaction content — transaction may have been tampered with`);
   }
 
-  // Genesis tx is special — check for the special genesis ID pattern
-  const isGenesisTxId = (id) => id === "genesis-" + "0".repeat(48) || id.startsWith("genesis-");
+  // Only genesis can have empty prev
+  if (!tx.prev || tx.prev.length === 0) {
+    if (tx.tx_type !== "GENESIS") {
+      errors.push("Non-genesis tx must have prev references");
+    }
+    return errors.length ? { valid: false, errors } : pass();
+  }
 
-  for (const prevId of (tx.prev || [])) {
+  // All prev references must exist in DAG
+  for (const prevId of tx.prev) {
     if (!prevId) { errors.push("Empty prev reference"); continue; }
-    if (isGenesisTxId(prevId)) continue; // Genesis ref is always valid
-    const ref = dag.getTx(prevId);
-    if (!ref) {
+    if (!dag.getTx(prevId)) {
       errors.push(`prev reference not found in DAG: ${prevId}`);
     }
   }

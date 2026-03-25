@@ -324,9 +324,6 @@ def _validate_crypto(
 # ─── Layer 5: DAG integrity ───────────────────────────────────────────────────
 
 def _validate_dag_integrity(tx: dict, dag) -> ValidationResult:
-    if tx.get("tx_type") == TxType.GENESIS:
-        return ValidationResult.ok()
-
     errors = []
     tx_id  = tx.get("tx_id", "")
 
@@ -334,24 +331,24 @@ def _validate_dag_integrity(tx: dict, dag) -> ValidationResult:
     if not verify_tx_id(tx):
         errors.append("tx_id does not match transaction content — transaction may have been tampered with")
 
-    # Duplicate check
-    if not tx_id.startswith("genesis"):
-        existing = dag.get_tx(tx_id)
-        if existing:
-            errors.append(f"Duplicate tx_id: '{tx_id}' already exists in DAG")
+    # Only genesis can have empty prev
+    prev = tx.get("prev", [])
+    if not prev:
+        if tx.get("tx_type") != TxType.GENESIS:
+            errors.append("Non-genesis tx must have prev references")
+        return ValidationResult.fail("dag_integrity", *errors) if errors else ValidationResult.ok()
 
-    # Prev reference validity
-    genesis_prefix = "0" * 64  # the real genesis tx_id
-    for prev_id in tx.get("prev", []):
+    # Duplicate check
+    existing = dag.get_tx(tx_id)
+    if existing:
+        errors.append(f"Duplicate tx_id: '{tx_id}' already exists in DAG")
+
+    # All prev references must exist in DAG
+    for prev_id in prev:
         if not prev_id:
             errors.append("Empty string in prev[] references")
             continue
-        if prev_id == genesis_prefix:
-            continue  # genesis is always valid
-        if prev_id.startswith("genesis"):
-            continue
-        ref = dag.get_tx(prev_id)
-        if ref is None:
+        if not dag.get_tx(prev_id):
             errors.append(f"prev reference not found in DAG: '{prev_id}'")
 
     return ValidationResult.fail("dag_integrity", *errors) if errors else ValidationResult.ok()

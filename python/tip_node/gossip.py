@@ -155,6 +155,7 @@ def _verify_incoming_tx(tx: dict, dag) -> bool:
     return True
 
 
+
 MSG_TX_BROADCAST      = "TX_BROADCAST"
 MSG_HANDSHAKE         = "HANDSHAKE"
 MSG_CHALLENGE         = "CHALLENGE"
@@ -312,6 +313,7 @@ class GossipServer:
                         elif not _verify_incoming_tx(tx, self._dag):
                             log.warning(f"Gossip: rejected tx {tx_id[:16]}... — body signature verification failed")
                         else:
+                            # prev links already checked by validate_transaction
                             self._dag.add_tx(tx)
                             _replay_derived_state(self._dag, tx)
                             log.debug(f"Gossip: imported tx {tx_id[:16]}... ({tx.get('tx_type')})")
@@ -331,14 +333,16 @@ class GossipServer:
         elif mtype == MSG_SYNC_RESPONSE:
             imported = 0
             for tx in msg.get("txs", []):
-                if tx.get("tx_id") and not self._dag.get_tx(tx["tx_id"]):
+                tx_id = tx.get("tx_id")
+                if tx_id and not self._dag.get_tx(tx_id):
                     result = validate_transaction(tx, self._dag, skip_state=True)
                     if not result.valid:
-                        log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... ({result.layer}): {result.errors[0]}")
+                        log.warning(f"Gossip: rejected sync tx {tx_id[:16]}... ({result.layer}): {result.errors[0]}")
                         continue
                     if not _verify_incoming_tx(tx, self._dag):
-                        log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... — body signature verification failed")
+                        log.warning(f"Gossip: rejected sync tx {tx_id[:16]}... — body signature verification failed")
                         continue
+                    # prev links checked by validate_transaction
                     self._dag.add_tx(tx)
                     _replay_derived_state(self._dag, tx)
                     imported += 1

@@ -483,7 +483,7 @@ describe("Transaction Validator", () => {
         dedup_hash:        "55667788990011223344556677889900112233445566778899001122334455667",
         zk_proof:          MOCK_ZK_PROOF,
       },
-      prev:      [],
+      prev:      dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: mldsaSign(tipId, freshKp.privateKey) };
     const result = validateTransaction(tx, dag);
@@ -495,7 +495,7 @@ describe("Transaction Validator", () => {
       tx_type:   TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
       data:      { tip_id: "tip://id/US-abc", region: "US" }, // missing vp_id
-      prev:      [],
+      prev:      dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTransaction(tx, dag);
@@ -522,9 +522,9 @@ describe("Transaction Validator", () => {
         pre_scan_passed: true,
         signature:     authorSig,
       },
-      prev:      [],
+      prev:      dag.getRecentPrev(),
     };
-    const tx = { ...txBody, tx_id: computeTxId(txBody), signature: authorSig };
+    const tx = { ...txBody, tx_id: computeTxId(txBody) };
     const result = validateTransaction(tx, dag);
     expect(result.valid).toBe(true);
   });
@@ -539,7 +539,7 @@ describe("Transaction Validator", () => {
         content_hash: "abc",
         author_tip_id: "tip://id/US-abc123",
       },
-      prev:      [],
+      prev:      dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTransaction(tx, dag);
@@ -556,7 +556,7 @@ describe("Transaction Validator", () => {
         reason_code:   "FRAUDULENT_REGISTRATION",
         // missing evidence_hash
       },
-      prev:      [],
+      prev:      dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody),
       signature: mldsaSign("revoke", vpKeypair.privateKey),

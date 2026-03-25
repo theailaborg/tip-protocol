@@ -379,7 +379,7 @@ def test_validator() -> None:
         tx = {
             "tx_type":   tx_type,
             "timestamp": "2026-03-14T12:00:00+00:00",
-            "prev":      [],
+            "prev": dag.get_recent_prev(),
             "data":      data,
         }
         tx["tx_id"] = compute_tx_id(tx)
@@ -393,7 +393,7 @@ def test_validator() -> None:
     check("Empty dict rejected [structure]", not r.valid and r.layer == "structure")
 
     r = validate_transaction({"tx_id": rh(), "timestamp": "2026-03-14T12:00:00+00:00",
-                              "data": {}, "prev": []}, dag, skip_state=True)
+                              "data": {}, "prev": dag.get_recent_prev()}, dag, skip_state=True)
     check("Missing tx_type rejected [structure]", not r.valid and r.layer == "structure")
 
     # Future timestamp test
@@ -401,7 +401,7 @@ def test_validator() -> None:
         "tx_id":     rh(),
         "tx_type":   TxType.REGISTER_IDENTITY,
         "timestamp": "2099-01-01T00:00:00+00:00",
-        "prev":      [],
+        "prev": dag.get_recent_prev(),
         "data":      {"tip_id": tid, "dedup_hash": MOCK_DEDUP_HASH, "zk_proof": MOCK_ZK_PROOF,
                       "vp_id": vpid, "verification_tier": "T1",
                       "region": "DE", "public_key": kp["publicKey"]},
@@ -412,7 +412,7 @@ def test_validator() -> None:
     # Valid identity
     _valid_id_body = {
         "tx_type":   TxType.REGISTER_IDENTITY,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"tip_id": tid, "region": "DE", "public_key": kp["publicKey"],
                       "vp_id": vpid, "verification_tier": "T1",
                       "dedup_hash": MOCK_DEDUP_HASH, "zk_proof": MOCK_ZK_PROOF},
@@ -454,7 +454,7 @@ def test_validator() -> None:
     # Bad origin code
     r = validate_transaction(
         {"tx_id": rh(), "tx_type": TxType.REGISTER_CONTENT,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+         "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
          "data": {"ctid": ctid, "origin_code": "XX", "content_hash": h,
                   "author_tip_id": tid, "signature": "s"}},
         dag, skip_crypto=True,
@@ -465,7 +465,7 @@ def test_validator() -> None:
     # Valid content
     _valid_content_body = {
         "tx_type":   TxType.REGISTER_CONTENT,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"ctid": ctid, "origin_code": "OH", "content_hash": h,
                       "author_tip_id": tid, "signature": "s"},
     }
@@ -488,7 +488,7 @@ def test_validator() -> None:
     # Score > 1000
     r = validate_transaction(
         {"tx_id": rh(), "tx_type": TxType.SCORE_UPDATE,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+         "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
          "data": {"tip_id": tid, "delta": 10, "score_after": 1500, "reason": "test"}},
         dag, skip_crypto=True,
     )
@@ -497,7 +497,7 @@ def test_validator() -> None:
     # Score in valid range
     _score_body = {
         "tx_type":   TxType.SCORE_UPDATE,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"tip_id": tid, "delta": 10, "score_after": 600, "reason": "test"},
     }
     r = validate_transaction(
@@ -509,7 +509,7 @@ def test_validator() -> None:
     # Revoke non-existent identity
     _revoke_nonexist_body = {
         "tx_type":   TxType.REVOKE_VP,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"tip_id": "tip://id/US-doesnotexist0000",
                       "issuing_vp_id": vpid, "reason_code": "FRAUD", "evidence_hash": "x"},
     }
@@ -523,7 +523,7 @@ def test_validator() -> None:
     dag.add_revocation(tid, "REVOKE_VOLUNTARY", "2026-03-15T00:00:00+00:00", rh())
     _double_revoke_body = {
         "tx_type":   TxType.REVOKE_VOLUNTARY,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"tip_id": tid},
     }
     r = validate_transaction(
@@ -535,7 +535,7 @@ def test_validator() -> None:
     # Red-tier VP
     r = validate_transaction(
         {"tx_id": rh(), "tx_type": TxType.VP_REGISTERED,
-         "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+         "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
          "data": {"vp_id": "tip://id/VP-CN-bad", "name": "Bad VP",
                   "jurisdiction_tier": "red", "public_key": "aabb"}},
         dag, skip_crypto=True,
@@ -545,7 +545,7 @@ def test_validator() -> None:
     # Green-tier VP
     _green_vp_body = {
         "tx_type":   TxType.VP_REGISTERED,
-        "timestamp": "2026-03-14T12:00:00+00:00", "prev": [],
+        "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
         "data":      {"vp_id": "tip://id/VP-FR-good", "name": "French VP",
                       "jurisdiction_tier": "green", "public_key": "aabb"},
     }
@@ -560,7 +560,7 @@ def test_validator() -> None:
     _signed_body = {
         "tx_type":   TxType.REGISTER_CONTENT,
         "timestamp": "2026-03-14T12:00:00+00:00",
-        "prev":      [],
+        "prev": dag.get_recent_prev(),
         "data":      {"ctid": ctid2, "origin_code": "AA",
                       "content_hash": hash_content("signed content for crypto test"),
                       "author_tip_id": tid, "signature": "placeholder"},
