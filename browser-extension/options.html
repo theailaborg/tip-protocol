@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TIP™ Extension — Settings</title>
+  <title>TIP™ Extension  -  Settings</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -229,7 +229,7 @@
       </svg>
       <div class="brand-text">
         <div class="name">TIP™ PROTOCOL</div>
-        <div class="ver">v2.1.0 · TIPCL-1.0</div>
+        <div class="ver">v2.2.0 · TIPCL-1.0</div>
       </div>
     </div>
 
@@ -469,7 +469,7 @@
           The current signing implementation uses <strong>ECDSA P-256</strong> as a development stand-in
           for ML-DSA-65 (Dilithium3, FIPS 204). For production, this must be replaced with
           <code>@noble/post-quantum</code> bundled into the extension.
-          The API surface is identical — only the import changes.
+          The API surface is identical  -  only the import changes.
           All devnet-registered content will need re-registration after the production crypto swap.
         </div>
         <a href="https://github.com/paulmillr/noble-post-quantum" target="_blank"
@@ -543,7 +543,7 @@
       <div class="alert alert-info">
         <strong>Dual-mode design:</strong> Before platforms implement TIP natively, the extension
         injects a registration panel on upload pages. After native implementation, the extension
-        reads the platform's own TIP headers and displays the badge — the panel disappears automatically.
+        reads the platform's own TIP headers and displays the badge  -  the panel disappears automatically.
       </div>
 
       <div class="card">
@@ -621,7 +621,7 @@
           Once a platform publishes <code>TIP-Author</code>, <code>TIP-Content</code>, and <code>TIP-Trust-Score</code>
           HTTP headers on their responses, the extension automatically switches to reading those instead.
           The creator registration panel hides itself on that platform.
-          No extension update is required — it works the moment the platform adds the headers.
+          No extension update is required  -  it works the moment the platform adds the headers.
         </div>
       </div>
     </div>
@@ -640,7 +640,7 @@
             <div class="step-num">1</div>
             <div class="step-content">
               <div class="step-title">Get a TIP-ID</div>
-              <div class="step-desc">Apply for verification at <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification — government ID, 3D liveness check, device binding. Takes about 5 minutes. You receive your TIP-ID and private key.</div>
+              <div class="step-desc">Apply for verification at <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification  -  government ID, 3D liveness check, device binding. Takes about 5 minutes. You receive your TIP-ID and private key.</div>
             </div>
           </div>
           <div class="step">
@@ -663,10 +663,10 @@
               <div class="step-title">Select your origin code</div>
               <div class="step-desc">
                 Choose how this content was created:<br>
-                <strong style="color:#2563A8;">OH</strong> — Original Human: you created it without AI.<br>
-                <strong style="color:#7C3AED;">AA</strong> — AI-Assisted: you led the work, AI helped.<br>
-                <strong style="color:#C07318;">AG</strong> — AI-Generated: AI generated it.<br>
-                <strong style="color:#8895A7;">MX</strong> — Mixed: combination of sources.<br><br>
+                <strong style="color:#2563A8;">OH</strong>  -  Original Human: you created it without AI.<br>
+                <strong style="color:#7C3AED;">AA</strong>  -  AI-Assisted: you led the work, AI helped.<br>
+                <strong style="color:#C07318;">AG</strong>  -  AI-Generated: AI generated it.<br>
+                <strong style="color:#8895A7;">MX</strong>  -  Mixed: combination of sources.<br><br>
                 <strong>Over-declaring AI involvement is always safe.</strong> Declaring OH when AI generated it can cost trust score points.
               </div>
             </div>
@@ -743,14 +743,14 @@
 
 // ── FAQ data ──────────────────────────────────────────────────────────────────
 const FAQS = [
-  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted with AES-256-GCM using a key derived from your password via PBKDF2. Only the encrypted ciphertext is stored on this device. The TIP node receives only a cryptographic signature — it cannot reverse-engineer your private key from it." },
+  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted with AES-256-GCM using a key derived from your password via PBKDF2. Only the encrypted ciphertext is stored on this device. The TIP node receives only a cryptographic signature  -  it cannot reverse-engineer your private key from it." },
   { q: "What is a CTID and where do I put it?", a: "A CTID (Content Transaction ID) is a permanent URI like tip://c/OH-7f2a91bc3d5e4a-a3f8. It identifies your content on the TIP DAG. Paste it anywhere in your content: video description, article footer, post caption. Viewers with the TIP extension see it as a clickable verification link. Viewers without the extension can go to theailab.org/verify/[ctid] to verify manually." },
   { q: "What if I pick OH but my content is actually AI-generated?", a: "The TIP node runs an AI pre-scan calibrated to your creator history. If you declare OH but the AI classifier detects probable AI generation, your trust score decreases: -100 for a first offense, up to -350 for repeated offenses. Over-declaring AI involvement (e.g. declaring AA when it's actually OH) carries zero penalty. When in doubt, declare conservatively." },
-  { q: "What happens if the platform already supports TIP natively?", a: "The extension automatically detects TIP-* HTTP headers in the platform's responses. Once those headers are present, the extension reads them instead of using the creator panel. The registration panel hides itself. You don't need to do anything — it transitions seamlessly." },
+  { q: "What happens if the platform already supports TIP natively?", a: "The extension automatically detects TIP-* HTTP headers in the platform's responses. Once those headers are present, the extension reads them instead of using the creator panel. The registration panel hides itself. You don't need to do anything  -  it transitions seamlessly." },
   { q: "Does the extension work on mobile browsers?", a: "Chrome and Firefox browser extensions are desktop-only. Mobile browser extensions are not currently supported by Chrome for Android or Safari for iOS. Platforms implementing TIP natively will provide the mobile experience." },
-  { q: "What is the difference between TIP-ID and a CTID?", a: "Your TIP-ID (tip://id/US-...) is your identity — it represents you as a verified person. It stays the same forever. A CTID (tip://c/OH-...) is a content record — it represents one specific piece of content you registered. You have one TIP-ID and as many CTIDs as pieces of content you register." },
+  { q: "What is the difference between TIP-ID and a CTID?", a: "Your TIP-ID (tip://id/US-...) is your identity  -  it represents you as a verified person. It stays the same forever. A CTID (tip://c/OH-...) is a content record  -  it represents one specific piece of content you registered. You have one TIP-ID and as many CTIDs as pieces of content you register." },
   { q: "What does the '+' badge on the extension icon mean?", a: "The gold '+' badge appears when you are on an upload page (YouTube Studio, TikTok, Instagram, etc.). It indicates the TIP creator panel has been injected and is ready for you to register your content." },
-  { q: "Can I use the extension without a TIP-ID?", a: "Yes, for viewer mode. You can see trust badges on any page that has TIP headers or meta tags, verify CTIDs, and scan pages for TIP data — all without a TIP-ID. You only need a TIP-ID to register your own content." },
+  { q: "Can I use the extension without a TIP-ID?", a: "Yes, for viewer mode. You can see trust badges on any page that has TIP headers or meta tags, verify CTIDs, and scan pages for TIP data  -  all without a TIP-ID. You only need a TIP-ID to register your own content." },
   { q: "How do I get a TIP-ID?", a: "Apply at theailab.org/get-verified. A Verification Provider (VP) runs you through biometric verification: government ID scan, 3D liveness check, and device biometric binding. Takes about 5 minutes. You receive your TIP-ID and private key at the end." },
   { q: "Is this free?", a: "Yes. The TIP extension is free. Getting a TIP-ID through an accredited VP is free for individuals. Commercial platforms building TIP into their products may require a commercial license above $500K annual revenue, but end users and creators are always free." },
 ];
@@ -977,8 +977,8 @@ document.getElementById("test-node-btn").addEventListener("click", async () => {
   if (res?.ok && res.data) {
     resultEl.innerHTML = `<div class="alert alert-success">
       <strong>✓ Connected</strong><br>
-      Version: ${res.data.version || "—"} &nbsp;·&nbsp;
-      Chain: ${res.data.chain_id || "—"} &nbsp;·&nbsp;
+      Version: ${res.data.version || " - "} &nbsp;·&nbsp;
+      Chain: ${res.data.chain_id || " - "} &nbsp;·&nbsp;
       DAG: ${res.data.dag_count || 0} transactions
     </div>`;
   } else {
@@ -1000,8 +1000,8 @@ async function loadNodeStatus() {
         <span style="color:#1A8A5C;font-weight:600;">Online</span>
       </div>
       <div style="font-size:11px;color:#8895A7;line-height:1.7;">
-        Version: <strong>${res.data.version||"—"}</strong><br>
-        Chain ID: <strong>${res.data.chain_id||"—"}</strong><br>
+        Version: <strong>${res.data.version||" - "}</strong><br>
+        Chain ID: <strong>${res.data.chain_id||" - "}</strong><br>
         DAG transactions: <strong>${res.data.dag_count||0}</strong><br>
         Identity count: <strong>${res.data.identity_count||0}</strong>
       </div>`;

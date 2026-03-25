@@ -3,745 +3,1583 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TIP™ — AI Trust ID</title>
+  <title>TIP(tm) - AI Trust ID</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    /* ── Reset + tokens ───────────────────────────────────────── */
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --navy:#0C1A3A; --navy2:#1B2A4A; --navy3:#0A1225;
+      --gold:#B8942E; --gold2:#C9A84C; --goldbg:rgba(184,148,46,.10);
+      --green:#1A8A5C; --blue:#2563A8; --red:#C53030;
+      --amber:#92780C; --teal:#0D7490;
+      --bg:#FFFFFF; --surf:#F5F7FA; --surf2:#EBEEF4;
+      --border:#D8DCE6; --border2:#C8CDD8;
+      --t1:#0C1A3A; --t2:#2E3A52; --t3:#3C4B68; --t4:#8895A7;
+      --serif:'Cormorant Garamond',Georgia,serif;
+      --sans:'Libre Franklin','Helvetica Neue',sans-serif;
+      --mono:'JetBrains Mono',monospace;
+    }
+    body{
+      width:360px; min-height:200px; max-height:600px;
+      font-family:var(--sans); background:var(--bg);
+      color:var(--t1); font-size:13px;
+      overflow-y:auto; overflow-x:hidden;
+      -webkit-font-smoothing:antialiased;
+    }
+    ::-webkit-scrollbar{width:3px}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 340px; min-height: 200px; max-height: 580px;
-      font-family: 'Libre Franklin', 'Helvetica Neue', sans-serif;
-      background: #FFFFFF; color: #0C1A3A; font-size: 13px;
-      overflow-y: auto; overflow-x: hidden;
+    /* ── Header ───────────────────────────────────────────────── */
+    .hdr{
+      background:linear-gradient(135deg,var(--navy3),var(--navy));
+      padding:12px 14px;
+      display:flex;align-items:center;gap:10px;
+      border-bottom:1px solid rgba(184,148,46,.2);
     }
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-thumb { background: #E2E6EE; border-radius: 2px; }
+    .hdr-brand .name{
+      font-family:var(--serif);font-size:13px;font-weight:700;
+      color:#FFF;letter-spacing:.5px;
+    }
+    .hdr-brand .sub{font-size:8px;color:var(--gold);letter-spacing:2px;font-weight:600}
+    .hdr-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+    #node-status{
+      width:7px;height:7px;border-radius:50%;
+      background:var(--t4);transition:background .3s;
+    }
+    #settings-btn,#test-fab{
+      background:none;border:none;cursor:pointer;
+      color:rgba(255,255,255,.5);padding:3px;
+      border-radius:5px;transition:color .15s,background .15s;
+      display:flex;align-items:center;justify-content:center;
+    }
+    #settings-btn:hover{color:var(--gold);background:rgba(255,255,255,.08)}
 
-    /* ── Header ── */
-    .header {
-      background: #0C1A3A; padding: 12px 14px;
-      display: flex; align-items: center; gap: 10px;
+    /* ── Test mode FAB ──────────────────────────────────────────── */
+    #test-fab{
+      font-family:var(--sans);font-size:9px;font-weight:700;
+      letter-spacing:.5px;padding:4px 8px;border-radius:12px;
+      border:1px solid rgba(184,148,46,.35);color:var(--gold);
+      background:rgba(184,148,46,.08);
     }
-    .header-text .title { font-size: 11px; font-weight: 700; color: #FFF; letter-spacing: 1.5px; }
-    .header-text .sub   { font-size: 9px; color: #B8942E; letter-spacing: 2px; font-weight: 500; }
+    #test-fab:hover{background:rgba(184,148,46,.18);color:var(--gold2)}
+    #test-fab.active{
+      background:var(--gold);color:#fff;border-color:var(--gold);
+    }
+    #test-banner{
+      display:none;
+      background:linear-gradient(90deg,#7A5F10,var(--gold),#7A5F10);
+      background-size:200% 100%;
+      animation:shimmer 2s linear infinite;
+      padding:5px 14px;font-size:9px;font-weight:700;
+      color:#fff;text-align:center;letter-spacing:1px;
+    }
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
-    /* ── Mode tabs ── */
-    .mode-tabs {
-      display: flex; border-bottom: 1px solid #E2E6EE;
-      background: #F8F9FB;
+    /* ── Tabs ─────────────────────────────────────────────────── */
+    .tabs{
+      display:flex;background:var(--surf);
+      border-bottom:1px solid var(--border);
     }
-    .mode-tab {
-      flex: 1; padding: 9px 6px; text-align: center;
-      font-size: 11px; font-weight: 500; cursor: pointer;
-      border: none; background: none; color: #8895A7;
-      border-bottom: 2px solid transparent;
-      transition: all 0.2s; font-family: inherit;
+    .tab{
+      flex:1;padding:9px 6px;text-align:center;
+      font-size:11px;font-weight:500;cursor:pointer;
+      border:none;background:none;color:var(--t4);
+      border-bottom:2px solid transparent;
+      transition:all .18s;font-family:var(--sans);
     }
-    .mode-tab.active { color: #0C1A3A; border-bottom-color: #B8942E; font-weight: 600; }
-    .mode-tab:hover:not(.active) { color: #4A5568; background: #F1F3F7; }
+    .tab.active{color:var(--navy);border-bottom-color:var(--gold);font-weight:600}
+    .tab:hover:not(.active){color:var(--t2);background:var(--surf2)}
 
-    /* ── Sections ── */
-    .section { padding: 14px; border-bottom: 1px solid #E2E6EE; }
-    .section:last-child { border-bottom: none; }
-    .section-label {
-      font-size: 9px; font-weight: 600; color: #8895A7;
-      letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px;
-    }
+    /* ── Panes ────────────────────────────────────────────────── */
+    .pane{display:none}
+    .pane.visible{display:block}
 
-    /* ── Buttons ── */
-    .btn-primary {
-      width: 100%; padding: 10px; border-radius: 8px;
-      background: #0C1A3A; color: #B8942E;
-      border: none; font-family: inherit; font-size: 12px;
-      font-weight: 600; cursor: pointer; letter-spacing: 0.5px;
-      display: flex; align-items: center; justify-content: center; gap: 7px;
-      transition: opacity 0.2s;
-    }
-    .btn-primary:hover { opacity: 0.9; }
-    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
-    .btn-secondary {
-      padding: 7px 12px; border-radius: 6px;
-      background: none; border: 1px solid #E2E6EE;
-      color: #4A5568; font-family: inherit; font-size: 11px;
-      cursor: pointer; transition: all 0.2s;
-    }
-    .btn-secondary:hover { background: #F1F3F7; border-color: #D0D5E0; }
-    .btn-green {
-      width: 100%; padding: 8px; border-radius: 6px;
-      background: #1A8A5C15; color: #1A8A5C;
-      border: 1px solid #1A8A5C40;
-      font-family: inherit; font-size: 11px; font-weight: 600;
-      cursor: pointer; transition: all 0.2s;
-    }
-    .btn-green:hover { background: #1A8A5C25; }
-
-    /* ── Origin buttons ── */
-    .origin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .origin-btn {
-      padding: 8px; border-radius: 7px; border: 1.5px solid #E2E6EE;
-      background: #FFF; cursor: pointer; text-align: left;
-      font-family: inherit; transition: all 0.15s;
-    }
-    .origin-btn:hover { border-color: #CBD5E0; background: #F8F9FB; }
-    .origin-btn.selected-OH { background: #2563A815; border-color: #2563A860; }
-    .origin-btn.selected-AA { background: #7C3AED15; border-color: #7C3AED60; }
-    .origin-btn.selected-AG { background: #C0731815; border-color: #C0731860; }
-    .origin-btn.selected-MX { background: #8895A715; border-color: #8895A760; }
-    .origin-code { font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-    .origin-label { font-size: 10px; color: #8895A7; margin-top: 1px; }
-
-    /* ── Score display ── */
-    .score-bar { height: 4px; background: #E2E6EE; border-radius: 2px; margin: 5px 0 8px; }
-    .score-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
-    .tier-badge {
-      display: inline-block; padding: 3px 8px; border-radius: 3px;
-      font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
-    }
-
-    /* ── Help tip box ── */
-    .help-tip {
-      background: #EFF6FF; border: 1px solid #BFDBFE;
-      border-radius: 7px; padding: 9px 11px;
-      font-size: 11px; color: #1E40AF; line-height: 1.55;
-      margin-bottom: 12px;
-    }
-    .help-tip a { color: #B8942E; text-decoration: none; }
-    .help-tip a:hover { text-decoration: underline; }
-
-    /* ── Status ── */
-    .status-msg {
-      padding: 8px 10px; border-radius: 6px; font-size: 11px;
-      font-weight: 500; margin-bottom: 10px; display: none;
-    }
-    .status-error { background: #FFF5F5; border: 1px solid #C5303030; color: #C53030; }
-    .status-info  { background: #EFF6FF; border: 1px solid #2563A830; color: #1E40AF; }
-    .status-ok    { background: #F0FDF4; border: 1px solid #1A8A5C30; color: #1A8A5C; }
-
-    /* ── Form inputs ── */
-    .input-field {
-      width: 100%; padding: 8px 10px; border: 1px solid #E2E6EE;
-      border-radius: 6px; font-family: 'JetBrains Mono', monospace;
-      font-size: 12px; color: #0C1A3A; outline: none; transition: border-color 0.2s;
-    }
-    .input-field:focus { border-color: #B8942E; }
-    .input-label {
-      font-size: 10px; font-weight: 600; color: #8895A7;
-      letter-spacing: 1px; text-transform: uppercase;
-      display: flex; align-items: center; gap: 5px; margin-bottom: 5px;
-    }
-    .help-icon {
-      font-size: 10px; background: #0C1A3A10; color: #0C1A3A;
-      border-radius: 50%; width: 14px; height: 14px;
-      display: inline-flex; align-items: center; justify-content: center;
-      cursor: help; font-weight: 700;
+    /* ── Section ─────────────────────────────────────────────── */
+    .section{padding:14px;border-bottom:1px solid var(--border)}
+    .section:last-child{border-bottom:none}
+    .sec-label{
+      font-size:9px;font-weight:700;color:var(--t4);
+      letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;
     }
 
-    /* ── CTID display ── */
-    .ctid-box {
-      font-family: 'JetBrains Mono', monospace; font-size: 10px;
-      color: #0C1A3A; background: #F8F9FB; padding: 8px 10px;
-      border-radius: 6px; border: 1px solid #E2E6EE;
-      word-break: break-all; margin: 8px 0; line-height: 1.6;
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn{
+      padding:9px 16px;border-radius:8px;font-size:12px;
+      font-weight:600;cursor:pointer;border:none;
+      font-family:var(--sans);display:inline-flex;
+      align-items:center;justify-content:center;
+      gap:6px;transition:all .15s;
+    }
+    .btn-primary{
+      width:100%;background:var(--navy);color:var(--gold);
+    }
+    .btn-primary:hover:not(:disabled){background:var(--navy2)}
+    .btn-primary:disabled{opacity:.4;cursor:not-allowed}
+    .btn-outline{
+      background:transparent;border:1.5px solid var(--border);
+      color:var(--t2);padding:7px 12px;font-size:11px;
+    }
+    .btn-outline:hover{border-color:var(--border2);background:var(--surf)}
+    .btn-green{
+      width:100%;background:rgba(26,138,92,.1);
+      color:var(--green);border:1px solid rgba(26,138,92,.3);
+      padding:8px;font-size:11px;border-radius:7px;
+    }
+    .btn-green:hover{background:rgba(26,138,92,.18)}
+
+    /* ── Input ────────────────────────────────────────────────── */
+    .inp{
+      width:100%;padding:8px 10px;
+      border:1.5px solid var(--border);border-radius:7px;
+      font-family:var(--mono);font-size:12px;
+      color:var(--t1);outline:none;
+      transition:border-color .15s;background:var(--bg);
+    }
+    .inp:focus{border-color:var(--gold)}
+    .inp-label{
+      font-size:10px;font-weight:600;color:var(--t3);
+      letter-spacing:.8px;text-transform:uppercase;
+      display:flex;align-items:center;gap:5px;margin-bottom:5px;
+    }
+    .inp-hint{font-size:9px;color:var(--t4);margin-top:3px}
+    .inp-req{color:var(--red);font-size:9px}
+    select.inp{
+      appearance:none;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238895A7' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat:no-repeat;
+      background-position:calc(100% - 10px) 50%;
+      padding-right:28px;font-family:var(--sans);
+    }
+    textarea.inp{
+      font-family:var(--sans);resize:vertical;
+      line-height:1.5;font-size:12px;
+    }
+    .help-icon{
+      font-size:9px;background:rgba(12,26,58,.08);color:var(--navy);
+      border-radius:50%;width:13px;height:13px;
+      display:inline-flex;align-items:center;justify-content:center;
+      cursor:help;font-weight:700;flex-shrink:0;
     }
 
-    /* ── Identity card ── */
-    .id-card {
-      display: flex; align-items: center; gap: 9px;
-      padding: 9px 11px; background: #F8F9FB;
-      border: 1px solid #E2E6EE; border-radius: 7px; margin-bottom: 10px;
+    /* ── Status messages ──────────────────────────────────────── */
+    .status{
+      padding:7px 10px;border-radius:6px;font-size:11px;
+      font-weight:500;margin-bottom:10px;display:none;
+    }
+    .status.error{background:#FFF5F5;border:1px solid rgba(197,48,48,.25);color:var(--red)}
+    .status.info{background:#EFF6FF;border:1px solid rgba(37,99,168,.2);color:#1E40AF}
+    .status.ok{background:#F0FDF4;border:1px solid rgba(26,138,92,.25);color:var(--green)}
+
+    /* ── Help tip ─────────────────────────────────────────────── */
+    .help-tip{
+      background:#EFF6FF;border:1px solid rgba(37,99,168,.2);
+      border-radius:7px;padding:9px 11px;
+      font-size:11px;color:#1E40AF;line-height:1.55;
+      margin-bottom:12px;
+    }
+    .help-tip a{color:var(--gold);text-decoration:none}
+    .help-tip a:hover{text-decoration:underline}
+
+    /* ── ID card ──────────────────────────────────────────────── */
+    .id-card{
+      display:flex;align-items:center;gap:9px;
+      padding:8px 11px;background:var(--surf);
+      border:1px solid var(--border);border-radius:7px;
+      margin-bottom:10px;
+    }
+    .id-card .id-label{
+      font-size:9px;color:var(--t4);letter-spacing:1px;font-weight:600
+    }
+    .id-card .id-val{
+      font-size:10px;font-family:var(--mono);color:var(--t1);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:230px;
     }
 
-    /* ── No TIP state ── */
-    .no-tip { text-align: center; padding: 30px 14px; color: #8895A7; }
-    .no-tip-icon { font-size: 32px; margin-bottom: 8px; }
-    .no-tip h3 { font-size: 14px; font-weight: 600; color: #0C1A3A; margin-bottom: 5px; }
-    .no-tip p { font-size: 11px; line-height: 1.6; }
-
-    /* ── Footer ── */
-    .footer {
-      padding: 8px 14px; background: #F8F9FB; border-top: 1px solid #E2E6EE;
-      display: flex; justify-content: space-between; align-items: center;
+    /* ── Origin buttons ───────────────────────────────────────── */
+    .origin-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .origin-btn{
+      padding:8px;border-radius:7px;border:1.5px solid var(--border);
+      background:var(--bg);cursor:pointer;text-align:left;
+      font-family:var(--sans);transition:all .15s;
     }
-    .footer a { font-size: 10px; color: #B8942E; text-decoration: none; }
-    .footer a:hover { text-decoration: underline; }
-
-    /* ── Loading ── */
-    #loading-state { text-align: center; padding: 36px; color: #8895A7; font-size: 12px; }
-    .spinner { display: inline-block; width: 20px; height: 20px;
-      border: 2px solid #E2E6EE; border-top-color: #B8942E;
-      border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 10px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Upload page CTA ── */
-    .upload-cta {
-      background: linear-gradient(135deg, #0C1A3A, #1B2A4A);
-      border-radius: 9px; padding: 14px; margin-bottom: 12px; color: #FFF;
+    .origin-btn:hover{border-color:var(--border2);background:var(--surf)}
+    .origin-btn.sel-OH{background:rgba(37,99,168,.08);border-color:rgba(37,99,168,.5)}
+    .origin-btn.sel-AA{background:rgba(124,58,237,.08);border-color:rgba(124,58,237,.5)}
+    .origin-btn.sel-AG{background:rgba(192,115,24,.08);border-color:rgba(192,115,24,.5)}
+    .origin-btn.sel-MX{background:rgba(136,149,167,.12);border-color:rgba(136,149,167,.5)}
+    .origin-btn.blocked{opacity:.28;pointer-events:none}
+    .o-code{font-size:12px;font-weight:700;font-family:var(--mono)}
+    .o-lbl{font-size:10px;color:var(--t4);margin-top:1px}
+    #popup-origin-hint{
+      font-size:10px;color:#1E40AF;margin-top:6px;
+      padding:5px 8px;background:#EFF6FF;
+      border-radius:5px;display:none;line-height:1.5;
     }
-    .upload-cta h3 { font-size: 13px; font-weight: 700; color: #B8942E; margin-bottom: 4px; }
-    .upload-cta p { font-size: 11px; color: #94A3B8; line-height: 1.5; }
+
+    /* ── Platform grid ────────────────────────────────────────── */
+    #popup-platform-grid{
+      display:grid;grid-template-columns:repeat(4,1fr);gap:5px;
+      margin-bottom:4px;
+    }
+    .plat-chip{
+      display:flex;flex-direction:column;align-items:center;
+      gap:3px;padding:7px 2px;border-radius:8px;
+      border:1.5px solid var(--border);background:var(--bg);
+      cursor:pointer;font-family:var(--sans);
+      transition:all .15s;position:relative;
+    }
+    .plat-chip:hover{border-color:var(--border2);background:var(--surf)}
+    .plat-chip.sel{background:var(--surf)}
+    .plat-icon{
+      width:30px;height:30px;border-radius:8px;
+      display:flex;align-items:center;justify-content:center;
+      font-size:9px;font-weight:800;color:#fff;
+      transition:transform .15s;
+    }
+    .plat-chip.sel .plat-icon{transform:scale(1.08)}
+    .plat-name{
+      font-size:8px;font-weight:500;color:var(--t4);
+      text-align:center;line-height:1.1;
+    }
+    .plat-chip.sel .plat-name{font-weight:700}
+    .plat-dot{
+      position:absolute;top:3px;right:3px;
+      width:6px;height:6px;border-radius:50%;
+      display:none;
+    }
+    .plat-chip.sel .plat-dot{display:block}
+
+    /* ── Type list ────────────────────────────────────────────── */
+    #popup-type-list{display:flex;flex-direction:column;gap:4px}
+    .type-chip{
+      display:flex;align-items:center;gap:9px;
+      padding:8px 10px;border-radius:7px;
+      border:1.5px solid var(--border);background:var(--bg);
+      cursor:pointer;text-align:left;
+      font-family:var(--sans);transition:all .15s;
+    }
+    .type-chip:hover{border-color:var(--border2);background:var(--surf)}
+    .type-chip.sel{border-width:2px}
+    .type-icon{
+      width:28px;height:28px;border-radius:6px;
+      flex-shrink:0;display:flex;align-items:center;
+      justify-content:center;font-size:10px;font-weight:700;
+    }
+    .type-label{font-size:11px;font-weight:500;color:var(--t1)}
+    .type-sub{font-size:9px;color:var(--t4)}
+    .type-chip.sel .type-label{font-weight:700}
+
+    /* ── Breadcrumb ───────────────────────────────────────────── */
+    #popup-breadcrumb{
+      display:flex;align-items:center;gap:5px;
+      margin-bottom:10px;flex-wrap:wrap;
+    }
+    .bc-pill{
+      display:inline-flex;align-items:center;gap:3px;
+      padding:2px 8px;background:var(--surf);
+      border:1px solid var(--border);border-radius:12px;
+      font-size:9px;font-weight:500;color:var(--t2);
+    }
+    .bc-mini{
+      width:12px;height:12px;border-radius:3px;
+      display:inline-flex;align-items:center;justify-content:center;
+      font-size:7px;font-weight:800;color:#fff;
+    }
+    .bc-arrow{font-size:12px;color:var(--t4)}
+    .bc-change{
+      font-size:9px;color:var(--gold);background:none;
+      border:none;cursor:pointer;font-family:var(--sans);
+      padding:0;margin-left:auto;
+    }
+    .bc-change:hover{text-decoration:underline}
+
+    /* ── Hash preview ─────────────────────────────────────────── */
+    #popup-hash-preview{
+      display:none;background:var(--surf);
+      border:1px solid var(--border);border-radius:7px;
+      padding:9px 11px;margin-bottom:10px;
+    }
+    .hash-title{
+      font-size:9px;font-weight:700;color:var(--t4);
+      letter-spacing:1.5px;text-transform:uppercase;
+      margin-bottom:6px;display:flex;align-items:center;gap:5px;
+    }
+    .hash-row{
+      display:flex;justify-content:space-between;align-items:center;
+      padding:3px 0;border-top:1px solid var(--border);
+      font-size:10px;
+    }
+    .hash-key{color:var(--t2)}
+    .hash-check{color:var(--green);font-weight:700;font-size:11px}
+    .hash-footer{
+      font-size:9px;color:var(--t4);margin-top:5px;
+      padding-top:5px;border-top:1px solid var(--border);
+    }
+
+    /* ── Wire notice ──────────────────────────────────────────── */
+    .wire-notice{
+      background:#FFFBEB;border:1px solid rgba(245,158,11,.4);
+      border-radius:6px;padding:6px 9px;
+      font-size:10px;color:#92400E;margin-bottom:8px;line-height:1.5;
+      display:none;
+    }
+
+    /* ── Thread posts ─────────────────────────────────────────── */
+    #popup-thread-posts{display:flex;flex-direction:column;gap:5px}
+    .thread-row{display:flex;align-items:flex-start;gap:6px}
+    .thread-num{
+      width:17px;height:17px;border-radius:50%;
+      background:var(--surf2);flex-shrink:0;
+      display:flex;align-items:center;justify-content:center;
+      font-size:8px;font-weight:700;color:var(--t4);margin-top:8px;
+    }
+
+    /* ── CTID box ─────────────────────────────────────────────── */
+    .ctid-box{
+      font-family:var(--mono);font-size:10px;color:var(--t1);
+      background:var(--surf);padding:8px 10px;border-radius:6px;
+      border:1px solid var(--border);word-break:break-all;
+      margin:8px 0;line-height:1.6;
+    }
+
+    /* ── Score bar ────────────────────────────────────────────── */
+    .score-bar{height:4px;background:var(--border);border-radius:2px;margin:6px 0 10px}
+    .score-fill{height:100%;border-radius:2px;transition:width .6s ease}
+
+    /* ── Tier badge ───────────────────────────────────────────── */
+    .tier-badge{
+      display:inline-block;padding:3px 8px;
+      border-radius:3px;font-size:10px;font-weight:700;
+      letter-spacing:.3px;
+    }
+
+    /* ── No-content state ─────────────────────────────────────── */
+    .no-tip{text-align:center;padding:28px 14px;color:var(--t4)}
+    .no-tip-icon{font-size:30px;margin-bottom:8px}
+    .no-tip h3{font-size:14px;font-weight:600;color:var(--t1);margin-bottom:5px}
+    .no-tip p{font-size:11px;line-height:1.6}
+
+    /* ── Upload CTA ───────────────────────────────────────────── */
+    .upload-cta{
+      background:linear-gradient(135deg,var(--navy),var(--navy2));
+      border-radius:9px;padding:14px;margin-bottom:12px;
+    }
+    .upload-cta h3{font-family:var(--serif);font-size:13px;font-weight:700;color:var(--gold);margin-bottom:4px}
+    .upload-cta p{font-size:11px;color:rgba(255,255,255,.65);line-height:1.5}
+
+    /* ── Footer ───────────────────────────────────────────────── */
+    .footer{
+      padding:8px 14px;background:var(--surf);
+      border-top:1px solid var(--border);
+      display:flex;justify-content:space-between;align-items:center;
+    }
+    .footer a{font-size:10px;color:var(--gold);text-decoration:none}
+    .footer a:hover{text-decoration:underline}
+    .footer span{font-size:9px;color:var(--t4)}
+
+    /* ── Spinner ──────────────────────────────────────────────── */
+    #loading-state{text-align:center;padding:40px;color:var(--t4);font-size:12px}
+    .spin{
+      display:inline-block;width:20px;height:20px;
+      border:2px solid var(--border);border-top-color:var(--gold);
+      border-radius:50%;animation:sp .8s linear infinite;margin-bottom:10px;
+    }
+    @keyframes sp{to{transform:rotate(360deg)}}
+
+    /* ── Step nav ─────────────────────────────────────────────── */
+    .step-back{
+      font-size:10px;color:var(--t4);background:none;
+      border:none;cursor:pointer;font-family:var(--sans);
+      display:flex;align-items:center;gap:4px;padding:0;
+      margin-bottom:10px;
+    }
+    .step-back:hover{color:var(--t2)}
+    .step-head{
+      display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:8px;
+    }
+
+    /* ── Viewer ───────────────────────────────────────────────── */
+    #viewer-shield{flex-shrink:0}
   </style>
 </head>
 <body>
 
-  <!-- ── Header ──────────────────────────────────────────────────────────── -->
-  <div class="header">
-    <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
-      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
-        fill="#B8942E20" stroke="#B8942E" stroke-width="2.2"/>
-      <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3"
-        stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <div class="header-text">
-      <div class="title">THE AI LAB</div>
-      <div class="sub">TRUST IDENTITY PROTOCOL</div>
-    </div>
-    <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-      <div id="node-status" title="TIP Node connection status"
-        style="width:8px;height:8px;border-radius:50%;background:#8895A7;"></div>
-      <button id="settings-btn" title="Settings"
-        style="background:none;border:none;cursor:pointer;padding:2px;color:#B8942E;">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-        </svg>
-      </button>
-    </div>
-  </div>
+<!-- ── TEST BANNER ─────────────────────────────────────────────────────── -->
+<div id="test-banner">TESTING MODE - SIMULATED DATA ONLY - NOT REGISTERED ON PROTOCOL</div>
 
-  <!-- ── Mode tabs ────────────────────────────────────────────────────────── -->
-  <div class="mode-tabs">
-    <button class="mode-tab active" id="tab-creator">
-      ✏️ Register Content
-    </button>
-    <button class="mode-tab" id="tab-viewer">
-      🛡 View Trust Badge
+<!-- ── HEADER ──────────────────────────────────────────────────────────── -->
+<div class="hdr">
+  <svg width="26" height="26" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+    <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+      fill="#B8942E20" stroke="#B8942E" stroke-width="2.2"/>
+    <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div class="hdr-brand">
+    <div class="name">THE AI LAB</div>
+    <div class="sub">TRUST IDENTITY PROTOCOL</div>
+  </div>
+  <div class="hdr-right">
+    <div id="node-status" title="TIP Node status" aria-label="Node status"></div>
+    <button id="test-fab" title="Test Mode - walk through all screens with sample data" aria-pressed="false">TEST</button>
+    <button id="settings-btn" title="Settings" aria-label="Open settings">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
     </button>
   </div>
+</div>
 
-  <!-- ── Loading ──────────────────────────────────────────────────────────── -->
-  <div id="loading-state">
-    <div class="spinner"></div>
-    <div>Loading TIP data...</div>
-  </div>
+<!-- ── TABS ──────────────────────────────────────────────────────────────── -->
+<div class="tabs" role="tablist">
+  <button class="tab active" id="tab-creator" role="tab"
+    aria-selected="true" aria-controls="creator-pane" data-tab="creator">
+    Register Content
+  </button>
+  <button class="tab" id="tab-viewer" role="tab"
+    aria-selected="false" aria-controls="viewer-pane" data-tab="viewer">
+    View Trust Badge
+  </button>
+</div>
 
-  <!-- ═══════════════════════════════════════════════════════════════════════
-       CREATOR TAB
-  ═══════════════════════════════════════════════════════════════════════════ -->
-  <div id="creator-pane" style="display:none;">
+<!-- ── LOADING ───────────────────────────────────────────────────────────── -->
+<div id="loading-state">
+  <div class="spin" aria-hidden="true"></div>
+  <div>Loading...</div>
+</div>
 
-    <!-- No identity set up -->
-    <div id="creator-no-id" class="section" style="display:none;">
+<!-- ════════════════════════════════════════════════════════════════════════
+     CREATOR PANE
+════════════════════════════════════════════════════════════════════════ -->
+<div id="creator-pane" class="pane" role="tabpanel" aria-labelledby="tab-creator">
+
+  <!-- No TIP-ID ──────────────────────────────────────────── -->
+  <div id="creator-no-id" style="display:none;">
+    <div class="section">
       <div class="no-tip">
         <div class="no-tip-icon">🆔</div>
         <h3>Set up your TIP-ID first</h3>
         <p>You need a verified TIP-ID to register content.<br>
            Click Settings to connect your identity.</p>
-        <button class="btn-primary" id="creator-goto-settings" style="margin-top:14px;max-width:200px;">
-          Open Settings →
+        <button class="btn btn-primary" id="creator-goto-settings"
+          style="margin-top:14px;max-width:200px;">
+          Open Settings
         </button>
       </div>
     </div>
+  </div>
 
-    <!-- Upload page detected -->
-    <div id="creator-upload-detected" style="display:none;">
-      <div class="section">
-        <div class="upload-cta">
-          <h3>📤 Upload page detected!</h3>
-          <p>The TIP panel has appeared on this page.<br>
-             Use it to register your content directly in the upload form.</p>
-        </div>
-        <div class="help-tip">
-          💡 The <strong>TIP panel</strong> (bottom-right of the page) is ready.
-          Select your origin code, enter your password, and click Register.
-        </div>
-        <div id="creator-identity-card" class="id-card">
-          <svg width="16" height="16" viewBox="0 0 48 48" fill="none">
-            <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
-              fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
-            <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
-          </svg>
-          <div>
-            <div style="font-size:9px;color:#8895A7;letter-spacing:1px;font-weight:600;">YOUR TIP-ID</div>
-            <div id="creator-tipid-upload" style="font-size:10px;font-family:monospace;color:#0C1A3A;
-              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"></div>
-          </div>
+  <!-- Upload page detected ────────────────────────────────── -->
+  <div id="creator-upload-detected" style="display:none;">
+    <div class="section">
+      <div class="upload-cta">
+        <h3>Upload page detected</h3>
+        <p>The TIP panel has appeared in the page.<br>
+           Use it to register directly in the upload form.</p>
+      </div>
+      <div class="help-tip">
+        The <strong>TIP panel</strong> (bottom-right of the page) is ready.
+        Select your origin code, enter your password, and click Register.
+      </div>
+      <div class="id-card">
+        <svg width="14" height="14" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+            fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
+          <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <div class="id-label">YOUR TIP-ID</div>
+          <div id="creator-tipid-upload" class="id-val"></div>
         </div>
       </div>
+      <button class="btn btn-outline" id="upload-open-settings"
+        style="font-size:11px;width:100%;margin-top:4px;">
+        Open Settings
+      </button>
     </div>
+  </div>
 
-    <!-- Manual registration form (non-upload pages) -->
-    <div id="creator-manual-form" style="display:none;">
-      <div class="section">
-        <div class="help-tip">
-          💡 <strong>How it works:</strong> Paste your title + description below.
-          We hash and sign it, then register it on the TIP DAG. You get a CTID
-          to paste in your video description for viewer verification.
-          <a href="https://theailab.org/trust-identity-protocol" target="_blank">Learn more →</a>
+  <!-- Manual form ─────────────────────────────────────────── -->
+  <div id="creator-manual-form" style="display:none;">
+    <div class="section">
+
+      <div id="creator-status" class="status" role="alert"></div>
+
+      <!-- Identity card -->
+      <div class="id-card">
+        <svg width="14" height="14" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+            fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
+          <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <div class="id-label">SIGNING AS</div>
+          <div id="creator-tipid-manual" class="id-val"></div>
+        </div>
+      </div>
+
+      <!-- STEP 1: Platform -->
+      <div id="popup-step-platform">
+        <div class="sec-label" style="margin-bottom:8px;">
+          Where are you publishing?
+        </div>
+        <div id="popup-platform-grid" role="group" aria-label="Select platform"></div>
+      </div>
+
+      <!-- STEP 2: Content type -->
+      <div id="popup-step-type" style="display:none;">
+        <div class="step-head">
+          <div class="sec-label" style="margin-bottom:0;">Content type</div>
+          <button class="bc-change" id="popup-change-platform">
+            Change platform
+          </button>
+        </div>
+        <div id="popup-type-list" role="group" aria-label="Select content type"></div>
+      </div>
+
+      <!-- STEP 3: Fields -->
+      <div id="popup-step-fields" style="display:none;">
+
+        <!-- Breadcrumb -->
+        <div id="popup-breadcrumb" aria-label="Current selection"></div>
+
+        <!-- Hash preview -->
+        <div id="popup-hash-preview" aria-live="polite">
+          <div class="hash-title">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            What gets hashed into your CTID
+          </div>
+          <div id="popup-hash-rows"></div>
+          <div class="hash-footer">Your content is never transmitted. Only the hash is published.</div>
         </div>
 
-        <div id="creator-status" class="status-msg"></div>
+        <!-- URL field -->
+        <div id="popup-field-url" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            <span id="popup-url-label">URL</span>
+            <span class="inp-req" id="popup-url-req">*</span>
+          </div>
+          <input class="inp" id="popup-url-input" type="url" placeholder="https://..." dir="auto" autocomplete="off"/>
+          <div class="inp-hint" id="popup-url-hint">Canonical URL is hashed, not the file.</div>
+        </div>
 
-        <div class="id-card" style="margin-bottom:12px;">
-          <svg width="14" height="14" viewBox="0 0 48 48" fill="none">
-            <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
-              fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2"/>
-            <path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
-          </svg>
-          <div>
-            <div style="font-size:9px;color:#8895A7;letter-spacing:1px;font-weight:600;">SIGNING AS</div>
-            <div id="creator-tipid-manual" style="font-size:10px;font-family:monospace;color:#0C1A3A;
-              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"></div>
+        <!-- Title field -->
+        <div id="popup-field-title" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            <span id="popup-title-label">Title</span>
+            <span id="popup-title-req" style="font-size:9px;color:var(--t4);font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span>
+          </div>
+          <input class="inp" id="popup-title-input" type="text" placeholder="Enter title..." dir="auto"/>
+        </div>
+
+        <!-- Byline field -->
+        <div id="popup-field-byline" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            Byline <span class="inp-req">*</span>
+          </div>
+          <input class="inp" id="popup-byline-input" type="text" placeholder="As published: Jane Smith" dir="auto"/>
+        </div>
+
+        <!-- Wire source -->
+        <div id="popup-field-wire" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            Wire service <span class="inp-req">*</span>
+          </div>
+          <select class="inp" id="popup-wire-input">
+            <option value="">Select wire service...</option>
+            <option value="AP">Associated Press (AP)</option>
+            <option value="Reuters">Reuters</option>
+            <option value="AFP">Agence France-Presse (AFP)</option>
+            <option value="Bloomberg">Bloomberg News</option>
+            <option value="PA">PA Media</option>
+            <option value="Other">Other</option>
+          </select>
+          <div class="wire-notice" id="popup-wire-note">
+            Wire adaptations require AA or MX origin code. OH is not appropriate when wire service text is substantially reprinted.
           </div>
         </div>
 
-        <!-- Title -->
+        <!-- Correction CTID -->
+        <div id="popup-field-ctid-orig" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            Original CTID being corrected <span class="inp-req">*</span>
+          </div>
+          <input class="inp" id="popup-ctid-orig-input" type="text" placeholder="tip://c/OH-7f2a91bc3d5e4a-a3f8" dir="auto"/>
+        </div>
+
+        <!-- Content textarea -->
+        <div id="popup-field-content" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">
+            <span id="popup-content-label">Description or Caption</span>
+            <span class="help-icon" title="This text is hashed. The actual content is never transmitted.">?</span>
+          </div>
+          <textarea class="inp" id="popup-content-input" rows="3"
+            placeholder="Write here..." dir="auto"></textarea>
+        </div>
+
+        <!-- Thread posts -->
+        <div id="popup-field-thread" style="display:none;margin-bottom:10px;">
+          <div class="inp-label">Thread posts</div>
+          <div id="popup-thread-posts"></div>
+          <button id="popup-add-thread-post"
+            style="font-size:10px;color:var(--blue);background:none;border:none;
+              cursor:pointer;padding:4px 0;margin-top:4px;font-family:var(--sans);">
+            + Add post
+          </button>
+        </div>
+
+        <!-- Wire origin notice -->
+        <div class="wire-notice" id="popup-wire-origin-notice">
+          Wire adaptations: only AA or MX origin codes are valid.
+        </div>
+
+        <!-- Origin buttons -->
         <div style="margin-bottom:10px;">
-          <div class="input-label">Title (optional)</div>
-          <input class="input-field" id="manual-title" type="text"
-            placeholder="e.g. How Quantum Computing Works"/>
-        </div>
-
-        <!-- Description -->
-        <div style="margin-bottom:12px;">
-          <div class="input-label">
-            Content description
-            <span class="help-icon" title="Paste your video description, article text, or post content. This gets hashed — the actual text is not stored anywhere.">?</span>
-          </div>
-          <textarea class="input-field" id="manual-content" rows="3"
-            placeholder="Paste your description, caption, or article text here..."
-            style="resize:vertical;font-family:inherit;font-size:12px;line-height:1.5;"></textarea>
-        </div>
-
-        <!-- Origin -->
-        <div style="margin-bottom:12px;">
-          <div class="input-label">
+          <div class="inp-label">
             Content Origin
-            <span class="help-icon" title="How was this content created? Over-declaring AI involvement is always safe — there's zero penalty. Under-declaring OH when it's AI-generated has penalties.">?</span>
+            <span class="help-icon" title="How was this content created? Over-declaring AI is always safe. Under-declaring has trust score penalties.">?</span>
           </div>
-          <div class="origin-grid" id="popup-origin-btns">
-            <button class="origin-btn" data-code="OH" data-color="#2563A8">
-              <div class="origin-code" style="color:#2563A8;">OH</div>
-              <div class="origin-label">Original Human</div>
+          <div class="origin-grid" id="popup-origin-btns" role="group" aria-label="Select content origin">
+            <button class="origin-btn" data-code="OH" aria-pressed="false">
+              <div class="o-code" style="color:#2563A8;">OH</div>
+              <div class="o-lbl">Original Human</div>
             </button>
-            <button class="origin-btn" data-code="AA" data-color="#7C3AED">
-              <div class="origin-code" style="color:#7C3AED;">AA</div>
-              <div class="origin-label">AI-Assisted</div>
+            <button class="origin-btn" data-code="AA" aria-pressed="false">
+              <div class="o-code" style="color:#7C3AED;">AA</div>
+              <div class="o-lbl">AI-Assisted</div>
             </button>
-            <button class="origin-btn" data-code="AG" data-color="#C07318">
-              <div class="origin-code" style="color:#C07318;">AG</div>
-              <div class="origin-label">AI-Generated</div>
+            <button class="origin-btn" data-code="AG" aria-pressed="false">
+              <div class="o-code" style="color:#C07318;">AG</div>
+              <div class="o-lbl">AI-Generated</div>
             </button>
-            <button class="origin-btn" data-code="MX" data-color="#8895A7">
-              <div class="origin-code" style="color:#8895A7;">MX</div>
-              <div class="origin-label">Mixed</div>
+            <button class="origin-btn" data-code="MX" aria-pressed="false">
+              <div class="o-code" style="color:#8895A7;">MX</div>
+              <div class="o-lbl">Mixed</div>
             </button>
           </div>
-          <div id="popup-origin-hint" style="display:none;font-size:10px;color:#2563A8;
-            margin-top:6px;padding:5px 8px;background:#EFF6FF;border-radius:4px;"></div>
+          <div id="popup-origin-hint" role="status"></div>
         </div>
 
         <!-- Password -->
         <div style="margin-bottom:12px;">
-          <div class="input-label">
+          <div class="inp-label">
             Signing Password
-            <span class="help-icon" title="This unlocks your private signing key stored locally in your browser. Your key never leaves your device.">?</span>
+            <span class="help-icon" title="Unlocks your private signing key stored locally. Your key never leaves this device.">?</span>
           </div>
-          <input class="input-field" id="popup-password" type="password"
-            placeholder="Your TIP signing password" autocomplete="current-password"/>
-          <div style="font-size:9px;color:#8895A7;margin-top:3px;">🔒 Your key never leaves this browser.</div>
+          <input class="inp" id="popup-password" type="password"
+            placeholder="Your TIP signing password"
+            autocomplete="current-password"/>
+          <div class="inp-hint">Your key never leaves this browser.</div>
         </div>
 
         <!-- Register button -->
-        <button class="btn-primary" id="popup-register-btn" disabled>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2.5" stroke-linecap="round">
+        <button class="btn btn-primary" id="popup-register-btn" disabled
+          aria-describedby="register-btn-desc">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
           </svg>
-          Select an origin code to continue
+          <span id="register-btn-text">Select a platform to continue</span>
         </button>
-      </div>
+        <p id="register-btn-desc" class="inp-hint" style="text-align:center;margin-top:4px;"></p>
 
-      <!-- Success -->
-      <div id="creator-success" class="section" style="display:none;text-align:center;padding:20px 14px;">
-        <div style="font-size:28px;margin-bottom:8px;">✅</div>
-        <div style="font-size:14px;font-weight:700;color:#1A8A5C;margin-bottom:4px;">Registered on TIP DAG!</div>
-        <div style="font-size:11px;color:#8895A7;margin-bottom:10px;">
-          Your content is now verifiable by anyone on the TIP network.
-        </div>
-        <div class="ctid-box" id="popup-ctid-display"></div>
-        <button class="btn-green" id="popup-copy-ctid" style="margin-bottom:8px;">
-          📋 Copy CTID to clipboard
-        </button>
-        <div style="font-size:10px;color:#8895A7;line-height:1.55;text-align:left;
-          padding:8px 10px;background:#F8F9FB;border-radius:6px;border:1px solid #E2E6EE;">
-          📌 <strong>Next step:</strong> Paste this CTID in your video description, article,
-          or post caption. Viewers with the TIP extension will see your verified trust badge.
-        </div>
-        <button class="btn-secondary" id="popup-register-another" style="margin-top:10px;width:100%;">
-          Register another piece of content
-        </button>
+      </div><!-- /popup-step-fields -->
+    </div><!-- /section -->
+
+    <!-- Success state -->
+    <div id="creator-success" class="section" style="display:none;text-align:center;padding:20px 14px;">
+      <div style="font-size:28px;margin-bottom:8px;">
+        <svg width="44" height="44" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+            fill="#1A8A5C15" stroke="#1A8A5C" stroke-width="2.2"/>
+          <path d="M15 24L22 31L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
       </div>
+      <div style="font-family:var(--serif);font-size:16px;font-weight:700;color:var(--green);margin-bottom:4px;">
+        Registered on TIP DAG!
+      </div>
+      <div style="font-size:11px;color:var(--t4);margin-bottom:10px;line-height:1.5;">
+        Your content is now verifiable by anyone on the TIP network.
+      </div>
+      <div class="ctid-box" id="popup-ctid-display" aria-label="Your CTID"></div>
+      <button class="btn btn-green" id="popup-copy-ctid" style="margin-bottom:8px;">
+        Copy CTID to clipboard
+      </button>
+      <div style="font-size:10px;color:var(--t4);line-height:1.55;text-align:left;
+        padding:8px 10px;background:var(--surf);border-radius:6px;border:1px solid var(--border);">
+        Paste this CTID in your video description, article, or post.
+        Viewers with the TIP extension will see your verified trust badge.
+      </div>
+      <button class="btn btn-outline" id="popup-register-another"
+        style="margin-top:10px;width:100%;font-size:11px;">
+        Register another piece of content
+      </button>
     </div>
 
-  </div>
+  </div><!-- /creator-manual-form -->
 
-  <!-- ═══════════════════════════════════════════════════════════════════════
-       VIEWER TAB
-  ═══════════════════════════════════════════════════════════════════════════ -->
-  <div id="viewer-pane" style="display:none;">
+</div><!-- /creator-pane -->
 
-    <!-- No TIP data on this page -->
-    <div id="viewer-no-tip" class="section" style="display:none;">
+<!-- ════════════════════════════════════════════════════════════════════════
+     VIEWER PANE
+════════════════════════════════════════════════════════════════════════ -->
+<div id="viewer-pane" class="pane" role="tabpanel" aria-labelledby="tab-viewer">
+
+  <!-- No TIP data -->
+  <div id="viewer-no-tip" style="display:none;">
+    <div class="section">
       <div class="no-tip">
-        <div class="no-tip-icon">🔍</div>
+        <div class="no-tip-icon">
+          <svg width="32" height="32" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+              fill="#8895A720" stroke="#8895A7" stroke-width="2"/>
+            <line x1="17" y1="19" x2="31" y2="33" stroke="#8895A7" stroke-width="2.5" stroke-linecap="round"/>
+            <line x1="31" y1="19" x2="17" y2="33" stroke="#8895A7" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+        </div>
         <h3>No TIP data on this page</h3>
         <p>This page has no TIP Protocol headers or meta tags.<br>
-           When creators register their content, you'll see<br>
+           When creators register their content you will see<br>
            their trust badge here automatically.</p>
       </div>
       <div class="help-tip" style="margin-top:0;">
-        💡 <strong>Look for CTIDs</strong> in descriptions:<br>
-        <code style="font-size:10px;color:#0C1A3A;">tip://c/OH-7f2a91bc-a3f8</code><br>
+        Look for CTIDs in descriptions:<br>
+        <code style="font-size:10px;color:var(--navy);">tip://c/OH-7f2a91bc-a3f8</code><br>
         Click any CTID link to verify it on theailab.org.
       </div>
     </div>
+  </div>
 
-    <!-- TIP data found -->
-    <div id="viewer-tip-data" style="display:none;">
-      <div class="section">
-        <!-- Author trust card -->
-        <div class="section-label">Author Identity</div>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-          <div id="viewer-shield" style="flex-shrink:0;"></div>
-          <div>
-            <div id="viewer-tier-badge" class="tier-badge" style="margin-bottom:4px;"></div>
-            <div id="viewer-score-text" style="font-size:11px;color:#4A5568;"></div>
-            <div id="viewer-tip-id" style="font-size:10px;font-family:'JetBrains Mono',monospace;
-              color:#8895A7;margin-top:2px;word-break:break-all;"></div>
-          </div>
-        </div>
-        <div class="score-bar">
-          <div class="score-fill" id="viewer-score-fill"></div>
+  <!-- TIP data found -->
+  <div id="viewer-tip-data" style="display:none;">
+    <div class="section">
+      <div class="sec-label">Author Identity</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+        <div id="viewer-shield"></div>
+        <div style="flex:1;min-width:0;">
+          <div id="viewer-tier-badge" class="tier-badge" style="margin-bottom:4px;"></div>
+          <div id="viewer-score-text" style="font-size:11px;color:var(--t3);"></div>
+          <div id="viewer-tip-id" style="font-size:10px;font-family:var(--mono);
+            color:var(--t4);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
         </div>
       </div>
-
-      <!-- Content record -->
-      <div class="section" id="viewer-content-section" style="display:none;">
-        <div class="section-label">Content Record</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-          <div id="viewer-origin-pill"></div>
-          <div id="viewer-content-status" class="tier-badge"></div>
-        </div>
-        <div id="viewer-ctid" style="font-size:10px;font-family:'JetBrains Mono',monospace;
-          color:#8895A7;margin-bottom:8px;word-break:break-all;"></div>
-        <a id="viewer-verify-link" href="#" target="_blank"
-          style="font-size:11px;color:#B8942E;text-decoration:none;display:flex;align-items:center;gap:4px;">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2" stroke-linecap="round">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-            <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-          </svg>
-          Verify on theailab.org →
-        </a>
-      </div>
-
-      <!-- Revocation warning -->
-      <div id="viewer-revoked-warning" class="section" style="display:none;
-        background:#FFF5F5;border-left:3px solid #C53030;">
-        <div style="font-size:11px;font-weight:600;color:#C53030;margin-bottom:4px;">
-          ⚠️ Identity Revoked
-        </div>
-        <div style="font-size:11px;color:#4A5568;line-height:1.55;">
-          This TIP-ID has been revoked. Content from this identity should be
-          treated with caution until the creator re-verifies.
-        </div>
+      <div class="score-bar" role="progressbar" aria-label="Trust score">
+        <div class="score-fill" id="viewer-score-fill"></div>
       </div>
     </div>
 
+    <div class="section" id="viewer-content-section" style="display:none;">
+      <div class="sec-label">Content Record</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div id="viewer-origin-pill"></div>
+        <div id="viewer-content-status"></div>
+      </div>
+      <div id="viewer-ctid" style="font-size:10px;font-family:var(--mono);
+        color:var(--t4);margin-bottom:8px;word-break:break-all;"></div>
+      <a id="viewer-verify-link" href="#" target="_blank" rel="noopener"
+        style="font-size:11px;color:var(--gold);text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+          <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+        Verify on theailab.org
+      </a>
+    </div>
+
+    <div id="viewer-revoked-warning" class="section" style="display:none;
+      background:#FFF5F5;border-left:3px solid var(--red);">
+      <div style="font-size:11px;font-weight:700;color:var(--red);margin-bottom:4px;">
+        Identity Revoked
+      </div>
+      <div style="font-size:11px;color:var(--t2);line-height:1.55;">
+        This TIP-ID has been revoked. Content from this identity should be
+        treated with caution until the creator re-verifies.
+      </div>
+    </div>
   </div>
 
-  <!-- ── Footer ────────────────────────────────────────────────────────────── -->
-  <div class="footer">
-    <a href="https://theailab.org" target="_blank">theailab.org</a>
-    <span style="font-size:9px;color:#8895A7;">TIP™ v2.1 · TIPCL-1.0</span>
-  </div>
+</div><!-- /viewer-pane -->
 
-  <!-- ═══════════════════════════════════════════════════════════════════════
-       POPUP SCRIPT
-  ═══════════════════════════════════════════════════════════════════════════ -->
-  <script>
-  "use strict";
+<!-- ── FOOTER ──────────────────────────────────────────────────────────── -->
+<div class="footer">
+  <a href="https://theailab.org" target="_blank" rel="noopener">theailab.org</a>
+  <span>TIP v2.2 - TIPCL-1.0</span>
+</div>
 
-  // ── Constants ─────────────────────────────────────────────────────────────
-  const COLORS = {
-    green:"#1A8A5C", blue:"#2563A8", yellow:"#A88B15",
-    orange:"#C07318", red:"#C53030", gray:"#8895A7",
-    navy:"#0C1A3A", gold:"#B8942E",
-  };
-  const ORIGIN_COLORS = { OH:"#2563A8", AA:"#7C3AED", AG:"#C07318", MX:"#8895A7" };
-  const ORIGIN_LABELS = {
-    OH:"Original Human", AA:"AI-Assisted", AG:"AI-Generated", MX:"Mixed"
-  };
-  const ORIGIN_HINTS = {
-    OH:"✅ Declaring Original Human means you created this without AI. If an AI classifier later challenges this, your trust score may be affected.",
-    AA:"✅ AI-Assisted is honest and safe. No penalty for over-declaring AI involvement. Use this when AI helped but you led the work.",
-    AG:"✅ AI-Generated is always accepted. Full transparency builds long-term trust with your audience.",
-    MX:"✅ Mixed is a safe default when you're unsure. It covers anything combining human and AI contributions.",
-  };
+<script type="module">
+"use strict";
 
-  function tierColor(s) {
-    return s>=800?COLORS.green:s>=600?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
-  }
-  function tierLabel(s) {
-    return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
-  }
+import {
+  TIP_PLATFORMS, TIP_TYPES, buildContentString,
+  ORIGIN_COLORS, ORIGIN_LABELS, ORIGIN_HINTS, WIRE_FORCED_ORIGINS
+} from "./src/tip-types.js";
 
-  function shieldSVG(score, size=36) {
-    const c = tierColor(score);
-    const icon = score>=600
-      ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
-      : score>=400
-        ? `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`
-        : `<line x1="17" y1="19" x2="31" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>
-           <line x1="31" y1="19" x2="17" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>`;
-    return `<svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none">
-      <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
-        fill="${c}15" stroke="${c}" stroke-width="2.2"/>
-      ${icon}
-    </svg>`;
-  }
+// ════════════════════════════════════════════════════════════════════════════
+// TEST MODE CONSTANTS
+// ════════════════════════════════════════════════════════════════════════════
+const TEST = {
+  TIP_ID:   "tip://id/US-a3f8c91b2d4e7021",
+  CTID:     "tip://c/OH-7f2a91bc3d5e4a-a3f8",
+  SCORE:    750,
+  PLATFORM: "instagram",
+  TYPE:     "photo",
+  ORIGIN:   "OH",
+  TITLE:    "Golden hour portrait, Mariana Trench overlook",
+  CONTENT:  "Shot on a Leica Q3, no AI used. Original human authorship declared and verified on TIP Protocol v2.0 DAG.",
+  URL:      "https://instagram.com/p/DemoPost12345",
+  BYLINE:   "Jane Smith",
+  WIRE_SRC: "AP",
+  THREAD:   ["First post in the thread. Setting context.", "Second post. Expanding on the topic.", "Third post. Conclusion."],
+};
 
-  function originPillHTML(code) {
-    const c = ORIGIN_COLORS[code]||COLORS.gray;
-    const l = ORIGIN_LABELS[code]||code;
-    return `<span style="display:inline-flex;align-items:center;gap:3px;padding:3px 8px;
-      border-radius:3px;background:${c}15;border:1px solid ${c}30;
-      font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:700;color:${c};">
-      ${code}<span style="font-family:inherit;font-weight:400;opacity:0.75;font-size:10px;"> ${l}</span></span>`;
-  }
+// ════════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ════════════════════════════════════════════════════════════════════════════
+const $  = id => document.getElementById(id);
+const C  = {
+  green:"#1A8A5C", blue:"#2563A8", yellow:"#A88B15",
+  orange:"#C07318", red:"#C53030", gray:"#8895A7",
+  navy:"#0C1A3A", gold:"#B8942E",
+};
 
-  function msg(type, payload) {
-    return new Promise(r => chrome.runtime.sendMessage({ type, ...payload }, r));
-  }
+function show(id, disp="block") {
+  const el = $(id); if(el) el.style.display = disp;
+}
+function hide(id) {
+  const el = $(id); if(el) el.style.display = "none";
+}
+function setHTML(id, h)   { const el=$(id); if(el) el.innerHTML  = h; }
+function setText(id, t)   { const el=$(id); if(el) el.textContent = t; }
+function val(id)          { return ($(id)?.value || "").trim(); }
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  let activeTab = "creator";
-  let selectedOrigin = null;
-  let currentCTID = "";
+function showStatus(id, type, txt) {
+  const el = $(id); if(!el) return;
+  if (!txt) { el.className = "status"; el.style.display = "none"; return; }
+  el.className = `status ${type}`;
+  el.textContent = txt;
+  el.style.display = "block";
+}
 
-  function show(id)  { const el = document.getElementById(id); if(el) el.style.display = "block"; }
-  function hide(id)  { const el = document.getElementById(id); if(el) el.style.display = "none"; }
-  function setHTML(id, html) { const el = document.getElementById(id); if(el) el.innerHTML = html; }
-  function setText(id, t)    { const el = document.getElementById(id); if(el) el.textContent = t; }
+function msgBg(type, payload={}) {
+  return new Promise(r => chrome.runtime.sendMessage({ type, ...payload }, r));
+}
 
-  function showStatus(id, type, msg) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (!msg) { el.style.display = "none"; return; }
-    const classes = { error:"status-error", info:"status-info", ok:"status-ok" };
-    el.className = "status-msg " + (classes[type]||classes.info);
-    el.textContent = msg;
-    el.style.display = "block";
-  }
+function tierColor(s) {
+  return s>=800?C.green:s>=600?C.blue:s>=400?C.yellow:s>=200?C.orange:C.red;
+}
+function tierLabel(s) {
+  return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
+}
+function shieldSVG(score, size=36) {
+  const c   = tierColor(score);
+  const icon = score >= 600
+    ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
+    : score >= 400
+      ? `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`
+      : `<line x1="17" y1="19" x2="31" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>
+         <line x1="31" y1="19" x2="17" y2="33" stroke="${c}" stroke-width="3" stroke-linecap="round"/>`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+    <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
+      fill="${c}15" stroke="${c}" stroke-width="2.2"/>${icon}</svg>`;
+}
+function originPill(code) {
+  const c = ORIGIN_COLORS[code] || C.gray;
+  const l = ORIGIN_LABELS[code] || code;
+  return `<span style="display:inline-flex;align-items:center;gap:3px;padding:3px 9px;
+    border-radius:3px;background:${c}15;border:1px solid ${c}30;
+    font-size:10px;font-family:var(--mono);font-weight:700;color:${c};">
+    ${code}<span style="font-weight:400;opacity:.75;"> ${l}</span></span>`;
+}
 
-  // ── Tab switching ─────────────────────────────────────────────────────────
-  document.getElementById("tab-creator").addEventListener("click", () => switchTab("creator"));
-  document.getElementById("tab-viewer").addEventListener("click",  () => switchTab("viewer"));
+// ════════════════════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════════════════════
+let testMode      = false;
+let regPlatformId = null;
+let regTypeId     = null;
+let selectedOrigin = null;
+let currentCTID   = "";
+let threadPosts   = ["", ""];
 
-  function switchTab(tab) {
-    activeTab = tab;
-    document.getElementById("tab-creator").classList.toggle("active", tab === "creator");
-    document.getElementById("tab-viewer").classList.toggle("active", tab === "viewer");
-    document.getElementById("creator-pane").style.display = tab === "creator" ? "block" : "none";
-    document.getElementById("viewer-pane").style.display  = tab === "viewer"  ? "block" : "none";
-  }
+// ════════════════════════════════════════════════════════════════════════════
+// TEST MODE
+// ════════════════════════════════════════════════════════════════════════════
+function enableTestMode() {
+  testMode = true;
+  $("test-fab").classList.add("active");
+  $("test-fab").setAttribute("aria-pressed", "true");
+  $("test-banner").style.display = "block";
 
-  // ── Settings button ───────────────────────────────────────────────────────
-  document.getElementById("settings-btn").addEventListener("click", () => {
-    chrome.runtime.openOptionsPage();
+  // Show the manual form with test identity
+  hide("creator-no-id");
+  hide("creator-upload-detected");
+  hide("creator-success");
+  show("creator-manual-form");
+  show("creator-pane");
+  setText("creator-tipid-manual", TEST.TIP_ID);
+
+  // Reset to step 1
+  resetRegistrationForm(false);
+  // Pre-select platform after short delay
+  setTimeout(() => {
+    selectPlatform(TEST.PLATFORM);
+    setTimeout(() => {
+      selectType(TEST.TYPE);
+      setTimeout(() => {
+        // Fill fields
+        const urlEl  = $("popup-url-input");     if(urlEl)  urlEl.value  = TEST.URL;
+        const titEl  = $("popup-title-input");   if(titEl)  titEl.value  = TEST.TITLE;
+        const conEl  = $("popup-content-input"); if(conEl)  conEl.value  = TEST.CONTENT;
+        const byEl   = $("popup-byline-input");  if(byEl)   byEl.value   = TEST.BYLINE;
+        const pwEl   = $("popup-password");      if(pwEl)   pwEl.value   = "testpassword123";
+        // Select origin OH
+        selectOrigin("OH");
+        updateRegisterBtn();
+      }, 100);
+    }, 120);
+  }, 120);
+}
+
+function disableTestMode() {
+  testMode = false;
+  $("test-fab").classList.remove("active");
+  $("test-fab").setAttribute("aria-pressed", "false");
+  $("test-banner").style.display = "none";
+  resetRegistrationForm(true);
+}
+
+$("test-fab").addEventListener("click", () => {
+  if (testMode) disableTestMode();
+  else          enableTestMode();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB SWITCHING
+// ════════════════════════════════════════════════════════════════════════════
+function switchTab(tabId) {
+  document.querySelectorAll(".tab").forEach(t => {
+    const isActive = t.dataset.tab === tabId;
+    t.classList.toggle("active", isActive);
+    t.setAttribute("aria-selected", String(isActive));
   });
-  document.getElementById("creator-goto-settings")?.addEventListener("click", () => {
-    chrome.runtime.openOptionsPage();
+  hide("creator-pane"); hide("viewer-pane");
+  show(`${tabId}-pane`);
+}
+
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// SETTINGS BUTTONS
+// ════════════════════════════════════════════════════════════════════════════
+function openSettings() {
+  msgBg("OPEN_OPTIONS");
+}
+$("settings-btn").addEventListener("click", openSettings);
+$("creator-goto-settings").addEventListener("click", openSettings);
+$("upload-open-settings").addEventListener("click", openSettings);
+
+// ════════════════════════════════════════════════════════════════════════════
+// PLATFORM SELECTION (Step 1)
+// ════════════════════════════════════════════════════════════════════════════
+function renderPlatforms() {
+  const grid = $("popup-platform-grid");
+  if (!grid) return;
+  grid.innerHTML = TIP_PLATFORMS.map(p => {
+    const isSel = regPlatformId === p.id;
+    return `<button class="plat-chip${isSel?' sel':''}" data-pid="${p.id}"
+      title="${p.name}" aria-pressed="${isSel}" type="button">
+      <div class="plat-icon" style="background:${p.bg};">${p.icon}</div>
+      <div class="plat-name" style="${isSel?'color:'+p.bg+';':''}">${p.name}</div>
+      <div class="plat-dot" style="background:${p.bg};"></div>
+    </button>`;
+  }).join("");
+  grid.querySelectorAll(".plat-chip").forEach(btn => {
+    btn.addEventListener("click", () => selectPlatform(btn.dataset.pid));
   });
+}
 
-  // ── Origin button selection ───────────────────────────────────────────────
-  document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(b => {
-        b.className = "origin-btn";
-      });
-      selectedOrigin = btn.dataset.code;
-      btn.classList.add(`selected-${selectedOrigin}`);
-      const hint = document.getElementById("popup-origin-hint");
-      if (hint) { hint.textContent = ORIGIN_HINTS[selectedOrigin]; hint.style.display="block"; }
-      const regBtn = document.getElementById("popup-register-btn");
-      if (regBtn) {
-        regBtn.disabled = false;
-        regBtn.innerHTML = `
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2.5" stroke-linecap="round">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}
-        `;
-      }
-    });
+function selectPlatform(pid) {
+  regPlatformId  = pid;
+  regTypeId      = null;
+  selectedOrigin = null;
+  threadPosts    = ["", ""];
+  renderPlatforms();
+  renderTypes();
+  hide("popup-step-platform");
+  hide("popup-step-fields");
+  show("popup-step-type");
+  updateRegisterBtn();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TYPE SELECTION (Step 2)
+// ════════════════════════════════════════════════════════════════════════════
+function renderTypes() {
+  const list = $("popup-type-list");
+  if (!list) return;
+  const plat = TIP_PLATFORMS.find(p => p.id === regPlatformId);
+  if (!plat) return;
+  list.innerHTML = plat.types.map(tid => {
+    const t   = TIP_TYPES[tid]; if (!t) return "";
+    const sel = regTypeId === tid;
+    return `<button class="type-chip${sel?' sel':''}" data-tid="${tid}"
+      aria-pressed="${sel}" type="button">
+      <div class="type-icon" style="background:${t.bg}18;color:${t.bg};">${t.icon}</div>
+      <div>
+        <div class="type-label">${t.label}</div>
+        <div class="type-sub">${t.sub}</div>
+      </div>
+    </button>`;
+  }).join("");
+  list.querySelectorAll(".type-chip").forEach(btn => {
+    btn.addEventListener("click", () => selectType(btn.dataset.tid));
   });
+}
 
-  // ── Register button ───────────────────────────────────────────────────────
-  document.getElementById("popup-register-btn")?.addEventListener("click", async () => {
-    if (!selectedOrigin) return;
-    const password = document.getElementById("popup-password").value;
-    const title    = document.getElementById("manual-title").value.trim();
-    const content  = document.getElementById("manual-content").value.trim();
-    if (!password) { showStatus("creator-status","error","Enter your signing password."); return; }
-    if (!content && !title) { showStatus("creator-status","error","Add some content to register."); return; }
+function selectType(tid) {
+  regTypeId      = tid;
+  selectedOrigin = null;
+  renderTypes();
+  renderBreadcrumb();
+  applyFields(tid);
+  renderHashPreview(tid);
+  applyOriginRestrictions(tid);
+  hide("popup-step-type");
+  show("popup-step-fields");
+  updateRegisterBtn();
+}
 
-    const btn = document.getElementById("popup-register-btn");
-    btn.disabled = true;
-    btn.innerHTML = "⏳ Registering...";
-    showStatus("creator-status","info","Hashing and signing your content...");
+// ════════════════════════════════════════════════════════════════════════════
+// BREADCRUMB
+// ════════════════════════════════════════════════════════════════════════════
+function renderBreadcrumb() {
+  const bc   = $("popup-breadcrumb"); if (!bc) return;
+  const plat = TIP_PLATFORMS.find(p => p.id === regPlatformId);
+  const type = TIP_TYPES[regTypeId];
+  if (!plat || !type) { bc.innerHTML = ""; return; }
+  bc.innerHTML = `
+    <span class="bc-pill">
+      <span class="bc-mini" style="background:${plat.bg};">${plat.icon}</span>
+      ${plat.name}
+    </span>
+    <span class="bc-arrow" aria-hidden="true">&#8250;</span>
+    <span class="bc-pill">${type.icon} ${type.label}</span>
+    <button class="bc-change" id="bc-change-type" type="button">Change</button>`;
+  $("bc-change-type")?.addEventListener("click", () => {
+    hide("popup-step-fields");
+    show("popup-step-type");
+    updateRegisterBtn();
+  });
+}
 
-    const res = await msg("REGISTER_CONTENT", { payload: { originCode: selectedOrigin, content: content||title, title, password } });
+// ════════════════════════════════════════════════════════════════════════════
+// HASH PREVIEW
+// ════════════════════════════════════════════════════════════════════════════
+function renderHashPreview(tid) {
+  const type = TIP_TYPES[tid];
+  const rows = $("popup-hash-rows");
+  if (!type || !rows) return;
+  rows.innerHTML = type.hashKeys.map(k =>
+    `<div class="hash-row">
+      <span class="hash-key">${k}</span>
+      <span class="hash-check" aria-label="included">&#10003;</span>
+    </div>`
+  ).join("");
+  show("popup-hash-preview");
+}
 
-    if (res?.ok && res.data?.ctid) {
-      currentCTID = res.data.ctid;
-      setText("popup-ctid-display", currentCTID);
-      hide("creator-manual-form");
-      show("creator-success");
-      showStatus("creator-status","","");
-      navigator.clipboard?.writeText(currentCTID).catch(()=>{});
-    } else {
-      showStatus("creator-status","error", res?.error || "Registration failed. Check Settings → TIP Node connection.");
-      btn.disabled = false;
-      btn.innerHTML = `Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}`;
+// ════════════════════════════════════════════════════════════════════════════
+// DYNAMIC FIELDS (Step 3)
+// ════════════════════════════════════════════════════════════════════════════
+function applyFields(tid) {
+  const type = TIP_TYPES[tid]; if (!type) return;
+  const f = type.fields;
+
+  // Hide all
+  ["popup-field-url","popup-field-title","popup-field-byline",
+   "popup-field-wire","popup-field-ctid-orig","popup-field-content",
+   "popup-field-thread","popup-wire-note","popup-wire-origin-notice"
+  ].forEach(id => hide(id));
+
+  if (f.includes("video_url") || f.includes("link_url")) {
+    show("popup-field-url");
+    const lbl = $("popup-url-label"); if(lbl) lbl.textContent = type.urlLabel || "URL";
+    const inp = $("popup-url-input"); if(inp) inp.placeholder  = type.urlPlaceholder || "https://...";
+    const hnt = $("popup-url-hint");  if(hnt) hnt.textContent  = type.urlHint || "Canonical URL is hashed, not the file.";
+  }
+  if (f.includes("title")) {
+    show("popup-field-title");
+    const lbl = $("popup-title-label"); if(lbl) lbl.textContent = type.titleLabel || "Title";
+    const req = $("popup-title-req");
+    if (req) {
+      const isReq = type.titleRequired || [
+        "news_article","breaking_news","investigation",
+        "photo_journalism","opinion","wire_adapted","correction"
+      ].includes(tid);
+      req.textContent = isReq ? "*" : "(optional)";
+      req.style.cssText = isReq
+        ? "font-size:9px;color:var(--red);font-weight:400;"
+        : "font-size:9px;color:var(--t4);font-weight:400;text-transform:none;letter-spacing:0;";
     }
-  });
+  }
+  if (f.includes("news_byline"))        show("popup-field-byline");
+  if (f.includes("news_wire_source")) {
+    show("popup-field-wire");
+    show("popup-wire-note");
+    show("popup-wire-origin-notice");
+  }
+  if (f.includes("news_ctid_original")) show("popup-field-ctid-orig");
+  if (f.includes("content")) {
+    show("popup-field-content");
+    const lbl = $("popup-content-label"); if(lbl) lbl.textContent  = type.contentLabel || "Description or Caption";
+    const ta  = $("popup-content-input");
+    if (ta) {
+      ta.placeholder = type.placeholder || "Write here...";
+      ta.maxLength   = type.limit       || 5000;
+      ta.rows        = (type.limit && type.limit <= 280) ? 2 : 3;
+    }
+  }
+  if (f.includes("thread")) {
+    show("popup-field-thread");
+    renderThreadPosts();
+  }
 
-  // ── Copy CTID ─────────────────────────────────────────────────────────────
-  document.getElementById("popup-copy-ctid")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(currentCTID).then(() => {
-      const btn = document.getElementById("popup-copy-ctid");
-      btn.textContent = "✓ Copied!";
-      setTimeout(() => { btn.textContent = "📋 Copy CTID to clipboard"; }, 2000);
+  // Clear previously-filled fields that are no longer shown
+  if (!$("popup-field-url")?.style.display || $("popup-field-url")?.style.display === "none") {
+    const inp = $("popup-url-input"); if(inp) inp.value = "";
+  }
+}
+
+// Thread posts
+function renderThreadPosts() {
+  const c = $("popup-thread-posts"); if (!c) return;
+  c.innerHTML = threadPosts.map((txt, i) => `
+    <div class="thread-row">
+      <div class="thread-num" aria-hidden="true">${i+1}</div>
+      <textarea data-idx="${i}" rows="2" maxlength="280" dir="auto"
+        placeholder="Post ${i+1}..."
+        class="inp" style="font-family:var(--sans);font-size:11px;resize:vertical;"
+        >${escHtml(txt)}</textarea>
+    </div>`).join("");
+  c.querySelectorAll("textarea").forEach(ta => {
+    ta.addEventListener("input", e => {
+      threadPosts[parseInt(ta.dataset.idx)] = e.target.value;
+      updateRegisterBtn();
     });
   });
+}
+function escHtml(s) {
+  return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 
-  // ── Register another ──────────────────────────────────────────────────────
-  document.getElementById("popup-register-another")?.addEventListener("click", () => {
-    hide("creator-success");
-    show("creator-manual-form");
+$("popup-add-thread-post")?.addEventListener("click", () => {
+  threadPosts.push("");
+  renderThreadPosts();
+});
+
+// Live validation on field input
+["popup-url-input","popup-title-input","popup-byline-input",
+ "popup-wire-input","popup-ctid-orig-input","popup-content-input"
+].forEach(id => $(id)?.addEventListener("input", updateRegisterBtn));
+
+// ════════════════════════════════════════════════════════════════════════════
+// ORIGIN RESTRICTIONS
+// ════════════════════════════════════════════════════════════════════════════
+function applyOriginRestrictions(tid) {
+  const type = TIP_TYPES[tid];
+  document.querySelectorAll(".origin-btn").forEach(btn => {
+    const code    = btn.dataset.code;
+    const blocked = type?.forcedOrigins && !type.forcedOrigins.includes(code);
+    btn.classList.toggle("blocked", !!blocked);
+    btn.setAttribute("aria-disabled", String(!!blocked));
+  });
+  // Deselect if now blocked
+  if (selectedOrigin && type?.forcedOrigins && !type.forcedOrigins.includes(selectedOrigin)) {
     selectedOrigin = null;
-    document.getElementById("popup-password").value = "";
-    document.getElementById("manual-title").value = "";
-    document.getElementById("manual-content").value = "";
-    document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(b => b.className = "origin-btn");
-    document.getElementById("popup-origin-hint").style.display = "none";
-    const btn = document.getElementById("popup-register-btn");
-    btn.disabled = true;
-    btn.innerHTML = `
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      </svg>
-      Select an origin code to continue
-    `;
-  });
+    clearOriginSelection();
+  }
+}
 
-  // ── Load viewer data ──────────────────────────────────────────────────────
-  async function loadViewerData(tab) {
-    const r = await msg("GET_TAB_DATA", { tabId: tab.id });
-    const data = r?.data;
-    if (!data?.tipAuthor) { show("viewer-no-tip"); return; }
+function clearOriginSelection() {
+  document.querySelectorAll(".origin-btn").forEach(b => {
+    b.className = b.className.replace(/\bsel-\w+/g, "").trim();
+    b.setAttribute("aria-pressed", "false");
+  });
+  hide("popup-origin-hint");
+}
+
+function selectOrigin(code) {
+  const type = TIP_TYPES[regTypeId];
+  if (type?.forcedOrigins && !type.forcedOrigins.includes(code)) return;
+  clearOriginSelection();
+  selectedOrigin = code;
+  const btn = document.querySelector(`.origin-btn[data-code="${code}"]`);
+  if (btn) {
+    btn.classList.add(`sel-${code}`);
+    btn.setAttribute("aria-pressed", "true");
+  }
+  const hint = $("popup-origin-hint");
+  if (hint) {
+    hint.textContent    = ORIGIN_HINTS[code] || "";
+    hint.style.display  = "block";
+  }
+  updateRegisterBtn();
+}
+
+document.querySelectorAll(".origin-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (btn.classList.contains("blocked")) return;
+    selectOrigin(btn.dataset.code);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CHANGE PLATFORM (Step 2 back to 1)
+// ════════════════════════════════════════════════════════════════════════════
+$("popup-change-platform")?.addEventListener("click", () => {
+  regPlatformId  = null;
+  regTypeId      = null;
+  selectedOrigin = null;
+  threadPosts    = ["", ""];
+  hide("popup-step-type");
+  hide("popup-step-fields");
+  show("popup-step-platform");
+  hide("popup-hash-preview");
+  renderPlatforms();
+  updateRegisterBtn();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// REGISTER BUTTON STATE
+// ════════════════════════════════════════════════════════════════════════════
+function updateRegisterBtn() {
+  const btn     = $("popup-register-btn");
+  const descEl  = $("register-btn-text");
+  if (!btn || !descEl) return;
+
+  const type        = TIP_TYPES[regTypeId];
+  const wrongOrigin = selectedOrigin && type?.forcedOrigins
+                      && !type.forcedOrigins.includes(selectedOrigin);
+  const hasContent  = validateFields();
+  const ready       = !!(regTypeId && selectedOrigin && hasContent && !wrongOrigin);
+
+  btn.disabled = !ready;
+
+  if (!regPlatformId)     descEl.textContent = "Select a platform to continue";
+  else if (!regTypeId)    descEl.textContent = "Select a content type to continue";
+  else if (wrongOrigin)   descEl.textContent = "Wire adaptations require AA or MX";
+  else if (!hasContent)   descEl.textContent = "Complete the required fields";
+  else if (!selectedOrigin) descEl.textContent = "Select an origin code to continue";
+  else descEl.textContent = `Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// FIELD VALIDATION
+// ════════════════════════════════════════════════════════════════════════════
+function validateFields() {
+  if (!regTypeId) return false;
+  const type = TIP_TYPES[regTypeId];
+  const f    = type.fields;
+  const v    = collectValues();
+
+  if (f.includes("video_url") || f.includes("link_url")) {
+    if (!v.video_url && !v.link_url) return false;
+  }
+  if (type.titleRequired || [
+    "news_article","breaking_news","investigation",
+    "photo_journalism","opinion","wire_adapted","correction"
+  ].includes(regTypeId)) {
+    if (!v.title) return false;
+  }
+  if (f.includes("news_wire_source")   && !v.news_wire_source)   return false;
+  if (f.includes("news_ctid_original") && !v.news_ctid_original) return false;
+  if (f.includes("news_byline") && [
+    "news_article","breaking_news","investigation","live_blog"
+  ].includes(regTypeId)) {
+    if (!v.news_byline) return false;
+  }
+  if (f.includes("thread") && !threadPosts.some(p => p.trim())) return false;
+  if (f.includes("content") && !f.includes("video_url") && !f.includes("audio")) {
+    if (!v.content) return false;
+  }
+  return true;
+}
+
+function collectValues() {
+  return {
+    video_url:           val("popup-url-input"),
+    link_url:            val("popup-url-input"),
+    title:               val("popup-title-input"),
+    news_byline:         val("popup-byline-input"),
+    news_wire_source:    val("popup-wire-input"),
+    news_ctid_original:  val("popup-ctid-orig-input"),
+    content:             val("popup-content-input"),
+    thread:              threadPosts,
+    threadPosts:         threadPosts,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// REGISTER BUTTON CLICK
+// ════════════════════════════════════════════════════════════════════════════
+$("popup-register-btn")?.addEventListener("click", async () => {
+  if (!selectedOrigin || !regTypeId) return;
+
+  const password = val("popup-password");
+  if (!password) {
+    showStatus("creator-status", "error", "Enter your signing password first.");
+    $("popup-password")?.focus();
+    return;
+  }
+
+  const values     = collectValues();
+  const contentStr = buildContentString(regTypeId, values);
+  if (!contentStr.trim()) {
+    showStatus("creator-status", "error", "No content to register. Fill in the required fields first.");
+    return;
+  }
+
+  const btn      = $("popup-register-btn");
+  const btnText  = $("register-btn-text");
+  btn.disabled   = true;
+  if (btnText) btnText.textContent = "Registering on TIP DAG...";
+  showStatus("creator-status", "info", "Hashing content and signing with your key...");
+
+  // Test mode: simulate success
+  if (testMode) {
+    await new Promise(r => setTimeout(r, 900));
+    currentCTID = TEST.CTID;
+    setText("popup-ctid-display", currentCTID);
+    hide("creator-manual-form");
+    show("creator-success");
+    showStatus("creator-status", "", "");
+    return;
+  }
+
+  const res = await msgBg("REGISTER_CONTENT", { payload: {
+    originCode: selectedOrigin,
+    typeId:     regTypeId,
+    values,
+    title:      values.title,
+    password,
+  }});
+
+  if (res?.ok && res.data?.ctid) {
+    currentCTID = res.data.ctid;
+    setText("popup-ctid-display", currentCTID);
+    hide("creator-manual-form");
+    show("creator-success");
+    showStatus("creator-status", "", "");
+    navigator.clipboard?.writeText(currentCTID).catch(() => {});
+  } else {
+    showStatus("creator-status", "error",
+      res?.error || "Registration failed. Check your node connection in Settings.");
+    btn.disabled = false;
+    updateRegisterBtn();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// COPY CTID
+// ════════════════════════════════════════════════════════════════════════════
+$("popup-copy-ctid")?.addEventListener("click", () => {
+  navigator.clipboard.writeText(currentCTID).then(() => {
+    const btn  = $("popup-copy-ctid");
+    const orig = btn.textContent;
+    btn.textContent = "Copied to clipboard!";
+    btn.style.background = "rgba(26,138,92,.25)";
+    setTimeout(() => {
+      btn.textContent    = orig;
+      btn.style.background = "";
+    }, 2000);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// REGISTER ANOTHER
+// ════════════════════════════════════════════════════════════════════════════
+$("popup-register-another")?.addEventListener("click", () => {
+  hide("creator-success");
+  show("creator-manual-form");
+  resetRegistrationForm(false);
+});
+
+function resetRegistrationForm(clearAll) {
+  regPlatformId  = null;
+  regTypeId      = null;
+  selectedOrigin = null;
+  threadPosts    = ["", ""];
+
+  if (clearAll) {
+    const pw = $("popup-password"); if(pw) pw.value = "";
+  }
+
+  clearOriginSelection();
+  hide("popup-origin-hint");
+  hide("popup-step-type");
+  hide("popup-step-fields");
+  hide("popup-hash-preview");
+  show("popup-step-platform");
+  renderPlatforms();
+  updateRegisterBtn();
+  showStatus("creator-status", "", "");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// VIEWER
+// ════════════════════════════════════════════════════════════════════════════
+async function loadViewerData(tab) {
+  if (!tab?.url || tab.url.startsWith("chrome://")) {
+    show("viewer-no-tip"); return;
+  }
+
+  // Test mode viewer
+  if (testMode) {
     show("viewer-tip-data");
-
-    // Fetch full identity
-    const identity = await msg("FETCH_IDENTITY", { tipId: data.tipAuthor });
-    const idata = identity?.data;
-    const score = idata?.score || data.tipScore || 0;
-    const tier  = idata?.tier?.label || tierLabel(score);
-    const c     = tierColor(score);
-
-    setHTML("viewer-shield", shieldSVG(score, 44));
-    setHTML("viewer-tier-badge", tier);
-    const tierEl = document.getElementById("viewer-tier-badge");
-    if (tierEl) { tierEl.style.background = `${c}15`; tierEl.style.color = c; }
-    setText("viewer-score-text", `Score: ${score} / 1000`);
-    setText("viewer-tip-id", data.tipAuthor);
-    const fillEl = document.getElementById("viewer-score-fill");
-    if (fillEl) { fillEl.style.width = `${score/10}%`; fillEl.style.background = c; }
-
-    // Revocation check
-    const revRes = await msg("IS_REVOKED", { tipId: data.tipAuthor });
-    if (revRes?.revoked) show("viewer-revoked-warning");
-
-    // Content record
-    if (data.tipContent) {
-      show("viewer-content-section");
-      const originCode = data.tipOrigin
-        ? data.tipOrigin.toUpperCase().replace("ORIGINAL-HUMAN","OH")
-            .replace("AI-ASSISTED","AA").replace("AI-GENERATED","AG").replace("MIXED","MX").slice(0,2)
-        : null;
-      if (originCode) setHTML("viewer-origin-pill", originPillHTML(originCode));
-      setText("viewer-ctid", data.tipContent);
-      const statusEl = document.getElementById("viewer-content-status");
-      if (statusEl) {
-        statusEl.textContent = "Verified";
-        statusEl.style.background = "#1A8A5C15";
-        statusEl.style.color = "#1A8A5C";
-      }
-      const link = document.getElementById("viewer-verify-link");
-      if (link) link.href = `https://theailab.org/verify/${encodeURIComponent(data.tipContent)}`;
-    }
+    renderViewerData(TEST.TIP_ID, TEST.SCORE, TEST.CTID, TEST.ORIGIN, "verified", false);
+    return;
   }
 
-  // ── Node health indicator ─────────────────────────────────────────────────
-  async function checkNode() {
-    const res = await msg("NODE_HEALTH");
-    const dot = document.getElementById("node-status");
-    if (dot) dot.style.background = res?.ok ? "#1A8A5C" : "#C53030";
-    if (dot) dot.title = res?.ok ? `TIP Node online — ${res.data?.dag_count || 0} transactions` : "TIP Node offline";
+  const tabRes = await msgBg("GET_TAB_DATA", { tabId: tab.id });
+  const tipData = tabRes?.data;
+  if (!tipData?.tipId) { show("viewer-no-tip"); return; }
+
+  show("viewer-tip-data");
+  const idRes = await msgBg("FETCH_IDENTITY", { tipId: tipData.tipId });
+  const score = idRes?.data?.score ?? tipData.score ?? 0;
+  const ctid  = tipData.ctid || null;
+  const origin = tipData.originCode || idRes?.data?.origin_code || "MX";
+  const status = idRes?.data?.status || "unverified";
+  const revRes = await msgBg("IS_REVOKED", { tipId: tipData.tipId });
+
+  renderViewerData(tipData.tipId, score, ctid, origin, status, revRes?.revoked);
+}
+
+function renderViewerData(tipId, score, ctid, originCode, status, revoked) {
+  setHTML("viewer-shield", shieldSVG(score));
+  const c = tierColor(score);
+  setHTML("viewer-tier-badge",
+    `<span class="tier-badge" style="background:${c}15;color:${c};border:1px solid ${c}30;">${tierLabel(score)}</span>`);
+  setText("viewer-score-text", `Trust score: ${score} / 1000`);
+  setText("viewer-tip-id",     tipId || "");
+
+  const fill = $("viewer-score-fill");
+  if (fill) {
+    fill.style.width      = `${Math.min(100, (score/1000)*100)}%`;
+    fill.style.background = c;
+  }
+  if (revoked) show("viewer-revoked-warning");
+
+  if (ctid) {
+    show("viewer-content-section");
+    setHTML("viewer-origin-pill", originPill(originCode));
+    setText("viewer-ctid", ctid);
+    const vLink = $("viewer-verify-link");
+    if (vLink) vLink.href = `https://theailab.org/verify/${encodeURIComponent(ctid)}`;
+    const sc = status === "verified" ? C.green : C.yellow;
+    setHTML("viewer-content-status",
+      `<span class="tier-badge" style="background:${sc}15;color:${sc};border:1px solid ${sc}30;">${status}</span>`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// NODE HEALTH
+// ════════════════════════════════════════════════════════════════════════════
+async function checkNode() {
+  if (testMode) {
+    const dot = $("node-status");
+    if (dot) { dot.style.background = C.green; dot.title = "Test Mode - simulated connection"; }
+    return;
+  }
+  const dot = $("node-status"); if (!dot) return;
+  try {
+    const res = await msgBg("NODE_HEALTH");
+    dot.style.background = res?.ok ? C.green : C.red;
+    dot.title = res?.ok ? "TIP Node connected" : "TIP Node offline - check Settings";
+  } catch {
+    dot.style.background = C.red;
+    dot.title = "TIP Node offline";
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════════════════
+async function init() {
+  let tab = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    tab = tabs[0];
+  } catch {
+    // Fallback - running outside extension context
+  }
+  hide("loading-state");
+
+  if (!tab) {
+    show("creator-pane");
+    show("creator-no-id");
+    return;
   }
 
-  // ── Main init ─────────────────────────────────────────────────────────────
-  async function init() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) { hide("loading-state"); return; }
+  let hasId = false;
+  let tipId = "";
+  try {
+    const idRes = await msgBg("GET_IDENTITY");
+    hasId = !!(idRes?.ok && idRes.data?.setupComplete);
+    tipId = idRes?.data?.tipId || "";
+  } catch { /* background not ready */ }
 
-    hide("loading-state");
+  if (!hasId) {
+    show("creator-no-id");
+  } else {
+    let platformDetected = null;
+    try {
+      const plat = await msgBg("DETECT_PLATFORM", { url: tab.url });
+      platformDetected = plat?.platform;
+    } catch {}
 
-    // Check identity
-    const idRes = await msg("GET_IDENTITY");
-    const hasId = idRes?.ok && idRes.data?.setupComplete;
-
-    // Creator tab setup
-    if (!hasId) {
-      show("creator-no-id");
+    if (platformDetected) {
+      show("creator-upload-detected");
+      setText("creator-tipid-upload", tipId);
     } else {
-      // Check if on an upload page
-      const platform = await msg("DETECT_PLATFORM", { url: tab.url });
-      if (platform?.platform) {
-        show("creator-upload-detected");
-        setText("creator-tipid-upload", idRes.data.tipId || "");
-      } else {
-        show("creator-manual-form");
-        setText("creator-tipid-manual", idRes.data.tipId || "");
-      }
+      show("creator-manual-form");
+      setText("creator-tipid-manual", tipId);
+      renderPlatforms();
+      updateRegisterBtn();
+      // Auto-detect platform from URL
+      try {
+        const host    = new URL(tab.url || "https://x.com").hostname.replace("www.", "");
+        const ID_MAP  = {
+          "youtube.com":"youtube","youtu.be":"youtube",
+          "instagram.com":"instagram","tiktok.com":"tiktok",
+          "facebook.com":"facebook","twitter.com":"twitter",
+          "x.com":"twitter","linkedin.com":"linkedin",
+          "threads.net":"threads","open.spotify.com":"podcast",
+          "podcasters.spotify.com":"podcast","anchor.fm":"podcast",
+          "medium.com":"blog","substack.com":"blog",
+          "wordpress.com":"blog","ghost.io":"blog",
+        };
+        const detected = ID_MAP[host];
+        if (detected) setTimeout(() => selectPlatform(detected), 150);
+      } catch {}
     }
-
-    // Viewer tab setup
-    await loadViewerData(tab);
-    checkNode();
   }
 
-  // Show creator by default for upload pages, viewer otherwise
-  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-    if (!tab) return;
-    const isUpload = /studio\.youtube\.com|youtube\.com\/upload|instagram\.com\/(create|reels)|tiktok\.com\/upload|twitter\.com\/compose|x\.com\/compose|substack\.com\/publish|medium\.com\/new-story/.test(tab.url || "");
-    if (isUpload) switchTab("creator");
-  });
+  await loadViewerData(tab);
+  checkNode();
+}
 
-  init();
-  </script>
+// Run
+init();
+</script>
 </body>
 </html>

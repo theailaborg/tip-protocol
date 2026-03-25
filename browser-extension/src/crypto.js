@@ -1,6 +1,6 @@
 /**
  * @file src/crypto.js
- * @description TIP Protocol — Browser Crypto Module
+ * @description TIP Protocol - Browser Crypto Module
  *
  * Provides:
  *   - SHAKE-256 hashing (pure JS Keccak implementation)
@@ -19,7 +19,7 @@
 "use strict";
 
 // ════════════════════════════════════════════════════════════════════════════
-// SHAKE-256 — Pure JavaScript Keccak implementation
+// SHAKE-256 - Pure JavaScript Keccak implementation
 // FIPS 202 compliant. No external dependencies.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -91,7 +91,7 @@ function keccakF(state) {
 }
 
 /**
- * SHAKE-256 — variable-length output hash function (FIPS 202)
+ * SHAKE-256 - variable-length output hash function (FIPS 202)
  * @param {Uint8Array|string} input
  * @param {number} outputBytes - default 32 (256 bits)
  * @returns {string} lowercase hex string
@@ -126,9 +126,9 @@ function shake256(input, outputBytes = 32) {
 }
 
 /**
- * shake256Async — Uses SubtleCrypto SHA-256 as a SHAKE-256 development stand-in.
+ * shake256Async - Uses SubtleCrypto SHA-256 as a SHAKE-256 development stand-in.
  * PRODUCTION NOTE: Replace with @noble/hashes shake256 for FIPS 202 compliance.
- * The content hash will differ between the stub and the real implementation —
+ * The content hash will differ between the stub and the real implementation -
  * all devnet content must be re-registered after the production crypto swap.
  *
  * @param {Uint8Array|string} data
@@ -141,7 +141,7 @@ async function shake256Async(data) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// KEY GENERATION — ML-DSA-65 stub (WebCrypto ECDSA P-256)
+// KEY GENERATION - ML-DSA-65 stub (WebCrypto ECDSA P-256)
 // PRODUCTION: Replace ml_dsa65 calls with @noble/post-quantum ml_dsa65
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -230,7 +230,7 @@ async function generateCTID(originCode, content, authorTipId) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PRIVATE KEY ENCRYPTION — AES-256-GCM + PBKDF2
+// PRIVATE KEY ENCRYPTION - AES-256-GCM + PBKDF2
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
