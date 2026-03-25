@@ -35,7 +35,7 @@ const morgan     = require("morgan");
 
 const {
   generateMLDSAKeypair, generateSLHDSAKeypair,
-  signTransaction, verifyTransaction,
+  signTransaction,
   shake256, shake256Multi,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
@@ -43,9 +43,16 @@ const {
   verifyBodySignature,
 } = require("../../shared/crypto");
 
-// Helper: sign a tx with the node's private key
-function nodeSigned(txBody, config) {
+// Assign content-addressed tx_id (no node signature — auth is at gossip layer)
+function withTxId(txBody) {
   txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+// Sign a tx with the node's registered key (for auto/system txs only)
+function nodeSignedAuto(txBody, config) {
+  txBody.tx_id = computeTxId(txBody);
+  txBody.data.node_id = config.nodeRegisteredId || config.nodeId;
   return signTransaction(txBody, config.nodePrivateKey);
 }
 
@@ -242,9 +249,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
           zk_proof,
         },
       };
-      const signedTx = nodeSigned(txBody, config);
+      const signedTx = withTxId(txBody);
 
-      const identityValidation = validateTransaction(signedTx, dag, { authorPublicKey: config.nodePublicKey });
+      const identityValidation = validateTransaction(signedTx, dag, {});
       if (!identityValidation.valid) {
         return res.status(400).json({ error: identityValidation.errors, layer: identityValidation.layer });
       }
@@ -427,9 +434,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
           prescan_probability: preScan.probability,
         },
       };
-      const signedContentTx = nodeSigned(contentTxBody, config);
+      const signedContentTx = withTxId(contentTxBody);
 
-      const contentValidation = validateTransaction(signedContentTx, dag, { authorPublicKey: config.nodePublicKey });
+      const contentValidation = validateTransaction(signedContentTx, dag, {});
       if (!contentValidation.valid) {
         return res.status(400).json({ error: contentValidation.errors, layer: contentValidation.layer });
       }
@@ -451,7 +458,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       // Auto-schedule Stage 1 adjudication if pre-scan flagged
       if (preScan.flagged) {
         log.info(`Pre-scan flagged ${ctid} — auto-scheduling Stage 1 adjudication`);
-        const flagTx = nodeSigned({
+        const flagTx = nodeSignedAuto({
           tx_type:   TX_TYPES.CONTENT_DISPUTED,
           timestamp: new Date().toISOString(),
           prev:      dag.getRecentPrev(),
@@ -557,9 +564,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         author_tip_id:     rec.author_tip_id,
       },
     };
-    const signedVerifyTx = nodeSigned(verifyTxBody, config);
+    const signedVerifyTx = withTxId(verifyTxBody);
 
-    const verifyValidation = validateTransaction(signedVerifyTx, dag, { authorPublicKey: config.nodePublicKey });
+    const verifyValidation = validateTransaction(signedVerifyTx, dag, {});
     if (!verifyValidation.valid) {
       return res.status(400).json({ error: verifyValidation.errors, layer: verifyValidation.layer });
     }
@@ -601,9 +608,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       prev:      dag.getRecentPrev(),
       data: { ctid: req.params.ctid, disputer_tip_id, reason, evidence_hash, author_tip_id: rec.author_tip_id },
     };
-    const signedDisputeTx = nodeSigned(disputeTxBody, config);
+    const signedDisputeTx = withTxId(disputeTxBody);
 
-    const disputeValidation = validateTransaction(signedDisputeTx, dag, { authorPublicKey: config.nodePublicKey });
+    const disputeValidation = validateTransaction(signedDisputeTx, dag, {});
     if (!disputeValidation.valid) {
       return res.status(400).json({ error: disputeValidation.errors, layer: disputeValidation.layer });
     }
@@ -683,9 +690,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         prev: dag.getRecentPrev(),
         data: { tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
       };
-      const signedRevokeTx = nodeSigned(revokeTxBody, config);
+      const signedRevokeTx = withTxId(revokeTxBody);
 
-      const revokeValidation = validateTransaction(signedRevokeTx, dag, { authorPublicKey: config.nodePublicKey });
+      const revokeValidation = validateTransaction(signedRevokeTx, dag, {});
       if (!revokeValidation.valid) {
         return res.status(400).json({ error: revokeValidation.errors, layer: revokeValidation.layer });
       }
@@ -700,7 +707,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
         const recentContent = dag.getContentByAuthor(tip_id).filter(c => c.registered_at > cutoff);
         recentContent.forEach(c => {
-          const cascadeTx = nodeSigned({
+          const cascadeTx = nodeSignedAuto({
             tx_type:   TX_TYPES.CONTENT_DISPUTED,
             timestamp: new Date().toISOString(),
             prev:      dag.getRecentPrev(),
@@ -777,9 +784,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         prev:      dag.getRecentPrev(),
         data:      { vp_id: vpId, name, jurisdiction_tier, public_key, council_signature, approving_vp_id },
       };
-      const signedVpTx = nodeSigned(vpTxBody, config);
+      const signedVpTx = withTxId(vpTxBody);
 
-      const vpValidation = validateTransaction(signedVpTx, dag, { authorPublicKey: config.nodePublicKey });
+      const vpValidation = validateTransaction(signedVpTx, dag, {});
       if (!vpValidation.valid) {
         return res.status(400).json({ error: vpValidation.errors, layer: vpValidation.layer });
       }
@@ -848,9 +855,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         prev:      dag.getRecentPrev(),
         data:      { node_id: nodeId, name, public_key, council_signature, approving_vp_id },
       };
-      const signedNodeTx = nodeSigned(nodeTxBody, config);
+      const signedNodeTx = withTxId(nodeTxBody);
 
-      const nodeValidation = validateTransaction(signedNodeTx, dag, { authorPublicKey: config.nodePublicKey });
+      const nodeValidation = validateTransaction(signedNodeTx, dag, {});
       if (!nodeValidation.valid) {
         return res.status(400).json({ error: nodeValidation.errors, layer: nodeValidation.layer });
       }
