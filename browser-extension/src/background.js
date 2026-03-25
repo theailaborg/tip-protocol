@@ -1,6 +1,6 @@
 /**
  * @file src/background.js
- * @description TIP™ Extension — Background Service Worker (Manifest V3)
+ * @description TIP™ Extension - Background Service Worker (Manifest V3)
  *
  * Dual-mode responsibilities:
  *
@@ -23,7 +23,8 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
+import { buildContentString } from "./tip-types.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
@@ -46,6 +47,9 @@ const UPLOAD_PATTERNS = [
   { pattern: /linkedin\.com\/post\/new|linkedin\.com\/feed\//,  platform: "LinkedIn"  },
   { pattern: /substack\.com\/publish|substack\.com\/.*\/write/, platform: "Substack"  },
   { pattern: /medium\.com\/new-story|medium\.com\/@.*\/new/,    platform: "Medium"    },
+  { pattern: /threads\.net\/intent|threads\.net\/compose/,      platform: "Threads"   },
+  { pattern: /anchor\.fm|podcasters\.spotify\.com|buzzsprout/,   platform: "Podcast"   },
+  { pattern: /wordpress\.com\/post|ghost\.io.*\/editor/,         platform: "Blog"      },
 ];
 
 // ── Node URL ─────────────────────────────────────────────────────────────────
@@ -136,13 +140,13 @@ async function pollRevocations() {
       data.revocations.forEach(r => { if (!existing.has(r.tip_id)) revocList.push(r); });
       revocLastTs = Date.now();
     }
-  } catch { /* silent — node may be offline */ }
+  } catch { /* silent - node may be offline */ }
 }
 setInterval(pollRevocations, REVOC_POLL);
 pollRevocations();
 
 // ── Creator: register content on TIP node ────────────────────────────────────
-async function registerContent({ tipId, originCode, content, title, password }) {
+async function registerContent({ tipId, originCode, typeId, values, content, title, password }) {
   // 1. Get encrypted private key from storage
   const stored = await chrome.storage.local.get(["encryptedKey", "tipId"]);
   if (!stored.encryptedKey) throw new Error("No TIP-ID configured. Please set up your identity in Settings.");
@@ -156,24 +160,37 @@ async function registerContent({ tipId, originCode, content, title, password }) 
     throw new Error("Wrong password. Cannot decrypt your signing key.");
   }
 
-  // 3. Hash the content
-  const contentToHash = title ? `${title}\n${content}` : content;
-  const contentHash   = await shake256(contentToHash);
+  // 3. Build canonical content string using platform-aware formula.
+  //    If typeId + values are provided (new platform-aware flow), use buildContentString.
+  //    Fall back to naive title+content for legacy callers.
+  let contentToHash;
+  if (typeId && values) {
+    contentToHash = buildContentString(typeId, values);
+  } else {
+    contentToHash = title ? `${title}\n${content}` : (content || "");
+  }
+  if (!contentToHash.trim()) {
+    throw new Error("No content to register. Fill in the required fields first.");
+  }
 
-  // 4. Sign: payload = contentHash + originCode
+  // 4. Hash using SHAKE-256 (TIP Protocol CTID formula)
+  const contentHash = await shake256(contentToHash);
+
+  // 5. Sign: payload = contentHash + originCode
   const payload   = contentHash + originCode;
   const signature = await signData(payload, privateKey);
 
-  // 5. POST to TIP node
+  // 6. POST to TIP node
   const result = await tipFetch("/v1/content/register", {
     method: "POST",
-    body:   JSON.stringify({
+    body: JSON.stringify({
       author_tip_id:    tipId || stored.tipId,
       origin_code:      originCode,
-      content:          contentToHash.slice(0, 10000), // cap for API
+      content_type:     typeId || "other",
+      content:          contentToHash.slice(0, 10000),
       content_hash:     contentHash,
       author_signature: signature,
-      title:            title || "",
+      title:            (values?.title || title || ""),
     }),
   });
 
@@ -323,6 +340,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "NODE_HEALTH":
       return respond(tipFetch("/health"));
 
+    // ── Open options page ─────────────────────────────────────────────────────
+    case "OPEN_OPTIONS":
+      chrome.runtime.openOptionsPage();
+      sendResponse({ ok: true });
+      return false;
+
     // ── Node URL management ───────────────────────────────────────────────────
     case "GET_NODE_URL":
       return respond(getNodeUrl());
@@ -371,4 +394,4 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-console.log("[TIP™] Background service worker v2.1.0 ready.");
+// Service worker v2.2.0 ready

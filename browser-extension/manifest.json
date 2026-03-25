@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "TIP™ — AI Trust ID",
-  "short_name": "TIP™",
-  "version": "2.1.0",
-  "description": "Register your content on the TIP Protocol DAG in one click. View trust badges on any verified page. Works on YouTube, Instagram, TikTok, X, Facebook, LinkedIn, Substack, and Medium.",
+  "name": "TIP(tm) - AI Trust ID",
+  "short_name": "TIP(tm)",
+  "version": "2.2.0",
+  "description": "Register your content on the TIP Protocol DAG. Declare your origin - human or AI - and get a verified CTID. Works on YouTube, Instagram, TikTok, X/Twitter, Facebook, LinkedIn, Threads, Podcast platforms, News Media, and Blogs.",
   "homepage_url": "https://theailab.org/trust-identity-protocol",
-
   "permissions": [
     "activeTab",
     "storage",
@@ -13,49 +12,53 @@
     "clipboardWrite",
     "notifications"
   ],
-
   "host_permissions": [
     "http://*/*",
     "https://*/*"
   ],
-
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
   },
-
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/content.js"],
-      "run_at": "document_idle"
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "type": "module"
     }
   ],
-
   "action": {
     "default_popup": "popup.html",
-    "default_title": "TIP™ — AI Trust ID",
+    "default_title": "TIP(tm) - AI Trust ID",
     "default_icon": {
-      "16":  "icons/icon16.png",
-      "32":  "icons/icon32.png",
-      "48":  "icons/icon48.png",
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
-
   "icons": {
-    "16":  "icons/icon16.png",
-    "32":  "icons/icon32.png",
-    "48":  "icons/icon48.png",
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-
   "options_page": "options.html",
-
   "web_accessible_resources": [
     {
-      "resources": ["src/content.js"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "src/content.js",
+        "src/tip-types.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

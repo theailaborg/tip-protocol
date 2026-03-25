@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TIP™ Extension — Settings</title>
+  <title>TIP™ Extension  -  Settings</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Libre+Franklin:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -238,7 +238,7 @@
       </svg>
       <div class="brand-text">
         <div class="name">TIP™ PROTOCOL</div>
-        <div class="ver">v2.1.0 · TIPCL-1.0</div>
+        <div class="ver">v2.2.0 · TIPCL-1.0</div>
       </div>
     </div>
 
@@ -539,7 +539,7 @@
           The current signing implementation uses <strong>ECDSA P-256</strong> as a development stand-in
           for ML-DSA-65 (Dilithium3, FIPS 204). For production, this must be replaced with
           <code>@noble/post-quantum</code> bundled into the extension.
-          The API surface is identical — only the import changes.
+          The API surface is identical  -  only the import changes.
           All devnet-registered content will need re-registration after the production crypto swap.
         </div>
         <a href="https://github.com/paulmillr/noble-post-quantum" target="_blank"
@@ -613,7 +613,7 @@
       <div class="alert alert-info">
         <strong>Dual-mode design:</strong> Before platforms implement TIP natively, the extension
         injects a registration panel on upload pages. After native implementation, the extension
-        reads the platform's own TIP headers and displays the badge — the panel disappears automatically.
+        reads the platform's own TIP headers and displays the badge  -  the panel disappears automatically.
       </div>
 
       <div class="card">
@@ -691,7 +691,7 @@
           Once a platform publishes <code>TIP-Author</code>, <code>TIP-Content</code>, and <code>TIP-Trust-Score</code>
           HTTP headers on their responses, the extension automatically switches to reading those instead.
           The creator registration panel hides itself on that platform.
-          No extension update is required — it works the moment the platform adds the headers.
+          No extension update is required  -  it works the moment the platform adds the headers.
         </div>
       </div>
     </div>
@@ -710,7 +710,7 @@
             <div class="step-num">1</div>
             <div class="step-content">
               <div class="step-title">Get a TIP-ID</div>
-              <div class="step-desc">Apply for verification at <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification — government ID, 3D liveness check, device binding. Takes about 5 minutes. You receive your TIP-ID and private key.</div>
+              <div class="step-desc">Apply for verification at <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification  -  government ID, 3D liveness check, device binding. Takes about 5 minutes. You receive your TIP-ID and private key.</div>
             </div>
           </div>
           <div class="step">
@@ -733,10 +733,10 @@
               <div class="step-title">Select your origin code</div>
               <div class="step-desc">
                 Choose how this content was created:<br>
-                <strong style="color:#2563A8;">OH</strong> — Original Human: you created it without AI.<br>
-                <strong style="color:#7C3AED;">AA</strong> — AI-Assisted: you led the work, AI helped.<br>
-                <strong style="color:#C07318;">AG</strong> — AI-Generated: AI generated it.<br>
-                <strong style="color:#8895A7;">MX</strong> — Mixed: combination of sources.<br><br>
+                <strong style="color:#2563A8;">OH</strong>  -  Original Human: you created it without AI.<br>
+                <strong style="color:#7C3AED;">AA</strong>  -  AI-Assisted: you led the work, AI helped.<br>
+                <strong style="color:#C07318;">AG</strong>  -  AI-Generated: AI generated it.<br>
+                <strong style="color:#8895A7;">MX</strong>  -  Mixed: combination of sources.<br><br>
                 <strong>Over-declaring AI involvement is always safe.</strong> Declaring OH when AI generated it can cost trust score points.
               </div>
             </div>

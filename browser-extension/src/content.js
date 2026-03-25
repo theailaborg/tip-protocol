@@ -1,6 +1,6 @@
 /**
  * @file src/content.js
- * @description TIP™ Extension — Content Script
+ * @description TIP™ Extension - Content Script
  *
  * Runs on every page. Two responsibilities:
  *
@@ -20,6 +20,8 @@
  */
 
 "use strict";
+
+import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LABELS, ORIGIN_HINTS } from "./tip-types.js";;
 
 (function () {
   if (window.__tipContentInjected) return;
@@ -349,7 +351,7 @@
                 { code:"OH", label:"Original Human",   hint:"You wrote or filmed this entirely." },
                 { code:"AA", label:"AI-Assisted",       hint:"You led the creative work; AI helped edit or improve." },
                 { code:"AG", label:"AI-Generated",      hint:"AI generated this; you prompted and curated." },
-                { code:"MX", label:"Mixed / Composite", hint:"Multiple sources — some human, some AI." },
+                { code:"MX", label:"Mixed / Composite", hint:"Multiple sources - some human, somee AI." },
               ].map(o => `
                 <button class="tip-origin-btn" data-code="${o.code}"
                   title="${o.hint}"
@@ -462,7 +464,8 @@
 
     // ── Panel state ────────────────────────────────────────────────────────────
     let selectedOrigin = null;
-    let detectedContent = { title: "", description: "" };
+    let detectedContent = { title: "", description: "", url: "" };
+    let detectedPlatformType = guessContentType(platformName);
     let currentCTID = "";
 
     // Draggable panel
@@ -499,6 +502,7 @@
       const descEl  = sel.desc  ? document.querySelector(sel.desc)  : null;
       detectedContent.title       = titleEl?.value || titleEl?.textContent?.trim() || "";
       detectedContent.description = descEl?.value  || descEl?.textContent?.trim()  || "";
+      detectedContent.url         = window.location.href || "";
       const preview = document.getElementById("tip-content-preview");
       if (preview) {
         const text = detectedContent.title
@@ -544,7 +548,7 @@
               stroke-width="2.5" stroke-linecap="round">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             </svg>
-            Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}
+            Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}
           `;
           btn2.style.opacity = "1";
         }
@@ -572,12 +576,19 @@
       btn.innerHTML = "⏳ Registering on TIP DAG...";
       showStatus("info", "Hashing content and signing with your key...");
 
+      // Build proper content string using platform-aware formula
+      const values = {
+        title:       detectedContent.title,
+        content:     detectedContent.description,
+        video_url:   detectedContent.url || "",
+      };
       chrome.runtime.sendMessage({
         type: "REGISTER_CONTENT",
         payload: {
           originCode: selectedOrigin,
-          content,
-          title: detectedContent.title,
+          typeId:     detectedPlatformType || "text",
+          values:     values,
+          title:      detectedContent.title,
           password,
         },
       }, (res) => {
@@ -592,7 +603,7 @@
         } else {
           showStatus("error", res?.error || "Registration failed. Check your node connection in Settings.");
           btn.disabled = false;
-          btn.innerHTML = `Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}`;
+          btn.innerHTML = `Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}`;
         }
       });
     });

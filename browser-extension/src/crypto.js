@@ -1,6 +1,6 @@
 /**
  * @file src/crypto.js
- * @description TIP Protocol — Browser Crypto Module
+ * @description TIP Protocol - Browser Crypto Module
  *
  * Provides:
  *   - SHAKE-256 hashing (FIPS 202 via @noble/hashes)
@@ -202,7 +202,7 @@ async function generateCTID(originCode, content, authorTipId) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PRIVATE KEY ENCRYPTION — AES-256-GCM + PBKDF2
+// PRIVATE KEY ENCRYPTION - AES-256-GCM + PBKDF2
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
