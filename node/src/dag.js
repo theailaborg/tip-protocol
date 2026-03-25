@@ -463,7 +463,13 @@ function initDAG(config) {
   }
 
   // ── Recent tx ring buffer (last 2 tx IDs for prev[] on new txs) ───────────
-  let _prev = ["genesis-" + "0".repeat(16), "genesis-" + "0".repeat(16)];
+  // Initialize from the two most recent txs in the DAG
+  const allTxIds = store.getAllTxs().map(t => t.tx_id);
+  let _prev = allTxIds.length >= 2
+    ? [allTxIds[allTxIds.length - 1], allTxIds[allTxIds.length - 2]]
+    : allTxIds.length === 1
+      ? [allTxIds[0], allTxIds[0]]
+      : [require("./genesis").GENESIS_TX_ID, require("./genesis").GENESIS_TX_ID];
   function _updatePrev(txId) { _prev = [txId, _prev[0]]; }
 
   // ── Public DAG API ────────────────────────────────────────────────────────

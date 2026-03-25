@@ -637,12 +637,21 @@ class DAG:
                 self._store = MemoryStore()
 
         self._config = config
-        from node.genesis import GENESIS_TX_ID as _GENESIS_TX_ID
-        self._prev_ring: list[str] = [_GENESIS_TX_ID, _GENESIS_TX_ID]
+        self._prev_ring: list[str] = []
         self._prev_lock = threading.Lock()
 
         if self._store.count() == 0:
             self._bootstrap_genesis()
+
+        # Initialize prev ring from the two most recent txs in DAG
+        all_tx_ids = [t["tx_id"] for t in self._store.get_all_txs()]
+        if len(all_tx_ids) >= 2:
+            self._prev_ring = [all_tx_ids[-1], all_tx_ids[-2]]
+        elif len(all_tx_ids) == 1:
+            self._prev_ring = [all_tx_ids[0], all_tx_ids[0]]
+        else:
+            from node.genesis import GENESIS_TX_ID as _GENESIS_TX_ID
+            self._prev_ring = [_GENESIS_TX_ID, _GENESIS_TX_ID]
 
     # ── Private ───────────────────────────────────────────────────────────────
     def _bootstrap_genesis(self) -> None:
