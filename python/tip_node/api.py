@@ -492,7 +492,6 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         author_tip_id  = body.get("author_tip_id") or body.get("authorTipId")
         origin_code    = body.get("origin_code")   or body.get("originCode")
         content        = body.get("content")
-        provided_hash  = body.get("content_hash")  or body.get("contentHash")
         signature      = body.get("signature", "unsigned")
 
         if not author_tip_id:
@@ -501,8 +500,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "origin_code is required (OH|AA|AG|MX)"}); return
         if not Origin.is_valid(origin_code):
             self._send_json(400, {"error": f"Invalid origin_code: {origin_code}"}); return
-        if not content and not provided_hash:
-            self._send_json(400, {"error": "content or content_hash is required"}); return
+        if not content:
+            self._send_json(400, {"error": "content is required"}); return
 
         identity = self.dag.get_identity(author_tip_id)
         if not identity:
@@ -511,15 +510,17 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(403, {"error": f"Author TIP-ID is revoked: {author_tip_id}"}); return
 
         if not signature or signature == "unsigned":
-            self._send_json(400, {"error": "signature is required (ML-DSA-65 over request body)"}); return
+            self._send_json(400, {"error": "signature is required"}); return
 
-        # Verify body signature: author signs only the required fields
-        _CONTENT_FIELDS = ["author_tip_id", "origin_code", "content", "content_hash"]
-        if not verify_body_signature(body, signature, identity.get("public_key", ""), _CONTENT_FIELDS):
+        # Server computes content_hash — client signs { author_tip_id, origin_code, content_hash }
+        content_hash = hash_content(content)
+
+        _CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"]
+        sig_body = {"author_tip_id": author_tip_id, "origin_code": origin_code, "content_hash": content_hash}
+        if not verify_body_signature(sig_body, signature, identity.get("public_key", ""), _CONTENT_FIELDS):
             self._send_json(403, {"error": "Content signature verification failed — signature does not match author public key"}); return
 
-        content_hash  = provided_hash or hash_content(content or "")
-        percept_hash  = perceptual_hash_text(content) if content else None
+        percept_hash = perceptual_hash_text(content)
 
         ctid          = generate_ctid(origin_code, content_hash, author_tip_id)
         registered_at = _utc_now()

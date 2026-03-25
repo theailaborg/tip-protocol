@@ -33,7 +33,7 @@ function verifyIncomingTx(tx, dag) {
       const identity = dag.getIdentity(d.author_tip_id);
       if (!identity || !d.signature) return true; // can't verify — accept
       return verifyBodySignature(d, d.signature, identity.public_key,
-        ["author_tip_id", "origin_code", "content", "content_hash"]);
+        ["author_tip_id", "origin_code", "content_hash"]);
     }
 
     if (tt === TX_TYPES.REGISTER_IDENTITY) {

@@ -105,7 +105,7 @@ def _verify_incoming_tx(tx: dict, dag) -> bool:
             identity = dag.get_identity(d.get("author_tip_id", ""))
             if not identity or not d.get("signature"): return True
             return verify_body_signature(d, d["signature"], identity["public_key"],
-                ["author_tip_id", "origin_code", "content", "content_hash"])
+                ["author_tip_id", "origin_code", "content_hash"])
 
         if tt == TxType.REGISTER_IDENTITY:
             vp = dag.get_vp(d.get("vp_id", ""))
