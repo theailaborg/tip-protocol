@@ -419,6 +419,58 @@ async function registerFoundingVP(genesisBlock, vpKeypair) {
   return { vpRecord, vpKeypair };
 }
 
+// ─── Step 4b: Register seed node ─────────────────────────────────────────────
+async function registerSeedNode(vpKeypair) {
+  info("Registering seed node in DAG...");
+
+  if (!useDirectMode || !_dag) {
+    warn("Node registration requires direct mode with DAG — skipping");
+    return null;
+  }
+
+  const nodeId       = generateTIPID("NODE", _nodeKp.publicKey);
+  const registeredAt = new Date().toISOString();
+
+  const nodeFields = { name: "Seed Node", public_key: _nodeKp.publicKey, approving_vp_id: getFoundingVP().vp_id };
+  const councilSig = signBody(nodeFields, vpKeypair.privateKey);
+
+  const nodeTxBody = {
+    tx_type:   TX_TYPES.NODE_REGISTERED,
+    timestamp: registeredAt,
+    prev:      _dag.getRecentPrev(),
+    data: {
+      node_id:           nodeId,
+      name:              "Seed Node",
+      public_key:        _nodeKp.publicKey,
+      council_signature: councilSig,
+      approving_vp_id:   getFoundingVP().vp_id,
+    },
+  };
+  const signedTx = _nodeSigned(nodeTxBody);
+  _dag.addTx(signedTx);
+  _dag.saveNode({
+    node_id:       nodeId,
+    name:          "Seed Node",
+    public_key:    _nodeKp.publicKey,
+    status:        "active",
+    registered_at: registeredAt,
+  });
+
+  // Write node keys to .env
+  const envFile = path.resolve(__dirname, "../.env");
+  if (fs.existsSync(envFile)) {
+    let envSrc = fs.readFileSync(envFile, "utf8");
+    envSrc = envSrc.replace(/TIP_NODE_PRIVATE_KEY=.*/, `TIP_NODE_PRIVATE_KEY=${_nodeKp.privateKey}`);
+    envSrc = envSrc.replace(/TIP_NODE_PUBLIC_KEY=.*/,  `TIP_NODE_PUBLIC_KEY=${_nodeKp.publicKey}`);
+    fs.writeFileSync(envFile, envSrc);
+    ok("Node keys written to .env");
+  }
+
+  ok(`Seed node registered: ${nodeId}`);
+  label("Node ID", nodeId);
+  return { nodeId, publicKey: _nodeKp.publicKey };
+}
+
 // ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
 async function createGenesisRing(vpRecord, vpKeypair) {
   head("STEP 5: Creating Genesis Ring (Founding Identities)");
@@ -894,6 +946,9 @@ async function main() {
     // Step 4: Founding VP
     const { vpRecord } = await registerFoundingVP(genesisBlock, vpKeypair);
 
+    // Step 4b: Register seed node
+    const seedNode = await registerSeedNode(vpKeypair);
+
     // Step 5: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
@@ -914,6 +969,7 @@ async function main() {
     label("Founding VP",         output.founding_vp.vp_id);
     label("Genesis ring members", output.genesis_ring.length.toString());
     label("Sample content",      `${output.sample_content.length} records (OH, AA, AG, MX)`);
+    if (seedNode) label("Seed node",     seedNode.nodeId);
     if (_dag) label("DAG transactions", `${_dag.count()}`);
     label("Validation",          allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
     console.log();
