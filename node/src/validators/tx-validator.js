@@ -385,13 +385,9 @@ function validateTransaction(tx, dag, options = {}) {
     return { valid: false, errors: businessResult.errors, layer: "business_rules" };
   }
 
-  // Layer 4: Cryptography (optional skip for system txs)
-  if (!skipCrypto) {
-    const cryptoResult = validateCryptography(tx, authorPublicKey);
-    if (!cryptoResult.valid) {
-      return { valid: false, errors: cryptoResult.errors, layer: "cryptography" };
-    }
-  }
+  // Layer 4: Cryptography — removed. Node tx-level signature no longer used.
+  // Body signatures (author/VP/verifier) are verified at the API endpoint level.
+  // Node auth is at the gossip transport layer (challenge-response).
 
   // Layer 5: DAG integrity
   const dagResult = validateDAGIntegrity(tx, dag);

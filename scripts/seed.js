@@ -47,7 +47,6 @@ const {
   perceptualHashText,
   signBody,
   computeTxId,
-  signTransaction,
   canonicalTx,
   canonicalJson,
 } = require("../shared/crypto");
@@ -338,9 +337,9 @@ function initDirectDAG() {
   label("DB path", cfg.dbPath);
 }
 
-function _nodeSigned(txBody) {
+function _withTxId(txBody) {
   txBody.tx_id = computeTxId(txBody);
-  return signTransaction(txBody, _nodeKp.privateKey);
+  return txBody;
 }
 
 // ─── Step 4: Register The AI Lab as founding VP ───────────────────────────────
@@ -411,7 +410,7 @@ async function registerSeedNode(vpKeypair) {
       approving_vp_id:   getFoundingVP().vp_id,
     },
   };
-  const signedTx = _nodeSigned(nodeTxBody);
+  const signedTx = _withTxId(nodeTxBody);
   _dag.addTx(signedTx);
   _dag.saveNode({
     node_id:       nodeId,
@@ -476,7 +475,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           vp_signature:      vpSignature,
         },
       };
-      const signedTx = _nodeSigned(txBody);
+      const signedTx = _withTxId(txBody);
       const tx = _dag.addTx(signedTx);
 
       _dag.saveIdentity({
@@ -610,7 +609,7 @@ async function registerSampleContent(identities) {
           prescan_probability: 0,
         },
       };
-      const signedContentTx = _nodeSigned(contentTxBody);
+      const signedContentTx = _withTxId(contentTxBody);
       const tx = _dag.addTx(signedContentTx);
 
       _dag.saveContent({
