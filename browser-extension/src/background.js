@@ -186,11 +186,28 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
 
   let privateKey;
   let publicKey;
-
-  if (existingPrivateKey) {
-    // User is importing an existing key
+  
+  if (existingPrivateKey?.startsWith("__RE_ENCRYPT__")) {
+    // Change-password flow — payload: "__RE_ENCRYPT__<oldPassword>__<encryptedB64>"
+    // Split on the *last* "__": base64 never contains "_" so the boundary is unambiguous
+    // even when the old password itself contains "__".
+    const payload  = existingPrivateKey.slice("__RE_ENCRYPT__".length);
+    const splitAt  = payload.lastIndexOf("__");
+    if (splitAt === -1) throw new Error("Malformed re-encrypt payload.");
+    const oldPassword  = payload.slice(0, splitAt);
+    const encryptedB64 = payload.slice(splitAt + 2);
+    try {
+      privateKey = await decryptPrivateKey(encryptedB64, oldPassword);
+    } catch {
+      throw new Error("Wrong password. Cannot decrypt your signing key.");
+    }
+    // Preserve the existing public key — re-encryption must not change it.
+    const stored = await chrome.storage.local.get(["publicKey"]);
+    publicKey = stored.publicKey || "imported";
+  } else if (existingPrivateKey) {
+    // Import flow — user provides the raw master seed hex from VP registration.
     privateKey = existingPrivateKey;
-    publicKey  = "imported"; // public key derivation from stored hex not needed for signing
+    publicKey  = "imported";
   } else {
     // Generate fresh keypair
     const kp   = await generateKeypair();
@@ -288,6 +305,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case "SET_NODE_URL":
       return respond(chrome.storage.sync.set({ nodeUrl: msg.url }));
+
+    // ── Icon theme: swap between light and dark icon sets ─────────────────────
+    case "UPDATE_ICON_THEME": {
+      const s = msg.isDark ? "" : "-dark";
+      chrome.action.setIcon({
+        path: {
+          // "16":  `icons/icon16${s}.png`,
+          "32":  `icons/icon32${s}.png`,
+          "48":  `icons/icon48${s}.png`,
+          "128": `icons/icon128${s}.png`,
+          "512": `icons/icon512${s}.png`,
+        },
+      }).catch(() => {});
+      sendResponse({ ok: true });
+      return false;
+    }
   }
 
   return false;

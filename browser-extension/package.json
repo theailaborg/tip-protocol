@@ -27,23 +27,47 @@
       "url": "https://theailab.org"
     }
   ],
+  "type": "module",
   "scripts": {
-    "build:chrome":  "node scripts/build.js --target=chrome",
+    "dev": "node scripts/watch.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "build:chrome": "node scripts/build.js --target=chrome",
     "build:firefox": "node scripts/build.js --target=firefox",
-    "build:all":     "npm run build:chrome && npm run build:firefox",
-    "zip:chrome":    "cd dist/chrome && zip -r ../../tip-extension-chrome-v2.1.0.zip .",
-    "zip:firefox":   "cd dist/firefox && zip -r ../../tip-extension-firefox-v2.1.0.zip .",
-    "lint":          "eslint src/ --ext .js"
+    "build:all": "npm run build:chrome && npm run build:firefox",
+    "zip:chrome": "cd dist/chrome && zip -r ../../tip-extension-chrome-v2.1.0.zip .",
+    "zip:firefox": "cd dist/firefox && zip -r ../../tip-extension-firefox-v2.1.0.zip .",
+    "lint": "eslint src/ --ext .js"
   },
   "devDependencies": {
-    "eslint": "^8.57.0"
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0",
+    "@noble/post-quantum": "^0.2.1",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "sharp": "^0.34.5"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ]
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "keywords": [
-    "tip-protocol", "browser-extension", "trust", "identity",
-    "content-authentication", "badges", "chrome-extension", "firefox-addon",
-    "youtube", "instagram", "tiktok", "creator-tools"
+    "tip-protocol",
+    "browser-extension",
+    "trust",
+    "identity",
+    "content-authentication",
+    "badges",
+    "chrome-extension",
+    "firefox-addon",
+    "youtube",
+    "instagram",
+    "tiktok",
+    "creator-tools"
   ]
 }

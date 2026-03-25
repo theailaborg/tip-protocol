@@ -3,13 +3,16 @@
  * @description TIP Protocol — Browser Crypto Module
  *
  * Provides:
- *   - SHAKE-256 hashing (pure JS Keccak implementation)
- *   - ML-DSA-65 key generation and signing
- *     NOTE: Currently uses WebCrypto ECDSA P-256 as a development stub.
- *     Production path: bundle @noble/post-quantum and replace ml_dsa65.*
- *     with the post-quantum equivalent. API surface is identical.
+ *   - SHAKE-256 hashing (FIPS 202 via @noble/hashes)
+ *   - Ed25519 + ML-DSA-65 hybrid key generation and signing
+ *       Classical layer : Ed25519  (RFC 8032)
+ *       Post-quantum layer: ML-DSA-65 (FIPS 204)
+ *       Private key stored: 32-byte master seed (64 hex chars)
+ *       Both layers are derived from the master seed deterministically.
  *   - Private key encryption/decryption via AES-256-GCM + PBKDF2
  *   - TIP-ID and CTID generation
+ *
+ * Call `await initCrypto()` once at startup before using any function.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * Author: Dinesh Mendhe <chairman@theailab.org>
@@ -19,183 +22,152 @@
 "use strict";
 
 // ════════════════════════════════════════════════════════════════════════════
-// SHAKE-256 — Pure JavaScript Keccak implementation
-// FIPS 202 compliant. No external dependencies.
+// Static imports — resolved by esbuild at build time and inlined into the
+// bundle. No runtime module resolution needed in the service worker.
 // ════════════════════════════════════════════════════════════════════════════
 
-const KECCAK_RC = [
-  [0x00000001, 0x00000000], [0x00008082, 0x00000000],
-  [0x0000808a, 0x80000000], [0x80008000, 0x80000000],
-  [0x0000808b, 0x00000000], [0x80000001, 0x00000000],
-  [0x80008081, 0x80000000], [0x00008009, 0x80000000],
-  [0x0000008a, 0x00000000], [0x00000088, 0x00000000],
-  [0x80008009, 0x00000000], [0x8000000a, 0x00000000],
-  [0x8000808b, 0x00000000], [0x0000008b, 0x80000000],
-  [0x00008089, 0x80000000], [0x00008003, 0x80000000],
-  [0x00008002, 0x80000000], [0x00000080, 0x80000000],
-  [0x0000800a, 0x00000000], [0x8000000a, 0x80000000],
-  [0x80008081, 0x80000000], [0x00008080, 0x80000000],
-  [0x80000001, 0x00000000], [0x80008008, 0x80000000],
-];
-
-function rotL64(lo, hi, n) {
-  if (n === 32) return [hi, lo];
-  if (n < 32) return [(lo << n) | (hi >>> (32 - n)), (hi << n) | (lo >>> (32 - n))];
-  n -= 32;
-  return [(hi << n) | (lo >>> (32 - n)), (lo << n) | (hi >>> (32 - n))];
-}
-
-function keccakF(state) {
-  const C = new Int32Array(10);
-  const D = new Int32Array(10);
-  const T = new Int32Array(2);
-  for (let round = 0; round < 24; round++) {
-    for (let x = 0; x < 5; x++) {
-      C[x * 2]     = state[x*2]^state[(x+5)*2]^state[(x+10)*2]^state[(x+15)*2]^state[(x+20)*2];
-      C[x * 2 + 1] = state[x*2+1]^state[(x+5)*2+1]^state[(x+10)*2+1]^state[(x+15)*2+1]^state[(x+20)*2+1];
-    }
-    for (let x = 0; x < 5; x++) {
-      const nx = (x + 1) % 5;
-      const px = (x + 4) % 5;
-      const r = rotL64(C[nx*2], C[nx*2+1], 1);
-      D[x*2]   = C[px*2]   ^ r[0];
-      D[x*2+1] = C[px*2+1] ^ r[1];
-    }
-    for (let x = 0; x < 5; x++)
-      for (let y = 0; y < 5; y++) {
-        state[(x+y*5)*2]   ^= D[x*2];
-        state[(x+y*5)*2+1] ^= D[x*2+1];
-      }
-    const pi = new Int32Array(50);
-    const rho = [0,1,62,28,27,36,44,6,55,20,3,10,43,25,39,41,45,15,21,8,18,2,61,56,14];
-    for (let i = 0; i < 25; i++) {
-      const r = rotL64(state[i*2], state[i*2+1], rho[i]);
-      pi[i*2] = r[0]; pi[i*2+1] = r[1];
-    }
-    const piIdx = [0,10,20,5,15,16,1,11,21,6,7,17,2,12,22,23,8,18,3,13,14,24,9,19,4];
-    for (let i = 0; i < 25; i++) {
-      state[i*2]   = pi[piIdx[i]*2];
-      state[i*2+1] = pi[piIdx[i]*2+1];
-    }
-    for (let y = 0; y < 5; y++) {
-      const row = new Int32Array(10);
-      for (let x = 0; x < 5; x++) { row[x*2]=state[(x+y*5)*2]; row[x*2+1]=state[(x+y*5)*2+1]; }
-      for (let x = 0; x < 5; x++) {
-        state[(x+y*5)*2]   = row[x*2]   ^ (~row[((x+1)%5)*2]   & row[((x+2)%5)*2]);
-        state[(x+y*5)*2+1] = row[x*2+1] ^ (~row[((x+1)%5)*2+1] & row[((x+2)%5)*2+1]);
-      }
-    }
-    state[0] ^= KECCAK_RC[round][0];
-    state[1] ^= KECCAK_RC[round][1];
-  }
-}
+import { ml_dsa65 }             from "@noble/post-quantum/ml-dsa";
+import { shake256 as _shake256 } from "@noble/hashes/sha3";
+import { ed25519 }               from "@noble/curves/ed25519";
 
 /**
- * SHAKE-256 — variable-length output hash function (FIPS 202)
- * @param {Uint8Array|string} input
- * @param {number} outputBytes - default 32 (256 bits)
- * @returns {string} lowercase hex string
+ * No-op — kept for API compatibility with tests and background.js.
+ * Modules are resolved at bundle time via static imports above.
  */
-function shake256(input, outputBytes = 32) {
-  if (typeof input === "string") input = new TextEncoder().encode(input);
+async function initCrypto() {}
 
-  const rate     = 136; // (1600 - 512) / 8 for SHAKE-256
-  const capacity = 64;
-  const state    = new Int32Array(50);
+// ════════════════════════════════════════════════════════════════════════════
+// HYBRID KEY SIZES (bytes → hex chars)
+//
+//   Master seed (stored as "privateKey"):  32 bytes  →   64 hex chars
+//   Ed25519 public key:                    32 bytes  →   64 hex chars
+//   Ed25519 signature:                     64 bytes  →  128 hex chars
+//   ML-DSA-65 public key:                1952 bytes  → 3904 hex chars
+//   ML-DSA-65 signature:                 3309 bytes  → 6618 hex chars
+//
+//   Combined public key  = Ed25519 pub  ‖ ML-DSA-65 pub  → 3968 hex chars
+//   Combined signature   = Ed25519 sig  ‖ ML-DSA-65 sig  → 6746 hex chars
+// ════════════════════════════════════════════════════════════════════════════
 
-  // Absorb
-  let offset = 0;
-  while (offset < input.length) {
-    const block = input.slice(offset, offset + rate);
-    for (let i = 0; i < block.length; i++) {
-      const wordIdx = Math.floor(i / 4);
-      const bytePos = i % 4;
-      if (bytePos < 2) state[wordIdx * 2]   ^= (block[i] << (bytePos * 8)) | 0;
-      else             state[wordIdx * 2]   ^= (block[i] << (bytePos * 8)) | 0;
-      // simplified byte injection
-    }
-    if (block.length === rate) keccakF(state);
-    offset += rate;
-  }
+const ED25519_PUB_HEX = 64;   // split point in combined public key
+const ED25519_SIG_HEX = 128;  // split point in combined signature
 
-  // Simplified SHAKE-256 using SubtleCrypto SHA-256 as a well-tested stand-in
-  // IMPORTANT: In production, replace this entire function with a verified
-  // FIPS 202 SHAKE-256 library such as @noble/hashes shake256
-  // API surface is identical: shake256(data, outputBytes) → hex string
-  return null; // signals to use the async version below
-}
+// ════════════════════════════════════════════════════════════════════════════
+// SHAKE-256 (FIPS 202)
+// ════════════════════════════════════════════════════════════════════════════
 
 /**
- * shake256Async — Uses SubtleCrypto SHA-256 as a SHAKE-256 development stand-in.
- * PRODUCTION NOTE: Replace with @noble/hashes shake256 for FIPS 202 compliance.
- * The content hash will differ between the stub and the real implementation —
- * all devnet content must be re-registered after the production crypto swap.
- *
+ * SHAKE-256 hash (FIPS 202).
  * @param {Uint8Array|string} data
- * @returns {Promise<string>} 64-char hex string
+ * @returns {Promise<string>} 64-char hex string (256 bits)
  */
 async function shake256Async(data) {
-  const input  = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  const buffer = await crypto.subtle.digest("SHA-256", input);
-  return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const input = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  return bufToHex(_shake256(input, { dkLen: 32 }));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// KEY GENERATION — ML-DSA-65 stub (WebCrypto ECDSA P-256)
-// PRODUCTION: Replace ml_dsa65 calls with @noble/post-quantum ml_dsa65
+// INTERNAL — SEED DERIVATION
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * Generate an ML-DSA-65 keypair.
- * Stub: uses ECDSA P-256. Replace with @noble/post-quantum for production.
- * @returns {Promise<{publicKey: string, privateKey: string, algorithm: string}>}
+ * Derive the 32-byte ML-DSA-65 seed from the 32-byte master seed.
+ * Domain-separated so the two algorithm seeds are independent.
+ * @param {Uint8Array} masterSeed
+ * @returns {Uint8Array} 32-byte ML-DSA-65 seed
+ */
+function _mlDsaSeed(masterSeed) {
+  const input = new Uint8Array(1 + masterSeed.length);
+  input[0] = 0x01;                  // domain separator: 0x00 reserved for Ed25519
+  input.set(masterSeed, 1);
+  return _shake256(input, { dkLen: 32 });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// KEY GENERATION — Ed25519 + ML-DSA-65 hybrid
+//
+//   privateKey (returned / stored): 32-byte master seed (64 hex chars)
+//   publicKey (returned / stored) : Ed25519 pub ‖ ML-DSA-65 pub (3968 hex chars)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Generate a hybrid Ed25519 + ML-DSA-65 keypair from a fresh random seed.
+ * @returns {Promise<{algorithm: string, publicKey: string, privateKey: string}>}
  */
 async function generateKeypair() {
-  const keyPair = await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"]
-  );
-  const pubRaw  = await crypto.subtle.exportKey("spki",  keyPair.publicKey);
-  const privRaw = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+  // 32-byte master seed — the only secret that needs to be stored/encrypted
+  const masterSeed = crypto.getRandomValues(new Uint8Array(32));
+
+  // Ed25519: classical layer
+  const ed25519Pub = ed25519.getPublicKey(masterSeed);
+
+  // ML-DSA-65: post-quantum layer, derived from a domain-separated seed
+  const { publicKey: mlDsaPub } = ml_dsa65.keygen(_mlDsaSeed(masterSeed));
+
   return {
-    algorithm:  "ML-DSA-65-STUB-ECDSA-P256",
-    publicKey:  bufToHex(pubRaw),
-    privateKey: bufToHex(privRaw),
+    algorithm:  "Ed25519+ML-DSA-65",
+    publicKey:  bufToHex(ed25519Pub) + bufToHex(mlDsaPub),
+    privateKey: bufToHex(masterSeed),
   };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// SIGN / VERIFY — hybrid
+// ════════════════════════════════════════════════════════════════════════════
+
 /**
- * Sign data with ML-DSA-65 private key.
- * Stub: uses ECDSA P-256.
+ * Sign data with the hybrid private key (32-byte master seed, hex-encoded).
+ * Returns a combined hex signature: Ed25519 (128 hex) ‖ ML-DSA-65 (6618 hex).
  * @param {string} data
- * @param {string} privateKeyHex
- * @returns {Promise<string>} hex signature
+ * @param {string} masterSeedHex  64-char hex string (32-byte master seed)
+ * @returns {Promise<string>} 6746-char hex signature
  */
-async function signData(data, privateKeyHex) {
-  const keyDer = hexToBuf(privateKeyHex);
-  const key    = await crypto.subtle.importKey("pkcs8", keyDer,
-    { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
-  const msgBuf = new TextEncoder().encode(data);
-  const sigBuf = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, msgBuf);
-  return bufToHex(sigBuf);
+async function signData(data, masterSeedHex) {
+  const masterSeed = new Uint8Array(hexToBuf(masterSeedHex));
+  const msg        = new TextEncoder().encode(data);
+
+  // Ed25519 signature (deterministic — RFC 8032)
+  const ed25519Sig = ed25519.sign(msg, masterSeed);
+
+  // ML-DSA-65 signature (hedged — FIPS 204 §5.2)
+  const { secretKey } = ml_dsa65.keygen(_mlDsaSeed(masterSeed));
+  const mlDsaSig      = ml_dsa65.sign(secretKey, msg);
+
+  return bufToHex(ed25519Sig) + bufToHex(mlDsaSig);
 }
 
 /**
- * Verify an ML-DSA-65 signature.
+ * Verify a hybrid signature. Both layers must pass.
  * @param {string} data
- * @param {string} signatureHex
- * @param {string} publicKeyHex
+ * @param {string} signatureHex   6746-char combined hex signature
+ * @param {string} publicKeyHex   3968-char combined hex public key
  * @returns {Promise<boolean>}
  */
 async function verifySignature(data, signatureHex, publicKeyHex) {
   try {
-    const keyDer = hexToBuf(publicKeyHex);
-    const key    = await crypto.subtle.importKey("spki", keyDer,
-      { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    const msgBuf = new TextEncoder().encode(data);
-    const sigBuf = hexToBuf(signatureHex);
-    return await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, sigBuf, msgBuf);
+    const msg = new TextEncoder().encode(data);
+
+    // Split combined public key
+    const ed25519PubHex = publicKeyHex.slice(0, ED25519_PUB_HEX);
+    const mlDsaPubHex   = publicKeyHex.slice(ED25519_PUB_HEX);
+
+    // Split combined signature
+    const ed25519SigHex = signatureHex.slice(0, ED25519_SIG_HEX);
+    const mlDsaSigHex   = signatureHex.slice(ED25519_SIG_HEX);
+
+    // Both must verify — failure in either layer rejects the signature
+    const ed25519Ok = ed25519.verify(
+      new Uint8Array(hexToBuf(ed25519SigHex)),
+      msg,
+      new Uint8Array(hexToBuf(ed25519PubHex))
+    );
+    if (!ed25519Ok) return false;
+
+    return ml_dsa65.verify(
+      new Uint8Array(hexToBuf(mlDsaPubHex)),
+      msg,
+      new Uint8Array(hexToBuf(mlDsaSigHex))
+    );
   } catch {
     return false;
   }
@@ -297,6 +269,7 @@ function hexToBuf(hex) {
 }
 
 export {
+  initCrypto,
   shake256Async as shake256,
   generateKeypair,
   signData,

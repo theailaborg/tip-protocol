@@ -719,4 +719,14 @@
     }
   }).observe(document, { subtree: true, childList: true });
 
+  // ── Icon theme switching (dark / light mode) ─────────────────────────────
+  // The service worker has no window.matchMedia — the content script detects
+  // the system color scheme and tells the background to swap the icon set.
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  function reportTheme(isDark) {
+    chrome.runtime.sendMessage({ type: "UPDATE_ICON_THEME", isDark }).catch(() => {});
+  }
+  reportTheme(mq.matches);
+  mq.addEventListener("change", e => reportTheme(e.matches));
+
 })();

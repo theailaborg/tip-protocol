@@ -126,3 +126,7 @@ temp/
 # Uncomment the lines below if this is a library package:
 # package-lock.json
 # yarn.lock
+
+# ─── Browser-extention ───────────────────────────────────────────────────────────────
+chrome.crx
+chrome.pem
