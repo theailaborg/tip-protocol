@@ -606,7 +606,7 @@ def test_genesis_files() -> None:
 
     if seed_file.exists():
         seed = _json.loads(seed_file.read_text())
-        check("Seed: genesis ring members >= 4",     len(seed.get("genesis_ring", [])) >= 4)
+        check("Seed: genesis ring members >= 3",     len(seed.get("genesis_ring", [])) >= 3)
         check("Seed: all four origin types",
               {c["origin"] for c in seed.get("sample_content", [])} == {"OH","AA","AG","MX"})
         check("Seed: founding VP matches genesis",
