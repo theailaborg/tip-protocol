@@ -29,7 +29,7 @@
 
 "use strict";
 
-// dotenv not required for direct mode
+try { require("dotenv").config(); } catch { /* dotenv optional */ }
 
 const fs    = require("fs");
 const path  = require("path");
@@ -84,9 +84,10 @@ const head  = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`);
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const genesisKeysOnly = args.includes("--genesis-keys-only");
-const nodeUrl         = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
-const useDirectMode   = args.includes("--direct") || !args.includes("--node-url");
+const genesisKeysOnly    = args.includes("--genesis-keys-only");
+const skipSampleContent  = args.includes("--no-sample-content") || process.env.NODE_ENV === "production";
+const nodeUrl            = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
+const useDirectMode      = args.includes("--direct") || !args.includes("--node-url");
 
 const DATA_DIR    = path.resolve(__dirname, "../genesis-data");
 const KEYS_FILE   = path.join(DATA_DIR, "genesis-keys.json");
@@ -896,8 +897,9 @@ async function main() {
     // Step 5: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
-    // Step 6: Sample content
-    const content = await registerSampleContent(identities);
+    // Step 6: Sample content (skipped in production)
+    const content = skipSampleContent ? [] : await registerSampleContent(identities);
+    if (skipSampleContent) info("Sample content skipped (production mode)");
 
     // Step 7: Verification
     const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
