@@ -18,8 +18,79 @@ const crypto                 = require("crypto");
 const WebSocket              = require("ws");
 const { validateTransaction } = require("./validators/tx-validator");
 const { TX_TYPES }           = require("../../shared/constants");
-const { mldsaVerify, mldsaSign } = require("../../shared/crypto");
+const { mldsaVerify, mldsaSign, verifyBodySignature, canonicalTx } = require("../../shared/crypto");
 const { log }                = require("./logger");
+
+// ─── Verify body signature on incoming tx ────────────────────────────────────
+// Each tx type has a known signer and signed fields. Returns true if valid,
+// false if verification fails. Skips txs where verification isn't possible.
+function verifyIncomingTx(tx, dag) {
+  const d = tx.data || {};
+  const tt = tx.tx_type;
+
+  try {
+    if (tt === TX_TYPES.REGISTER_CONTENT) {
+      const identity = dag.getIdentity(d.author_tip_id);
+      if (!identity || !d.signature) return true; // can't verify — accept
+      return verifyBodySignature(d, d.signature, identity.public_key,
+        ["author_tip_id", "origin_code", "content", "content_hash"]);
+    }
+
+    if (tt === TX_TYPES.REGISTER_IDENTITY) {
+      const vp = dag.getVP(d.vp_id);
+      if (!vp || !d.vp_signature) return true;
+      return verifyBodySignature(d, d.vp_signature, vp.public_key,
+        ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
+    }
+
+    if (tt === TX_TYPES.CONTENT_VERIFIED) {
+      const verifier = dag.getIdentity(d.verifier_tip_id);
+      if (!verifier || !d.signature) return true;
+      return verifyBodySignature(d, d.signature, verifier.public_key,
+        ["verifier_tip_id", "verdict"]);
+    }
+
+    if (tt === TX_TYPES.CONTENT_DISPUTED) {
+      if (d.auto) {
+        // Auto dispute — verify node signature
+        const node = dag.getNode(d.node_id);
+        if (!node || !tx.signature) return true;
+        return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
+      }
+      const disputer = dag.getIdentity(d.disputer_tip_id);
+      if (!disputer || !d.signature) return true;
+      return verifyBodySignature(d, d.signature, disputer.public_key,
+        ["disputer_tip_id", "reason", "evidence_hash"]);
+    }
+
+    if (tt === TX_TYPES.REVOKE_VOLUNTARY || tt === TX_TYPES.REVOKE_VP ||
+        tt === TX_TYPES.REVOKE_DECEASED || tt === TX_TYPES.REVOKE_DEVICE) {
+      const vp = dag.getVP(d.issuing_vp_id);
+      if (!vp || !d.signature) return true;
+      return verifyBodySignature(d, d.signature, vp.public_key,
+        ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"]);
+    }
+
+    if (tt === TX_TYPES.VP_REGISTERED) {
+      const vp = dag.getVP(d.approving_vp_id);
+      if (!vp || !d.council_signature) return true;
+      return verifyBodySignature(d, d.council_signature, vp.public_key,
+        ["name", "jurisdiction_tier", "public_key", "approving_vp_id"]);
+    }
+
+    if (tt === TX_TYPES.NODE_REGISTERED) {
+      const vp = dag.getVP(d.approving_vp_id);
+      if (!vp || !d.council_signature) return true;
+      return verifyBodySignature(d, d.council_signature, vp.public_key,
+        ["name", "public_key", "approving_vp_id"]);
+    }
+  } catch (err) {
+    log.warn(`Gossip: body sig verification error for ${tt}: ${err.message}`);
+    return false;
+  }
+
+  return true; // unknown tx type — accept
+}
 
 const MSG_TYPES = {
   TX_BROADCAST:  "TX_BROADCAST",
@@ -191,15 +262,18 @@ function initGossip(server, dag, config) {
           setTimeout(() => seenTx.delete(msg.tx.tx_id), 60_000); // TTL 60s
           const existing = dag.getTx(msg.tx.tx_id);
           if (!existing) {
-            const result = validateTransaction(msg.tx, dag, { skipCrypto: true, skipState: true });
+            const result = validateTransaction(msg.tx, dag, { skipState: true });
             if (!result.valid) {
               log.warn(`Gossip: rejected tx ${msg.tx.tx_id} (${result.layer}): ${result.errors.join(", ")}`);
+              break;
+            }
+            if (!verifyIncomingTx(msg.tx, dag)) {
+              log.warn(`Gossip: rejected tx ${msg.tx.tx_id} — body signature verification failed`);
               break;
             }
             dag.addTx(msg.tx);
             replayDerivedState(dag, msg.tx);
             log.info(`Gossip: received tx ${msg.tx.tx_id} (${msg.tx.tx_type})`);
-            // Relay to other peers (TTL = 1 more hop)
             if ((msg.ttl || 2) > 0) {
               broadcast(msg.tx, ws, (msg.ttl || 2) - 1);
             }
@@ -219,9 +293,13 @@ function initGossip(server, dag, config) {
           let imported = 0;
           for (const tx of msg.txs) {
             if (!dag.getTx(tx.tx_id)) {
-              const result = validateTransaction(tx, dag, { skipCrypto: true, skipState: true });
+              const result = validateTransaction(tx, dag, { skipState: true });
               if (!result.valid) {
                 log.warn(`Gossip: rejected sync tx ${tx.tx_id} (${result.layer}): ${result.errors.join(", ")}`);
+                continue;
+              }
+              if (!verifyIncomingTx(tx, dag)) {
+                log.warn(`Gossip: rejected sync tx ${tx.tx_id} — body signature verification failed`);
                 continue;
               }
               dag.addTx(tx);

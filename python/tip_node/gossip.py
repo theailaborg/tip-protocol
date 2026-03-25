@@ -94,6 +94,67 @@ def _replay_derived_state(dag, tx: dict) -> None:
             })
 
 
+def _verify_incoming_tx(tx: dict, dag) -> bool:
+    """Verify body signature on incoming gossip tx. Returns True if valid or unverifiable."""
+    from shared.crypto import verify_body_signature, mldsa_verify, canonical_tx
+    d = tx.get("data") or {}
+    tt = tx.get("tx_type", "")
+
+    try:
+        if tt == TxType.REGISTER_CONTENT:
+            identity = dag.get_identity(d.get("author_tip_id", ""))
+            if not identity or not d.get("signature"): return True
+            return verify_body_signature(d, d["signature"], identity["public_key"],
+                ["author_tip_id", "origin_code", "content", "content_hash"])
+
+        if tt == TxType.REGISTER_IDENTITY:
+            vp = dag.get_vp(d.get("vp_id", ""))
+            if not vp or not d.get("vp_signature"): return True
+            return verify_body_signature(d, d["vp_signature"], vp["public_key"],
+                ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"])
+
+        if tt == TxType.CONTENT_VERIFIED:
+            verifier = dag.get_identity(d.get("verifier_tip_id", ""))
+            if not verifier or not d.get("signature"): return True
+            return verify_body_signature(d, d["signature"], verifier["public_key"],
+                ["verifier_tip_id", "verdict"])
+
+        if tt == TxType.CONTENT_DISPUTED:
+            if d.get("auto"):
+                node = dag.get_node(d.get("node_id", ""))
+                if not node or not tx.get("signature"): return True
+                return mldsa_verify(canonical_tx(tx), tx["signature"], node["public_key"])
+            disputer = dag.get_identity(d.get("disputer_tip_id", ""))
+            if not disputer or not d.get("signature"): return True
+            return verify_body_signature(d, d["signature"], disputer["public_key"],
+                ["disputer_tip_id", "reason", "evidence_hash"])
+
+        if tt in (TxType.REVOKE_VOLUNTARY, TxType.REVOKE_VP,
+                  TxType.REVOKE_DECEASED, TxType.REVOKE_DEVICE):
+            vp = dag.get_vp(d.get("issuing_vp_id", ""))
+            if not vp or not d.get("signature"): return True
+            return verify_body_signature(d, d["signature"], vp["public_key"],
+                ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"])
+
+        if tt == TxType.VP_REGISTERED:
+            vp = dag.get_vp(d.get("approving_vp_id", ""))
+            if not vp or not d.get("council_signature"): return True
+            return verify_body_signature(d, d["council_signature"], vp["public_key"],
+                ["name", "jurisdiction_tier", "public_key", "approving_vp_id"])
+
+        if tt == TxType.NODE_REGISTERED:
+            vp = dag.get_vp(d.get("approving_vp_id", ""))
+            if not vp or not d.get("council_signature"): return True
+            return verify_body_signature(d, d["council_signature"], vp["public_key"],
+                ["name", "public_key", "approving_vp_id"])
+
+    except Exception as exc:
+        log.warning(f"Gossip: body sig verification error for {tt}: {exc}")
+        return False
+
+    return True
+
+
 MSG_TX_BROADCAST      = "TX_BROADCAST"
 MSG_HANDSHAKE         = "HANDSHAKE"
 MSG_CHALLENGE         = "CHALLENGE"
@@ -245,9 +306,11 @@ class GossipServer:
                     with self._lock:
                         self._seen.add(tx_id)
                     if not self._dag.get_tx(tx_id):
-                        result = validate_transaction(tx, self._dag, skip_crypto=True, skip_state=True)
+                        result = validate_transaction(tx, self._dag, skip_state=True)
                         if not result.valid:
                             log.warning(f"Gossip: rejected tx {tx_id[:16]}... ({result.layer}): {result.errors[0]}")
+                        elif not _verify_incoming_tx(tx, self._dag):
+                            log.warning(f"Gossip: rejected tx {tx_id[:16]}... — body signature verification failed")
                         else:
                             self._dag.add_tx(tx)
                             _replay_derived_state(self._dag, tx)
@@ -269,9 +332,12 @@ class GossipServer:
             imported = 0
             for tx in msg.get("txs", []):
                 if tx.get("tx_id") and not self._dag.get_tx(tx["tx_id"]):
-                    result = validate_transaction(tx, self._dag, skip_crypto=True, skip_state=True)
+                    result = validate_transaction(tx, self._dag, skip_state=True)
                     if not result.valid:
                         log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... ({result.layer}): {result.errors[0]}")
+                        continue
+                    if not _verify_incoming_tx(tx, self._dag):
+                        log.warning(f"Gossip: rejected sync tx {tx['tx_id'][:16]}... — body signature verification failed")
                         continue
                     self._dag.add_tx(tx)
                     _replay_derived_state(self._dag, tx)
