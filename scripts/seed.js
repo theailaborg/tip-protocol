@@ -39,7 +39,6 @@ const https = require("https");
 const {
   initCrypto,
   generateMLDSAKeypair,
-  generateSLHDSAKeypair,
   mldsaSign,
   shake256,
   shake256Multi,
@@ -170,9 +169,19 @@ async function generateGenesisKeys() {
   return keys;
 }
 
-// ─── Step 2: Generate founding VP keypair and embed in genesis ───────────────
+// ─── Founding members definition ─────────────────────────────────────────────
+const FOUNDING_MEMBERS = [
+  { name: "Dinesh Mendhe — Founder",      role: "Founder & Sole Inventor",    region: "US", tag: "founder" },
+  { name: "Tushar Bhendarkar — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-tushar" },
+  { name: "Vishal — Co-Founder",          role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-vishal" },
+];
+
+// Keypairs generated in Step 2, used in Step 5
+let _foundingKeypairs = []; // [{ member, keypair, tipId }]
+
+// ─── Step 2: Generate founding VP + member keypairs and embed in genesis ─────
 async function embedFoundingVPKey() {
-  head("STEP 2: Founding VP Keypair → Genesis Payload");
+  head("STEP 2: Founding VP & Member Keypairs → Genesis Payload");
 
   const vpKeysFile = path.join(DATA_DIR, "founding-vp-keys.json");
 
@@ -215,16 +224,37 @@ async function embedFoundingVPKey() {
     }
   }
 
-  // Clear Node.js require cache so genesis.js is re-read with the updated key
+  // Generate founding member keypairs and compute TIP-IDs for genesis_ring
+  info("Generating founding member keypairs...");
+  _foundingKeypairs = FOUNDING_MEMBERS.map(member => {
+    const keypair = generateMLDSAKeypair();
+    const tipId   = generateTIPID(member.region, keypair.publicKey);
+    return { member, keypair, tipId };
+  });
+  const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
+  ok(`Generated ${genesisRing.length} founding member keypairs`);
+
+  // Embed genesis_ring (TIP-IDs) into genesis source files
+  const ringJson = JSON.stringify(genesisRing);
+  // JS: genesis_ring: [...]
+  let jsSrc = fs.readFileSync(genesisJsFile, "utf8");
+  jsSrc = jsSrc.replace(/genesis_ring:\s*\[.*?\]/s, `genesis_ring: ${ringJson}`);
+  fs.writeFileSync(genesisJsFile, jsSrc);
+  // Python: "genesis_ring": [...]
+  let pySrc = fs.readFileSync(genesisPyFile, "utf8");
+  pySrc = pySrc.replace(/"genesis_ring":\s*\[.*?\]/s, `"genesis_ring": ${ringJson}`);
+  fs.writeFileSync(genesisPyFile, pySrc);
+  ok("Embedded genesis_ring (founding TIP-IDs) in genesis source files");
+
+  // Clear Node.js require cache so genesis.js is re-read with updated key + ring
   const genesisModule = require.resolve("../node/src/genesis");
   delete require.cache[genesisModule];
-  // Also clear constants/crypto since genesis depends on them
   Object.keys(require.cache).forEach(key => {
     if (key.includes("genesis")) delete require.cache[key];
   });
 
   // Compute and embed bootstrap tx signatures (founding VP signs both)
-  // Re-read genesis module with the updated VP key
+  // Re-read genesis module with the updated VP key + genesis_ring
   const freshGenesis = require("../node/src/genesis");
 
   // Sign genesis tx
@@ -392,51 +422,9 @@ async function registerFoundingVP(genesisBlock, vpKeypair) {
 async function createGenesisRing(vpRecord, vpKeypair) {
   head("STEP 5: Creating Genesis Ring (Founding Identities)");
 
-  const foundingMembers = [
-    {
-      name:    "Dinesh Mendhe — Founder",
-      role:    "Founder & Sole Inventor",
-      region:  "US",
-      tag:     "founder",
-    },
-    {
-      name:    "Tushar Bhendarkar — Co-Founder",
-      role:    "Co-Founder & Core Engineer",
-      region:  "US",
-      tag:     "cofounder-tushar",
-    },
-    {
-      name:    "Vishal — Co-Founder",
-      role:    "Co-Founder & Core Engineer",
-      region:  "US",
-      tag:     "cofounder-vishal",
-    },
-    {
-      name:    "The AI Lab — Protocol Bot",
-      role:    "Automated VP credential for testing",
-      region:  "US",
-      tag:     "system",
-    },
-    {
-      name:    "Test Journalist",
-      role:    "Sample founding journalist (replace with real credential)",
-      region:  "US",
-      tag:     "journalist",
-    },
-    {
-      name:    "Test Researcher",
-      role:    "Sample founding researcher (replace with real credential)",
-      region:  "US",
-      tag:     "researcher",
-    },
-  ];
-
   const identities = [];
 
-  for (const member of foundingMembers) {
-    const keypair   = generateMLDSAKeypair();
-    const rootKp    = generateSLHDSAKeypair();
-    const tipId     = generateTIPID(member.region, keypair.publicKey);
+  for (const { member, keypair, tipId } of _foundingKeypairs) {
 
     // Seed uses mock proof — production would call generateDedupProof() from shared/zk.js
     const mockDedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
@@ -461,11 +449,10 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           tip_id:            tipId,
           region:            member.region.toUpperCase(),
           public_key:        keypair.publicKey,
-          root_public_key:   rootKp.publicKey,
           vp_id:             vpRecord.vp_id,
           verification_tier: "T1",
           social_attested:   true,
-          founding:          false,
+          founding:          true,
           dedup_hash:        mockDedupHash,
           zk_proof:          mockZkProof,
           vp_signature:      vpSignature,
@@ -478,10 +465,9 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         tip_id:          tipId,
         region:          member.region.toUpperCase(),
         public_key:      keypair.publicKey,
-        root_public_key: rootKp.publicKey,
         vp_id:           vpRecord.vp_id,
         verification_tier: "T1",
-        founding:        false,
+        founding:        true,
         status:          "active",
         registered_at:   registeredAt,
         tx_id:           tx.tx_id,
@@ -493,8 +479,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         tip_id:          tipId,
         public_key:      keypair.publicKey,
         private_key:     keypair.privateKey,
-        root_public_key: rootKp.publicKey,
-        root_private_key: rootKp.privateKey,
         score:           550,
         registered_at:   registeredAt,
         vp_id:           vpRecord.vp_id,
@@ -517,8 +501,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           tip_id:          tipId,
           public_key:      keypair.publicKey,
           private_key:     keypair.privateKey,
-          root_public_key: rootKp.publicKey,
-          root_private_key: rootKp.privateKey,
           score:           550,
           registered_at:   new Date().toISOString(),
           vp_id:           vpRecord.vp_id,
@@ -533,7 +515,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       tip_id:          regResult.tip_id,
       public_key:      keypair.publicKey,
       private_key:     keypair.privateKey,  // Stored in seed output — replace with real keys in production
-      root_public_key: rootKp.publicKey,
       founding:        true,
       score:           regResult.score || 550,
       registered_at:   regResult.registered_at,
@@ -664,8 +645,10 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   const checks = [];
   const { mldsaVerify, verifyTxId } = require("../shared/crypto");
 
-  // Genesis hash integrity
-  const expectedHash = computeGenesisHash(GENESIS_PAYLOAD);
+  // Genesis hash integrity (use fresh require — top-level imports have stale payload)
+  Object.keys(require.cache).forEach(key => { if (key.includes("genesis")) delete require.cache[key]; });
+  const updatedGenesis = require("../node/src/genesis");
+  const expectedHash = updatedGenesis.computeGenesisHash(updatedGenesis.GENESIS_PAYLOAD);
   checks.push({
     name: "Genesis block hash",
     pass: genesisBlock.genesis_hash === expectedHash,
@@ -695,7 +678,6 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   });
 
   // VP public key matches genesis
-  const updatedGenesis = require("../node/src/genesis");
   const genesisVpKey = updatedGenesis.GENESIS_PAYLOAD.founding_vp.public_key;
   checks.push({
     name: "VP key matches genesis payload",
