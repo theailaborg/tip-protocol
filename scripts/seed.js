@@ -4,25 +4,24 @@
  * @description Production Seed Script — End-to-End Genesis Block and DAG Bootstrap
  *
  * This script:
- *   1. Generates the root SLH-DSA keypair for the Genesis Block
- *   2. Mints and signs the Genesis Block
+ *   1. Generates founding VP keypair + member keypairs, embeds in genesis
+ *   2. Mints and signs the Genesis Block (signed by founding VP)
  *   3. Registers The AI Lab as the founding Verification Provider
- *   4. Registers a set of founding identities (Genesis Ring)
- *   5. Registers sample content with all four origin types
- *   6. Verifies the full DAG state and prints a health report
+ *   3b. Registers the seed node in the DAG + writes keys to .env
+ *   4. Registers founding identities (Genesis Ring)
+ *   5. Registers sample content (dev only, skipped in production)
+ *   6. Verifies the full DAG state
+ *   7. Writes seed output files
  *
  * USAGE:
- *   # Full production seed (generates everything from scratch):
- *   node scripts/seed.js
+ *   # Full seed (generates everything from scratch):
+ *   node --experimental-vm-modules scripts/seed.js
  *
- *   # Only generate genesis keys (first step in production):
- *   node scripts/seed.js --genesis-keys-only
+ *   # Skip sample content:
+ *   node --experimental-vm-modules scripts/seed.js --no-sample-content
  *
  *   # Seed against a running node via REST API:
- *   node scripts/seed.js --node-url http://localhost:4000
- *
- *   # Seed directly into the DAG (no HTTP, for initial bootstrap):
- *   node scripts/seed.js --direct
+ *   node --experimental-vm-modules scripts/seed.js --node-url http://localhost:4000
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  */
@@ -84,13 +83,11 @@ const head  = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`);
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const genesisKeysOnly    = args.includes("--genesis-keys-only");
 const skipSampleContent  = args.includes("--no-sample-content") || process.env.NODE_ENV === "production";
 const nodeUrl            = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
 const useDirectMode      = args.includes("--direct") || !args.includes("--node-url");
 
 const DATA_DIR    = path.resolve(__dirname, "../genesis-data");
-const KEYS_FILE   = path.join(DATA_DIR, "genesis-keys.json");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
 const SEED_FILE   = path.join(DATA_DIR, "seed-output.json");
 
@@ -138,38 +135,6 @@ function get(url) {
   });
 }
 
-// ─── Step 1: Generate (or load) genesis root keypair ─────────────────────────
-async function generateGenesisKeys() {
-  head("STEP 1: Genesis Root Keypair (ML-DSA-65)");
-
-  if (fs.existsSync(KEYS_FILE)) {
-    warn("genesis-keys.json already exists — loading existing keys");
-    warn("Delete genesis-data/genesis-keys.json to regenerate from scratch");
-    const keys = JSON.parse(fs.readFileSync(KEYS_FILE, "utf8"));
-    label("Public key (first 32 chars)", keys.publicKey.slice(0, 32) + "...");
-    label("Key file", KEYS_FILE);
-    return keys;
-  }
-
-  info("Generating ML-DSA-65 root keypair...");
-  const keys = generateMLDSAKeypair();
-  label("Algorithm",                  keys.algorithm);
-  label("Public key (first 32 chars)", keys.publicKey.slice(0, 32) + "...");
-
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(KEYS_FILE, JSON.stringify({
-    algorithm:  keys.algorithm,
-    publicKey:  keys.publicKey,
-    privateKey: keys.privateKey, // KEEP SECURE — never commit to version control
-    created_at: new Date().toISOString(),
-    purpose:    "TIP™ Protocol Genesis Block root signing key",
-  }, null, 2), { mode: 0o600 }); // Restricted permissions
-
-  ok("Genesis root keypair generated and saved");
-  warn("SECURITY: genesis-keys.json is chmod 600. Back it up securely. NEVER commit it to git.");
-  return keys;
-}
-
 // ─── Founding members definition ─────────────────────────────────────────────
 const FOUNDING_MEMBERS = [
   { name: "Dinesh Mendhe — Founder",      role: "Founder & Sole Inventor",    region: "US", tag: "founder" },
@@ -180,9 +145,9 @@ const FOUNDING_MEMBERS = [
 // Keypairs generated in Step 2, used in Step 5
 let _foundingKeypairs = []; // [{ member, keypair, tipId }]
 
-// ─── Step 2: Generate founding VP + member keypairs and embed in genesis ─────
+// ─── Step 1: Generate founding VP + member keypairs and embed in genesis ─────
 async function embedFoundingVPKey() {
-  head("STEP 2: Founding VP & Member Keypairs → Genesis Payload");
+  head("STEP 1: Founding VP & Member Keypairs → Genesis Payload");
 
   const vpKeysFile = path.join(DATA_DIR, "founding-vp-keys.json");
 
@@ -297,8 +262,8 @@ async function embedFoundingVPKey() {
 }
 
 // ─── Step 3: Mint the Genesis Block ──────────────────────────────────────────
-async function mintGenesisBlock(rootKeys) {
-  head("STEP 3: Minting Genesis Block");
+async function mintGenesisBlock(vpKeypair) {
+  head("STEP 2: Minting Genesis Block");
 
   // Re-read genesis module after VP key embedding (cache was cleared)
   const updatedGenesis = require("../node/src/genesis");
@@ -326,8 +291,8 @@ async function mintGenesisBlock(rootKeys) {
   label("Timestamp",        GENESIS_TIMESTAMP);
   label("Issuer",           PROTOCOL.issuer);
 
-  info("Signing genesis block with ML-DSA-65 root key...");
-  const signature = mldsaSign(genesisHash, rootKeys.privateKey);
+  info("Signing genesis block with founding VP key...");
+  const signature = mldsaSign(genesisHash, vpKeypair.privateKey);
   ok("Signature computed");
 
   const genesisBlock = {
@@ -335,7 +300,7 @@ async function mintGenesisBlock(rootKeys) {
     genesis_hash:         genesisHash,
     canonical_hash:       shake256(canonicalJson(updatedPayload)),
     signed_at:            new Date().toISOString(),
-    signer_public_key:    rootKeys.publicKey,
+    signer_public_key:    vpKeypair.publicKey,
     signature,
     environment:          "production",
     build_info: {
@@ -380,7 +345,7 @@ function _nodeSigned(txBody) {
 
 // ─── Step 4: Register The AI Lab as founding VP ───────────────────────────────
 async function registerFoundingVP(genesisBlock, vpKeypair) {
-  head("STEP 4: Register The AI Lab Verification Provider");
+  head("STEP 3: Register The AI Lab Verification Provider");
 
   const foundingVP = getFoundingVP();
 
@@ -473,7 +438,7 @@ async function registerSeedNode(vpKeypair) {
 
 // ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
 async function createGenesisRing(vpRecord, vpKeypair) {
-  head("STEP 5: Creating Genesis Ring (Founding Identities)");
+  head("STEP 4: Creating Genesis Ring (Founding Identities)");
 
   const identities = [];
 
@@ -586,7 +551,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 
 // ─── Step 6: Register sample content (all four origin types) ──────────────────
 async function registerSampleContent(identities) {
-  head("STEP 6: Registering Sample Content (All Origin Types)");
+  head("STEP 5: Registering Sample Content (All Origin Types)");
 
   const author = identities.find(i => i.tag === "founder");
   if (!author) { warn("No founder identity found — skipping content registration"); return []; }
@@ -693,7 +658,7 @@ async function registerSampleContent(identities) {
 
 // ─── Step 7: Full DAG verification ────────────────────────────────────────────
 async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content) {
-  head("STEP 7: DAG State Verification");
+  head("STEP 6: DAG State Verification");
 
   const checks = [];
   const { mldsaVerify, verifyTxId } = require("../shared/crypto");
@@ -848,7 +813,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
 
 // ─── Step 8: Write seed output ────────────────────────────────────────────────
 async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content) {
-  head("STEP 8: Writing Seed Output");
+  head("STEP 7: Writing Seed Output");
 
   const output = {
     seed_version:     "2.0.0",
@@ -927,39 +892,32 @@ async function main() {
     // Initialize post-quantum crypto libraries
     await initCrypto();
 
-    // Step 1: Genesis root keys
-    const rootKeys = await generateGenesisKeys();
-    if (genesisKeysOnly) {
-      ok("Genesis keys generated. Run without --genesis-keys-only to continue.");
-      return;
-    }
-
-    // Step 2: Generate founding VP keypair and embed in genesis source files
+    // Step 1: Generate founding VP keypair and embed in genesis source files
     const vpKeypair = await embedFoundingVPKey();
 
-    // Step 3: Genesis block (uses updated genesis payload with VP public key)
-    const genesisBlock = await mintGenesisBlock(rootKeys);
+    // Step 2: Mint genesis block (signed by founding VP key)
+    const genesisBlock = await mintGenesisBlock(vpKeypair);
 
-    // Step 3b: Initialize real DAG for direct mode
+    // Step 2b: Initialize real DAG for direct mode
     if (useDirectMode) initDirectDAG();
 
-    // Step 4: Founding VP
+    // Step 3: Founding VP
     const { vpRecord } = await registerFoundingVP(genesisBlock, vpKeypair);
 
-    // Step 4b: Register seed node
+    // Step 3b: Register seed node
     const seedNode = await registerSeedNode(vpKeypair);
 
-    // Step 5: Genesis Ring
+    // Step 4: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
-    // Step 6: Sample content (skipped in production)
+    // Step 5: Sample content (skipped in production)
     const content = skipSampleContent ? [] : await registerSampleContent(identities);
     if (skipSampleContent) info("Sample content skipped (production mode)");
 
-    // Step 7: Verification
+    // Step 6: Verification
     const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
 
-    // Step 8: Write output
+    // Step 7: Write output
     const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content);
 
     // ── Final summary ────────────────────────────────────────────────────────
