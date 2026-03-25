@@ -689,8 +689,8 @@ describe("REST API", () => {
     });
     dag.setScore(authorId, 500, 0);
     const content = "This is a test article written by a human author with enough words to pass.";
-    const signedFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content };
-    const body = { ...signedFields, title: "Test Article", signature: signBody(signedFields, authorKp.privateKey) };
+    const sigFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
+    const body = { author_tip_id: authorId, origin_code: ORIGIN.OH, content, title: "Test Article", signature: signBody(sigFields, authorKp.privateKey) };
     const res = await request(app)
       .post("/v1/content/register")
       .send(body);
@@ -838,10 +838,10 @@ describe("Integration: Full Registration Flow", () => {
     // Step 3: Register Content (sign with the author's private key from identity registration)
     const authorPrivateKey = idRes.body.private_key;
     const content  = "An original human-written article about trust and identity on the internet.";
-    const contentFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content };
+    const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
     const contentRes = await request(app)
       .post("/v1/content/register")
-      .send({ ...contentFields, title: "Trust and Identity", signature: signBody(contentFields, authorPrivateKey) });
+      .send({ author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content, title: "Trust and Identity", signature: signBody(ctSigFields, authorPrivateKey) });
     expect([200, 201]).toContain(contentRes.status);
     const ctid = contentRes.body.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
@@ -956,10 +956,10 @@ describe("Gossip Broadcast Wiring", () => {
 
     broadcastCalls = [];
     const content  = "Gossip broadcast wiring test content article.";
-    const ctFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content };
+    const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
     const res = await request(gossipApp)
       .post("/v1/content/register")
-      .send({ ...ctFields, signature: signBody(ctFields, authorPrivKey) });
+      .send({ author_tip_id: tipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields, authorPrivKey) });
     expect([200, 201]).toContain(res.status);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
   });
@@ -1012,10 +1012,10 @@ describe("Gossip Broadcast Wiring", () => {
     const dAuthorPriv = idRes.body.private_key;
 
     const content  = "Dispute gossip broadcast test article.";
-    const ctFields = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content };
+    const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
-      .send({ ...ctFields, signature: signBody(ctFields, dAuthorPriv) });
+      .send({ author_tip_id: dTipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields2, dAuthorPriv) });
     const ctid = cRes.body.ctid;
 
     broadcastCalls = [];
@@ -1070,10 +1070,11 @@ describe("Semantic Dedup", () => {
     sdDag.setScore(sdTipId, 800, 0);
 
     // Register content
-    const ctFields = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: "Semantic dedup test content." };
+    const sdContent = "Semantic dedup test content.";
+    const sdCtSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: hashContent(sdContent) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ ...ctFields, signature: signBody(ctFields, sdAuthorPriv) });
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent, signature: signBody(sdCtSig, sdAuthorPriv) });
     sdCtid = ctRes.body.ctid;
   });
 
@@ -1099,10 +1100,11 @@ describe("Semantic Dedup", () => {
 
   test("9.3 First dispute succeeds", async () => {
     // Register second content for dispute test
-    const ctFields2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: "Second content for dispute dedup." };
+    const sdContent2 = "Second content for dispute dedup.";
+    const sdCtSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: hashContent(sdContent2) };
     const ctRes2 = await request(sdApp)
       .post("/v1/content/register")
-      .send({ ...ctFields2, signature: signBody(ctFields2, sdAuthorPriv) });
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent2, signature: signBody(sdCtSig2, sdAuthorPriv) });
     const ctid2 = ctRes2.body.ctid;
 
     const fields = { disputer_tip_id: sdTipId, reason: "test dispute" };

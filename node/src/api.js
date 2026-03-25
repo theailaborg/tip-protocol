@@ -383,32 +383,32 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
    * Body:
    *   author_tip_id  string  (required)
    *   origin_code    string  OH|AA|AG|MX (required)
-   *   content        string  (required for text; can be hash for binary)
-   *   content_hash   string  optional pre-computed SHAKE-256 hash
-   *   signature      string  ML-DSA-65 sig over shake256(canonical(body_without_signature))
+   *   content        string  (required)
+   *   signature      string  ML-DSA-65 sig over { author_tip_id, origin_code, content_hash }
    */
   app.post("/v1/content/register", (req, res) => {
     try {
-      const { author_tip_id, origin_code, content, content_hash: providedHash, signature } = req.body;
+      const { author_tip_id, origin_code, content, signature } = req.body;
 
       if (!author_tip_id)       return res.status(400).json({ error: "author_tip_id is required" });
       if (!origin_code)         return res.status(400).json({ error: "origin_code is required" });
       if (!ORIGIN[origin_code]) return res.status(400).json({ error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` });
-      if (!content && !providedHash) return res.status(400).json({ error: "content or content_hash is required" });
-      if (!signature)           return res.status(400).json({ error: "signature is required (ML-DSA-65 over full request body)" });
+      if (!content)             return res.status(400).json({ error: "content is required" });
+      if (!signature)           return res.status(400).json({ error: "signature is required" });
 
       const identity = dag.getIdentity(author_tip_id);
       if (!identity) return res.status(404).json({ error: "Author TIP-ID not found" });
       if (dag.isRevoked(author_tip_id)) return res.status(403).json({ error: "Author TIP-ID is revoked" });
 
-      // Verify body signature: author signs only the required fields
-      const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content", "content_hash"];
-      if (!verifyBodySignature(req.body, signature, identity.public_key, CONTENT_FIELDS)) {
+      // Server computes content_hash — client signs { author_tip_id, origin_code, content_hash }
+      const contentHash = hashContent(content);
+
+      // Verify body signature against server-computed content_hash
+      const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"];
+      const sigBody = { author_tip_id, origin_code, content_hash: contentHash };
+      if (!verifyBodySignature(sigBody, signature, identity.public_key, CONTENT_FIELDS)) {
         return res.status(403).json({ error: "Content signature verification failed — signature does not match author public key" });
       }
-
-      // Compute content hash
-      const contentHash = providedHash || hashContent(content || "");
       const perceptHash = content ? perceptualHashText(content) : null;
 
       // v2 FIX-03: Pre-scan (calibrated thresholds, flag-but-mint)

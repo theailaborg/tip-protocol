@@ -953,10 +953,10 @@ def test_api_endpoints() -> None:
 
     # 9.11 POST /v1/content/register
     content_text = "This is a test article for the Python API endpoint tests"
-    content_hash = hash_content(content_text)
-    ct_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": content_hash}
+    ct_sig_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
     st, body = _post(f"{base}/v1/content/register", {
-        **ct_fields, "signature": _sign_body(ct_fields, test_author_priv),
+        "author_tip_id": test_tip_id, "origin_code": "OH", "content": content_text,
+        "signature": _sign_body(ct_sig_fields, test_author_priv),
     })
     check("POST /v1/content/register returns 201",  st == 201)
     test_ctid = body.get("ctid", "")
@@ -1060,9 +1060,10 @@ def test_integration_flow() -> None:
     # Step 3: Register Content (sign with author's private key from identity registration)
     author_private_key = id_body["private_key"]
     content_text = "Integration test: original human content for full flow"
-    ct_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content": content_text}
+    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
     st, ct_body = _post(f"{base}/v1/content/register", {
-        **ct_fields, "signature": _sign_body(ct_fields, author_private_key),
+        "author_tip_id": tip_id, "origin_code": "OH", "content": content_text,
+        "signature": _sign_body(ct_sig_fields, author_private_key),
     })
     check("Integration: Content registered",   st == 201)
     ctid = ct_body["ctid"]
@@ -1176,9 +1177,10 @@ def test_gossip_broadcast_wiring() -> None:
     broadcast_calls.clear()
     author_priv = body.get("private_key", "")
     content_text = "Gossip broadcast wiring test content article."
-    ct_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content": content_text}
+    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
     st, body = _post(f"{base}/v1/content/register", {
-        **ct_fields, "signature": _sign_body(ct_fields, author_priv),
+        "author_tip_id": tip_id, "origin_code": "OH", "content": content_text,
+        "signature": _sign_body(ct_sig_fields, author_priv),
     })
     check("11.3 Content register broadcasts", st == 201 and len(broadcast_calls) >= 1)
     ctid = body.get("ctid", "")
