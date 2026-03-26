@@ -292,6 +292,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "REGISTER_CONTENT":
       return respond(registerContent(msg.payload));
 
+    // ── Creator: register with pre-decrypted key (WebAuthn flow) ─────────────
+    // The options/popup page decrypts the key via WebAuthn (window context only),
+    // then sends the raw private key hex here for hashing, signing, and POSTing.
+    case "REGISTER_CONTENT_WITH_KEY": {
+      return respond((async () => {
+        const { tipId, originCode, content, title, privateKeyHex } = msg.payload;
+        if (!privateKeyHex)  throw new Error("No private key provided.");
+        if (!originCode)     throw new Error("Origin code required.");
+        const stored = await chrome.storage.local.get(["tipId"]);
+        const contentToHash = title ? `${title}\n${content}` : content;
+        const contentHash   = await shake256(contentToHash);
+        const payload       = contentHash + originCode;
+        const signature     = await signData(payload, privateKeyHex);
+        return tipFetch("/v1/content/register", {
+          method: "POST",
+          body:   JSON.stringify({
+            author_tip_id:    tipId || stored.tipId,
+            origin_code:      originCode,
+            content:          contentToHash.slice(0, 10000),
+            content_hash:     contentHash,
+            author_signature: signature,
+            title:            title || "",
+          }),
+        });
+      })());
+    }
+
     // ── Creator: setup / import identity ─────────────────────────────────────
     case "SETUP_IDENTITY":
       return respond(setupIdentity(msg.payload));
@@ -322,7 +349,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // ── Creator: get stored identity ──────────────────────────────────────────
     case "GET_IDENTITY":
-      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate", "securityMethod"]));
+      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate", "securityMethod", "credentialId"]));
 
     // ── Creator: clear identity (logout) ─────────────────────────────────────
     case "CLEAR_IDENTITY":

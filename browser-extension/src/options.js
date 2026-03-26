@@ -58,9 +58,12 @@ async function webAuthnAuthenticate(credentialId) {
   };
 }
 
-async function _waKey(auth, salt, usage) {
-  const bytes = new Uint8Array([...auth.authenticatorData, ...auth.signature]);
-  const km    = await crypto.subtle.importKey("raw", bytes, "PBKDF2", false, ["deriveKey"]);
+// Key derivation uses the credentialId as stable PBKDF2 material.
+// WebAuthn authentication is the biometric gate; the credential ID
+// (a random 32-byte handle stored in chrome.storage) provides key material.
+// ECDSA signatures are non-deterministic so they cannot be used for key derivation.
+async function _waKey(credBytes, salt, usage) {
+  const km = await crypto.subtle.importKey("raw", credBytes, "PBKDF2", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
     { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
     km, { name: "AES-GCM", length: 256 }, false, [usage]
@@ -68,9 +71,10 @@ async function _waKey(auth, salt, usage) {
 }
 
 async function encryptKeyWithWebAuthn(privKeyHex, credentialId) {
-  const auth = await webAuthnAuthenticate(credentialId);
+  await webAuthnAuthenticate(credentialId); // biometric gate
+  const credBytes = new Uint8Array(_waB64ToBuf(credentialId));
   const salt = _waRandomBytes(16), iv = _waRandomBytes(12);
-  const key  = await _waKey(auth, salt, "encrypt");
+  const key  = await _waKey(credBytes, salt, "encrypt");
   const ct   = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(privKeyHex));
   const out  = new Uint8Array(16 + 12 + ct.byteLength);
   out.set(salt, 0); out.set(iv, 16); out.set(new Uint8Array(ct), 28);
@@ -78,9 +82,10 @@ async function encryptKeyWithWebAuthn(privKeyHex, credentialId) {
 }
 
 async function decryptKeyWithWebAuthn(encB64, credentialId) {
-  const auth = await webAuthnAuthenticate(credentialId);
+  await webAuthnAuthenticate(credentialId); // biometric gate
+  const credBytes = new Uint8Array(_waB64ToBuf(credentialId));
   const d    = Uint8Array.from(atob(encB64), c => c.charCodeAt(0));
-  const key  = await _waKey(auth, d.slice(0, 16), "decrypt");
+  const key  = await _waKey(credBytes, d.slice(0, 16), "decrypt");
   const pt   = await crypto.subtle.decrypt({ name: "AES-GCM", iv: d.slice(16, 28) }, key, d.slice(28));
   return new TextDecoder().decode(pt);
 }
@@ -467,6 +472,390 @@ async function loadNodeStatus() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// LABEL THE CONTENT — Platform → Type → Fields → Origin → Register
+// ══════════════════════════════════════════════════════════════════════════════
+
+const LC_PLATFORMS = [
+  {id:'instagram', name:'Instagram',  bg:'#E1306C', icon:'IG', types:['photo','carousel','reel','story']},
+  {id:'facebook',  name:'Facebook',   bg:'#1877F2', icon:'FB', types:['text','photo','video','audio','link']},
+  {id:'twitter',   name:'X/Twitter',  bg:'#111111', icon:'X',  types:['tweet','tweet_img','tweet_vid','thread']},
+  {id:'youtube',   name:'YouTube',    bg:'#FF0000', icon:'YT', types:['video']},
+  {id:'tiktok',    name:'TikTok',     bg:'#010101', icon:'TT', types:['video']},
+  {id:'linkedin',  name:'LinkedIn',   bg:'#0A66C2', icon:'in', types:['post','article','video','document']},
+  {id:'threads',   name:'Threads',    bg:'#000000', icon:'@',  types:['text','photo','video']},
+  {id:'podcast',   name:'Podcast',    bg:'#8940E8', icon:'PC', types:['audio']},
+  {id:'news',      name:'News Media', bg:'#0C1A3A', icon:'NM',
+   types:['news_article','photo_journalism','breaking_news','investigation','live_blog','opinion','wire_adapted','correction']},
+  {id:'blog',      name:'Blog',       bg:'#0D7490', icon:'BL', types:['article']},
+  {id:'other',     name:'Other',      bg:'#8895A7', icon:'…',  types:['text','photo','video','audio','article','document']},
+];
+
+const LC_TYPES = {
+  photo:           {label:'Photo',          sub:'Image + caption',           fields:['url','content'],                  contentLabel:'Caption',           urlLabel:'Image URL'},
+  carousel:        {label:'Carousel',       sub:'Multiple images + caption', fields:['content'],                        contentLabel:'Caption'},
+  reel:            {label:'Reel / Short',   sub:'Video URL + caption',       fields:['url','content'],                  contentLabel:'Caption',           urlLabel:'Video URL'},
+  story:           {label:'Story',          sub:'Image + text overlay',      fields:['content'],                        contentLabel:'Story text'},
+  text:            {label:'Text post',      sub:'Written post',              fields:['content'],                        contentLabel:'Post text',         placeholder:'Write your post...'},
+  video:           {label:'Video',          sub:'URL + title + description', fields:['url','title','content'],           contentLabel:'Description',       urlLabel:'Video URL'},
+  audio:           {label:'Audio',          sub:'Title + show notes',        fields:['title','content'],                 contentLabel:'Show notes',        titleRequired:true},
+  link:            {label:'Link + comment', sub:'URL + comment',             fields:['url','content'],                  contentLabel:'Your comment',      urlLabel:'Link URL'},
+  tweet:           {label:'Tweet',          sub:'Up to 280 chars',           fields:['content'],                        contentLabel:'Tweet',             placeholder:"What's on your mind?",   limit:280},
+  tweet_img:       {label:'Tweet + image',  sub:'Text + image',              fields:['url','content'],                  contentLabel:'Tweet',             urlLabel:'Image URL',   limit:280},
+  tweet_vid:       {label:'Tweet + video',  sub:'Text + video URL',          fields:['url','content'],                  contentLabel:'Tweet',             urlLabel:'Video URL',   limit:280},
+  thread:          {label:'Thread',         sub:'Connected posts',           fields:['thread']},
+  post:            {label:'Post',           sub:'Short-form update',         fields:['content'],                        contentLabel:'Post',              placeholder:'Write your post...'},
+  article:         {label:'Article',        sub:'URL + title + body',        fields:['url','title','content'],           contentLabel:'Article text',      urlLabel:'Article URL', urlHint:'Use the canonical permalink.'},
+  document:        {label:'Document',       sub:'Title + description',       fields:['title','content'],                 contentLabel:'Description',       titleRequired:true},
+  news_article:    {label:'News article',   sub:'Headline + URL + byline',   fields:['url','title','byline','content'],  contentLabel:'Summary / lead',    urlLabel:'Published URL',  titleLabel:'Headline'},
+  photo_journalism:{label:'Photo journalism',sub:'Image + cutline',          fields:['url','title','content'],           titleLabel:'Caption / cutline',   contentLabel:'Context',    urlLabel:'Image URL'},
+  breaking_news:   {label:'Breaking news',  sub:'Developing story',          fields:['url','title','byline','content'],  contentLabel:'What is confirmed', urlLabel:'Story URL',      titleLabel:'Headline'},
+  investigation:   {label:'Investigation',  sub:'Long-form / series',        fields:['url','title','byline','content'],  contentLabel:'Summary of findings',urlLabel:'Published URL', titleLabel:'Headline'},
+  live_blog:       {label:'Live blog',      sub:'Real-time coverage',        fields:['url','title','byline','thread'],   urlLabel:'Live blog URL',         titleLabel:'Event title'},
+  opinion:         {label:'Opinion',        sub:'Analysis / column',         fields:['url','title','byline','content'],  contentLabel:'Opening argument',  urlLabel:'Published URL',  titleLabel:'Headline'},
+  wire_adapted:    {label:'Wire adaptation',sub:'Wire source + your work',   fields:['url','title','byline','wire','content'], contentLabel:'What you added', urlLabel:'Your published URL', titleLabel:'Headline', forcedOrigins:['AA','MX']},
+  correction:      {label:'Correction',     sub:'Corrects previous CTID',    fields:['url','title','ctid_orig','content'], contentLabel:'What was corrected', urlLabel:'Corrected URL', titleLabel:'Corrected headline'},
+};
+
+const LC_ORIGIN_HINTS = {
+  OH:"✅ No AI tools used. If an AI classifier later challenges this, your trust score may be affected.",
+  AA:"✅ AI-Assisted: safe and honest. No penalty for over-declaring AI involvement.",
+  AG:"✅ AI-Generated: full transparency builds long-term trust with your audience.",
+  MX:"✅ Mixed: safe default when human and AI both contributed.",
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let lcPlatform   = null;
+let lcType       = null;
+let lcOrigin     = null;
+let lcThreadPosts = ['', ''];
+let lcSecMethod  = 'password';
+let lcCredId     = null;
+let lcCurrentCTID = '';
+
+function lcShow(id, v = true) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = v ? 'block' : 'none';
+}
+function lcErr(text) {
+  const el = document.getElementById('lc-err');
+  if (el) { el.textContent = text; el.style.display = text ? 'block' : 'none'; }
+}
+
+// ── Render platforms ──────────────────────────────────────────────────────────
+function lcRenderPlatforms() {
+  const grid = document.getElementById('lc-plat-grid');
+  if (!grid) return;
+  grid.innerHTML = LC_PLATFORMS.map(p => `
+    <button class="lc-plat-btn ${lcPlatform === p.id ? 'sel' : ''}" data-lcpid="${p.id}" aria-label="${p.name}">
+      <div class="lc-plat-icon" style="background:${p.bg};">${p.icon}</div>
+      <div class="lc-plat-name">${p.name}</div>
+    </button>
+  `).join('');
+  grid.querySelectorAll('.lc-plat-btn').forEach(btn => {
+    btn.addEventListener('click', () => lcSelectPlatform(btn.dataset.lcpid));
+  });
+}
+
+function lcSelectPlatform(pid) {
+  lcPlatform = pid; lcType = null; lcOrigin = null;
+  lcShow('lc-step1', false);
+  lcShow('lc-step2', true);
+  lcShow('lc-step3', false);
+  lcRenderTypes();
+}
+
+// ── Render types ──────────────────────────────────────────────────────────────
+function lcRenderTypes() {
+  const list = document.getElementById('lc-type-list');
+  const plat = LC_PLATFORMS.find(p => p.id === lcPlatform);
+  if (!list || !plat) return;
+  list.innerHTML = plat.types.map(tid => {
+    const t = LC_TYPES[tid]; if (!t) return '';
+    const bg = t.bg || '#8895A7';
+    return `<button class="lc-type-chip ${lcType === tid ? 'sel' : ''}" data-lctid="${tid}">
+      <div class="lc-type-icon" style="background:${bg}15;color:${bg};">${tid[0].toUpperCase()}</div>
+      <div>
+        <div class="lc-type-label">${t.label}</div>
+        <div class="lc-type-sub">${t.sub || ''}</div>
+      </div>
+    </button>`;
+  }).join('');
+  list.querySelectorAll('.lc-type-chip').forEach(btn => {
+    btn.addEventListener('click', () => lcSelectType(btn.dataset.lctid));
+  });
+}
+
+function lcSelectType(tid) {
+  lcType = tid; lcOrigin = null;
+  lcShow('lc-step2', false);
+  lcShow('lc-step3', true);
+  const type = LC_TYPES[tid]; if (!type) return;
+  lcUpdateBreadcrumb();
+  lcShowFields(type);
+  lcApplyWireRestriction(type);
+  lcUpdateAuthUI();
+  lcValidate();
+}
+
+// ── Breadcrumb ────────────────────────────────────────────────────────────────
+function lcUpdateBreadcrumb() {
+  const bc   = document.getElementById('lc-breadcrumb');
+  const plat = LC_PLATFORMS.find(p => p.id === lcPlatform);
+  const type = LC_TYPES[lcType];
+  if (!bc || !plat || !type) return;
+  bc.innerHTML = `
+    <div class="lc-bc-pill">
+      <span class="lc-bc-mini" style="background:${plat.bg};">${plat.icon}</span>
+      ${plat.name}
+    </div>
+    <span style="font-size:14px;color:#8895A7;">›</span>
+    <div class="lc-bc-pill">${type.label}</div>
+    <button class="lc-bc-change" id="lc-bc-change-type">Change</button>
+  `;
+  document.getElementById('lc-bc-change-type')?.addEventListener('click', () => {
+    lcShow('lc-step3', false);
+    lcShow('lc-step2', true);
+    lcRenderTypes();
+  });
+}
+
+// ── Field visibility ──────────────────────────────────────────────────────────
+const LC_ALL_FIELDS = ['url','title','byline','wire','ctid-orig','content','thread'];
+function lcShowFields(type) {
+  LC_ALL_FIELDS.forEach(f => lcShow(`lc-field-${f}`, false));
+  lcShow('lc-wire-origin-notice', false);
+  lcShow('lc-origin-section', false);
+
+  (type.fields || []).forEach(f => {
+    lcShow(`lc-field-${f === 'ctid_orig' ? 'ctid-orig' : f}`, true);
+  });
+  lcShow('lc-origin-section', true);
+
+  // Update labels
+  const urlLbl = document.getElementById('lc-url-label');
+  if (urlLbl) urlLbl.textContent = type.urlLabel || 'URL';
+  const urlHint = document.getElementById('lc-url-hint');
+  if (urlHint) urlHint.textContent = type.urlHint || 'Canonical URL is hashed, not the file.';
+  const titleLbl = document.getElementById('lc-title-label');
+  if (titleLbl) titleLbl.textContent = type.titleLabel || 'Title';
+  const titleReq = document.getElementById('lc-title-req');
+  if (titleReq) {
+    titleReq.textContent = type.titleRequired ? '*' : '(optional)';
+    titleReq.style.color = type.titleRequired ? '#C53030' : '#8895A7';
+  }
+  const contentLbl = document.getElementById('lc-content-label');
+  if (contentLbl) contentLbl.textContent = type.contentLabel || 'Description or Caption';
+  const contentTA = document.getElementById('lc-content-input');
+  if (contentTA) {
+    contentTA.placeholder = type.placeholder || 'Write here...';
+    contentTA.maxLength = type.limit || 5000;
+  }
+
+  // Reset origin buttons
+  document.querySelectorAll('#lc-origin-btns .lc-origin-btn').forEach(b => {
+    b.className = 'lc-origin-btn';
+  });
+  lcOrigin = null;
+  const hint = document.getElementById('lc-origin-hint');
+  if (hint) hint.style.display = 'none';
+
+  if (type.fields.includes('thread')) lcRenderThreadPosts();
+}
+
+// ── Thread posts ──────────────────────────────────────────────────────────────
+function lcRenderThreadPosts() {
+  const c = document.getElementById('lc-thread-posts');
+  if (!c) return;
+  c.innerHTML = lcThreadPosts.map((t, i) => `
+    <div class="lc-thread-row">
+      <div class="lc-thread-num">${i + 1}</div>
+      <textarea style="flex:1;padding:8px 10px;border:1px solid #E2E6EE;border-radius:7px;
+        font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical;min-height:60px;"
+        placeholder="Post ${i + 1}..." maxlength="280" data-lct="${i}">${t}</textarea>
+    </div>
+  `).join('');
+  c.querySelectorAll('textarea[data-lct]').forEach(ta => {
+    ta.addEventListener('input', () => {
+      lcThreadPosts[+ta.dataset.lct] = ta.value;
+      lcValidate();
+    });
+  });
+}
+
+document.getElementById('lc-add-thread-post')?.addEventListener('click', () => {
+  lcThreadPosts.push('');
+  lcRenderThreadPosts();
+});
+
+// ── Wire restriction ──────────────────────────────────────────────────────────
+function lcApplyWireRestriction(type) {
+  const forced = type.forcedOrigins;
+  lcShow('lc-wire-origin-notice', !!forced);
+  document.querySelectorAll('#lc-origin-btns .lc-origin-btn').forEach(btn => {
+    btn.classList.toggle('blocked', !!(forced && !forced.includes(btn.dataset.code)));
+  });
+  if (lcOrigin && forced && !forced.includes(lcOrigin)) lcOrigin = null;
+}
+
+// ── Change platform button ────────────────────────────────────────────────────
+document.getElementById('lc-change-plat')?.addEventListener('click', () => {
+  lcPlatform = null; lcType = null;
+  lcShow('lc-step2', false);
+  lcShow('lc-step1', true);
+  lcRenderPlatforms();
+});
+
+// ── Origin buttons ────────────────────────────────────────────────────────────
+document.querySelectorAll('#lc-origin-btns .lc-origin-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.classList.contains('blocked')) return;
+    document.querySelectorAll('#lc-origin-btns .lc-origin-btn').forEach(b => {
+      b.className = 'lc-origin-btn' + (b.classList.contains('blocked') ? ' blocked' : '');
+    });
+    lcOrigin = btn.dataset.code;
+    btn.classList.add(`sel-${lcOrigin}`);
+    const hint = document.getElementById('lc-origin-hint');
+    if (hint) { hint.textContent = LC_ORIGIN_HINTS[lcOrigin] || ''; hint.style.display = 'block'; }
+    lcValidate();
+  });
+});
+
+// ── Auth UI ───────────────────────────────────────────────────────────────────
+function lcUpdateAuthUI() {
+  const isWA = lcSecMethod === 'webauthn' && !!lcCredId;
+  lcShow('lc-pw-field', !isWA);
+  lcShow('lc-wa-note', isWA);
+}
+
+// ── Build content string ──────────────────────────────────────────────────────
+function lcBuildContent() {
+  if (!lcType) return '';
+  const type = LC_TYPES[lcType]; if (!type) return '';
+  const parts = [];
+  const f = type.fields || [];
+  if (f.includes('url'))       { const v = document.getElementById('lc-url-input')?.value.trim();       if (v) parts.push(v); }
+  if (f.includes('title'))     { const v = document.getElementById('lc-title-input')?.value.trim();     if (v) parts.push(v); }
+  if (f.includes('byline'))    { const v = document.getElementById('lc-byline-input')?.value.trim();    if (v) parts.push(v); }
+  if (f.includes('wire'))      { const v = document.getElementById('lc-wire-input')?.value.trim();      if (v) parts.push(v); }
+  if (f.includes('ctid_orig')) { const v = document.getElementById('lc-ctid-orig-input')?.value.trim(); if (v) parts.push(v); }
+  if (f.includes('content'))   { const v = document.getElementById('lc-content-input')?.value.trim();   if (v) parts.push(v); }
+  if (f.includes('thread'))    { const j = lcThreadPosts.filter(Boolean).join('\n---\n'); if (j) parts.push(j); }
+  return parts.join('\n');
+}
+
+// ── Validate ──────────────────────────────────────────────────────────────────
+function lcValidate() {
+  const btn = document.getElementById('lc-register-btn');
+  if (!btn) return;
+  if (!lcType)             { btn.disabled = true; btn.textContent = 'Select content type to continue'; return; }
+  if (!lcBuildContent())   { btn.disabled = true; btn.textContent = 'Add content to continue'; return; }
+  if (!lcOrigin)           { btn.disabled = true; btn.textContent = 'Select an origin code to continue'; return; }
+  btn.disabled = false;
+  btn.textContent = `Register as ${lcOrigin}`;
+}
+
+// Bind field inputs to validate
+['lc-url-input','lc-title-input','lc-byline-input','lc-content-input','lc-ctid-orig-input'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', lcValidate);
+});
+document.getElementById('lc-wire-input')?.addEventListener('change', lcValidate);
+
+// ── Register ──────────────────────────────────────────────────────────────────
+document.getElementById('lc-register-btn')?.addEventListener('click', async () => {
+  if (!lcOrigin) return;
+  const content = lcBuildContent();
+  const title   = document.getElementById('lc-title-input')?.value.trim() || '';
+  if (!content) { lcErr('Add content to register.'); return; }
+
+  const btn = document.getElementById('lc-register-btn');
+  btn.disabled = true; btn.textContent = '⏳ Registering...';
+  lcErr('');
+
+  let res;
+  try {
+    if (lcSecMethod === 'webauthn' && lcCredId) {
+      const stored = await chrome.storage.local.get(['encryptedKey', 'tipId']);
+      // decryptKeyWithWebAuthn triggers the system passkey popup, then decrypts
+      const privateKeyHex = await decryptKeyWithWebAuthn(stored.encryptedKey, lcCredId);
+      res = await msg('REGISTER_CONTENT_WITH_KEY', {
+        payload: { originCode: lcOrigin, content, title, privateKeyHex },
+      });
+    } else {
+      const password = document.getElementById('lc-password')?.value || '';
+      if (!password) { lcErr('Enter your signing password.'); btn.disabled = false; btn.textContent = `Register as ${lcOrigin}`; return; }
+      res = await msg('REGISTER_CONTENT', { payload: { originCode: lcOrigin, content, title, password } });
+    }
+  } catch (e) {
+    if (e.name === 'NotAllowedError') {
+      lcErr('Authentication cancelled. Try again.');
+    } else if (e.name === 'OperationError') {
+      lcErr('Key decryption failed. Please re-register your TIP ID in Settings → Setup tab.');
+    } else {
+      lcErr(e.message || 'Authentication failed.');
+    }
+    btn.disabled = false; btn.textContent = `Register as ${lcOrigin}`;
+    return;
+  }
+
+  if (res?.ok && res.data?.ctid) {
+    lcCurrentCTID = res.data.ctid;
+    document.getElementById('lc-ctid-display').textContent = lcCurrentCTID;
+    lcShow('lc-step3', false);
+    lcShow('lc-success', true);
+    navigator.clipboard?.writeText(lcCurrentCTID).catch(() => {});
+    toast('✓ Registered! CTID copied to clipboard.');
+  } else {
+    lcErr(res?.error || 'Registration failed. Check Settings → TIP Node.');
+    btn.disabled = false; btn.textContent = `Register as ${lcOrigin}`;
+  }
+});
+
+// ── Copy CTID ─────────────────────────────────────────────────────────────────
+document.getElementById('lc-copy-ctid')?.addEventListener('click', () => {
+  navigator.clipboard?.writeText(lcCurrentCTID).then(() => {
+    const btn = document.getElementById('lc-copy-ctid');
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => { btn.textContent = '📋 Copy CTID to clipboard'; }, 2000);
+  });
+});
+
+// ── Register another ──────────────────────────────────────────────────────────
+document.getElementById('lc-register-another')?.addEventListener('click', () => {
+  lcPlatform = null; lcType = null; lcOrigin = null;
+  lcThreadPosts = ['', ''];
+  lcCurrentCTID = '';
+  ['lc-url-input','lc-title-input','lc-byline-input','lc-content-input','lc-ctid-orig-input'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  lcShow('lc-success', false);
+  lcShow('lc-step3', false);
+  lcShow('lc-step2', false);
+  lcShow('lc-step1', true);
+  lcRenderPlatforms();
+});
+
+// ── Init Label Content ────────────────────────────────────────────────────────
+async function initLabelContent() {
+  const idRes = await msg('GET_IDENTITY');
+  if (!idRes?.ok || !idRes.data?.setupComplete) {
+    lcShow('lc-no-id', true);
+    lcShow('lc-form', false);
+    return;
+  }
+  lcSecMethod = idRes.data.securityMethod || 'password';
+  lcCredId    = idRes.data.credentialId   || null;
+  const tipId = idRes.data.tipId || '';
+  const el = document.getElementById('lc-tipid');
+  if (el) el.textContent = tipId;
+  lcShow('lc-no-id', false);
+  lcShow('lc-form', true);
+  lcUpdateAuthUI();
+  lcRenderPlatforms();
+  lcValidate();
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 loadIdentity();
 loadNodeStatus();
+initLabelContent();
