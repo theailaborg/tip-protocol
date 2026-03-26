@@ -23,8 +23,7 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
-import { buildContentString } from "./tip-types.js";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
