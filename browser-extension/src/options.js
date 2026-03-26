@@ -1,5 +1,90 @@
 "use strict";
 
+// ── WebAuthn helpers ──────────────────────────────────────────────────────────
+// RP ID: window.location.hostname resolves to the extension ID in Chrome
+// extension pages (chrome-extension://[id]/options.html), which is a valid
+// WebAuthn RP ID for credentials scoped to this extension.
+const WA_RP_ID = window.location.hostname || "theailab.org";
+
+function _waRandomBytes(n) {
+  return crypto.getRandomValues(new Uint8Array(n));
+}
+function _waBufToB64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function _waB64ToBuf(b64) {
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+}
+
+function isWebAuthnSupported() {
+  return !!(window.PublicKeyCredential && navigator.credentials?.create);
+}
+async function isPlatformAuthenticatorAvailable() {
+  if (!isWebAuthnSupported()) return false;
+  try { return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); }
+  catch { return false; }
+}
+
+/**
+ * Create a new passkey.
+ * No authenticatorAttachment restriction — the OS shows ALL options:
+ * Face ID / Touch ID, Windows Hello, AND "Use a phone / security key" (QR code).
+ */
+async function webAuthnRegister(userId, displayName) {
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge:   _waRandomBytes(32),
+    rp:          { id: WA_RP_ID, name: "TIP Protocol — The AI Lab" },
+    user:        { id: new TextEncoder().encode(userId), name: userId, displayName: displayName || "TIP Creator" },
+    pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
+    authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
+    timeout:     120000,
+    attestation: "none",
+  }});
+  return { credentialId: _waBufToB64(cred.rawId) };
+}
+
+async function webAuthnAuthenticate(credentialId) {
+  const allowCreds = credentialId ? [{ id: _waB64ToBuf(credentialId), type: "public-key" }] : [];
+  const assertion  = await navigator.credentials.get({ publicKey: {
+    challenge:        _waRandomBytes(32),
+    rpId:             WA_RP_ID,
+    userVerification: "required",
+    allowCredentials: allowCreds,
+    timeout:          120000,
+  }});
+  return {
+    authenticatorData: new Uint8Array(assertion.response.authenticatorData),
+    signature:         new Uint8Array(assertion.response.signature),
+  };
+}
+
+async function _waKey(auth, salt, usage) {
+  const bytes = new Uint8Array([...auth.authenticatorData, ...auth.signature]);
+  const km    = await crypto.subtle.importKey("raw", bytes, "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    km, { name: "AES-GCM", length: 256 }, false, [usage]
+  );
+}
+
+async function encryptKeyWithWebAuthn(privKeyHex, credentialId) {
+  const auth = await webAuthnAuthenticate(credentialId);
+  const salt = _waRandomBytes(16), iv = _waRandomBytes(12);
+  const key  = await _waKey(auth, salt, "encrypt");
+  const ct   = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(privKeyHex));
+  const out  = new Uint8Array(16 + 12 + ct.byteLength);
+  out.set(salt, 0); out.set(iv, 16); out.set(new Uint8Array(ct), 28);
+  return btoa(String.fromCharCode(...out));
+}
+
+async function decryptKeyWithWebAuthn(encB64, credentialId) {
+  const auth = await webAuthnAuthenticate(credentialId);
+  const d    = Uint8Array.from(atob(encB64), c => c.charCodeAt(0));
+  const key  = await _waKey(auth, d.slice(0, 16), "decrypt");
+  const pt   = await crypto.subtle.decrypt({ name: "AES-GCM", iv: d.slice(16, 28) }, key, d.slice(28));
+  return new TextDecoder().decode(pt);
+}
+
 // ── FAQ data ──────────────────────────────────────────────────────────────────
 const FAQS = [
   { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted with AES-256-GCM using a key derived from your password via PBKDF2. Only the encrypted ciphertext is stored on this device. The TIP node receives only a cryptographic signature — it cannot reverse-engineer your private key from it." },
@@ -83,6 +168,11 @@ async function loadIdentity() {
     const date = res.data.setupDate ? new Date(res.data.setupDate).toLocaleDateString() : "";
     document.getElementById("display-setup-date").textContent = `Connected ${date}`;
     document.getElementById("pubkey-display").textContent = res.data.publicKey || "(key is stored encrypted)";
+    const secEl = document.getElementById("display-security-method");
+    if (secEl) {
+      const isWA = res.data.securityMethod === "webauthn";
+      secEl.textContent = isWA ? "✓ Key secured with passkey" : "✓ Key secured with AES-256-GCM";
+    }
 
     // Fetch live score
     if (res.data.tipId) {
@@ -111,58 +201,158 @@ async function loadIdentity() {
   }
 }
 
-// ── Connect TIP-ID ─────────────────────────────────────────────────────────────
-document.getElementById("setup-save-btn").addEventListener("click", async () => {
-  const tipId    = document.getElementById("setup-tipid").value.trim();
-  const privKey  = document.getElementById("setup-privkey").value.trim();
-  const password = document.getElementById("setup-password").value;
-  const confirm  = document.getElementById("setup-password-confirm").value;
-  const errEl    = document.getElementById("setup-error");
+// ── Setup step helpers ────────────────────────────────────────────────────────
 
-  errEl.style.display = "none";
-  if (!tipId)    { errEl.textContent = "TIP-ID is required."; errEl.style.display = "block"; return; }
-  if (!tipId.startsWith("tip://id/")) { errEl.textContent = 'TIP-ID must start with "tip://id/".'; errEl.style.display="block"; return; }
-  if (!privKey)  { errEl.textContent = "Private key is required."; errEl.style.display = "block"; return; }
-  if (!password) { errEl.textContent = "Password is required."; errEl.style.display = "block"; return; }
-  if (password !== confirm) { errEl.textContent = "Passwords do not match."; errEl.style.display = "block"; return; }
-  if (password.length < 8)  { errEl.textContent = "Password must be at least 8 characters."; errEl.style.display = "block"; return; }
+// Temp store: private key passes from step 1 → step 2 in memory only (never stored raw)
+let _tmpPrivKey = null;
+let _tmpPubKey  = null;
 
-  document.getElementById("setup-save-btn").textContent = "Saving...";
-  document.getElementById("setup-save-btn").disabled = true;
+function goSetupStep(step) {
+  document.getElementById("ss1").style.display = step === 1 ? "block" : "none";
+  document.getElementById("ss2").style.display = step === 2 ? "block" : "none";
+  // Update step indicators
+  document.getElementById("sp1").style.background = step >= 1 ? "#B8942E" : "#E2E6EE";
+  document.getElementById("sp1").style.color      = step >= 1 ? "#fff"    : "#8895A7";
+  document.getElementById("sp2").style.background = step >= 2 ? "#B8942E" : "#E2E6EE";
+  document.getElementById("sp2").style.color      = step >= 2 ? "#fff"    : "#8895A7";
+  document.getElementById("sl1").style.background = step >= 2 ? "#B8942E" : "#E2E6EE";
+}
 
-  const res = await msg("SETUP_IDENTITY", { payload: { tipId, existingPrivateKey: privKey, password } });
-  if (res?.ok) {
-    toast("✓ TIP-ID connected successfully!");
-    loadIdentity();
-  } else {
-    errEl.textContent = res?.error || "Failed to save. Try again.";
-    errEl.style.display = "block";
-    document.getElementById("setup-save-btn").textContent = "Connect TIP-ID";
-    document.getElementById("setup-save-btn").disabled = false;
+function showSetupErr(text) {
+  const el = document.getElementById("setup-error");
+  el.textContent = text; el.style.display = text ? "block" : "none";
+}
+function showStep2Err(text) {
+  const el = document.getElementById("s2-err");
+  el.textContent = text; el.style.display = text ? "block" : "none";
+}
+
+// Check passkey availability on load
+(async () => {
+  if (!isWebAuthnSupported()) {
+    document.getElementById("ss2-wa").style.opacity = "0.5";
+    document.getElementById("s2-wa-btn").disabled = true;
+    document.getElementById("wa-unavailable").style.display = "block";
+  }
+})();
+
+// ── Step 1 → "Continue" ───────────────────────────────────────────────────────
+document.getElementById("s1-next").addEventListener("click", () => {
+  const tipId   = document.getElementById("setup-tipid").value.trim();
+  const privKey = document.getElementById("setup-privkey").value.trim();
+  showSetupErr("");
+  if (!tipId)   { showSetupErr("TIP-ID is required."); return; }
+  if (!tipId.startsWith("tip://id/")) { showSetupErr('TIP-ID must start with "tip://id/".'); return; }
+  if (!privKey) { showSetupErr("Private key is required."); return; }
+  _tmpPrivKey = privKey;
+  _tmpPubKey  = null;  // public key not needed for password path; set for generated keys
+  goSetupStep(2);
+});
+
+// ── Step 1 → "Generate a test keypair" (s1-gen equivalent) ───────────────────
+document.getElementById("generate-keypair-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("generate-keypair-btn");
+  btn.textContent = "Generating…"; btn.disabled = true;
+  showSetupErr("");
+  try {
+    // Generate keypair via background (crypto.js)
+    const kpRes = await msg("GENERATE_KEYPAIR");
+    if (!kpRes?.ok) throw new Error(kpRes?.error || "Keypair generation failed.");
+    const { privateKey, publicKey } = kpRes.data;
+
+    // Compute TIP-ID from public key
+    const tidRes = await msg("COMPUTE_TIP_ID", { region: "US", publicKey });
+    const tipId  = tidRes?.ok ? tidRes.data : null;
+
+    // Fill both fields — exactly like s1-gen in standalone.html
+    document.getElementById("setup-tipid").value   = tipId  || "(pending VP registration)";
+    document.getElementById("setup-privkey").value = privateKey;
+
+    // Keep in memory for step 2
+    _tmpPrivKey = privateKey;
+    _tmpPubKey  = publicKey;
+
+    toast("✓ Test keypair generated. Devnet use only.");
+    btn.textContent = "✓ Generated";
+  } catch (e) {
+    showSetupErr("Failed: " + e.message);
+    btn.textContent = "Generate a test keypair (devnet only) →";
+  } finally {
+    btn.disabled = false;
   }
 });
 
-// ── Generate keypair ───────────────────────────────────────────────────────────
-document.getElementById("generate-keypair-btn").addEventListener("click", async () => {
+// ── Step 2 → Back ─────────────────────────────────────────────────────────────
+document.getElementById("s2-back-btn").addEventListener("click", () => {
+  _tmpPrivKey = null; _tmpPubKey = null;
+  showStep2Err("");
+  goSetupStep(1);
+});
+
+// ── Step 2 → WebAuthn ("Use Face ID / Fingerprint") ──────────────────────────
+document.getElementById("s2-wa-btn").addEventListener("click", async () => {
+  const btn   = document.getElementById("s2-wa-btn");
+  const tipId = document.getElementById("setup-tipid").value.trim();
+  btn.textContent = "Waiting for passkey…"; btn.disabled = true;
+  showStep2Err("");
+  try {
+    const privKey = _tmpPrivKey;
+    if (!privKey) throw new Error("No private key in memory. Go back to step 1.");
+
+    // Register WebAuthn credential — browser shows native OS dialog here
+    // (Face ID / Touch ID / "Use a phone, tablet or security key" QR code)
+    const { credentialId } = await webAuthnRegister(tipId, "TIP Creator");
+
+    btn.textContent = "Encrypting key…";
+    const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId);
+    _tmpPrivKey = null;  // clear from memory immediately after encryption
+
+    const publicKey = _tmpPubKey || "imported";
+    const res = await msg("SETUP_IDENTITY_WEBAUTHN", {
+      payload: { tipId, publicKey, encryptedKey, credentialId },
+    });
+    if (!res?.ok) throw new Error(res?.error || "Failed to save.");
+    toast("✓ Passkey registered! Your TIP-ID is connected.");
+    loadIdentity();
+  } catch (e) {
+    _tmpPrivKey = null;
+    const m = e.name === "NotAllowedError" ? "Passkey cancelled. Try again." : e.message;
+    showStep2Err(m);
+  } finally {
+    btn.textContent = "Use Face ID / Fingerprint"; btn.disabled = false;
+  }
+});
+
+// ── Step 2 → Password ("Use Password") ───────────────────────────────────────
+document.getElementById("setup-save-btn").addEventListener("click", async () => {
+  const tipId    = document.getElementById("setup-tipid").value.trim();
   const password = document.getElementById("setup-password").value;
   const confirm  = document.getElementById("setup-password-confirm").value;
-  const errEl    = document.getElementById("setup-error");
+  const btn      = document.getElementById("setup-save-btn");
+  showStep2Err("");
 
-  if (!password || password !== confirm || password.length < 8) {
-    errEl.textContent = "Set a valid password (min 8 chars, must match) before generating a keypair.";
-    errEl.style.display = "block";
-    return;
-  }
-  errEl.style.display = "none";
-  document.getElementById("generate-keypair-btn").textContent = "Generating...";
+  if (!password)            { showStep2Err("Password is required."); return; }
+  if (password.length < 8)  { showStep2Err("Password must be at least 8 characters."); return; }
+  if (password !== confirm)  { showStep2Err("Passwords do not match."); return; }
 
-  const res = await msg("SETUP_IDENTITY", { payload: { tipId: "", password } });
-  if (res?.ok) {
-    document.getElementById("setup-tipid").value = res.data?.tipId || "(pending VP registration)";
-    toast("✓ Keypair generated. Complete VP registration to get your TIP-ID.");
+  btn.textContent = "Saving…"; btn.disabled = true;
+  try {
+    const privKey   = _tmpPrivKey;
+    if (!privKey) throw new Error("No private key in memory. Go back to step 1.");
+    const publicKey = _tmpPubKey || "imported";
+    _tmpPrivKey = null;  // clear before async call
+
+    const res = await msg("SETUP_IDENTITY", {
+      payload: { tipId, existingPrivateKey: privKey, password, publicKey },
+    });
+    if (!res?.ok) throw new Error(res?.error || "Failed to save. Try again.");
+    toast("✓ TIP-ID connected successfully!");
     loadIdentity();
+  } catch (e) {
+    _tmpPrivKey = null;
+    showStep2Err(e.message);
+    btn.textContent = "Use Password"; btn.disabled = false;
   }
-  document.getElementById("generate-keypair-btn").textContent = "Generate new keypair";
 });
 
 // ── Disconnect ─────────────────────────────────────────────────────────────────

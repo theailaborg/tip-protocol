@@ -201,6 +201,15 @@
     }
     @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
+    /* ── Link button ── */
+    .btn-link {
+      background: none; border: none; padding: 0;
+      color: #B8942E; font-family: inherit; font-size: 12px;
+      cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+      display: inline-block;
+    }
+    .btn-link:hover { color: #9A7A24; }
+
     /* ── Monospace code ── */
     code {
       font-family: 'JetBrains Mono', monospace;
@@ -292,65 +301,126 @@
         <div class="card">
           <div class="card-title">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B8942E" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            Connect your TIP-ID
-          </div>
-          <div class="card-sub">
-            Enter your TIP-ID and the private key you received from your Verification Provider.
-            Your private key is encrypted with your password and stored only on this device.
+            Set Up Identity
           </div>
 
-          <div class="field">
-            <div class="field-label">Your TIP-ID <span class="required">*</span></div>
-            <input type="text" id="setup-tipid"
-              placeholder="tip://id/US-a3f8c91b2d4e7021"/>
-            <div class="field-hint">Format: <code>tip://id/[REGION]-[16 hex chars]</code></div>
+          <!-- Step progress indicator -->
+          <div style="display:flex;align-items:center;gap:0;margin-bottom:20px;">
+            <div id="sp1" style="width:28px;height:28px;border-radius:50%;background:#B8942E;color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
+            <div id="sl1" style="flex:1;height:2px;background:#E2E6EE;"></div>
+            <div id="sp2" style="width:28px;height:28px;border-radius:50%;background:#E2E6EE;color:#8895A7;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
           </div>
 
-          <div class="field">
-            <div class="field-label">
-              Private Key (hex) <span class="required">*</span>
-              <span class="badge">stays on this device</span>
+          <!-- ── Step 1: TIP-ID + Private Key ── -->
+          <div id="ss1">
+            <div class="card-sub" style="margin-bottom:14px;">
+              Enter your TIP-ID and private key from your Verification Provider.
             </div>
-            <input type="password" id="setup-privkey"
-              placeholder="Paste your ML-DSA-65 private key hex..."/>
-            <div class="field-hint">
-              Your private key from your VP registration. It will be encrypted with your password below
-              and never transmitted anywhere.
+            <div class="alert alert-info" style="margin-bottom:14px;">
+              <strong>🆔 No TIP-ID yet?</strong> Get verified free at
+              <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. Takes about 5 minutes.
+            </div>
+
+            <div class="field">
+              <div class="field-label">Your TIP-ID <span class="required">*</span></div>
+              <input type="text" id="setup-tipid" placeholder="tip://id/US-a3f8c91b2d4e7021"
+                autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"/>
+              <div class="field-hint">Starts with <code>tip://id/</code></div>
+            </div>
+
+            <div class="field">
+              <div class="field-label">
+                Private Signing Key <span class="required">*</span>
+                <span class="badge">stays on this device</span>
+              </div>
+              <input type="password" id="setup-privkey"
+                placeholder="Paste your private key hex…" autocomplete="new-password"/>
+              <div class="field-hint">Encrypted locally. Never transmitted.</div>
+            </div>
+
+            <div id="setup-error" class="alert alert-danger" style="display:none;"></div>
+
+            <button class="btn-primary" id="s1-next" style="width:100%;justify-content:center;">
+              Continue →
+            </button>
+            <div style="text-align:center;margin-top:12px;display:flex;flex-direction:column;gap:6px;">
+              <button id="generate-keypair-btn" class="btn-link" style="font-size:13px;">
+                Generate a test keypair (devnet only) →
+              </button>
+            </div>
+            <div class="field-hint" style="margin-top:10px;">
+              ⚠️ <strong>No TIP-ID yet?</strong> Generate a keypair for development/testing.
+              For a real verified TIP-ID, apply at
+              <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified →</a>
             </div>
           </div>
 
-          <div class="field">
-            <div class="field-label">Signing Password <span class="required">*</span></div>
-            <input type="password" id="setup-password"
-              placeholder="Choose a strong password"
-              oninput="updateStrength(this.value)"/>
-            <div class="strength-bar"><div class="strength-fill" id="strength-fill"></div></div>
-            <div class="field-hint" id="strength-label">Choose a password to encrypt your signing key.</div>
-          </div>
+          <!-- ── Step 2: Secure Your Key ── -->
+          <div id="ss2" style="display:none;">
+            <div class="card-sub" style="margin-bottom:16px;">
+              Choose how to protect your private signing key on this device.
+            </div>
 
-          <div class="field">
-            <div class="field-label">Confirm Password <span class="required">*</span></div>
-            <input type="password" id="setup-password-confirm"
-              placeholder="Repeat your password"/>
-          </div>
+            <!-- Passkey option -->
+            <div id="ss2-wa" style="border:2px solid #1A8A5C;border-radius:10px;padding:16px;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+                <div style="width:40px;height:40px;border-radius:10px;background:rgba(26,138,92,.1);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;">🔐</div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:700;color:#0C1A3A;">Face ID / Fingerprint</div>
+                  <div style="font-size:11px;color:#8895A7;margin-top:2px;">or phone / security key</div>
+                </div>
+                <span class="badge" style="background:#1A8A5C15;color:#1A8A5C;border:1px solid #1A8A5C30;">Recommended</span>
+              </div>
+              <div style="font-size:12px;color:#4A5568;line-height:1.6;margin-bottom:12px;">
+                Protected by your device biometrics — the same hardware that protects Apple Pay and Google Pay.
+                Choose "Use a phone, tablet or security key" to scan a QR code with your phone.
+              </div>
+              <button class="btn-primary" id="s2-wa-btn" style="width:100%;justify-content:center;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Use Face ID / Fingerprint
+              </button>
+              <div id="wa-unavailable" class="alert alert-info" style="display:none;margin-top:8px;font-size:12px;">
+                Passkeys are not supported on this device. Use a password below.
+              </div>
+            </div>
 
-          <div id="setup-error" class="alert alert-danger" style="display:none;"></div>
+            <!-- Divider -->
+            <div style="display:flex;align-items:center;gap:10px;margin:14px 0;">
+              <div style="flex:1;height:1px;background:#E2E6EE;"></div>
+              <span style="font-size:11px;color:#8895A7;font-weight:500;">or use a password</span>
+              <div style="flex:1;height:1px;background:#E2E6EE;"></div>
+            </div>
 
-          <div class="btn-row">
-            <button class="btn-primary" id="setup-save-btn">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              Connect TIP-ID
+            <!-- Password option -->
+            <div style="border:1px solid #E2E6EE;border-radius:10px;padding:16px;">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+                <div style="width:40px;height:40px;border-radius:10px;background:#F5F7FA;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;">🔑</div>
+                <div>
+                  <div style="font-size:13px;font-weight:700;color:#0C1A3A;">Password</div>
+                  <div style="font-size:11px;color:#8895A7;margin-top:2px;">AES-256-GCM · 200k PBKDF2 rounds</div>
+                </div>
+              </div>
+              <div class="field">
+                <div class="field-label">Signing Password <span class="required">*</span></div>
+                <input type="password" id="setup-password" placeholder="Minimum 8 characters"
+                  autocomplete="new-password" oninput="updateStrength(this.value)"/>
+                <div class="strength-bar"><div class="strength-fill" id="strength-fill"></div></div>
+                <div class="field-hint" id="strength-label">Choose a password to encrypt your signing key.</div>
+              </div>
+              <div class="field">
+                <div class="field-label">Confirm Password <span class="required">*</span></div>
+                <input type="password" id="setup-password-confirm" placeholder="Repeat your password"
+                  autocomplete="new-password"/>
+              </div>
+              <div id="s2-err" class="alert alert-danger" style="display:none;"></div>
+              <button class="btn-secondary" id="setup-save-btn" style="width:100%;justify-content:center;">
+                Use Password
+              </button>
+            </div>
+
+            <button id="s2-back-btn" class="btn-link" style="font-size:12px;color:#8895A7;margin-top:12px;display:block;">
+              ← Back
             </button>
-            <button class="btn-secondary" id="generate-keypair-btn">
-              Generate new keypair
-            </button>
-          </div>
-          <div class="field-hint" style="margin-top:10px;">
-            ⚠️ <strong>No TIP-ID yet?</strong> You can generate a keypair for development/testing purposes.
-            To get a real verified TIP-ID, you must go through an accredited Verification Provider.
-            <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">Apply here →</a>
           </div>
         </div>
       </div>
@@ -362,7 +432,7 @@
           <div class="id-card-value" id="display-tipid"></div>
           <div class="id-card-meta">
             <span id="display-setup-date"></span> ·
-            <span style="color:#1A8A5C;">✓ Key secured with AES-256-GCM</span>
+            <span id="display-security-method" style="color:#1A8A5C;">✓ Key secured</span>
           </div>
         </div>
 

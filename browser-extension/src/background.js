@@ -23,7 +23,7 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
@@ -280,13 +280,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "SETUP_IDENTITY":
       return respond(setupIdentity(msg.payload));
 
+    // ── Creator: setup via WebAuthn passkey (options page encrypts the key) ──
+    // WebAuthn requires a window context — the options page handles registration
+    // and encryption, then sends the already-encrypted blob here for storage.
+    case "SETUP_IDENTITY_WEBAUTHN": {
+      const { tipId, publicKey, encryptedKey, credentialId } = msg.payload;
+      return respond((async () => {
+        await chrome.storage.local.set({
+          tipId, publicKey, encryptedKey, credentialId,
+          securityMethod: "webauthn",
+          setupComplete:  true,
+          setupDate:      new Date().toISOString(),
+        });
+        return { tipId, publicKey };
+      })());
+    }
+
+    // ── Creator: generate keypair (used by options page s1-gen + passkey flow) ─
+    case "GENERATE_KEYPAIR":
+      return respond(generateKeypair());
+
+    // ── Creator: compute TIP-ID from public key (used by options page s1-gen) ─
+    case "COMPUTE_TIP_ID":
+      return respond(computeTIPID(msg.region || "US", msg.publicKey));
+
     // ── Creator: get stored identity ──────────────────────────────────────────
     case "GET_IDENTITY":
-      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate"]));
+      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate", "securityMethod"]));
 
     // ── Creator: clear identity (logout) ─────────────────────────────────────
     case "CLEAR_IDENTITY":
-      return respond(chrome.storage.local.remove(["tipId", "publicKey", "encryptedKey", "setupComplete", "setupDate"]));
+      return respond(chrome.storage.local.remove(["tipId", "publicKey", "encryptedKey", "credentialId", "securityMethod", "setupComplete", "setupDate"]));
 
     // ── Detect upload platform for a URL ─────────────────────────────────────
     case "DETECT_PLATFORM": {
