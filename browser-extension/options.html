@@ -201,6 +201,74 @@
     }
     @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
+    /* ── Label Content: platform grid ── */
+    .lc-plat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:4px;}
+    .lc-plat-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px 8px;
+      border-radius:9px;border:1.5px solid #E2E6EE;background:#FFF;cursor:pointer;
+      font-family:inherit;transition:all .15s;text-align:center;}
+    .lc-plat-btn:hover{border-color:#D0D5E0;background:#F5F7FA;}
+    .lc-plat-btn.sel{border-color:#B8942E;background:#B8942E08;}
+    .lc-plat-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;
+      justify-content:center;font-size:10px;font-weight:800;color:#fff;transition:transform .15s;}
+    .lc-plat-btn.sel .lc-plat-icon{transform:scale(1.08);}
+    .lc-plat-name{font-size:10px;font-weight:500;color:#8895A7;line-height:1.2;}
+    .lc-plat-btn.sel .lc-plat-name{font-weight:700;color:#7A5F10;}
+    /* ── Label Content: type list ── */
+    .lc-type-list{display:flex;flex-direction:column;gap:6px;}
+    .lc-type-chip{display:flex;align-items:center;gap:10px;padding:10px 12px;
+      border-radius:8px;border:1.5px solid #E2E6EE;background:#FFF;
+      cursor:pointer;text-align:left;font-family:inherit;transition:all .15s;}
+    .lc-type-chip:hover{border-color:#D0D5E0;background:#F5F7FA;}
+    .lc-type-chip.sel{border-width:2px;border-color:#B8942E;}
+    .lc-type-icon{width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;
+      align-items:center;justify-content:center;font-size:11px;font-weight:700;}
+    .lc-type-label{font-size:12px;font-weight:600;color:#0C1A3A;}
+    .lc-type-sub{font-size:10px;color:#8895A7;margin-top:1px;}
+    /* ── Label Content: origin grid ── */
+    .lc-origin-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+    .lc-origin-btn{padding:10px;border-radius:8px;border:1.5px solid #E2E6EE;
+      background:#FFF;cursor:pointer;text-align:left;font-family:inherit;transition:all .15s;}
+    .lc-origin-btn:hover{border-color:#D0D5E0;background:#F5F7FA;}
+    .lc-origin-btn.blocked{opacity:.25;pointer-events:none;}
+    .lc-o-code{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:2px;}
+    .lc-o-lbl{font-size:10px;color:#8895A7;}
+    .lc-origin-btn.sel-OH{background:#EEF4FF;border-color:#2563A8;}
+    .lc-origin-btn.sel-OH .lc-o-code{color:#2563A8;}
+    .lc-origin-btn.sel-AA{background:#F5F0FF;border-color:#7C3AED;}
+    .lc-origin-btn.sel-AA .lc-o-code{color:#7C3AED;}
+    .lc-origin-btn.sel-AG{background:#FFF4EC;border-color:#B55E10;}
+    .lc-origin-btn.sel-AG .lc-o-code{color:#B55E10;}
+    .lc-origin-btn.sel-MX{background:#F8F9FB;border-color:#8895A7;}
+    .lc-origin-btn.sel-MX .lc-o-code{color:#8895A7;}
+    /* ── Label Content: breadcrumb ── */
+    .lc-bc{display:flex;align-items:center;gap:6px;margin-bottom:12px;flex-wrap:wrap;}
+    .lc-bc-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;
+      background:#F5F7FA;border:1px solid #E2E6EE;border-radius:12px;
+      font-size:10px;font-weight:500;color:#2E3A52;}
+    .lc-bc-mini{width:14px;height:14px;border-radius:3px;display:inline-flex;
+      align-items:center;justify-content:center;font-size:8px;font-weight:800;color:#fff;}
+    .lc-bc-change{font-size:10px;color:#B8942E;background:none;border:none;
+      cursor:pointer;font-family:inherit;padding:0;margin-left:auto;}
+    .lc-bc-change:hover{text-decoration:underline;}
+    /* ── Label Content: CTID box ── */
+    .lc-ctid-box{font-family:'JetBrains Mono',monospace;font-size:12px;color:#0C1A3A;
+      background:#F5F7FA;padding:10px 12px;border-radius:8px;
+      border:1px solid #E2E6EE;word-break:break-all;margin:10px 0;line-height:1.7;}
+    /* ── Label Content: thread rows ── */
+    .lc-thread-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;}
+    .lc-thread-num{width:20px;height:20px;border-radius:50%;background:#F5F7FA;flex-shrink:0;
+      display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;
+      color:#8895A7;margin-top:10px;}
+
+    /* ── Link button ── */
+    .btn-link {
+      background: none; border: none; padding: 0;
+      color: #B8942E; font-family: inherit; font-size: 12px;
+      cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+      display: inline-block;
+    }
+    .btn-link:hover { color: #9A7A24; }
+
     /* ── Monospace code ── */
     code {
       font-family: 'JetBrains Mono', monospace;
@@ -537,9 +605,189 @@
          PANE: PLATFORMS
     ═════════════════════════════════════════════════════════════════════ -->
     <div id="pane-platforms" class="pane">
-      <div class="page-title">Platform Support</div>
-      <div class="page-sub">Where the TIP extension detects upload pages and injects badges.</div>
+      <div class="page-title">Platforms</div>
+      <div class="page-sub">Register your content or view platform support status.</div>
 
+      <!-- ── Label the Content ─────────────────────────────────────────── -->
+      <div class="card" id="lc-card">
+        <div class="card-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B8942E" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Label the Content
+        </div>
+        <div class="card-sub">Register content on the TIP DAG. Get a CTID to paste in your post description.</div>
+
+        <!-- No identity -->
+        <div id="lc-no-id" class="alert alert-warning" style="display:none;">
+          No TIP-ID connected. <button onclick="document.querySelector('[data-pane=identity]').click()" style="background:none;border:none;cursor:pointer;color:inherit;font-weight:700;font-family:inherit;padding:0;text-decoration:underline;">Set up identity →</button>
+        </div>
+
+        <!-- Form (hidden until identity loaded) -->
+        <div id="lc-form" style="display:none;">
+
+          <!-- Identity chip -->
+          <div id="lc-id-chip" style="display:flex;align-items:center;gap:10px;padding:10px 12px;
+            background:#F5F7FA;border-radius:10px;border:1px solid #E2E6EE;margin-bottom:16px;">
+            <svg width="14" height="14" viewBox="0 0 48 48" fill="none"><path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z" fill="rgba(26,138,92,.12)" stroke="#1A8A5C" stroke-width="2.2"/><path d="M16 24L22 30L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/></svg>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:9px;color:#8895A7;letter-spacing:1.2px;font-weight:600;">SIGNING AS</div>
+              <div id="lc-tipid" style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#0C1A3A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+            </div>
+          </div>
+
+          <!-- ── Step 1: Platform ── -->
+          <div id="lc-step1">
+            <div class="field-label" style="margin-bottom:10px;">Where are you publishing?</div>
+            <div class="lc-plat-grid" id="lc-plat-grid"></div>
+          </div>
+
+          <!-- ── Step 2: Content type ── -->
+          <div id="lc-step2" style="display:none;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+              <div class="field-label" style="margin-bottom:0;">Content type</div>
+              <button class="lc-bc-change" id="lc-change-plat">Change platform</button>
+            </div>
+            <div class="lc-type-list" id="lc-type-list"></div>
+          </div>
+
+          <!-- ── Step 3: Fields + origin + auth ── -->
+          <div id="lc-step3" style="display:none;">
+
+            <!-- Breadcrumb -->
+            <div class="lc-bc" id="lc-breadcrumb"></div>
+
+            <!-- URL -->
+            <div class="field" id="lc-field-url" style="display:none;">
+              <div class="field-label"><span id="lc-url-label">URL</span> <span style="color:#C53030;">*</span></div>
+              <input type="url" id="lc-url-input" placeholder="https://..." autocomplete="off" inputmode="url" dir="auto"/>
+              <div class="field-hint" id="lc-url-hint">Canonical URL is hashed, not the file.</div>
+            </div>
+
+            <!-- Title -->
+            <div class="field" id="lc-field-title" style="display:none;">
+              <div class="field-label"><span id="lc-title-label">Title</span> <span id="lc-title-req" style="font-size:10px;color:#8895A7;font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></div>
+              <input type="text" id="lc-title-input" placeholder="Enter title..." maxlength="300" autocomplete="off" dir="auto"/>
+            </div>
+
+            <!-- Byline -->
+            <div class="field" id="lc-field-byline" style="display:none;">
+              <div class="field-label">Byline <span style="color:#C53030;">*</span></div>
+              <input type="text" id="lc-byline-input" placeholder="As published: Jane Smith" maxlength="200" dir="auto"/>
+              <div class="field-hint">Author name exactly as printed.</div>
+            </div>
+
+            <!-- Wire service -->
+            <div class="field" id="lc-field-wire" style="display:none;">
+              <div class="field-label">Wire service <span style="color:#C53030;">*</span></div>
+              <select id="lc-wire-input" style="width:100%;padding:9px 12px;border:1px solid #E2E6EE;border-radius:7px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#0C1A3A;outline:none;background:#FFF;">
+                <option value="">Select wire service...</option>
+                <option value="AP">Associated Press (AP)</option>
+                <option value="Reuters">Reuters</option>
+                <option value="AFP">Agence France-Presse (AFP)</option>
+                <option value="Bloomberg">Bloomberg News</option>
+                <option value="PA">PA Media</option>
+                <option value="UPI">UPI</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            <!-- Correction CTID -->
+            <div class="field" id="lc-field-ctid-orig" style="display:none;">
+              <div class="field-label">Original CTID being corrected <span style="color:#C53030;">*</span></div>
+              <input type="text" id="lc-ctid-orig-input" placeholder="tip://c/OH-7f2a91bc3d5e4a-a3f8" maxlength="60" dir="auto"/>
+            </div>
+
+            <!-- Content textarea -->
+            <div class="field" id="lc-field-content" style="display:none;">
+              <div class="field-label"><span id="lc-content-label">Description or Caption</span></div>
+              <textarea id="lc-content-input" rows="4" placeholder="Write here... (any language)" maxlength="5000" dir="auto"></textarea>
+              <div class="field-hint">Only a cryptographic hash is published — your text is never transmitted.</div>
+            </div>
+
+            <!-- Thread posts -->
+            <div class="field" id="lc-field-thread" style="display:none;">
+              <div class="field-label">Thread posts <span style="color:#C53030;">*</span></div>
+              <div id="lc-thread-posts"></div>
+              <button id="lc-add-thread-post" class="btn-link" style="font-size:11px;margin-top:6px;">+ Add post</button>
+              <div class="field-hint">All posts joined in order and hashed together.</div>
+            </div>
+
+            <!-- Wire origin restriction -->
+            <div id="lc-wire-origin-notice" class="alert alert-warning" style="display:none;font-size:11px;">
+              Wire adaptations require <strong>AA</strong> or <strong>MX</strong> origin. OH is not valid when wire service text is substantially reprinted.
+            </div>
+
+            <!-- Origin selector -->
+            <div class="field" id="lc-origin-section" style="display:none;">
+              <div class="field-label">Origin Code</div>
+              <div class="lc-origin-grid" id="lc-origin-btns">
+                <button class="lc-origin-btn" data-code="OH">
+                  <div class="lc-o-code" style="color:#2563A8;">OH</div>
+                  <div class="lc-o-lbl">Original Human</div>
+                </button>
+                <button class="lc-origin-btn" data-code="AA">
+                  <div class="lc-o-code" style="color:#7C3AED;">AA</div>
+                  <div class="lc-o-lbl">AI-Assisted</div>
+                </button>
+                <button class="lc-origin-btn" data-code="AG">
+                  <div class="lc-o-code" style="color:#B55E10;">AG</div>
+                  <div class="lc-o-lbl">AI-Generated</div>
+                </button>
+                <button class="lc-origin-btn" data-code="MX">
+                  <div class="lc-o-code" style="color:#8895A7;">MX</div>
+                  <div class="lc-o-lbl">Mixed</div>
+                </button>
+              </div>
+              <div id="lc-origin-hint" style="display:none;font-size:11px;color:#1E40AF;
+                padding:8px 10px;background:#EFF6FF;border-radius:6px;line-height:1.55;"></div>
+            </div>
+
+            <!-- WebAuthn note -->
+            <div id="lc-wa-note" style="display:none;margin-bottom:12px;
+              background:rgba(26,138,92,.06);border:1px solid rgba(26,138,92,.2);
+              border-radius:8px;padding:10px 12px;font-size:12px;color:#14532D;">
+              🔐 <strong>Face ID / Fingerprint</strong> will be required to sign this registration.
+            </div>
+
+            <!-- Password field -->
+            <div class="field" id="lc-pw-field" style="display:none">
+              <div class="field-label">Signing Password <span style="color:#C53030;">*</span></div>
+              <input type="password" id="lc-password" placeholder="Your signing password" autocomplete="current-password"/>
+              <div class="field-hint">Unlocks your encrypted signing key stored on this device.</div>
+            </div>
+
+            <!-- Error -->
+            <div id="lc-err" class="alert alert-danger" style="display:none;"></div>
+
+            <!-- Register button -->
+            <button class="btn-primary" id="lc-register-btn" disabled style="width:100%;justify-content:center;">
+              Select an origin code to continue
+            </button>
+          </div><!-- /lc-step3 -->
+
+          <!-- ── Success ── -->
+          <div id="lc-success" style="display:none;text-align:center;padding:16px 0;">
+            <svg width="44" height="44" viewBox="0 0 48 48" fill="none" style="margin-bottom:8px;">
+              <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z" fill="rgba(26,138,92,.1)" stroke="#1A8A5C" stroke-width="2.2"/>
+              <path d="M15 24L22 31L34 18" stroke="#1A8A5C" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+            <div style="font-size:16px;font-weight:700;color:#1A8A5C;margin-bottom:6px;">Registered on TIP DAG!</div>
+            <div style="font-size:12px;color:#8895A7;margin-bottom:4px;">Your content is permanently verifiable.</div>
+            <div class="lc-ctid-box" id="lc-ctid-display"></div>
+            <button class="btn-primary" id="lc-copy-ctid" style="width:100%;justify-content:center;margin-bottom:8px;">
+              📋 Copy CTID to clipboard
+            </button>
+            <div class="field-hint" style="text-align:left;background:#F5F7FA;padding:10px 12px;border-radius:8px;border:1px solid #E2E6EE;">
+              Paste this CTID in your video description, article, or post caption. Viewers with the TIP extension see your verified trust badge.
+            </div>
+            <button class="btn-link" id="lc-register-another" style="font-size:12px;margin-top:12px;display:block;width:100%;text-align:center;">
+              Register another piece of content →
+            </button>
+          </div>
+
+        </div><!-- /lc-form -->
+      </div><!-- /lc-card -->
+
+      <!-- Platform support info (existing) -->
       <div class="alert alert-info">
         <strong>Dual-mode design:</strong> Before platforms implement TIP natively, the extension
         injects a registration panel on upload pages. After native implementation, the extension
