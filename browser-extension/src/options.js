@@ -70,8 +70,8 @@ async function _waKey(credBytes, salt, usage) {
   );
 }
 
-async function encryptKeyWithWebAuthn(privKeyHex, credentialId) {
-  await webAuthnAuthenticate(credentialId); // biometric gate
+async function encryptKeyWithWebAuthn(privKeyHex, credentialId, skipAuth = false) {
+  if (!skipAuth) await webAuthnAuthenticate(credentialId); // biometric gate
   const credBytes = new Uint8Array(_waB64ToBuf(credentialId));
   const salt = _waRandomBytes(16), iv = _waRandomBytes(12);
   const key  = await _waKey(credBytes, salt, "encrypt");
@@ -309,7 +309,7 @@ document.getElementById("s2-wa-btn").addEventListener("click", async () => {
     const { credentialId } = await webAuthnRegister(tipId, "TIP Creator");
 
     btn.textContent = "Encrypting key…";
-    const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId);
+    const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId, true); // skip re-auth — just registered
     _tmpPrivKey = null;  // clear from memory immediately after encryption
 
     const publicKey = _tmpPubKey || "imported";
@@ -427,6 +427,9 @@ document.getElementById("test-node-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("node-test-result");
   resultEl.style.display = "block";
   resultEl.innerHTML = `<div class="alert alert-info">Testing connection...</div>`;
+  // Save first so test uses the current field value
+  const url = document.getElementById("node-url").value.trim().replace(/\/$/, "");
+  await chrome.storage.sync.set({ nodeUrl: url });
   const res = await msg("NODE_HEALTH");
   if (res?.ok && res.data) {
     resultEl.innerHTML = `<div class="alert alert-success">
