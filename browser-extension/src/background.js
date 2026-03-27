@@ -25,6 +25,7 @@
 
 import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
 import { buildContentString } from "./tip-types.js";
+import { signContentRegister } from "./tip-sign.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
@@ -173,24 +174,18 @@ async function registerContent({ tipId, originCode, typeId, values, content, tit
     throw new Error("No content to register. Fill in the required fields first.");
   }
 
-  // 4. Hash using SHAKE-256 (TIP Protocol CTID formula)
-  const contentHash = await shake256(contentToHash);
+  // 4. Sign content with ML-DSA-65 canonical JSON body signature
+  const authorTipId = tipId || stored.tipId;
+  const { signature, contentHash } = signContentRegister(authorTipId, originCode, contentToHash, privateKey);
 
-  // 5. Sign: payload = contentHash + originCode
-  const payload   = contentHash + originCode;
-  const signature = await signData(payload, privateKey);
-
-  // 6. POST to TIP node
+  // 5. POST to TIP node
   const result = await tipFetch("/v1/content/register", {
     method: "POST",
     body: JSON.stringify({
-      author_tip_id:    tipId || stored.tipId,
+      author_tip_id:    authorTipId,
       origin_code:      originCode,
-      content_type:     typeId || "other",
-      content:          contentToHash.slice(0, 10000),
-      content_hash:     contentHash,
-      author_signature: signature,
-      title:            (values?.title || title || ""),
+      content:          contentToHash,
+      signature,
     }),
   });
 
@@ -286,18 +281,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!originCode)     throw new Error("Origin code required.");
         const stored = await chrome.storage.local.get(["tipId"]);
         const contentToHash = title ? `${title}\n${content}` : content;
-        const contentHash   = await shake256(contentToHash);
-        const payload       = contentHash + originCode;
-        const signature     = await signData(payload, privateKeyHex);
+        const authorTipId = tipId || stored.tipId;
+        const { signature } = signContentRegister(authorTipId, originCode, contentToHash, privateKeyHex);
         return tipFetch("/v1/content/register", {
           method: "POST",
           body:   JSON.stringify({
-            author_tip_id:    tipId || stored.tipId,
+            author_tip_id:    authorTipId,
             origin_code:      originCode,
-            content:          contentToHash.slice(0, 10000),
-            content_hash:     contentHash,
-            author_signature: signature,
-            title:            title || "",
+            content:          contentToHash,
+            signature,
           }),
         });
       })());
