@@ -39,10 +39,11 @@
     "test:python": "cd python && python -m pytest tests/ -v",
     "lint": "npm run lint:node",
     "lint:node": "cd node && npx eslint src/ --ext .js",
-    "seed:node": "cd scripts && node seed.js",
+    "seed": "node --experimental-vm-modules scripts/seed.js",
+    "seed:fresh": "rm -rf genesis-data/ data/ && node --experimental-vm-modules scripts/seed.js",
     "seed:python": "cd python && python -m scripts.seed",
-    "start": "cd node && npm start",
-    "dev": "cd node && npm run dev"
+    "start": "node node/src/index.js",
+    "dev": "node --watch node/src/index.js"
   },
   "engines": {
     "node": ">=18.0.0",

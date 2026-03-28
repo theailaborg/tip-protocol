@@ -27,6 +27,7 @@
 
 "use strict";
 
+const path       = require("path");
 const express    = require("express");
 const cors       = require("cors");
 const helmet     = require("helmet");
@@ -117,9 +118,14 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   };
   const app = express();
 
+  // ── CORS (before all routes including static) ───────────────────────────────
+  app.use(cors({ origin: config.corsOrigins, methods: ["GET","POST","PUT","DELETE","OPTIONS"] }));
+
+  // ── ZK circuit files (before auth/rate-limit — no auth needed) ─────────────
+  app.use("/v1/zk", express.static(path.resolve(__dirname, "../../circuits")));
+
   // ── Middleware ──────────────────────────────────────────────────────────────
   app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(cors({ origin: config.corsOrigins, methods: ["GET","POST","PUT","DELETE","OPTIONS"] }));
   app.use(express.json({ limit: "4mb" }));
   app.use(morgan("[:date[iso]] :method :url :status :response-time ms"));
 

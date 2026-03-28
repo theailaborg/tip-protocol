@@ -81,7 +81,7 @@ function parsePeers(envVal) {
 }
 
 function parseCorsOrigins(envVal) {
-  if (!envVal) return ["*"];
+  if (!envVal || envVal.trim() === "*") return "*";
   return envVal.split(",").map(o => o.trim()).filter(Boolean);
 }
 
