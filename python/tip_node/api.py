@@ -261,6 +261,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/v1/identity/register":
             return self._identity_register(body)
+        if path == "/v1/identity/verify-ownership":
+            return self._identity_verify_ownership(body)
         if path == "/v1/content/register":
             return self._content_register(body)
         if path == "/v1/dedup/check":
@@ -454,6 +456,32 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "tier_color":        score_data["tier_color"],
             "content_count":     len(content),
             "registered_at":     rec.get("registered_at"),
+        })
+
+    def _identity_verify_ownership(self, body: dict):
+        tip_id    = body.get("tip_id")
+        challenge = body.get("challenge")
+        signature = body.get("signature")
+        if not tip_id:    self._send_json(400, {"error": "tip_id is required"}); return
+        if not challenge: self._send_json(400, {"error": "challenge is required"}); return
+        if not signature: self._send_json(400, {"error": "signature is required"}); return
+
+        identity = self.dag.get_identity(tip_id)
+        if not identity:
+            self._send_json(404, {"error": "TIP-ID not found"}); return
+        if self.dag.is_revoked(tip_id):
+            self._send_json(403, {"error": "TIP-ID is revoked"}); return
+
+        if not mldsa_verify(challenge, signature, identity.get("public_key", "")):
+            self._send_json(403, {"error": "Signature verification failed — you do not own this TIP-ID"}); return
+
+        score_data = self.scoring.get_score(tip_id)
+        self._send_json(200, {
+            "verified": True,
+            "tip_id":   tip_id,
+            "score":    score_data["score"],
+            "tier":     score_data["tier"],
+            "status":   identity.get("status", "active"),
         })
 
     def _identity_score(self, tip_id: str):

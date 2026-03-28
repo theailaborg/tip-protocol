@@ -979,6 +979,30 @@ def test_api_endpoints() -> None:
     check("POST /v1/content/:ctid/dispute returns 200", st == 200)
     check("Dispute returns success",                    body.get("success") is True)
 
+    # 9.13b POST /v1/identity/verify-ownership — correct key
+    import time
+    challenge = f"test-{time.time()}"
+    from shared.crypto import mldsa_sign
+    verify_sig = mldsa_sign(challenge, kp_test["privateKey"])
+    st, body = _post(f"{base}/v1/identity/verify-ownership", {
+        "tip_id": test_tip_id, "challenge": challenge, "signature": verify_sig,
+    })
+    check("verify-ownership succeeds with correct key",  st == 200 and body.get("verified") is True)
+
+    # 9.13c POST /v1/identity/verify-ownership — wrong key
+    fake_kp = generate_mldsa_keypair()
+    fake_sig = mldsa_sign(challenge, fake_kp["privateKey"])
+    st, body = _post(f"{base}/v1/identity/verify-ownership", {
+        "tip_id": test_tip_id, "challenge": challenge, "signature": fake_sig,
+    })
+    check("verify-ownership fails with wrong key",       st == 403)
+
+    # 9.13d POST /v1/identity/verify-ownership — unknown TIP-ID
+    st, body = _post(f"{base}/v1/identity/verify-ownership", {
+        "tip_id": "tip://id/US-0000000000000000", "challenge": "test", "signature": "fake",
+    })
+    check("verify-ownership returns 404 for unknown",    st == 404)
+
     # 9.14 GET /v1/revocations
     st, body = _get(f"{base}/v1/revocations")
     check("GET /v1/revocations returns 200",        st == 200)

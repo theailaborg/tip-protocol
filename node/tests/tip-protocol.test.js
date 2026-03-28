@@ -683,6 +683,34 @@ describe("REST API", () => {
     expect(res.status).toBe(404);
   });
 
+  test("6.10b POST /v1/identity/verify-ownership succeeds with correct key", async () => {
+    const challenge = "test-challenge-" + Date.now();
+    const sig = mldsaSign(challenge, authorKp.privateKey);
+    const res = await request(app)
+      .post("/v1/identity/verify-ownership")
+      .send({ tip_id: authorId, challenge, signature: sig });
+    expect(res.status).toBe(200);
+    expect(res.body.verified).toBe(true);
+    expect(res.body.tip_id).toBe(authorId);
+  });
+
+  test("6.10c POST /v1/identity/verify-ownership fails with wrong key", async () => {
+    const fakeKp = generateMLDSAKeypair();
+    const challenge = "test-challenge-" + Date.now();
+    const sig = mldsaSign(challenge, fakeKp.privateKey);
+    const res = await request(app)
+      .post("/v1/identity/verify-ownership")
+      .send({ tip_id: authorId, challenge, signature: sig });
+    expect(res.status).toBe(403);
+  });
+
+  test("6.10d POST /v1/identity/verify-ownership returns 404 for unknown TIP-ID", async () => {
+    const res = await request(app)
+      .post("/v1/identity/verify-ownership")
+      .send({ tip_id: "tip://id/US-nonexistent0000", challenge: "test", signature: "fake" });
+    expect(res.status).toBe(404);
+  });
+
   test("6.11 POST /v1/content/register registers content", async () => {
     const authorKp = generateMLDSAKeypair();
     const authorId = generateTIPID("US", authorKp.publicKey);

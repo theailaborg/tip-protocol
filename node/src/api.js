@@ -328,6 +328,39 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   });
 
   /**
+   * POST /v1/identity/verify-ownership
+   * Prove you own a TIP-ID by signing a challenge.
+   *
+   * Body:
+   *   tip_id     string   the TIP-ID to prove ownership of
+   *   challenge  string   any string (e.g. timestamp or nonce from client)
+   *   signature  string   ML-DSA-65 sig over challenge using your private key
+   */
+  app.post("/v1/identity/verify-ownership", (req, res) => {
+    const { tip_id, challenge, signature } = req.body;
+    if (!tip_id)    return res.status(400).json({ error: "tip_id is required" });
+    if (!challenge) return res.status(400).json({ error: "challenge is required" });
+    if (!signature) return res.status(400).json({ error: "signature is required" });
+
+    const identity = dag.getIdentity(tip_id);
+    if (!identity) return res.status(404).json({ error: "TIP-ID not found" });
+    if (dag.isRevoked(tip_id)) return res.status(403).json({ error: "TIP-ID is revoked" });
+
+    const { mldsaVerify } = require("../../shared/crypto");
+    const valid = mldsaVerify(challenge, signature, identity.public_key);
+    if (!valid) return res.status(403).json({ error: "Signature verification failed — you do not own this TIP-ID" });
+
+    const scoreData = scoring.getScore(tip_id);
+    res.json({
+      verified: true,
+      tip_id,
+      score:  scoreData.score,
+      tier:   scoreData.tier.name,
+      status: identity.status,
+    });
+  });
+
+  /**
    * GET /v1/identity/:tipId/score
    * Return the trust score for a TIP-ID with full breakdown.
    */
