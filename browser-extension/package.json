@@ -27,7 +27,10 @@
       "url": "https://theailab.org"
     }
   ],
+  "type": "module",
   "scripts": {
+    "dev": "node scripts/watch.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "build:chrome": "node scripts/build.js --target=chrome",
     "build:firefox": "node scripts/build.js --target=firefox",
     "build:all": "npm run build:chrome && npm run build:firefox",
@@ -36,7 +39,19 @@
     "lint": "eslint src/ --ext .js"
   },
   "devDependencies": {
-    "eslint": "^8.57.0"
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0",
+    "@noble/post-quantum": "^0.2.1",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "sharp": "^0.34.5"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ]
   },
   "engines": {
     "node": ">=18.0.0"
