@@ -40,7 +40,7 @@ function verifyIncomingTx(tx, dag) {
       const vp = dag.getVP(d.vp_id);
       if (!vp || !d.vp_signature) return true;
       return verifyBodySignature(d, d.vp_signature, vp.public_key,
-        ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
+        ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
     }
 
     if (tt === TX_TYPES.CONTENT_VERIFIED) {

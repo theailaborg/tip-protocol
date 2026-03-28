@@ -12,14 +12,12 @@
 "use strict";
 
 const path   = require("path");
-const crypto = require("crypto");
 
 function loadConfig() {
   // Generate a stable node ID from hostname + a fixed seed if not set
+  const { shake256: _shake } = require("../../shared/crypto");
   const defaultNodeId = process.env.TIP_NODE_ID ||
-    crypto.createHash("sha256")
-      .update(require("os").hostname() + "tip-node-v2")
-      .digest("hex")
+    _shake(require("os").hostname() + "tip-node-v2")
       .slice(0, 16);
 
   return {

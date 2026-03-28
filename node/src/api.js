@@ -172,6 +172,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
    *
    * Body:
    *   region            string   e.g. "US"
+   *   public_key        string   client-generated ML-DSA-65 public key
    *   dedup_hash        string   Poseidon(govId, dob, country) — decimal field element
    *   zk_proof          object   Groth16 proof { pi_a, pi_b, pi_c, protocol, curve }
    *   verification_tier string   "T1"|"T2"|"T3"|"T4"
@@ -183,6 +184,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     try {
       const {
         region = "US",
+        public_key,
         dedup_hash,
         zk_proof,
         verification_tier = "T1",
@@ -191,6 +193,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         social_attested = false,
       } = req.body;
 
+      if (!public_key)  return res.status(400).json({ error: "public_key is required (client-generated ML-DSA-65)" });
       if (!dedup_hash) return res.status(400).json({ error: "dedup_hash is required" });
       if (!zk_proof)   return res.status(400).json({ error: "zk_proof is required" });
       if (!vp_id)      return res.status(400).json({ error: "vp_id is required" });
@@ -207,7 +210,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!vp_signature) {
         return res.status(400).json({ error: "vp_signature is required" });
       }
-      const VP_IDENTITY_FIELDS = ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+      const VP_IDENTITY_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
       if (!verifyBodySignature(req.body, vp_signature, vp.public_key, VP_IDENTITY_FIELDS)) {
         return res.status(403).json({ error: "VP signature verification failed — signature does not match VP public key" });
       }
@@ -226,10 +229,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         });
       }
 
-      // Generate post-quantum keypair for this identity
-      const keypair     = generateMLDSAKeypair();
-      const rootKeypair = generateSLHDSAKeypair();
-      const tipId       = generateTIPID(region, keypair.publicKey);
+      // TIP-ID derived from client-provided public key
+      const tipId       = generateTIPID(region, public_key);
 
       const registeredAt = new Date().toISOString();
 
@@ -245,8 +246,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         data: {
           tip_id:            tipId,
           region:            region.toUpperCase(),
-          public_key:        keypair.publicKey,
-          root_public_key:   rootKeypair.publicKey,
+          public_key:        public_key,
           vp_id,
           verification_tier,
           social_attested,
@@ -268,8 +268,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       dag.saveIdentity({
         tip_id:          tipId,
         region:          region.toUpperCase(),
-        public_key:      keypair.publicKey,
-        root_public_key: rootKeypair.publicKey,
+        public_key:      public_key,
         vp_id,
         verification_tier,
         founding,
@@ -288,15 +287,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
 
       res.status(201).json({
         tip_id:           tipId,
-        public_key:       keypair.publicKey,
-        // Private key returned ONLY at registration — never stored server-side
-        private_key:      keypair.privateKey,
-        root_public_key:  rootKeypair.publicKey,
-        root_private_key: rootKeypair.privateKey,
+        public_key:       public_key,
         tx_id:            tx.tx_id,
         score:            social_attested ? 550 : 500,
         registered_at:    registeredAt,
-        message:          "Store your private keys securely. They are never stored by this node.",
       });
 
     } catch (err) {

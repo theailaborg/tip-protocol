@@ -339,17 +339,17 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
     def _identity_register(self, body: dict):
         region       = body.get("region", "US")
+        public_key   = body.get("public_key")
         vp_id        = body.get("vp_id") or body.get("vpId")
         vp_signature = body.get("vp_signature") or body.get("vpSignature")
         dedup_hash   = body.get("dedup_hash") or body.get("dedupHash")
         zk_proof     = body.get("zk_proof") or body.get("zkProof")
         tier         = body.get("verification_tier", "T1")
         attested     = bool(body.get("social_attested") or body.get("socialAttested"))
-        # Founding status is determined by the genesis block, not the request.
-        # Only identities in genesis_ring (populated by seed script before launch)
-        # are founding members. The API always sets founding = false.
         founding     = False
 
+        if not public_key:
+            self._send_json(400, {"error": "public_key is required (client-generated ML-DSA-65)"}); return
         if not vp_id:
             self._send_json(400, {"error": "vp_id is required"}); return
         if not vp_signature:
@@ -366,7 +366,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(403, {"error": f"VP is not active: {vp_id}"}); return
 
         # Verify VP signature over required fields
-        _VP_IDENTITY_FIELDS = ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]
+        _VP_IDENTITY_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]
         if not verify_body_signature(body, vp_signature, vp.get("public_key", ""), _VP_IDENTITY_FIELDS):
             self._send_json(403, {"error": "VP signature verification failed — signature does not match VP public key"}); return
 
@@ -381,8 +381,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "code":  "DUPLICATE_IDENTITY",
             }); return
 
-        kp            = generate_mldsa_keypair()
-        tip_id        = generate_tip_id(region, kp["publicKey"])
+        tip_id        = generate_tip_id(region, public_key)
         registered_at = _utc_now()
 
         # Pre-validate
@@ -393,7 +392,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "data": {
                 "tip_id":            tip_id,
                 "region":            region.upper(),
-                "public_key":        kp["publicKey"],
+                "public_key":        public_key,
                 "vp_id":             vp_id,
                 "verification_tier": tier,
                 "social_attested":   attested,
@@ -414,7 +413,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self.dag.save_identity({
             "tip_id":            tip_id,
             "region":            region.upper(),
-            "public_key":        kp["publicKey"],
+            "public_key":        public_key,
             "vp_id":             vp_id,
             "verification_tier": tier,
             "founding":          founding,
@@ -429,12 +428,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         self._send_json(201, {
             "tip_id":           tip_id,
-            "public_key":       kp["publicKey"],
-            "private_key":      kp["privateKey"],   # NEVER stored server-side
+            "public_key":       public_key,
             "tx_id":            tx["tx_id"],
             "score":            initial_score,
             "registered_at":    registered_at,
-            "message":          "Store your private key securely. It is never stored by this node.",
         })
 
     def _identity_resolve(self, tip_id: str):

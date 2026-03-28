@@ -920,7 +920,8 @@ def test_api_endpoints() -> None:
     dedup_hash = "12345678901234567890123456789012345678901234567890123456789012345678"
     zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
                   "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
-    id_fields = {"region": "US", "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+    kp_test = generate_mldsa_keypair()
+    id_fields = {"region": "US", "public_key": kp_test["publicKey"], "dedup_hash": dedup_hash, "zk_proof": zk_proof,
                  "verification_tier": "T1", "vp_id": test_vp_id, "social_attested": False}
     vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
 
@@ -929,7 +930,7 @@ def test_api_endpoints() -> None:
     })
     check("POST /v1/identity/register returns 201", st == 201)
     test_tip_id = body.get("tip_id", "")
-    test_author_priv = body.get("private_key", "")
+    test_author_priv = kp_test["privateKey"]
     check("Identity register returns tip_id",       test_tip_id.startswith("tip://id/US-"))
     check("Identity register returns public_key",   bool(body.get("public_key")))
     check("Identity register returns score",        body.get("score") == 500)
@@ -986,7 +987,8 @@ def test_api_endpoints() -> None:
 
     # 9.15 POST /v1/revocations
     dedup2 = "99887766554433221100998877665544332211009988776655443322110099887"
-    id2_fields = {"region": "EU", "dedup_hash": dedup2, "zk_proof": zk_proof,
+    kp_test2 = generate_mldsa_keypair()
+    id2_fields = {"region": "EU", "public_key": kp_test2["publicKey"], "dedup_hash": dedup2, "zk_proof": zk_proof,
                   "verification_tier": "T1", "vp_id": test_vp_id, "social_attested": False}
     vp_sig2 = _sign_body(id2_fields, vp_kp["privateKey"])
     st2, id2 = _post(f"{base}/v1/identity/register", {
@@ -1046,7 +1048,8 @@ def test_integration_flow() -> None:
     dedup_hash = "11223344556677889900112233445566778899001122334455667788990011223"
     zk_proof   = {"pi_a": ["1","2","3"], "pi_b": [["1","2"],["3","4"],["5","6"]],
                   "pi_c": ["1","2","3"], "protocol": "groth16", "curve": "bn128"}
-    id_fields = {"region": "US", "dedup_hash": dedup_hash, "zk_proof": zk_proof,
+    kp_test = generate_mldsa_keypair()
+    id_fields = {"region": "US", "public_key": kp_test["publicKey"], "dedup_hash": dedup_hash, "zk_proof": zk_proof,
                  "verification_tier": "T1", "vp_id": vp_id, "social_attested": True}
     vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
 
@@ -1058,7 +1061,7 @@ def test_integration_flow() -> None:
     check("Integration: Attested score = 550", id_body.get("score") == 550)
 
     # Step 3: Register Content (sign with author's private key from identity registration)
-    author_private_key = id_body["private_key"]
+    author_private_key = kp_test["privateKey"]
     content_text = "Integration test: original human content for full flow"
     ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
     st, ct_body = _post(f"{base}/v1/content/register", {
@@ -1161,7 +1164,8 @@ def test_gossip_broadcast_wiring() -> None:
     vp_id = body["vp_id"]
 
     # 11.2 Identity register triggers broadcast
-    id_fields = {"region": "US", "dedup_hash": "88881111222233334444555566667777888899990000111122223333444455556",
+    kp_test = generate_mldsa_keypair()
+    id_fields = {"region": "US", "public_key": kp_test["publicKey"], "dedup_hash": "88881111222233334444555566667777888899990000111122223333444455556",
                  "zk_proof": zk_proof, "verification_tier": "T1",
                  "vp_id": vp_id, "social_attested": False}
     vp_sig = _sign_body(id_fields, vp_kp["privateKey"])
@@ -1175,7 +1179,7 @@ def test_gossip_broadcast_wiring() -> None:
 
     # 11.3 Content register triggers broadcast
     broadcast_calls.clear()
-    author_priv = body.get("private_key", "")
+    author_priv = kp_test["privateKey"]
     content_text = "Gossip broadcast wiring test content article."
     ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
     st, body = _post(f"{base}/v1/content/register", {

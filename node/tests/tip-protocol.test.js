@@ -602,6 +602,8 @@ describe("REST API", () => {
 
   let testVpKp; // VP keypair shared across tests 6.5–6.7
   let testVpId;  // VP ID returned by test 6.5
+  let authorKp;  // Author keypair (client-generated)
+  let authorId;  // Author TIP-ID
 
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
@@ -626,17 +628,19 @@ describe("REST API", () => {
   });
 
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
+    authorKp = generateMLDSAKeypair();
     const idFields = {
-      region: "DE", dedup_hash: MOCK_DEDUP_HASH, zk_proof: MOCK_ZK_PROOF,
+      region: "DE", public_key: authorKp.publicKey, dedup_hash: MOCK_DEDUP_HASH, zk_proof: MOCK_ZK_PROOF,
       verification_tier: "T1", vp_id: testVpId, social_attested: false,
     };
     const vpSig = signBody(idFields, testVpKp.privateKey);
 
     const res = await request(app)
       .post("/v1/identity/register")
-      .send({ ...idFields, vp_signature: vpSig, attested: false });
+      .send({ ...idFields, vp_signature: vpSig });
     expect([200, 201]).toContain(res.status);
     expect(res.body.tip_id).toBeDefined();
+    authorId = res.body.tip_id;
   });
 
   test("6.8 GET /v1/identity/:tipId returns identity", async () => {
@@ -812,9 +816,11 @@ describe("Integration: Full Registration Flow", () => {
     expect([200, 201]).toContain(vpRes.status);
     integrationVpId = vpRes.body.vp_id;
 
-    // Step 2: Register Identity
+    // Step 2: Register Identity (client generates keypair)
+    const authorKp2 = generateMLDSAKeypair();
     const idFields = {
-      region: "SG", dedup_hash: "99887766554433221100998877665544332211009988776655443322110099887",
+      region: "SG", public_key: authorKp2.publicKey,
+      dedup_hash: "99887766554433221100998877665544332211009988776655443322110099887",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: integrationVpId, social_attested: false,
     };
@@ -827,8 +833,8 @@ describe("Integration: Full Registration Flow", () => {
     integrationTipId = idRes.body.tip_id;
     expect(integrationTipId).toBeDefined();
 
-    // Step 3: Register Content (sign with the author's private key from identity registration)
-    const authorPrivateKey = idRes.body.private_key;
+    // Step 3: Register Content (client has private key — never sent to server)
+    const authorPrivateKey = authorKp2.privateKey;
     const content  = "An original human-written article about trust and identity on the internet.";
     const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
     const contentRes = await request(app)
@@ -850,8 +856,9 @@ describe("Integration: Full Registration Flow", () => {
     const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG");
     dag.addDedupHash(dedup);
 
+    const dupKp = generateMLDSAKeypair();
     const dupFields = {
-      region: "SG", dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
+      region: "SG", public_key: dupKp.publicKey, dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
       verification_tier: "T1", vp_id: integrationVpId, social_attested: false,
     };
     const dupVpSig = signBody(dupFields, integrationKp.privateKey);
@@ -918,8 +925,10 @@ describe("Gossip Broadcast Wiring", () => {
   });
 
   test("8.2 Identity register triggers gossip broadcast", async () => {
+    const kp82 = generateMLDSAKeypair();
     const idFields = {
-      region: "US", dedup_hash: "88881111222233334444555566667777888899990000111122223333444455556",
+      region: "US", public_key: kp82.publicKey,
+      dedup_hash: "88881111222233334444555566667777888899990000111122223333444455556",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
@@ -933,8 +942,10 @@ describe("Gossip Broadcast Wiring", () => {
   });
 
   test("8.3 Content register triggers gossip broadcast", async () => {
+    const kp83 = generateMLDSAKeypair();
     const idFields = {
-      region: "US", dedup_hash: "99991111222233334444555566667777888899990000111122223333444455556",
+      region: "US", public_key: kp83.publicKey,
+      dedup_hash: "99991111222233334444555566667777888899990000111122223333444455556",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
@@ -944,7 +955,7 @@ describe("Gossip Broadcast Wiring", () => {
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: vpSig });
     const tipId         = idRes.body.tip_id;
-    const authorPrivKey = idRes.body.private_key;
+    const authorPrivKey = kp83.privateKey;
 
     broadcastCalls = [];
     const content  = "Gossip broadcast wiring test content article.";
@@ -968,8 +979,10 @@ describe("Gossip Broadcast Wiring", () => {
       .send({ ...vpFields, council_signature: signBody(vpFields, gFoundingVpKp.privateKey) });
     const rVpId = vpRes.body.vp_id;
 
+    const kp84 = generateMLDSAKeypair();
     const idFields = {
-      region: "US", dedup_hash: "77771111222233334444555566667777888899990000111122223333444455556",
+      region: "US", public_key: kp84.publicKey,
+      dedup_hash: "77771111222233334444555566667777888899990000111122223333444455556",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: rVpId, social_attested: false,
     };
@@ -992,8 +1005,10 @@ describe("Gossip Broadcast Wiring", () => {
 
   test("8.5 Dispute triggers gossip broadcast", async () => {
     // Register identity + content, then dispute
+    const kp85 = generateMLDSAKeypair();
     const dIdFields = {
-      region: "US", dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
+      region: "US", public_key: kp85.publicKey,
+      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
@@ -1001,7 +1016,7 @@ describe("Gossip Broadcast Wiring", () => {
       .post("/v1/identity/register")
       .send({ ...dIdFields, vp_signature: signBody(dIdFields, gFoundingVpKp.privateKey) });
     const dTipId      = idRes.body.tip_id;
-    const dAuthorPriv = idRes.body.private_key;
+    const dAuthorPriv = kp85.privateKey;
 
     const content  = "Dispute gossip broadcast test article.";
     const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: hashContent(content) };
@@ -1046,9 +1061,11 @@ describe("Semantic Dedup", () => {
 
     sdApp = createApp({ dag: sdDag, scoring: sdScoring, config: TEST_CONFIG });
 
-    // Register identity
+    // Register identity (client generates keypair)
+    const sdKp = generateMLDSAKeypair();
     const idFields = {
-      region: "US", dedup_hash: "55551111222233334444555566667777888899990000111122223333444455556",
+      region: "US", public_key: sdKp.publicKey,
+      dedup_hash: "55551111222233334444555566667777888899990000111122223333444455556",
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: sdVpId, social_attested: false,
     };
@@ -1056,7 +1073,7 @@ describe("Semantic Dedup", () => {
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
     sdTipId     = idRes.body.tip_id;
-    sdAuthorPriv = idRes.body.private_key;
+    sdAuthorPriv = sdKp.privateKey;
 
     // Set score high enough for jury eligibility
     sdDag.setScore(sdTipId, 800, 0);

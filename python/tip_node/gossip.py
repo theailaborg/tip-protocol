@@ -111,7 +111,7 @@ def _verify_incoming_tx(tx: dict, dag) -> bool:
             vp = dag.get_vp(d.get("vp_id", ""))
             if not vp or not d.get("vp_signature"): return True
             return verify_body_signature(d, d["vp_signature"], vp["public_key"],
-                ["region", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"])
+                ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"])
 
         if tt == TxType.CONTENT_VERIFIED:
             verifier = dag.get_identity(d.get("verifier_tip_id", ""))

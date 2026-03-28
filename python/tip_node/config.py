@@ -1,11 +1,12 @@
 """node/config.py — TIP Protocol node configuration."""
 from __future__ import annotations
-import os, pathlib, hashlib, socket
+import os, pathlib, socket
 
 # Author:    Dinesh Mendhe <chairman@theailab.org>
 def load_config() -> dict:
     _hostname = socket.gethostname()
-    _default_id = hashlib.sha256((_hostname + "tip-node-v2").encode()).hexdigest()[:16]
+    from shared.crypto import shake256 as _shake
+    _default_id = _shake(_hostname + "tip-node-v2")[:16]
     data_dir = os.environ.get("TIP_DATA_DIR", str(pathlib.Path.cwd() / "data"))
     return {
         "node_id":       os.environ.get("TIP_NODE_ID",       _default_id),
