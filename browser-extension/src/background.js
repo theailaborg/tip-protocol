@@ -23,8 +23,9 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
 import { buildContentString } from "./tip-types.js";
+import { signContentRegister } from "./tip-sign.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
@@ -173,24 +174,18 @@ async function registerContent({ tipId, originCode, typeId, values, content, tit
     throw new Error("No content to register. Fill in the required fields first.");
   }
 
-  // 4. Hash using SHAKE-256 (TIP Protocol CTID formula)
-  const contentHash = await shake256(contentToHash);
+  // 4. Sign content with ML-DSA-65 canonical JSON body signature
+  const authorTipId = tipId || stored.tipId;
+  const { signature, contentHash } = signContentRegister(authorTipId, originCode, contentToHash, privateKey);
 
-  // 5. Sign: payload = contentHash + originCode
-  const payload   = contentHash + originCode;
-  const signature = await signData(payload, privateKey);
-
-  // 6. POST to TIP node
+  // 5. POST to TIP node
   const result = await tipFetch("/v1/content/register", {
     method: "POST",
     body: JSON.stringify({
-      author_tip_id:    tipId || stored.tipId,
+      author_tip_id:    authorTipId,
       origin_code:      originCode,
-      content_type:     typeId || "other",
-      content:          contentToHash.slice(0, 10000),
-      content_hash:     contentHash,
-      author_signature: signature,
-      title:            (values?.title || title || ""),
+      content:          contentToHash,
+      signature,
     }),
   });
 
@@ -203,11 +198,28 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
 
   let privateKey;
   let publicKey;
-
-  if (existingPrivateKey) {
-    // User is importing an existing key
+  
+  if (existingPrivateKey?.startsWith("__RE_ENCRYPT__")) {
+    // Change-password flow — payload: "__RE_ENCRYPT__<oldPassword>__<encryptedB64>"
+    // Split on the *last* "__": base64 never contains "_" so the boundary is unambiguous
+    // even when the old password itself contains "__".
+    const payload  = existingPrivateKey.slice("__RE_ENCRYPT__".length);
+    const splitAt  = payload.lastIndexOf("__");
+    if (splitAt === -1) throw new Error("Malformed re-encrypt payload.");
+    const oldPassword  = payload.slice(0, splitAt);
+    const encryptedB64 = payload.slice(splitAt + 2);
+    try {
+      privateKey = await decryptPrivateKey(encryptedB64, oldPassword);
+    } catch {
+      throw new Error("Wrong password. Cannot decrypt your signing key.");
+    }
+    // Preserve the existing public key — re-encryption must not change it.
+    const stored = await chrome.storage.local.get(["publicKey"]);
+    publicKey = stored.publicKey || "imported";
+  } else if (existingPrivateKey) {
+    // Import flow — user provides the raw master seed hex from VP registration.
     privateKey = existingPrivateKey;
-    publicKey  = "imported"; // public key derivation from stored hex not needed for signing
+    publicKey  = "imported";
   } else {
     // Generate fresh keypair
     const kp   = await generateKeypair();
@@ -276,17 +288,65 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "REGISTER_CONTENT":
       return respond(registerContent(msg.payload));
 
+    // ── Creator: register with pre-decrypted key (WebAuthn flow) ─────────────
+    // The options/popup page decrypts the key via WebAuthn (window context only),
+    // then sends the raw private key hex here for hashing, signing, and POSTing.
+    case "REGISTER_CONTENT_WITH_KEY": {
+      return respond((async () => {
+        const { tipId, originCode, content, title, privateKeyHex } = msg.payload;
+        if (!privateKeyHex)  throw new Error("No private key provided.");
+        if (!originCode)     throw new Error("Origin code required.");
+        const stored = await chrome.storage.local.get(["tipId"]);
+        const contentToHash = title ? `${title}\n${content}` : content;
+        const authorTipId = tipId || stored.tipId;
+        const { signature } = signContentRegister(authorTipId, originCode, contentToHash, privateKeyHex);
+        return tipFetch("/v1/content/register", {
+          method: "POST",
+          body:   JSON.stringify({
+            author_tip_id:    authorTipId,
+            origin_code:      originCode,
+            content:          contentToHash,
+            signature,
+          }),
+        });
+      })());
+    }
+
     // ── Creator: setup / import identity ─────────────────────────────────────
     case "SETUP_IDENTITY":
       return respond(setupIdentity(msg.payload));
 
+    // ── Creator: setup via WebAuthn passkey (options page encrypts the key) ──
+    // WebAuthn requires a window context — the options page handles registration
+    // and encryption, then sends the already-encrypted blob here for storage.
+    case "SETUP_IDENTITY_WEBAUTHN": {
+      const { tipId, publicKey, encryptedKey, credentialId } = msg.payload;
+      return respond((async () => {
+        await chrome.storage.local.set({
+          tipId, publicKey, encryptedKey, credentialId,
+          securityMethod: "webauthn",
+          setupComplete:  true,
+          setupDate:      new Date().toISOString(),
+        });
+        return { tipId, publicKey };
+      })());
+    }
+
+    // ── Creator: generate keypair (used by options page s1-gen + passkey flow) ─
+    case "GENERATE_KEYPAIR":
+      return respond(generateKeypair());
+
+    // ── Creator: compute TIP-ID from public key (used by options page s1-gen) ─
+    case "COMPUTE_TIP_ID":
+      return respond(computeTIPID(msg.region || "US", msg.publicKey));
+
     // ── Creator: get stored identity ──────────────────────────────────────────
     case "GET_IDENTITY":
-      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate"]));
+      return respond(chrome.storage.local.get(["tipId", "publicKey", "setupComplete", "setupDate", "securityMethod", "credentialId"]));
 
     // ── Creator: clear identity (logout) ─────────────────────────────────────
     case "CLEAR_IDENTITY":
-      return respond(chrome.storage.local.remove(["tipId", "publicKey", "encryptedKey", "setupComplete", "setupDate"]));
+      return respond(chrome.storage.local.remove(["tipId", "publicKey", "encryptedKey", "credentialId", "securityMethod", "setupComplete", "setupDate"]));
 
     // ── Detect upload platform for a URL ─────────────────────────────────────
     case "DETECT_PLATFORM": {
@@ -311,6 +371,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case "SET_NODE_URL":
       return respond(chrome.storage.sync.set({ nodeUrl: msg.url }));
+
+    // ── Icon theme: swap between light and dark icon sets ─────────────────────
+    case "UPDATE_ICON_THEME": {
+      const s = msg.isDark ? "" : "-dark";
+      chrome.action.setIcon({
+        path: {
+          // "16":  `icons/icon16${s}.png`,
+          "32":  `icons/icon32${s}.png`,
+          "48":  `icons/icon48${s}.png`,
+          "128": `icons/icon128${s}.png`,
+          "512": `icons/icon512${s}.png`,
+        },
+      }).catch(() => {});
+      sendResponse({ ok: true });
+      return false;
+    }
   }
 
   return false;
