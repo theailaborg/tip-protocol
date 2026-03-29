@@ -23,7 +23,7 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID } from "./crypto.js";
+import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID, kdfHash } from "./crypto.js";
 import { buildContentString } from "./tip-types.js";
 import { signContentRegister } from "./tip-sign.js";
 
@@ -156,7 +156,7 @@ async function registerContent({ tipId, originCode, typeId, values, content, tit
   // 2. Decrypt private key
   let privateKey;
   try {
-    privateKey = await decryptPrivateKey(stored.encryptedKey, password);
+    privateKey = await decryptPrivateKey(stored.encryptedKey, password, stored.tipId);
   } catch {
     throw new Error("Wrong password. Cannot decrypt your signing key.");
   }
@@ -209,7 +209,7 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
     const oldPassword  = payload.slice(0, splitAt);
     const encryptedB64 = payload.slice(splitAt + 2);
     try {
-      privateKey = await decryptPrivateKey(encryptedB64, oldPassword);
+      privateKey = await decryptPrivateKey(encryptedB64, oldPassword, tipId);
     } catch {
       throw new Error("Wrong password. Cannot decrypt your signing key.");
     }
@@ -227,7 +227,7 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
     publicKey  = kp.publicKey;
   }
 
-  const encryptedKey = await encryptPrivateKey(privateKey, password);
+  const encryptedKey = await encryptPrivateKey(privateKey, password, tipId);
 
   await chrome.storage.local.set({
     tipId,
@@ -320,11 +320,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // WebAuthn requires a window context — the options page handles registration
     // and encryption, then sends the already-encrypted blob here for storage.
     case "SETUP_IDENTITY_WEBAUTHN": {
-      const { tipId, publicKey, encryptedKey, credentialId } = msg.payload;
+      const { tipId, publicKey, encryptedKey, credentialId, securityMethod } = msg.payload;
       return respond((async () => {
         await chrome.storage.local.set({
           tipId, publicKey, encryptedKey, credentialId,
-          securityMethod: "webauthn",
+          securityMethod: securityMethod || "webauthn",
           setupComplete:  true,
           setupDate:      new Date().toISOString(),
         });
@@ -339,6 +339,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // ── Creator: compute TIP-ID from public key (used by options page s1-gen) ─
     case "COMPUTE_TIP_ID":
       return respond(computeTIPID(msg.region || "US", msg.publicKey));
+
+    // ── Crypto: SHAKE-256 KDF hash (used by options.js for WebAuthn key derivation) ─
+    case "KDF_HASH": {
+      const inputBytes = typeof msg.input === "string"
+        ? new TextEncoder().encode(msg.input)
+        : new Uint8Array(msg.input);
+      const hashBytes = kdfHash(inputBytes);
+      sendResponse({ ok: true, data: Array.from(hashBytes) });
+      return false;
+    }
 
     // ── Creator: get stored identity ──────────────────────────────────────────
     case "GET_IDENTITY":

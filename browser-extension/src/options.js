@@ -58,10 +58,27 @@ async function webAuthnAuthenticate(credentialId) {
   };
 }
 
-// Key derivation uses the credentialId as stable PBKDF2 material.
-// WebAuthn authentication is the biometric gate; the credential ID
-// (a random 32-byte handle stored in chrome.storage) provides key material.
-// ECDSA signatures are non-deterministic so they cannot be used for key derivation.
+// Key derivation: 3-layer architecture for ML-DSA-65 private key protection.
+//
+// Path A (Chrome/Edge 116+): WebAuthn PRF extension.
+//   SHAKE-256(PRF_output || "tip-pqc-key-wrap")[:32] -> AES-256-GCM key.
+//   Hardware-bound: PRF secret only released after biometric.
+//
+// Path B (Safari, Firefox, older Chrome): Fallback.
+//   SHAKE-256(credentialId || "tip-pqc-key-wrap")[:32] -> PBKDF2 200k -> AES-256-GCM key.
+//   Software-gated: biometric credentials.get() required before derivation.
+//
+// Both paths use AAD = tipId to bind ciphertext to the identity.
+// v2 format: magic("TIP2",4) + salt(16) + iv(12) + aadLen(2 LE) + aad + methodByte(1) + ciphertext
+
+// 4-byte magic header for v2 format (same as crypto.js). Collision probability: 1/2^32.
+const _WA_V2_MAGIC = new Uint8Array([0x54, 0x49, 0x50, 0x32]); // ASCII "TIP2"
+function _waIsV2(d) { return d.length >= 4 && d[0]===0x54 && d[1]===0x49 && d[2]===0x50 && d[3]===0x32; }
+const _WA_KDF_DOMAIN = "tip-pqc-key-wrap";
+const _WA_METHOD_PRF = 0x01;
+const _WA_METHOD_FALLBACK = 0x02;
+
+// Legacy v1 key derivation (kept for backward compat with pre-v2 stored keys)
 async function _waKey(credBytes, salt, usage) {
   const km = await crypto.subtle.importKey("raw", credBytes, "PBKDF2", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
@@ -70,29 +87,203 @@ async function _waKey(credBytes, salt, usage) {
   );
 }
 
+/**
+ * Compute SHAKE-256(input || "tip-pqc-key-wrap")[:32] via background worker.
+ * Retries once if messaging fails (extension startup race). Throws on failure
+ * instead of silently falling back to SHA-256 (which produces different output).
+ */
+async function _waKdfHash(inputBytes) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: "KDF_HASH", input: Array.from(inputBytes) },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          }
+        );
+      });
+      if (res?.ok && res.data) return new Uint8Array(res.data);
+    } catch {
+      // First attempt failed (service worker starting up), wait and retry
+      if (attempt === 0) await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw new Error("Cannot compute SHAKE-256 hash. Extension background worker is not responding. Please reload the extension.");
+}
+
+/**
+ * Path A: Derive AES key from Secure Enclave via WebAuthn PRF extension.
+ * Returns { aesKey, method: _WA_METHOD_PRF } or null if PRF is not supported.
+ * Throws if PRF succeeds but downstream hash computation fails (do not silently downgrade).
+ */
+async function _deriveKeyViaPRF(credentialIdBuf, usage) {
+  // Step 1: Attempt PRF assertion. If the browser doesn't support PRF,
+  // the assertion succeeds but getClientExtensionResults().prf is absent.
+  let assertion;
+  try {
+    const prfSalt = new TextEncoder().encode(_WA_KDF_DOMAIN);
+    assertion = await navigator.credentials.get({ publicKey: {
+      challenge:        _waRandomBytes(32),
+      rpId:             WA_RP_ID,
+      allowCredentials: [{ id: credentialIdBuf, type: "public-key" }],
+      userVerification: "required",
+      timeout:          60000,
+      extensions:       { prf: { eval: { first: prfSalt } } }
+    }});
+  } catch (e) {
+    if (e.name === "NotAllowedError") throw e; // user cancelled, do not swallow
+    return null; // credential not found, authenticator error, etc.
+  }
+
+  const prfResults = assertion.getClientExtensionResults()?.prf?.results;
+  if (!prfResults?.first) return null; // PRF extension not supported by this browser/authenticator
+
+  // Step 2: PRF succeeded. From here, errors must propagate (not silently downgrade).
+  // If SHAKE-256 fails, the user should see a clear error, not lose hardware protection.
+  const prfOutput = new Uint8Array(prfResults.first);
+  const keyBytes  = await _waKdfHash(prfOutput); // throws if background worker is dead
+  const aesKey    = await crypto.subtle.importKey(
+    "raw", keyBytes, { name: "AES-GCM" }, false, [usage]
+  );
+  return { aesKey, method: _WA_METHOD_PRF };
+}
+
+/**
+ * Path B: Derive AES key from credentialId (fallback).
+ * Requires biometric gate before derivation.
+ * @param {ArrayBuffer} credentialIdBuf
+ * @param {string} credentialIdB64
+ * @param {boolean} requireBiometric
+ * @param {string} usage - "encrypt" or "decrypt"
+ * @param {Uint8Array} salt - 16-byte random salt for PBKDF2
+ */
+async function _deriveKeyFallback(credentialIdBuf, credentialIdB64, requireBiometric, usage, salt) {
+  if (requireBiometric) {
+    await webAuthnAuthenticate(credentialIdB64); // biometric gate
+  }
+  const credBytes  = new Uint8Array(credentialIdBuf);
+  const shakeInput = await _waKdfHash(credBytes);
+  const km = await crypto.subtle.importKey("raw", shakeInput, "PBKDF2", false, ["deriveKey"]);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    km, { name: "AES-GCM", length: 256 }, false, [usage]
+  );
+  return { aesKey, method: _WA_METHOD_FALLBACK };
+}
+
+/**
+ * Encrypt private key with WebAuthn-derived AES-256-GCM.
+ * Tries PRF (hardware-bound) first, falls back to credentialId + biometric gate.
+ * v2 format with AAD = tipId.
+ *
+ * Note: PRF path triggers a second biometric prompt after passkey registration.
+ * This is architecturally required (PRF needs credentials.get(), which cannot
+ * reuse the registration response). The user sees:
+ *   1. Passkey registration dialog (from webAuthnRegister)
+ *   2. PRF authentication dialog (from _deriveKeyViaPRF)
+ * On browsers without PRF, only the registration dialog appears.
+ */
 async function encryptKeyWithWebAuthn(privKeyHex, credentialId, skipAuth = false) {
-  if (!skipAuth) await webAuthnAuthenticate(credentialId); // biometric gate
-  const credBytes = new Uint8Array(_waB64ToBuf(credentialId));
-  const salt = _waRandomBytes(16), iv = _waRandomBytes(12);
-  const key  = await _waKey(credBytes, salt, "encrypt");
-  const ct   = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(privKeyHex));
-  const out  = new Uint8Array(16 + 12 + ct.byteLength);
-  out.set(salt, 0); out.set(iv, 16); out.set(new Uint8Array(ct), 28);
+  const credBuf = _waB64ToBuf(credentialId);
+  const tipId   = document.getElementById("setup-tipid")?.value?.trim() || "";
+  const aad     = new TextEncoder().encode(tipId);
+
+  // Generate salt and IV upfront so they can be used in derivation
+  const salt = _waRandomBytes(16);
+  const iv   = _waRandomBytes(12);
+
+  // Always try PRF first (hardware-bound, Chrome/Edge 116+).
+  // _deriveKeyViaPRF returns null if PRF is unsupported by this browser/authenticator.
+  // It throws NotAllowedError if user cancels biometric, or throws Error if PRF
+  // succeeded but SHAKE-256 computation failed (prevents silent security downgrade).
+  let derived = await _deriveKeyViaPRF(credBuf, "encrypt");
+  if (!derived) {
+    // Fallback: use random salt in PBKDF2 (salt stored in blob for decrypt to read)
+    derived = await _deriveKeyFallback(credBuf, credentialId, !skipAuth, "encrypt", salt);
+  }
+
+  const { aesKey, method } = derived;
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: aad },
+    aesKey,
+    new TextEncoder().encode(privKeyHex)
+  );
+
+  // v2 format: magic("TIP2",4) + salt(16) + iv(12) + aadLen(2 LE) + aad + methodByte(1) + ciphertext
+  const aadLen = new Uint8Array(2);
+  aadLen[0] = aad.length & 0xFF;
+  aadLen[1] = (aad.length >> 8) & 0xFF;
+
+  const out = new Uint8Array(4 + 16 + 12 + 2 + aad.length + 1 + ct.byteLength);
+  let off = 0;
+  out.set(_WA_V2_MAGIC, off); off += 4;
+  out.set(salt, off); off += 16;
+  out.set(iv, off); off += 12;
+  out.set(aadLen, off); off += 2;
+  out.set(aad, off); off += aad.length;
+  out[off++] = method;
+  out.set(new Uint8Array(ct), off);
+
   return btoa(String.fromCharCode(...out));
 }
 
+/**
+ * Decrypt private key with WebAuthn. Requires biometric authentication.
+ * Auto-detects v2 (PRF/fallback + AAD) vs v1 (legacy credId + PBKDF2 200k).
+ */
 async function decryptKeyWithWebAuthn(encB64, credentialId) {
-  await webAuthnAuthenticate(credentialId); // biometric gate
-  const credBytes = new Uint8Array(_waB64ToBuf(credentialId));
-  const d    = Uint8Array.from(atob(encB64), c => c.charCodeAt(0));
-  const key  = await _waKey(credBytes, d.slice(0, 16), "decrypt");
-  const pt   = await crypto.subtle.decrypt({ name: "AES-GCM", iv: d.slice(16, 28) }, key, d.slice(28));
-  return new TextDecoder().decode(pt);
+  const d = Uint8Array.from(atob(encB64), c => c.charCodeAt(0));
+  const credBuf = _waB64ToBuf(credentialId);
+
+  if (_waIsV2(d)) {
+    // ── v2 format ──
+    let off = 4; // skip magic
+    const salt   = d.slice(off, off + 16); off += 16;
+    const iv     = d.slice(off, off + 12); off += 12;
+    const aadLen = d[off] | (d[off + 1] << 8); off += 2;
+    const aad    = d.slice(off, off + aadLen); off += aadLen;
+    const method = d[off++];
+    const ct     = d.slice(off);
+
+    let derived;
+    if (method === _WA_METHOD_PRF) {
+      // PRF derives key from hardware secret (salt not needed)
+      derived = await _deriveKeyViaPRF(credBuf, "decrypt");
+      if (!derived) {
+        throw new Error("This key was encrypted with Secure Enclave PRF. Use the original device and Chrome/Edge 116+.");
+      }
+    } else {
+      // Fallback: biometric gate required, pass stored salt for PBKDF2
+      derived = await _deriveKeyFallback(credBuf, credentialId, true, "decrypt", salt);
+    }
+
+    const { aesKey } = derived;
+    const pt = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv, additionalData: aad },
+      aesKey, ct
+    );
+    return new TextDecoder().decode(pt);
+
+  } else {
+    // ── v1 legacy format: salt(16) + iv(12) + ciphertext ──
+    await webAuthnAuthenticate(credentialId); // biometric gate
+    const credBytes = new Uint8Array(credBuf);
+    const key = await _waKey(credBytes, d.slice(0, 16), "decrypt");
+    const pt  = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: d.slice(16, 28) }, key, d.slice(28)
+    );
+    return new TextDecoder().decode(pt);
+  }
 }
 
 // ── FAQ data ──────────────────────────────────────────────────────────────────
 const FAQS = [
-  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted with AES-256-GCM using a key derived from your password via PBKDF2. Only the encrypted ciphertext is stored on this device. The TIP node receives only a cryptographic signature — it cannot reverse-engineer your private key from it." },
+  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted on this device using AES-256-GCM. On Chrome/Edge 116+, the encryption key is derived from a Secure Enclave hardware secret via WebAuthn PRF, gated by your biometrics. On other browsers, the key is derived via SHAKE-256 and PBKDF2 (200,000 rounds) from your passkey credential or password. Only the encrypted ciphertext is stored. The TIP node receives only cryptographic signatures." },
   { q: "What is a CTID and where do I put it?", a: "A CTID (Content Transaction ID) is a permanent URI like tip://c/OH-7f2a91bc3d5e4a-a3f8. It identifies your content on the TIP DAG. Paste it anywhere in your content: video description, article footer, post caption. Viewers with the TIP extension see it as a clickable verification link. Viewers without the extension can go to theailab.org/verify/[ctid] to verify manually." },
   { q: "What if I pick OH but my content is actually AI-generated?", a: "The TIP node runs an AI pre-scan calibrated to your creator history. If you declare OH but the AI classifier detects probable AI generation, your trust score decreases: -100 for a first offense, up to -350 for repeated offenses. Over-declaring AI involvement (e.g. declaring AA when it's actually OH) carries zero penalty. When in doubt, declare conservatively." },
   { q: "What happens if the platform already supports TIP natively?", a: "The extension automatically detects TIP-* HTTP headers in the platform's responses. Once those headers are present, the extension reads them instead of using the creator panel. The registration panel hides itself. You don't need to do anything — it transitions seamlessly." },
@@ -174,10 +365,20 @@ async function loadIdentity() {
     document.getElementById("display-setup-date").textContent = `Connected ${date}`;
     document.getElementById("pubkey-display").textContent = res.data.publicKey || "(key is stored encrypted)";
     const secEl = document.getElementById("display-security-method");
+    const cpBtn = document.getElementById("change-password-btn");
+    const sm = res.data.securityMethod || "";
+    const isWAMethod = sm === "webauthn-prf" || sm === "webauthn-fallback" || sm === "webauthn";
     if (secEl) {
-      const isWA = res.data.securityMethod === "webauthn";
-      secEl.textContent = isWA ? "✓ Key secured with passkey" : "✓ Key secured with AES-256-GCM";
+      if (sm === "webauthn-prf") {
+        secEl.textContent = "\u2713 Key secured with Secure Enclave (PRF)";
+      } else if (isWAMethod) {
+        secEl.textContent = "\u2713 Key secured with passkey (biometric-gated)";
+      } else {
+        secEl.textContent = "\u2713 Key secured with AES-256-GCM";
+      }
     }
+    // Hide change-password for WebAuthn users (key is passkey-encrypted, not password-encrypted)
+    if (cpBtn) cpBtn.style.display = isWAMethod ? "none" : "";
 
     // Fetch live score
     if (res.data.tipId) {
@@ -312,9 +513,19 @@ document.getElementById("s2-wa-btn").addEventListener("click", async () => {
     const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId, true); // skip re-auth — just registered
     _tmpPrivKey = null;  // clear from memory immediately after encryption
 
+    // Detect method from encrypted blob (v2 format has method byte)
+    const encBlob = Uint8Array.from(atob(encryptedKey), c => c.charCodeAt(0));
+    let securityMethod = "webauthn";
+    if (_waIsV2(encBlob)) {
+      // magic(4) + salt(16) + iv(12) = offset 32, aadLen at [32,33]
+      const aadLen = encBlob[32] | (encBlob[33] << 8);
+      const methodByte = encBlob[34 + aadLen]; // aad starts at 34, method after aad
+      securityMethod = methodByte === _WA_METHOD_PRF ? "webauthn-prf" : "webauthn-fallback";
+    }
+
     const publicKey = _tmpPubKey || "imported";
     const res = await msg("SETUP_IDENTITY_WEBAUTHN", {
-      payload: { tipId, publicKey, encryptedKey, credentialId },
+      payload: { tipId, publicKey, encryptedKey, credentialId, securityMethod },
     });
     if (!res?.ok) throw new Error(res?.error || "Failed to save.");
     toast("✓ Passkey registered! Your TIP-ID is connected.");
@@ -726,7 +937,7 @@ document.querySelectorAll('#lc-origin-btns .lc-origin-btn').forEach(btn => {
 
 // ── Auth UI ───────────────────────────────────────────────────────────────────
 function lcUpdateAuthUI() {
-  const isWA = lcSecMethod === 'webauthn' && !!lcCredId;
+  const isWA = (lcSecMethod === 'webauthn' || lcSecMethod === 'webauthn-prf' || lcSecMethod === 'webauthn-fallback') && !!lcCredId;
   lcShow('lc-pw-field', !isWA);
   lcShow('lc-wa-note', isWA);
 }
@@ -777,7 +988,7 @@ document.getElementById('lc-register-btn')?.addEventListener('click', async () =
 
   let res;
   try {
-    if (lcSecMethod === 'webauthn' && lcCredId) {
+    if ((lcSecMethod === 'webauthn' || lcSecMethod === 'webauthn-prf' || lcSecMethod === 'webauthn-fallback') && lcCredId) {
       const stored = await chrome.storage.local.get(['encryptedKey', 'tipId']);
       // decryptKeyWithWebAuthn triggers the system passkey popup, then decrypts
       const privateKeyHex = await decryptKeyWithWebAuthn(stored.encryptedKey, lcCredId);

@@ -202,57 +202,139 @@ async function generateCTID(originCode, content, authorTipId) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PRIVATE KEY ENCRYPTION - AES-256-GCM + PBKDF2
+// PRIVATE KEY ENCRYPTION - AES-256-GCM + SHAKE-256 + PBKDF2
+//
+// v2 format (new): magic("TIP2",4) + salt(16) + iv(12) + aadLen(2 LE) + aad + ciphertext
+//   KDF: SHAKE-256(password || "tip-pqc-key-wrap")[:32] -> PBKDF2 200k -> AES-256
+//   AAD: tipId (binds ciphertext to this specific identity)
+//
+// v1 format (legacy): salt(16) + iv(12) + ciphertext
+//   KDF: PBKDF2(password, 100k) -> AES-256  (no SHAKE-256, no AAD)
+//   Detected by absence of "TIP2" magic at positions 0-3
 // ════════════════════════════════════════════════════════════════════════════
+
+const _KDF_DOMAIN = "tip-pqc-key-wrap";
+// 4-byte magic header for v2 format. Probability of random v1 salt matching: 1/2^32 (~0.00000002%).
+const _V2_MAGIC   = new Uint8Array([0x54, 0x49, 0x50, 0x32]); // ASCII "TIP2"
+
+function _isV2(data) {
+  return data.length >= 4
+    && data[0] === 0x54 && data[1] === 0x49
+    && data[2] === 0x50 && data[3] === 0x32;
+}
+
+/**
+ * SHAKE-256(input || domain_separator) -> 32 bytes.
+ * Used for key derivation pre-hash in all encryption paths.
+ * @param {Uint8Array|string} input
+ * @returns {Uint8Array} 32-byte hash
+ */
+function kdfHash(input) {
+  const inputBytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  const domain     = new TextEncoder().encode(_KDF_DOMAIN);
+  const combined   = new Uint8Array(inputBytes.length + domain.length);
+  combined.set(inputBytes);
+  combined.set(domain, inputBytes.length);
+  return _shake256(combined, { dkLen: 32 });
+}
 
 /**
  * Encrypt a private key hex string with a password.
+ * v2: SHAKE-256(password || domain) -> PBKDF2 200k -> AES-256-GCM with AAD.
  * @param {string} privateKeyHex
  * @param {string} password
- * @returns {Promise<string>} encrypted base64 string (salt+iv+ciphertext)
+ * @param {string} [tipId=""] - TIP-ID for AAD binding (v2). Omit for backward compat.
+ * @returns {Promise<string>} encrypted base64 string
  */
-async function encryptPrivateKey(privateKeyHex, password) {
-  const salt       = crypto.getRandomValues(new Uint8Array(16));
-  const iv         = crypto.getRandomValues(new Uint8Array(12));
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
-  );
+async function encryptPrivateKey(privateKeyHex, password, tipId) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const aad  = new TextEncoder().encode(tipId || "");
+
+  // SHAKE-256 pre-hash: SHAKE-256(password || "tip-pqc-key-wrap")[:32]
+  const shakeOutput = kdfHash(password);
+  const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
   const aesKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
     keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt"]
   );
+
   const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv, additionalData: aad },
     aesKey,
     new TextEncoder().encode(privateKeyHex)
   );
-  const result = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
-  result.set(salt, 0);
-  result.set(iv, salt.length);
-  result.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+  // v2 format: magic(4) + salt(16) + iv(12) + aadLen(2 LE) + aad + ciphertext
+  const aadLen = new Uint8Array(2);
+  aadLen[0] = aad.length & 0xFF;
+  aadLen[1] = (aad.length >> 8) & 0xFF;
+
+  const result = new Uint8Array(4 + salt.length + iv.length + 2 + aad.length + encrypted.byteLength);
+  let offset = 0;
+  result.set(_V2_MAGIC, offset); offset += 4;
+  result.set(salt, offset); offset += salt.length;
+  result.set(iv, offset); offset += iv.length;
+  result.set(aadLen, offset); offset += 2;
+  result.set(aad, offset); offset += aad.length;
+  result.set(new Uint8Array(encrypted), offset);
+
   return btoa(String.fromCharCode(...result));
 }
 
 /**
  * Decrypt a private key.
+ * Auto-detects v2 (SHAKE-256 + AAD + PBKDF2 200k) vs v1 (PBKDF2 100k) format.
  * @param {string} encryptedB64
  * @param {string} password
+ * @param {string} [tipId=""] - TIP-ID for AAD verification (v2). Ignored for v1.
  * @returns {Promise<string>} privateKeyHex
  */
-async function decryptPrivateKey(encryptedB64, password) {
-  const data       = Uint8Array.from(atob(encryptedB64), c => c.charCodeAt(0));
-  const salt       = data.slice(0, 16);
-  const iv         = data.slice(16, 28);
-  const ciphertext = data.slice(28);
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
-  );
-  const aesKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
-    keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
-  );
-  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertext);
-  return new TextDecoder().decode(decrypted);
+async function decryptPrivateKey(encryptedB64, password, tipId) {
+  const data = Uint8Array.from(atob(encryptedB64), c => c.charCodeAt(0));
+
+  // Detect version: v2 starts with "TIP2" magic, v1 has raw salt at byte 0
+  if (_isV2(data)) {
+    // ── v2 format: SHAKE-256 + PBKDF2 200k + AAD ──
+    let offset = 4; // skip magic
+    const salt = data.slice(offset, offset + 16); offset += 16;
+    const iv   = data.slice(offset, offset + 12); offset += 12;
+    const aadLen = data[offset] | (data[offset + 1] << 8); offset += 2;
+    const aad  = data.slice(offset, offset + aadLen); offset += aadLen;
+    const ciphertext = data.slice(offset);
+
+    // If caller provides tipId, use it for AAD verification; otherwise use stored AAD
+    const aadForDecrypt = (tipId !== undefined && tipId !== null)
+      ? new TextEncoder().encode(tipId || "")
+      : aad;
+
+    const shakeOutput = kdfHash(password);
+    const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
+    const aesKey = await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+      keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
+    );
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv, additionalData: aadForDecrypt },
+      aesKey, ciphertext
+    );
+    return new TextDecoder().decode(decrypted);
+
+  } else {
+    // ── v1 legacy format: raw PBKDF2 100k, no SHAKE-256, no AAD ──
+    const salt       = data.slice(0, 16);
+    const iv         = data.slice(16, 28);
+    const ciphertext = data.slice(28);
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
+    );
+    const aesKey = await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
+      keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
+    );
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertext);
+    return new TextDecoder().decode(decrypted);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -278,4 +360,5 @@ export {
   generateCTID,
   encryptPrivateKey,
   decryptPrivateKey,
+  kdfHash,
 };
