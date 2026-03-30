@@ -52,10 +52,22 @@ function initScoring(dag, config) {
       switch (tx.tx_type) {
 
         case TX_TYPES.REGISTER_IDENTITY:
-          score = tx.data.attested ? 550 : 500;
-          reason = tx.data.attested ? "Registration with social attestation (+50)" : "Registration";
-          delta = tx.data.attested ? 50 : 0;
+          score = tx.data.attested || tx.data.social_attested ? 550 : 500;
+          reason = tx.data.attested || tx.data.social_attested ? "Registration with social attestation (+50)" : "Registration";
+          delta = tx.data.attested || tx.data.social_attested ? 50 : 0;
           lastCleanStart = new Date(tx.timestamp);
+          break;
+
+        case TX_TYPES.REGISTER_CONTENT:
+          delta = 0;
+          reason = `Content registered: ${tx.data.ctid || "unknown"} (${tx.data.origin_code || "?"})`;
+          break;
+
+        case TX_TYPES.CONTENT_DISPUTED:
+          delta = 0;
+          reason = tx.data.auto
+            ? `Auto-dispute: ${tx.data.reason || "pre-scan"} on ${tx.data.ctid || "unknown"}`
+            : `Dispute filed on ${tx.data.ctid || "unknown"}`;
           break;
 
         case TX_TYPES.CONTENT_VERIFIED:
@@ -92,6 +104,8 @@ function initScoring(dag, config) {
 
       if (delta !== 0) {
         score = Math.max(0, Math.min(1000, score + delta));
+      }
+      if (reason) {
         history.push({
           tx_id: tx.tx_id,
           tx_type: tx.tx_type,
