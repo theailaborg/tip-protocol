@@ -41,6 +41,7 @@ const {
   hashContent, perceptualHashText,
   generateTIPID, generateCTID,
   computeTxId,
+  verifyTxId,
   verifyBodySignature,
 } = require("../../shared/crypto");
 
@@ -311,6 +312,11 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const content   = dag.getContentByAuthor(req.params.tipId);
     const revoked   = dag.isRevoked(req.params.tipId);
 
+    // Verify the underlying transaction
+    const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
+    const txValid = tx ? verifyTxId(tx) : false;
+    const prevValid = tx && tx.prev ? tx.prev.every(p => !!dag.getTx(p)) : false;
+
     res.json({
       tip_id:            rec.tip_id,
       region:            rec.region,
@@ -324,6 +330,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       tier_color:        scoreData.tier.color,
       content_count:     content.length,
       registered_at:     rec.registered_at,
+      verification: {
+        tx_exists:    !!tx,
+        tx_id_valid:  txValid,
+        prev_valid:   prevValid,
+        on_dag:       true,
+      },
     });
   });
 
@@ -547,10 +559,29 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   app.get("/v1/content/:ctid", (req, res) => {
     const rec = dag.getContent(req.params.ctid);
     if (!rec) return res.status(404).json({ error: "Content record not found" });
+
+    // Verify the underlying transaction
+    const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
+    const txValid = tx ? verifyTxId(tx) : false;
+    const prevValid = tx && tx.prev ? tx.prev.every(p => !!dag.getTx(p)) : false;
+
+    // Verify author identity exists and is active
+    const author = dag.getIdentity(rec.author_tip_id);
+    const authorValid = !!author && author.status === "active" && !dag.isRevoked(rec.author_tip_id);
+
     res.json({
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       author_score: scoring.getScore(rec.author_tip_id).score,
+      author_tier:  scoring.getScore(rec.author_tip_id).tier.name,
+      verification: {
+        tx_exists:      !!tx,
+        tx_id_valid:    txValid,
+        prev_valid:     prevValid,
+        author_valid:   authorValid,
+        author_revoked: dag.isRevoked(rec.author_tip_id),
+        on_dag:         true,
+      },
     });
   });
 
