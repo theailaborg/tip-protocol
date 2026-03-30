@@ -433,8 +433,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!identity) return res.status(404).json({ error: "Author TIP-ID not found" });
       if (dag.isRevoked(author_tip_id)) return res.status(403).json({ error: "Author TIP-ID is revoked" });
 
-      // Server computes content_hash — client signs { author_tip_id, origin_code, content_hash }
-      const contentHash = hashContent(content);
+      // Server computes content_hash — must match what client signed (full SHAKE-256)
+      const contentHash = shake256(content);
 
       // Verify body signature against server-computed content_hash
       const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"];

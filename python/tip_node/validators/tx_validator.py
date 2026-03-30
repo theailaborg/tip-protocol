@@ -49,8 +49,8 @@ class ValidationResult:
 
 # ─── Regex patterns ───────────────────────────────────────────────────────────
 _TIP_ID_RE   = re.compile(r"^tip://id/[A-Z]{2,}-[0-9a-f]{16}$")
-_CTID_RE     = re.compile(r"^tip://c/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$")
-_HASH14_RE   = re.compile(r"^[0-9a-f]{14}$")
+_CTID_RE     = re.compile(r"^tip://c/(OH|AA|AG|MX)-[0-9a-f]{64}-[0-9a-f]{4}$")
+_HASH64_RE   = re.compile(r"^[0-9a-f]{64}$")
 _HEX_TX_RE   = re.compile(r"^[0-9a-f]{64}$")
 _VP_ID_RE    = re.compile(r"^tip://id/VP-")
 _ISO_TS_RE   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
@@ -253,7 +253,7 @@ def _validate_business(tx: dict) -> ValidationResult:
         if ctid and not _CTID_RE.match(ctid):
             errors.append(
                 f"Invalid CTID format: '{ctid}'. "
-                f"Expected: tip://c/[ORIGIN]-[14hex]-[4hex]"
+                f"Expected: tip://c/[ORIGIN]-[64hex]-[4hex]"
             )
         origin = data.get("origin_code", "")
         if origin and not Origin.is_valid(origin):
@@ -261,8 +261,8 @@ def _validate_business(tx: dict) -> ValidationResult:
                 f"Invalid origin_code: '{origin}'. Must be OH, AA, AG, or MX"
             )
         ch = data.get("content_hash", "")
-        if ch and not _HASH14_RE.match(ch):
-            errors.append("content_hash must be a 14-char lowercase hex string")
+        if ch and not _HASH64_RE.match(ch):
+            errors.append("content_hash must be a 64-char lowercase hex string")
 
     elif tx_type == TxType.SCORE_UPDATE:
         score_after = data.get("score_after")

@@ -124,10 +124,10 @@ def test_crypto() -> None:
           tip_id)
 
     # CTID format
-    h = hash_content("hello world test content here for ctid")
+    h = shake256("hello world test content here for ctid")
     ctid = generate_ctid("OH", h, tip_id)
-    check("CTID URI format: tip://c/OH-[14hex]-[4hex]",
-          bool(re.match(r"^tip://c/OH-[0-9a-f]{14}-[0-9a-f]{4}$", ctid)),
+    check("CTID URI format: tip://c/OH-[64hex]-[4hex]",
+          bool(re.match(r"^tip://c/OH-[0-9a-f]{64}-[0-9a-f]{4}$", ctid)),
           ctid)
 
     # ZK proof
@@ -217,7 +217,7 @@ def test_dag() -> None:
     check("Score clamped to 0 min",            dag.get_score(tip_id)["score"] == 0)
 
     # Content CRUD
-    h = hash_content("DAG store test article content for test suite")
+    h = shake256("DAG store test article content for test suite")
     ctid = generate_ctid("AA", h, tip_id)
     dag.save_content({"ctid": ctid, "origin_code": "AA", "content_hash": h,
                       "author_tip_id": tip_id, "status": "verified",
@@ -448,7 +448,7 @@ def test_validator() -> None:
         "vp_id": vpid, "verification_tier": "T1", "founding": False,
         "status": "active", "registered_at": "2026-03-15T00:00:00+00:00",
     })
-    h    = hash_content("content for validator integration test article")
+    h    = shake256("content for validator integration test article")
     ctid = generate_ctid("OH", h, tid)
 
     # Bad origin code
@@ -556,13 +556,13 @@ def test_validator() -> None:
     check("Green-tier VP accepted [all layers]", r.valid, str(r.errors))
 
     # Real ML-DSA-65 signature: valid
-    ctid2  = generate_ctid("AA", hash_content("signed content for crypto test"), tid)
+    ctid2  = generate_ctid("AA", shake256("signed content for crypto test"), tid)
     _signed_body = {
         "tx_type":   TxType.REGISTER_CONTENT,
         "timestamp": "2026-03-14T12:00:00+00:00",
         "prev": dag.get_recent_prev(),
         "data":      {"ctid": ctid2, "origin_code": "AA",
-                      "content_hash": hash_content("signed content for crypto test"),
+                      "content_hash": shake256("signed content for crypto test"),
                       "author_tip_id": tid, "signature": "placeholder"},
     }
     _signed_body["tx_id"] = compute_tx_id(_signed_body)
@@ -570,9 +570,8 @@ def test_validator() -> None:
     r = validate_transaction(signed_tx, dag, author_public_key=kp["publicKey"], skip_state=True)
     check("Valid ML-DSA-65 signature accepted [crypto]", r.valid, str(r.errors))
 
-    # Tampered tx — use a valid-format 14-char hex hash so it reaches the crypto layer
-    import hashlib
-    bad_hash = hashlib.shake_256(b"tampered").hexdigest(7)  # 14 hex chars
+    # Tampered tx — use a valid-format 64-char hex hash so it reaches the crypto layer
+    bad_hash = shake256("tampered")  # 64 hex chars
     tampered = dict(signed_tx)
     tampered = {**signed_tx, "data": {**signed_tx["data"], "content_hash": bad_hash}}
     r = validate_transaction(tampered, dag, author_public_key=kp["publicKey"], skip_state=True)
@@ -954,7 +953,7 @@ def test_api_endpoints() -> None:
 
     # 9.11 POST /v1/content/register
     content_text = "This is a test article for the Python API endpoint tests"
-    ct_sig_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
+    ct_sig_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": shake256(content_text)}
     st, body = _post(f"{base}/v1/content/register", {
         "author_tip_id": test_tip_id, "origin_code": "OH", "content": content_text,
         "signature": _sign_body(ct_sig_fields, test_author_priv),
@@ -1087,7 +1086,7 @@ def test_integration_flow() -> None:
     # Step 3: Register Content (sign with author's private key from identity registration)
     author_private_key = kp_test["privateKey"]
     content_text = "Integration test: original human content for full flow"
-    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
+    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": shake256(content_text)}
     st, ct_body = _post(f"{base}/v1/content/register", {
         "author_tip_id": tip_id, "origin_code": "OH", "content": content_text,
         "signature": _sign_body(ct_sig_fields, author_private_key),
@@ -1205,7 +1204,7 @@ def test_gossip_broadcast_wiring() -> None:
     broadcast_calls.clear()
     author_priv = kp_test["privateKey"]
     content_text = "Gossip broadcast wiring test content article."
-    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": hash_content(content_text)}
+    ct_sig_fields = {"author_tip_id": tip_id, "origin_code": "OH", "content_hash": shake256(content_text)}
     st, body = _post(f"{base}/v1/content/register", {
         "author_tip_id": tip_id, "origin_code": "OH", "content": content_text,
         "signature": _sign_body(ct_sig_fields, author_priv),

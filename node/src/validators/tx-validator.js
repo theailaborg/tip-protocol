@@ -178,17 +178,17 @@ function validateBusinessRules(tx) {
     }
 
     case TX_TYPES.REGISTER_CONTENT: {
-      // CTID format: tip://c/[OH|AA|AG|MX]-[14hex]-[4hex]
-      if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$/.test(d.ctid)) {
-        errors.push(`Invalid CTID format: "${d.ctid}". Expected: tip://c/[ORIGIN]-[14hex]-[4hex]`);
+      // CTID format: tip://c/[OH|AA|AG|MX]-[64hex]-[4hex]
+      if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{64}-[0-9a-f]{4}$/.test(d.ctid)) {
+        errors.push(`Invalid CTID format: "${d.ctid}". Expected: tip://c/[ORIGIN]-[64hex]-[4hex]`);
       }
       // Origin code must be valid
       if (d.origin_code && !Object.keys(ORIGIN).includes(d.origin_code)) {
         errors.push(`Invalid origin_code: "${d.origin_code}". Must be OH, AA, AG, or MX`);
       }
-      // Content hash must be 14-char hex
-      if (d.content_hash && !/^[0-9a-f]{14}$/.test(d.content_hash)) {
-        errors.push(`content_hash must be a 14-char hex string`);
+      // Content hash must be 64-char hex (full SHAKE-256)
+      if (d.content_hash && !/^[0-9a-f]{64}$/.test(d.content_hash)) {
+        errors.push(`content_hash must be a 64-char hex string`);
       }
       break;
     }

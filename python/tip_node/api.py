@@ -538,7 +538,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "signature is required"}); return
 
         # Server computes content_hash — client signs { author_tip_id, origin_code, content_hash }
-        content_hash = hash_content(content)
+        content_hash = shake256(content)
 
         _CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"]
         sig_body = {"author_tip_id": author_tip_id, "origin_code": origin_code, "content_hash": content_hash}
