@@ -47,7 +47,13 @@ services:
     labels:
       com.theailab.service:    "tip-protocol-node"
       com.theailab.version:    "2.2.0"
+    networks:
+      - tip-vp_default  # join VP's network so cloudflared can reach us
 
 volumes:
   tip-data:
     driver: local
+
+networks:
+  tip-vp_default:
+    external: true  # created by the VP docker-compose
