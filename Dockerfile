@@ -6,9 +6,9 @@
 #
 # Usage:
 #   docker build -t tip-node .
-#   docker run -p 4000:4000 -p 4001:4001 --env-file .env tip-node
+#   docker run -p 4000:4000 --env-file .env tip-node
 #
-# Or use docker-compose.yml for the full stack with PostgreSQL.
+# Or use docker-compose.yml for the full stack.
 #
 # Author: Dinesh Mendhe <chairman@theailab.org>
 # Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -22,9 +22,11 @@ WORKDIR /build
 # Install native build tools required by better-sqlite3
 RUN apk add --no-cache python3 make g++
 
-# Copy package files and install production dependencies only
+# Copy package files and install production dependencies
+# Install all production dependencies (root + node workspace)
+COPY package*.json ./
 COPY node/package*.json ./node/
-RUN cd node && npm ci --omit=dev
+RUN npm install --omit=dev
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
@@ -32,7 +34,7 @@ FROM node:20-alpine AS runtime
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"
 LABEL org.opencontainers.image.description="Trust Identity Protocol -- full node, REST API, DAG, trust scoring"
-LABEL org.opencontainers.image.version="2.0.0"
+LABEL org.opencontainers.image.version="2.2.0"
 LABEL org.opencontainers.image.authors="Dinesh Mendhe <chairman@theailab.org>"
 LABEL org.opencontainers.image.vendor="The AI Lab Intelligence Unobscured, Inc."
 LABEL org.opencontainers.image.url="https://theailab.org"
@@ -46,15 +48,24 @@ RUN addgroup -g 1001 -S tipnode && \
 WORKDIR /app
 
 # Copy built node_modules from build stage
-COPY --from=build /build/node/node_modules ./node/node_modules
+COPY --from=build /build/node_modules ./node_modules
 
 # Copy application source
-COPY node/src/        ./node/src/
+COPY node/src/         ./node/src/
 COPY node/package.json ./node/package.json
-COPY shared/          ./shared/
-COPY scripts/seed.js  ./scripts/seed.js
-COPY NOTICE.txt       ./NOTICE.txt
-COPY LICENSE.txt      ./LICENSE.txt
+COPY shared/           ./shared/
+COPY circuits/         ./circuits/
+COPY package.json      ./package.json
+
+# Copy genesis data (seed.db for first boot auto-copy)
+COPY genesis-data/     ./genesis-data/
+
+# Copy scripts
+COPY scripts/seed.js   ./scripts/seed.js
+
+# Copy license/notice if they exist
+COPY NOTICE.tx[t]      ./
+COPY LICENSE.tx[t]     ./
 
 # Create data directory with correct ownership
 RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
@@ -62,17 +73,14 @@ RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
 # Switch to non-root user
 USER tipnode
 
-# REST API port
+# REST API + WebSocket gossip on same port
 EXPOSE 4000
 
-# Gossip protocol port (P2P DAG propagation)
-EXPOSE 4001
-
-# Health check -- REST API must respond within 10 seconds
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:4000/health || exit 1
 
-# Data directory as a volume so the DAG persists across container restarts
+# Data directory as a volume
 VOLUME ["/app/data"]
 
 # Entry point

@@ -123,6 +123,7 @@ temp/
 *.backup
 issues.md
 todo.md
+pilot.md
 
 # ─── Package locks (commit these for apps, not libraries) ────────────────────
 # Uncomment the lines below if this is a library package:
