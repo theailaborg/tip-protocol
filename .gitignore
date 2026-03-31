@@ -14,9 +14,15 @@ genesis_root_key.*
 *.p12
 *.pfx
 
-# Genesis production data
-genesis-data/
-seed-output-production.json
+# Genesis private keys — NEVER commit
+genesis-data/founder-keys.json
+genesis-data/founding-vp-keys.json
+genesis-data/genesis-keys.json
+
+# Genesis public data — OK to commit
+!genesis-data/seed.db
+!genesis-data/seed-output.json
+!genesis-data/genesis.json
 
 # ─── Node.js ─────────────────────────────────────────────────────────────────
 node_modules/
@@ -62,6 +68,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+!genesis-data/seed.db
 data/
 !data/.gitkeep
 
