@@ -122,8 +122,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   // ── CORS (before all routes including static) ───────────────────────────────
   app.use(cors({ origin: config.corsOrigins, methods: ["GET","POST","PUT","DELETE","OPTIONS"] }));
 
-  // ── ZK circuit files (before auth/rate-limit — no auth needed) ─────────────
+  // ── Static files (before auth/rate-limit) ───────────────────────────────────
   app.use("/v1/zk", express.static(path.resolve(__dirname, "../../circuits")));
+  app.use("/download", express.static(path.resolve(__dirname, "../../browser-extension")));
 
   // ── Middleware ──────────────────────────────────────────────────────────────
   app.use(helmet({ contentSecurityPolicy: false }));

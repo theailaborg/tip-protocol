@@ -55,6 +55,7 @@ COPY node/src/         ./node/src/
 COPY node/package.json ./node/package.json
 COPY shared/           ./shared/
 COPY circuits/         ./circuits/
+COPY browser-extension/*.zip ./browser-extension/
 COPY package.json      ./package.json
 
 # Copy genesis data (seed.db for first boot auto-copy)
