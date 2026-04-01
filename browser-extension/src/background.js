@@ -23,9 +23,8 @@
 
 "use strict";
 
-import { shake256, signData, generateKeypair, encryptPrivateKey, decryptPrivateKey, computeTIPID, kdfHash } from "./crypto.js";
+import { shake256, signData, signBody, generateKeypair, encryptPrivateKey, decryptPrivateKey, encryptWithWebAuthn, decryptWithWebAuthn, computeTIPID, kdfHash } from "./crypto.js";
 import { buildContentString } from "./tip-types.js";
-import { signContentRegister } from "./tip-sign.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
 const CACHE_TTL    = 5 * 60 * 1000;   // 5 min
@@ -174,9 +173,13 @@ async function registerContent({ tipId, originCode, typeId, values, content, tit
     throw new Error("No content to register. Fill in the required fields first.");
   }
 
-  // 4. Sign content with ML-DSA-65 canonical JSON body signature
+  // 4. Sign content: signBody({ author_tip_id, origin_code, content_hash }, privateKey)
   const authorTipId = tipId || stored.tipId;
-  const { signature, contentHash } = signContentRegister(authorTipId, originCode, contentToHash, privateKey);
+  const contentHash = await shake256(contentToHash);
+  const signature   = await signBody(
+    { author_tip_id: authorTipId, origin_code: originCode, content_hash: contentHash },
+    privateKey
+  );
 
   // 5. POST to TIP node
   const result = await tipFetch("/v1/content/register", {
@@ -250,6 +253,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
 
+    // ── VP app connection (via content script postMessage relay) ────────────
+    case "TIP_CONNECT": {
+      const { tip_id, encrypted_key, public_key, credential_id } = msg;
+      if (!tip_id || !encrypted_key) {
+        sendResponse({ ok: false, error: "tip_id and encrypted_key required" });
+        return false;
+      }
+      return respond(chrome.storage.local.set({
+        tipId:          tip_id,
+        publicKey:      public_key || "",
+        encryptedKey:   encrypted_key,
+        credentialId:   credential_id || "",
+        securityMethod: "webauthn",
+        setupComplete:  true,
+        setupDate:      new Date().toISOString(),
+        connected:      false,
+      }).then(() => {
+        // Notify user — update badge + show notification
+        chrome.action.setBadgeText({ text: "NEW" }).catch(() => {});
+        chrome.action.setBadgeBackgroundColor({ color: "#B8942E" }).catch(() => {});
+        chrome.notifications.create("tip-connect", {
+          type:    "basic",
+          iconUrl: "icons/icon128.png",
+          title:   "TIP Identity Received",
+          message: `TIP-ID: ${tip_id.slice(-16)}. Open extension to connect.`,
+        }).catch(() => {});
+        return { ok: true, tip_id };
+      }));
+    }
+
     // ── Viewer: get TIP data for current tab ──────────────────────────────────
     case "GET_TAB_DATA": {
       const tabId = msg.tabId || sender.tab?.id;
@@ -299,7 +332,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const stored = await chrome.storage.local.get(["tipId"]);
         const contentToHash = title ? `${title}\n${content}` : content;
         const authorTipId = tipId || stored.tipId;
-        const { signature } = signContentRegister(authorTipId, originCode, contentToHash, privateKeyHex);
+        const contentHash = await shake256(contentToHash);
+        const signature = await signBody(
+          { author_tip_id: authorTipId, origin_code: originCode, content_hash: contentHash },
+          privateKeyHex
+        );
         return tipFetch("/v1/content/register", {
           method: "POST",
           body:   JSON.stringify({
@@ -363,6 +400,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const platform = detectUploadPlatform(msg.url);
       sendResponse({ platform });
       return false;
+    }
+
+    // ── Verify ownership: sign challenge with decrypted key, call node ──────
+    case "VERIFY_OWNERSHIP": {
+      return respond((async () => {
+        const { privateKeyHex } = msg.payload;
+        if (!privateKeyHex) throw new Error("Private key required");
+        const stored = await chrome.storage.local.get(["tipId"]);
+        if (!stored.tipId) throw new Error("No TIP-ID stored");
+
+        const challenge = crypto.randomUUID();
+        const signature = await signData(challenge, privateKeyHex);
+
+        const result = await tipFetch("/v1/identity/verify-ownership", {
+          method: "POST",
+          body: JSON.stringify({
+            tip_id:    stored.tipId,
+            challenge,
+            signature,
+          }),
+        });
+
+        if (result.verified) {
+          await chrome.storage.local.set({
+            connected:   true,
+            score:       result.score,
+            tier:        result.tier,
+            status:      result.status,
+            verifiedAt:  new Date().toISOString(),
+          });
+        }
+        return result;
+      })());
     }
 
     // ── Node health check ─────────────────────────────────────────────────────

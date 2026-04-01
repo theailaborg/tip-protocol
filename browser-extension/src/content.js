@@ -27,6 +27,28 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   if (window.__tipContentInjected) return;
   window.__tipContentInjected = true;
 
+  // ── Announce extension presence (for VP app detection) ────────────────────
+  document.documentElement.dataset.tipExtension = "ready";
+
+  // ── VP app connection via window.postMessage (cross-browser) ──────────────
+  window.addEventListener("message", (e) => {
+    if (e.data?.type === "TIP_CONNECT" && e.data?.source === "tip-vp-portal") {
+      chrome.runtime.sendMessage({
+        type:           "TIP_CONNECT",
+        tip_id:         e.data.tip_id,
+        encrypted_key:  e.data.encrypted_key,
+        public_key:     e.data.public_key,
+        credential_id:  e.data.credential_id,
+      }, (res) => {
+        window.postMessage({
+          type: "TIP_CONNECT_ACK",
+          ok:   res?.ok,
+          error: res?.error,
+        }, "*");
+      });
+    }
+  });
+
   // ── Design tokens ───────────────────────────────────────────────────────────
   const C = {
     navy: "#0C1A3A", gold: "#B8942E", goldBg: "#B8942E15",

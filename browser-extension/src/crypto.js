@@ -4,231 +4,221 @@
  *
  * Provides:
  *   - SHAKE-256 hashing (FIPS 202 via @noble/hashes)
- *   - Ed25519 + ML-DSA-65 hybrid key generation and signing
- *       Classical layer : Ed25519  (RFC 8032)
- *       Post-quantum layer: ML-DSA-65 (FIPS 204)
- *       Private key stored: 32-byte master seed (64 hex chars)
- *       Both layers are derived from the master seed deterministically.
- *   - Private key encryption/decryption via AES-256-GCM + PBKDF2
+ *   - ML-DSA-65 key generation and signing (FIPS 204 via @noble/post-quantum)
+ *   - Private key encryption via AES-256-GCM + WebAuthn (passkey-derived key)
+ *   - Fallback: AES-256-GCM + PBKDF2 (password-based, legacy)
  *   - TIP-ID and CTID generation
+ *   - Canonical JSON for body signatures (matches node's canonicalJson)
  *
  * Call `await initCrypto()` once at startup before using any function.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
- * License: TIPCL-1.0
  */
 
 "use strict";
 
-// ════════════════════════════════════════════════════════════════════════════
-// Static imports — resolved by esbuild at build time and inlined into the
-// bundle. No runtime module resolution needed in the service worker.
-// ════════════════════════════════════════════════════════════════════════════
-
 import { ml_dsa65 }             from "@noble/post-quantum/ml-dsa";
 import { shake256 as _shake256 } from "@noble/hashes/sha3";
-import { ed25519 }               from "@noble/curves/ed25519";
 
-/**
- * No-op — kept for API compatibility with tests and background.js.
- * Modules are resolved at bundle time via static imports above.
- */
 async function initCrypto() {}
-
-// ════════════════════════════════════════════════════════════════════════════
-// HYBRID KEY SIZES (bytes → hex chars)
-//
-//   Master seed (stored as "privateKey"):  32 bytes  →   64 hex chars
-//   Ed25519 public key:                    32 bytes  →   64 hex chars
-//   Ed25519 signature:                     64 bytes  →  128 hex chars
-//   ML-DSA-65 public key:                1952 bytes  → 3904 hex chars
-//   ML-DSA-65 signature:                 3309 bytes  → 6618 hex chars
-//
-//   Combined public key  = Ed25519 pub  ‖ ML-DSA-65 pub  → 3968 hex chars
-//   Combined signature   = Ed25519 sig  ‖ ML-DSA-65 sig  → 6746 hex chars
-// ════════════════════════════════════════════════════════════════════════════
-
-const ED25519_PUB_HEX = 64;   // split point in combined public key
-const ED25519_SIG_HEX = 128;  // split point in combined signature
 
 // ════════════════════════════════════════════════════════════════════════════
 // SHAKE-256 (FIPS 202)
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * SHAKE-256 hash (FIPS 202).
- * @param {Uint8Array|string} data
- * @returns {Promise<string>} 64-char hex string (256 bits)
- */
-async function shake256Async(data) {
+async function shake256(data) {
   const input = typeof data === "string" ? new TextEncoder().encode(data) : data;
   return bufToHex(_shake256(input, { dkLen: 32 }));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// INTERNAL — SEED DERIVATION
+// ML-DSA-65 KEY GENERATION (pure post-quantum, no hybrid)
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Derive the 32-byte ML-DSA-65 seed from the 32-byte master seed.
- * Domain-separated so the two algorithm seeds are independent.
- * @param {Uint8Array} masterSeed
- * @returns {Uint8Array} 32-byte ML-DSA-65 seed
- */
-function _mlDsaSeed(masterSeed) {
-  const input = new Uint8Array(1 + masterSeed.length);
-  input[0] = 0x01;                  // domain separator: 0x00 reserved for Ed25519
-  input.set(masterSeed, 1);
-  return _shake256(input, { dkLen: 32 });
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// KEY GENERATION — Ed25519 + ML-DSA-65 hybrid
-//
-//   privateKey (returned / stored): 32-byte master seed (64 hex chars)
-//   publicKey (returned / stored) : Ed25519 pub ‖ ML-DSA-65 pub (3968 hex chars)
-// ════════════════════════════════════════════════════════════════════════════
-
-/**
- * Generate a hybrid Ed25519 + ML-DSA-65 keypair from a fresh random seed.
- * @returns {Promise<{algorithm: string, publicKey: string, privateKey: string}>}
- */
 async function generateKeypair() {
-  // 32-byte master seed — the only secret that needs to be stored/encrypted
-  const masterSeed = crypto.getRandomValues(new Uint8Array(32));
-
-  // Ed25519: classical layer
-  const ed25519Pub = ed25519.getPublicKey(masterSeed);
-
-  // ML-DSA-65: post-quantum layer, derived from a domain-separated seed
-  const { publicKey: mlDsaPub } = ml_dsa65.keygen(_mlDsaSeed(masterSeed));
-
+  const { publicKey, secretKey } = ml_dsa65.keygen();
   return {
-    algorithm:  "Ed25519+ML-DSA-65",
-    publicKey:  bufToHex(ed25519Pub) + bufToHex(mlDsaPub),
-    privateKey: bufToHex(masterSeed),
+    algorithm:  "ML-DSA-65",
+    publicKey:  bufToHex(publicKey),
+    privateKey: bufToHex(secretKey),
   };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SIGN / VERIFY — hybrid
+// SIGN / VERIFY — ML-DSA-65 only
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Sign data with the hybrid private key (32-byte master seed, hex-encoded).
- * Returns a combined hex signature: Ed25519 (128 hex) ‖ ML-DSA-65 (6618 hex).
- * @param {string} data
- * @param {string} masterSeedHex  64-char hex string (32-byte master seed)
- * @returns {Promise<string>} 6746-char hex signature
- */
-async function signData(data, masterSeedHex) {
-  const masterSeed = new Uint8Array(hexToBuf(masterSeedHex));
-  const msg        = new TextEncoder().encode(data);
-
-  // Ed25519 signature (deterministic — RFC 8032)
-  const ed25519Sig = ed25519.sign(msg, masterSeed);
-
-  // ML-DSA-65 signature (hedged — FIPS 204 §5.2)
-  const { secretKey } = ml_dsa65.keygen(_mlDsaSeed(masterSeed));
-  const mlDsaSig      = ml_dsa65.sign(secretKey, msg);
-
-  return bufToHex(ed25519Sig) + bufToHex(mlDsaSig);
+async function signData(data, privateKeyHex) {
+  const msg = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const secretKey = new Uint8Array(hexToBuf(privateKeyHex));
+  const sig = ml_dsa65.sign(secretKey, msg);
+  return bufToHex(sig);
 }
 
-/**
- * Verify a hybrid signature. Both layers must pass.
- * @param {string} data
- * @param {string} signatureHex   6746-char combined hex signature
- * @param {string} publicKeyHex   3968-char combined hex public key
- * @returns {Promise<boolean>}
- */
 async function verifySignature(data, signatureHex, publicKeyHex) {
   try {
-    const msg = new TextEncoder().encode(data);
-
-    // Split combined public key
-    const ed25519PubHex = publicKeyHex.slice(0, ED25519_PUB_HEX);
-    const mlDsaPubHex   = publicKeyHex.slice(ED25519_PUB_HEX);
-
-    // Split combined signature
-    const ed25519SigHex = signatureHex.slice(0, ED25519_SIG_HEX);
-    const mlDsaSigHex   = signatureHex.slice(ED25519_SIG_HEX);
-
-    // Both must verify — failure in either layer rejects the signature
-    const ed25519Ok = ed25519.verify(
-      new Uint8Array(hexToBuf(ed25519SigHex)),
-      msg,
-      new Uint8Array(hexToBuf(ed25519PubHex))
-    );
-    if (!ed25519Ok) return false;
-
-    return ml_dsa65.verify(
-      new Uint8Array(hexToBuf(mlDsaPubHex)),
-      msg,
-      new Uint8Array(hexToBuf(mlDsaSigHex))
-    );
+    const msg = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    const sig = new Uint8Array(hexToBuf(signatureHex));
+    const pub = new Uint8Array(hexToBuf(publicKeyHex));
+    return ml_dsa65.verify(pub, msg, sig);
   } catch {
     return false;
   }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// CANONICAL JSON + BODY SIGNATURES (matches node's canonicalJson/signBody)
+// ════════════════════════════════════════════════════════════════════════════
+
+function canonicalJson(obj) {
+  if (obj === null || obj === undefined) return String(obj);
+  if (typeof obj !== "object") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
+  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+}
+
+async function signBody(fields, privateKeyHex) {
+  const hash = await shake256(canonicalJson(fields));
+  return signData(hash, privateKeyHex);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // TIP-ID AND CTID GENERATION
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Compute TIP-ID URI from region and public key.
- * @param {string} region e.g. "US"
- * @param {string} publicKeyHex
- * @returns {Promise<string>}
- */
 async function computeTIPID(region, publicKeyHex) {
-  const hash = await shake256Async(publicKeyHex);
+  const hash = await shake256(publicKeyHex);
   return `tip://id/${region.toUpperCase()}-${hash.slice(0, 16)}`;
 }
 
-/**
- * Generate CTID for content.
- * @param {string} originCode "OH"|"AA"|"AG"|"MX"
- * @param {string} content
- * @param {string} authorTipId
- * @returns {Promise<string>}
- */
 async function generateCTID(originCode, content, authorTipId) {
-  const contentHash = await shake256Async(content);
+  const contentHash = await shake256(content);
   const idShort     = authorTipId.split("-").pop().slice(0, 4);
   return `tip://c/${originCode}-${contentHash.slice(0, 14)}-${idShort}`;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PRIVATE KEY ENCRYPTION - AES-256-GCM + SHAKE-256 + PBKDF2
-//
-// v2 format (new): magic("TIP2",4) + salt(16) + iv(12) + aadLen(2 LE) + aad + ciphertext
-//   KDF: SHAKE-256(password || "tip-pqc-key-wrap")[:32] -> PBKDF2 200k -> AES-256
-//   AAD: tipId (binds ciphertext to this specific identity)
-//
-// v1 format (legacy): salt(16) + iv(12) + ciphertext
-//   KDF: PBKDF2(password, 100k) -> AES-256  (no SHAKE-256, no AAD)
-//   Detected by absence of "TIP2" magic at positions 0-3
+// WEBAUTHN — CREATE PASSKEY + DERIVE AES KEY
 // ════════════════════════════════════════════════════════════════════════════
 
-const _KDF_DOMAIN = "tip-pqc-key-wrap";
-// 4-byte magic header for v2 format. Probability of random v1 salt matching: 1/2^32 (~0.00000002%).
-const _V2_MAGIC   = new Uint8Array([0x54, 0x49, 0x50, 0x32]); // ASCII "TIP2"
+const WEBAUTHN_RP_ID   = "theailab.org";
+const WEBAUTHN_RP_NAME = "TIP Protocol";
 
-function _isV2(data) {
-  return data.length >= 4
-    && data[0] === 0x54 && data[1] === 0x49
-    && data[2] === 0x50 && data[3] === 0x32;
+async function createPasskey(tipId) {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId    = new TextEncoder().encode(tipId);
+
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      rp:   { id: WEBAUTHN_RP_ID, name: WEBAUTHN_RP_NAME },
+      user: { id: userId, name: tipId, displayName: `TIP: ${tipId.slice(-8)}` },
+      challenge,
+      pubKeyCredParams: [
+        { alg: -7,  type: "public-key" },  // ES256
+        { alg: -257, type: "public-key" }, // RS256
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: "platform",
+        residentKey: "required",
+        userVerification: "required",
+      },
+      timeout: 60000,
+    },
+  });
+
+  return {
+    credentialId: bufToBase64(credential.rawId),
+    publicKey:    bufToBase64(credential.response.getPublicKey()),
+  };
 }
 
-/**
- * SHAKE-256(input || domain_separator) -> 32 bytes.
- * Used for key derivation pre-hash in all encryption paths.
- * @param {Uint8Array|string} input
- * @returns {Uint8Array} 32-byte hash
- */
+async function authenticatePasskey(credentialIdB64) {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+
+  const options = {
+    publicKey: {
+      rpId: WEBAUTHN_RP_ID,
+      challenge,
+      userVerification: "required",
+      timeout: 60000,
+    },
+  };
+
+  // If credential ID is known, restrict to that credential (skips selection UI)
+  if (credentialIdB64) {
+    options.publicKey.allowCredentials = [{
+      id:   base64ToBuf(credentialIdB64),
+      type: "public-key",
+      transports: ["internal"], // platform authenticator (Face ID / Touch ID)
+    }];
+  }
+
+  const assertion = await navigator.credentials.get(options);
+
+  // Derive AES-256 key from the authenticator response
+  // Using HKDF on the signature to get a stable key derivation
+  const sigBytes = new Uint8Array(assertion.response.signature);
+  const authData = new Uint8Array(assertion.response.authenticatorData);
+
+  // Combine authenticatorData + signature for key material
+  const combined = new Uint8Array(authData.length + sigBytes.length);
+  combined.set(authData);
+  combined.set(sigBytes, authData.length);
+
+  const keyHash = _shake256(combined, { dkLen: 32 });
+  const aesKey = await crypto.subtle.importKey(
+    "raw", keyHash, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]
+  );
+
+  return { aesKey, credentialId: bufToBase64(assertion.rawId) };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PRIVATE KEY ENCRYPTION — WebAuthn (primary) or Password (fallback)
+// ════════════════════════════════════════════════════════════════════════════
+
+// Format: magic("TIPW",4) + iv(12) + ciphertext
+const _WEBAUTHN_MAGIC = new Uint8Array([0x54, 0x49, 0x50, 0x57]); // "TIPW"
+
+async function encryptWithWebAuthn(privateKeyHex, tipId, credentialIdB64) {
+  const { aesKey, credentialId } = await authenticatePasskey(credentialIdB64);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aad = new TextEncoder().encode(tipId);
+
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: aad },
+    aesKey,
+    new TextEncoder().encode(privateKeyHex)
+  );
+
+  const result = new Uint8Array(4 + iv.length + encrypted.byteLength);
+  result.set(_WEBAUTHN_MAGIC, 0);
+  result.set(iv, 4);
+  result.set(new Uint8Array(encrypted), 16);
+
+  return { encrypted: bufToBase64(result), credentialId };
+}
+
+async function decryptWithWebAuthn(encryptedB64, tipId, credentialIdB64) {
+  const data = base64ToBuf(encryptedB64);
+  const iv = data.slice(4, 16);
+  const ciphertext = data.slice(16);
+  const aad = new TextEncoder().encode(tipId);
+
+  const { aesKey } = await authenticatePasskey(credentialIdB64);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv, additionalData: aad },
+    aesKey, ciphertext
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
+// ── Password fallback (legacy) ───────────────────────────────────────────
+
+const _KDF_DOMAIN = "tip-pqc-key-wrap";
+const _V2_MAGIC   = new Uint8Array([0x54, 0x49, 0x50, 0x32]); // "TIP2"
+
 function kdfHash(input) {
   const inputBytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
   const domain     = new TextEncoder().encode(_KDF_DOMAIN);
@@ -238,20 +228,11 @@ function kdfHash(input) {
   return _shake256(combined, { dkLen: 32 });
 }
 
-/**
- * Encrypt a private key hex string with a password.
- * v2: SHAKE-256(password || domain) -> PBKDF2 200k -> AES-256-GCM with AAD.
- * @param {string} privateKeyHex
- * @param {string} password
- * @param {string} [tipId=""] - TIP-ID for AAD binding (v2). Omit for backward compat.
- * @returns {Promise<string>} encrypted base64 string
- */
 async function encryptPrivateKey(privateKeyHex, password, tipId) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
   const aad  = new TextEncoder().encode(tipId || "");
 
-  // SHAKE-256 pre-hash: SHAKE-256(password || "tip-pqc-key-wrap")[:32]
   const shakeOutput = kdfHash(password);
   const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
   const aesKey = await crypto.subtle.deriveKey(
@@ -261,11 +242,9 @@ async function encryptPrivateKey(privateKeyHex, password, tipId) {
 
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: aad },
-    aesKey,
-    new TextEncoder().encode(privateKeyHex)
+    aesKey, new TextEncoder().encode(privateKeyHex)
   );
 
-  // v2 format: magic(4) + salt(16) + iv(12) + aadLen(2 LE) + aad + ciphertext
   const aadLen = new Uint8Array(2);
   aadLen[0] = aad.length & 0xFF;
   aadLen[1] = (aad.length >> 8) & 0xFF;
@@ -282,59 +261,28 @@ async function encryptPrivateKey(privateKeyHex, password, tipId) {
   return btoa(String.fromCharCode(...result));
 }
 
-/**
- * Decrypt a private key.
- * Auto-detects v2 (SHAKE-256 + AAD + PBKDF2 200k) vs v1 (PBKDF2 100k) format.
- * @param {string} encryptedB64
- * @param {string} password
- * @param {string} [tipId=""] - TIP-ID for AAD verification (v2). Ignored for v1.
- * @returns {Promise<string>} privateKeyHex
- */
 async function decryptPrivateKey(encryptedB64, password, tipId) {
   const data = Uint8Array.from(atob(encryptedB64), c => c.charCodeAt(0));
+  let offset = 4; // skip magic
+  const salt = data.slice(offset, offset + 16); offset += 16;
+  const iv   = data.slice(offset, offset + 12); offset += 12;
+  const aadLen = data[offset] | (data[offset + 1] << 8); offset += 2;
+  const aad  = data.slice(offset, offset + aadLen); offset += aadLen;
+  const ciphertext = data.slice(offset);
 
-  // Detect version: v2 starts with "TIP2" magic, v1 has raw salt at byte 0
-  if (_isV2(data)) {
-    // ── v2 format: SHAKE-256 + PBKDF2 200k + AAD ──
-    let offset = 4; // skip magic
-    const salt = data.slice(offset, offset + 16); offset += 16;
-    const iv   = data.slice(offset, offset + 12); offset += 12;
-    const aadLen = data[offset] | (data[offset + 1] << 8); offset += 2;
-    const aad  = data.slice(offset, offset + aadLen); offset += aadLen;
-    const ciphertext = data.slice(offset);
+  const aadForDecrypt = tipId != null ? new TextEncoder().encode(tipId) : aad;
 
-    // If caller provides tipId, use it for AAD verification; otherwise use stored AAD
-    const aadForDecrypt = (tipId !== undefined && tipId !== null)
-      ? new TextEncoder().encode(tipId || "")
-      : aad;
-
-    const shakeOutput = kdfHash(password);
-    const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
-    const aesKey = await crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
-      keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
-    );
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv, additionalData: aadForDecrypt },
-      aesKey, ciphertext
-    );
-    return new TextDecoder().decode(decrypted);
-
-  } else {
-    // ── v1 legacy format: raw PBKDF2 100k, no SHAKE-256, no AAD ──
-    const salt       = data.slice(0, 16);
-    const iv         = data.slice(16, 28);
-    const ciphertext = data.slice(28);
-    const keyMaterial = await crypto.subtle.importKey(
-      "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
-    );
-    const aesKey = await crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
-      keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
-    );
-    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertext);
-    return new TextDecoder().decode(decrypted);
-  }
+  const shakeOutput = kdfHash(password);
+  const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
+  );
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv, additionalData: aadForDecrypt },
+    aesKey, ciphertext
+  );
+  return new TextDecoder().decode(decrypted);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -349,15 +297,29 @@ function hexToBuf(hex) {
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i*2, i*2+2), 16);
   return bytes.buffer;
 }
+function bufToBase64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function base64ToBuf(b64) {
+  return new Uint8Array(atob(b64).split("").map(c => c.charCodeAt(0)));
+}
 
 export {
   initCrypto,
-  shake256Async as shake256,
+  shake256,
   generateKeypair,
   signData,
   verifySignature,
+  canonicalJson,
+  signBody,
   computeTIPID,
   generateCTID,
+  // WebAuthn encryption
+  createPasskey,
+  authenticatePasskey,
+  encryptWithWebAuthn,
+  decryptWithWebAuthn,
+  // Password fallback
   encryptPrivateKey,
   decryptPrivateKey,
   kdfHash,

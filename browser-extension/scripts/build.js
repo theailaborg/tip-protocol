@@ -69,13 +69,19 @@ await esbuild.build({
 });
 console.log("  ✓ src/background.js — bundled (crypto + noble inlined)");
 
-// ── 3. Copy content.js ────────────────────────────────────────────────────────
-// Plain IIFE with no imports — no bundling needed.
-cpSync(
-  resolve(ROOT, "src", "content.js"),
-  resolve(OUT, "src", "content.js"),
-);
-console.log("  ✓ src/content.js   — copied");
+// ── 3. Bundle content.js ──────────────────────────────────────────────────────
+// Content script: IIFE format, inlines tip-types.js imports.
+await esbuild.build({
+  entryPoints: [resolve(ROOT, "src", "content.js")],
+  outfile:     resolve(OUT, "src", "content.js"),
+  bundle:      true,
+  format:      "iife",
+  platform:    "browser",
+  target:      target === "firefox" ? ["firefox121"] : ["chrome109"],
+  minify:      true,
+  sourcemap:   false,
+});
+console.log("  ✓ src/content.js   — bundled");
 
 // ── 4. Copy popup/options JS and HTML ─────────────────────────────────────────
 // Scripts are already extracted to src/popup.js and src/options.js in the source.
