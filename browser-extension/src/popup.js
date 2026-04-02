@@ -261,6 +261,9 @@ async function init() {
   // Viewer tab setup
   await loadViewerData(tab);
   checkNode();
+
+  // Show the active tab pane
+  switchTab(activeTab);
 }
 
 // Show creator by default for upload pages, viewer otherwise
