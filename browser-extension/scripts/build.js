@@ -51,9 +51,14 @@ rmSync(OUT, { recursive: true, force: true });
 mkdirSync(resolve(OUT, "src"),   { recursive: true });
 mkdirSync(resolve(OUT, "icons"), { recursive: true });
 
+// ── Read config ──────────────────────────────────────────────────────────────
+const configSrc    = readFileSync(resolve(ROOT, "src", "config.js"), "utf8");
+const rpIdMatch    = configSrc.match(/TIP_WEBAUTHN_RP_ID\s*=\s*"([^"]+)"/);
+const WEBAUTHN_RP_ID = rpIdMatch ? rpIdMatch[1] : "localhost";
+console.log(`  ℹ WebAuthn RP ID: ${WEBAUTHN_RP_ID} (from src/config.js)`);
+
 // ── 2. Bundle background.js ───────────────────────────────────────────────────
 // Service worker: ESM format, inlines crypto.js + @noble/post-quantum + @noble/hashes.
-// Dynamic import() calls inside initCrypto() are resolved at bundle time.
 await esbuild.build({
   entryPoints: [resolve(ROOT, "src", "background.js")],
   outfile:     resolve(OUT, "src", "background.js"),
@@ -64,7 +69,6 @@ await esbuild.build({
   minify:      true,
   sourcemap:   false,
   define:      { "process.env.NODE_ENV": '"production"' },
-  // Suppress "dynamic require" warnings from noble packages
   logOverride: { "commonjs-variable-in-esm": "silent" },
 });
 console.log("  ✓ src/background.js — bundled (crypto + noble inlined)");
@@ -83,13 +87,22 @@ await esbuild.build({
 });
 console.log("  ✓ src/content.js   — bundled");
 
-// ── 4. Copy popup/options JS and HTML ─────────────────────────────────────────
-// Scripts are already extracted to src/popup.js and src/options.js in the source.
-// HTML files reference them via <script src="src/popup.js"> — copy everything as-is.
-for (const jsFile of ["popup.js", "options.js"]) {
-  cpSync(resolve(ROOT, "src", jsFile), resolve(OUT, "src", jsFile));
-  console.log(`  ✓ src/${jsFile.padEnd(12)} — copied`);
-}
+// ── 4. Copy popup.js + process options.js ─────────────────────────────────────
+cpSync(resolve(ROOT, "src", "popup.js"), resolve(OUT, "src", "popup.js"));
+console.log("  ✓ src/popup.js     — copied");
+
+// Bundle options.js (imports config.js for WebAuthn RP ID)
+await esbuild.build({
+  entryPoints: [resolve(ROOT, "src", "options.js")],
+  outfile:     resolve(OUT, "src", "options.js"),
+  bundle:      true,
+  format:      "iife",
+  platform:    "browser",
+  target:      target === "firefox" ? ["firefox121"] : ["chrome109"],
+  minify:      true,
+  sourcemap:   false,
+});
+console.log(`  ✓ src/options.js   — bundled (rpId: ${WEBAUTHN_RP_ID})`);
 for (const htmlFile of ["popup.html", "options.html"]) {
   cpSync(resolve(ROOT, htmlFile), resolve(OUT, htmlFile));
   console.log(`  ✓ ${htmlFile.padEnd(16)} — copied`);

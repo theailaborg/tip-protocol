@@ -101,7 +101,9 @@ async function generateCTID(originCode, content, authorTipId) {
 // WEBAUTHN — CREATE PASSKEY + DERIVE AES KEY
 // ════════════════════════════════════════════════════════════════════════════
 
-const WEBAUTHN_RP_ID   = "theailab.org";
+import { TIP_WEBAUTHN_RP_ID } from "./config.js";
+
+const WEBAUTHN_RP_ID   = TIP_WEBAUTHN_RP_ID;
 const WEBAUTHN_RP_NAME = "TIP Protocol";
 
 async function createPasskey(tipId) {
@@ -214,9 +216,124 @@ async function decryptWithWebAuthn(encryptedB64, tipId, credentialIdB64) {
   return new TextDecoder().decode(decrypted);
 }
 
-// ── Password fallback (legacy) ───────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// DECRYPT VP KEY — matches VP app's encryptAndStoreKey format exactly
+// tipKey object: { credentialId, tipId, salt[], nonce[], iv[], data[], method, version }
+// ════════════════════════════════════════════════════════════════════════════
 
 const _KDF_DOMAIN = "tip-pqc-key-wrap";
+
+function _kdfHash(input) {
+  const inputBytes = input instanceof Uint8Array ? input : new TextEncoder().encode(input);
+  const domain     = new TextEncoder().encode(_KDF_DOMAIN);
+  const combined   = new Uint8Array(inputBytes.length + domain.length);
+  combined.set(inputBytes);
+  combined.set(domain, inputBytes.length);
+  return _shake256(combined, { dkLen: 32 });
+}
+
+/**
+ * PATH A: Derive AES key via WebAuthn PRF extension (Secure Enclave).
+ * Returns { aesKey, method } or null if PRF not supported.
+ */
+async function _deriveKeyViaPRF(credentialIdBytes, forEncrypt) {
+  try {
+    const prfSalt = new TextEncoder().encode(_KDF_DOMAIN);
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId: WEBAUTHN_RP_ID,
+        allowCredentials: [{ type: "public-key", id: credentialIdBytes, transports: ["internal"] }],
+        userVerification: "required",
+        timeout: 60000,
+        extensions: { prf: { eval: { first: prfSalt } } },
+      },
+    });
+    const extResults = assertion.getClientExtensionResults();
+    if (!extResults?.prf?.results?.first) return null;
+
+    const prfOutput = new Uint8Array(extResults.prf.results.first);
+    const keyBytes = _kdfHash(prfOutput);
+    const aesKey = await crypto.subtle.importKey(
+      "raw", keyBytes, { name: "AES-GCM" }, false, forEncrypt ? ["encrypt"] : ["decrypt"]
+    );
+    return { aesKey, method: "webauthn-prf" };
+  } catch (e) {
+    if (e.name === "NotAllowedError") throw e; // user cancelled
+    return null;
+  }
+}
+
+/**
+ * PATH B: Derive AES key from credentialId fallback (biometric-gated).
+ * SHAKE-256(credentialId || domain) → PBKDF2(salt, 200k) → AES-256
+ */
+async function _deriveKeyFallback(credentialId, credentialIdBytes, requireBiometric, forEncrypt, salt) {
+  if (requireBiometric) {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId: WEBAUTHN_RP_ID,
+        allowCredentials: [{ type: "public-key", id: credentialIdBytes, transports: ["internal"] }],
+        userVerification: "required",
+        timeout: 60000,
+      },
+    });
+  }
+
+  const shakeOutput = _kdfHash(new TextEncoder().encode(credentialId));
+  const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    keyMaterial, { name: "AES-GCM", length: 256 }, false, forEncrypt ? ["encrypt"] : ["decrypt"]
+  );
+  return { aesKey, method: "webauthn-fallback" };
+}
+
+/**
+ * Decrypt a VP-format tipKey object. Matches VP app's decryptStoredKey exactly.
+ * @param {Object} tipKey - { credentialId, tipId, salt[], nonce[], iv[], data[], method, version }
+ * @returns {Promise<string>} decrypted private key hex
+ */
+async function decryptVPKey(tipKey) {
+  if (!tipKey || !tipKey.data) throw new Error("No key data found");
+
+  const credentialId = tipKey.credentialId;
+  const credentialIdBytes = Uint8Array.from(atob(credentialId), c => c.charCodeAt(0));
+  const tipId = tipKey.tipId || "";
+  const nonce = new Uint8Array(tipKey.nonce || tipKey.iv);
+  const ciphertext = new Uint8Array(tipKey.data);
+  const storedSalt = tipKey.salt ? new Uint8Array(tipKey.salt) : null;
+
+  let derived;
+
+  if (tipKey.method === "webauthn-prf") {
+    derived = await _deriveKeyViaPRF(credentialIdBytes, false);
+    if (!derived) throw new Error("PRF not available. Use the original device with Chrome/Edge 116+.");
+  } else {
+    const salt = storedSalt || new TextEncoder().encode("tip-key-v2");
+    derived = await _deriveKeyFallback(credentialId, credentialIdBytes, true, false, salt);
+  }
+
+  // Try decrypt with multiple AAD candidates (tipId, empty) like VP app does
+  const { aesKey } = derived;
+  const aadCandidates = [tipId];
+  if (tipId) aadCandidates.push("");
+
+  for (const aadStr of aadCandidates) {
+    try {
+      const aad = new TextEncoder().encode(aadStr);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: nonce, additionalData: aad },
+        aesKey, ciphertext
+      );
+      return new TextDecoder().decode(decrypted);
+    } catch { continue; }
+  }
+  throw new Error("Decryption failed — key may be corrupted or wrong device");
+}
+
+// ── Password fallback (legacy) ───────────────────────────────────────────
 const _V2_MAGIC   = new Uint8Array([0x54, 0x49, 0x50, 0x32]); // "TIP2"
 
 function kdfHash(input) {
@@ -319,6 +436,7 @@ export {
   authenticatePasskey,
   encryptWithWebAuthn,
   decryptWithWebAuthn,
+  decryptVPKey,
   // Password fallback
   encryptPrivateKey,
   decryptPrivateKey,

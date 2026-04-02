@@ -34,11 +34,9 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   window.addEventListener("message", (e) => {
     if (e.data?.type === "TIP_CONNECT" && e.data?.source === "tip-vp-portal") {
       chrome.runtime.sendMessage({
-        type:           "TIP_CONNECT",
-        tip_id:         e.data.tip_id,
-        encrypted_key:  e.data.encrypted_key,
-        public_key:     e.data.public_key,
-        credential_id:  e.data.credential_id,
+        type:    "TIP_CONNECT",
+        tip_id:  e.data.tip_id,
+        tip_key: e.data.tip_key,
       }, (res) => {
         window.postMessage({
           type: "TIP_CONNECT_ACK",

@@ -4,7 +4,8 @@
 // RP ID: window.location.hostname resolves to the extension ID in Chrome
 // extension pages (chrome-extension://[id]/options.html), which is a valid
 // WebAuthn RP ID for credentials scoped to this extension.
-const WA_RP_ID = window.location.hostname || "theailab.org";
+import { TIP_WEBAUTHN_RP_ID } from "./config.js";
+const WA_RP_ID = TIP_WEBAUTHN_RP_ID;
 
 function _waRandomBytes(n) {
   return crypto.getRandomValues(new Uint8Array(n));
@@ -989,9 +990,15 @@ document.getElementById('lc-register-btn')?.addEventListener('click', async () =
   let res;
   try {
     if ((lcSecMethod === 'webauthn' || lcSecMethod === 'webauthn-prf' || lcSecMethod === 'webauthn-fallback') && lcCredId) {
-      const stored = await chrome.storage.local.get(['encryptedKey', 'tipId']);
-      // decryptKeyWithWebAuthn triggers the system passkey popup, then decrypts
-      const privateKeyHex = await decryptKeyWithWebAuthn(stored.encryptedKey, lcCredId);
+      const stored = await chrome.storage.local.get(['encryptedKey', 'tipId', 'tipKey']);
+      // Use VP key format if available, otherwise fall back to extension's own format
+      let privateKeyHex;
+      if (stored.tipKey && stored.tipKey.data) {
+        const { decryptVPKey } = await import("./crypto.js");
+        privateKeyHex = await decryptVPKey(stored.tipKey);
+      } else {
+        privateKeyHex = await decryptKeyWithWebAuthn(stored.encryptedKey, lcCredId);
+      }
       res = await msg('REGISTER_CONTENT_WITH_KEY', {
         payload: { originCode: lcOrigin, content, title, privateKeyHex },
       });

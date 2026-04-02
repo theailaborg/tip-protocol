@@ -23,7 +23,7 @@
 
 "use strict";
 
-import { shake256, signData, signBody, generateKeypair, encryptPrivateKey, decryptPrivateKey, encryptWithWebAuthn, decryptWithWebAuthn, computeTIPID, kdfHash } from "./crypto.js";
+import { shake256, signData, signBody, generateKeypair, encryptPrivateKey, decryptPrivateKey, encryptWithWebAuthn, decryptWithWebAuthn, decryptVPKey, computeTIPID, kdfHash } from "./crypto.js";
 import { buildContentString } from "./tip-types.js";
 
 const DEFAULT_NODE = "https://node.theailab.org";
@@ -255,17 +255,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // ── VP app connection (via content script postMessage relay) ────────────
     case "TIP_CONNECT": {
-      const { tip_id, encrypted_key, public_key, credential_id } = msg;
-      if (!tip_id || !encrypted_key) {
-        sendResponse({ ok: false, error: "tip_id and encrypted_key required" });
+      const { tip_id, tip_key } = msg;
+      if (!tip_id || !tip_key) {
+        sendResponse({ ok: false, error: "tip_id and tip_key required" });
         return false;
       }
       return respond(chrome.storage.local.set({
         tipId:          tip_id,
-        publicKey:      public_key || "",
-        encryptedKey:   encrypted_key,
-        credentialId:   credential_id || "",
-        securityMethod: "webauthn",
+        tipKey:         tip_key,
+        publicKey:      tip_key.publicKey || "",
+        encryptedKey:   tip_key.data ? btoa(String.fromCharCode(...tip_key.data)) : "",
+        credentialId:   tip_key.credentialId || "",
+        securityMethod: tip_key.method || "webauthn",
         setupComplete:  true,
         setupDate:      new Date().toISOString(),
         connected:      false,
@@ -403,6 +404,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     // ── Verify ownership: sign challenge with decrypted key, call node ──────
+    // ── Verify ownership with pre-decrypted key ──────────────────────────
+    // Popup/options decrypts via WebAuthn (needs window context), then sends key here
     case "VERIFY_OWNERSHIP": {
       return respond((async () => {
         const { privateKeyHex } = msg.payload;
