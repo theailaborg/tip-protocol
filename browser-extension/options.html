@@ -553,8 +553,8 @@
 
       <div class="alert alert-success">
         <strong>🔒 Your private key never leaves this browser.</strong><br>
-        It is encrypted with AES-256-GCM using a key derived from your password via PBKDF2 (100,000 iterations).
-        Only the encrypted ciphertext is stored in <code>chrome.storage.local</code>.
+        It is encrypted with AES-256-GCM. The encryption key is derived from your device's biometric hardware (WebAuthn) or a password fallback.
+        Only the encrypted ciphertext is stored. The raw key exists in memory only during signing.
       </div>
 
       <div class="card">
@@ -563,45 +563,47 @@
           <div class="step">
             <div class="step-num">1</div>
             <div class="step-content">
-              <div class="step-title">Key derivation (PBKDF2)</div>
-              <div class="step-desc">Your password is fed into PBKDF2 with a random 16-byte salt and 100,000 iterations of SHA-256. This produces a 256-bit AES key. Even if someone steals the encrypted storage, they need your password to decrypt it.</div>
+              <div class="step-title">Key derivation — WebAuthn (primary)</div>
+              <div class="step-desc">
+                <strong>Path A (Chrome/Edge 116+):</strong> WebAuthn PRF extension derives a hardware-bound secret from the Secure Enclave via biometric authentication (Face ID / Touch ID). The AES key is SHAKE-256(PRF_output || domain). Hardware-bound — never leaves the chip.<br><br>
+                <strong>Path B (Safari, Firefox, older Chrome):</strong> WebAuthn biometric gate + SHAKE-256(credentialId || domain) + PBKDF2 (200,000 iterations, random salt). Software-gated by biometrics.<br><br>
+                <strong>Path C (fallback):</strong> Password + SHAKE-256(password || domain) + PBKDF2 (200,000 iterations). Standard password protection.
+              </div>
             </div>
           </div>
           <div class="step">
             <div class="step-num">2</div>
             <div class="step-content">
               <div class="step-title">Encryption (AES-256-GCM)</div>
-              <div class="step-desc">Your private key hex is encrypted with AES-256-GCM using a random 12-byte IV. The result includes an authentication tag that detects tampering. The ciphertext, salt, and IV are stored together as a base64 string in chrome.storage.local.</div>
+              <div class="step-desc">Your ML-DSA-65 private key is encrypted with AES-256-GCM using a random 12-byte IV. AAD (Additional Authenticated Data) is bound to your TIP-ID — the ciphertext cannot be used with a different identity. The authentication tag detects any tampering.</div>
             </div>
           </div>
           <div class="step">
             <div class="step-num">3</div>
             <div class="step-content">
-              <div class="step-title">Signing (ML-DSA-65 / ECDSA P-256 stub)</div>
-              <div class="step-desc">When you register content, the extension decrypts your private key in memory using your password, signs the content hash + origin code payload, then immediately discards the decrypted key. The private key exists in plaintext memory for less than 100 milliseconds.</div>
+              <div class="step-title">Signing (ML-DSA-65, FIPS 204)</div>
+              <div class="step-desc">When you register content, the extension authenticates with your biometric (Face ID / Touch ID), decrypts the key in memory, signs the canonical JSON body (author_tip_id + origin_code + content_hash), then immediately wipes the key. The private key exists in plaintext memory for less than 100 milliseconds.</div>
             </div>
           </div>
           <div class="step">
             <div class="step-num">4</div>
             <div class="step-content">
               <div class="step-title">Network: only the signature is sent</div>
-              <div class="step-desc">The TIP node receives: author_tip_id, origin_code, content_hash, and author_signature. Your private key, your password, and the decrypted content beyond the hash are never transmitted anywhere.</div>
+              <div class="step-desc">The TIP node receives: author_tip_id, origin_code, content, and ML-DSA-65 signature. Your private key, biometric data, and encryption details are never transmitted. The node verifies the signature against your public key stored on the DAG.</div>
             </div>
           </div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C07318" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          Production note: ML-DSA-65 stub
+        <div class="card-title" style="color:#1A8A5C;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A8A5C" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Post-quantum cryptography: ML-DSA-65 (Dilithium3)
         </div>
         <div class="card-sub">
-          The current signing implementation uses <strong>ECDSA P-256</strong> as a development stand-in
-          for ML-DSA-65 (Dilithium3, FIPS 204). For production, this must be replaced with
-          <code>@noble/post-quantum</code> bundled into the extension.
-          The API surface is identical  -  only the import changes.
-          All devnet-registered content will need re-registration after the production crypto swap.
+          This extension uses <strong>ML-DSA-65</strong> (FIPS 204) for all signatures — a post-quantum
+          lattice-based scheme standardized by NIST. Secure against both classical and quantum computer attacks.
+          Implemented via <code>@noble/post-quantum</code> bundled directly into the extension.
         </div>
         <a href="https://github.com/paulmillr/noble-post-quantum" target="_blank"
           style="font-size:12px;color:#B8942E;">
