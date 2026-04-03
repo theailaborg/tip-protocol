@@ -446,12 +446,14 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       if (!identity) return res.status(404).json({ error: "Author TIP-ID not found" });
       if (dag.isRevoked(author_tip_id)) return res.status(403).json({ error: "Author TIP-ID is revoked" });
 
-      // Server computes content_hash — must match what client signed (full SHAKE-256)
-      const contentHash = shake256(content);
+      // Full SHAKE-256 for signature verification (64 hex chars — matches client signBody)
+      const contentHashFull = shake256(content);
+      // Truncated hash for CTID URI and storage (14 hex chars — readable)
+      const contentHashShort = hashContent(content);
 
-      // Verify body signature against server-computed content_hash
+      // Verify body signature against full hash
       const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"];
-      const sigBody = { author_tip_id, origin_code, content_hash: contentHash };
+      const sigBody = { author_tip_id, origin_code, content_hash: contentHashFull };
       if (!verifyBodySignature(sigBody, signature, identity.public_key, CONTENT_FIELDS)) {
         return res.status(403).json({ error: "Content signature verification failed — signature does not match author public key" });
       }
@@ -462,7 +464,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       const preScan = preScanContent(content || "", origin_code, contentHistory);
 
       const registeredAt = new Date().toISOString();
-      const ctid         = generateCTID(origin_code, contentHash, author_tip_id);
+      const ctid         = generateCTID(origin_code, contentHashShort, author_tip_id);
 
       const contentTxBody = {
         tx_type:   TX_TYPES.REGISTER_CONTENT,
@@ -472,7 +474,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
           ctid,
           origin_code,
           origin_label:   ORIGIN_LABELS[origin_code],
-          content_hash:   contentHash,
+          content_hash:   contentHashFull,
           perceptual_hash: perceptHash,
           author_tip_id,
           signature,
@@ -493,7 +495,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       dag.saveContent({
         ctid,
         origin_code,
-        content_hash:    contentHash,
+        content_hash:    contentHashFull,
         perceptual_hash: perceptHash,
         author_tip_id,
         status:          preScan.flagged ? "pending_review" : "verified",
@@ -528,7 +530,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         ctid,
         origin_code,
         origin_label:      ORIGIN_LABELS[origin_code],
-        content_hash:      contentHash,
+        content_hash:      contentHashFull,
         author_tip_id,
         tx_id:             tx.tx_id,
         registered_at:     registeredAt,

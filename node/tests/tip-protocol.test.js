@@ -509,15 +509,16 @@ describe("Transaction Validator", () => {
       tip_id: tipId, region: "US", public_key: keypair1.publicKey,
       status: "active", vp_id: VP_ID, verified_at: new Date().toISOString(),
     });
-    const contentHash53 = shake256("content here");
-    const ctid = generateCTID(ORIGIN.OH, contentHash53, tipId);
+    const contentHashFull = shake256("content here");
+    const contentHashShort = hashContent("content here");
+    const ctid = generateCTID(ORIGIN.OH, contentHashShort, tipId);
     const authorSig = mldsaSign(ctid + ORIGIN.OH, keypair1.privateKey);
     const txBody = {
       tx_type:   TX_TYPES.REGISTER_CONTENT,
       timestamp: new Date().toISOString(),
       data: {
         ctid, origin_code: ORIGIN.OH,
-        content_hash:  contentHash53,
+        content_hash:  contentHashFull,
         author_tip_id: tipId,
         pre_scan_passed: true,
         signature:     authorSig,

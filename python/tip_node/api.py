@@ -537,17 +537,19 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not signature or signature == "unsigned":
             self._send_json(400, {"error": "signature is required"}); return
 
-        # Server computes content_hash — client signs { author_tip_id, origin_code, content_hash }
-        content_hash = shake256(content)
+        # Full SHAKE-256 for signature verification (64 hex chars — matches client signBody)
+        content_hash_full = shake256(content)
+        # Truncated hash for CTID URI and storage (14 hex chars — readable)
+        content_hash_short = hash_content(content)
 
         _CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"]
-        sig_body = {"author_tip_id": author_tip_id, "origin_code": origin_code, "content_hash": content_hash}
+        sig_body = {"author_tip_id": author_tip_id, "origin_code": origin_code, "content_hash": content_hash_full}
         if not verify_body_signature(sig_body, signature, identity.get("public_key", ""), _CONTENT_FIELDS):
             self._send_json(403, {"error": "Content signature verification failed — signature does not match author public key"}); return
 
         percept_hash = perceptual_hash_text(content)
 
-        ctid          = generate_ctid(origin_code, content_hash, author_tip_id)
+        ctid          = generate_ctid(origin_code, content_hash_short, author_tip_id)
         registered_at = _utc_now()
 
         # Pre-scan (v2 FIX-03)
@@ -566,7 +568,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "ctid":              ctid,
                 "origin_code":       origin_code,
                 "origin_label":      Origin.label(origin_code),
-                "content_hash":      content_hash,
+                "content_hash":      content_hash_full,
                 "perceptual_hash":   percept_hash,
                 "author_tip_id":     author_tip_id,
                 "signature":         signature,
@@ -587,7 +589,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self.dag.save_content({
             "ctid":             ctid,
             "origin_code":      origin_code,
-            "content_hash":     content_hash,
+            "content_hash":     content_hash_full,
             "perceptual_hash":  percept_hash,
             "author_tip_id":    author_tip_id,
             "status":           status,
@@ -622,7 +624,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "ctid":             ctid,
             "origin_code":      origin_code,
             "origin_label":     Origin.label(origin_code),
-            "content_hash":     content_hash,
+            "content_hash":     content_hash_full,
             "author_tip_id":    author_tip_id,
             "tx_id":            tx["tx_id"],
             "status":           status,

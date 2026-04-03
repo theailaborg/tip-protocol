@@ -448,14 +448,15 @@ def test_validator() -> None:
         "vp_id": vpid, "verification_tier": "T1", "founding": False,
         "status": "active", "registered_at": "2026-03-15T00:00:00+00:00",
     })
-    h    = shake256("content for validator integration test article")
-    ctid = generate_ctid("OH", h, tid)
+    h_short = hash_content("content for validator integration test article")
+    h_full  = shake256("content for validator integration test article")
+    ctid = generate_ctid("OH", h_short, tid)
 
     # Bad origin code
     r = validate_transaction(
         {"tx_id": rh(), "tx_type": TxType.REGISTER_CONTENT,
          "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
-         "data": {"ctid": ctid, "origin_code": "XX", "content_hash": h,
+         "data": {"ctid": ctid, "origin_code": "XX", "content_hash": h_full,
                   "author_tip_id": tid, "signature": "s"}},
         dag, skip_crypto=True,
     )
@@ -466,7 +467,7 @@ def test_validator() -> None:
     _valid_content_body = {
         "tx_type":   TxType.REGISTER_CONTENT,
         "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
-        "data":      {"ctid": ctid, "origin_code": "OH", "content_hash": h,
+        "data":      {"ctid": ctid, "origin_code": "OH", "content_hash": h_full,
                       "author_tip_id": tid, "signature": "s"},
     }
     r = validate_transaction(
@@ -476,7 +477,7 @@ def test_validator() -> None:
     check("Valid content tx accepted [all layers]", r.valid, str(r.errors))
 
     # Duplicate CTID
-    dag.save_content({"ctid": ctid, "origin_code": "OH", "content_hash": h,
+    dag.save_content({"ctid": ctid, "origin_code": "OH", "content_hash": h_full,
                       "author_tip_id": tid, "status": "verified",
                       "registered_at": "2026-03-15T00:00:00+00:00"})
     r = validate_transaction(
@@ -556,7 +557,7 @@ def test_validator() -> None:
     check("Green-tier VP accepted [all layers]", r.valid, str(r.errors))
 
     # Real ML-DSA-65 signature: valid
-    ctid2  = generate_ctid("AA", shake256("signed content for crypto test"), tid)
+    ctid2  = generate_ctid("AA", hash_content("signed content for crypto test"), tid)
     _signed_body = {
         "tx_type":   TxType.REGISTER_CONTENT,
         "timestamp": "2026-03-14T12:00:00+00:00",

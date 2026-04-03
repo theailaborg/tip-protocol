@@ -178,9 +178,9 @@ function validateBusinessRules(tx) {
     }
 
     case TX_TYPES.REGISTER_CONTENT: {
-      // CTID format: tip://c/[OH|AA|AG|MX]-[64hex]-[4hex]
-      if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{64}-[0-9a-f]{4}$/.test(d.ctid)) {
-        errors.push(`Invalid CTID format: "${d.ctid}". Expected: tip://c/[ORIGIN]-[64hex]-[4hex]`);
+      // CTID format: tip://c/[OH|AA|AG|MX]-[14hex]-[4hex]
+      if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$/.test(d.ctid)) {
+        errors.push(`Invalid CTID format: "${d.ctid}". Expected: tip://c/[ORIGIN]-[14hex]-[4hex]`);
       }
       // Origin code must be valid
       if (d.origin_code && !Object.keys(ORIGIN).includes(d.origin_code)) {
