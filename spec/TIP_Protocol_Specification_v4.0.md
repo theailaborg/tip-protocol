@@ -82,7 +82,7 @@ A CTID is a content provenance record binding a piece of content to its creator'
 
 - `ORIGIN`: OH | AA | AG | MX (see Section 4.1)
 - `HASH14`: First 14 hex characters of SHAKE-256(content)
-- `ID_SHORT`: Last 4 characters of the author's TIP-ID
+- `ID_SHORT`: First 4 hex characters of the author's TIP-ID hash portion (the segment after the region prefix and dash in `tip://id/XX-[hash]`)
 
 ### 2.3 TIP-TRUST Score
 
@@ -231,10 +231,27 @@ If content exceeds the calibrated threshold:
 **Step 4: CTID Generation**  
 `tip://c/[ORIGIN]-[HASH14]-[ID_SHORT]`
 
-The origin code is embedded directly in the URI, making origin classification visible in every reference.
+- `ORIGIN`: The declared origin code (OH, AA, AG, or MX), embedded directly in the URI so that origin classification is visible in every reference, link, or citation.
+- `HASH14`: First 14 hex characters of the SHAKE-256 hash of the raw content. This uniquely identifies the content.
+- `ID_SHORT`: First 4 hex characters of the author's TIP-ID hash portion. For a TIP-ID of `tip://id/US-a3f8c91b2d4e7021`, the hash portion is `a3f8c91b2d4e7021` and ID_SHORT is `a3f8`. This links the CTID back to its author at a glance.
+
+Example: For author `tip://id/US-a3f8c91b2d4e7021` registering original human content whose SHAKE-256 hash begins with `7f2a91bc3d5e4a...`, the CTID is `tip://c/OH-7f2a91bc3d5e4a-a3f8`.
 
 **Step 5: DAG Transaction**  
-An ML-DSA-65 signature is computed over `(content_hash || origin_type)`. This makes the origin declaration **cryptographically inseparable** from the content. It is impossible to modify the origin without invalidating the signature.
+An ML-DSA-65 signature is computed over the SHAKE-256 hash of a canonical JSON object containing the author's identity, the content hash, and the origin code:
+
+```
+signature = ML-DSA-65.sign(
+  privateKey,
+  SHAKE-256(canonicalJson({
+    "author_tip_id": "tip://id/US-a3f8c91b2d4e7021",
+    "content_hash":  "<SHAKE-256 hex hash of content>",
+    "origin_code":   "OH"
+  }))
+)
+```
+
+The `canonicalJson` function produces deterministic JSON with keys sorted alphabetically at all levels. This ensures that any conforming implementation (browser extension, mobile app, server) produces an identical byte sequence for the same inputs. The signature binds the author's identity, the content hash, and the origin declaration into a single cryptographic commitment. It is impossible to modify the origin code, substitute a different author, or alter the content hash without invalidating the signature.
 
 **Step 6: Integration Artifact Generation**  
 HTTP response headers and HTML meta tags are generated. Origin-aware visual badges are produced.
