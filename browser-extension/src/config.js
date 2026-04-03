@@ -1,5 +1,5 @@
 /**
- * TIP Extension — Configuration
+ * TIP Extension - Configuration
  * Change these values for different environments.
  */
 

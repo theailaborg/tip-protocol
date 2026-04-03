@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * @file scripts/watch.js
- * @description TIP™ Extension — Development watch mode (Chrome)
+ * @description TIP™ Extension - Development watch mode (Chrome)
  *
- * - background.js : esbuild context watch — rebuilds automatically on save
+ * - background.js : esbuild context watch - rebuilds automatically on save
  *                   (crypto.js + @noble packages inlined, sourcemaps enabled)
  * - content.js, popup.js, options.js, HTML, icons, manifest.json :
- *                   fs.watch — re-copied to dist/chrome/ on every save
+ *                   fs.watch - re-copied to dist/chrome/ on every save
  *
  * Usage:
  *   npm run dev
@@ -15,7 +15,7 @@
  * to pick up the changes in the browser.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
+ * Author: Dinesh Mendhe <tip@theailab.org>
  * License: TIPCL-1.0
  */
 
@@ -59,7 +59,7 @@ mkdirSync(resolve(OUT, "icons"), { recursive: true });
 copyStatics();
 console.log("✓ dist/chrome/ scaffolded\n");
 
-// ── esbuild watch — background.js + crypto.js + @noble/* ─────────────────────
+// ── esbuild watch - background.js + crypto.js + @noble/* ─────────────────────
 
 const ctx = await esbuild.context({
   entryPoints: [resolve(ROOT, "src", "background.js")],
@@ -77,9 +77,9 @@ const ctx = await esbuild.context({
     setup(build) {
       build.onEnd(result => {
         if (result.errors.length) {
-          console.error(`[${timestamp()}] ✗ background.js — ${result.errors.length} error(s)`);
+          console.error(`[${timestamp()}] ✗ background.js - ${result.errors.length} error(s)`);
         } else {
-          console.log(`[${timestamp()}] ✓ background.js rebuilt — reload extension`);
+          console.log(`[${timestamp()}] ✓ background.js rebuilt - reload extension`);
         }
       });
     },
@@ -89,7 +89,7 @@ const ctx = await esbuild.context({
 await ctx.watch();
 console.log(`[${timestamp()}] Watching src/background.js (+ crypto.js + @noble/*) via esbuild`);
 
-// ── fs.watch — static files ───────────────────────────────────────────────────
+// ── fs.watch - static files ───────────────────────────────────────────────────
 // Debounce rapid successive saves (e.g. editor auto-save) to avoid redundant copies.
 
 const debounceTimers = new Map();

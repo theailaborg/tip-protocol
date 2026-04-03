@@ -15,7 +15,7 @@
  *   Sends content to the popup for registration.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
+ * Author: Dinesh Mendhe <tip@theailab.org>
  * License: TIPCL-1.0
  */
 
@@ -144,7 +144,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     el.title = `TIP™ Verified | ${label} (${score}/1000) | ${tipId}`;
     el.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
-      window.open(`https://theailab.org/verify/${encodeURIComponent(tipId)}`, "_blank", "noopener");
+      window.open(`https://vp.theailab.org/verify-record/${encodeURIComponent(tipId)}`, "_blank", "noopener");
     });
     return el;
   }
@@ -178,7 +178,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     `;
     el.addEventListener("click", (e) => {
       if (e.target.id === "tip-badge-close") { el.remove(); return; }
-      window.open(`https://theailab.org/verify/${encodeURIComponent(tipId)}`, "_blank", "noopener");
+      window.open(`https://vp.theailab.org/verify-record/${encodeURIComponent(tipId)}`, "_blank", "noopener");
     });
     document.body.appendChild(el);
     setTimeout(() => { el.style.opacity = "0.7"; }, 5000);
@@ -203,7 +203,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
       parts.forEach(part => {
         if (/^tip:\/\/c\//.test(part)) {
           const a = document.createElement("a");
-          a.href = `https://theailab.org/verify/${encodeURIComponent(part)}`;
+          a.href = `https://vp.theailab.org/verify-record/${encodeURIComponent(part)}`;
           a.target = "_blank"; a.rel = "noopener";
           a.style.cssText = `color:${C.blue};font-family:monospace;font-size:0.9em;text-decoration:underline dotted;`;
           a.title = `Verify on TIP Protocol DAG: ${part}`;
@@ -751,7 +751,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   }).observe(document, { subtree: true, childList: true });
 
   // ── Icon theme switching (dark / light mode) ─────────────────────────────
-  // The service worker has no window.matchMedia — the content script detects
+  // The service worker has no window.matchMedia - the content script detects
   // the system color scheme and tells the background to swap the icon set.
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
   function reportTheme(isDark) {

@@ -49,11 +49,11 @@ export function tipShake256(input) {
  * signature = mldsaSign(shake256(canonicalJson(fields)), privateKey)
  *
  * Accepts either:
- *   - Pure ML-DSA-65 private key (from seed/node — 4032 bytes hex)
- *   - Hybrid master seed (from extension crypto.js — 32 bytes hex, derives ML-DSA key)
+ *   - Pure ML-DSA-65 private key (from seed/node - 4032 bytes hex)
+ *   - Hybrid master seed (from extension crypto.js - 32 bytes hex, derives ML-DSA key)
  *
- * @param {Object} fields  — the fields to sign
- * @param {string} privateKeyHex — ML-DSA-65 private key or hybrid master seed (hex)
+ * @param {Object} fields  - the fields to sign
+ * @param {string} privateKeyHex - ML-DSA-65 private key or hybrid master seed (hex)
  * @returns {string} signature hex
  */
 export function signBody(fields, privateKeyHex) {
@@ -63,7 +63,7 @@ export function signBody(fields, privateKeyHex) {
 
   let secretKey;
   if (privBytes.length === 32) {
-    // Hybrid master seed — derive ML-DSA seed: shake256(0x01 || masterSeed)
+    // Hybrid master seed - derive ML-DSA seed: shake256(0x01 || masterSeed)
     const input = new Uint8Array(1 + 32);
     input[0] = 0x01;
     input.set(privBytes, 1);
@@ -83,9 +83,9 @@ export function signBody(fields, privateKeyHex) {
  * Client computes content_hash, signs { author_tip_id, origin_code, content_hash }.
  *
  * @param {string} authorTipId
- * @param {string} originCode   — OH|AA|AG|MX
- * @param {string} content      — raw content text
- * @param {string} mlDsaPrivateKeyHex — ML-DSA-65 private key (hex)
+ * @param {string} originCode   - OH|AA|AG|MX
+ * @param {string} content      - raw content text
+ * @param {string} mlDsaPrivateKeyHex - ML-DSA-65 private key (hex)
  * @returns {{ signature: string, contentHash: string }}
  */
 export function signContentRegister(authorTipId, originCode, content, mlDsaPrivateKeyHex) {

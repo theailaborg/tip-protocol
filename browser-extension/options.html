@@ -335,8 +335,8 @@
 
     <div class="sidebar-footer">
       <a href="https://theailab.org/trust-identity-protocol" target="_blank">theailab.org/tip</a>
-      <a href="https://github.com/theailab-org/tip-sdk" target="_blank">github.com/theailab-org/tip-sdk</a>
-      <a href="mailto:chairman@theailab.org">chairman@theailab.org</a>
+      <a href="https://github.com/theailaborg/tip-sdk" target="_blank">github.com/theailaborg/tip-sdk</a>
+      <a href="mailto:tip@theailab.org">tip@theailab.org</a>
     </div>
   </div>
 
@@ -356,7 +356,7 @@
           <strong>🆔 You need a TIP-ID to register content.</strong><br>
           A TIP-ID is a verified identity issued by an accredited Verification Provider (VP).
           If you already have one, connect it below. If not, apply for verification at
-          <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>.
+          <a href="https://vp.theailab.org/get-verified" target="_blank" style="color:#B8942E;">vp.theailab.org/get-verified</a>.
         </div>
 
         <div class="card">
@@ -379,7 +379,7 @@
             </div>
             <div class="alert alert-info" style="margin-bottom:14px;">
               <strong>🆔 No TIP-ID yet?</strong> Get verified free at
-              <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. Takes about 5 minutes.
+              <a href="https://vp.theailab.org/get-verified" target="_blank" style="color:#B8942E;">vp.theailab.org/get-verified</a>. Takes about 10 minutes.
             </div>
 
             <div class="field">
@@ -412,7 +412,7 @@
             <div class="field-hint" style="margin-top:10px;">
               ⚠️ <strong>No TIP-ID yet?</strong> Generate a keypair for development/testing.
               For a real verified TIP-ID, apply at
-              <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified →</a>
+              <a href="https://vp.theailab.org/get-verified" target="_blank" style="color:#B8942E;">vp.theailab.org/get-verified →</a>
             </div>
           </div>
 
@@ -433,7 +433,7 @@
                 <span class="badge" style="background:#1A8A5C15;color:#1A8A5C;border:1px solid #1A8A5C30;">Recommended</span>
               </div>
               <div style="font-size:12px;color:#4A5568;line-height:1.6;margin-bottom:12px;">
-                Protected by your device biometrics — the same hardware that protects Apple Pay and Google Pay.
+                Protected by your device biometrics - the same hardware that protects Apple Pay and Google Pay.
                 Choose "Use a phone, tablet or security key" to scan a QR code with your phone.
               </div>
               <button class="btn-primary" id="s2-wa-btn" style="width:100%;justify-content:center;">
@@ -563,9 +563,9 @@
           <div class="step">
             <div class="step-num">1</div>
             <div class="step-content">
-              <div class="step-title">Key derivation — WebAuthn (primary)</div>
+              <div class="step-title">Key derivation - WebAuthn (primary)</div>
               <div class="step-desc">
-                <strong>Path A (Chrome/Edge 116+):</strong> WebAuthn PRF extension derives a hardware-bound secret from the Secure Enclave via biometric authentication (Face ID / Touch ID). The AES key is SHAKE-256(PRF_output || domain). Hardware-bound — never leaves the chip.<br><br>
+                <strong>Path A (Chrome/Edge 116+):</strong> WebAuthn PRF extension derives a hardware-bound secret from the Secure Enclave via biometric authentication (Face ID / Touch ID). The AES key is SHAKE-256(PRF_output || domain). Hardware-bound - never leaves the chip.<br><br>
                 <strong>Path B (Safari, Firefox, older Chrome):</strong> WebAuthn biometric gate + SHAKE-256(credentialId || domain) + PBKDF2 (200,000 iterations, random salt). Software-gated by biometrics.<br><br>
                 <strong>Path C (fallback):</strong> Password + SHAKE-256(password || domain) + PBKDF2 (200,000 iterations). Standard password protection.
               </div>
@@ -575,7 +575,7 @@
             <div class="step-num">2</div>
             <div class="step-content">
               <div class="step-title">Encryption (AES-256-GCM)</div>
-              <div class="step-desc">Your ML-DSA-65 private key is encrypted with AES-256-GCM using a random 12-byte IV. AAD (Additional Authenticated Data) is bound to your TIP-ID — the ciphertext cannot be used with a different identity. The authentication tag detects any tampering.</div>
+              <div class="step-desc">Your ML-DSA-65 private key is encrypted with AES-256-GCM using a random 12-byte IV. AAD (Additional Authenticated Data) is bound to your TIP-ID - the ciphertext cannot be used with a different identity. The authentication tag detects any tampering.</div>
             </div>
           </div>
           <div class="step">
@@ -601,7 +601,7 @@
           Post-quantum cryptography: ML-DSA-65 (Dilithium3)
         </div>
         <div class="card-sub">
-          This extension uses <strong>ML-DSA-65</strong> (FIPS 204) for all signatures — a post-quantum
+          This extension uses <strong>ML-DSA-65</strong> (FIPS 204) for all signatures - a post-quantum
           lattice-based scheme standardized by NIST. Secure against both classical and quantum computer attacks.
           Implemented via <code>@noble/post-quantum</code> bundled directly into the extension.
         </div>
@@ -636,8 +636,8 @@
         <div class="card-sub">
           The TIP node is where your content registrations are sent and where trust scores are fetched.
           The official mainnet node is <code>https://node.theailab.org</code>.
-          For development, run a local node from <a href="https://github.com/theailab-org/tip-node"
-          target="_blank" style="color:#B8942E;">theailab-org/tip-node</a>.
+          For development, run a local node from <a href="https://github.com/theailaborg/tip-node"
+          target="_blank" style="color:#B8942E;">theailaborg/tip-node</a>.
         </div>
 
         <div class="field">
@@ -765,7 +765,7 @@
             <div class="field" id="lc-field-content" style="display:none;">
               <div class="field-label"><span id="lc-content-label">Description or Caption</span></div>
               <textarea id="lc-content-input" rows="4" placeholder="Write here... (any language)" maxlength="5000" dir="auto"></textarea>
-              <div class="field-hint">Only a cryptographic hash is published — your text is never transmitted.</div>
+              <div class="field-hint">Only a cryptographic hash is published - your text is never transmitted.</div>
             </div>
 
             <!-- Thread posts -->
@@ -953,14 +953,14 @@
             <div class="step-num">1</div>
             <div class="step-content">
               <div class="step-title">Get a TIP-ID</div>
-              <div class="step-desc">Apply for verification at <a href="https://theailab.org/get-verified" target="_blank" style="color:#B8942E;">theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification  -  government ID, 3D liveness check, device binding. Takes about 5 minutes. You receive your TIP-ID and private key.</div>
+              <div class="step-desc">Apply for verification at <a href="https://vp.theailab.org/get-verified" target="_blank" style="color:#B8942E;">vp.theailab.org/get-verified</a>. A Verification Provider (VP) runs you through biometric verification  -  government ID, 3D liveness check, device binding. Takes about 10 minutes. You receive your TIP-ID and private key.</div>
             </div>
           </div>
           <div class="step">
             <div class="step-num">2</div>
             <div class="step-content">
               <div class="step-title">Connect to the browser extension</div>
-              <div class="step-desc">After verification, click "Connect Browser Plugin" on the VP page. Your encrypted signing key is transferred to the extension via secure messaging. The key is encrypted with your device biometric (Face ID / Touch ID) — it can only be decrypted by you on this device.</div>
+              <div class="step-desc">After verification, click "Connect Browser Plugin" on the VP page. Your encrypted signing key is transferred to the extension via secure messaging. The key is encrypted with your device biometric (Face ID / Touch ID) - it can only be decrypted by you on this device.</div>
             </div>
           </div>
           <div class="step">
@@ -995,7 +995,7 @@
             <div class="step-num">6</div>
             <div class="step-content">
               <div class="step-title">Copy your CTID and paste it</div>
-              <div class="step-desc">You receive a CTID: <code>tip://c/OH-7f2a91bc3d5e4a-a3f8</code>. Paste it in your video description, post caption, or article. Viewers with the TIP extension installed see your verified badge. Anyone can verify it at <a href="https://theailab.org/verify" target="_blank" style="color:#B8942E;">theailab.org/verify</a>.</div>
+              <div class="step-desc">You receive a CTID: <code>tip://c/OH-7f2a91bc3d5e4a-a3f8</code>. Paste it in your video description, post caption, or article. Viewers with the TIP extension installed see your verified badge. Anyone can verify it at <a href="https://vp.theailab.org/verify-record" target="_blank" style="color:#B8942E;">vp.theailab.org/verify-record</a>.</div>
             </div>
           </div>
         </div>

@@ -110,7 +110,7 @@ document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
           stroke-width="2.5" stroke-linecap="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
-        Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}
+        Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}
       `;
     }
   });
@@ -142,7 +142,7 @@ document.getElementById("popup-register-btn")?.addEventListener("click", async (
   } else {
     showStatus("creator-status","error", res?.error || "Registration failed. Check Settings → TIP Node connection.");
     btn.disabled = false;
-    btn.innerHTML = `Register as ${selectedOrigin} — ${ORIGIN_LABELS[selectedOrigin]}`;
+    btn.innerHTML = `Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}`;
   }
 });
 
@@ -218,7 +218,7 @@ async function loadViewerData(tab) {
       statusEl.style.color = "#1A8A5C";
     }
     const link = document.getElementById("viewer-verify-link");
-    if (link) link.href = `https://theailab.org/verify/${encodeURIComponent(data.tipContent)}`;
+    if (link) link.href = `https://vp.theailab.org/verify-record/${encodeURIComponent(data.tipContent)}`;
   }
 }
 
@@ -227,7 +227,7 @@ async function checkNode() {
   const res = await msg("NODE_HEALTH");
   const dot = document.getElementById("node-status");
   if (dot) dot.style.background = res?.ok ? "#1A8A5C" : "#C53030";
-  if (dot) dot.title = res?.ok ? `TIP Node online — ${res.data?.dag_count || 0} transactions` : "TIP Node offline";
+  if (dot) dot.title = res?.ok ? `TIP Node online - ${res.data?.dag_count || 0} transactions` : "TIP Node offline";
 }
 
 // ── Main init ─────────────────────────────────────────────────────────────

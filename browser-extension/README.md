@@ -112,7 +112,7 @@ npm install @noble/post-quantum
 ```
 
 ```javascript
-// In crypto.js — replace generateKeypair() and signData()
+// In crypto.js - replace generateKeypair() and signData()
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa";
 
 async function generateKeypair() {
@@ -127,7 +127,7 @@ async function generateKeypair() {
 ```
 
 The `@noble/post-quantum` library is pure JavaScript, audited by Cure53, and
-requires no native compilation or WebAssembly build steps — it works directly
+requires no native compilation or WebAssembly build steps - it works directly
 in browser extensions.
 
 ---
@@ -144,7 +144,7 @@ The extension connects to a TIP node for:
 
 To run a local node:
 ```bash
-git clone https://github.com/theailab-org/tip-node.git
+git clone https://github.com/theailaborg/tip-node.git
 cd tip-node && cp .env.example .env
 docker compose up -d
 docker compose exec tip-node node scripts/seed.js
@@ -170,6 +170,6 @@ content risks trust score penalties.
 
 ## Contact
 
-chairman@theailab.org | theailab.org | accreditation@theailab.org
+tip@theailab.org | theailab.org | accreditation@theailab.org
 
 Copyright 2026 The AI Lab Intelligence Unobscured, Inc. | Authored by Dinesh Mendhe

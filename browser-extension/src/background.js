@@ -17,7 +17,7 @@
  *   - Return CTID and copy to clipboard
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
+ * Author: Dinesh Mendhe <tip@theailab.org>
  * License: TIPCL-1.0
  */
 
@@ -203,7 +203,7 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
   let publicKey;
   
   if (existingPrivateKey?.startsWith("__RE_ENCRYPT__")) {
-    // Change-password flow — payload: "__RE_ENCRYPT__<oldPassword>__<encryptedB64>"
+    // Change-password flow - payload: "__RE_ENCRYPT__<oldPassword>__<encryptedB64>"
     // Split on the *last* "__": base64 never contains "_" so the boundary is unambiguous
     // even when the old password itself contains "__".
     const payload  = existingPrivateKey.slice("__RE_ENCRYPT__".length);
@@ -216,11 +216,11 @@ async function setupIdentity({ tipId, password, existingPrivateKey }) {
     } catch {
       throw new Error("Wrong password. Cannot decrypt your signing key.");
     }
-    // Preserve the existing public key — re-encryption must not change it.
+    // Preserve the existing public key - re-encryption must not change it.
     const stored = await chrome.storage.local.get(["publicKey"]);
     publicKey = stored.publicKey || "imported";
   } else if (existingPrivateKey) {
-    // Import flow — user provides the raw master seed hex from VP registration.
+    // Import flow - user provides the raw master seed hex from VP registration.
     privateKey = existingPrivateKey;
     publicKey  = "imported";
   } else {
@@ -271,7 +271,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         setupDate:      new Date().toISOString(),
         connected:      false,
       }).then(() => {
-        // Notify user — update badge + show notification
+        // Notify user - update badge + show notification
         chrome.action.setBadgeText({ text: "NEW" }).catch(() => {});
         chrome.action.setBadgeBackgroundColor({ color: "#B8942E" }).catch(() => {});
         chrome.notifications.create("tip-connect", {
@@ -355,7 +355,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return respond(setupIdentity(msg.payload));
 
     // ── Creator: setup via WebAuthn passkey (options page encrypts the key) ──
-    // WebAuthn requires a window context — the options page handles registration
+    // WebAuthn requires a window context - the options page handles registration
     // and encryption, then sends the already-encrypted blob here for storage.
     case "SETUP_IDENTITY_WEBAUTHN": {
       const { tipId, publicKey, encryptedKey, credentialId, securityMethod } = msg.payload;

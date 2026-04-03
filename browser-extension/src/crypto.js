@@ -45,7 +45,7 @@ async function generateKeypair() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SIGN / VERIFY — ML-DSA-65 only
+// SIGN / VERIFY - ML-DSA-65 only
 // ════════════════════════════════════════════════════════════════════════════
 
 async function signData(data, privateKeyHex) {
@@ -98,7 +98,7 @@ async function generateCTID(originCode, content, authorTipId) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// WEBAUTHN — CREATE PASSKEY + DERIVE AES KEY
+// WEBAUTHN - CREATE PASSKEY + DERIVE AES KEY
 // ════════════════════════════════════════════════════════════════════════════
 
 import { TIP_WEBAUTHN_RP_ID } from "./config.js";
@@ -176,7 +176,7 @@ async function authenticatePasskey(credentialIdB64) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PRIVATE KEY ENCRYPTION — WebAuthn (primary) or Password (fallback)
+// PRIVATE KEY ENCRYPTION - WebAuthn (primary) or Password (fallback)
 // ════════════════════════════════════════════════════════════════════════════
 
 // Format: magic("TIPW",4) + iv(12) + ciphertext
@@ -217,7 +217,7 @@ async function decryptWithWebAuthn(encryptedB64, tipId, credentialIdB64) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// DECRYPT VP KEY — matches VP app's encryptAndStoreKey format exactly
+// DECRYPT VP KEY - matches VP app's encryptAndStoreKey format exactly
 // tipKey object: { credentialId, tipId, salt[], nonce[], iv[], data[], method, version }
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -330,7 +330,7 @@ async function decryptVPKey(tipKey) {
       return new TextDecoder().decode(decrypted);
     } catch { continue; }
   }
-  throw new Error("Decryption failed — key may be corrupted or wrong device");
+  throw new Error("Decryption failed - key may be corrupted or wrong device");
 }
 
 // ── Password fallback (legacy) ───────────────────────────────────────────

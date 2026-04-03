@@ -28,13 +28,13 @@ async function isPlatformAuthenticatorAvailable() {
 
 /**
  * Create a new passkey.
- * No authenticatorAttachment restriction — the OS shows ALL options:
+ * No authenticatorAttachment restriction - the OS shows ALL options:
  * Face ID / Touch ID, Windows Hello, AND "Use a phone / security key" (QR code).
  */
 async function webAuthnRegister(userId, displayName) {
   const cred = await navigator.credentials.create({ publicKey: {
     challenge:   _waRandomBytes(32),
-    rp:          { id: WA_RP_ID, name: "TIP Protocol — The AI Lab" },
+    rp:          { id: WA_RP_ID, name: "TIP Protocol - The AI Lab" },
     user:        { id: new TextEncoder().encode(userId), name: userId, displayName: displayName || "TIP Creator" },
     pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
     authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
@@ -284,16 +284,23 @@ async function decryptKeyWithWebAuthn(encB64, credentialId) {
 
 // ── FAQ data ──────────────────────────────────────────────────────────────────
 const FAQS = [
-  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted on this device using AES-256-GCM. On Chrome/Edge 116+, the encryption key is derived from a Secure Enclave hardware secret via WebAuthn PRF, gated by your biometrics. On other browsers, the key is derived via SHAKE-256 and PBKDF2 (200,000 rounds) from your passkey credential or password. Only the encrypted ciphertext is stored. The TIP node receives only cryptographic signatures." },
-  { q: "What is a CTID and where do I put it?", a: "A CTID (Content Transaction ID) is a permanent URI like tip://c/OH-7f2a91bc3d5e4a-a3f8. It identifies your content on the TIP DAG. Paste it anywhere in your content: video description, article footer, post caption. Viewers with the TIP extension see it as a clickable verification link. Viewers without the extension can go to theailab.org/verify/[ctid] to verify manually." },
-  { q: "What if I pick OH but my content is actually AI-generated?", a: "The TIP node runs an AI pre-scan calibrated to your creator history. If you declare OH but the AI classifier detects probable AI generation, your trust score decreases: -100 for a first offense, up to -350 for repeated offenses. Over-declaring AI involvement (e.g. declaring AA when it's actually OH) carries zero penalty. When in doubt, declare conservatively." },
-  { q: "What happens if the platform already supports TIP natively?", a: "The extension automatically detects TIP-* HTTP headers in the platform's responses. Once those headers are present, the extension reads them instead of using the creator panel. The registration panel hides itself. You don't need to do anything — it transitions seamlessly." },
-  { q: "Does the extension work on mobile browsers?", a: "Chrome and Firefox browser extensions are desktop-only. Mobile browser extensions are not currently supported by Chrome for Android or Safari for iOS. Platforms implementing TIP natively will provide the mobile experience." },
-  { q: "What is the difference between TIP-ID and a CTID?", a: "Your TIP-ID (tip://id/US-...) is your identity — it represents you as a verified person. It stays the same forever. A CTID (tip://c/OH-...) is a content record — it represents one specific piece of content you registered. You have one TIP-ID and as many CTIDs as pieces of content you register." },
+  { q: "Is my private key sent to any server?", a: "No. Your private key is encrypted on this device using AES-256-GCM. On Chrome/Edge 116+, the encryption key is derived from a Secure Enclave hardware secret via WebAuthn PRF, gated by your biometrics. On other browsers, the key is derived via SHAKE-256 and PBKDF2 (200,000 rounds) from your passkey credential or password. Only the encrypted ciphertext is stored. The TIP node receives only cryptographic signatures, never key material." },
+  { q: "What is a CTID and where do I put it?", a: "A CTID (Content Transaction ID) is a permanent URI like tip://c/OH-7f2a91bc3d5e4a-a3f8. It identifies your content on the TIP DAG. Paste it anywhere in your content: video description, article footer, post caption. Viewers with the TIP extension see it as a clickable verification link. Viewers without the extension can go to vp.theailab.org/verify-record/[ctid] to verify manually." },
+  { q: "What do the origin codes mean (OH, AA, AG, MX)?", a: "OH (Original Human): created entirely by you without AI generation tools. Traditional tools like Photoshop, spell-check, and color grading are fine. AA (AI-Assisted): you are the primary author but used AI tools for drafting, editing, or enhancement. AG (AI-Generated): AI is the primary creator; your role was prompting, curating, or minor editing. MX (Mixed/Composite): combines human and AI elements that cannot be clearly separated." },
+  { q: "What if I pick OH but my content is actually AI-generated?", a: "The TIP node runs an AI pre-scan calibrated to your creator history. If you declare OH but the AI classifier detects probable AI generation, your trust score decreases: -100 for a first offense, up to -350 for repeated offenses. Over-declaring AI involvement (e.g. declaring AA when it is actually OH) carries zero penalty. When in doubt, declare conservatively. Conservative labeling is always safe." },
+  { q: "What happens if the platform already supports TIP natively?", a: "The extension automatically detects TIP-* HTTP headers in the platform's responses. Once those headers are present, the extension reads them instead of using the creator panel. The registration panel hides itself. You do not need to do anything; it transitions seamlessly." },
+  { q: "Does the extension work on mobile browsers?", a: "Browser extensions are desktop-only (Chrome, Edge, Firefox). For mobile, use the TIP Mobile App (iOS and Android), which provides the same content registration and verification features with native biometric support through the Secure Enclave. You can connect your existing TIP-ID to the mobile app by scanning the QR code on the VP portal's 'Identity Verified' page." },
+  { q: "What is the difference between a TIP-ID and a CTID?", a: "Your TIP-ID (tip://id/US-...) is your identity. It represents you as a verified person and stays the same forever. A CTID (tip://c/OH-...) is a content record. It represents one specific piece of content you registered. You have one TIP-ID and as many CTIDs as pieces of content you register." },
   { q: "What does the '+' badge on the extension icon mean?", a: "The gold '+' badge appears when you are on an upload page (YouTube Studio, TikTok, Instagram, etc.). It indicates the TIP creator panel has been injected and is ready for you to register your content." },
-  { q: "Can I use the extension without a TIP-ID?", a: "Yes, for viewer mode. You can see trust badges on any page that has TIP headers or meta tags, verify CTIDs, and scan pages for TIP data — all without a TIP-ID. You only need a TIP-ID to register your own content." },
-  { q: "How do I get a TIP-ID?", a: "Apply at theailab.org/get-verified. A Verification Provider (VP) runs you through biometric verification: government ID scan, 3D liveness check, and device biometric binding. Takes about 5 minutes. After verification, click 'Connect Browser Plugin' on the VP page to transfer your encrypted signing key to the extension. Your key is protected by Face ID / Touch ID and never stored in plaintext." },
-  { q: "Is this free?", a: "Yes. The TIP extension is free. Getting a TIP-ID through an accredited VP is free for individuals. Commercial platforms building TIP into their products may require a commercial license above $500K annual revenue, but end users and creators are always free." },
+  { q: "Can I use the extension without a TIP-ID?", a: "Yes, for viewer mode. You can see trust badges on any page that has TIP headers or meta tags, verify CTIDs, and scan pages for TIP data, all without a TIP-ID. You only need a TIP-ID to register your own content." },
+  { q: "How do I get a TIP-ID?", a: "Visit vp.theailab.org/get-verified. A Verification Provider (VP) runs you through biometric verification: government ID scan, 3D liveness check, and device biometric binding. Takes about 10 minutes and is free. After verification, click 'Connect Browser Plugin' on the VP page to transfer your encrypted signing key to the extension." },
+  { q: "Is this free?", a: "Yes. The TIP extension is free. Getting a TIP-ID through an accredited VP is free for individuals. The TIP Protocol specification is CC-BY 4.0 (free forever). Commercial platforms building TIP into their products may require a commercial license above $500K annual revenue, but end users and creators are always free." },
+  { q: "What are the trust score tiers?", a: "Highly Trusted (800-1000): strong track record, high credibility. Trusted (600-799): consistent honest labeling. Review Advised (400-599): new or limited history, proceed with caution. Low Trust (200-399): past offenses, verify independently. Not Trusted (0-199): multiple misrepresentation offenses." },
+  { q: "What cryptography does TIP use?", a: "All signatures use ML-DSA-65 (Dilithium), a NIST-standardized post-quantum algorithm (FIPS 204). Hashing uses SHAKE-256 (FIPS 202). Key encryption uses AES-256-GCM. These algorithms are secure against both classical and quantum computer attacks. Your content signatures will remain valid even after large-scale quantum computers exist." },
+  { q: "Which platforms are supported?", a: "The extension injects a creator panel on YouTube Studio, TikTok, Instagram, X/Twitter, Facebook, LinkedIn, Threads, Substack, Medium, WordPress, podcast platforms, and news media upload pages. Viewer mode (badge display and verification) works on any website that serves TIP headers or meta tags." },
+  { q: "Can I revoke my TIP-ID?", a: "Yes. Voluntary revocation is permanent. Your TIP-ID is marked as revoked on the DAG, and no new content can be registered under it. Existing content records remain for provenance integrity. To revoke, contact your Verification Provider or use the extension settings." },
+  { q: "Can I connect my TIP-ID to multiple devices?", a: "Yes. After verifying on one device (browser or mobile), you can connect the same TIP-ID to other devices. From the VP portal's 'Identity Verified' page, use the QR code (for the TIP mobile app) or the 'Connect Browser Plugin' button (for additional browser extensions). Each device creates its own Secure Enclave keypair and encrypts your signing key independently." },
+  { q: "What if I lose access to my device?", a: "During verification, you receive a .tip.json backup file containing your encrypted private key. Store it securely (password manager, encrypted USB drive). If you lose your device, import the backup on a new device via the TIP mobile app or browser extension. If you did not save a backup, you will need to complete the verification process again with your VP." },
 ];
 
 // ── Build FAQ list ─────────────────────────────────────────────────────────────
@@ -471,7 +478,7 @@ document.getElementById("generate-keypair-btn").addEventListener("click", async 
     const tidRes = await msg("COMPUTE_TIP_ID", { region: "US", publicKey });
     const tipId  = tidRes?.ok ? tidRes.data : null;
 
-    // Fill both fields — exactly like s1-gen in standalone.html
+    // Fill both fields - exactly like s1-gen in standalone.html
     document.getElementById("setup-tipid").value   = tipId  || "(pending VP registration)";
     document.getElementById("setup-privkey").value = privateKey;
 
@@ -506,12 +513,12 @@ document.getElementById("s2-wa-btn").addEventListener("click", async () => {
     const privKey = _tmpPrivKey;
     if (!privKey) throw new Error("No private key in memory. Go back to step 1.");
 
-    // Register WebAuthn credential — browser shows native OS dialog here
+    // Register WebAuthn credential - browser shows native OS dialog here
     // (Face ID / Touch ID / "Use a phone, tablet or security key" QR code)
     const { credentialId } = await webAuthnRegister(tipId, "TIP Creator");
 
     btn.textContent = "Encrypting key…";
-    const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId, true); // skip re-auth — just registered
+    const encryptedKey = await encryptKeyWithWebAuthn(privKey, credentialId, true); // skip re-auth - just registered
     _tmpPrivKey = null;  // clear from memory immediately after encryption
 
     // Detect method from encrypted blob (v2 format has method byte)
@@ -646,8 +653,8 @@ document.getElementById("test-node-btn").addEventListener("click", async () => {
   if (res?.ok && res.data) {
     resultEl.innerHTML = `<div class="alert alert-success">
       <strong>✓ Connected</strong><br>
-      Version: ${res.data.version || "—"} &nbsp;·&nbsp;
-      Chain: ${res.data.chain_id || "—"} &nbsp;·&nbsp;
+      Version: ${res.data.version || " - "} &nbsp;·&nbsp;
+      Chain: ${res.data.chain_id || " - "} &nbsp;·&nbsp;
       DAG: ${res.data.dag_count || 0} transactions
     </div>`;
   } else {
@@ -669,8 +676,8 @@ async function loadNodeStatus() {
         <span style="color:#1A8A5C;font-weight:600;">Online</span>
       </div>
       <div style="font-size:11px;color:#8895A7;line-height:1.7;">
-        Version: <strong>${res.data.version||"—"}</strong><br>
-        Chain ID: <strong>${res.data.chain_id||"—"}</strong><br>
+        Version: <strong>${res.data.version||" - "}</strong><br>
+        Chain ID: <strong>${res.data.chain_id||" - "}</strong><br>
         DAG transactions: <strong>${res.data.dag_count||0}</strong><br>
         Identity count: <strong>${res.data.identity_count||0}</strong>
       </div>`;
@@ -688,7 +695,7 @@ async function loadNodeStatus() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LABEL THE CONTENT — Platform → Type → Fields → Origin → Register
+// LABEL THE CONTENT - Platform → Type → Fields → Origin → Register
 // ══════════════════════════════════════════════════════════════════════════════
 
 const LC_PLATFORMS = [

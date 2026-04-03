@@ -1,6 +1,6 @@
 TIP Protocol Browser Extension
 Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
-Authored by Dinesh Mendhe <chairman@theailab.org>
+Authored by Dinesh Mendhe <tip@theailab.org>
 
 theailab.org | accreditation@theailab.org
 131 Continental Dr, Suite 305, Newark, DE 19713, United States

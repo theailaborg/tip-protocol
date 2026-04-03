@@ -1,6 +1,6 @@
 /**
  * @file tests/crypto.test.js
- * @description TIP Protocol — Browser Extension Crypto Module Test Suite
+ * @description TIP Protocol - Browser Extension Crypto Module Test Suite
  *
  * Test coverage:
  *   - SHAKE-256 hashing (FIPS 202 via @noble/hashes)
@@ -18,7 +18,7 @@
  * Run: npm test
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
+ * Author: Dinesh Mendhe <tip@theailab.org>
  * License: TIPCL-1.0
  */
 
@@ -163,7 +163,7 @@ describe("Ed25519 + ML-DSA-65 Hybrid Sign / Verify", () => {
   });
 
   test("3.6 both independent signatures verify correctly for the same data", async () => {
-    // ML-DSA-65 uses hedged (randomised) signing — signatures differ between calls.
+    // ML-DSA-65 uses hedged (randomised) signing - signatures differ between calls.
     // What matters is that every signature verifies against the corresponding public key.
     const data = "same message";
     const sig1 = await signData(data, keypair1.privateKey);

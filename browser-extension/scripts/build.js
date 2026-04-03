@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @file scripts/build.js
- * @description TIP™ Extension — Build Script
+ * @description TIP™ Extension - Build Script
  *
  * Bundles the extension with esbuild:
  *   - background.js  → ESM service worker (inlines crypto.js + @noble packages)
@@ -18,7 +18,7 @@
  *   node scripts/build.js --target=firefox
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
- * Author: Dinesh Mendhe <chairman@theailab.org>
+ * Author: Dinesh Mendhe <tip@theailab.org>
  * License: TIPCL-1.0
  */
 
@@ -71,7 +71,7 @@ await esbuild.build({
   define:      { "process.env.NODE_ENV": '"production"' },
   logOverride: { "commonjs-variable-in-esm": "silent" },
 });
-console.log("  ✓ src/background.js — bundled (crypto + noble inlined)");
+console.log("  ✓ src/background.js - bundled (crypto + noble inlined)");
 
 // ── 3. Bundle content.js ──────────────────────────────────────────────────────
 // Content script: IIFE format, inlines tip-types.js imports.
@@ -85,11 +85,11 @@ await esbuild.build({
   minify:      true,
   sourcemap:   false,
 });
-console.log("  ✓ src/content.js   — bundled");
+console.log("  ✓ src/content.js   - bundled");
 
 // ── 4. Copy popup.js + process options.js ─────────────────────────────────────
 cpSync(resolve(ROOT, "src", "popup.js"), resolve(OUT, "src", "popup.js"));
-console.log("  ✓ src/popup.js     — copied");
+console.log("  ✓ src/popup.js     - copied");
 
 // Bundle options.js (imports config.js for WebAuthn RP ID)
 await esbuild.build({
@@ -102,18 +102,18 @@ await esbuild.build({
   minify:      true,
   sourcemap:   false,
 });
-console.log(`  ✓ src/options.js   — bundled (rpId: ${WEBAUTHN_RP_ID})`);
+console.log(`  ✓ src/options.js   - bundled (rpId: ${WEBAUTHN_RP_ID})`);
 for (const htmlFile of ["popup.html", "options.html"]) {
   cpSync(resolve(ROOT, htmlFile), resolve(OUT, htmlFile));
-  console.log(`  ✓ ${htmlFile.padEnd(16)} — copied`);
+  console.log(`  ✓ ${htmlFile.padEnd(16)} - copied`);
 }
 
 if (existsSync(resolve(ROOT, "NOTICE.txt"))) {
   cpSync(resolve(ROOT, "NOTICE.txt"), resolve(OUT, "NOTICE.txt"));
-  console.log("  ✓ NOTICE.txt       — copied");
+  console.log("  ✓ NOTICE.txt       - copied");
 }
 cpSync(resolve(ROOT, "icons"), resolve(OUT, "icons"), { recursive: true });
-console.log("  ✓ icons/           — copied");
+console.log("  ✓ icons/           - copied");
 
 // ── 5. Write manifest.json (target-specific) ──────────────────────────────────
 const manifest = JSON.parse(readFileSync(resolve(ROOT, "manifest.json"), "utf8"));
@@ -130,7 +130,7 @@ if (target === "firefox") {
 }
 
 writeFileSync(resolve(OUT, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
-console.log("  ✓ manifest.json    — written");
+console.log("  ✓ manifest.json    - written");
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 console.log(`\n✓ Done → dist/${target}/\n`);
