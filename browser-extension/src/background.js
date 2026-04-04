@@ -43,7 +43,7 @@ const UPLOAD_PATTERNS = [
   { pattern: /instagram\.com\/(create|p\/|reels\/|stories\/)/,  platform: "Instagram" },
   { pattern: /tiktok\.com\/upload/,                          platform: "TikTok"     },
   { pattern: /facebook\.com\/(video\/upload|photo|stories\/)/,  platform: "Facebook"  },
-  { pattern: /twitter\.com\/compose|x\.com\/compose/,        platform: "X"          },
+  { pattern: /twitter\.com\/compose|x\.com\/compose|x\.com\/home|x\.com\/intent\/post/,  platform: "X"  },
   { pattern: /linkedin\.com\/post\/new|linkedin\.com\/feed\//,  platform: "LinkedIn"  },
   { pattern: /substack\.com\/publish|substack\.com\/.*\/write/, platform: "Substack"  },
   { pattern: /medium\.com\/new-story|medium\.com\/@.*\/new/,    platform: "Medium"    },

@@ -85,7 +85,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     /studio\.youtube\.com|youtube\.com\/upload/.test(location.href) ||
     /instagram\.com\/(create|p\/|reels\/|stories\/)/.test(location.href) ||
     /tiktok\.com\/upload/.test(location.href) ||
-    /twitter\.com\/compose|x\.com\/compose/.test(location.href) ||
+    /twitter\.com\/compose|x\.com\/compose|x\.com\/home|x\.com\/intent\/post/.test(location.href) ||
     /facebook\.com\/(video\/upload|photo|stories\/)/.test(location.href) ||
     /linkedin\.com\/post\/new|linkedin\.com\/feed\//.test(location.href) ||
     /substack\.com\/publish|substack\.com\/.*\/write/.test(location.href) ||
@@ -485,7 +485,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     // ── Panel state ────────────────────────────────────────────────────────────
     let selectedOrigin = null;
     let detectedContent = { title: "", description: "", url: "" };
-    let detectedPlatformType = guessContentType(platformName);
+    let detectedPlatformType = platformName?.toLowerCase() || "text";
     let currentCTID = "";
 
     // Draggable panel
