@@ -1,6 +1,6 @@
 /**
  * @file src/background.js
- * @description TIP™ Extension - Background Service Worker (Manifest V3)
+ * @description TIP Extension - Background Service Worker (Manifest V3)
  *
  * Dual-mode responsibilities:
  *

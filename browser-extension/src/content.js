@@ -1,6 +1,6 @@
 /**
  * @file src/content.js
- * @description TIP™ Extension - Content Script
+ * @description TIP Extension - Content Script
  *
  * Runs on every page. Two responsibilities:
  *
@@ -141,7 +141,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
       <span style="font-size:11px;font-weight:600;color:${c};font-family:sans-serif;">${score}</span>
       ${origin ? originPill(origin.toUpperCase().slice(0, 2)) : ""}
     `;
-    el.title = `TIP™ Verified | ${label} (${score}/1000) | ${tipId}`;
+    el.title = `TIP Verified | ${label} (${score}/1000) | ${tipId}`;
     el.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       window.open(`https://vp.theailab.org/verify-record/${encodeURIComponent(tipId)}`, "_blank", "noopener");
@@ -227,7 +227,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         const wrap = document.createElement("span");
         wrap.style.cssText = "display:inline-flex;align-items:center;margin-left:5px;";
         wrap.innerHTML = shieldSVG(0, 14);
-        wrap.title = "TIP™: Verification status unknown for this creator";
+        wrap.title = "TIP: Verification status unknown for this creator";
         wrap.style.opacity = "0.4";
         el.appendChild(wrap);
       });
@@ -243,7 +243,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         const wrap = document.createElement("span");
         wrap.style.cssText = "display:inline-flex;align-items:center;margin-left:4px;";
         wrap.innerHTML = shieldSVG(0, 15);
-        wrap.title = "TIP™: Creator verification status unknown";
+        wrap.title = "TIP: Creator verification status unknown";
         wrap.style.opacity = "0.35";
         el.appendChild(wrap);
       });
@@ -290,7 +290,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
             <path d="M16 24L22 30L34 18" stroke="#B8942E" stroke-width="3" stroke-linecap="round"/>
           </svg>
           <div>
-            <div style="font-size:11px;font-weight:700;color:#FFFFFF;letter-spacing:1px;">TIP™ PROTOCOL</div>
+            <div style="font-size:11px;font-weight:700;color:#FFFFFF;letter-spacing:1px;">TIP PROTOCOL</div>
             <div style="font-size:9px;color:#B8942E;letter-spacing:1.5px;">REGISTER CONTENT</div>
           </div>
         </div>
@@ -476,7 +476,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         <a href="https://theailab.org" target="_blank" style="font-size:9px;color:${C.gray};text-decoration:none;">
           theailab.org
         </a>
-        <span style="font-size:9px;color:${C.gray};">TIP™ v2.1</span>
+        <span style="font-size:9px;color:${C.gray};">TIP v2.1</span>
       </div>
     `;
 
