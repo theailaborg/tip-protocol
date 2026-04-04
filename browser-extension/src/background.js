@@ -449,6 +449,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
 
+    case "OPEN_SIGN_TAB":
+      chrome.tabs.create({ url: chrome.runtime.getURL("sign.html"), active: true });
+      sendResponse({ ok: true });
+      return false;
+
+
     // ── Node URL management ───────────────────────────────────────────────────
     case "GET_NODE_URL":
       return respond(getNodeUrl());

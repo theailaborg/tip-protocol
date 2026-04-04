@@ -113,7 +113,20 @@ await esbuild.build({
   sourcemap:   false,
 });
 console.log(`  ✓ src/options.js   - bundled (rpId: ${WEBAUTHN_RP_ID})`);
-for (const htmlFile of ["popup.html", "options.html"]) {
+// Bundle sign.js (WebAuthn signing page — imports crypto.js)
+await esbuild.build({
+  entryPoints: [resolve(ROOT, "src", "sign.js")],
+  outfile:     resolve(OUT, "src", "sign.js"),
+  bundle:      true,
+  format:      "iife",
+  platform:    "browser",
+  target:      target === "firefox" ? ["firefox121"] : ["chrome109"],
+  minify:      true,
+  sourcemap:   false,
+});
+console.log("  ✓ src/sign.js      - bundled");
+
+for (const htmlFile of ["popup.html", "options.html", "sign.html"]) {
   cpSync(resolve(ROOT, htmlFile), resolve(OUT, htmlFile));
   console.log(`  ✓ ${htmlFile.padEnd(16)} - copied`);
 }

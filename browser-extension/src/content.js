@@ -21,7 +21,7 @@
 
 "use strict";
 
-import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LABELS, ORIGIN_HINTS } from "./tip-types.js";;
+import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LABELS, ORIGIN_HINTS } from "./tip-types.js";
 
 (function () {
   if (window.__tipContentInjected) return;
@@ -409,26 +409,24 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
             </div>
           </div>
 
-          <!-- Password field -->
-          <div style="margin-bottom:12px;">
+          <!-- Auth: WebAuthn (default) -->
+          <div id="tip-auth-webauthn" style="margin-bottom:12px;display:none;">
+            <div style="padding:8px 10px;background:#1A8A5C10;border:1px solid #1A8A5C30;border-radius:6px;font-size:11px;color:#1A8A5C;">
+              🔐 <strong>Face ID / Fingerprint</strong> will be required to sign.
+            </div>
+          </div>
+          <!-- Auth: Password (fallback) -->
+          <div id="tip-auth-password" style="margin-bottom:12px;display:none;">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
               <div style="font-size:10px;font-weight:600;color:${C.gray};letter-spacing:1px;
                 text-transform:uppercase;">Signing Password</div>
-              <span title="This unlocks your private signing key stored locally. It never leaves your device."
-                style="font-size:10px;background:${C.navy}10;color:${C.navy};
-                border-radius:50%;width:14px;height:14px;display:inline-flex;
-                align-items:center;justify-content:center;cursor:help;font-weight:700;">?</span>
             </div>
             <input id="tip-password" type="password" placeholder="Enter your TIP signing password"
               style="width:100%;padding:8px 10px;border:1px solid ${C.border};
                 border-radius:6px;font-family:monospace;font-size:12px;
-                color:${C.navy};outline:none;box-sizing:border-box;
-                transition:border-color 0.2s;"
+                color:${C.navy};outline:none;box-sizing:border-box;"
               autocomplete="current-password"
             />
-            <div style="font-size:9px;color:${C.gray};margin-top:3px;">
-              🔒 Your key never leaves this device.
-            </div>
           </div>
 
           <!-- Register button -->
@@ -510,6 +508,11 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         if (idEl) idEl.textContent = res.data.tipId;
         document.getElementById("tip-setup-prompt").style.display = "none";
         document.getElementById("tip-reg-form").style.display = "block";
+        // Show correct auth method
+        const sm = (res.data.securityMethod || "").toLowerCase();
+        const isWA = sm.includes("webauthn");
+        document.getElementById("tip-auth-webauthn").style.display = isWA ? "block" : "none";
+        document.getElementById("tip-auth-password").style.display = isWA ? "none" : "block";
       } else {
         document.getElementById("tip-setup-prompt").style.display = "block";
         document.getElementById("tip-reg-form").style.display = "none";
@@ -576,14 +579,25 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
       });
     });
 
+    // Detect auth method
+    let widgetUseWebAuthn = false;
+    chrome.runtime.sendMessage({ type: "GET_IDENTITY" }, (idRes) => {
+      if (idRes?.ok && idRes.data?.securityMethod) {
+        widgetUseWebAuthn = idRes.data.securityMethod.toLowerCase().includes("webauthn");
+      }
+    });
+
     // Register button click
     document.getElementById("tip-register-btn").addEventListener("click", async () => {
       if (!selectedOrigin) return;
-      const password = document.getElementById("tip-password").value;
-      if (!password) {
-        showStatus("error", "Enter your signing password first.");
-        document.getElementById("tip-password").focus();
-        return;
+
+      if (!widgetUseWebAuthn) {
+        const password = document.getElementById("tip-password").value;
+        if (!password) {
+          showStatus("error", "Enter your signing password first.");
+          document.getElementById("tip-password").focus();
+          return;
+        }
       }
 
       const content = `${detectedContent.title}\n${detectedContent.description}`.trim();
@@ -595,7 +609,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
       const btn = document.getElementById("tip-register-btn");
       btn.disabled = true;
       btn.innerHTML = "⏳ Registering on TIP DAG...";
-      showStatus("info", "Hashing content and signing with your key...");
+      showStatus("info", widgetUseWebAuthn ? "Authenticate with biometric to sign..." : "Hashing content and signing with your key...");
 
       // Build proper content string using platform-aware formula
       const values = {
@@ -603,30 +617,52 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         content:     detectedContent.description,
         video_url:   detectedContent.url || "",
       };
-      chrome.runtime.sendMessage({
-        type: "REGISTER_CONTENT",
-        payload: {
-          originCode: selectedOrigin,
-          typeId:     detectedPlatformType || "text",
-          values:     values,
-          title:      detectedContent.title,
-          password,
-        },
-      }, (res) => {
+
+      function handleRegResult(res) {
         if (res?.ok && res.data?.ctid) {
           currentCTID = res.data.ctid;
           document.getElementById("tip-ctid-display").textContent = currentCTID;
           document.getElementById("tip-reg-form").style.display = "none";
           document.getElementById("tip-success").style.display = "block";
           showStatus("", "");
-          // Auto-copy to clipboard
           navigator.clipboard?.writeText(currentCTID).catch(() => {});
         } else {
           showStatus("error", res?.error || "Registration failed. Check your node connection in Settings.");
           btn.disabled = false;
           btn.innerHTML = `Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}`;
         }
-      });
+      }
+
+      if (widgetUseWebAuthn) {
+        // WebAuthn needs extension origin — use hidden iframe with publickey-credentials permission
+        await chrome.storage.local.set({
+          pendingReg: { originCode: selectedOrigin, content: detectedContent.description, title: detectedContent.title },
+        });
+        // Listen for result via storage
+        chrome.storage.onChanged.addListener(function sigListener(changes) {
+          if (changes.signResult) {
+            chrome.storage.onChanged.removeListener(sigListener);
+            const res = changes.signResult.newValue;
+            chrome.storage.local.remove("signResult");
+            const frame = document.getElementById("tip-sign-frame");
+            if (frame) frame.remove();
+            handleRegResult(res);
+          }
+        });
+        // Create iframe on extension origin with WebAuthn permission
+        const frame = document.createElement("iframe");
+        frame.id = "tip-sign-frame";
+        frame.src = chrome.runtime.getURL("sign.html");
+        frame.allow = "publickey-credentials-get *; publickey-credentials-create *";
+        frame.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;border:none;opacity:0;";
+        document.body.appendChild(frame);
+      } else {
+        const password = document.getElementById("tip-password").value;
+        chrome.runtime.sendMessage({
+          type: "REGISTER_CONTENT",
+          payload: { originCode: selectedOrigin, typeId: detectedPlatformType || "text", values, title: detectedContent.title, password },
+        }, handleRegResult);
+      }
     });
 
     document.getElementById("tip-copy-ctid").addEventListener("click", () => {
