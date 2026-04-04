@@ -160,7 +160,9 @@ document.getElementById("popup-register-btn")?.addEventListener("click", async (
   if (res?.ok && res.data?.ctid) {
     currentCTID = res.data.ctid;
     setText("popup-ctid-display", currentCTID);
-    hide("creator-manual-form");
+    hide("popup-step-fields");
+    hide("popup-auth-webauthn");
+    hide("popup-auth-password");
     show("creator-success");
     showStatus("creator-status","","");
     navigator.clipboard?.writeText(currentCTID).catch(()=>{});
@@ -183,7 +185,9 @@ document.getElementById("popup-copy-ctid")?.addEventListener("click", () => {
 // ── Register another ──────────────────────────────────────────────────────
 document.getElementById("popup-register-another")?.addEventListener("click", () => {
   hide("creator-success");
-  show("creator-manual-form");
+  show("popup-step-fields");
+  show("popup-field-title");
+  if (useWebAuthn) { show("popup-auth-webauthn"); } else { show("popup-auth-password"); }
   selectedOrigin = null;
   document.getElementById("popup-password").value = "";
   if (document.getElementById("popup-title-input")) document.getElementById("popup-title-input").value = "";
