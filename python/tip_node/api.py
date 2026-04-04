@@ -13,6 +13,7 @@ All endpoints are identical regardless of backend.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import time
 import threading
@@ -211,6 +212,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/")
         qs     = parse_qs(parsed.query)
+
+        # ── Static file routes ──────────────────────────────────────────────
+        if method == "GET" and (path.startswith("/download/") or path.startswith("/v1/zk/")):
+            return self._serve_static(path)
 
         # ── GET routes ──────────────────────────────────────────────────────
         if method == "GET":
@@ -989,6 +994,35 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not node:
             self._send_json(404, {"error": f"Node not found: {node_id}"}); return
         self._send_json(200, dict(node))
+
+
+    def _serve_static(self, path: str):
+        """Serve static files from /download (browser extension) and /v1/zk (circuits)."""
+        import mimetypes
+        root = pathlib.Path(__file__).parent.parent.parent  # repo root
+        if path.startswith("/download/"):
+            file_path = root / "browser-extension" / path[len("/download/"):]
+        elif path.startswith("/v1/zk/"):
+            file_path = root / "circuits" / path[len("/v1/zk/"):]
+        else:
+            self._send_json(404, {"error": "Not found"}); return
+
+        # Prevent path traversal
+        try:
+            file_path = file_path.resolve()
+            if ".." in str(file_path) or not file_path.is_file():
+                self._send_json(404, {"error": "Not found"}); return
+        except Exception:
+            self._send_json(404, {"error": "Not found"}); return
+
+        content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        data = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
 
 
 def _decode(s: str) -> str:
