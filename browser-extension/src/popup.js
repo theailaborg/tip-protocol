@@ -122,8 +122,8 @@ document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
 // ── Register button ───────────────────────────────────────────────────────
 document.getElementById("popup-register-btn")?.addEventListener("click", async () => {
   if (!selectedOrigin) return;
-  const title    = document.getElementById("manual-title").value.trim();
-  const content  = document.getElementById("manual-content").value.trim();
+  const title    = (document.getElementById("popup-title-input")?.value || "").trim();
+  const content  = (document.getElementById("popup-content-input")?.value || "").trim();
   if (!content && !title) { showStatus("creator-status","error","Add some content to register."); return; }
 
   if (!useWebAuthn) {
@@ -186,8 +186,8 @@ document.getElementById("popup-register-another")?.addEventListener("click", () 
   show("creator-manual-form");
   selectedOrigin = null;
   document.getElementById("popup-password").value = "";
-  document.getElementById("manual-title").value = "";
-  document.getElementById("manual-content").value = "";
+  if (document.getElementById("popup-title-input")) document.getElementById("popup-title-input").value = "";
+  if (document.getElementById("popup-content-input")) document.getElementById("popup-content-input").value = "";
   document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(b => b.className = "origin-btn");
   document.getElementById("popup-origin-hint").style.display = "none";
   const btn = document.getElementById("popup-register-btn");
@@ -291,6 +291,11 @@ async function init() {
     } else {
       show("creator-manual-form");
       setText("creator-tipid-manual", idRes.data.tipId || "");
+      // No upload page — skip platform/type wizard, show content form directly
+      hide("popup-step-platform");
+      hide("popup-step-type");
+      show("popup-step-fields");
+      show("popup-field-title");
     }
   }
 
