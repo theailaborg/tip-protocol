@@ -13,8 +13,8 @@ const {
   hashContent,
   perceptualHashText,
   generateCTID,
-  mldsaSign,
   shake256,
+  signBody,
 } = require("../../shared/crypto");
 
 const { ORIGIN, ORIGIN_LABELS } = require("../../shared/constants");
@@ -48,41 +48,46 @@ class TIPContentClient {
 
   /**
    * Build the signature payload for content registration.
-   * Must be signed by the author's ML-DSA-65 private key.
+   * Returns the canonical field object that signBody() will serialise + hash.
    *
-   * @param {string} contentHash  14-char hash from hashContent()
+   * @param {string} authorTipId  Author's TIP-ID
    * @param {string} originCode   OH|AA|AG|MX
-   * @returns {string} payload to sign
+   * @param {string} contentHash  Full 64-char SHAKE-256 hash
+   * @returns {Object} fields to sign via signBody()
    */
-  buildSignaturePayload(contentHash, originCode) {
-    return contentHash + originCode;
+  buildSignaturePayload(authorTipId, originCode, contentHash) {
+    return { author_tip_id: authorTipId, origin_code: originCode, content_hash: contentHash };
   }
 
   /**
    * Sign content registration locally.
-   * The signature covers (contentHash + originCode) — making the origin
-   * declaration cryptographically inseparable from the content.
+   * The signature covers canonicalJson({ author_tip_id, origin_code, content_hash })
+   * via signBody() — making the origin declaration cryptographically bound to the content.
    *
+   * @param {string} authorTipId  Author's TIP-ID
    * @param {string} content      Raw content text
    * @param {string} originCode   OH|AA|AG|MX
    * @param {string} privateKey   Author's ML-DSA-65 private key (hex)
-   * @returns {{ contentHash, signature, ctidPreview }}
+   * @returns {{ contentHash, contentHashFull, signature, ctidPreview }}
    */
-  signContent(content, originCode, privateKey) {
+  signContent(authorTipId, content, originCode, privateKey) {
+    if (!authorTipId) throw new Error("authorTipId is required to sign content");
     if (!ORIGIN[originCode]) {
       throw new Error(`Invalid originCode "${originCode}". Must be one of: ${Object.keys(ORIGIN).join(", ")}`);
     }
     if (!privateKey) throw new Error("privateKey is required to sign content");
 
-    const contentHash = hashContent(content);
-    const payload     = this.buildSignaturePayload(contentHash, originCode);
-    const signature   = mldsaSign(payload, privateKey);
+    const contentHashFull  = shake256(content);
+    const contentHashShort = hashContent(content);
+    const fields    = this.buildSignaturePayload(authorTipId, originCode, contentHashFull);
+    const signature = signBody(fields, privateKey);
 
     return {
-      contentHash,
+      contentHash:     contentHashShort,
+      contentHashFull,
       signature,
       originCode,
-      ctidPreview: `tip://c/${originCode}-${contentHash}-????`,
+      ctidPreview: `tip://c/${originCode}-${contentHashShort}-????`,
     };
   }
 
@@ -91,7 +96,7 @@ class TIPContentClient {
    *
    * Flow:
    *   1. Hash the content locally
-   *   2. Sign (contentHash + originCode) with your ML-DSA-65 private key
+   *   2. Sign { author_tip_id, origin_code, content_hash } via signBody()
    *   3. Send to node — node runs calibrated AI pre-scan (v2 FIX-03)
    *   4. Node returns CTID, HTTP headers ready to deploy, and meta tags
    *
@@ -109,9 +114,10 @@ class TIPContentClient {
     if (!ORIGIN[originCode]) throw new Error(`Invalid originCode. Must be one of: ${Object.keys(ORIGIN).join(", ")}`);
     if (!content && !precomputedHash) throw new Error("content or contentHash is required");
 
-    const contentHash = precomputedHash || hashContent(content);
-    const signature   = privateKey
-      ? mldsaSign(this.buildSignaturePayload(contentHash, originCode), privateKey)
+    const contentHashFull  = precomputedHash || shake256(content);
+    const contentHashShort = precomputedHash ? precomputedHash.slice(0, 14) : hashContent(content);
+    const signature = privateKey
+      ? signBody(this.buildSignaturePayload(authorTipId, originCode, contentHashFull), privateKey)
       : "unsigned";
 
     const res = await this._fetch("/v1/content/register", {
@@ -120,7 +126,7 @@ class TIPContentClient {
         author_tip_id: authorTipId,
         origin_code:   originCode,
         content:       content || null,
-        content_hash:  contentHash,
+        content_hash:  contentHashFull,
         signature,
       },
     });
@@ -159,13 +165,17 @@ class TIPContentClient {
    *
    * @param {string} ctid
    * @param {string} verifierTipId
-   * @param {string} [verdict]  Default: "ORIGIN_CONFIRMED"
+   * @param {string} privateKey    Verifier's ML-DSA-65 private key (hex)
+   * @param {string} [verdict]     Default: "ORIGIN_CONFIRMED"
    * @returns {Promise<Object>}
    */
-  async verify(ctid, verifierTipId, verdict = "ORIGIN_CONFIRMED") {
+  async verify(ctid, verifierTipId, privateKey, verdict = "ORIGIN_CONFIRMED") {
+    if (!privateKey) throw new Error("privateKey is required to verify content");
+    const fields    = { verifier_tip_id: verifierTipId, verdict };
+    const signature = signBody(fields, privateKey);
     return this._fetch(`/v1/content/${encodeURIComponent(ctid)}/verify`, {
       method: "POST",
-      body: { verifier_tip_id: verifierTipId, verdict },
+      body: { verifier_tip_id: verifierTipId, verdict, signature },
     });
   }
 
@@ -173,14 +183,18 @@ class TIPContentClient {
    * File an origin dispute against a content record.
    * @param {string} ctid
    * @param {string} disputerTipId
+   * @param {string} privateKey    Disputer's ML-DSA-65 private key (hex)
    * @param {string} reason
    * @param {string} [evidenceHash]
    * @returns {Promise<Object>}
    */
-  async dispute(ctid, disputerTipId, reason, evidenceHash) {
+  async dispute(ctid, disputerTipId, privateKey, reason, evidenceHash) {
+    if (!privateKey) throw new Error("privateKey is required to dispute content");
+    const fields    = { disputer_tip_id: disputerTipId, reason, evidence_hash: evidenceHash };
+    const signature = signBody(fields, privateKey);
     return this._fetch(`/v1/content/${encodeURIComponent(ctid)}/dispute`, {
       method: "POST",
-      body: { disputer_tip_id: disputerTipId, reason, evidence_hash: evidenceHash },
+      body: { disputer_tip_id: disputerTipId, reason, evidence_hash: evidenceHash, signature },
     });
   }
 

@@ -368,14 +368,17 @@ contentCmd
   .command("verify <ctid>")
   .description("Submit a community verification of content origin")
   .option("--as <tipId>", "Verifier TIP-ID (uses default if set)")
+  .option("--key <privateKey>", "ML-DSA-65 private key (uses config if set)")
   .action(async (ctid, opts) => {
     const cfg    = loadCLIConfig();
     const tipId  = opts.as || cfg.defaultTipId;
     if (!tipId) { err("--as <tipId> required"); process.exit(1); }
+    const privKey = opts.key || cfg.privateKey;
+    if (!privKey) { err("--key <privateKey> required (or set via: tip config set-key)"); process.exit(1); }
 
     const client = getClient();
     try {
-      const res = await client.content.verify(ctid, tipId);
+      const res = await client.content.verify(ctid, tipId, privKey);
       ok(`Verification submitted. Score delta: +${res.delta_applied}`);
     } catch (e) {
       err(e.message);
@@ -388,11 +391,16 @@ contentCmd
   .description("File an origin dispute against a content record")
   .requiredOption("--as <tipId>",      "Disputer TIP-ID")
   .requiredOption("--reason <reason>", "Reason for dispute")
+  .option("--key <privateKey>",         "ML-DSA-65 private key (uses config if set)")
   .option("--evidence <hash>",          "SHAKE-256 hash of supporting evidence")
   .action(async (ctid, opts) => {
+    const cfg = loadCLIConfig();
+    const privKey = opts.key || cfg.privateKey;
+    if (!privKey) { err("--key <privateKey> required (or set via: tip config set-key)"); process.exit(1); }
+
     const client = getClient();
     try {
-      const res = await client.content.dispute(ctid, opts.as, opts.reason, opts.evidence);
+      const res = await client.content.dispute(ctid, opts.as, privKey, opts.reason, opts.evidence);
       ok(res.message || "Dispute filed successfully.");
     } catch (e) {
       err(e.message);
