@@ -45,6 +45,7 @@ const UPLOAD_PATTERNS = [
   { pattern: /facebook\.com\/(video\/upload|photo|stories\/)/,  platform: "Facebook"  },
   { pattern: /twitter\.com\/compose|x\.com\/compose|x\.com\/home|x\.com\/intent\/post/,  platform: "X"  },
   { pattern: /linkedin\.com\/post\/new|linkedin\.com\/feed\//,  platform: "LinkedIn"  },
+  { pattern: /pinterest\.com\/(pin-creation|collage-creation)/,  platform: "Pinterest"  },
   { pattern: /substack\.com\/publish|substack\.com\/.*\/write/, platform: "Substack"  },
   { pattern: /medium\.com\/new-story|medium\.com\/@.*\/new/,    platform: "Medium"    },
   { pattern: /threads\.net\/intent|threads\.net\/compose/,      platform: "Threads"   },

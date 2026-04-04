@@ -88,6 +88,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     /twitter\.com\/compose|x\.com\/compose|x\.com\/home|x\.com\/intent\/post/.test(location.href) ||
     /facebook\.com\/(video\/upload|photo|stories\/)/.test(location.href) ||
     /linkedin\.com\/post\/new|linkedin\.com\/feed\//.test(location.href) ||
+    /pinterest\.com\/(pin-creation|collage-creation)/.test(location.href) ||
     /substack\.com\/publish|substack\.com\/.*\/write/.test(location.href) ||
     /medium\.com\/new-story|medium\.com\/@.*\/new/.test(location.href);
 
