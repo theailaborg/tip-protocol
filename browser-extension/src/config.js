@@ -4,4 +4,5 @@
  */
 
 export const TIP_NODE_URL       = "https://node.theailab.org";
-export const TIP_WEBAUTHN_RP_ID = "localhost";  // prod: "theailab.org"
+export const TIP_WEBAUTHN_RP_ID = "localhost";  // use this for dev
+// export const TIP_WEBAUTHN_RP_ID = "theailab.org";  // use this for prod
