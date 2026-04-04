@@ -136,3 +136,7 @@ pilot.md
 # Uncomment the lines below if this is a library package:
 # package-lock.json
 # yarn.lock
+
+package-lock.json
+chrome.crx
+
