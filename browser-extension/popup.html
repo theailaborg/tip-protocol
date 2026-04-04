@@ -667,7 +667,8 @@
         </div>
 
         <!-- Password -->
-        <div style="margin-bottom:12px;">
+        <!-- Password auth (shown for password-encrypted keys) -->
+        <div id="popup-auth-password" style="margin-bottom:12px;display:none;">
           <div class="inp-label">
             Signing Password
             <span class="help-icon" title="Unlocks your private signing key stored locally. Your key never leaves this device.">?</span>
@@ -676,6 +677,12 @@
             placeholder="Your TIP signing password"
             autocomplete="current-password"/>
           <div class="inp-hint">Your key never leaves this browser.</div>
+        </div>
+        <!-- WebAuthn auth (shown for biometric-encrypted keys) -->
+        <div id="popup-auth-webauthn" style="margin-bottom:12px;display:none;">
+          <div style="padding:10px 12px;background:#1A8A5C10;border:1px solid #1A8A5C30;border-radius:6px;font-size:11px;color:#1A8A5C;">
+            🔐 <strong>Face ID / Fingerprint</strong> will be required to sign this registration.
+          </div>
         </div>
 
         <!-- Register button -->

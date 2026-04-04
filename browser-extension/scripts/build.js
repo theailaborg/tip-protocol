@@ -88,8 +88,18 @@ await esbuild.build({
 console.log("  ✓ src/content.js   - bundled");
 
 // ── 4. Copy popup.js + process options.js ─────────────────────────────────────
-cpSync(resolve(ROOT, "src", "popup.js"), resolve(OUT, "src", "popup.js"));
-console.log("  ✓ src/popup.js     - copied");
+// Bundle popup.js (imports crypto.js for WebAuthn decryption)
+await esbuild.build({
+  entryPoints: [resolve(ROOT, "src", "popup.js")],
+  outfile:     resolve(OUT, "src", "popup.js"),
+  bundle:      true,
+  format:      "iife",
+  platform:    "browser",
+  target:      target === "firefox" ? ["firefox121"] : ["chrome109"],
+  minify:      true,
+  sourcemap:   false,
+});
+console.log("  ✓ src/popup.js     - bundled");
 
 // Bundle options.js (imports config.js for WebAuthn RP ID)
 await esbuild.build({

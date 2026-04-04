@@ -1,5 +1,7 @@
 "use strict";
 
+import { decryptVPKey } from "./crypto.js";
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const COLORS = {
   green:"#1A8A5C", blue:"#2563A8", yellow:"#A88B15",
@@ -56,6 +58,7 @@ function msg(type, payload) {
 let activeTab = "creator";
 let selectedOrigin = null;
 let currentCTID = "";
+let useWebAuthn = false;
 
 function show(id)  { const el = document.getElementById(id); if(el) el.style.display = "block"; }
 function hide(id)  { const el = document.getElementById(id); if(el) el.style.display = "none"; }
@@ -119,18 +122,40 @@ document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
 // ── Register button ───────────────────────────────────────────────────────
 document.getElementById("popup-register-btn")?.addEventListener("click", async () => {
   if (!selectedOrigin) return;
-  const password = document.getElementById("popup-password").value;
   const title    = document.getElementById("manual-title").value.trim();
   const content  = document.getElementById("manual-content").value.trim();
-  if (!password) { showStatus("creator-status","error","Enter your signing password."); return; }
   if (!content && !title) { showStatus("creator-status","error","Add some content to register."); return; }
+
+  if (!useWebAuthn) {
+    const password = document.getElementById("popup-password").value;
+    if (!password) { showStatus("creator-status","error","Enter your signing password."); return; }
+  }
 
   const btn = document.getElementById("popup-register-btn");
   btn.disabled = true;
   btn.innerHTML = "⏳ Registering...";
-  showStatus("creator-status","info","Hashing and signing your content...");
+  showStatus("creator-status","info", useWebAuthn ? "Authenticate with biometric to sign..." : "Hashing and signing your content...");
 
-  const res = await msg("REGISTER_CONTENT", { payload: { originCode: selectedOrigin, content: content||title, title, password } });
+  let res;
+  if (useWebAuthn) {
+    // Decrypt key via WebAuthn (popup has window context for biometric prompt)
+    try {
+      const stored = await chrome.storage.local.get(["tipKey", "tipId"]);
+      if (!stored.tipKey) throw new Error("No encrypted key found. Re-connect from VP app.");
+      const privateKeyHex = await decryptVPKey(stored.tipKey);
+      res = await msg("REGISTER_CONTENT_WITH_KEY", {
+        payload: { originCode: selectedOrigin, content: content||title, title, privateKeyHex }
+      });
+    } catch (e) {
+      showStatus("creator-status","error", e.message || "Key decryption failed. Please re-register your TIP ID in Settings → Setup tab.");
+      btn.disabled = false;
+      btn.innerHTML = `Register as ${selectedOrigin} - ${ORIGIN_LABELS[selectedOrigin]}`;
+      return;
+    }
+  } else {
+    const password = document.getElementById("popup-password").value;
+    res = await msg("REGISTER_CONTENT", { payload: { originCode: selectedOrigin, content: content||title, title, password } });
+  }
 
   if (res?.ok && res.data?.ctid) {
     currentCTID = res.data.ctid;
@@ -247,6 +272,17 @@ async function init() {
   if (!hasId) {
     show("creator-no-id");
   } else {
+    // Detect auth method — WebAuthn or password
+    const sm = (idRes.data.securityMethod || "").toLowerCase();
+    useWebAuthn = sm.includes("webauthn");
+    if (useWebAuthn) {
+      show("popup-auth-webauthn");
+      hide("popup-auth-password");
+    } else {
+      show("popup-auth-password");
+      hide("popup-auth-webauthn");
+    }
+
     // Check if on an upload page
     const platform = await msg("DETECT_PLATFORM", { url: tab.url });
     if (platform?.platform) {
