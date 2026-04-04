@@ -311,8 +311,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
           color:#1E40AF;line-height:1.5;
         ">
           <strong>💡 What is this?</strong><br>
-          Register your content on the blockchain-based TIP Protocol DAG.
-          Viewers get a verified badge showing who made this and whether AI was involved.
+          Declare how your content was created - human, AI-assisted, AI-generated, or mixed. Your declaration is signed with your verified identity and recorded permanently.
           <a href="https://theailab.org/trust-identity-protocol" target="_blank"
             style="color:#B8942E;display:block;margin-top:4px;">Learn more →</a>
         </div>
@@ -475,7 +474,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
         <a href="https://theailab.org" target="_blank" style="font-size:9px;color:${C.gray};text-decoration:none;">
           theailab.org
         </a>
-        <span style="font-size:9px;color:${C.gray};">TIP v2.1</span>
+        <span style="font-size:9px;color:${C.gray};">TIP v2.2</span>
       </div>
     `;
 

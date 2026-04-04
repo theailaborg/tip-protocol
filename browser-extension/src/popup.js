@@ -97,6 +97,9 @@ document.getElementById("creator-goto-settings")?.addEventListener("click", () =
 document.getElementById("popup-full-form")?.addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("options.html#platforms") });
 });
+document.getElementById("upload-open-settings")?.addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
+});
 
 // ── Origin button selection ───────────────────────────────────────────────
 document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
