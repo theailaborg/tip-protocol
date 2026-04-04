@@ -340,6 +340,13 @@ document.querySelectorAll(".nav-item").forEach(btn => {
   });
 });
 
+// ── Hash routing (e.g. options.html#platforms) ────────────────────────────────
+if (window.location.hash) {
+  const pane = window.location.hash.slice(1);
+  const btn = document.querySelector(`.nav-item[data-pane="${pane}"]`);
+  if (btn) btn.click();
+}
+
 // ── Password strength indicator ────────────────────────────────────────────────
 window.updateStrength = function(val) {
   let score = 0;

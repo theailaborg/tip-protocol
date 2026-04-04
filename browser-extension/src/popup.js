@@ -94,6 +94,9 @@ document.getElementById("settings-btn").addEventListener("click", () => {
 document.getElementById("creator-goto-settings")?.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
+document.getElementById("popup-full-form")?.addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("options.html#platforms") });
+});
 
 // ── Origin button selection ───────────────────────────────────────────────
 document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
@@ -102,7 +105,7 @@ document.querySelectorAll("#popup-origin-btns .origin-btn").forEach(btn => {
       b.className = "origin-btn";
     });
     selectedOrigin = btn.dataset.code;
-    btn.classList.add(`selected-${selectedOrigin}`);
+    btn.classList.add(`sel-${selectedOrigin}`);
     const hint = document.getElementById("popup-origin-hint");
     if (hint) { hint.textContent = ORIGIN_HINTS[selectedOrigin]; hint.style.display="block"; }
     const regBtn = document.getElementById("popup-register-btn");
@@ -186,7 +189,7 @@ document.getElementById("popup-copy-ctid")?.addEventListener("click", () => {
 document.getElementById("popup-register-another")?.addEventListener("click", () => {
   hide("creator-success");
   show("popup-step-fields");
-  show("popup-field-title");
+  show("popup-field-content");
   if (useWebAuthn) { show("popup-auth-webauthn"); } else { show("popup-auth-password"); }
   selectedOrigin = null;
   document.getElementById("popup-password").value = "";
@@ -295,11 +298,11 @@ async function init() {
     } else {
       show("creator-manual-form");
       setText("creator-tipid-manual", idRes.data.tipId || "");
-      // No upload page — skip platform/type wizard, show content form directly
+      // No upload page — skip platform/type wizard, show simple form
       hide("popup-step-platform");
       hide("popup-step-type");
       show("popup-step-fields");
-      show("popup-field-title");
+      show("popup-field-content");
     }
   }
 
