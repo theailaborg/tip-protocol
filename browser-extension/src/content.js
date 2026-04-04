@@ -679,19 +679,28 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   // ── Drag helper ──────────────────────────────────────────────────────────────
   function makeDraggable(el, handle) {
     let ox = 0, oy = 0, x = 0, y = 0;
+    let dragging = false, startX, startY, startLeft, startTop;
     handle.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return;
       e.preventDefault();
-      ox = e.clientX; oy = e.clientY;
-      document.addEventListener("mousemove", drag);
-      document.addEventListener("mouseup", () => document.removeEventListener("mousemove", drag), { once: true });
-    });
-    function drag(e) {
-      x = ox - e.clientX; y = oy - e.clientY;
-      ox = e.clientX; oy = e.clientY;
-      el.style.top    = (el.offsetTop - y) + "px";
-      el.style.left   = (el.offsetLeft - x) + "px";
-      el.style.right  = "auto";
+      dragging = true;
+      const rect = el.getBoundingClientRect();
+      el.style.top = rect.top + "px";
+      el.style.left = rect.left + "px";
+      el.style.right = "auto";
       el.style.bottom = "auto";
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      el.style.left = (startLeft + e.clientX - startX) + "px";
+      el.style.top = (startTop + e.clientY - startY) + "px";
+    });
+    document.addEventListener("mouseup", () => { dragging = false; });
+    function drag() {  // unused — kept for compat
     }
   }
 
