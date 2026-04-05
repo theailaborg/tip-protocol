@@ -1,0 +1,135 @@
+TIP COMMUNITY LICENSE v1.0 (TIPCL-1.0)
+The AI Lab Intelligence Unobscured, Inc. | Effective: January 1, 2026
+theailab.org | licensing@theailab.org
+
+PLAIN ENGLISH SUMMARY
+
+FREE FOR:  Individuals, Nonprofits, Journalism organizations,
+           Governments, Education, Businesses under $500K/yr revenue,
+           Research and development (any size)
+
+PAID FOR:  Commercial use above $500K annual revenue
+           Sentinel $2,750/yr, Guardian $11,000/yr, Silver $55,000/yr,
+           Gold $165,000/yr, Platinum $550,000/yr
+
+ALWAYS:    Display attribution: "Built on TIP Protocol by The AI Lab"
+           Preserve the NOTICE file in all distributions
+
+CONVERTS:  To Apache License 2.0 on January 1, 2031
+           (NOTICE file + trademark restrictions survive permanently)
+
+
+S1  PREAMBLE
+
+This License governs the TIP Protocol Reference Implementation
+authored by Dinesh Mendhe and owned by The AI Lab Intelligence
+Unobscured, Inc. ("The AI Lab"). The Protocol Specification is
+separately licensed under CC-BY 4.0 and is unaffected by this
+License.
+
+The AI Lab believes open protocols create stronger ecosystems,
+attribution is a structural truth (not a courtesy), commercial
+enterprises building revenue on this technology should help sustain
+it, and individuals/journalists/nonprofits/governments should never
+face a paywall to participate in a public-interest trust protocol.
+
+
+S2  FREE USE - WHO QUALIFIES
+
+You qualify for FREE USE if you are:
+
+(a) An individual person (any income level)
+(b) A business with Annual Revenue under USD $500,000
+(c) A nonprofit, NGO, or tax-exempt charity (any size)
+(d) A university, college, or educational institution (any size)
+(e) A government entity (any size)
+(f) A journalism organization or individual journalist (any size,
+    used solely for editorial identity/provenance purposes)
+(g) Using the Software only for internal R&D/testing (any size)
+
+Free Use grants you the right to: deploy TIP nodes, modify the
+Software, distribute to other Free Use users, and apply for VP
+accreditation, all at no charge.
+
+
+S3  COMMERCIAL LICENSE REQUIREMENT
+
+Any use that does not qualify as Free Use requires a Commercial
+License. Contact: licensing@theailab.org
+
+Tiers:
+  Sentinel  $500K-$10M rev    $2,750/yr
+  Guardian  $10M-$50M rev    $11,000/yr
+  Silver    $50M-$500M rev   $55,000/yr
+  Gold      $500M-$5B rev   $165,000/yr
+  Platinum  $5B+ rev        $550,000/yr
+
+Commercial License includes a patent license for The AI Lab's
+essential patent claims covering TIP Protocol inventions.
+
+
+S4  ATTRIBUTION - MANDATORY IN ALL CASES
+
+Every implementation (Free or Commercial) must display:
+
+  "Built on TIP Protocol by The AI Lab Intelligence
+   Unobscured, Inc. (theailab.org) | Licensed under TIPCL-1.0"
+
+Acceptable formats:
+  Full:    Full text above in footer/About/Help page
+  Short:   "Powered by TIP Protocol - theailab.org" + hyperlink
+  Badge:   TIP Powered Mark + hyperlink to theailab.org/tip
+  API:     X-Powered-By: TIP-Protocol/theailab.org in responses
+
+
+S5  NOTICE FILE - REQUIRED IN ALL DISTRIBUTIONS
+
+Include this NOTICE file verbatim in all distributions:
+
+  TIP Protocol | Copyright 2026 The AI Lab Intelligence
+  Unobscured, Inc. | Authored by Dinesh Mendhe
+  theailab.org | Licensed under TIPCL-1.0
+  TIP(TM), AI Trust ID(TM), AI Trust Registry(TM) are trademarks
+  of The AI Lab Intelligence Unobscured, Inc.
+
+
+S6  RESTRICTIONS - ABSOLUTE (FREE AND COMMERCIAL)
+
+You may NOT:
+  1. Remove or alter the NOTICE file
+  2. Use TIP(TM), AI Trust ID(TM), AI Trust Registry(TM) or
+     confusingly similar marks without a separate trademark license
+  3. Issue AI Trust ID(TM) Seals yourself (registry-issued only)
+  4. Claim The AI Lab endorses your product
+  5. Run a private fork claiming to be the TIP(TM) network
+  6. Sub-license commercial rights to third parties
+
+
+S7  CONVERSION TO APACHE 2.0 (JANUARY 1, 2031)
+
+On January 1, 2031, this License converts to Apache License 2.0.
+After conversion, commercial use requires no paid license.
+
+SURVIVING PERMANENTLY after conversion:
+  - NOTICE file preservation in all distributions
+  - All trademark restrictions (TIP marks remain reserved)
+  - AI Trust ID(TM) Seal registry-issued only
+  - Genesis block (cryptographic fact, not a license term)
+
+ENDING after conversion:
+  - Mandatory UI attribution display in running applications
+  - Commercial license fee requirement
+  - Copyleft on protocol core modifications
+
+
+S8  PATENTS
+
+Free Use includes a royalty-free patent license for compliant
+implementations. Commercial License includes a broader patent
+license. If you sue The AI Lab for patent infringement, your
+patent license terminates immediately.
+
+
+GOVERNING LAW: Delaware, USA | Arbitration: JAMS, Wilmington, DE
+FULL TEXT: theailab.org/license | licensing@theailab.org
+COPYRIGHT 2026 THE AI LAB INTELLIGENCE UNOBSCURED, INC.
