@@ -167,8 +167,7 @@ async function _deriveKeyFallback(credentialIdBuf, credentialIdB64, requireBiome
   if (requireBiometric) {
     await webAuthnAuthenticate(credentialIdB64); // biometric gate
   }
-  const credBytes  = new Uint8Array(credentialIdBuf);
-  const shakeInput = await _waKdfHash(credBytes);
+  const shakeInput = await _waKdfHash(new TextEncoder().encode(credentialIdB64));
   const km = await crypto.subtle.importKey("raw", shakeInput, "PBKDF2", false, ["deriveKey"]);
   const aesKey = await crypto.subtle.deriveKey(
     { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
