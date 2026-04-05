@@ -1078,6 +1078,7 @@ describe("Gossip Broadcast Wiring", () => {
 describe("Semantic Dedup", () => {
   let sdApp, sdDag, sdScoring;
   let sdVpId, sdVpKp, sdTipId, sdAuthorPriv, sdCtid;
+  let sdVerifierId, sdVerifierPriv;
 
   beforeAll(async () => {
     sdDag     = initDAG({ dbPath: ":memory:" });
@@ -1090,7 +1091,7 @@ describe("Semantic Dedup", () => {
 
     sdApp = createApp({ dag: sdDag, scoring: sdScoring, config: TEST_CONFIG });
 
-    // Register identity (client generates keypair)
+    // Register author identity
     const sdKp = generateMLDSAKeypair();
     const idFields = {
       region: "US", public_key: sdKp.publicKey,
@@ -1103,9 +1104,22 @@ describe("Semantic Dedup", () => {
       .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
     sdTipId     = idRes.body.tip_id;
     sdAuthorPriv = sdKp.privateKey;
-
-    // Set score high enough for jury eligibility
     sdDag.setScore(sdTipId, 800, 0);
+
+    // Register a separate verifier identity
+    const vKp = generateMLDSAKeypair();
+    const vFields = {
+      region: "US", public_key: vKp.publicKey,
+      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: sdVpId, social_attested: false,
+    };
+    const vRes = await request(sdApp)
+      .post("/v1/identity/register")
+      .send({ ...vFields, vp_signature: signBody(vFields, sdVpKp.privateKey) });
+    sdVerifierId  = vRes.body.tip_id;
+    sdVerifierPriv = vKp.privateKey;
+    sdDag.setScore(sdVerifierId, 800, 0);
 
     // Register content
     const sdContent = "Semantic dedup test content.";
@@ -1119,19 +1133,19 @@ describe("Semantic Dedup", () => {
   afterAll(() => { if (sdDag) sdDag.close(); });
 
   test("9.1 First verify succeeds", async () => {
-    const fields = { verifier_tip_id: sdTipId, verdict: "ORIGIN_CONFIRMED" };
+    const fields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
-      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+      .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   test("9.2 Duplicate verify returns 409", async () => {
-    const fields = { verifier_tip_id: sdTipId, verdict: "ORIGIN_CONFIRMED" };
+    const fields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
-      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+      .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/already verified/i);
   });

@@ -672,6 +672,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         verifier = self.dag.get_identity(verifier_tip_id)
         if not verifier:
             self._send_json(404, {"error": f"Verifier TIP-ID not found: {verifier_tip_id}"}); return
+        if verifier_tip_id == rec.get("author_tip_id"):
+            self._send_json(403, {"error": "Cannot verify your own content"}); return
 
         _VERIFY_FIELDS = ["verifier_tip_id", "verdict"]
         if not verify_body_signature(body, signature, verifier.get("public_key", ""), _VERIFY_FIELDS):

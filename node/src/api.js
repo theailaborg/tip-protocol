@@ -602,6 +602,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
 
     const verifier = dag.getIdentity(verifier_tip_id);
     if (!verifier) return res.status(404).json({ error: "Verifier TIP-ID not found" });
+    if (verifier_tip_id === rec.author_tip_id) return res.status(403).json({ error: "Cannot verify your own content" });
 
     const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
     if (!verifyBodySignature(req.body, signature, verifier.public_key, VERIFY_FIELDS)) {
