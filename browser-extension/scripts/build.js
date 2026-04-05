@@ -53,7 +53,7 @@ mkdirSync(resolve(OUT, "icons"), { recursive: true });
 
 // ── Read config ──────────────────────────────────────────────────────────────
 const configSrc    = readFileSync(resolve(ROOT, "src", "config.js"), "utf8");
-const rpIdMatch    = configSrc.match(/TIP_WEBAUTHN_RP_ID\s*=\s*"([^"]+)"/);
+const rpIdMatch    = configSrc.match(/^(?!\s*\/\/).*TIP_WEBAUTHN_RP_ID\s*=\s*"([^"]+)"/m);
 const WEBAUTHN_RP_ID = rpIdMatch ? rpIdMatch[1] : "localhost";
 console.log(`  ℹ WebAuthn RP ID: ${WEBAUTHN_RP_ID} (from src/config.js)`);
 
