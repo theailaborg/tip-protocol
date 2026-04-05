@@ -659,6 +659,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
 
     const disputer = dag.getIdentity(disputer_tip_id);
     if (!disputer) return res.status(404).json({ error: "Disputer TIP-ID not found" });
+    if (dag.isRevoked(disputer_tip_id)) return res.status(403).json({ error: "Disputer TIP-ID is revoked" });
 
     const DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"];
     if (!verifyBodySignature(req.body, signature, disputer.public_key, DISPUTE_FIELDS)) {

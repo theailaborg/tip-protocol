@@ -723,6 +723,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         disputer_identity = self.dag.get_identity(disputer)
         if not disputer_identity:
             self._send_json(404, {"error": f"Disputer TIP-ID not found: {disputer}"}); return
+        if self.dag.is_revoked(disputer):
+            self._send_json(403, {"error": "Disputer TIP-ID is revoked"}); return
 
         _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"]
         if not verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
