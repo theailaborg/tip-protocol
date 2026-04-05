@@ -337,6 +337,7 @@ document.querySelectorAll(".nav-item").forEach(btn => {
     document.querySelectorAll(".pane").forEach(p => p.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("pane-" + btn.dataset.pane).classList.add("active");
+    if (btn.dataset.pane === "platforms") initLabelContent();
   });
 });
 
