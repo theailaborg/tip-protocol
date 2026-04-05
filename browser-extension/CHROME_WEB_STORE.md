@@ -112,11 +112,10 @@ This extension registers content on the TIP Protocol with cryptographic origin d
 
 ## Privacy policy URL
 
-Host the PRIVACY_POLICY.md at a public URL and enter it during submission. Options:
+Host the PRIVACY_POLICY.md at a public URL and enter it during submission. Use:
 
-- GitHub Pages: `https://theailaborg.github.io/tip-sdk/browser-extension/PRIVACY_POLICY`
-- Main website: `https://theailab.org/tip-extension-privacy`
-- Raw GitHub: `https://github.com/theailaborg/tip-sdk/blob/main/browser-extension/PRIVACY_POLICY.md`
+- **Recommended:** `https://theailab.org/tip-privacy-policy`
+- GitHub raw: `https://github.com/theailaborg/tip-sdk/blob/main/browser-extension/PRIVACY_POLICY.md`
 
 The Chrome Web Store requires a direct URL, not a file upload.
 

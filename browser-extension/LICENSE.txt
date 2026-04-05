@@ -131,5 +131,5 @@ patent license terminates immediately.
 
 
 GOVERNING LAW: Delaware, USA | Arbitration: JAMS, Wilmington, DE
-FULL TEXT: theailab.org/license | licensing@theailab.org
+FULL TEXT: theailab.org/tip-license | licensing@theailab.org
 COPYRIGHT 2026 THE AI LAB INTELLIGENCE UNOBSCURED, INC.

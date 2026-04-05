@@ -28,7 +28,7 @@
       display: flex; align-items: center; gap: 10px;
     }
     .brand-text .name { font-size: 12px; font-weight: 700; color: #FFFFFF; letter-spacing: 1px; }
-    .brand-text .ver  { font-size: 9px; color: #B8942E; letter-spacing: 2px; }
+    .brand-text .ver  { font-size: 9px; color: #B8942E; letter-spacing: 2px; margin-top: 4px; }
     .nav-section-label {
       font-size: 9px; font-weight: 600; color: #4A6080;
       letter-spacing: 2px; padding: 16px 20px 6px;
@@ -49,9 +49,12 @@
     }
     .sidebar-footer a {
       font-size: 10px; color: #4A6080; text-decoration: none;
-      display: block; margin-bottom: 4px;
+      display: block; padding: 3px 0;
     }
     .sidebar-footer a:hover { color: #B8942E; }
+    .sidebar-footer .footer-divider {
+      height: 1px; background: #1B2A4A; margin: 8px 0;
+    }
 
     /* ── Main content ── */
     .main { padding: 32px 36px; max-width: 680px; }
@@ -337,6 +340,10 @@
       <a href="https://theailab.org/trust-identity-protocol" target="_blank">theailab.org/tip</a>
       <a href="https://github.com/theailaborg/tip-protocol" target="_blank">github.com/theailaborg/tip-protocol</a>
       <a href="mailto:tip@theailab.org">tip@theailab.org</a>
+      <div class="footer-divider"></div>
+      <a href="https://theailab.org/tip-privacy-policy" target="_blank">Privacy Policy</a>
+      <a href="https://theailab.org/tip-terms-of-service" target="_blank">Terms of Service</a>
+      <a href="https://theailab.org/tip-license" target="_blank">License (TIPCL-1.0)</a>
     </div>
   </div>
 

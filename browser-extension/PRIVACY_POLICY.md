@@ -3,8 +3,11 @@
 **TIP - AI Trust ID Browser Extension**
 **Effective date:** April 4, 2026
 **Last updated:** April 4, 2026
+**Online:** https://theailab.org/tip-privacy-policy
 
 This privacy policy describes how the TIP - AI Trust ID browser extension ("the Extension") handles your data. The Extension is published by The AI Lab Intelligence Unobscured, Inc. ("we", "us").
+
+The Extension is licensed under [TIPCL-1.0](https://theailab.org/tip-license). Use of the Extension is subject to the [Terms of Service](https://theailab.org/tip-terms-of-service).
 
 ---
 
@@ -117,3 +120,6 @@ For privacy questions or data deletion requests:
 - Security: security@theailab.org
 - Address: The AI Lab Intelligence Unobscured, Inc., 131 Continental Dr, Suite 305, Newark, DE 19713, United States
 - Website: https://theailab.org
+- Privacy Policy: https://theailab.org/tip-privacy-policy
+- Terms of Service: https://theailab.org/tip-terms-of-service
+- License: https://theailab.org/tip-license

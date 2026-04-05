@@ -4,7 +4,7 @@
 Works on YouTube, Instagram, TikTok, X/Twitter, Facebook, LinkedIn, Threads, Substack, Medium, podcast platforms, news media, and blogs.
 
 **Author:** Dinesh Mendhe | **Owner:** The AI Lab Intelligence Unobscured, Inc.
-**License:** TIPCL-1.0 | theailab.org
+**License:** [TIPCL-1.0](https://theailab.org/tip-license) | theailab.org
 
 ---
 
@@ -269,6 +269,16 @@ npm run build:all       # Build both
 npm test                # Run unit tests
 npm run lint            # Lint source files
 ```
+
+---
+
+## Links
+
+- **License:** [TIPCL-1.0](https://theailab.org/tip-license)
+- **Privacy Policy:** [theailab.org/tip-privacy-policy](https://theailab.org/tip-privacy-policy)
+- **Terms of Service:** [theailab.org/tip-terms-of-service](https://theailab.org/tip-terms-of-service)
+- **Protocol Spec:** [theailab.org/trust-identity-protocol](https://theailab.org/trust-identity-protocol)
+- **Get Verified:** [vp.theailab.org/get-verified](https://vp.theailab.org/get-verified)
 
 ---
 
