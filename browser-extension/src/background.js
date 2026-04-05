@@ -359,11 +359,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // WebAuthn requires a window context - the options page handles registration
     // and encryption, then sends the already-encrypted blob here for storage.
     case "SETUP_IDENTITY_WEBAUTHN": {
-      const { tipId, publicKey, encryptedKey, credentialId, securityMethod } = msg.payload;
+      const { tipId, publicKey, encryptedKey, credentialId, securityMethod, tipKey } = msg.payload;
       return respond((async () => {
         await chrome.storage.local.set({
           tipId, publicKey, encryptedKey, credentialId,
           securityMethod: securityMethod || "webauthn",
+          tipKey:         tipKey || null,
           setupComplete:  true,
           setupDate:      new Date().toISOString(),
         });

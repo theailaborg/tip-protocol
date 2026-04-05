@@ -281,7 +281,7 @@ async function _deriveKeyFallback(credentialId, credentialIdBytes, requireBiomet
     });
   }
 
-  const shakeOutput = _kdfHash(new TextEncoder().encode(credentialId));
+  const shakeOutput = _kdfHash(credentialIdBytes);
   const keyMaterial = await crypto.subtle.importKey("raw", shakeOutput, "PBKDF2", false, ["deriveKey"]);
   const aesKey = await crypto.subtle.deriveKey(
     { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },

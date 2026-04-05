@@ -754,6 +754,7 @@
         "src/content.js",
         "src/tip-types.js",
         "sign.html",
+        "src/sign.js",
         "src/crypto.js"
       ],
       "matches": [

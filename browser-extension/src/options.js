@@ -539,8 +539,23 @@ document.getElementById("s2-wa-btn").addEventListener("click", async () => {
     }
 
     const publicKey = _tmpPubKey || "imported";
+
+    // Build tipKey object (VP-compatible format) so widget iframe can decrypt
+    const encBlob2 = Uint8Array.from(atob(encryptedKey), c => c.charCodeAt(0));
+    let tipKey = { credentialId, tipId, method: securityMethod, version: 2 };
+    if (_waIsV2(encBlob2)) {
+      let off = 4;
+      tipKey.salt = Array.from(encBlob2.slice(off, off + 16)); off += 16;
+      tipKey.nonce = Array.from(encBlob2.slice(off, off + 12));
+      tipKey.iv = tipKey.nonce; off += 12;
+      const aadLen = encBlob2[off] | (encBlob2[off + 1] << 8); off += 2;
+      off += aadLen; // skip aad
+      off += 1; // skip method byte
+      tipKey.data = Array.from(encBlob2.slice(off));
+    }
+
     const res = await msg("SETUP_IDENTITY_WEBAUTHN", {
-      payload: { tipId, publicKey, encryptedKey, credentialId, securityMethod },
+      payload: { tipId, publicKey, encryptedKey, credentialId, securityMethod, tipKey },
     });
     if (!res?.ok) throw new Error(res?.error || "Failed to save.");
     toast("✓ Passkey registered! Your TIP-ID is connected.");

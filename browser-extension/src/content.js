@@ -633,11 +633,10 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
       }
 
       if (widgetUseWebAuthn) {
-        // WebAuthn needs extension origin — use hidden iframe with publickey-credentials permission
+        // WebAuthn needs extension origin — hidden iframe with credentials permission
         await chrome.storage.local.set({
           pendingReg: { originCode: selectedOrigin, content: detectedContent.description, title: detectedContent.title },
         });
-        // Listen for result via storage
         chrome.storage.onChanged.addListener(function sigListener(changes) {
           if (changes.signResult) {
             chrome.storage.onChanged.removeListener(sigListener);
@@ -648,7 +647,6 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
             handleRegResult(res);
           }
         });
-        // Create iframe on extension origin with WebAuthn permission
         const frame = document.createElement("iframe");
         frame.id = "tip-sign-frame";
         frame.src = chrome.runtime.getURL("sign.html");
