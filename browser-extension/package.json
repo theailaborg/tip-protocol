@@ -1,6 +1,6 @@
 {
   "name": "@tip-protocol/browser-extension",
-  "version": "2.2.0",
+  "version": "2.1.0",
   "description": "TIP Protocol Browser Extension - dual-mode creator registration and viewer badge overlay. Works on YouTube, Instagram, TikTok, X, Facebook, LinkedIn, Substack, and Medium. Manifest V3 (Chrome, Edge, Brave) and Firefox compatible.",
   "author": "Dinesh Mendhe <tip@theailab.org> (https://theailab.org)",
   "publisher": "The AI Lab Intelligence Unobscured, Inc.",

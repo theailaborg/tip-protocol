@@ -3,6 +3,10 @@
  * Change these values for different environments.
  */
 
-export const TIP_NODE_URL       = "https://node.theailab.org";
-export const TIP_WEBAUTHN_RP_ID = "localhost";  // use this for dev
-// export const TIP_WEBAUTHN_RP_ID = "theailab.org";  // use this for prod
+// use this for dev
+export const TIP_NODE_URL       = "http://localhsot:4000";
+export const TIP_WEBAUTHN_RP_ID = "localhost";  
+
+// use this for prod
+// export const TIP_NODE_URL       = "https://node.theailab.org";
+// export const TIP_WEBAUTHN_RP_ID = "theailab.org";  

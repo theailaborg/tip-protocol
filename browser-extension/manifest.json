@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TIP - AI Trust ID",
   "short_name": "TIP",
-  "version": "2.2.0",
+  "version": "2.1.0",
   "description": "Register content on TIP Protocol. Declare human or AI origin, get a verified CTID. Trust badges on YouTube, X, and more.",
   "homepage_url": "https://theailab.org/trust-identity-protocol",
   "permissions": [

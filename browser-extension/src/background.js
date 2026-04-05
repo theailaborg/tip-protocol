@@ -504,4 +504,4 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-// Service worker v2.2.0 ready
+// Service worker v2.1.0 ready
