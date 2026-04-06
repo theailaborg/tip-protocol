@@ -90,12 +90,13 @@ We will not pursue legal action against researchers who:
 TIP Protocol's security rests on several layers. Vulnerabilities are most
 severe when they affect multiple layers simultaneously:
 
-1. **Cryptographic layer**: ML-DSA-65, SLH-DSA-128s, ML-KEM-768, SHAKE-256
-2. **Biometric binding**: Four-layer verification stack, device FIDO2 binding
-3. **Deduplication**: Peppered SHAKE-256 hash + ZK proof on DAG
-4. **DAG integrity**: Genesis block signature chain, gossip validation
-5. **Trust scoring**: Deterministic computation, penalty structure
-6. **Network layer**: Gossip protocol, node authentication
+1. **Cryptographic layer**: ML-DSA-65 (content signing), SLH-DSA-128s (genesis root), ML-KEM-768 (key encapsulation), SHAKE-256 (hashing and key derivation)
+2. **Key protection**: Secure Enclave ECDSA P-256 produces PRF output (biometric-gated), SHAKE-256 derives AES-256 key, AES-256-GCM encrypts ML-DSA-65 private key at rest. ECDSA never signs content.
+3. **Biometric binding**: Four-layer verification stack, device FIDO2/WebAuthn binding, PRF evaluation requires biometric on every signing operation
+4. **Deduplication**: Peppered SHAKE-256 hash + ZK proof on DAG
+5. **DAG integrity**: Genesis block signature chain, gossip validation
+6. **Trust scoring**: Deterministic computation, penalty structure
+7. **Network layer**: Gossip protocol, node authentication
 
 ## Known Limitations (v2.0)
 

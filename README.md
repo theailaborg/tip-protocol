@@ -180,11 +180,11 @@ Every piece of content registered through TIP Protocol carries a mandatory origi
 
 | Score | Tier | Shield | Meaning |
 |-------|------|--------|---------|
-| 800-1000 | HIGHLY TRUSTED | ✓ Green | Clean content history, verified by a Green-tier VP |
-| 600-799 | TRUSTED | ✓ Blue | Good track record, no sustained violations |
-| 400-599 | REVIEW ADVISED | ! Amber | Some disputed content or new account |
-| 200-399 | LOW TRUST | ✗ Orange | Multiple adjudicated mismatches |
-| 0-199 | NOT TRUSTED | ✗ Red | Suspended or repeated violations |
+| 850-1000 | HIGHLY TRUSTED | ✓ Green | Exceptional long-term record of consistent, honest origin declarations |
+| 650-849 | TRUSTED | ✓ Blue | Established credibility, accurate origin labelling over time |
+| 400-649 | VERIFIED | ✓ Gold | Identity confirmed by accredited VP, no violations. Default starting tier |
+| 200-399 | CAUTION | ⚠ Amber | Mislabelling incidents or unresolved disputes on record |
+| 0-199 | NOT TRUSTED | ✗ Red | Severe or repeated violations, identity may be suspended |
 
 Scores are computed deterministically from the DAG. Any protocol-compliant node produces the same score for any TIP-ID from the same DAG history. There is no central score database and no hidden manipulation.
 
