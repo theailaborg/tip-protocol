@@ -112,8 +112,8 @@ chrome.webRequest?.onHeadersReceived?.addListener(
 
 // ── Toolbar badge ─────────────────────────────────────────────────────────────
 function updateBadge(tabId, score, verified = false) {
-  const color = score >= 800 ? "#1A8A5C"
-    : score >= 600 ? "#2563A8"
+  const color = score >= 850 ? "#1A8A5C"
+    : score >= 650 ? "#2563A8"
     : score >= 400 ? "#A88B15"
     : score >= 200 ? "#C07318"
     : score > 0    ? "#C53030"

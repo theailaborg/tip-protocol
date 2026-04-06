@@ -20,15 +20,15 @@ const ORIGIN_HINTS = {
 };
 
 function tierColor(s) {
-  return s>=800?COLORS.green:s>=600?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
+  return s>=850?COLORS.green:s>=650?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
 }
 function tierLabel(s) {
-  return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
+  return s>=850?"Highly Trusted":s>=650?"Trusted":s>=400?"Verified":s>=200?"Caution":"Not Trusted";
 }
 
 function shieldSVG(score, size=36) {
   const c = tierColor(score);
-  const icon = score>=600
+  const icon = score>=650
     ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
     : score>=400
       ? `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`

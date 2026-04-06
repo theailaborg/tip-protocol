@@ -56,10 +56,10 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   };
 
   function tierColor(s) {
-    return s>=800?C.green:s>=600?C.blue:s>=400?C.yellow:s>=200?C.orange:C.red;
+    return s>=850?C.green:s>=650?C.blue:s>=400?C.yellow:s>=200?C.orange:C.red;
   }
   function tierLabel(s) {
-    return s>=800?"Highly Trusted":s>=600?"Trusted":s>=400?"Review Advised":s>=200?"Low Trust":"Not Trusted";
+    return s>=850?"Highly Trusted":s>=650?"Trusted":s>=400?"Verified":s>=200?"Caution":"Not Trusted";
   }
 
   const ORIGIN_COLORS = { OH: C.blue, AA: "#7C3AED", AG: C.orange, MX: C.gray };
@@ -96,7 +96,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   function shieldSVG(score, size = 20, founding = false) {
     const c  = tierColor(score);
     const bc = founding ? C.gold : c;
-    const icon = score >= 600
+    const icon = score >= 650
       ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
       : score >= 400
         ? `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`

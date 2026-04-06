@@ -294,7 +294,7 @@ const FAQS = [
   { q: "Can I use the extension without a TIP-ID?", a: "Yes, for viewer mode. You can see trust badges on any page that has TIP headers or meta tags, verify CTIDs, and scan pages for TIP data, all without a TIP-ID. You only need a TIP-ID to register your own content." },
   { q: "How do I get a TIP-ID?", a: "Visit vp.theailab.org/get-verified. A Verification Provider (VP) runs you through biometric verification: government ID scan, 3D liveness check, and device biometric binding. Takes about 10 minutes and is free. After verification, click 'Connect Browser Plugin' on the VP page to transfer your encrypted signing key to the extension." },
   { q: "Is this free?", a: "Yes. The TIP extension is free. Getting a TIP-ID through an accredited VP is free for individuals. The TIP Protocol specification is CC-BY 4.0 (free forever). Commercial platforms building TIP into their products may require a commercial license above $500K annual revenue, but end users and creators are always free." },
-  { q: "What are the trust score tiers?", a: "Highly Trusted (800-1000): strong track record, high credibility. Trusted (600-799): consistent honest labeling. Review Advised (400-599): new or limited history, proceed with caution. Low Trust (200-399): past offenses, verify independently. Not Trusted (0-199): multiple misrepresentation offenses." },
+  { q: "What are the trust score tiers?", a: "Highly Trusted (850-1000): strong track record, high credibility. Trusted (650-849): consistent honest labeling. Verified (400-649): new or limited history, proceed with caution. Caution (200-399): past offenses, verify independently. Not Trusted (0-199): multiple misrepresentation offenses." },
   { q: "What cryptography does TIP use?", a: "All signatures use ML-DSA-65 (Dilithium), a NIST-standardized post-quantum algorithm (FIPS 204). Hashing uses SHAKE-256 (FIPS 202). Key encryption uses AES-256-GCM. These algorithms are secure against both classical and quantum computer attacks. Your content signatures will remain valid even after large-scale quantum computers exist." },
   { q: "Which platforms are supported?", a: "The extension injects a creator panel on YouTube Studio, TikTok, Instagram, X/Twitter, Facebook, LinkedIn, Threads, Substack, Medium, WordPress, podcast platforms, and news media upload pages. Viewer mode (badge display and verification) works on any website that serves TIP headers or meta tags." },
   { q: "Can I revoke my TIP-ID?", a: "Yes. Voluntary revocation is permanent. Your TIP-ID is marked as revoked on the DAG, and no new content can be registered under it. Existing content records remain for provenance integrity. To revoke, contact your Verification Provider or use the extension settings." },
@@ -401,13 +401,13 @@ async function loadIdentity() {
       if (scoreRes?.ok && scoreRes.data) {
         const score = scoreRes.data.score || 500;
         const tier  = scoreRes.data.tier?.label || "TRUSTED";
-        const c     = score>=800?"#1A8A5C":score>=600?"#2563A8":score>=400?"#A88B15":score>=200?"#C07318":"#C53030";
+        const c     = score>=850?"#1A8A5C":score>=650?"#2563A8":score>=400?"#A88B15":score>=200?"#C07318":"#C53030";
         document.getElementById("score-card").style.display = "block";
         document.getElementById("score-shield").innerHTML = `
           <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
             <path d="M24 4L6 12V22C6 33.1 13.84 43.36 24 46C34.16 43.36 42 33.1 42 22V12L24 4Z"
               fill="${c}15" stroke="${c}" stroke-width="2"/>
-            ${score>=600
+            ${score>=650
               ? `<path d="M16 24L22 30L34 18" stroke="${c}" stroke-width="3" stroke-linecap="round"/>`
               : `<text x="24" y="29" text-anchor="middle" fill="${c}" font-size="16" font-weight="bold">!</text>`}
           </svg>`;
