@@ -353,7 +353,7 @@ class SQLiteStore:
     def save_tx(self, tx: dict) -> None:
         conn = self._conn()
         conn.execute(
-            """INSERT OR REPLACE INTO transactions
+            """INSERT OR IGNORE INTO transactions
                (tx_id, tx_type, data, timestamp, prev, signature)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (

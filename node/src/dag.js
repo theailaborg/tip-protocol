@@ -242,7 +242,7 @@ class SQLiteStore {
     // Pre-compile hot-path statements for performance
     this._stmts = {
       saveTx: this.db.prepare(
-        `INSERT OR REPLACE INTO transactions
+        `INSERT OR IGNORE INTO transactions
            (tx_id,tx_type,data,timestamp,prev,signature)
          VALUES (?,?,?,?,?,?)`
       ),
