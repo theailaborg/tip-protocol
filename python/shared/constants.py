@@ -51,10 +51,10 @@ class Tier:
 
 
 TIERS: list[Tier] = [
-    Tier("HIGHLY_TRUSTED", "Highly Trusted",  800, 1000, "#1A8A5C"),
-    Tier("TRUSTED",        "Trusted",          600,  799, "#2563A8"),
-    Tier("REVIEW_ADVISED", "Review Advised",   400,  599, "#A88B15"),
-    Tier("LOW_TRUST",      "Low Trust",        200,  399, "#C07318"),
+    Tier("HIGHLY_TRUSTED", "Highly Trusted",  850, 1000, "#1A8A5C"),
+    Tier("TRUSTED",        "Trusted",          650,  849, "#2563A8"),
+    Tier("VERIFIED",       "Verified",         400,  649, "#A88B15"),
+    Tier("CAUTION",        "Caution",          200,  399, "#C07318"),
     Tier("NOT_TRUSTED",    "Not Trusted",        0,  199, "#C53030"),
 ]
 

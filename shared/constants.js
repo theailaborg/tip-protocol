@@ -25,10 +25,10 @@ const ORIGIN_LABELS = Object.freeze({
 
 // ─── Trust tiers ─────────────────────────────────────────────────────────────
 const TIERS = Object.freeze([
-  { min: 800, max: 1000, name: "HIGHLY_TRUSTED", label: "Highly Trusted", color: "#1A8A5C" },
-  { min: 600, max:  799, name: "TRUSTED",        label: "Trusted",        color: "#2563A8" },
-  { min: 400, max:  599, name: "REVIEW_ADVISED", label: "Review Advised", color: "#A88B15" },
-  { min: 200, max:  399, name: "LOW_TRUST",      label: "Low Trust",      color: "#C07318" },
+  { min: 850, max: 1000, name: "HIGHLY_TRUSTED", label: "Highly Trusted", color: "#1A8A5C" },
+  { min: 650, max:  849, name: "TRUSTED",        label: "Trusted",        color: "#2563A8" },
+  { min: 400, max:  649, name: "VERIFIED",       label: "Verified",       color: "#A88B15" },
+  { min: 200, max:  399, name: "CAUTION",        label: "Caution",        color: "#C07318" },
   { min:   0, max:  199, name: "NOT_TRUSTED",    label: "Not Trusted",    color: "#C53030" },
 ]);
 

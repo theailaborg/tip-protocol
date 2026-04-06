@@ -209,11 +209,11 @@ describe("Protocol Constants", () => {
   test("2.2 getTier maps scores to correct tiers", () => {
     expect(getTier(924).name).toBe("HIGHLY_TRUSTED");
     expect(getTier(718).name).toBe("TRUSTED");
-    expect(getTier(462).name).toBe("REVIEW_ADVISED");
-    expect(getTier(231).name).toBe("LOW_TRUST");
+    expect(getTier(462).name).toBe("VERIFIED");
+    expect(getTier(231).name).toBe("CAUTION");
     expect(getTier(38).name).toBe("NOT_TRUSTED");
-    expect(getTier(800).name).toBe("HIGHLY_TRUSTED");
-    expect(getTier(799).name).toBe("TRUSTED");
+    expect(getTier(850).name).toBe("HIGHLY_TRUSTED");
+    expect(getTier(849).name).toBe("TRUSTED");
   });
 
   test("2.3 getTier color values are hex strings", () => {
@@ -401,7 +401,7 @@ describe("Trust Scoring Engine", () => {
     const result = scoring.computeScore(TIP_ID_SCORE_TEST);
     // Score at this point should be <= 500 after penalty
     expect(result.tier.name).toBeDefined();
-    expect(["REVIEW_ADVISED", "LOW_TRUST", "NOT_TRUSTED"]).toContain(
+    expect(["VERIFIED", "CAUTION", "NOT_TRUSTED"]).toContain(
       result.tier.name
     );
   });
