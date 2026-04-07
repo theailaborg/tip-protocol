@@ -19,6 +19,9 @@ const ORIGIN_HINTS = {
   MX:"✅ Mixed is a safe default when you're unsure. It covers anything combining human and AI contributions.",
 };
 
+const UPLOAD_PAGE_RE =
+  /studio\.youtube\.com|youtube\.com\/upload|instagram\.com\/(create|p\/|reels\/|stories\/)|tiktok\.com\/upload|twitter\.com\/compose|x\.com\/(compose|home|intent\/post)|linkedin\.com\/post\/new|linkedin\.com\/feed\/|substack\.com\/publish|medium\.com\/new-story|facebook\.com\/(video\/upload|photo\/|stories\/)/;
+
 function tierColor(s) {
   return s>=850?COLORS.green:s>=650?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
 }
@@ -325,3 +328,30 @@ chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
 });
 
 init();
+
+async function injectReopenButton() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!UPLOAD_PAGE_RE.test(tab?.url || "")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "popup-show-panel";
+  btn.textContent = "Show registration panel";
+  btn.style.cssText = [
+    "display:block", "width:100%", "padding:10px 0",
+    "margin:8px 0 4px", "background:#2563A8", "color:#fff",
+    "border:none", "border-radius:6px", "font-size:13px",
+    "font-family:inherit", "font-weight:600", "cursor:pointer",
+  ].join(";");
+
+  btn.addEventListener("click", async () => {
+    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
+    chrome.tabs.sendMessage(t.id, { type: "SHOW_TIP_PANEL" }, () => window.close());
+  });
+
+  // Insert before origin buttons (or as first child of creator tab body)
+  const target = document.getElementById("popup-origin-btns") ||
+                 document.getElementById("creator-tab-body");
+  if (target) target.insertAdjacentElement("beforebegin", btn);
+}
+
+document.addEventListener("DOMContentLoaded", injectReopenButton);

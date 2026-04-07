@@ -92,6 +92,16 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     /substack\.com\/publish|substack\.com\/.*\/write/.test(location.href) ||
     /medium\.com\/new-story|medium\.com\/@.*\/new/.test(location.href);
 
+  const PLATFORM_NAME =
+    /youtube/i.test(location.href)        ? "YouTube"   :
+    /instagram/i.test(location.href)      ? "Instagram" :
+    /tiktok/i.test(location.href)         ? "TikTok"    :
+    /twitter|x\.com/i.test(location.href) ? "X"         :
+    /facebook/i.test(location.href)       ? "Facebook"  :
+    /linkedin/i.test(location.href)       ? "LinkedIn"  :
+    /substack/i.test(location.href)       ? "Substack"  :
+    /medium/i.test(location.href)         ? "Medium"    : "Platform";
+
   // ── Shield badge HTML ────────────────────────────────────────────────────────
   function shieldSVG(score, size = 20, founding = false) {
     const c  = tierColor(score);
@@ -709,6 +719,19 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
     }
   }
 
+  // ── Reopen panel on demand (from popup) ──────────────────────────────────────
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type !== "SHOW_TIP_PANEL") return;
+    const panel = document.getElementById("tip-creator-panel");
+    if (panel) {
+      // Panel was hidden by the close button — restore it
+      panel.style.display = "block";
+    } else if (IS_UPLOAD) {
+      // Panel was removed from DOM — re-inject
+      injectCreatorPanel(PLATFORM_NAME);
+    }
+  });
+
   // ── Drag helper ──────────────────────────────────────────────────────────────
   function makeDraggable(el, handle) {
     let ox = 0, oy = 0, x = 0, y = 0;
@@ -761,16 +784,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
 
     // Creator: upload page detection
     if (IS_UPLOAD) {
-      const platformName =
-        /youtube/i.test(location.href)   ? "YouTube"   :
-        /instagram/i.test(location.href) ? "Instagram" :
-        /tiktok/i.test(location.href)    ? "TikTok"    :
-        /twitter|x\.com/i.test(location.href) ? "X"   :
-        /facebook/i.test(location.href)  ? "Facebook"  :
-        /linkedin/i.test(location.href)  ? "LinkedIn"  :
-        /substack/i.test(location.href)  ? "Substack"  :
-        /medium/i.test(location.href)    ? "Medium"    : "Platform";
-      setTimeout(() => injectCreatorPanel(platformName), 1500); // wait for SPA to render
+      setTimeout(() => injectCreatorPanel(PLATFORM_NAME), 1500); // wait for SPA to render
     }
   }
 
