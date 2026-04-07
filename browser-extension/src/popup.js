@@ -20,7 +20,7 @@ const ORIGIN_HINTS = {
 };
 
 const UPLOAD_PAGE_RE =
-  /studio\.youtube\.com|youtube\.com\/upload|instagram\.com\/(create|p\/|reels\/|stories\/)|tiktok\.com\/upload|twitter\.com\/compose|x\.com\/(compose|home|intent\/post)|linkedin\.com\/post\/new|linkedin\.com\/feed\/|substack\.com\/publish|medium\.com\/new-story|facebook\.com\/(video\/upload|photo\/|stories\/)/;
+  /studio\.youtube\.com|youtube\.com\/upload|instagram\.com\/(create|p\/|reels\/|stories\/)|tiktok\.com\/upload|twitter\.com\/compose|x\.com\/(compose|home|intent\/post)|linkedin\.com\/post\/new|linkedin\.com\/feed\/|substack\.com\/publish|substack\.com\/.*\/write|medium\.com\/new-story|medium\.com\/@.*\/new|facebook\.com\/(video\/upload|photo\/|stories\/)|pinterest\.com\/(pin-creation|collage-creation)/;
 
 function tierColor(s) {
   return s>=850?COLORS.green:s>=650?COLORS.blue:s>=400?COLORS.yellow:s>=200?COLORS.orange:COLORS.red;
@@ -343,9 +343,13 @@ async function injectReopenButton() {
     "font-family:inherit", "font-weight:600", "cursor:pointer",
   ].join(";");
 
-  btn.addEventListener("click", async () => {
-    const [t] = await chrome.tabs.query({ active: true, currentWindow: true });
-    chrome.tabs.sendMessage(t.id, { type: "SHOW_TIP_PANEL" }, () => window.close());
+  btn.addEventListener("click", () => {
+    chrome.tabs.sendMessage(tab.id, { type: "SHOW_TIP_PANEL" }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("TIP: could not reach content script —", chrome.runtime.lastError.message);
+      }
+      window.close();
+    });
   });
 
   // Insert before origin buttons (or as first child of creator tab body)

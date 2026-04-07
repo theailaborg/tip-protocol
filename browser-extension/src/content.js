@@ -722,12 +722,7 @@ import { TIP_PLATFORMS, TIP_TYPES, buildContentString, ORIGIN_COLORS, ORIGIN_LAB
   // ── Reopen panel on demand (from popup) ──────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type !== "SHOW_TIP_PANEL") return;
-    const panel = document.getElementById("tip-creator-panel");
-    if (panel) {
-      // Panel was hidden by the close button — restore it
-      panel.style.display = "block";
-    } else if (IS_UPLOAD) {
-      // Panel was removed from DOM — re-inject
+    if (!document.getElementById("tip-creator-panel") && IS_UPLOAD) {
       injectCreatorPanel(PLATFORM_NAME);
     }
   });
