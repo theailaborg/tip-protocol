@@ -342,6 +342,43 @@ describe("DAG Engine", () => {
     expect(revs.length).toBeGreaterThan(0);
   });
 
+  test("3.9 Duplicate addTx does not corrupt _prev ring", () => {
+    const freshDag = initDAG({ dbPath: ":memory:" });
+    const tx1 = freshDag.addTx({
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
+      data:    { tip_id: "tip://id/prev-test-1" },
+      prev:    [],
+    });
+    const tx2 = freshDag.addTx({
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
+      data:    { tip_id: "tip://id/prev-test-2" },
+      prev:    [],
+    });
+    expect(freshDag.getRecentPrev()[0]).toBe(tx2.tx_id);
+
+    // Re-add tx1 as an exact duplicate — _prev must stay pointing at tx2
+    freshDag.addTx({ ...tx1 });
+    expect(freshDag.getRecentPrev()[0]).toBe(tx2.tx_id);
+    freshDag.close();
+  });
+
+  test("3.10 MemoryStore saveTx does not overwrite an existing tx", () => {
+    const freshDag = initDAG({ dbPath: ":memory:" });
+    const tx = freshDag.addTx({
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
+      data:    { tip_id: "tip://id/overwrite-test", extra: "original" },
+      prev:    [],
+    });
+    const storedBefore = freshDag.getTx(tx.tx_id);
+    expect(storedBefore.data.extra).toBe("original");
+
+    // Attempt a second saveTx via addTx with the same tx_id (duplicate)
+    freshDag.addTx({ ...tx });
+    const storedAfter = freshDag.getTx(tx.tx_id);
+    expect(storedAfter.data.extra).toBe("original");
+    freshDag.close();
+  });
+
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1172,5 +1209,41 @@ describe("Semantic Dedup", () => {
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
     expect(res2.status).toBe(409);
     expect(res2.body.error).toMatch(/already disputed/i);
+  });
+
+  test("9.4 Self-verification returns 403", async () => {
+    const fields = { verifier_tip_id: sdTipId, verdict: "ORIGIN_CONFIRMED" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/own content/i);
+  });
+
+  test("9.5 Revoked identity dispute returns 403", async () => {
+    // Register a fresh identity then revoke it directly
+    const rKp = generateMLDSAKeypair();
+    const rIdFields = {
+      region: "US", public_key: rKp.publicKey,
+      dedup_hash: "88881111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: sdVpId, social_attested: false,
+    };
+    const rIdRes = await request(sdApp)
+      .post("/v1/identity/register")
+      .send({ ...rIdFields, vp_signature: signBody(rIdFields, sdVpKp.privateKey) });
+    const rTipId = rIdRes.body.tip_id;
+    expect(rTipId).toBeDefined();
+
+    // Revoke the identity directly in the DAG
+    sdDag.addRevocation(rTipId, "REVOKE_VP", new Date().toISOString(), "test-revoke-tx-9-5");
+
+    // Attempt dispute as revoked identity
+    const fields = { disputer_tip_id: rTipId, reason: "dispute from revoked identity" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(sdCtid)}/dispute`)
+      .send({ ...fields, signature: signBody(fields, rKp.privateKey) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/revoked/i);
   });
 });

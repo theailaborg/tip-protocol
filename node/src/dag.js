@@ -48,7 +48,12 @@ class MemoryStore {
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
-  saveTx(tx) { this._txs.set(tx.tx_id, { ...tx }); }
+  // Returns true if newly stored, false if tx_id already exists (mirrors INSERT OR IGNORE)
+  saveTx(tx) {
+    if (this._txs.has(tx.tx_id)) return false;
+    this._txs.set(tx.tx_id, { ...tx });
+    return true;
+  }
   getTx(id)  { return this._txs.get(id) || null; }
   getAllTxs() { return [...this._txs.values()]; }
   count()    { return this._txs.size; }
@@ -331,14 +336,17 @@ class SQLiteStore {
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
+  // Returns true if the row was newly inserted, false if tx_id already existed
+  // (INSERT OR IGNORE silently drops duplicates; result.changes === 0 in that case)
   saveTx(tx) {
-    this._stmts.saveTx.run(
+    const result = this._stmts.saveTx.run(
       tx.tx_id, tx.tx_type,
       JSON.stringify(tx.data),
       tx.timestamp,
       JSON.stringify(tx.prev || []),
       tx.signature || null
     );
+    return result.changes > 0;
   }
   getTx(id)    { return this._parseTx(this._stmts.getTx.get(id)); }
   getAllTxs()  { return this._stmts.getAllTxs.all().map(r => this._parseTx(r)); }
@@ -486,8 +494,11 @@ function initDAG(config) {
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
       
       if (!tx.tx_id) tx.tx_id = computeTxId(tx);
-      store.saveTx(tx);
-      _updatePrev(tx.tx_id);
+      // Only advance the _prev ring when the tx is newly written.
+      // If saveTx returns false the tx_id already existed (duplicate / gossip replay)
+      // and advancing _prev would corrupt the chain pointer.
+      const inserted = store.saveTx(tx);
+      if (inserted) _updatePrev(tx.tx_id);
       return tx;
     },
     getTx:          (id)      => store.getTx(id),

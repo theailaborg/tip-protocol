@@ -152,9 +152,13 @@ class MemoryStore:
         self._nodes:  dict = {}
 
     # ── Transactions ─────────────────────────────────────────────────────────
-    def save_tx(self, tx: dict) -> None:
+    # Returns True if newly stored, False if tx_id already exists (mirrors INSERT OR IGNORE)
+    def save_tx(self, tx: dict) -> bool:
         with self._lock:
+            if tx["tx_id"] in self._txs:
+                return False
             self._txs[tx["tx_id"]] = dict(tx)
+            return True
 
     def get_tx(self, tx_id: str) -> Optional[dict]:
         with self._lock:
@@ -350,9 +354,11 @@ class SQLiteStore:
         return d
 
     # ── Transactions ─────────────────────────────────────────────────────────
-    def save_tx(self, tx: dict) -> None:
+    # Returns True if the row was newly inserted, False if tx_id already existed
+    # (INSERT OR IGNORE silently drops duplicates; rowcount == 0 in that case)
+    def save_tx(self, tx: dict) -> bool:
         conn = self._conn()
-        conn.execute(
+        cursor = conn.execute(
             """INSERT OR IGNORE INTO transactions
                (tx_id, tx_type, data, timestamp, prev, signature)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -366,6 +372,7 @@ class SQLiteStore:
             ),
         )
         conn.commit()
+        return cursor.rowcount > 0
 
     def get_tx(self, tx_id: str) -> Optional[dict]:
         row = self._conn().execute(
@@ -723,8 +730,12 @@ class DAG:
         if had_tx_id and not verify_tx_id(tx):
             raise ValueError(f"add_tx: tx_id mismatch — rejecting tampered tx {tx['tx_id']}")
 
-        self._store.save_tx(tx)
-        self._update_prev(tx["tx_id"])
+        # Only advance the _prev ring when the tx is newly written.
+        # If save_tx returns False the tx_id already existed (duplicate / gossip replay)
+        # and advancing _prev would corrupt the chain pointer.
+        inserted = self._store.save_tx(tx)
+        if inserted:
+            self._update_prev(tx["tx_id"])
         return tx
 
     def get_tx(self, tx_id: str) -> Optional[dict]:
