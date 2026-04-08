@@ -67,6 +67,14 @@ def get_tier(score: int) -> Tier:
     return TIERS[-1]  # fallback: NOT_TRUSTED
 
 
+# ─── Verification caps ───────────────────────────────────────────────────────
+
+class VerifyCaps:
+    PER_CONTENT = 5   # max +5 per CTID
+    PER_DAY     = 5   # max +5 per creator per day
+    PER_MONTH   = 30  # max +30 per creator per month
+
+
 # ─── Transaction types ────────────────────────────────────────────────────────
 
 class TxType:

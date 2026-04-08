@@ -1132,13 +1132,21 @@ describe("Semantic Dedup", () => {
 
   afterAll(() => { if (sdDag) sdDag.close(); });
 
-  test("9.1 First verify succeeds", async () => {
+  test("9.1 First verify succeeds with correct delta and caps", async () => {
     const fields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+    // Verifier score is 800 → high-trust bonus → delta +3
+    expect(res.body.delta_applied).toBe(3);
+    // Caps returned in response
+    expect(res.body.caps).toBeDefined();
+    expect(res.body.caps.content.used).toBe(3);
+    expect(res.body.caps.content.max).toBe(5);
+    expect(res.body.caps.daily.max).toBe(5);
+    expect(res.body.caps.monthly.max).toBe(30);
   });
 
   test("9.2 Duplicate verify returns 409", async () => {
@@ -1148,6 +1156,63 @@ describe("Semantic Dedup", () => {
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/already verified/i);
+  });
+
+  test("9.2b Per-content cap enforced", async () => {
+    // Register fresh content for cap test
+    const capContent = "Content for verification cap test.";
+    const capSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(capContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: capContent, signature: signBody(capSig, sdAuthorPriv) });
+    const capCtid = ctRes.body.ctid;
+
+    // Create 3 verifier identities to fill the cap
+    const verifiers = [];
+    for (let i = 0; i < 3; i++) {
+      const kp = generateMLDSAKeypair();
+      const idFields = {
+        region: "US", public_key: kp.publicKey,
+        dedup_hash: `77${i}0111122223333444455556666777788889999000011112222333344445555`,
+        zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+        vp_id: sdVpId, social_attested: false,
+      };
+      const idRes = await request(sdApp)
+        .post("/v1/identity/register")
+        .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
+      sdDag.setScore(idRes.body.tip_id, 800, 0); // high-trust for +3 each
+      verifiers.push({ tipId: idRes.body.tip_id, priv: kp.privateKey });
+    }
+
+    // Daily cap already has 3 used from test 9.1 (sdTipId got +3 today)
+    // Daily remaining = 5 - 3 = 2
+
+    // Verifier 1: wants +3 but daily cap limits to +2
+    const f1 = { verifier_tip_id: verifiers[0].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const r1 = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
+      .send({ ...f1, signature: signBody(f1, verifiers[0].priv) });
+    expect(r1.status).toBe(200);
+    expect(r1.body.delta_applied).toBe(2); // daily cap: 5 - 3 = 2 remaining
+    expect(r1.body.caps.content.used).toBe(2);
+    expect(r1.body.caps.daily.used).toBe(5); // 3 + 2 = 5 (full)
+
+    // Verifier 2: +0 (daily cap hit)
+    const f2 = { verifier_tip_id: verifiers[1].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const r2 = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
+      .send({ ...f2, signature: signBody(f2, verifiers[1].priv) });
+    expect(r2.status).toBe(200);
+    expect(r2.body.delta_applied).toBe(0);
+    expect(r2.body.caps.daily.used).toBe(5); // still 5, no increase
+
+    // Verifier 3: +0 (daily cap still hit)
+    const f3 = { verifier_tip_id: verifiers[2].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const r3 = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
+      .send({ ...f3, signature: signBody(f3, verifiers[2].priv) });
+    expect(r3.status).toBe(200);
+    expect(r3.body.delta_applied).toBe(0);
   });
 
   test("9.3 First dispute succeeds", async () => {

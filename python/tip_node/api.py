@@ -35,7 +35,7 @@ from shared.crypto import (
 from shared.zk import verify_dedup_proof
 from shared.constants import (
     TxType, Origin, Protocol, HttpHeaders,
-    JurisdictionTier, get_tier, ScoreEvent,
+    JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
 )
 from tip_node.validators.tx_validator import validate_transaction
 from tip_node.logger import get_logger
@@ -679,8 +679,36 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if self.dag.has_verification(ctid, verifier_tip_id):
             self._send_json(409, {"error": "You have already verified this content"}); return
 
+        # ── Verification caps ──────────────────────────────────────────────
+        from datetime import datetime, timezone
+        all_verify_txs = self.dag.get_txs_by_type(TxType.CONTENT_VERIFIED)
+        author_tip_id = rec.get("author_tip_id")
+        now = datetime.now(timezone.utc)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+
+        content_delta_sum = sum(
+            (t.get("data") or {}).get("weighted_delta", 0)
+            for t in all_verify_txs if (t.get("data") or {}).get("ctid") == ctid)
+        daily_delta_sum = sum(
+            (t.get("data") or {}).get("weighted_delta", 0)
+            for t in all_verify_txs
+            if (t.get("data") or {}).get("author_tip_id") == author_tip_id and t.get("timestamp", "") >= day_start)
+        monthly_delta_sum = sum(
+            (t.get("data") or {}).get("weighted_delta", 0)
+            for t in all_verify_txs
+            if (t.get("data") or {}).get("author_tip_id") == author_tip_id and t.get("timestamp", "") >= month_start)
+
         verifier_score = self.scoring.get_score(verifier_tip_id)["score"]
-        weighted_delta = 3 if verifier_score >= 800 else 2  # base +2, high-trust bonus +3 (1.5x)
+        weighted_delta = 3 if verifier_score >= 800 else 2
+
+        weighted_delta = min(
+            weighted_delta,
+            max(0, VerifyCaps.PER_CONTENT - content_delta_sum),
+            max(0, VerifyCaps.PER_DAY     - daily_delta_sum),
+            max(0, VerifyCaps.PER_MONTH   - monthly_delta_sum),
+        )
+
         verify_tx = {
             "tx_type":   TxType.CONTENT_VERIFIED,
             "timestamp": _utc_now(),
@@ -690,7 +718,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "verifier_tip_id":  verifier_tip_id,
                 "verdict":          body.get("verdict", "ORIGIN_CONFIRMED"),
                 "weighted_delta":   weighted_delta,
-                "author_tip_id":    rec.get("author_tip_id"),
+                "author_tip_id":    author_tip_id,
             },
         }
         verify_tx = self._with_tx_id(verify_tx)
@@ -699,13 +727,22 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(verify_tx)
         self._broadcast(verify_tx)
-        self.scoring.apply_score_event(
-            rec.get("author_tip_id", ""), weighted_delta,
-            f"Content verified by {verifier_tip_id}"
-        )
+        if weighted_delta > 0:
+            self.scoring.apply_score_event(
+                author_tip_id, weighted_delta,
+                f"Content verified by {verifier_tip_id}"
+            )
         if rec.get("status") == "registered":
             self.dag.update_content_status(ctid, "verified")
-        self._send_json(200, {"success": True, "delta_applied": weighted_delta})
+        self._send_json(200, {
+            "success": True,
+            "delta_applied": weighted_delta,
+            "caps": {
+                "content": {"used": content_delta_sum + weighted_delta, "max": VerifyCaps.PER_CONTENT},
+                "daily":   {"used": daily_delta_sum + weighted_delta,   "max": VerifyCaps.PER_DAY},
+                "monthly": {"used": monthly_delta_sum + weighted_delta, "max": VerifyCaps.PER_MONTH},
+            },
+        })
 
     def _content_dispute(self, ctid: str, body: dict):
         rec = self.dag.get_content(ctid)

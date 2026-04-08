@@ -64,7 +64,7 @@ const { verifyDedupProof } = require("../../shared/zk");
 const { validateTransaction } = require("./validators/tx-validator");
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS,
   getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
 } = require("../../shared/constants");
 
@@ -608,8 +608,33 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(409).json({ error: "You have already verified this content" });
     }
 
+    // ── Verification caps ──────────────────────────────────────────────────
+    const allVerifyTxs = dag.getTxsByType(TX_TYPES.CONTENT_VERIFIED);
+    const authorTipId  = rec.author_tip_id;
+    const now          = new Date();
+    const dayStart     = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const monthStart   = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const contentDeltaSum = allVerifyTxs
+      .filter(t => t.data?.ctid === req.params.ctid)
+      .reduce((sum, t) => sum + (t.data?.weighted_delta || 0), 0);
+    const dailyDeltaSum = allVerifyTxs
+      .filter(t => t.data?.author_tip_id === authorTipId && t.timestamp >= dayStart)
+      .reduce((sum, t) => sum + (t.data?.weighted_delta || 0), 0);
+    const monthlyDeltaSum = allVerifyTxs
+      .filter(t => t.data?.author_tip_id === authorTipId && t.timestamp >= monthStart)
+      .reduce((sum, t) => sum + (t.data?.weighted_delta || 0), 0);
+
     const verifierScore = scoring.getScore(verifier_tip_id).score;
-    const weightedDelta = verifierScore >= 800 ? 3 : 2; // base +2, high-trust bonus +3 (1.5x)
+    let weightedDelta = verifierScore >= 800 ? 3 : 2; // base +2, high-trust bonus +3 (1.5x)
+
+    // Apply caps — reduce delta to fit within limits
+    weightedDelta = Math.min(
+      weightedDelta,
+      Math.max(0, VERIFY_CAPS.PER_CONTENT - contentDeltaSum),
+      Math.max(0, VERIFY_CAPS.PER_DAY     - dailyDeltaSum),
+      Math.max(0, VERIFY_CAPS.PER_MONTH   - monthlyDeltaSum),
+    );
 
     const verifyTxBody = {
       tx_type:   TX_TYPES.CONTENT_VERIFIED,
@@ -620,7 +645,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         verifier_tip_id,
         verdict:           verdict || "ORIGIN_CONFIRMED",
         weighted_delta:    weightedDelta,
-        author_tip_id:     rec.author_tip_id,
+        author_tip_id:     authorTipId,
       },
     };
     const signedVerifyTx = withTxId(verifyTxBody);
@@ -633,14 +658,24 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const verifyTx = dag.addTx(signedVerifyTx);
     _broadcast(verifyTx);
 
-    scoring.applyScoreEvent(rec.author_tip_id, weightedDelta, `Content verified by ${verifier_tip_id}`);
+    if (weightedDelta > 0) {
+      scoring.applyScoreEvent(authorTipId, weightedDelta, `Content verified by ${verifier_tip_id}`);
+    }
 
     // Update content status to verified (community endorsed)
     if (rec.status === "registered") {
       dag.updateContentStatus(req.params.ctid, "verified");
     }
 
-    res.json({ success: true, delta_applied: weightedDelta });
+    res.json({
+      success: true,
+      delta_applied: weightedDelta,
+      caps: {
+        content: { used: contentDeltaSum + weightedDelta, max: VERIFY_CAPS.PER_CONTENT },
+        daily:   { used: dailyDeltaSum + weightedDelta,   max: VERIFY_CAPS.PER_DAY },
+        monthly: { used: monthlyDeltaSum + weightedDelta, max: VERIFY_CAPS.PER_MONTH },
+      },
+    });
   });
 
   /**

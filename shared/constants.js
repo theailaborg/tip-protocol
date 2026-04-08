@@ -54,6 +54,13 @@ const SCORE_EVENTS = Object.freeze({
   DEVICE_COMPROMISE_PENDING: {  delta:  -15              },
 });
 
+// ─── Verification caps ───────────────────────────────────────────────────────
+const VERIFY_CAPS = Object.freeze({
+  PER_CONTENT: 5,   // max +5 per CTID
+  PER_DAY:     5,   // max +5 per creator per day
+  PER_MONTH:   30,  // max +30 per creator per month
+});
+
 // ─── Transaction types ────────────────────────────────────────────────────────
 const TX_TYPES = Object.freeze({
   // Identity
@@ -167,6 +174,7 @@ module.exports = {
   TIERS,
   getTier,
   SCORE_EVENTS,
+  VERIFY_CAPS,
   TX_TYPES,
   PRESCAN_THRESHOLDS,
   SCORE_DISPLAY,
