@@ -689,6 +689,86 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     res.json({ success: true, message: "Dispute filed. Content verification blocked until resolved." });
   });
 
+  /**
+   * POST /v1/content/:ctid/update-origin
+   * Author can change origin code within 24 hours of registration at zero penalty.
+   */
+  app.post("/v1/content/:ctid/update-origin", (req, res) => {
+    const rec = dag.getContent(req.params.ctid);
+    if (!rec) return res.status(404).json({ error: "Content record not found" });
+
+    const { author_tip_id, new_origin_code, signature } = req.body;
+    if (!author_tip_id)    return res.status(400).json({ error: "author_tip_id required" });
+    if (!new_origin_code)  return res.status(400).json({ error: "new_origin_code required" });
+    if (!signature)        return res.status(400).json({ error: "signature required" });
+
+    // Only the author can update
+    if (author_tip_id !== rec.author_tip_id) {
+      return res.status(403).json({ error: "Only the content author can update the origin code" });
+    }
+
+    // Only registered or pending_review content can be updated
+    if (rec.status !== "registered" && rec.status !== "pending_review") {
+      return res.status(403).json({ error: `Cannot update origin — content status is '${rec.status}'` });
+    }
+
+    // 24-hour window check
+    const registeredAt = new Date(rec.registered_at).getTime();
+    const now = Date.now();
+    const GRACE_PERIOD = 24 * 60 * 60 * 1000; // 24 hours
+    if (now - registeredAt > GRACE_PERIOD) {
+      return res.status(403).json({ error: "24-hour grace period has expired. Origin code can no longer be changed." });
+    }
+
+    // Validate new origin code
+    if (!ORIGIN[new_origin_code]) {
+      return res.status(400).json({ error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` });
+    }
+
+    // Verify author signature
+    const author = dag.getIdentity(author_tip_id);
+    if (!author) return res.status(404).json({ error: "Author identity not found" });
+
+    const UPDATE_FIELDS = ["author_tip_id", "new_origin_code"];
+    if (!verifyBodySignature(req.body, signature, author.public_key, UPDATE_FIELDS)) {
+      return res.status(403).json({ error: "Author signature verification failed" });
+    }
+
+    // Write UPDATE_ORIGIN tx to DAG
+    const updateTxBody = {
+      tx_type:   TX_TYPES.UPDATE_ORIGIN,
+      timestamp: new Date().toISOString(),
+      prev:      dag.getRecentPrev(),
+      data: {
+        ctid:              req.params.ctid,
+        old_origin_code:   rec.origin_code,
+        new_origin_code,
+        author_tip_id,
+      },
+    };
+    const signedUpdateTx = withTxId(updateTxBody);
+    const updateTx = dag.addTx(signedUpdateTx);
+    _broadcast(updateTx);
+
+    // Re-run pre-scan with new origin
+    const preScan = preScanContent(rec.content_hash || "", new_origin_code, {});
+    const newStatus = preScan.flagged ? "pending_review" : "registered";
+
+    // Update derived content record
+    dag.updateContentOrigin(req.params.ctid, new_origin_code, newStatus);
+
+    log.info(`Origin updated: ${req.params.ctid} ${rec.origin_code} → ${new_origin_code} (by ${author_tip_id})`);
+
+    res.json({
+      success:          true,
+      ctid:             req.params.ctid,
+      old_origin_code:  rec.origin_code,
+      new_origin_code,
+      status:           newStatus,
+      tx_id:            updateTx.tx_id,
+    });
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // DAG
   // ─────────────────────────────────────────────────────────────────────────

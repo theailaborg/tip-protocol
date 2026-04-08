@@ -1173,4 +1173,94 @@ describe("Semantic Dedup", () => {
     expect(res2.status).toBe(409);
     expect(res2.body.error).toMatch(/already disputed/i);
   });
+
+  test("9.4 Update origin within 24h succeeds", async () => {
+    // Register fresh content for update test
+    const updateContent = "Content for origin update test.";
+    const updateSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(updateContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent, signature: signBody(updateSig, sdAuthorPriv) });
+    expect(ctRes.status).toBe(201);
+    const updateCtid = ctRes.body.ctid;
+    expect(ctRes.body.status).toBe("registered");
+
+    // Update origin from OH to AA
+    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(updateCtid)}/update-origin`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.old_origin_code).toBe("OH");
+    expect(res.body.new_origin_code).toBe("AA");
+
+    // Verify content record updated
+    const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(updateCtid)}`);
+    expect(getRes.body.origin_code).toBe("AA");
+  });
+
+  test("9.5 Non-author cannot update origin", async () => {
+    const updateContent2 = "Content for non-author update test.";
+    const updateSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(updateContent2) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent2, signature: signBody(updateSig2, sdAuthorPriv) });
+    const nonAuthorCtid = ctRes.body.ctid;
+
+    // Verifier (different identity) tries to update
+    const fields = { author_tip_id: sdVerifierId, new_origin_code: ORIGIN.AG };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(nonAuthorCtid)}/update-origin`)
+      .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/only the content author/i);
+  });
+
+  test("9.6 Cannot update origin on disputed content", async () => {
+    // Register content
+    const disputeContent = "Content for dispute-block update test.";
+    const disputeSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(disputeContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: disputeContent, signature: signBody(disputeSig, sdAuthorPriv) });
+    const disputeCtid = ctRes.body.ctid;
+
+    // Dispute it
+    const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
+    await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(disputeCtid)}/dispute`)
+      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+
+    // Try to update origin
+    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(disputeCtid)}/update-origin`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/cannot update origin/i);
+  });
+
+  test("9.7 Verify blocked on disputed content", async () => {
+    // Register + dispute content
+    const blockContent = "Content for verify-block test.";
+    const blockSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(blockContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: blockContent, signature: signBody(blockSig, sdAuthorPriv) });
+    const blockCtid = ctRes.body.ctid;
+
+    const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
+    await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(blockCtid)}/dispute`)
+      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+
+    // Try to verify
+    const vFields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(blockCtid)}/verify`)
+      .send({ ...vFields, signature: signBody(vFields, sdVerifierPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/under dispute/i);
+  });
 });

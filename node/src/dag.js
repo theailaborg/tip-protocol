@@ -73,6 +73,10 @@ class MemoryStore {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, status });
   }
+  updateContentOrigin(ctid, originCode, status) {
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, origin_code: originCode, status });
+  }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
   }
@@ -277,6 +281,7 @@ class SQLiteStore {
       ),
       getContent:  this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
+      updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       hasVerification: this.db.prepare(
         `SELECT 1 FROM transactions
@@ -373,13 +378,14 @@ class SQLiteStore {
       rec.ctid, rec.origin_code,
       rec.content_hash, rec.perceptual_hash || null,
       rec.author_tip_id,
-      rec.status || "verified",
+      rec.status || "registered",
       rec.prescan_flagged ? 1 : 0,
       rec.registered_at, rec.tx_id || null
     );
   }
   getContent(ctid)            { return this._stmts.getContent.get(ctid) || null; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
+  updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId)   { return this._stmts.contentByAuthor.all(tipId); }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
@@ -511,6 +517,7 @@ function initDAG(config) {
     saveContent:          (rec)         => store.saveContent(rec),
     getContent:           (ctid)        => store.getContent(ctid),
     updateContentStatus:  (ctid, s)     => store.updateContentStatus(ctid, s),
+    updateContentOrigin:  (ctid, o, s)  => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor:   (id)          => store.getContentByAuthor(id),
     hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),

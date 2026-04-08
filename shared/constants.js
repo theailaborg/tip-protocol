@@ -62,6 +62,7 @@ const TX_TYPES = Object.freeze({
   LINK_PLATFORM:            "LINK_PLATFORM",
   // Content
   REGISTER_CONTENT:         "REGISTER_CONTENT",
+  UPDATE_ORIGIN:            "UPDATE_ORIGIN",
   // Trust
   CONTENT_VERIFIED:         "CONTENT_VERIFIED",
   CONTENT_DISPUTED:         "CONTENT_DISPUTED",

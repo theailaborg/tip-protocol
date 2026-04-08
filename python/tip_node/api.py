@@ -285,6 +285,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/v1/content/([^/]+)/dispute$", path)
         if m:
             return self._content_dispute(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/update-origin$", path)
+        if m:
+            return self._content_update_origin(_decode(m.group(1)), body)
 
         self._send_json(404, {"error": "Endpoint not found"})
 
@@ -751,6 +754,72 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self._send_json(200, {
             "success": True,
             "message": "Dispute filed. Content verification blocked until resolved.",
+        })
+
+    def _content_update_origin(self, ctid: str, body: dict):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+
+        author_tip_id  = body.get("author_tip_id")
+        new_origin_code = body.get("new_origin_code")
+        signature       = body.get("signature")
+        if not author_tip_id:   self._send_json(400, {"error": "author_tip_id required"}); return
+        if not new_origin_code: self._send_json(400, {"error": "new_origin_code required"}); return
+        if not signature:       self._send_json(400, {"error": "signature required"}); return
+
+        if author_tip_id != rec.get("author_tip_id"):
+            self._send_json(403, {"error": "Only the content author can update the origin code"}); return
+
+        status = rec.get("status")
+        if status not in ("registered", "pending_review"):
+            self._send_json(403, {"error": f"Cannot update origin — content status is '{status}'"}); return
+
+        from datetime import datetime, timezone
+        registered_at = datetime.fromisoformat(rec.get("registered_at", "").replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if (now - registered_at).total_seconds() > 86400:
+            self._send_json(403, {"error": "24-hour grace period has expired. Origin code can no longer be changed."}); return
+
+        valid_origins = {"OH", "AA", "AG", "MX"}
+        if new_origin_code not in valid_origins:
+            self._send_json(400, {"error": f"Invalid origin_code. Must be one of: {', '.join(valid_origins)}"}); return
+
+        author = self.dag.get_identity(author_tip_id)
+        if not author:
+            self._send_json(404, {"error": "Author identity not found"}); return
+
+        _UPDATE_FIELDS = ["author_tip_id", "new_origin_code"]
+        if not verify_body_signature(body, signature, author.get("public_key", ""), _UPDATE_FIELDS):
+            self._send_json(403, {"error": "Author signature verification failed"}); return
+
+        update_tx = {
+            "tx_type":   TxType.UPDATE_ORIGIN,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
+            "data": {
+                "ctid":            ctid,
+                "old_origin_code": rec.get("origin_code"),
+                "new_origin_code": new_origin_code,
+                "author_tip_id":   author_tip_id,
+            },
+        }
+        update_tx = self._with_tx_id(update_tx)
+        self.dag.add_tx(update_tx)
+        self._broadcast(update_tx)
+
+        prescan = _prescan_content("", new_origin_code, {})
+        new_status = "pending_review" if prescan["flagged"] else "registered"
+        self.dag.update_content_origin(ctid, new_origin_code, new_status)
+
+        log.info(f"Origin updated: {ctid} {rec.get('origin_code')} → {new_origin_code} (by {author_tip_id})")
+        self._send_json(200, {
+            "success":         True,
+            "ctid":            ctid,
+            "old_origin_code": rec.get("origin_code"),
+            "new_origin_code": new_origin_code,
+            "status":          new_status,
+            "tx_id":           update_tx["tx_id"],
         })
 
     def _dag_tx(self, tx_id: str):

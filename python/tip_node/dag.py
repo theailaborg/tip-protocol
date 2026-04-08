@@ -204,6 +204,12 @@ class MemoryStore:
             if ctid in self._content:
                 self._content[ctid]["status"] = status
 
+    def update_content_origin(self, ctid: str, origin_code: str, status: str) -> None:
+        with self._lock:
+            if ctid in self._content:
+                self._content[ctid]["origin_code"] = origin_code
+                self._content[ctid]["status"] = status
+
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         with self._lock:
             return [dict(c) for c in self._content.values() if c.get("author_tip_id") == tip_id]
@@ -469,6 +475,11 @@ class SQLiteStore:
     def update_content_status(self, ctid: str, status: str) -> None:
         conn = self._conn()
         conn.execute("UPDATE content SET status = ? WHERE ctid = ?", (status, ctid))
+        conn.commit()
+
+    def update_content_origin(self, ctid: str, origin_code: str, status: str) -> None:
+        conn = self._conn()
+        conn.execute("UPDATE content SET origin_code = ?, status = ? WHERE ctid = ?", (origin_code, status, ctid))
         conn.commit()
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
@@ -772,6 +783,9 @@ class DAG:
 
     def update_content_status(self, ctid: str, status: str) -> None:
         self._store.update_content_status(ctid, status)
+
+    def update_content_origin(self, ctid: str, origin_code: str, status: str) -> None:
+        self._store.update_content_origin(ctid, origin_code, status)
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         return self._store.get_content_by_author(tip_id)

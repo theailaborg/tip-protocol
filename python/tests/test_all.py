@@ -971,7 +971,40 @@ def test_api_endpoints() -> None:
     check("Content record has origin_code",         body.get("origin_code") == "OH")
     check("Content record has author_tip_id",       body.get("author_tip_id") == test_tip_id)
 
-    # 9.13 POST /v1/content/:ctid/dispute
+    # 9.13 POST /v1/content/:ctid/update-origin (within 24h)
+    update_content = "Content for origin update test in Python"
+    update_sig_fields = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": shake256(update_content)}
+    st, body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": test_tip_id, "origin_code": "OH", "content": update_content,
+        "signature": _sign_body(update_sig_fields, test_author_priv),
+    })
+    check("Register content for update-origin test",   st == 201)
+    update_ctid = body.get("ctid", "")
+    check("Content status is registered",              body.get("status") == "registered")
+
+    # Update origin OH -> AA
+    update_fields = {"author_tip_id": test_tip_id, "new_origin_code": "AA"}
+    st, body = _post(f"{base}/v1/content/{quote(update_ctid, safe='')}/update-origin", {
+        **update_fields, "signature": _sign_body(update_fields, test_author_priv),
+    })
+    check("POST update-origin returns 200",            st == 200)
+    check("Update-origin returns success",             body.get("success") is True)
+    check("Old origin is OH",                          body.get("old_origin_code") == "OH")
+    check("New origin is AA",                          body.get("new_origin_code") == "AA")
+
+    # Verify content record updated
+    st, body = _get(f"{base}/v1/content/{quote(update_ctid, safe='')}")
+    check("Content origin updated to AA",              body.get("origin_code") == "AA")
+
+    # Non-author cannot update
+    fake_kp2 = generate_mldsa_keypair()
+    fake_fields = {"author_tip_id": "tip://id/US-fake", "new_origin_code": "AG"}
+    st, body = _post(f"{base}/v1/content/{quote(update_ctid, safe='')}/update-origin", {
+        **fake_fields, "signature": _sign_body(fake_fields, fake_kp2["privateKey"]),
+    })
+    check("Non-author update-origin returns 403",      st == 403)
+
+    # 9.14 POST /v1/content/:ctid/dispute
     disp_fields = {"disputer_tip_id": test_tip_id, "reason": "suspicious", "evidence_hash": "abc123"}
     st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/dispute", {
         **disp_fields, "signature": _sign_body(disp_fields, test_author_priv),
@@ -979,7 +1012,14 @@ def test_api_endpoints() -> None:
     check("POST /v1/content/:ctid/dispute returns 200", st == 200)
     check("Dispute returns success",                    body.get("success") is True)
 
-    # 9.13b POST /v1/identity/verify-ownership — correct key
+    # Verify blocked on disputed content
+    st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/update-origin", {
+        **{"author_tip_id": test_tip_id, "new_origin_code": "AA"},
+        "signature": _sign_body({"author_tip_id": test_tip_id, "new_origin_code": "AA"}, test_author_priv),
+    })
+    check("Update-origin blocked on disputed content",  st == 403)
+
+    # 9.14b POST /v1/identity/verify-ownership — correct key
     import time
     challenge = f"test-{time.time()}"
     from shared.crypto import mldsa_sign
