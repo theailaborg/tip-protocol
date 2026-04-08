@@ -408,13 +408,18 @@ This software implements inventions that are the subject of pending U.S. patent 
 |----------|-----|
 | Website | https://theailab.org |
 | Documentation | https://docs.theailab.org |
-| Protocol Spec | https://spec.theailab.org |
+| Protocol Spec | https://github.com/theailaborg/tip-protocol/blob/main/spec/TIP_Protocol_Specification_v4_0.md |
 | Badge Widget | https://badge.theailab.org |
-| Verify a TIP-ID | https://theailab.org/verify |
+| Verify a TIP-ID | https://vp.theailab.org/verify-record |
+| Create a TIP-ID | https://vp.theailab.org/get-verified |
 | VP Accreditation | https://theailab.org/accreditation |
 | Commercial Licensing | https://theailab.org/licensing |
+| TIP License (TIPCL-1.0) | https://github.com/theailaborg/tip-protocol/blob/main/LICENSE.txt |
+| TIP Patents | https://github.com/theailaborg/tip-protocol/blob/main/PATENTS.md |
+| TIP Trademarks | https://github.com/theailaborg/tip-protocol/blob/main/TRADEMARKS.md |
+| TIP Privacy Policy | https://theailab.org/tip-privacy-policy |
 | Security Disclosures | security@theailab.org |
-| General Contact | chairman@theailab.org |
+| General Contact | tip@theailab.org |
 
 ---
 
