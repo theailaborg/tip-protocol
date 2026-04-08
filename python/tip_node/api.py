@@ -588,7 +588,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                                   "errors": result.errors,
                                   "layer": result.layer}); return
 
-        status = "pending_review" if prescan["flagged"] else "verified"
+        status = "pending_review" if prescan["flagged"] else "registered"
         self.dag.add_tx(tx)
         self._broadcast(tx)
         self.dag.save_content({
@@ -602,18 +602,6 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "registered_at":    registered_at,
             "tx_id":            tx["tx_id"],
         })
-
-        if prescan["flagged"]:
-            flag_tx = self._node_signed_auto({
-                "tx_type":   TxType.CONTENT_DISPUTED,
-                "timestamp": _utc_now(),
-                "prev":      self.dag.get_recent_prev(),
-                "data":      {"ctid": ctid, "reason": "pre_scan_flag",
-                              "probability": prescan["probability"], "auto": True},
-            })
-            self.dag.add_tx(flag_tx)
-            self._broadcast(flag_tx)
-            log.info(f"Pre-scan flagged {ctid} — auto Stage 1 adjudication queued")
 
         score_data = self.scoring.get_score(author_tip_id)
         http_headers = {
@@ -674,6 +662,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"Verifier TIP-ID not found: {verifier_tip_id}"}); return
         if verifier_tip_id == rec.get("author_tip_id"):
             self._send_json(403, {"error": "Cannot verify your own content"}); return
+        if rec.get("status") == "disputed":
+            self._send_json(403, {"error": "Content is under dispute — verification blocked until resolved"}); return
+        if rec.get("status") == "pending_review":
+            self._send_json(403, {"error": "Content is pending review — verification blocked until 24-hour grace period ends"}); return
 
         _VERIFY_FIELDS = ["verifier_tip_id", "verdict"]
         if not verify_body_signature(body, signature, verifier.get("public_key", ""), _VERIFY_FIELDS):
@@ -709,6 +701,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             rec.get("author_tip_id", ""), weighted_delta,
             f"Content verified by {verifier_tip_id}"
         )
+        if rec.get("status") == "registered":
+            self.dag.update_content_status(ctid, "verified")
         self._send_json(200, {"success": True, "delta_applied": weighted_delta})
 
     def _content_dispute(self, ctid: str, body: dict):
@@ -753,9 +747,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": result.errors[0], "errors": result.errors, "layer": result.layer}); return
         self.dag.add_tx(dispute_tx)
         self._broadcast(dispute_tx)
+        self.dag.update_content_status(ctid, "disputed")
         self._send_json(200, {
             "success": True,
-            "message": "Dispute filed. Stage 1 AI classifier will run within 60 seconds.",
+            "message": "Dispute filed. Content verification blocked until resolved.",
         })
 
     def _dag_tx(self, tx_id: str):

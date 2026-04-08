@@ -498,23 +498,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         content_hash:    contentHashFull,
         perceptual_hash: perceptHash,
         author_tip_id,
-        status:          preScan.flagged ? "pending_review" : "verified",
+        status:          preScan.flagged ? "pending_review" : "registered",
         registered_at:   registeredAt,
         tx_id:           tx.tx_id,
       });
-
-      // Auto-schedule Stage 1 adjudication if pre-scan flagged
-      if (preScan.flagged) {
-        log.info(`Pre-scan flagged ${ctid} — auto-scheduling Stage 1 adjudication`);
-        const flagTx = nodeSignedAuto({
-          tx_type:   TX_TYPES.CONTENT_DISPUTED,
-          timestamp: new Date().toISOString(),
-          prev:      dag.getRecentPrev(),
-          data: { ctid, reason: "pre_scan_flag", probability: preScan.probability, auto: true },
-        }, config);
-        const fTx = dag.addTx(flagTx);
-        _broadcast(fTx);
-      }
 
       log.info(`Content registered: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
 
@@ -534,10 +521,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         author_tip_id,
         tx_id:             tx.tx_id,
         registered_at:     registeredAt,
-        status:            preScan.flagged ? "pending_review" : "verified",
+        status:            preScan.flagged ? "pending_review" : "registered",
         prescan_flagged:   preScan.flagged,
         prescan_note:      preScan.flagged
-          ? "Content flagged by AI pre-scan and entered Stage 1 adjudication. No penalty if cleared."
+          ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty."
           : null,
         http_headers,
         meta_tags: {
@@ -545,7 +532,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
           "tip:content": ctid,
           "tip:origin":  ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
           "tip:score":   scoring.getScore(author_tip_id).score.toString(),
-          "tip:status":  preScan.flagged ? "PENDING" : "VERIFIED",
+          "tip:status":  preScan.flagged ? "PENDING" : "REGISTERED",
         },
       });
 
@@ -609,12 +596,15 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(403).json({ error: "Verifier signature verification failed — signature does not match verifier public key" });
     }
 
-    if (dag.hasVerification(req.params.ctid, verifier_tip_id)) {
-      return res.status(409).json({ error: "You have already verified this content" });
+    if (rec.status === "disputed") {
+      return res.status(403).json({ error: "Content is under dispute — verification blocked until resolved" });
+    }
+    if (rec.status === "pending_review") {
+      return res.status(403).json({ error: "Content is pending review — verification blocked until 24-hour grace period ends" });
     }
 
-    if (!scoring.isJuryEligible(verifier_tip_id)) {
-      return res.status(403).json({ error: "Verifier not jury eligible (score < 700 or revoked)" });
+    if (dag.hasVerification(req.params.ctid, verifier_tip_id)) {
+      return res.status(409).json({ error: "You have already verified this content" });
     }
 
     const verifierScore = scoring.getScore(verifier_tip_id).score;
@@ -643,6 +633,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     _broadcast(verifyTx);
 
     scoring.applyScoreEvent(rec.author_tip_id, weightedDelta, `Content verified by ${verifier_tip_id}`);
+
+    // Update content status to verified (community endorsed)
+    if (rec.status === "registered") {
+      dag.updateContentStatus(req.params.ctid, "verified");
+    }
+
     res.json({ success: true, delta_applied: weightedDelta });
   });
 
@@ -687,7 +683,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const disputeTx = dag.addTx(signedDisputeTx);
     _broadcast(disputeTx);
 
-    res.json({ success: true, message: "Dispute filed. Stage 1 AI classifier will run within 60 seconds." });
+    // Update content status to disputed
+    dag.updateContentStatus(req.params.ctid, "disputed");
+
+    res.json({ success: true, message: "Dispute filed. Content verification blocked until resolved." });
   });
 
   // ─────────────────────────────────────────────────────────────────────────

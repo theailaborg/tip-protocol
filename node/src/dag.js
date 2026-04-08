@@ -69,6 +69,10 @@ class MemoryStore {
   // ── Content ───────────────────────────────────────────────────────────────
   saveContent(rec)  { this._content.set(rec.ctid, { ...rec }); }
   getContent(ctid)  { return this._content.get(ctid) || null; }
+  updateContentStatus(ctid, status) {
+    const rec = this._content.get(ctid);
+    if (rec) this._content.set(ctid, { ...rec, status });
+  }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
   }
@@ -272,6 +276,7 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?,?)`
       ),
       getContent:  this.db.prepare("SELECT * FROM content WHERE ctid=?"),
+      updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       hasVerification: this.db.prepare(
         `SELECT 1 FROM transactions
@@ -374,6 +379,7 @@ class SQLiteStore {
     );
   }
   getContent(ctid)            { return this._stmts.getContent.get(ctid) || null; }
+  updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   getContentByAuthor(tipId)   { return this._stmts.contentByAuthor.all(tipId); }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
@@ -502,9 +508,10 @@ function initDAG(config) {
     getIdentity:     (id)      => store.getIdentity(id),
 
     // ── Content ───────────────────────────────────────────────────────────
-    saveContent:       (rec)         => store.saveContent(rec),
-    getContent:        (ctid)        => store.getContent(ctid),
-    getContentByAuthor: (id)         => store.getContentByAuthor(id),
+    saveContent:          (rec)         => store.saveContent(rec),
+    getContent:           (ctid)        => store.getContent(ctid),
+    updateContentStatus:  (ctid, s)     => store.updateContentStatus(ctid, s),
+    getContentByAuthor:   (id)          => store.getContentByAuthor(id),
     hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),
 

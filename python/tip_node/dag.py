@@ -199,6 +199,11 @@ class MemoryStore:
         with self._lock:
             return dict(self._content[ctid]) if ctid in self._content else None
 
+    def update_content_status(self, ctid: str, status: str) -> None:
+        with self._lock:
+            if ctid in self._content:
+                self._content[ctid]["status"] = status
+
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         with self._lock:
             return [dict(c) for c in self._content.values() if c.get("author_tip_id") == tip_id]
@@ -460,7 +465,11 @@ class SQLiteStore:
         return self._conn().execute(
             "SELECT * FROM content WHERE ctid = ?", (ctid,)
         ).fetchone()
-        # Returns sqlite3.Row; callers should call dict() if needed
+
+    def update_content_status(self, ctid: str, status: str) -> None:
+        conn = self._conn()
+        conn.execute("UPDATE content SET status = ? WHERE ctid = ?", (status, ctid))
+        conn.commit()
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         rows = self._conn().execute(
@@ -760,6 +769,9 @@ class DAG:
     def get_content(self, ctid: str) -> Optional[dict]:
         row = self._store.get_content(ctid)
         return dict(row) if row is not None else None
+
+    def update_content_status(self, ctid: str, status: str) -> None:
+        self._store.update_content_status(ctid, status)
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         return self._store.get_content_by_author(tip_id)
