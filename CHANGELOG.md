@@ -7,6 +7,109 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+**Third Provisional Patent Filed (April 7, 2026)**
+- Application Number: 64/031,648 (Confirmation: 7072, Docket: AILAB-2026-PROV-03)
+- Six new claim groups (K-P) covering content normalization, dual-mode
+  verification, content versioning, content scope extraction, multi-layer
+  verification delivery, and extensible normalization framework
+
+**Claim Group K: Canonical Content Normalization (CNA-1)**
+- Six-step deterministic text normalization algorithm producing identical
+  cryptographic hashes regardless of HTML formatting, Unicode encoding,
+  whitespace handling, or typographic conventions
+- Three-hash architecture: canonical hash (primary verification), exact hash
+  (forensic audit), perceptual hash (near-copy detection at 90% threshold)
+- CTID derivation from canonical hash ensures identical content always
+  produces the same CTID across platforms
+
+**Claim Group L: Dual-Mode Content Verification**
+- Publisher Mode: domain-bound ML-DSA-65 signature with 5 HTTP headers
+- Creator Mode: hash-based DAG lookup for creators on platforms they do not
+  control (X.com, Facebook, YouTube). No HTTP headers needed.
+- Timestamps excluded from signature payload in both modes (eliminates
+  timezone and registration-to-publication gap fragility)
+- New API endpoint: GET /v1/content/by-hash/:canonicalHash (19th endpoint)
+
+**Claim Group M: Content Version Tracking**
+- CONTENT_UPDATED DAG transaction type with three mutation semantics:
+  CORRECTION (preserves CTID and origin code), UPDATE (permits origin code
+  change), RETRACTION (marks withdrawn, -50 trust score)
+- Version-chain verification: checks all versions before perceptual fallback
+- CONTENT_SYNDICATED transaction type for authorized republication
+
+**Claim Group N: Content Scope Extraction**
+- Four-priority content boundary detection: (1) data-tip-content HTML
+  attribute, (2) JSON-LD articleBody, (3) HTML5 semantic elements,
+  (4) Readability algorithm fallback
+- New HTML meta tags: tip-content-selector, tip-content-title
+- New data attribute: data-tip-content="true"
+
+**Claim Group O: Multi-Layer Verification Delivery**
+- Five-layer progressive architecture: (1) publisher-rendered <tip-badge>
+  web component, (2) platform-native meta tags (tip:author, tip:ctid,
+  tip:origin), (3) browser extension, (4) mobile share-to verification app,
+  (5) URL-based zero-install verification service
+
+**Claim Group P: Extensible Normalization Framework**
+- normalization_version field in content registration transaction
+- Defined identifiers: CNA-1 (text), CNA-IMG-1 (images), CNA-VID-1 (video),
+  CNA-AUD-1 (audio), CNA-MIX-1 (mixed media)
+- New algorithms deployable without protocol upgrade
+
+**Security Architecture: Key Protection Chain**
+- Documented PRF-to-AES key protection chain for ML-DSA-65 private key:
+  Secure Enclave ECDSA P-256 -> PRF (biometric-gated) -> SHAKE-256 ->
+  AES-256 key -> AES-256-GCM encrypts ML-DSA-65 private key at rest
+- ECDSA never signs content; it only gates the PRF
+- Browser extension uses dual signature (Ed25519 + ML-DSA-65), both in
+  software, Secure Enclave protects master seed at rest
+
+**Trust Tier Overhaul**
+- Updated trust tier ranges and names:
+  850-1000 Highly Trusted (#1A8A5C), 650-849 Trusted (#2563A8),
+  400-649 Verified (#C9A84C), 200-399 Caution (#C07318),
+  0-199 Not Trusted (#C53030)
+- New user at score 500 now lands in Verified tier (gold badge, checkmark)
+  instead of the previous Review Advised tier (warning icon)
+- 100-point buffer before dropping to Caution tier
+- Shield icons: checkmark for >= 400, warning triangle for 200-399, X for 0-199
+
+**Verification Result Cards**
+- New rectangular verification card system for browser extension and web
+  component detail panels
+- Nine status types: verified (Publisher Mode), verified-syndicated,
+  verified-creator, verified-corrected, verified-updated, republished (amber),
+  mismatch (red), retracted (red), none (gray)
+- Data-driven SVG renderer with dynamic height, score pills, origin pills,
+  domain indicators, and accent-colored TIP PROTOCOL watermark
+
+**Badge Library v8 (tip-badges repository)**
+- 11 badge categories, 393+ pre-generated SVGs
+- New no-score seal and registry badge variants
+- React component (TipBadge) with 12 variants and live API fetch
+- Web component (<tip-badge>) with Shadow DOM
+- React VerificationCard component
+- npm package: @theailab/tip-badges
+
+**REST API**
+- Added 19th endpoint: GET /v1/content/by-hash/:canonicalHash for Creator
+  Mode hash-based content lookup
+
+**DAG Transaction Types**
+- Added: CONTENT_UPDATED (content versioning with typed mutations)
+- Added: CONTENT_SYNDICATED (authorized republication across domains)
+
+### Changed
+
+- Browser extension moved to separate repository (tip-extension) for
+  independent release cycles and Chrome Web Store compliance
+
+---
+
 ## [2.0.0]: 2026-03-15
 
 ### Initial public release: TIP Protocol v2.0
@@ -108,12 +211,5 @@ interface for the complete pre-launch checklist.
 
 ---
 
-## [Unreleased]
-
-Changes that are merged to `main` but not yet in a tagged release will
-appear here.
-
----
-
-*For the full commit history, see the Git log.*  
+*For the full commit history, see the Git log.*
 *Copyright 2026 The AI Lab Intelligence Unobscured, Inc.*
