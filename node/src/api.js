@@ -64,7 +64,7 @@ const { verifyDedupProof } = require("../../shared/zk");
 const { validateTransaction } = require("./validators/tx-validator");
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, AI_CLASSIFIER,
   getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
 } = require("../../shared/constants");
 
@@ -698,6 +698,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     if (!disputer) return res.status(404).json({ error: "Disputer TIP-ID not found" });
     if (dag.isRevoked(disputer_tip_id)) return res.status(403).json({ error: "Disputer TIP-ID is revoked" });
 
+    // Minimum score to dispute (Verified tier or above)
+    const disputerScore = scoring.getScore(disputer_tip_id).score;
+    if (disputerScore < DISPUTE.MIN_SCORE_TO_DISPUTE) {
+      return res.status(403).json({ error: `Score must be >= ${DISPUTE.MIN_SCORE_TO_DISPUTE} to file a dispute (current: ${disputerScore})` });
+    }
+
     const DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"];
     if (!verifyBodySignature(req.body, signature, disputer.public_key, DISPUTE_FIELDS)) {
       return res.status(403).json({ error: "Disputer signature verification failed — signature does not match disputer public key" });
@@ -707,11 +713,19 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(409).json({ error: "You have already disputed this content" });
     }
 
+    // No score change on dispute filing — penalty/bonus applied at verdict
     const disputeTxBody = {
       tx_type:   TX_TYPES.CONTENT_DISPUTED,
       timestamp: new Date().toISOString(),
       prev:      dag.getRecentPrev(),
-      data: { ctid: req.params.ctid, disputer_tip_id, reason, evidence_hash, author_tip_id: rec.author_tip_id },
+      data: {
+        ctid:            req.params.ctid,
+        disputer_tip_id,
+        reason,
+        evidence_hash,
+        author_tip_id:   rec.author_tip_id,
+        stake:           DISPUTE.DISPUTER_STAKE,
+      },
     };
     const signedDisputeTx = withTxId(disputeTxBody);
 
@@ -726,7 +740,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     // Update content status to disputed
     dag.updateContentStatus(req.params.ctid, "disputed");
 
-    res.json({ success: true, message: "Dispute filed. Content verification blocked until resolved." });
+    res.json({
+      success: true,
+      message: "Dispute filed. Content verification blocked until resolved.",
+      dispute_tx_id: disputeTx.tx_id,
+      stake_at_risk: DISPUTE.DISPUTER_STAKE,
+    });
   });
 
   /**

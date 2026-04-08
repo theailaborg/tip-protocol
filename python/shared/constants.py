@@ -78,6 +78,43 @@ class VerifyCaps:
     HIGH_TRUST_MIN   = 800   # minimum score for high-trust bonus
 
 
+# ─── Dispute & Jury constants ─────────────────────────────────────────────────
+
+class Dispute:
+    MIN_SCORE_TO_DISPUTE  = 400    # Verified tier or above
+    DISPUTER_STAKE        = 15     # points held in escrow
+    FRIVOLOUS_PENALTY     = 5      # deducted from stake if auto-dismissed (<30%)
+    UPHELD_BONUS          = 5      # bonus to disputer if dispute upheld
+    VINDICATION_BONUS     = 5      # bonus to creator if dispute auto-dismissed
+
+class Jury:
+    SIZE                  = 7      # jurors per dispute
+    MIN_SCORE             = 700    # minimum score for jury eligibility
+    JUROR_STAKE           = 10     # points staked per juror
+    MAJORITY_VOTE         = 3      # votes needed if 2 abstain (otherwise 4)
+    COMMIT_WINDOW_HOURS   = 72     # hours to submit vote commitment
+    REVEAL_WINDOW_HOURS   = 6      # hours after commit window to reveal
+    QUORUM                = 5      # minimum reveals needed (else escalate to Stage 3)
+    MAJORITY_BONUS        = 3      # bonus for voting with majority
+    MINORITY_PENALTY      = 10     # net loss for voting against majority
+    NO_SHOW_PENALTY       = 10     # net loss for failing to reveal
+    MAX_SAME_COUNTRY      = 3      # geographic diversity cap
+    COOLDOWN_DAYS         = 7      # days before juror can serve same creator again
+
+class Appeal:
+    APPELLANT_STAKE       = 25     # higher bar than dispute stake
+    MIN_EXPERT_SCORE      = 850    # experts must be highly trusted
+    EXPERT_COUNT          = 3      # experts per appeal
+    FILING_WINDOW_HOURS   = 48     # hours after ADJUDICATION_RESULT to file
+    REVIEW_DAYS           = 7      # days for expert review
+    OVERTURN_BONUS        = 10     # bonus to appellant if appeal succeeds
+
+class AiClassifier:
+    AUTO_DISMISS_THRESHOLD = 0.30  # <30% → auto-dismiss
+    HIGH_CONFIDENCE        = 0.90  # >90% → escalate with flag
+    TIMEOUT_SECONDS        = 60    # max time for AI inference
+
+
 # ─── Transaction types ────────────────────────────────────────────────────────
 
 class TxType:
@@ -91,8 +128,14 @@ class TxType:
     # Trust
     CONTENT_VERIFIED       = "CONTENT_VERIFIED"
     CONTENT_DISPUTED       = "CONTENT_DISPUTED"
+    # Adjudication
+    AI_CLASSIFIER_RESULT   = "AI_CLASSIFIER_RESULT"
+    JURY_SUMMONS           = "JURY_SUMMONS"
+    JURY_VOTE_COMMIT       = "JURY_VOTE_COMMIT"
+    JURY_VOTE_REVEAL       = "JURY_VOTE_REVEAL"
     ADJUDICATION_RESULT    = "ADJUDICATION_RESULT"
     APPEAL_FILED           = "APPEAL_FILED"
+    APPEAL_RESULT          = "APPEAL_RESULT"
     SCORE_UPDATE           = "SCORE_UPDATE"
     # Revocation
     REVOKE_VOLUNTARY       = "REVOKE_VOLUNTARY"

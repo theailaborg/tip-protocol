@@ -36,6 +36,7 @@ from shared.zk import verify_dedup_proof
 from shared.constants import (
     TxType, Origin, Protocol, HttpHeaders,
     JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
+    Dispute, AiClassifier,
 )
 from tip_node.validators.tx_validator import validate_transaction
 from tip_node.logger import get_logger
@@ -763,6 +764,10 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if self.dag.is_revoked(disputer):
             self._send_json(403, {"error": "Disputer TIP-ID is revoked"}); return
 
+        disputer_score = self.scoring.get_score(disputer)["score"]
+        if disputer_score < Dispute.MIN_SCORE_TO_DISPUTE:
+            self._send_json(403, {"error": f"Score must be >= {Dispute.MIN_SCORE_TO_DISPUTE} to file a dispute (current: {disputer_score})"}); return
+
         _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"]
         if not verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
             self._send_json(403, {"error": "Disputer signature verification failed — signature does not match disputer public key"}); return
@@ -770,6 +775,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if self.dag.has_dispute(ctid, disputer):
             self._send_json(409, {"error": "You have already disputed this content"}); return
 
+        # No score change on dispute filing — penalty/bonus applied at verdict
         dispute_tx = {
             "tx_type":   TxType.CONTENT_DISPUTED,
             "timestamp": _utc_now(),
@@ -780,6 +786,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "reason":           body.get("reason"),
                 "evidence_hash":    body.get("evidence_hash"),
                 "author_tip_id":    rec.get("author_tip_id"),
+                "stake":            Dispute.DISPUTER_STAKE,
             },
         }
         dispute_tx = self._with_tx_id(dispute_tx)
@@ -792,6 +799,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self._send_json(200, {
             "success": True,
             "message": "Dispute filed. Content verification blocked until resolved.",
+            "dispute_tx_id": dispute_tx["tx_id"],
+            "stake_at_risk": Dispute.DISPUTER_STAKE,
         })
 
     def _content_update_origin(self, ctid: str, body: dict):
