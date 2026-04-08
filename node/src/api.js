@@ -589,6 +589,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
 
     const verifier = dag.getIdentity(verifier_tip_id);
     if (!verifier) return res.status(404).json({ error: "Verifier TIP-ID not found" });
+    if (dag.isRevoked(verifier_tip_id)) return res.status(403).json({ error: "Verifier TIP-ID is revoked" });
     if (verifier_tip_id === rec.author_tip_id) return res.status(403).json({ error: "Cannot verify your own content" });
 
     const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
@@ -608,7 +609,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     }
 
     const verifierScore = scoring.getScore(verifier_tip_id).score;
-    const weightedDelta = Math.ceil((verifierScore / 1000) * 5); // 1-5 based on verifier trust
+    const weightedDelta = verifierScore >= 800 ? 3 : 2; // base +2, high-trust bonus +3 (1.5x)
 
     const verifyTxBody = {
       tx_type:   TX_TYPES.CONTENT_VERIFIED,

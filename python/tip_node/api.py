@@ -663,6 +663,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         verifier = self.dag.get_identity(verifier_tip_id)
         if not verifier:
             self._send_json(404, {"error": f"Verifier TIP-ID not found: {verifier_tip_id}"}); return
+        if self.dag.is_revoked(verifier_tip_id):
+            self._send_json(403, {"error": "Verifier TIP-ID is revoked"}); return
         if verifier_tip_id == rec.get("author_tip_id"):
             self._send_json(403, {"error": "Cannot verify your own content"}); return
         if rec.get("status") == "disputed":
@@ -677,11 +679,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if self.dag.has_verification(ctid, verifier_tip_id):
             self._send_json(409, {"error": "You have already verified this content"}); return
 
-        if not self.scoring.is_jury_eligible(verifier_tip_id):
-            self._send_json(403, {"error": "Verifier not jury eligible (score < 700 or revoked)"}); return
-
         verifier_score = self.scoring.get_score(verifier_tip_id)["score"]
-        weighted_delta = max(1, min(5, int(verifier_score / 200)))
+        weighted_delta = 3 if verifier_score >= 800 else 2  # base +2, high-trust bonus +3 (1.5x)
         verify_tx = {
             "tx_type":   TxType.CONTENT_VERIFIED,
             "timestamp": _utc_now(),
