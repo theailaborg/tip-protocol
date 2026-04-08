@@ -352,9 +352,8 @@ async function injectReopenButton() {
     });
   });
 
-  // Insert before origin buttons (or as first child of creator tab body)
-  const target = document.getElementById("popup-origin-btns") ||
-                 document.getElementById("creator-tab-body");
+  // Insert before the "Open Settings" button inside the upload-detected section
+  const target = document.getElementById("upload-open-settings");
   if (target) target.insertAdjacentElement("beforebegin", btn);
 }
 
