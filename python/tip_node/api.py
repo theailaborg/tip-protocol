@@ -700,7 +700,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             if (t.get("data") or {}).get("author_tip_id") == author_tip_id and t.get("timestamp", "") >= month_start)
 
         verifier_score = self.scoring.get_score(verifier_tip_id)["score"]
-        weighted_delta = 3 if verifier_score >= 800 else 2
+        weighted_delta = VerifyCaps.HIGH_TRUST_DELTA if verifier_score >= VerifyCaps.HIGH_TRUST_MIN else VerifyCaps.BASE_DELTA
 
         weighted_delta = min(
             weighted_delta,

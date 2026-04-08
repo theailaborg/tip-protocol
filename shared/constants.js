@@ -56,9 +56,12 @@ const SCORE_EVENTS = Object.freeze({
 
 // ─── Verification caps ───────────────────────────────────────────────────────
 const VERIFY_CAPS = Object.freeze({
-  PER_CONTENT: 5,   // max +5 per CTID
-  PER_DAY:     5,   // max +5 per creator per day
-  PER_MONTH:   30,  // max +30 per creator per month
+  PER_CONTENT:        5,     // max +5 per CTID
+  PER_DAY:            5,     // max +5 per creator per day
+  PER_MONTH:          30,    // max +30 per creator per month
+  BASE_DELTA:         2,     // base credit per verification
+  HIGH_TRUST_DELTA:   3,     // bonus for verifier score >= HIGH_TRUST_MIN (1.5x)
+  HIGH_TRUST_MIN:     800,   // minimum score for high-trust bonus
 });
 
 // ─── Transaction types ────────────────────────────────────────────────────────

@@ -626,7 +626,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       .reduce((sum, t) => sum + (t.data?.weighted_delta || 0), 0);
 
     const verifierScore = scoring.getScore(verifier_tip_id).score;
-    let weightedDelta = verifierScore >= 800 ? 3 : 2; // base +2, high-trust bonus +3 (1.5x)
+    let weightedDelta = verifierScore >= VERIFY_CAPS.HIGH_TRUST_MIN ? VERIFY_CAPS.HIGH_TRUST_DELTA : VERIFY_CAPS.BASE_DELTA;
 
     // Apply caps — reduce delta to fit within limits
     weightedDelta = Math.min(
