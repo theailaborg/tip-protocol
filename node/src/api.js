@@ -650,6 +650,10 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     const rec = dag.getContent(req.params.ctid);
     if (!rec) return res.status(404).json({ error: "Content record not found" });
 
+    if (rec.status === "pending_review") {
+      return res.status(403).json({ error: "Content is pending review — wait for 24-hour grace period to end before disputing" });
+    }
+
     const { disputer_tip_id, reason, evidence_hash, signature } = req.body;
     if (!disputer_tip_id) return res.status(400).json({ error: "disputer_tip_id required" });
     if (!signature)       return res.status(400).json({ error: "signature is required" });

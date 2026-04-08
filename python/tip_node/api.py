@@ -712,6 +712,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         rec = self.dag.get_content(ctid)
         if not rec:
             self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+        if rec.get("status") == "pending_review":
+            self._send_json(403, {"error": "Content is pending review — wait for 24-hour grace period to end before disputing"}); return
         disputer  = body.get("disputer_tip_id")
         signature = body.get("signature")
         if not disputer:
