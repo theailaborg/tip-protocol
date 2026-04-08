@@ -79,27 +79,27 @@ Add these to any web server: no SDK, no account, no code required:
 
 ```nginx
 # Nginx
-add_header TIP-Author      "tip://id/US-a3f8c91b2d4e7021";
-add_header TIP-Content     "tip://c/OH-7f2a91bc3d5e4a-a3f8";
-add_header TIP-Origin      "original-human";
-add_header TIP-Trust-Score "892";
-add_header TIP-Signature   "[ML-DSA-65 signature hex]";
+add_header X-TIP-Author       "tip://id/US-a3f8c91b2d4e7021";
+add_header X-TIP-CTID         "tip://c/OH-7f2a91bc3d5e4a-a3f8";
+add_header X-TIP-Origin       "OH";
+add_header X-TIP-Signature    "[ML-DSA-65 signature base64]";
+add_header X-TIP-Content-Bind "[domain-bind-hash]";
 ```
 
 ```apache
 # Apache (.htaccess)
-Header set TIP-Author      "tip://id/US-a3f8c91b2d4e7021"
-Header set TIP-Content     "tip://c/OH-7f2a91bc3d5e4a-a3f8"
-Header set TIP-Origin      "original-human"
-Header set TIP-Trust-Score "892"
+Header set X-TIP-Author       "tip://id/US-a3f8c91b2d4e7021"
+Header set X-TIP-CTID         "tip://c/OH-7f2a91bc3d5e4a-a3f8"
+Header set X-TIP-Origin       "OH"
+Header set X-TIP-Signature    "[ML-DSA-65 signature base64]"
+Header set X-TIP-Content-Bind "[domain-bind-hash]"
 ```
 
 ```html
 <!-- HTML meta tags -->
-<meta property="tip:author"  content="tip://id/US-a3f8c91b2d4e7021" />
-<meta property="tip:content" content="tip://c/OH-7f2a91bc3d5e4a-a3f8" />
-<meta property="tip:origin"  content="original-human" />
-<meta property="tip:score"   content="892" />
+<meta property="tip:author" content="tip://id/US-a3f8c91b2d4e7021" />
+<meta property="tip:ctid"   content="tip://c/OH-7f2a91bc3d5e4a-a3f8" />
+<meta property="tip:origin" content="OH" />
 ```
 
 ### Run a Node (Node.js)
@@ -255,6 +255,9 @@ GET /v1/identity/:tipId/score
 # Resolve content provenance
 GET /v1/content/:ctid
 
+# Look up content by hash (Creator Mode)
+GET /v1/content/by-hash/:canonicalHash
+
 # Register new content
 POST /v1/content/register
 
@@ -343,7 +346,7 @@ tip-protocol/
 │
 ├── sdk/                         ← JavaScript SDK for platform integration
 ├── cli/                         ← Command-line tools
-├── browser-extension/           ← Manifest V3 Chrome/Firefox extension
+├── browser-extension/           ← [Moved to github.com/theailaborg/tip-extension]
 ├── badge/                       ← <tip-badge> web component
 └── scripts/                     ← Utilities and seed scripts
     └── seed.py                  ← Genesis block generation
@@ -360,7 +363,7 @@ TIP Protocol uses a layered licensing model:
 | Protocol Specification | **CC-BY 4.0** | Free for everyone, forever. Attribution required. |
 | Reference Implementation | **TIPCL-1.0** | Free under $500K revenue. Paid above. Converts to Apache 2.0 on January 1, 2031. |
 | TIP™ Trademarks | **Trademark Law** | Reserved by The AI Lab. Separate license required. |
-| Patent Claims (10 inventions) | **Patent Law** | Included in TIPCL commercial license. Valid to ~2047. |
+| Patent Claims (16 inventions, A-P) | **Patent Law** | Included in TIPCL commercial license. Valid to ~2047. |
 
 **Free for:** Individuals · Nonprofits · Journalism organisations · Governments · Education · Businesses under $500K annual revenue
 
