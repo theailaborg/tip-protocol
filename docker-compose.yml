@@ -23,7 +23,7 @@ services:
     ports:
       - "${PORT:-4000}:4000"
     volumes:
-      - tip-data:/app/data
+      - ./data:/app/data
     environment:
       NODE_ENV:              ${NODE_ENV:-production}
       PORT:                  4000
@@ -49,10 +49,6 @@ services:
       com.theailab.version:    "2.2.0"
     networks:
       - tip-vp_default  # join VP's network so cloudflared can reach us
-
-volumes:
-  tip-data:
-    driver: local
 
 networks:
   tip-vp_default:
