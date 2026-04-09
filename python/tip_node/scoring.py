@@ -225,11 +225,14 @@ class ScoringEngine:
         confirmed = data.get("confirmed_origin", "")
         verdict   = data.get("verdict", "")
 
-        if verdict in ("CLEARED", "DISMISSED"):
-            return 0, f"Adjudication cleared: {data.get('ctid', '')[:30]}"
+        if verdict == "DISMISSED":
+            return 0, f"Adjudication dismissed: {data.get('ctid', '')[:30]}"
 
         if verdict == "CONSERVATIVE_LABEL":
             return 0, "Conservative labelling — no penalty"
+
+        if verdict != "UPHELD":
+            return 0, f"Adjudication: unknown verdict={verdict}"
 
         # OH declared, AG confirmed — most serious
         if declared == Origin.OH and confirmed == Origin.AG:

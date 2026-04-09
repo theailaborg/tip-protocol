@@ -59,6 +59,122 @@ function nodeSignedAuto(txBody, config) {
 }
 
 
+/**
+ * Tally jury votes and apply verdict + score effects.
+ * Called when all jurors have revealed (or reveal window expires).
+ */
+function _tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
+  const matchCount    = reveals.filter(r => r.data?.vote === "MATCH").length;
+  const mismatchCount = reveals.filter(r => r.data?.vote === "MISMATCH").length;
+  const abstainCount  = reveals.filter(r => r.data?.vote === "ABSTAIN").length;
+  const totalVotes    = matchCount + mismatchCount + abstainCount;
+
+  // Quorum check: enough reveals AND enough actual votes (not just abstains)
+  const nonAbstain = matchCount + mismatchCount;
+  if (totalVotes < JURY.QUORUM) {
+    return { verdict: "NO_QUORUM", message: "Insufficient reveals — escalate to Stage 3", matchCount, mismatchCount, abstainCount };
+  }
+  if (nonAbstain < JURY.MAJORITY_VOTE) {
+    return { verdict: "NO_QUORUM", message: "Insufficient non-abstain votes — escalate to Stage 3", matchCount, mismatchCount, abstainCount };
+  }
+
+  // Majority: need > 50% of non-abstain votes
+  const majorityNeeded = Math.floor(nonAbstain / 2) + 1;
+  const decision = mismatchCount >= majorityNeeded ? "UPHELD" : "DISMISSED";
+
+  const rec = dag.getContent(ctid);
+  const disputeTxs = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED).filter(t => t.data?.ctid === ctid);
+  const disputeData   = disputeTxs[0]?.data || {};
+  const disputerTipId = disputeData.disputer_tip_id;
+  const authorTipId   = rec?.author_tip_id;
+
+  // Origin codes: declared (what author said) vs confirmed (majority of MISMATCH jurors)
+  const declared_origin = disputeData.declared_origin || rec?.origin_code;
+  let confirmed_origin = null;
+  if (decision === "UPHELD") {
+    // Pick most common confirmed_origin from MISMATCH voters
+    const originVotes = reveals
+      .filter(r => r.data?.vote === "MISMATCH" && r.data?.confirmed_origin)
+      .map(r => r.data.confirmed_origin);
+    const originCounts = {};
+    for (const o of originVotes) originCounts[o] = (originCounts[o] || 0) + 1;
+    confirmed_origin = Object.entries(originCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
+                     || disputeData.claimed_origin || null;
+  }
+
+  // Check for conservative label (AG declared, was actually OH — no penalty)
+  const verdict = decision === "DISMISSED" ? "DISMISSED"
+    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? "CONSERVATIVE_LABEL"
+    : "UPHELD";
+
+  // Write ADJUDICATION_RESULT tx
+  const resultTx = nodeSignedAuto({
+    tx_type:   TX_TYPES.ADJUDICATION_RESULT,
+    timestamp: new Date().toISOString(),
+    prev:      dag.getRecentPrev(),
+    data: {
+      ctid,
+      verdict,
+      declared_origin,
+      confirmed_origin,
+      reason:          disputeData.reason,
+      author_tip_id:   authorTipId,
+      match_count:     matchCount,
+      mismatch_count:  mismatchCount,
+      abstain_count:   abstainCount,
+      juror_votes:     reveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
+    },
+  }, config);
+  dag.addTx(resultTx);
+
+  // Apply juror score effects
+  const isTie = matchCount === mismatchCount;
+  if (isTie) {
+    // Tie — no juror penalties or bonuses (honest disagreement)
+    log.info(`Jury tie on ${ctid}: ${matchCount}-${mismatchCount} — no juror score changes`);
+  } else {
+    const majorityVote = mismatchCount > matchCount ? "MISMATCH" : "MATCH";
+    for (const reveal of reveals) {
+      const jurorTipId = reveal.data.juror_tip_id;
+      if (reveal.data.vote === "ABSTAIN") continue;
+      if (reveal.data.vote === majorityVote) {
+        scoring.applyScoreEvent(jurorTipId, JURY.MAJORITY_BONUS, `Jury majority vote on ${ctid}`);
+      } else {
+        scoring.applyScoreEvent(jurorTipId, -JURY.MINORITY_PENALTY, `Jury minority vote on ${ctid}`);
+      }
+    }
+  }
+
+  // No-show jurors (summoned but didn't reveal)
+  const revealedIds = new Set(reveals.map(r => r.data.juror_tip_id));
+  for (const s of summons) {
+    if (!revealedIds.has(s.data.juror_tip_id)) {
+      scoring.applyScoreEvent(s.data.juror_tip_id, -JURY.NO_SHOW_PENALTY, `Jury no-show on ${ctid}`);
+    }
+  }
+
+  // Disputer effects
+  if (verdict === "UPHELD" && disputerTipId) {
+    scoring.applyScoreEvent(disputerTipId, DISPUTE.UPHELD_BONUS, `Dispute upheld on ${ctid}`);
+  } else if (verdict === "DISMISSED" && disputerTipId) {
+    scoring.applyScoreEvent(disputerTipId, -DISPUTE.DISPUTER_STAKE, `Dispute dismissed on ${ctid}`);
+  }
+
+  // Creator effects — penalty applied via scoring replay of ADJUDICATION_RESULT tx
+  if (verdict === "UPHELD" && authorTipId) {
+    const current = scoring.computeScore(authorTipId);
+    // Update content to jury-confirmed origin + verified status
+    if (confirmed_origin) {
+      dag.updateContentOrigin(ctid, confirmed_origin, "verified");
+      log.info(`Verdict UPHELD: ${ctid} origin ${declared_origin} → ${confirmed_origin}, creator ${authorTipId} penalty (score: ${current.score})`);
+    }
+  } else if (verdict === "DISMISSED" || verdict === "CONSERVATIVE_LABEL") {
+    dag.updateContentStatus(ctid, "registered");
+  }
+
+  return { verdict, confirmed_origin, matchCount, mismatchCount, abstainCount, tx_id: resultTx.tx_id };
+}
+
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
@@ -691,9 +807,16 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(403).json({ error: "Content is pending review — wait for 24-hour grace period to end before disputing" });
     }
 
-    const { disputer_tip_id, reason, evidence_hash, signature } = req.body;
+    const { disputer_tip_id, reason, claimed_origin, evidence_hash, signature } = req.body;
     if (!disputer_tip_id) return res.status(400).json({ error: "disputer_tip_id required" });
     if (!signature)       return res.status(400).json({ error: "signature is required" });
+    if (!reason)          return res.status(400).json({ error: "reason required (origin_mismatch or factual_falsehood)" });
+    if (reason === "origin_mismatch" && !claimed_origin) {
+      return res.status(400).json({ error: "claimed_origin required for origin_mismatch disputes (what you think the actual origin is)" });
+    }
+    if (claimed_origin && !ORIGIN[claimed_origin]) {
+      return res.status(400).json({ error: `Invalid claimed_origin. Must be one of: ${Object.keys(ORIGIN).join(", ")}` });
+    }
 
     const disputer = dag.getIdentity(disputer_tip_id);
     if (!disputer) return res.status(404).json({ error: "Disputer TIP-ID not found" });
@@ -723,6 +846,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         ctid:            req.params.ctid,
         disputer_tip_id,
         reason,
+        claimed_origin:  claimed_origin || null,
+        declared_origin: rec.origin_code,
         evidence_hash,
         author_tip_id:   rec.author_tip_id,
         stake:           DISPUTE.DISPUTER_STAKE,
@@ -832,6 +957,177 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       stage1: stage1Result,
       stage2: juryResult,
     });
+  });
+
+  /**
+   * POST /v1/content/:ctid/jury/commit
+   * Juror submits a hidden vote commitment: SHAKE-256(vote + salt).
+   * Vote is hidden until reveal phase.
+   */
+  app.post("/v1/content/:ctid/jury/commit", async (req, res) => {
+    try {
+      const { juror_tip_id, commitment, signature } = req.body;
+      if (!juror_tip_id) return res.status(400).json({ error: "juror_tip_id required" });
+      if (!commitment)   return res.status(400).json({ error: "commitment required (SHAKE-256 of vote + salt)" });
+      if (!signature)    return res.status(400).json({ error: "signature required" });
+
+      // Verify juror identity
+      const juror = dag.getIdentity(juror_tip_id);
+      if (!juror) return res.status(404).json({ error: "Juror TIP-ID not found" });
+      if (dag.isRevoked(juror_tip_id)) return res.status(403).json({ error: "Juror TIP-ID is revoked" });
+
+      // Verify signature
+      const COMMIT_FIELDS = ["juror_tip_id", "commitment"];
+      if (!verifyBodySignature(req.body, signature, juror.public_key, COMMIT_FIELDS)) {
+        return res.status(403).json({ error: "Juror signature verification failed" });
+      }
+
+      // Check juror was summoned for this dispute
+      const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
+        .filter(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      if (!summonsTxs.length) {
+        return res.status(403).json({ error: "You were not summoned as a juror for this dispute" });
+      }
+
+      // Check commit deadline
+      const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+      if (Date.now() > commitDeadline) {
+        return res.status(403).json({ error: "Commit window has closed" });
+      }
+
+      // Check not already committed
+      const existingCommit = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
+        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      if (existingCommit) {
+        return res.status(409).json({ error: "You have already submitted a vote commitment" });
+      }
+
+      // Write JURY_VOTE_COMMIT tx
+      const commitTx = withTxId({
+        tx_type:   TX_TYPES.JURY_VOTE_COMMIT,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: {
+          ctid:         req.params.ctid,
+          juror_tip_id,
+          commitment,
+        },
+      });
+      dag.addTx(commitTx);
+      _broadcast(commitTx);
+
+      res.json({ success: true, tx_id: commitTx.tx_id });
+    } catch (e) {
+      log.error("Jury commit error:", e.message);
+      res.status(500).json({ error: "Internal server error", detail: e.message });
+    }
+  });
+
+  /**
+   * POST /v1/content/:ctid/jury/reveal
+   * Juror reveals their vote and salt. Node verifies SHAKE-256(vote + salt) matches commitment.
+   */
+  app.post("/v1/content/:ctid/jury/reveal", async (req, res) => {
+    try {
+      const { juror_tip_id, vote, salt, confirmed_origin, signature } = req.body;
+      if (!juror_tip_id) return res.status(400).json({ error: "juror_tip_id required" });
+      if (!vote)         return res.status(400).json({ error: "vote required (MATCH, MISMATCH, or ABSTAIN)" });
+      if (!salt)         return res.status(400).json({ error: "salt required" });
+      if (!signature)    return res.status(400).json({ error: "signature required" });
+
+      const VALID_VOTES = ["MATCH", "MISMATCH", "ABSTAIN"];
+      if (!VALID_VOTES.includes(vote)) {
+        return res.status(400).json({ error: `Invalid vote. Must be one of: ${VALID_VOTES.join(", ")}` });
+      }
+      if (vote === "MISMATCH" && !confirmed_origin) {
+        return res.status(400).json({ error: "confirmed_origin required when voting MISMATCH (what you think the actual origin is)" });
+      }
+      if (confirmed_origin && !ORIGIN[confirmed_origin]) {
+        return res.status(400).json({ error: `Invalid confirmed_origin. Must be one of: ${Object.keys(ORIGIN).join(", ")}` });
+      }
+
+      // Verify juror identity
+      const juror = dag.getIdentity(juror_tip_id);
+      if (!juror) return res.status(404).json({ error: "Juror TIP-ID not found" });
+
+      // Verify signature
+      const REVEAL_FIELDS = confirmed_origin
+        ? ["juror_tip_id", "vote", "salt", "confirmed_origin"]
+        : ["juror_tip_id", "vote", "salt"];
+      if (!verifyBodySignature(req.body, signature, juror.public_key, REVEAL_FIELDS)) {
+        return res.status(403).json({ error: "Juror signature verification failed" });
+      }
+
+      // Check juror was summoned
+      const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
+        .filter(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      if (!summonsTxs.length) {
+        return res.status(403).json({ error: "You were not summoned as a juror for this dispute" });
+      }
+
+      // Check reveal window (after commit deadline, before reveal deadline)
+      const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+      const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
+      const now = Date.now();
+      if (now < commitDeadline) {
+        return res.status(403).json({ error: "Reveal window has not opened yet — commit phase still active" });
+      }
+      if (now > revealDeadline) {
+        return res.status(403).json({ error: "Reveal window has closed" });
+      }
+
+      // Find the commitment
+      const commitTx = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
+        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      if (!commitTx) {
+        return res.status(404).json({ error: "No vote commitment found — you must commit before revealing" });
+      }
+
+      // Verify commitment matches: SHAKE-256(vote + salt) === stored commitment
+      const computedCommitment = shake256(`${vote}:${salt}`);
+      if (computedCommitment !== commitTx.data.commitment) {
+        return res.status(403).json({ error: "Vote does not match commitment — vote discarded, stake forfeited" });
+      }
+
+      // Check not already revealed
+      const existingReveal = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
+        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      if (existingReveal) {
+        return res.status(409).json({ error: "You have already revealed your vote" });
+      }
+
+      // Write JURY_VOTE_REVEAL tx
+      const revealTx = withTxId({
+        tx_type:   TX_TYPES.JURY_VOTE_REVEAL,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: {
+          ctid:         req.params.ctid,
+          juror_tip_id,
+          vote,
+          salt,
+          confirmed_origin: vote === "MISMATCH" ? confirmed_origin : null,
+        },
+      });
+      dag.addTx(revealTx);
+      _broadcast(revealTx);
+
+      // Check if all jurors have revealed — trigger verdict if so
+      const allReveals = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
+        .filter(t => t.data?.ctid === req.params.ctid);
+      const allSummons = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
+        .filter(t => t.data?.ctid === req.params.ctid);
+
+      let verdict = null;
+      if (allReveals.length >= allSummons.length) {
+        verdict = _tallyVerdictAndApply(req.params.ctid, allReveals, allSummons, dag, scoring, config);
+      }
+
+      res.json({ success: true, tx_id: revealTx.tx_id, verdict });
+    } catch (e) {
+      log.error("Jury reveal error:", e.message);
+      res.status(500).json({ error: "Internal server error", detail: e.message });
+    }
   });
 
   /**

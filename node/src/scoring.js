@@ -148,8 +148,9 @@ function initScoring(dag, config) {
   function _adjudicationDelta(data, currentOffenseCount) {
     const { declared_origin, confirmed_origin, verdict } = data;
 
-    if (verdict === "CLEARED" || verdict === "DISMISSED") return 0;
+    if (verdict === "DISMISSED") return 0;
     if (verdict === "CONSERVATIVE_LABEL") return 0; // AG declared as OH — never penalised
+    if (verdict !== "UPHELD") return 0; // unknown verdict — no penalty
 
     // Most serious: declared OH, confirmed AG
     if (declared_origin === ORIGIN.OH && confirmed_origin === ORIGIN.AG) {

@@ -290,6 +290,12 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/v1/content/([^/]+)/update-origin$", path)
         if m:
             return self._content_update_origin(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/jury/commit$", path)
+        if m:
+            return self._jury_commit(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/jury/reveal$", path)
+        if m:
+            return self._jury_reveal(_decode(m.group(1)), body)
 
         self._send_json(404, {"error": "Endpoint not found"})
 
@@ -752,12 +758,21 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"Content not found: {ctid}"}); return
         if rec.get("status") == "pending_review":
             self._send_json(403, {"error": "Content is pending review — wait for 24-hour grace period to end before disputing"}); return
-        disputer  = body.get("disputer_tip_id")
-        signature = body.get("signature")
+        disputer       = body.get("disputer_tip_id")
+        signature      = body.get("signature")
+        reason         = body.get("reason")
+        claimed_origin = body.get("claimed_origin")
         if not disputer:
             self._send_json(400, {"error": "disputer_tip_id required"}); return
         if not signature:
             self._send_json(400, {"error": "signature is required"}); return
+        if not reason:
+            self._send_json(400, {"error": "reason required (origin_mismatch or factual_falsehood)"}); return
+        if reason == "origin_mismatch" and not claimed_origin:
+            self._send_json(400, {"error": "claimed_origin required for origin_mismatch disputes"}); return
+        valid_origins = {"OH", "AA", "AG", "MX"}
+        if claimed_origin and claimed_origin not in valid_origins:
+            self._send_json(400, {"error": f"Invalid claimed_origin. Must be one of: {', '.join(valid_origins)}"}); return
 
         disputer_identity = self.dag.get_identity(disputer)
         if not disputer_identity:
@@ -784,7 +799,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "data": {
                 "ctid":             ctid,
                 "disputer_tip_id":  disputer,
-                "reason":           body.get("reason"),
+                "reason":           reason,
+                "claimed_origin":   claimed_origin or None,
+                "declared_origin":  rec.get("origin_code"),
                 "evidence_hash":    body.get("evidence_hash"),
                 "author_tip_id":    rec.get("author_tip_id"),
                 "stake":            Dispute.DISPUTER_STAKE,
@@ -949,6 +966,225 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "status":          new_status,
             "tx_id":           update_tx["tx_id"],
         })
+
+    def _jury_commit(self, ctid: str, body: dict):
+        juror_tip_id = body.get("juror_tip_id")
+        commitment   = body.get("commitment")
+        signature    = body.get("signature")
+        if not juror_tip_id: self._send_json(400, {"error": "juror_tip_id required"}); return
+        if not commitment:   self._send_json(400, {"error": "commitment required (SHAKE-256 of vote + salt)"}); return
+        if not signature:    self._send_json(400, {"error": "signature required"}); return
+
+        juror = self.dag.get_identity(juror_tip_id)
+        if not juror: self._send_json(404, {"error": "Juror TIP-ID not found"}); return
+        if self.dag.is_revoked(juror_tip_id): self._send_json(403, {"error": "Juror TIP-ID is revoked"}); return
+
+        _COMMIT_FIELDS = ["juror_tip_id", "commitment"]
+        if not verify_body_signature(body, signature, juror.get("public_key", ""), _COMMIT_FIELDS):
+            self._send_json(403, {"error": "Juror signature verification failed"}); return
+
+        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
+                        if (t.get("data") or {}).get("ctid") == ctid
+                        and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        if not summons_txs:
+            self._send_json(403, {"error": "You were not summoned as a juror for this dispute"}); return
+
+        from datetime import datetime, timezone
+        commit_deadline = datetime.fromisoformat(summons_txs[0]["data"]["commit_deadline"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > commit_deadline:
+            self._send_json(403, {"error": "Commit window has closed"}); return
+
+        existing = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_COMMIT)
+                    if (t.get("data") or {}).get("ctid") == ctid
+                    and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        if existing:
+            self._send_json(409, {"error": "You have already submitted a vote commitment"}); return
+
+        commit_tx = self._with_tx_id({
+            "tx_type":   TxType.JURY_VOTE_COMMIT,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
+            "data":      {"ctid": ctid, "juror_tip_id": juror_tip_id, "commitment": commitment},
+        })
+        self.dag.add_tx(commit_tx)
+        self._broadcast(commit_tx)
+        self._send_json(200, {"success": True, "tx_id": commit_tx["tx_id"]})
+
+    def _jury_reveal(self, ctid: str, body: dict):
+        juror_tip_id = body.get("juror_tip_id")
+        vote         = body.get("vote")
+        salt         = body.get("salt")
+        signature    = body.get("signature")
+        if not juror_tip_id: self._send_json(400, {"error": "juror_tip_id required"}); return
+        if not vote:         self._send_json(400, {"error": "vote required (MATCH, MISMATCH, or ABSTAIN)"}); return
+        if not salt:         self._send_json(400, {"error": "salt required"}); return
+        if not signature:    self._send_json(400, {"error": "signature required"}); return
+
+        if vote not in ("MATCH", "MISMATCH", "ABSTAIN"):
+            self._send_json(400, {"error": f"Invalid vote. Must be MATCH, MISMATCH, or ABSTAIN"}); return
+        confirmed_origin = body.get("confirmed_origin")
+        if vote == "MISMATCH" and not confirmed_origin:
+            self._send_json(400, {"error": "confirmed_origin required when voting MISMATCH"}); return
+        valid_origins = {"OH", "AA", "AG", "MX"}
+        if confirmed_origin and confirmed_origin not in valid_origins:
+            self._send_json(400, {"error": f"Invalid confirmed_origin. Must be one of: {', '.join(valid_origins)}"}); return
+
+        juror = self.dag.get_identity(juror_tip_id)
+        if not juror: self._send_json(404, {"error": "Juror TIP-ID not found"}); return
+
+        _REVEAL_FIELDS = ["juror_tip_id", "vote", "salt", "confirmed_origin"] if confirmed_origin else ["juror_tip_id", "vote", "salt"]
+        if not verify_body_signature(body, signature, juror.get("public_key", ""), _REVEAL_FIELDS):
+            self._send_json(403, {"error": "Juror signature verification failed"}); return
+
+        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
+                        if (t.get("data") or {}).get("ctid") == ctid
+                        and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        if not summons_txs:
+            self._send_json(403, {"error": "You were not summoned as a juror for this dispute"}); return
+
+        from datetime import datetime, timezone
+        commit_deadline = datetime.fromisoformat(summons_txs[0]["data"]["commit_deadline"].replace("Z", "+00:00"))
+        reveal_deadline = datetime.fromisoformat(summons_txs[0]["data"]["reveal_deadline"].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if now < commit_deadline:
+            self._send_json(403, {"error": "Reveal window has not opened yet"}); return
+        if now > reveal_deadline:
+            self._send_json(403, {"error": "Reveal window has closed"}); return
+
+        commit_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_COMMIT)
+                      if (t.get("data") or {}).get("ctid") == ctid
+                      and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        if not commit_txs:
+            self._send_json(404, {"error": "No vote commitment found"}); return
+
+        computed = shake256(f"{vote}:{salt}")
+        if computed != commit_txs[0]["data"]["commitment"]:
+            self._send_json(403, {"error": "Vote does not match commitment — vote discarded"}); return
+
+        existing_reveal = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL)
+                           if (t.get("data") or {}).get("ctid") == ctid
+                           and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        if existing_reveal:
+            self._send_json(409, {"error": "You have already revealed your vote"}); return
+
+        reveal_tx = self._with_tx_id({
+            "tx_type":   TxType.JURY_VOTE_REVEAL,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
+            "data":      {"ctid": ctid, "juror_tip_id": juror_tip_id, "vote": vote, "salt": salt,
+                          "confirmed_origin": confirmed_origin if vote == "MISMATCH" else None},
+        })
+        self.dag.add_tx(reveal_tx)
+        self._broadcast(reveal_tx)
+
+        # Check if all jurors revealed — trigger verdict
+        all_reveals = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL)
+                       if (t.get("data") or {}).get("ctid") == ctid]
+        all_summons = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
+                       if (t.get("data") or {}).get("ctid") == ctid]
+
+        verdict_result = None
+        if len(all_reveals) >= len(all_summons):
+            verdict_result = self._tally_verdict(ctid, all_reveals, all_summons)
+
+        self._send_json(200, {"success": True, "tx_id": reveal_tx["tx_id"], "verdict": verdict_result})
+
+    def _tally_verdict(self, ctid: str, reveals: list, summons: list) -> dict:
+        match_count    = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MATCH")
+        mismatch_count = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MISMATCH")
+        abstain_count  = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "ABSTAIN")
+        total_votes    = match_count + mismatch_count + abstain_count
+        non_abstain    = match_count + mismatch_count
+
+        if total_votes < Jury.QUORUM:
+            return {"verdict": "NO_QUORUM", "message": "Insufficient reveals", "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count}
+        if non_abstain < Jury.MAJORITY_VOTE:
+            return {"verdict": "NO_QUORUM", "message": "Insufficient non-abstain votes", "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count}
+
+        majority_needed = non_abstain // 2 + 1
+        decision = "UPHELD" if mismatch_count >= majority_needed else "DISMISSED"
+
+        rec = self.dag.get_content(ctid)
+        dispute_txs = [t for t in self.dag.get_txs_by_type(TxType.CONTENT_DISPUTED) if (t.get("data") or {}).get("ctid") == ctid]
+        dispute_data    = (dispute_txs[0].get("data") or {}) if dispute_txs else {}
+        disputer_tip_id = dispute_data.get("disputer_tip_id")
+        author_tip_id   = rec.get("author_tip_id") if rec else None
+
+        declared_origin = dispute_data.get("declared_origin") or (rec.get("origin_code") if rec else None)
+        confirmed_origin = None
+        if decision == "UPHELD":
+            # Pick most common confirmed_origin from MISMATCH voters
+            origin_votes = [
+                (r.get("data") or {}).get("confirmed_origin")
+                for r in reveals
+                if (r.get("data") or {}).get("vote") == "MISMATCH" and (r.get("data") or {}).get("confirmed_origin")
+            ]
+            origin_counts: dict[str, int] = {}
+            for o in origin_votes:
+                origin_counts[o] = origin_counts.get(o, 0) + 1
+            confirmed_origin = max(origin_counts, key=origin_counts.get) if origin_counts else dispute_data.get("claimed_origin")
+
+        from shared.constants import Origin
+        verdict = "DISMISSED" if decision == "DISMISSED" \
+            else "CONSERVATIVE_LABEL" if (declared_origin == "AG" and confirmed_origin == "OH") \
+            else "UPHELD"
+
+        result_tx = self._node_signed_auto({
+            "tx_type":   TxType.ADJUDICATION_RESULT,
+            "timestamp": _utc_now(),
+            "prev":      self.dag.get_recent_prev(),
+            "data": {
+                "ctid":            ctid,
+                "verdict":         verdict,
+                "declared_origin": declared_origin,
+                "confirmed_origin": confirmed_origin,
+                "reason":          dispute_data.get("reason"),
+                "author_tip_id":   author_tip_id,
+                "match_count":     match_count,
+                "mismatch_count":  mismatch_count,
+                "abstain_count":   abstain_count,
+                "juror_votes":     [{"juror_tip_id": (r.get("data") or {}).get("juror_tip_id"), "vote": (r.get("data") or {}).get("vote")} for r in reveals],
+            },
+        })
+        self.dag.add_tx(result_tx)
+        self._broadcast(result_tx)
+
+        # Juror score effects
+        is_tie = match_count == mismatch_count
+        if not is_tie:
+            majority_vote = "MISMATCH" if mismatch_count > match_count else "MATCH"
+            for r in reveals:
+                juror_id = (r.get("data") or {}).get("juror_tip_id")
+                v = (r.get("data") or {}).get("vote")
+                if v == "ABSTAIN": continue
+                if v == majority_vote:
+                    self.scoring.apply_score_event(juror_id, Jury.MAJORITY_BONUS, f"Jury majority vote on {ctid}")
+                else:
+                    self.scoring.apply_score_event(juror_id, -Jury.MINORITY_PENALTY, f"Jury minority vote on {ctid}")
+
+        # No-show penalty
+        revealed_ids = {(r.get("data") or {}).get("juror_tip_id") for r in reveals}
+        for s in summons:
+            jid = (s.get("data") or {}).get("juror_tip_id")
+            if jid not in revealed_ids:
+                self.scoring.apply_score_event(jid, -Jury.NO_SHOW_PENALTY, f"Jury no-show on {ctid}")
+
+        # Disputer effects
+        if verdict == "UPHELD" and disputer_tip_id:
+            self.scoring.apply_score_event(disputer_tip_id, Dispute.UPHELD_BONUS, f"Dispute upheld on {ctid}")
+        elif verdict == "DISMISSED" and disputer_tip_id:
+            self.scoring.apply_score_event(disputer_tip_id, -Dispute.DISPUTER_STAKE, f"Dispute dismissed on {ctid}")
+
+        # Creator effects
+        if verdict == "UPHELD" and author_tip_id:
+            self.scoring.compute_score(author_tip_id)
+            if confirmed_origin:
+                self.dag.update_content_origin(ctid, confirmed_origin, "verified")
+                log.info(f"Verdict UPHELD: {ctid} origin {declared_origin} → {confirmed_origin}")
+        elif verdict in ("DISMISSED", "CONSERVATIVE_LABEL"):
+            self.dag.update_content_status(ctid, "registered")
+
+        return {"verdict": verdict, "confirmed_origin": confirmed_origin, "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count, "tx_id": result_tx["tx_id"]}
 
     def _dag_tx(self, tx_id: str):
         tx = self.dag.get_tx(tx_id)

@@ -1351,4 +1351,131 @@ describe("Semantic Dedup", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/cannot update origin/i);
   });
+
+  test("9.10 Jury commit succeeds and duplicate rejected", async () => {
+    // Register content
+    const juryContent = "Content for jury commit test.";
+    const jurySig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(juryContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: juryContent, signature: signBody(jurySig, sdAuthorPriv) });
+    const juryCtid = ctRes.body.ctid;
+    sdDag.updateContentStatus(juryCtid, "disputed");
+
+    // Summon verifier as juror with future deadline
+    const { computeTxId } = require("../../shared/crypto");
+    const summonsTx = {
+      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: juryCtid, dispute_tx_id: "test-dispute-tx", juror_tip_id: sdVerifierId,
+              stake: 10, seed: "test", identity_count: 10,
+              commit_deadline: new Date(Date.now() + 72 * 3600000).toISOString(),
+              reveal_deadline: new Date(Date.now() + 78 * 3600000).toISOString() },
+    };
+    summonsTx.tx_id = computeTxId(summonsTx);
+    sdDag.addTx(summonsTx);
+
+    // Commit
+    const commitment = shake256("MISMATCH:salt123");
+    const commitFields = { juror_tip_id: sdVerifierId, commitment };
+    const commitRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(juryCtid)}/jury/commit`)
+      .send({ ...commitFields, signature: signBody(commitFields, sdVerifierPriv) });
+    expect(commitRes.status).toBe(200);
+    expect(commitRes.body.success).toBe(true);
+
+    // Duplicate rejected
+    const commitRes2 = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(juryCtid)}/jury/commit`)
+      .send({ ...commitFields, signature: signBody(commitFields, sdVerifierPriv) });
+    expect(commitRes2.status).toBe(409);
+  });
+
+  test("9.11 Jury reveal verifies commitment and records vote", async () => {
+    // Register content + set disputed
+    const revContent = "Content for jury reveal test.";
+    const revSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(revContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: revContent, signature: signBody(revSig, sdAuthorPriv) });
+    const revCtid = ctRes.body.ctid;
+    sdDag.updateContentStatus(revCtid, "disputed");
+
+    const { computeTxId } = require("../../shared/crypto");
+
+    // Summon with commit deadline already passed, reveal deadline in future
+    const commitDeadline = new Date(Date.now() - 1000).toISOString(); // past
+    const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString(); // future
+    const summonsTx = {
+      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: revCtid, dispute_tx_id: "test-dispute-rev", juror_tip_id: sdVerifierId,
+              stake: 10, seed: "test", identity_count: 10,
+              commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+    };
+    summonsTx.tx_id = computeTxId(summonsTx);
+    sdDag.addTx(summonsTx);
+
+    // Manually add a commit tx (since commit window is past, can't use endpoint)
+    const salt = "revealsalt456";
+    const commitment = shake256(`MISMATCH:${salt}`);
+    const commitTx = {
+      tx_type: "JURY_VOTE_COMMIT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: revCtid, juror_tip_id: sdVerifierId, commitment },
+    };
+    commitTx.tx_id = computeTxId(commitTx);
+    sdDag.addTx(commitTx);
+
+    // Reveal with correct vote + salt
+    const revealFields = { juror_tip_id: sdVerifierId, vote: "MISMATCH", salt, confirmed_origin: "AG" };
+    const revRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(revCtid)}/jury/reveal`)
+      .send({ ...revealFields, signature: signBody(revealFields, sdVerifierPriv) });
+    expect(revRes.status).toBe(200);
+    expect(revRes.body.success).toBe(true);
+
+    // Duplicate reveal rejected
+    const dupFields = { juror_tip_id: sdVerifierId, vote: "MISMATCH", salt, confirmed_origin: "AG" };
+    const dupRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(revCtid)}/jury/reveal`)
+      .send({ ...dupFields, signature: signBody(dupFields, sdVerifierPriv) });
+    expect(dupRes.status).toBe(409);
+  });
+
+  test("9.12 MISMATCH vote requires confirmed_origin", async () => {
+    const misContent = "Content for mismatch origin test.";
+    const misSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(misContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: misContent, signature: signBody(misSig, sdAuthorPriv) });
+    const misCtid = ctRes.body.ctid;
+    sdDag.updateContentStatus(misCtid, "disputed");
+
+    const { computeTxId } = require("../../shared/crypto");
+    const commitDeadline = new Date(Date.now() - 1000).toISOString();
+    const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString();
+    const summonsTx = {
+      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: misCtid, dispute_tx_id: "test-dispute-mis", juror_tip_id: sdVerifierId,
+              stake: 10, seed: "test", identity_count: 10,
+              commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+    };
+    summonsTx.tx_id = computeTxId(summonsTx);
+    sdDag.addTx(summonsTx);
+
+    const salt = "missalt789";
+    const commitment = shake256(`MISMATCH:${salt}`);
+    const commitTx = {
+      tx_type: "JURY_VOTE_COMMIT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: misCtid, juror_tip_id: sdVerifierId, commitment },
+    };
+    commitTx.tx_id = computeTxId(commitTx);
+    sdDag.addTx(commitTx);
+
+    // Reveal MISMATCH without confirmed_origin → rejected
+    const noOriginFields = { juror_tip_id: sdVerifierId, vote: "MISMATCH", salt };
+    const noOriginRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(misCtid)}/jury/reveal`)
+      .send({ ...noOriginFields, signature: signBody(noOriginFields, sdVerifierPriv) });
+    expect(noOriginRes.status).toBe(400);
+    expect(noOriginRes.body.error).toMatch(/confirmed_origin required/i);
+  });
 });
