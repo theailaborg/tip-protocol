@@ -1282,50 +1282,73 @@ describe("Semantic Dedup", () => {
     expect(res.body.error).toMatch(/only the content author/i);
   });
 
-  test("9.6 Cannot update origin on disputed content", async () => {
-    // Register content
-    const disputeContent = "Content for dispute-block update test.";
-    const disputeSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(disputeContent) };
+  test("9.6 Dispute always escalates to Stage 2 with AI result", async () => {
+    const content96 = "Short dispute escalate test.";
+    const sig96 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content96) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: disputeContent, signature: signBody(disputeSig, sdAuthorPriv) });
-    const disputeCtid = ctRes.body.ctid;
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content96, signature: signBody(sig96, sdAuthorPriv) });
+    const ctid96 = ctRes.body.ctid;
 
-    // Dispute it
     const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
-    await request(sdApp)
-      .post(`/v1/content/${encodeURIComponent(disputeCtid)}/dispute`)
+    const dRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(ctid96)}/dispute`)
       .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+    expect(dRes.status).toBe(200);
+    expect(dRes.body.stage1).toBeDefined();
+    expect(["escalate", "escalate_high"]).toContain(dRes.body.stage1.routing);
 
-    // Try to update origin
-    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
-    const res = await request(sdApp)
-      .post(`/v1/content/${encodeURIComponent(disputeCtid)}/update-origin`)
-      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
-    expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/cannot update origin/i);
+    // Content stays disputed (no auto-dismiss)
+    const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(ctid96)}`);
+    expect(getRes.body.status).toBe("disputed");
   });
 
-  test("9.7 Verify blocked on disputed content", async () => {
-    // Register + dispute content
-    const blockContent = "Content for verify-block test.";
-    const blockSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(blockContent) };
+  test("9.7 Escalated dispute keeps content status as disputed", async () => {
+    const content97 = "Escalated dispute test content.";
+    const sig97 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content97) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: blockContent, signature: signBody(blockSig, sdAuthorPriv) });
-    const blockCtid = ctRes.body.ctid;
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content97, signature: signBody(sig97, sdAuthorPriv) });
+    const ctid97 = ctRes.body.ctid;
 
-    const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
-    await request(sdApp)
-      .post(`/v1/content/${encodeURIComponent(blockCtid)}/dispute`)
-      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+    // Simulate escalated dispute (AI confidence >= 30%)
+    sdDag.updateContentStatus(ctid97, "disputed");
 
-    // Try to verify
+    const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(ctid97)}`);
+    expect(getRes.body.status).toBe("disputed");
+  });
+
+  test("9.8 Verify blocked on disputed content", async () => {
+    const content98 = "Verify block test content.";
+    const sig98 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content98) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content98, signature: signBody(sig98, sdAuthorPriv) });
+    const ctid98 = ctRes.body.ctid;
+    sdDag.updateContentStatus(ctid98, "disputed");
+
     const vFields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
-      .post(`/v1/content/${encodeURIComponent(blockCtid)}/verify`)
+      .post(`/v1/content/${encodeURIComponent(ctid98)}/verify`)
       .send({ ...vFields, signature: signBody(vFields, sdVerifierPriv) });
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/under dispute/i);
+  });
+
+  test("9.9 Update-origin blocked on disputed content", async () => {
+    const content99 = "Update origin block test content.";
+    const sig99 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content99) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content99, signature: signBody(sig99, sdAuthorPriv) });
+    const ctid99 = ctRes.body.ctid;
+    sdDag.updateContentStatus(ctid99, "disputed");
+
+    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(ctid99)}/update-origin`)
+      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/cannot update origin/i);
   });
 });

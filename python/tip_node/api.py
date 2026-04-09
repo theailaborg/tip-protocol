@@ -796,11 +796,43 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self.dag.add_tx(dispute_tx)
         self._broadcast(dispute_tx)
         self.dag.update_content_status(ctid, "disputed")
+
+        # ── Stage 1: AI Classifier (always escalates — auto-dismiss disabled) ──
+        # TODO (#47): AI needs actual content text, not just hash
+        ai_result = _prescan_content(rec.get("content_hash", ""), rec.get("origin_code", ""), {})
+        confidence = ai_result.get("probability", 0)
+        routing = "escalate_high" if confidence >= AiClassifier.HIGH_CONFIDENCE else "escalate"
+
+        try:
+            classifier_tx = self._node_signed_auto({
+                "tx_type":   TxType.AI_CLASSIFIER_RESULT,
+                "timestamp": _utc_now(),
+                "prev":      self.dag.get_recent_prev(),
+                "data": {
+                    "ctid":          ctid,
+                    "dispute_tx_id": dispute_tx["tx_id"],
+                    "confidence":    confidence,
+                    "routing":       routing,
+                },
+            })
+            self.dag.add_tx(classifier_tx)
+            self._broadcast(classifier_tx)
+        except Exception as e:
+            log.error(f"Stage 1 AI tx failed for {ctid}: {e}")
+
+        stage1 = {"routing": routing, "confidence": confidence,
+                   "message": "High-confidence mismatch. Escalated to Stage 2 jury with flag."
+                   if routing == "escalate_high"
+                   else "Escalated to Stage 2 jury for human review."}
+
+        log.info(f"Stage 1 AI: {ctid} confidence={confidence} routing={routing}")
+
         self._send_json(200, {
             "success": True,
-            "message": "Dispute filed. Content verification blocked until resolved.",
+            "message": "Dispute filed.",
             "dispute_tx_id": dispute_tx["tx_id"],
             "stake_at_risk": Dispute.DISPUTER_STAKE,
+            "stage1": stage1,
         })
 
     def _content_update_origin(self, ctid: str, body: dict):

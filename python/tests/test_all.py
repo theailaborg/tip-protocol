@@ -1011,6 +1011,12 @@ def test_api_endpoints() -> None:
     })
     check("POST /v1/content/:ctid/dispute returns 200", st == 200)
     check("Dispute returns success",                    body.get("success") is True)
+    check("Dispute returns stage1 result",              body.get("stage1") is not None)
+    check("Stage1 routing is escalate",                 body.get("stage1", {}).get("routing") in ("escalate", "escalate_high"))
+
+    # Content stays disputed
+    st, ct_body = _get(f"{base}/v1/content/{quote(test_ctid, safe='')}")
+    check("Content status is disputed after dispute",   ct_body.get("status") == "disputed")
 
     # Verify blocked on disputed content
     st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/update-origin", {

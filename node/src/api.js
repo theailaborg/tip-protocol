@@ -53,8 +53,8 @@ function withTxId(txBody) {
 
 // Sign a tx with the node's registered key (for auto/system txs only)
 function nodeSignedAuto(txBody, config) {
-  txBody.tx_id = computeTxId(txBody);
   txBody.data.node_id = config.nodeRegisteredId || config.nodeId;
+  txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, config.nodePrivateKey);
 }
 
@@ -740,11 +740,45 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     // Update content status to disputed
     dag.updateContentStatus(req.params.ctid, "disputed");
 
+    // ── Stage 1: AI Classifier ───────────────────────────────────────────
+    // AI classifier runs but always escalates to Stage 2 for now.
+    // TODO (#47): AI needs actual content text — currently only hash is stored.
+    // Disputer should submit content text, node verifies hash match, then runs ML.
+    let stage1Result;
+    try {
+      const contentRecord = dag.getContent(req.params.ctid);
+      const aiResult = preScanContent(contentRecord?.content_hash || "", rec.origin_code, {});
+      const confidence = aiResult.probability || 0;
+
+      // Always escalate — auto-dismiss disabled until AI has real content to analyze
+      const routing = confidence >= AI_CLASSIFIER.HIGH_CONFIDENCE ? "escalate_high" : "escalate";
+
+      // Write AI_CLASSIFIER_RESULT tx to DAG (metadata, not score-changing)
+      const classifierTx = nodeSignedAuto({
+        tx_type:   TX_TYPES.AI_CLASSIFIER_RESULT,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: { ctid: req.params.ctid, dispute_tx_id: disputeTx.tx_id, confidence, routing },
+      }, config);
+      dag.addTx(classifierTx);
+      _broadcast(classifierTx);
+
+      stage1Result = { routing, confidence, message: routing === "escalate_high"
+        ? "High-confidence mismatch. Escalated to Stage 2 jury with flag."
+        : "Escalated to Stage 2 jury for human review." };
+
+      log.info(`Stage 1 AI: ${req.params.ctid} confidence=${confidence} routing=${routing}`);
+    } catch (e) {
+      log.error(`Stage 1 AI failed for ${req.params.ctid}:`, e.message);
+      stage1Result = { routing: "escalate", confidence: 0, message: "AI classifier unavailable — escalated to Stage 2." };
+    }
+
     res.json({
       success: true,
-      message: "Dispute filed. Content verification blocked until resolved.",
+      message: "Dispute filed.",
       dispute_tx_id: disputeTx.tx_id,
       stake_at_risk: DISPUTE.DISPUTER_STAKE,
+      stage1: stage1Result,
     });
   });
 
