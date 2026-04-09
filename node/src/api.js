@@ -62,9 +62,10 @@ function nodeSignedAuto(txBody, config) {
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
+const { selectJury } = require("./jury");
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, AI_CLASSIFIER,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, AI_CLASSIFIER,
   getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
 } = require("../../shared/constants");
 
@@ -773,12 +774,63 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       stage1Result = { routing: "escalate", confidence: 0, message: "AI classifier unavailable — escalated to Stage 2." };
     }
 
+    // ── Stage 2: Jury Selection ─────────────────────────────────────────
+    let juryResult = null;
+    try {
+      const jury = selectJury(dag, scoring, disputeTx.tx_id, rec.author_tip_id, disputer_tip_id);
+      if (jury.insufficient) {
+        log.warn(`Jury selection: insufficient eligible jurors for ${req.params.ctid} (${jury.jurors.length}/${JURY.SIZE})`);
+      }
+
+      const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
+      const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+      const timestamp = new Date().toISOString();
+
+      // Write JURY_SUMMONS tx for each selected juror + apply juror stake
+      for (const jurorTipId of jury.jurors) {
+        const summonsTx = nodeSignedAuto({
+          tx_type:   TX_TYPES.JURY_SUMMONS,
+          timestamp,
+          prev:      dag.getRecentPrev(),
+          data: {
+            ctid:            req.params.ctid,
+            dispute_tx_id:   disputeTx.tx_id,
+            juror_tip_id:    jurorTipId,
+            stake:           JURY.JUROR_STAKE,
+            seed:            jury.seed,
+            identity_count:  jury.identityCount,
+            commit_deadline: commitDeadline,
+            reveal_deadline: revealDeadline,
+          },
+        }, config);
+        dag.addTx(summonsTx);
+        _broadcast(summonsTx);
+
+        // Deduct juror stake (applied at verdict, not now — same approach as disputer)
+      }
+
+      juryResult = {
+        jurors:          jury.jurors,
+        count:           jury.jurors.length,
+        insufficient:    jury.insufficient,
+        seed:            jury.seed,
+        identity_count:  jury.identityCount,
+        commit_deadline: commitDeadline,
+        reveal_deadline: revealDeadline,
+      };
+      log.info(`Jury selected for ${req.params.ctid}: ${jury.jurors.length} jurors`);
+    } catch (e) {
+      log.error(`Jury selection failed for ${req.params.ctid}:`, e.message);
+      juryResult = { error: "Jury selection failed", message: e.message };
+    }
+
     res.json({
       success: true,
       message: "Dispute filed.",
       dispute_tx_id: disputeTx.tx_id,
       stake_at_risk: DISPUTE.DISPUTER_STAKE,
       stage1: stage1Result,
+      stage2: juryResult,
     });
   });
 

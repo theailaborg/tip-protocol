@@ -190,6 +190,10 @@ class MemoryStore:
         with self._lock:
             return dict(self._ids[tip_id]) if tip_id in self._ids else None
 
+    def get_all_identities(self) -> list[dict]:
+        with self._lock:
+            return [dict(v) for v in self._ids.values()]
+
     # ── Content ───────────────────────────────────────────────────────────────
     def save_content(self, rec: dict) -> None:
         with self._lock:
@@ -444,6 +448,10 @@ class SQLiteStore:
         d = dict(row)
         d["founding"] = bool(d["founding"])
         return d
+
+    def get_all_identities(self) -> list[dict]:
+        rows = self._conn().execute("SELECT * FROM identities WHERE status = 'active'").fetchall()
+        return [dict(r) for r in rows]
 
     # ── Content ───────────────────────────────────────────────────────────────
     def save_content(self, rec: dict) -> None:
@@ -772,6 +780,9 @@ class DAG:
 
     def get_identity(self, tip_id: str) -> Optional[dict]:
         return self._store.get_identity(tip_id)
+
+    def get_all_identities(self) -> list[dict]:
+        return self._store.get_all_identities()
 
     # Content
     def save_content(self, rec: dict) -> None:

@@ -65,6 +65,7 @@ class MemoryStore {
   // ── Identities ────────────────────────────────────────────────────────────
   saveIdentity(rec) { this._identities.set(rec.tip_id, { ...rec }); }
   getIdentity(id)   { return this._identities.get(id) || null; }
+  getAllIdentities() { return [...this._identities.values()]; }
 
   // ── Content ───────────────────────────────────────────────────────────────
   saveContent(rec)  { this._content.set(rec.ctid, { ...rec }); }
@@ -272,6 +273,7 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
+      getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
@@ -370,6 +372,9 @@ class SQLiteStore {
   getIdentity(id) {
     const row = this._stmts.getIdentity.get(id);
     return row ? { ...row, founding: row.founding === 1 } : null;
+  }
+  getAllIdentities() {
+    return this._stmts.getAllIdentities.all().map(r => ({ ...r, founding: r.founding === 1 }));
   }
 
   // ── Content ───────────────────────────────────────────────────────────────
@@ -512,6 +517,7 @@ function initDAG(config) {
     // ── Identity ──────────────────────────────────────────────────────────
     saveIdentity:    (rec)     => store.saveIdentity(rec),
     getIdentity:     (id)      => store.getIdentity(id),
+    getAllIdentities: ()       => store.getAllIdentities(),
 
     // ── Content ───────────────────────────────────────────────────────────
     saveContent:          (rec)         => store.saveContent(rec),

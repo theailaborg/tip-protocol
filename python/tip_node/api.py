@@ -36,8 +36,9 @@ from shared.zk import verify_dedup_proof
 from shared.constants import (
     TxType, Origin, Protocol, HttpHeaders,
     JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
-    Dispute, AiClassifier,
+    Dispute, Jury, AiClassifier,
 )
+from tip_node.jury import select_jury
 from tip_node.validators.tx_validator import validate_transaction
 from tip_node.logger import get_logger
 
@@ -827,12 +828,60 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
 
         log.info(f"Stage 1 AI: {ctid} confidence={confidence} routing={routing}")
 
+        # ── Stage 2: Jury Selection ───────────────────────────────────
+        jury_result = None
+        try:
+            jury = select_jury(self.dag, self.scoring, dispute_tx["tx_id"],
+                               rec.get("author_tip_id"), disputer)
+            if jury.get("insufficient"):
+                log.warning(f"Jury selection: insufficient eligible jurors for {ctid} ({len(jury['jurors'])}/{Jury.SIZE})")
+
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            commit_deadline = (now + timedelta(hours=Jury.COMMIT_WINDOW_HOURS)).isoformat().replace("+00:00", "Z")
+            reveal_deadline = (now + timedelta(hours=Jury.COMMIT_WINDOW_HOURS + Jury.REVEAL_WINDOW_HOURS)).isoformat().replace("+00:00", "Z")
+            timestamp = _utc_now()
+
+            for juror_tip_id in jury["jurors"]:
+                summons_tx = self._node_signed_auto({
+                    "tx_type":   TxType.JURY_SUMMONS,
+                    "timestamp": timestamp,
+                    "prev":      self.dag.get_recent_prev(),
+                    "data": {
+                        "ctid":            ctid,
+                        "dispute_tx_id":   dispute_tx["tx_id"],
+                        "juror_tip_id":    juror_tip_id,
+                        "stake":           Jury.JUROR_STAKE,
+                        "seed":            jury["seed"],
+                        "identity_count":  jury["identityCount"],
+                        "commit_deadline": commit_deadline,
+                        "reveal_deadline": reveal_deadline,
+                    },
+                })
+                self.dag.add_tx(summons_tx)
+                self._broadcast(summons_tx)
+
+            jury_result = {
+                "jurors":          jury["jurors"],
+                "count":           len(jury["jurors"]),
+                "insufficient":    jury.get("insufficient", False),
+                "seed":            jury["seed"],
+                "identity_count":  jury["identityCount"],
+                "commit_deadline": commit_deadline,
+                "reveal_deadline": reveal_deadline,
+            }
+            log.info(f"Jury selected for {ctid}: {len(jury['jurors'])} jurors")
+        except Exception as e:
+            log.error(f"Jury selection failed for {ctid}: {e}")
+            jury_result = {"error": "Jury selection failed", "message": str(e)}
+
         self._send_json(200, {
             "success": True,
             "message": "Dispute filed.",
             "dispute_tx_id": dispute_tx["tx_id"],
             "stake_at_risk": Dispute.DISPUTER_STAKE,
             "stage1": stage1,
+            "stage2": jury_result,
         })
 
     def _content_update_origin(self, ctid: str, body: dict):
