@@ -397,6 +397,17 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
 
   if (overturned && appellantTipId) {
     scoring.applyScoreEvent(appellantTipId, APPEAL.APPELLANT_STAKE + APPEAL.OVERTURN_BONUS, `Appeal overturned on ${ctid}`);
+
+    // Reverse disputer's Stage 2 effect
+    const disputerTipId = disputeData.disputer_tip_id;
+    if (stage2Verdict === "UPHELD" && disputerTipId) {
+      // Disputer got +5 at Stage 2 → take it back
+      scoring.applyScoreEvent(disputerTipId, -DISPUTE.UPHELD_BONUS, `Appeal overturned: Stage 2 bonus reversed on ${ctid}`);
+    } else if (stage2Verdict === "DISMISSED" && disputerTipId) {
+      // Disputer lost -15 at Stage 2 → give it back
+      scoring.applyScoreEvent(disputerTipId, DISPUTE.DISPUTER_STAKE, `Appeal overturned: Stage 2 penalty reversed on ${ctid}`);
+    }
+
     if (stage2Verdict === "UPHELD" && authorTipId) {
       // Stage 2 penalized author → reverse: restore original origin + pre-dispute status
       scoring.computeScore(authorTipId);

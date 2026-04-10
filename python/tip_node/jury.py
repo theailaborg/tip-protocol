@@ -300,6 +300,14 @@ def apply_appeal_verdict(ctid: str, reveals: list, summons: list, dag, scoring, 
     # Appellant effects
     if overturned and appellant_tip_id:
         scoring.apply_score_event(appellant_tip_id, Appeal.APPELLANT_STAKE + Appeal.OVERTURN_BONUS, f"Appeal overturned on {ctid}")
+
+        # Reverse disputer's Stage 2 effect
+        disputer_tip_id = dispute_data.get("disputer_tip_id")
+        if stage2_verdict == "UPHELD" and disputer_tip_id:
+            scoring.apply_score_event(disputer_tip_id, -Dispute.UPHELD_BONUS, f"Appeal overturned: Stage 2 bonus reversed on {ctid}")
+        elif stage2_verdict == "DISMISSED" and disputer_tip_id:
+            scoring.apply_score_event(disputer_tip_id, Dispute.DISPUTER_STAKE, f"Appeal overturned: Stage 2 penalty reversed on {ctid}")
+
         if stage2_verdict == "UPHELD" and author_tip_id:
             scoring.compute_score(author_tip_id)
             dag.update_content_origin(ctid, declared_origin, pre_status)
