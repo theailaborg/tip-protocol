@@ -71,11 +71,11 @@ def start_scheduled_tasks(dag, scoring, gossip, config: dict) -> None:
             except Exception:
                 pass
 
-    # 4. Jury verdict auto-trigger (every 5 minutes)
-    def jury_verdict_check() -> None:
-        from tip_node.jury import tally_verdict_and_apply
+    # 4. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
+    def verdict_check() -> None:
+        from tip_node.jury import tally_verdict_and_apply, apply_appeal_verdict
         while True:
-            threading.Event().wait(300)  # 5 minutes
+            threading.Event().wait(300)
             try:
                 disputed = dag.get_content_by_status("disputed")
                 if not disputed:
@@ -85,33 +85,55 @@ def start_scheduled_tasks(dag, scoring, gossip, config: dict) -> None:
                     ctid = rec.get("ctid")
                     if not ctid:
                         continue
-                    summons = dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
-                    if not summons:
+                    all_summons = dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                    if not all_summons:
                         continue
-                    reveal_deadline = (summons[0].get("data") or {}).get("reveal_deadline", "")
-                    try:
-                        dl = datetime.fromisoformat(reveal_deadline.replace("Z", "+00:00")).timestamp()
-                    except (ValueError, AttributeError):
-                        continue
-                    if now_ts < dl:
-                        continue
-                    has_verdict = len(dag.get_txs_by_type_and_ctid(TxType.ADJUDICATION_RESULT, ctid)) > 0
-                    if has_verdict:
-                        continue
-                    reveals = dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
-                    log.info(f"Auto-triggering verdict for {ctid}: {len(reveals)}/{len(summons)} reveals, deadline passed")
-                    result = tally_verdict_and_apply(ctid, reveals, summons, dag, scoring, config)
-                    log.info(f"Auto-verdict for {ctid}: {result.get('verdict')} ({result.get('match_count')}-{result.get('mismatch_count')}-{result.get('abstain_count')})")
+
+                    jury_summons   = [t for t in all_summons if not (t.get("data") or {}).get("is_appeal")]
+                    appeal_summons = [t for t in all_summons if (t.get("data") or {}).get("is_appeal")]
+
+                    # Check appeal first (if exists, it's the active stage)
+                    if appeal_summons:
+                        dl_str = (appeal_summons[0].get("data") or {}).get("reveal_deadline", "")
+                        try:
+                            dl = datetime.fromisoformat(dl_str.replace("Z", "+00:00")).timestamp()
+                        except (ValueError, AttributeError):
+                            continue
+                        if now_ts >= dl:
+                            has_result = len(dag.get_txs_by_type_and_ctid(TxType.APPEAL_RESULT, ctid)) > 0
+                            if not has_result:
+                                reveals = [t for t in dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+                                           if (t.get("data") or {}).get("is_appeal")]
+                                log.info(f"Auto-appeal verdict: {ctid} ({len(reveals)}/{len(appeal_summons)} reveals)")
+                                r = apply_appeal_verdict(ctid, reveals, appeal_summons, dag, scoring, config)
+                                log.info(f"Appeal result: {ctid} → {r.get('verdict')} (overturned: {r.get('overturned')})")
+                        continue  # appeal active, skip jury
+
+                    # Check jury (no appeal exists)
+                    if jury_summons:
+                        dl_str = (jury_summons[0].get("data") or {}).get("reveal_deadline", "")
+                        try:
+                            dl = datetime.fromisoformat(dl_str.replace("Z", "+00:00")).timestamp()
+                        except (ValueError, AttributeError):
+                            continue
+                        if now_ts >= dl:
+                            has_verdict = len(dag.get_txs_by_type_and_ctid(TxType.ADJUDICATION_RESULT, ctid)) > 0
+                            if not has_verdict:
+                                reveals = [t for t in dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+                                           if not (t.get("data") or {}).get("is_appeal")]
+                                log.info(f"Auto-jury verdict: {ctid} ({len(reveals)}/{len(jury_summons)} reveals)")
+                                r = tally_verdict_and_apply(ctid, reveals, jury_summons, dag, scoring, config)
+                                log.info(f"Jury result: {ctid} → {r.get('verdict')}")
             except Exception as exc:
-                log.warning(f"Jury verdict auto-trigger failed: {exc}")
+                log.warning(f"Verdict auto-trigger failed: {exc}")
 
     for fn, name in [
-        (publish_merkle,      "scheduler.merkle"),
-        (recompute_scores,    "scheduler.scores"),
-        (peer_ping,           "scheduler.ping"),
-        (jury_verdict_check,  "scheduler.jury"),
+        (publish_merkle,     "scheduler.merkle"),
+        (recompute_scores,   "scheduler.scores"),
+        (peer_ping,          "scheduler.ping"),
+        (verdict_check,      "scheduler.verdict"),
     ]:
         t = threading.Thread(target=fn, name=name, daemon=True)
         t.start()
 
-    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping, jury verdict)")
+    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping, jury verdict, appeal verdict)")

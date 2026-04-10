@@ -16,7 +16,7 @@
 
 const { TX_TYPES }          = require("../../shared/constants");
 const { shake256Multi }     = require("../../shared/crypto");
-const { tallyVerdictAndApply } = require("./jury");
+const { tallyVerdictAndApply, applyAppealVerdict } = require("./jury");
 const { log }               = require("./logger");
 
 function scheduledTasks(dag, scoring, gossip, config) {
@@ -59,43 +59,60 @@ function scheduledTasks(dag, scoring, gossip, config) {
     }
   }, 30_000);
 
-  // 4. Jury verdict auto-trigger (every 5 minutes)
-  // Only checks content with status "disputed" — no full tx scan.
+  // 4. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
+  // Only processes disputed content with expired deadlines and no result yet.
   setInterval(() => {
     try {
-      // Get only disputed content (small set)
       const disputedContent = dag.getContentByStatus("disputed");
       if (!disputedContent.length) return;
 
       const now = Date.now();
       for (const rec of disputedContent) {
         const ctid = rec.ctid;
+        const allSummons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid);
+        if (!allSummons.length) continue;
 
-        // Direct query per CTID — no full tx scan
-        const summons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid);
-        if (!summons.length) continue;
+        // Split into jury and appeal summons
+        const jurySummons   = allSummons.filter(t => !t.data?.is_appeal);
+        const appealSummons = allSummons.filter(t => t.data?.is_appeal === true);
 
-        // Check reveal deadline passed
-        const revealDeadline = new Date(summons[0].data?.reveal_deadline).getTime();
-        if (isNaN(revealDeadline) || now < revealDeadline) continue;
+        // Check appeal first (if exists, it's the active stage)
+        if (appealSummons.length) {
+          const deadline = new Date(appealSummons[0].data?.reveal_deadline).getTime();
+          if (!isNaN(deadline) && now >= deadline) {
+            const hasResult = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, ctid).length > 0;
+            if (!hasResult) {
+              const reveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid)
+                .filter(t => t.data?.is_appeal === true);
+              log.info(`Auto-appeal verdict: ${ctid} (${reveals.length}/${appealSummons.length} reveals)`);
+              const r = applyAppealVerdict(ctid, reveals, appealSummons, dag, scoring, config);
+              log.info(`Appeal result: ${ctid} → ${r.verdict} (overturned: ${r.overturned})`);
+            }
+          }
+          continue; // appeal is active, skip jury check
+        }
 
-        // Check no verdict yet
-        const hasVerdict = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid).length > 0;
-        if (hasVerdict) continue;
-
-        // Gather reveals and trigger verdict
-        const reveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid);
-
-        log.info(`Auto-triggering verdict for ${ctid}: ${reveals.length}/${summons.length} reveals, deadline passed`);
-        const result = tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config);
-        log.info(`Auto-verdict for ${ctid}: ${result.verdict} (${result.matchCount}-${result.mismatchCount}-${result.abstainCount})`);
+        // Check jury (no appeal exists)
+        if (jurySummons.length) {
+          const deadline = new Date(jurySummons[0].data?.reveal_deadline).getTime();
+          if (!isNaN(deadline) && now >= deadline) {
+            const hasVerdict = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid).length > 0;
+            if (!hasVerdict) {
+              const reveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid)
+                .filter(t => !t.data?.is_appeal);
+              log.info(`Auto-jury verdict: ${ctid} (${reveals.length}/${jurySummons.length} reveals)`);
+              const r = tallyVerdictAndApply(ctid, reveals, jurySummons, dag, scoring, config);
+              log.info(`Jury result: ${ctid} → ${r.verdict}`);
+            }
+          }
+        }
       }
     } catch (err) {
-      log.warn("Jury verdict auto-trigger failed:", err.message);
+      log.warn("Verdict auto-trigger failed:", err.message);
     }
-  }, 5 * 60 * 1000); // every 5 minutes
+  }, 5 * 60 * 1000);
 
-  log.info("Scheduled tasks initialised (Merkle root, score recomputation, peer health, jury verdict)");
+  log.info("Scheduled tasks initialised (Merkle root, score recomputation, peer health, jury verdict, appeal verdict)");
 }
 
 module.exports = { scheduledTasks };
