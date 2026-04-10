@@ -828,7 +828,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       return res.status(403).json({ error: `Score must be >= ${DISPUTE.MIN_SCORE_TO_DISPUTE} to file a dispute (current: ${disputerScore})` });
     }
 
-    const DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"];
+    const DISPUTE_FIELDS = claimed_origin
+      ? ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"]
+      : ["disputer_tip_id", "reason", "evidence_hash"];
     if (!verifyBodySignature(req.body, signature, disputer.public_key, DISPUTE_FIELDS)) {
       return res.status(403).json({ error: "Disputer signature verification failed — signature does not match disputer public key" });
     }
@@ -1128,6 +1130,106 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       log.error("Jury reveal error:", e.message);
       res.status(500).json({ error: "Internal server error", detail: e.message });
     }
+  });
+
+  /**
+   * GET /v1/content/:ctid/dispute-case
+   * Returns full case details for juror review.
+   */
+  app.get("/v1/content/:ctid/dispute-case", (req, res) => {
+    const rec = dag.getContent(req.params.ctid);
+    if (!rec) return res.status(404).json({ error: "Content record not found" });
+
+    // Content details
+    const content = {
+      ctid:         req.params.ctid,
+      origin_code:  rec.origin_code,
+      origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      content_hash: rec.content_hash,
+      author_tip_id: rec.author_tip_id,
+      status:       rec.status,
+      registered_at: rec.registered_at,
+    };
+
+    // Dispute details
+    const disputeTxs = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
+      .filter(t => t.data?.ctid === req.params.ctid);
+    const dispute = disputeTxs.length ? {
+      disputer_tip_id: disputeTxs[0].data.disputer_tip_id,
+      reason:          disputeTxs[0].data.reason,
+      claimed_origin:  disputeTxs[0].data.claimed_origin,
+      declared_origin: disputeTxs[0].data.declared_origin,
+      evidence_hash:   disputeTxs[0].data.evidence_hash,
+      filed_at:        disputeTxs[0].timestamp,
+      dispute_tx_id:   disputeTxs[0].tx_id,
+    } : null;
+
+    // AI classifier result
+    const classifierTxs = dag.getTxsByType(TX_TYPES.AI_CLASSIFIER_RESULT)
+      .filter(t => t.data?.ctid === req.params.ctid);
+    const ai_classifier = classifierTxs.length ? {
+      confidence: classifierTxs[0].data.confidence,
+      routing:    classifierTxs[0].data.routing,
+    } : null;
+
+    // Creator history
+    const authorContent = dag.getContentByAuthor(rec.author_tip_id);
+    const authorScore = scoring.getScore(rec.author_tip_id);
+    const priorDisputes = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
+      .filter(t => t.data?.author_tip_id === rec.author_tip_id);
+    const priorAdjudications = dag.getTxsByType(TX_TYPES.ADJUDICATION_RESULT)
+      .filter(t => t.data?.author_tip_id === rec.author_tip_id);
+
+    const creator_history = {
+      total_content:       authorContent.length,
+      verified_count:      authorContent.filter(c => c.status === "verified").length,
+      prior_disputes:      priorDisputes.length,
+      prior_upheld:        priorAdjudications.filter(t => t.data?.verdict === "UPHELD").length,
+      prior_dismissed:     priorAdjudications.filter(t => t.data?.verdict === "DISMISSED").length,
+      current_score:       authorScore.score,
+      current_tier:        authorScore.tier.name,
+      offense_count:       authorScore.offense_count,
+    };
+
+    // Jury status
+    const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
+      .filter(t => t.data?.ctid === req.params.ctid);
+    const commitTxs = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
+      .filter(t => t.data?.ctid === req.params.ctid);
+    const revealTxs = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
+      .filter(t => t.data?.ctid === req.params.ctid);
+
+    const committedIds = new Set(commitTxs.map(t => t.data.juror_tip_id));
+    const revealedIds  = new Set(revealTxs.map(t => t.data.juror_tip_id));
+
+    const jury = {
+      jurors: summonsTxs.map(s => ({
+        juror_tip_id: s.data.juror_tip_id,
+        status:       revealedIds.has(s.data.juror_tip_id) ? "revealed"
+                    : committedIds.has(s.data.juror_tip_id) ? "committed"
+                    : "summoned",
+      })),
+      commit_deadline: summonsTxs[0]?.data?.commit_deadline,
+      reveal_deadline: summonsTxs[0]?.data?.reveal_deadline,
+      total_summoned:  summonsTxs.length,
+      total_committed: commitTxs.length,
+      total_revealed:  revealTxs.length,
+    };
+
+    // Existing verdict (if resolved)
+    const adjTxs = dag.getTxsByType(TX_TYPES.ADJUDICATION_RESULT)
+      .filter(t => t.data?.ctid === req.params.ctid);
+    const verdict = adjTxs.length ? {
+      verdict:          adjTxs[0].data.verdict,
+      declared_origin:  adjTxs[0].data.declared_origin,
+      confirmed_origin: adjTxs[0].data.confirmed_origin,
+      match_count:      adjTxs[0].data.match_count,
+      mismatch_count:   adjTxs[0].data.mismatch_count,
+      abstain_count:    adjTxs[0].data.abstain_count,
+      resolved_at:      adjTxs[0].timestamp,
+    } : null;
+
+    res.json({ content, dispute, ai_classifier, creator_history, jury, verdict });
   });
 
   /**

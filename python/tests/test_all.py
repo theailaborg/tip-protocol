@@ -1005,7 +1005,7 @@ def test_api_endpoints() -> None:
     check("Non-author update-origin returns 403",      st == 403)
 
     # 9.14 POST /v1/content/:ctid/dispute
-    disp_fields = {"disputer_tip_id": test_tip_id, "reason": "suspicious", "evidence_hash": "abc123"}
+    disp_fields = {"disputer_tip_id": test_tip_id, "reason": "origin_mismatch", "claimed_origin": "AG", "evidence_hash": "abc123"}
     st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/dispute", {
         **disp_fields, "signature": _sign_body(disp_fields, test_author_priv),
     })
@@ -1013,10 +1013,29 @@ def test_api_endpoints() -> None:
     check("Dispute returns success",                    body.get("success") is True)
     check("Dispute returns stage1 result",              body.get("stage1") is not None)
     check("Stage1 routing is escalate",                 body.get("stage1", {}).get("routing") in ("escalate", "escalate_high"))
+    check("Dispute returns stage2 jury result",         body.get("stage2") is not None)
 
     # Content stays disputed
     st, ct_body = _get(f"{base}/v1/content/{quote(test_ctid, safe='')}")
     check("Content status is disputed after dispute",   ct_body.get("status") == "disputed")
+
+    # 9.14b GET /v1/content/:ctid/dispute-case
+    st, case_body = _get(f"{base}/v1/content/{quote(test_ctid, safe='')}/dispute-case")
+    check("GET dispute-case returns 200",               st == 200)
+    check("Dispute-case has content section",           case_body.get("content") is not None)
+    check("Dispute-case content has ctid",              case_body.get("content", {}).get("ctid") == test_ctid)
+    check("Dispute-case has dispute section",           case_body.get("dispute") is not None)
+    check("Dispute-case dispute has reason",            case_body.get("dispute", {}).get("reason") == "origin_mismatch")
+    check("Dispute-case dispute has claimed_origin",    case_body.get("dispute", {}).get("claimed_origin") == "AG")
+    check("Dispute-case dispute has declared_origin",   case_body.get("dispute", {}).get("declared_origin") == "OH")
+    check("Dispute-case has ai_classifier section",     case_body.get("ai_classifier") is not None)
+    check("Dispute-case has creator_history section",   case_body.get("creator_history") is not None)
+    check("Dispute-case has jury section",              case_body.get("jury") is not None)
+    check("Dispute-case verdict is null (unresolved)",  case_body.get("verdict") is None)
+
+    # 9.14c GET dispute-case 404 for unknown CTID
+    st, body = _get(f"{base}/v1/content/{quote('tip://c/FAKE-nonexistent', safe='')}/dispute-case")
+    check("Dispute-case 404 for unknown CTID",          st == 404)
 
     # Verify blocked on disputed content
     st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/update-origin", {

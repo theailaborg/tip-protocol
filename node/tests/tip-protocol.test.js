@@ -1478,4 +1478,61 @@ describe("Semantic Dedup", () => {
     expect(noOriginRes.status).toBe(400);
     expect(noOriginRes.body.error).toMatch(/confirmed_origin required/i);
   });
+
+  test("9.13 GET dispute-case returns full case details", async () => {
+    // Register content
+    const caseContent = "Content for dispute case test.";
+    const caseSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(caseContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: caseContent, signature: signBody(caseSig, sdAuthorPriv) });
+    const caseCtid = ctRes.body.ctid;
+
+    // File dispute
+    const dFields = { disputer_tip_id: sdVerifierId, reason: "origin_mismatch", claimed_origin: "AG", evidence_hash: "ev123" };
+    const disputeRes = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(caseCtid)}/dispute`)
+      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+    expect(disputeRes.status).toBe(200);
+
+    const res = await request(sdApp)
+      .get(`/v1/content/${encodeURIComponent(caseCtid)}/dispute-case`);
+    expect(res.status).toBe(200);
+
+    // Content section
+    expect(res.body.content).toBeDefined();
+    expect(res.body.content.ctid).toBe(caseCtid);
+    expect(res.body.content.origin_code).toBe("OH");
+    expect(res.body.content.author_tip_id).toBe(sdTipId);
+
+    // Dispute section
+    expect(res.body.dispute).toBeDefined();
+    expect(res.body.dispute.disputer_tip_id).toBe(sdVerifierId);
+    expect(res.body.dispute.reason).toBe("origin_mismatch");
+    expect(res.body.dispute.claimed_origin).toBe("AG");
+    expect(res.body.dispute.declared_origin).toBe("OH");
+
+    // AI classifier section
+    expect(res.body.ai_classifier).toBeDefined();
+    expect(res.body.ai_classifier.routing).toBeDefined();
+
+    // Creator history section
+    expect(res.body.creator_history).toBeDefined();
+    expect(res.body.creator_history.total_content).toBeGreaterThan(0);
+    expect(res.body.creator_history.current_score).toBeDefined();
+
+    // Jury section
+    expect(res.body.jury).toBeDefined();
+    expect(res.body.jury.total_summoned).toBeGreaterThanOrEqual(0);
+    expect(res.body.jury.commit_deadline).toBeDefined();
+
+    // No verdict yet
+    expect(res.body.verdict).toBeNull();
+  });
+
+  test("9.14 GET dispute-case returns 404 for unknown CTID", async () => {
+    const res = await request(sdApp)
+      .get(`/v1/content/${encodeURIComponent("tip://c/FAKE-nonexistent")}/dispute-case`);
+    expect(res.status).toBe(404);
+  });
 });

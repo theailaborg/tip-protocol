@@ -242,6 +242,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             m = re.match(r"^/v1/identity/([^/]+)/history$", path)
             if m:
                 return self._identity_history(_decode(m.group(1)))
+            m = re.match(r"^/v1/content/([^/]+)/dispute-case$", path)
+            if m:
+                return self._dispute_case(_decode(m.group(1)))
             m = re.match(r"^/v1/content/([^/]+)$", path)
             if m:
                 return self._content_resolve(_decode(m.group(1)))
@@ -784,7 +787,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if disputer_score < Dispute.MIN_SCORE_TO_DISPUTE:
             self._send_json(403, {"error": f"Score must be >= {Dispute.MIN_SCORE_TO_DISPUTE} to file a dispute (current: {disputer_score})"}); return
 
-        _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "evidence_hash"]
+        _DISPUTE_FIELDS = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"] if claimed_origin else ["disputer_tip_id", "reason", "evidence_hash"]
         if not verify_body_signature(body, signature, disputer_identity.get("public_key", ""), _DISPUTE_FIELDS):
             self._send_json(403, {"error": "Disputer signature verification failed — signature does not match disputer public key"}); return
 
@@ -1185,6 +1188,67 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self.dag.update_content_status(ctid, "registered")
 
         return {"verdict": verdict, "confirmed_origin": confirmed_origin, "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count, "tx_id": result_tx["tx_id"]}
+
+    def _dispute_case(self, ctid: str):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+
+        content = {
+            "ctid": ctid, "origin_code": rec.get("origin_code"), "origin_label": Origin.label(rec.get("origin_code", "")),
+            "content_hash": rec.get("content_hash"), "author_tip_id": rec.get("author_tip_id"),
+            "status": rec.get("status"), "registered_at": rec.get("registered_at"),
+        }
+
+        dispute_txs = [t for t in self.dag.get_txs_by_type(TxType.CONTENT_DISPUTED) if (t.get("data") or {}).get("ctid") == ctid]
+        dispute = {
+            "disputer_tip_id": dispute_txs[0]["data"].get("disputer_tip_id"), "reason": dispute_txs[0]["data"].get("reason"),
+            "claimed_origin": dispute_txs[0]["data"].get("claimed_origin"), "declared_origin": dispute_txs[0]["data"].get("declared_origin"),
+            "evidence_hash": dispute_txs[0]["data"].get("evidence_hash"), "filed_at": dispute_txs[0].get("timestamp"),
+            "dispute_tx_id": dispute_txs[0].get("tx_id"),
+        } if dispute_txs else None
+
+        classifier_txs = [t for t in self.dag.get_txs_by_type(TxType.AI_CLASSIFIER_RESULT) if (t.get("data") or {}).get("ctid") == ctid]
+        ai_classifier = {"confidence": classifier_txs[0]["data"].get("confidence"), "routing": classifier_txs[0]["data"].get("routing")} if classifier_txs else None
+
+        author_tip_id = rec.get("author_tip_id", "")
+        author_content = self.dag.get_content_by_author(author_tip_id)
+        author_score = self.scoring.get_score(author_tip_id)
+        prior_disputes = [t for t in self.dag.get_txs_by_type(TxType.CONTENT_DISPUTED) if (t.get("data") or {}).get("author_tip_id") == author_tip_id]
+        prior_adj = [t for t in self.dag.get_txs_by_type(TxType.ADJUDICATION_RESULT) if (t.get("data") or {}).get("author_tip_id") == author_tip_id]
+        creator_history = {
+            "total_content": len(author_content), "verified_count": sum(1 for c in author_content if c.get("status") == "verified"),
+            "prior_disputes": len(prior_disputes), "prior_upheld": sum(1 for t in prior_adj if (t.get("data") or {}).get("verdict") == "UPHELD"),
+            "prior_dismissed": sum(1 for t in prior_adj if (t.get("data") or {}).get("verdict") == "DISMISSED"),
+            "current_score": author_score.get("score", 0), "current_tier": author_score.get("tier", {}).get("name", ""),
+            "offense_count": author_score.get("offense_count", 0),
+        }
+
+        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS) if (t.get("data") or {}).get("ctid") == ctid]
+        commit_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_COMMIT) if (t.get("data") or {}).get("ctid") == ctid]
+        reveal_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL) if (t.get("data") or {}).get("ctid") == ctid]
+        committed_ids = {(t.get("data") or {}).get("juror_tip_id") for t in commit_txs}
+        revealed_ids = {(t.get("data") or {}).get("juror_tip_id") for t in reveal_txs}
+        jury = {
+            "jurors": [{"juror_tip_id": (s.get("data") or {}).get("juror_tip_id"),
+                        "status": "revealed" if (s.get("data") or {}).get("juror_tip_id") in revealed_ids
+                                  else "committed" if (s.get("data") or {}).get("juror_tip_id") in committed_ids
+                                  else "summoned"} for s in summons_txs],
+            "commit_deadline": (summons_txs[0].get("data") or {}).get("commit_deadline") if summons_txs else None,
+            "reveal_deadline": (summons_txs[0].get("data") or {}).get("reveal_deadline") if summons_txs else None,
+            "total_summoned": len(summons_txs), "total_committed": len(commit_txs), "total_revealed": len(reveal_txs),
+        }
+
+        adj_txs = [t for t in self.dag.get_txs_by_type(TxType.ADJUDICATION_RESULT) if (t.get("data") or {}).get("ctid") == ctid]
+        verdict = {
+            "verdict": adj_txs[0]["data"].get("verdict"), "declared_origin": adj_txs[0]["data"].get("declared_origin"),
+            "confirmed_origin": adj_txs[0]["data"].get("confirmed_origin"), "match_count": adj_txs[0]["data"].get("match_count"),
+            "mismatch_count": adj_txs[0]["data"].get("mismatch_count"), "abstain_count": adj_txs[0]["data"].get("abstain_count"),
+            "resolved_at": adj_txs[0].get("timestamp"),
+        } if adj_txs else None
+
+        self._send_json(200, {"content": content, "dispute": dispute, "ai_classifier": ai_classifier,
+                               "creator_history": creator_history, "jury": jury, "verdict": verdict})
 
     def _dag_tx(self, tx_id: str):
         tx = self.dag.get_tx(tx_id)
