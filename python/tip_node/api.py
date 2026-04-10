@@ -38,7 +38,7 @@ from shared.constants import (
     JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
     Dispute, Jury, AiClassifier,
 )
-from tip_node.jury import select_jury, tally_verdict_and_apply
+from tip_node.jury import select_jury, select_experts, tally_verdict_and_apply, apply_appeal_verdict, write_summons_txs
 from tip_node.validators.tx_validator import validate_transaction
 from tip_node.logger import get_logger
 
@@ -299,6 +299,15 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/v1/content/([^/]+)/jury/reveal$", path)
         if m:
             return self._jury_reveal(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/appeal$", path)
+        if m:
+            return self._appeal_file(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/appeal/commit$", path)
+        if m:
+            return self._appeal_commit(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/appeal/reveal$", path)
+        if m:
+            return self._appeal_reveal(_decode(m.group(1)), body)
 
         self._send_json(404, {"error": "Endpoint not found"})
 
@@ -807,6 +816,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
                 "declared_origin":  rec.get("origin_code"),
                 "evidence_hash":    body.get("evidence_hash"),
                 "author_tip_id":    rec.get("author_tip_id"),
+                "pre_dispute_status": rec.get("status"),
                 "stake":            Dispute.DISPUTER_STAKE,
             },
         }
@@ -1085,6 +1095,153 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             verdict_result = tally_verdict_and_apply(ctid, all_reveals, all_summons, self.dag, self.scoring, self.config)
 
         self._send_json(200, {"success": True, "tx_id": reveal_tx["tx_id"], "verdict": verdict_result})
+
+    # ── Stage 3: Appeal endpoints ────────────────────────────────────────────
+
+    def _appeal_file(self, ctid: str, body: dict):
+        appellant_tip_id = body.get("appellant_tip_id")
+        signature = body.get("signature")
+        if not appellant_tip_id: self._send_json(400, {"error": "appellant_tip_id required"}); return
+        if not signature: self._send_json(400, {"error": "signature required"}); return
+
+        adj_txs = self.dag.get_txs_by_type_and_ctid(TxType.ADJUDICATION_RESULT, ctid)
+        if not adj_txs: self._send_json(404, {"error": "No Stage 2 verdict found"}); return
+
+        existing = self.dag.get_txs_by_type_and_ctid(TxType.APPEAL_FILED, ctid)
+        if existing: self._send_json(409, {"error": "Appeal already filed"}); return
+
+        from datetime import datetime, timezone
+        verdict_time = datetime.fromisoformat(adj_txs[0].get("timestamp", "").replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - verdict_time).total_seconds() > Appeal.FILING_WINDOW_HOURS * 3600:
+            self._send_json(403, {"error": "48-hour appeal window has expired"}); return
+
+        rec = self.dag.get_content(ctid)
+        dispute_txs = self.dag.get_txs_by_type_and_ctid(TxType.CONTENT_DISPUTED, ctid)
+        disputer_tip_id = (dispute_txs[0].get("data") or {}).get("disputer_tip_id") if dispute_txs else None
+        author_tip_id = rec.get("author_tip_id") if rec else None
+        if appellant_tip_id != author_tip_id and appellant_tip_id != disputer_tip_id:
+            self._send_json(403, {"error": "Only author or disputer can appeal"}); return
+
+        appellant = self.dag.get_identity(appellant_tip_id)
+        if not appellant: self._send_json(404, {"error": "Appellant not found"}); return
+        if self.dag.is_revoked(appellant_tip_id): self._send_json(403, {"error": "Appellant is revoked"}); return
+
+        _FIELDS = ["appellant_tip_id"]
+        if not verify_body_signature(body, signature, appellant.get("public_key", ""), _FIELDS):
+            self._send_json(403, {"error": "Appellant signature verification failed"}); return
+
+        appeal_tx = self._with_tx_id({
+            "tx_type": TxType.APPEAL_FILED, "timestamp": _utc_now(), "prev": self.dag.get_recent_prev(),
+            "data": {"ctid": ctid, "appellant_tip_id": appellant_tip_id, "stage2_verdict": adj_txs[0]["data"].get("verdict"), "stake": Appeal.APPELLANT_STAKE},
+        })
+        self.dag.add_tx(appeal_tx)
+        self._broadcast(appeal_tx)
+
+        experts = select_experts(self.dag, self.scoring, appeal_tx["tx_id"], author_tip_id, disputer_tip_id)
+        deadlines = write_summons_txs(self.dag, self.config, ctid, appeal_tx["tx_id"], experts, Appeal.COMMIT_WINDOW_HOURS, Appeal.REVEAL_WINDOW_HOURS, True)
+
+        self.dag.update_content_status(ctid, "disputed")
+        log.info(f"Appeal filed for {ctid} by {appellant_tip_id}")
+        self._send_json(200, {
+            "success": True, "appeal_tx_id": appeal_tx["tx_id"], "stake_at_risk": Appeal.APPELLANT_STAKE,
+            "experts": {"selected": experts.get("experts", []), "count": len(experts.get("experts", [])),
+                        "commit_deadline": deadlines["commit_deadline"], "reveal_deadline": deadlines["reveal_deadline"]},
+        })
+
+    def _appeal_commit(self, ctid: str, body: dict):
+        juror_tip_id = body.get("juror_tip_id")
+        commitment = body.get("commitment")
+        signature = body.get("signature")
+        if not juror_tip_id: self._send_json(400, {"error": "juror_tip_id required"}); return
+        if not commitment: self._send_json(400, {"error": "commitment required"}); return
+        if not signature: self._send_json(400, {"error": "signature required"}); return
+
+        juror = self.dag.get_identity(juror_tip_id)
+        if not juror: self._send_json(404, {"error": "Expert not found"}); return
+        if self.dag.is_revoked(juror_tip_id): self._send_json(403, {"error": "Expert is revoked"}); return
+
+        if not verify_body_signature(body, signature, juror.get("public_key", ""), ["juror_tip_id", "commitment"]):
+            self._send_json(403, {"error": "Expert signature verification failed"}); return
+
+        summons = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                   if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id and (t.get("data") or {}).get("is_appeal")]
+        if not summons: self._send_json(403, {"error": "Not summoned as expert for this appeal"}); return
+
+        from datetime import datetime, timezone
+        dl = datetime.fromisoformat(summons[0]["data"]["commit_deadline"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > dl: self._send_json(403, {"error": "Commit window closed"}); return
+
+        existing = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_COMMIT, ctid)
+                    if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id and (t.get("data") or {}).get("is_appeal")]
+        if existing: self._send_json(409, {"error": "Already committed"}); return
+
+        tx = self._with_tx_id({
+            "tx_type": TxType.JURY_VOTE_COMMIT, "timestamp": _utc_now(), "prev": self.dag.get_recent_prev(),
+            "data": {"ctid": ctid, "juror_tip_id": juror_tip_id, "commitment": commitment, "is_appeal": True},
+        })
+        self.dag.add_tx(tx)
+        self._broadcast(tx)
+        self._send_json(200, {"success": True, "tx_id": tx["tx_id"]})
+
+    def _appeal_reveal(self, ctid: str, body: dict):
+        juror_tip_id = body.get("juror_tip_id")
+        vote = body.get("vote")
+        salt = body.get("salt")
+        confirmed_origin = body.get("confirmed_origin")
+        signature = body.get("signature")
+        if not juror_tip_id: self._send_json(400, {"error": "juror_tip_id required"}); return
+        if not vote: self._send_json(400, {"error": "vote required"}); return
+        if not salt: self._send_json(400, {"error": "salt required"}); return
+        if not signature: self._send_json(400, {"error": "signature required"}); return
+        if vote not in ("MATCH", "MISMATCH", "ABSTAIN"): self._send_json(400, {"error": "Invalid vote"}); return
+        if vote == "MISMATCH" and not confirmed_origin: self._send_json(400, {"error": "confirmed_origin required for MISMATCH"}); return
+
+        juror = self.dag.get_identity(juror_tip_id)
+        if not juror: self._send_json(404, {"error": "Expert not found"}); return
+
+        fields = ["juror_tip_id", "vote", "salt", "confirmed_origin"] if confirmed_origin else ["juror_tip_id", "vote", "salt"]
+        if not verify_body_signature(body, signature, juror.get("public_key", ""), fields):
+            self._send_json(403, {"error": "Expert signature verification failed"}); return
+
+        summons = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                   if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id and (t.get("data") or {}).get("is_appeal")]
+        if not summons: self._send_json(403, {"error": "Not summoned as expert"}); return
+
+        from datetime import datetime, timezone
+        commit_dl = datetime.fromisoformat(summons[0]["data"]["commit_deadline"].replace("Z", "+00:00"))
+        reveal_dl = datetime.fromisoformat(summons[0]["data"]["reveal_deadline"].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if now < commit_dl: self._send_json(403, {"error": "Reveal window not open yet"}); return
+        if now > reveal_dl: self._send_json(403, {"error": "Reveal window closed"}); return
+
+        commits = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_COMMIT, ctid)
+                   if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id and (t.get("data") or {}).get("is_appeal")]
+        if not commits: self._send_json(404, {"error": "No commitment found"}); return
+
+        computed = shake256(f"{vote}:{salt}")
+        if computed != commits[0]["data"]["commitment"]:
+            self._send_json(403, {"error": "Vote does not match commitment"}); return
+
+        existing = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+                    if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id and (t.get("data") or {}).get("is_appeal")]
+        if existing: self._send_json(409, {"error": "Already revealed"}); return
+
+        tx = self._with_tx_id({
+            "tx_type": TxType.JURY_VOTE_REVEAL, "timestamp": _utc_now(), "prev": self.dag.get_recent_prev(),
+            "data": {"ctid": ctid, "juror_tip_id": juror_tip_id, "vote": vote, "salt": salt,
+                     "confirmed_origin": confirmed_origin if vote == "MISMATCH" else None, "is_appeal": True},
+        })
+        self.dag.add_tx(tx)
+        self._broadcast(tx)
+
+        all_reveals = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid) if (t.get("data") or {}).get("is_appeal")]
+        all_summons = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid) if (t.get("data") or {}).get("is_appeal")]
+
+        appeal_verdict = None
+        if len(all_reveals) >= len(all_summons):
+            appeal_verdict = apply_appeal_verdict(ctid, all_reveals, all_summons, self.dag, self.scoring, self.config)
+
+        self._send_json(200, {"success": True, "tx_id": tx["tx_id"], "verdict": appeal_verdict})
 
     def _dispute_case(self, ctid: str):
         rec = self.dag.get_content(ctid)

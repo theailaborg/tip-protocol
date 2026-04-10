@@ -105,8 +105,10 @@ class Appeal:
     APPELLANT_STAKE       = 25     # higher bar than dispute stake
     MIN_EXPERT_SCORE      = 850    # experts must be highly trusted
     EXPERT_COUNT          = 3      # experts per appeal
+    MIN_VOTES             = 2      # minimum non-abstain votes from experts
     FILING_WINDOW_HOURS   = 48     # hours after ADJUDICATION_RESULT to file
-    REVIEW_DAYS           = 7      # days for expert review
+    COMMIT_WINDOW_HOURS   = 72     # 3 days for expert commit (same as jury)
+    REVEAL_WINDOW_HOURS   = 6      # 6 hours for expert reveal (same as jury)
     OVERTURN_BONUS        = 10     # bonus to appellant if appeal succeeds
 
 class AiClassifier:

@@ -62,10 +62,10 @@ function nodeSignedAuto(txBody, config) {
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
-const { selectJury, tallyVerdictAndApply } = require("./jury");
+const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("./jury");
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, AI_CLASSIFIER,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER,
   getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
 } = require("../../shared/constants");
 
@@ -736,6 +736,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
         declared_origin: rec.origin_code,
         evidence_hash,
         author_tip_id:   rec.author_tip_id,
+        pre_dispute_status: rec.status,
         stake:           DISPUTE.DISPUTER_STAKE,
       },
     };
@@ -1106,6 +1107,252 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     } : null;
 
     res.json({ content, dispute, ai_classifier, creator_history, jury, verdict });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STAGE 3: EXPERT APPEAL
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /v1/content/:ctid/appeal
+   * File an appeal against a Stage 2 verdict. Must be within 48 hours.
+   */
+  app.post("/v1/content/:ctid/appeal", (req, res) => {
+    try {
+      const { appellant_tip_id, signature } = req.body;
+      if (!appellant_tip_id) return res.status(400).json({ error: "appellant_tip_id required" });
+      if (!signature)        return res.status(400).json({ error: "signature required" });
+
+      // Must have an existing verdict
+      const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, req.params.ctid);
+      if (!adjTxs.length) return res.status(404).json({ error: "No Stage 2 verdict found for this content" });
+
+      // Check no existing appeal
+      const existingAppeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, req.params.ctid);
+      if (existingAppeal.length) return res.status(409).json({ error: "Appeal already filed for this content" });
+
+      // Must be within 48-hour window
+      const verdictTime = new Date(adjTxs[0].timestamp).getTime();
+      if (Date.now() - verdictTime > APPEAL.FILING_WINDOW_HOURS * 3600000) {
+        return res.status(403).json({ error: "48-hour appeal window has expired" });
+      }
+
+      // Only author or disputer can appeal
+      const rec = dag.getContent(req.params.ctid);
+      const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, req.params.ctid);
+      const disputerTipId = disputeTxs[0]?.data?.disputer_tip_id;
+      const authorTipId = rec?.author_tip_id;
+      if (appellant_tip_id !== authorTipId && appellant_tip_id !== disputerTipId) {
+        return res.status(403).json({ error: "Only the content author or the original disputer can file an appeal" });
+      }
+
+      // Verify identity + signature
+      const appellant = dag.getIdentity(appellant_tip_id);
+      if (!appellant) return res.status(404).json({ error: "Appellant TIP-ID not found" });
+      if (dag.isRevoked(appellant_tip_id)) return res.status(403).json({ error: "Appellant TIP-ID is revoked" });
+
+      const APPEAL_FIELDS = ["appellant_tip_id"];
+      if (!verifyBodySignature(req.body, signature, appellant.public_key, APPEAL_FIELDS)) {
+        return res.status(403).json({ error: "Appellant signature verification failed" });
+      }
+
+      // Write APPEAL_FILED tx
+      const appealTx = withTxId({
+        tx_type:   TX_TYPES.APPEAL_FILED,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: {
+          ctid:             req.params.ctid,
+          appellant_tip_id,
+          stage2_verdict:   adjTxs[0].data.verdict,
+          stake:            APPEAL.APPELLANT_STAKE,
+        },
+      });
+      dag.addTx(appealTx);
+      _broadcast(appealTx);
+
+      // Select 3 experts
+      const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId);
+      const commitDeadline = new Date(Date.now() + APPEAL.COMMIT_WINDOW_HOURS * 3600000).toISOString();
+      const revealDeadline = new Date(Date.now() + (APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+
+      // Write JURY_SUMMONS for each expert (reuse summons tx type with appeal flag)
+      const timestamp = new Date().toISOString();
+      for (const expertTipId of experts.experts) {
+        const summonsTx = nodeSignedAuto({
+          tx_type:   TX_TYPES.JURY_SUMMONS,
+          timestamp,
+          prev:      dag.getRecentPrev(),
+          data: {
+            ctid:            req.params.ctid,
+            dispute_tx_id:   appealTx.tx_id,
+            juror_tip_id:    expertTipId,
+            stake:           JURY.JUROR_STAKE,
+            seed:            experts.seed,
+            identity_count:  experts.identityCount,
+            commit_deadline: commitDeadline,
+            reveal_deadline: revealDeadline,
+            is_appeal:       true,
+          },
+        }, config);
+        dag.addTx(summonsTx);
+        _broadcast(summonsTx);
+      }
+
+      // Update content status back to disputed (under appeal review)
+      dag.updateContentStatus(req.params.ctid, "disputed");
+
+      log.info(`Appeal filed for ${req.params.ctid} by ${appellant_tip_id}`);
+      res.json({
+        success: true,
+        appeal_tx_id: appealTx.tx_id,
+        stake_at_risk: APPEAL.APPELLANT_STAKE,
+        experts: {
+          selected: experts.experts,
+          count: experts.experts.length,
+          insufficient: experts.insufficient,
+          commit_deadline: commitDeadline,
+          reveal_deadline: revealDeadline,
+        },
+      });
+    } catch (e) {
+      log.error("Appeal error:", e.message);
+      res.status(500).json({ error: "Internal server error", detail: e.message });
+    }
+  });
+
+  /**
+   * POST /v1/content/:ctid/appeal/commit
+   * Expert submits hidden vote commitment for appeal.
+   */
+  app.post("/v1/content/:ctid/appeal/commit", async (req, res) => {
+    try {
+      const { juror_tip_id, commitment, signature } = req.body;
+      if (!juror_tip_id) return res.status(400).json({ error: "juror_tip_id required" });
+      if (!commitment)   return res.status(400).json({ error: "commitment required" });
+      if (!signature)    return res.status(400).json({ error: "signature required" });
+
+      const juror = dag.getIdentity(juror_tip_id);
+      if (!juror) return res.status(404).json({ error: "Expert TIP-ID not found" });
+      if (dag.isRevoked(juror_tip_id)) return res.status(403).json({ error: "Expert TIP-ID is revoked" });
+
+      const COMMIT_FIELDS = ["juror_tip_id", "commitment"];
+      if (!verifyBodySignature(req.body, signature, juror.public_key, COMMIT_FIELDS)) {
+        return res.status(403).json({ error: "Expert signature verification failed" });
+      }
+
+      // Must be summoned as appeal expert (is_appeal flag)
+      const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid)
+        .filter(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
+      if (!summonsTxs.length) return res.status(403).json({ error: "You were not summoned as an expert for this appeal" });
+
+      const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+      if (Date.now() > commitDeadline) return res.status(403).json({ error: "Commit window has closed" });
+
+      const existingCommit = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
+      if (existingCommit) return res.status(409).json({ error: "You have already submitted a vote commitment" });
+
+      const commitTx = withTxId({
+        tx_type:   TX_TYPES.JURY_VOTE_COMMIT,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: { ctid: req.params.ctid, juror_tip_id, commitment, is_appeal: true },
+      });
+      dag.addTx(commitTx);
+      _broadcast(commitTx);
+
+      res.json({ success: true, tx_id: commitTx.tx_id });
+    } catch (e) {
+      log.error("Appeal commit error:", e.message);
+      res.status(500).json({ error: "Internal server error", detail: e.message });
+    }
+  });
+
+  /**
+   * POST /v1/content/:ctid/appeal/reveal
+   * Expert reveals their vote and salt for appeal.
+   */
+  app.post("/v1/content/:ctid/appeal/reveal", async (req, res) => {
+    try {
+      const { juror_tip_id, vote, salt, confirmed_origin, signature } = req.body;
+      if (!juror_tip_id) return res.status(400).json({ error: "juror_tip_id required" });
+      if (!vote)         return res.status(400).json({ error: "vote required (MATCH, MISMATCH, or ABSTAIN)" });
+      if (!salt)         return res.status(400).json({ error: "salt required" });
+      if (!signature)    return res.status(400).json({ error: "signature required" });
+
+      const VALID_VOTES = ["MATCH", "MISMATCH", "ABSTAIN"];
+      if (!VALID_VOTES.includes(vote)) return res.status(400).json({ error: `Invalid vote. Must be one of: ${VALID_VOTES.join(", ")}` });
+      if (vote === "MISMATCH" && !confirmed_origin) return res.status(400).json({ error: "confirmed_origin required when voting MISMATCH" });
+      if (confirmed_origin && !ORIGIN[confirmed_origin]) return res.status(400).json({ error: `Invalid confirmed_origin` });
+
+      const juror = dag.getIdentity(juror_tip_id);
+      if (!juror) return res.status(404).json({ error: "Expert TIP-ID not found" });
+
+      const REVEAL_FIELDS = confirmed_origin
+        ? ["juror_tip_id", "vote", "salt", "confirmed_origin"]
+        : ["juror_tip_id", "vote", "salt"];
+      if (!verifyBodySignature(req.body, signature, juror.public_key, REVEAL_FIELDS)) {
+        return res.status(403).json({ error: "Expert signature verification failed" });
+      }
+
+      // Must be summoned as appeal expert
+      const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid)
+        .filter(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
+      if (!summonsTxs.length) return res.status(403).json({ error: "You were not summoned as an expert for this appeal" });
+
+      // Check reveal window
+      const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+      const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
+      const now = Date.now();
+      if (now < commitDeadline) return res.status(403).json({ error: "Reveal window has not opened yet" });
+      if (now > revealDeadline) return res.status(403).json({ error: "Reveal window has closed" });
+
+      // Verify commitment
+      const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
+      if (!commitTx) return res.status(404).json({ error: "No vote commitment found" });
+
+      const computedCommitment = shake256(`${vote}:${salt}`);
+      if (computedCommitment !== commitTx.data.commitment) {
+        return res.status(403).json({ error: "Vote does not match commitment — vote discarded" });
+      }
+
+      // Check not already revealed
+      const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
+      if (existingReveal) return res.status(409).json({ error: "You have already revealed your vote" });
+
+      // Write reveal tx
+      const revealTx = withTxId({
+        tx_type:   TX_TYPES.JURY_VOTE_REVEAL,
+        timestamp: new Date().toISOString(),
+        prev:      dag.getRecentPrev(),
+        data: {
+          ctid: req.params.ctid, juror_tip_id, vote, salt,
+          confirmed_origin: vote === "MISMATCH" ? confirmed_origin : null,
+          is_appeal: true,
+        },
+      });
+      dag.addTx(revealTx);
+      _broadcast(revealTx);
+
+      // Check if all experts revealed → trigger final verdict
+      const allReveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, req.params.ctid)
+        .filter(t => t.data?.is_appeal === true);
+      const allSummons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid)
+        .filter(t => t.data?.is_appeal === true);
+
+      let appealVerdict = null;
+      if (allReveals.length >= allSummons.length) {
+        appealVerdict = applyAppealVerdict(req.params.ctid, allReveals, allSummons, dag, scoring, config);
+      }
+
+      res.json({ success: true, tx_id: revealTx.tx_id, verdict: appealVerdict });
+    } catch (e) {
+      log.error("Appeal reveal error:", e.message);
+      res.status(500).json({ error: "Internal server error", detail: e.message });
+    }
   });
 
   /**

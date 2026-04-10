@@ -1044,6 +1044,66 @@ def test_api_endpoints() -> None:
     })
     check("Update-origin blocked on disputed content",  st == 403)
 
+    # 9.15 Appeal requires Stage 2 verdict
+    app_fields = {"appellant_tip_id": test_tip_id}
+    # Use a content without verdict — test_ctid is disputed but no ADJUDICATION_RESULT
+    # Register new content for this test
+    appeal_content = "Content for Python appeal test"
+    appeal_ct_sig = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": shake256(appeal_content)}
+    st, body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": test_tip_id, "origin_code": "OH", "content": appeal_content,
+        "signature": _sign_body(appeal_ct_sig, test_author_priv),
+    })
+    appeal_ctid = body.get("ctid", "")
+    st, body = _post(f"{base}/v1/content/{quote(appeal_ctid, safe='')}/appeal", {
+        **app_fields, "signature": _sign_body(app_fields, test_author_priv),
+    })
+    check("Appeal without verdict returns 404",          st == 404)
+
+    # 9.16 Only author or disputer can appeal
+    # Create a third identity
+    kp_third = generate_mldsa_keypair()
+    third_fields = {
+        "region": "US", "public_key": kp_third["publicKey"],
+        "dedup_hash": "99001111222233334444555566667777888899990000111122223333444455556",
+        "zk_proof": zk_proof, "verification_tier": "T1", "vp_id": test_vp_id, "social_attested": False,
+    }
+    st, body = _post(f"{base}/v1/identity/register", {
+        **third_fields, "vp_signature": _sign_body(third_fields, vp_kp["privateKey"]),
+    })
+    third_tip_id = body.get("tip_id", "")
+
+    # test_ctid is disputed — manually add an ADJUDICATION_RESULT so we can appeal
+    from shared.crypto import compute_tx_id as _compute_tx_id
+    from datetime import datetime as _dt, timezone as _tz
+    _now = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    adj_tx = {"tx_type": "ADJUDICATION_RESULT", "timestamp": _now,
+              "prev": dag.get_recent_prev(), "data": {"ctid": test_ctid, "verdict": "UPHELD", "author_tip_id": test_tip_id}}
+    adj_tx["tx_id"] = _compute_tx_id(adj_tx)
+    dag.add_tx(adj_tx)
+
+    # Third party tries to appeal
+    third_app = {"appellant_tip_id": third_tip_id}
+    st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/appeal", {
+        **third_app, "signature": _sign_body(third_app, kp_third["privateKey"]),
+    })
+    check("Third party appeal returns 403",              st == 403)
+
+    # Author can appeal
+    author_app = {"appellant_tip_id": test_tip_id}
+    st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/appeal", {
+        **author_app, "signature": _sign_body(author_app, test_author_priv),
+    })
+    check("Author appeal returns 200",                   st == 200)
+    check("Appeal returns success",                      body.get("success") is True)
+    check("Appeal returns stake_at_risk",                body.get("stake_at_risk") == 25)
+
+    # Duplicate appeal rejected
+    st, body = _post(f"{base}/v1/content/{quote(test_ctid, safe='')}/appeal", {
+        **author_app, "signature": _sign_body(author_app, test_author_priv),
+    })
+    check("Duplicate appeal returns 409",                st == 409)
+
     # 9.14b POST /v1/identity/verify-ownership — correct key
     import time
     challenge = f"test-{time.time()}"

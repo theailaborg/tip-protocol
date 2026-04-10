@@ -1535,4 +1535,124 @@ describe("Semantic Dedup", () => {
       .get(`/v1/content/${encodeURIComponent("tip://c/FAKE-nonexistent")}/dispute-case`);
     expect(res.status).toBe(404);
   });
+
+  test("9.15 Appeal filing requires Stage 2 verdict", async () => {
+    // Content without any verdict — appeal should fail
+    const appContent = "Content for appeal test without verdict.";
+    const appSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(appContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appContent, signature: signBody(appSig, sdAuthorPriv) });
+    const appCtid = ctRes.body.ctid;
+
+    const appFields = { appellant_tip_id: sdTipId };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(appCtid)}/appeal`)
+      .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/no stage 2 verdict/i);
+  });
+
+  test("9.16 Appeal filing succeeds with Stage 2 verdict", async () => {
+    // Register content + simulate full dispute flow
+    const { computeTxId } = require("../../shared/crypto");
+    const appealContent = "Content for appeal flow test.";
+    const appealSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(appealContent) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appealContent, signature: signBody(appealSig, sdAuthorPriv) });
+    const appealCtid = ctRes.body.ctid;
+    sdDag.updateContentStatus(appealCtid, "disputed");
+
+    // Create dispute tx
+    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: appealCtid, disputer_tip_id: sdVerifierId, reason: "origin_mismatch",
+              claimed_origin: "AG", declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    dTx.tx_id = computeTxId(dTx);
+    sdDag.addTx(dTx);
+
+    // Create ADJUDICATION_RESULT tx (simulate jury UPHELD)
+    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: appealCtid, verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG",
+              author_tip_id: sdTipId, match_count: 1, mismatch_count: 5, abstain_count: 1 } };
+    adjTx.tx_id = computeTxId(adjTx);
+    sdDag.addTx(adjTx);
+
+    // Author files appeal
+    const appFields = { appellant_tip_id: sdTipId };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(appealCtid)}/appeal`)
+      .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.appeal_tx_id).toBeDefined();
+    expect(res.body.stake_at_risk).toBe(25);
+    expect(res.body.experts).toBeDefined();
+  });
+
+  test("9.17 Only author or disputer can appeal", async () => {
+    // Create a third identity that is neither author nor disputer
+    const { computeTxId } = require("../../shared/crypto");
+    const thirdKp = generateMLDSAKeypair();
+    const thirdFields = { region: "US", public_key: thirdKp.publicKey,
+      dedup_hash: "88001111222233334444555566667777888899990000111122223333444455556",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1", vp_id: sdVpId, social_attested: false };
+    const thirdRes = await request(sdApp)
+      .post("/v1/identity/register")
+      .send({ ...thirdFields, vp_signature: signBody(thirdFields, sdVpKp.privateKey) });
+    const thirdTipId = thirdRes.body.tip_id;
+
+    // Register + simulate verdict
+    const tc = "Content for third party appeal test.";
+    const ts = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tc) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: tc, signature: signBody(ts, sdAuthorPriv) });
+    const tCtid = ctRes.body.ctid;
+
+    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: tCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
+    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: tCtid, verdict: "UPHELD", author_tip_id: sdTipId } };
+    adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
+
+    // Third party tries to appeal
+    const appFields = { appellant_tip_id: thirdTipId };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(tCtid)}/appeal`)
+      .send({ ...appFields, signature: signBody(appFields, thirdKp.privateKey) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/only.*author.*disputer/i);
+  });
+
+  test("9.18 Duplicate appeal rejected", async () => {
+    // Use the content from 9.16 which already has an appeal
+    // Register new content for this test
+    const { computeTxId } = require("../../shared/crypto");
+    const dc = "Content for duplicate appeal test.";
+    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(dc) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
+    const dCtid = ctRes.body.ctid;
+
+    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: dCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
+    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: dCtid, verdict: "UPHELD", author_tip_id: sdTipId } };
+    adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
+
+    // First appeal
+    const f1 = { appellant_tip_id: sdTipId };
+    const r1 = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/appeal`)
+      .send({ ...f1, signature: signBody(f1, sdAuthorPriv) });
+    expect(r1.status).toBe(200);
+
+    // Second appeal — rejected
+    const r2 = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/appeal`)
+      .send({ ...f1, signature: signBody(f1, sdAuthorPriv) });
+    expect(r2.status).toBe(409);
+  });
 });
