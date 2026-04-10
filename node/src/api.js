@@ -59,126 +59,10 @@ function nodeSignedAuto(txBody, config) {
 }
 
 
-/**
- * Tally jury votes and apply verdict + score effects.
- * Called when all jurors have revealed (or reveal window expires).
- */
-function _tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
-  const matchCount    = reveals.filter(r => r.data?.vote === "MATCH").length;
-  const mismatchCount = reveals.filter(r => r.data?.vote === "MISMATCH").length;
-  const abstainCount  = reveals.filter(r => r.data?.vote === "ABSTAIN").length;
-  const totalVotes    = matchCount + mismatchCount + abstainCount;
-
-  // Quorum check: enough reveals AND enough actual votes (not just abstains)
-  const nonAbstain = matchCount + mismatchCount;
-  if (totalVotes < JURY.QUORUM) {
-    return { verdict: "NO_QUORUM", message: "Insufficient reveals — escalate to Stage 3", matchCount, mismatchCount, abstainCount };
-  }
-  if (nonAbstain < JURY.MAJORITY_VOTE) {
-    return { verdict: "NO_QUORUM", message: "Insufficient non-abstain votes — escalate to Stage 3", matchCount, mismatchCount, abstainCount };
-  }
-
-  // Majority: need > 50% of non-abstain votes
-  const majorityNeeded = Math.floor(nonAbstain / 2) + 1;
-  const decision = mismatchCount >= majorityNeeded ? "UPHELD" : "DISMISSED";
-
-  const rec = dag.getContent(ctid);
-  const disputeTxs = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED).filter(t => t.data?.ctid === ctid);
-  const disputeData   = disputeTxs[0]?.data || {};
-  const disputerTipId = disputeData.disputer_tip_id;
-  const authorTipId   = rec?.author_tip_id;
-
-  // Origin codes: declared (what author said) vs confirmed (majority of MISMATCH jurors)
-  const declared_origin = disputeData.declared_origin || rec?.origin_code;
-  let confirmed_origin = null;
-  if (decision === "UPHELD") {
-    // Pick most common confirmed_origin from MISMATCH voters
-    const originVotes = reveals
-      .filter(r => r.data?.vote === "MISMATCH" && r.data?.confirmed_origin)
-      .map(r => r.data.confirmed_origin);
-    const originCounts = {};
-    for (const o of originVotes) originCounts[o] = (originCounts[o] || 0) + 1;
-    confirmed_origin = Object.entries(originCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
-                     || disputeData.claimed_origin || null;
-  }
-
-  // Check for conservative label (AG declared, was actually OH — no penalty)
-  const verdict = decision === "DISMISSED" ? "DISMISSED"
-    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? "CONSERVATIVE_LABEL"
-    : "UPHELD";
-
-  // Write ADJUDICATION_RESULT tx
-  const resultTx = nodeSignedAuto({
-    tx_type:   TX_TYPES.ADJUDICATION_RESULT,
-    timestamp: new Date().toISOString(),
-    prev:      dag.getRecentPrev(),
-    data: {
-      ctid,
-      verdict,
-      declared_origin,
-      confirmed_origin,
-      reason:          disputeData.reason,
-      author_tip_id:   authorTipId,
-      match_count:     matchCount,
-      mismatch_count:  mismatchCount,
-      abstain_count:   abstainCount,
-      juror_votes:     reveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
-    },
-  }, config);
-  dag.addTx(resultTx);
-
-  // Apply juror score effects
-  const isTie = matchCount === mismatchCount;
-  if (isTie) {
-    // Tie — no juror penalties or bonuses (honest disagreement)
-    log.info(`Jury tie on ${ctid}: ${matchCount}-${mismatchCount} — no juror score changes`);
-  } else {
-    const majorityVote = mismatchCount > matchCount ? "MISMATCH" : "MATCH";
-    for (const reveal of reveals) {
-      const jurorTipId = reveal.data.juror_tip_id;
-      if (reveal.data.vote === "ABSTAIN") continue;
-      if (reveal.data.vote === majorityVote) {
-        scoring.applyScoreEvent(jurorTipId, JURY.MAJORITY_BONUS, `Jury majority vote on ${ctid}`);
-      } else {
-        scoring.applyScoreEvent(jurorTipId, -JURY.MINORITY_PENALTY, `Jury minority vote on ${ctid}`);
-      }
-    }
-  }
-
-  // No-show jurors (summoned but didn't reveal)
-  const revealedIds = new Set(reveals.map(r => r.data.juror_tip_id));
-  for (const s of summons) {
-    if (!revealedIds.has(s.data.juror_tip_id)) {
-      scoring.applyScoreEvent(s.data.juror_tip_id, -JURY.NO_SHOW_PENALTY, `Jury no-show on ${ctid}`);
-    }
-  }
-
-  // Disputer effects
-  if (verdict === "UPHELD" && disputerTipId) {
-    scoring.applyScoreEvent(disputerTipId, DISPUTE.UPHELD_BONUS, `Dispute upheld on ${ctid}`);
-  } else if (verdict === "DISMISSED" && disputerTipId) {
-    scoring.applyScoreEvent(disputerTipId, -DISPUTE.DISPUTER_STAKE, `Dispute dismissed on ${ctid}`);
-  }
-
-  // Creator effects — penalty applied via scoring replay of ADJUDICATION_RESULT tx
-  if (verdict === "UPHELD" && authorTipId) {
-    const current = scoring.computeScore(authorTipId);
-    // Update content to jury-confirmed origin + verified status
-    if (confirmed_origin) {
-      dag.updateContentOrigin(ctid, confirmed_origin, "verified");
-      log.info(`Verdict UPHELD: ${ctid} origin ${declared_origin} → ${confirmed_origin}, creator ${authorTipId} penalty (score: ${current.score})`);
-    }
-  } else if (verdict === "DISMISSED" || verdict === "CONSERVATIVE_LABEL") {
-    dag.updateContentStatus(ctid, "registered");
-  }
-
-  return { verdict, confirmed_origin, matchCount, mismatchCount, abstainCount, tx_id: resultTx.tx_id };
-}
-
 const { verifyDedupProof } = require("../../shared/zk");
 
 const { validateTransaction } = require("./validators/tx-validator");
-const { selectJury } = require("./jury");
+const { selectJury, tallyVerdictAndApply } = require("./jury");
 
 const {
   TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, AI_CLASSIFIER,
@@ -985,8 +869,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       }
 
       // Check juror was summoned for this dispute
-      const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
-        .filter(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid)
+        .filter(t => t.data?.juror_tip_id === juror_tip_id);
       if (!summonsTxs.length) {
         return res.status(403).json({ error: "You were not summoned as a juror for this dispute" });
       }
@@ -998,8 +882,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       }
 
       // Check not already committed
-      const existingCommit = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
-        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      const existingCommit = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id);
       if (existingCommit) {
         return res.status(409).json({ error: "You have already submitted a vote commitment" });
       }
@@ -1061,8 +945,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       }
 
       // Check juror was summoned
-      const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
-        .filter(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid)
+        .filter(t => t.data?.juror_tip_id === juror_tip_id);
       if (!summonsTxs.length) {
         return res.status(403).json({ error: "You were not summoned as a juror for this dispute" });
       }
@@ -1079,8 +963,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       }
 
       // Find the commitment
-      const commitTx = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
-        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id);
       if (!commitTx) {
         return res.status(404).json({ error: "No vote commitment found — you must commit before revealing" });
       }
@@ -1092,8 +976,8 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       }
 
       // Check not already revealed
-      const existingReveal = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
-        .find(t => t.data?.ctid === req.params.ctid && t.data?.juror_tip_id === juror_tip_id);
+      const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, req.params.ctid)
+        .find(t => t.data?.juror_tip_id === juror_tip_id);
       if (existingReveal) {
         return res.status(409).json({ error: "You have already revealed your vote" });
       }
@@ -1115,14 +999,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       _broadcast(revealTx);
 
       // Check if all jurors have revealed — trigger verdict if so
-      const allReveals = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
-        .filter(t => t.data?.ctid === req.params.ctid);
-      const allSummons = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
-        .filter(t => t.data?.ctid === req.params.ctid);
+      const allReveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, req.params.ctid);
+      const allSummons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid);
 
       let verdict = null;
       if (allReveals.length >= allSummons.length) {
-        verdict = _tallyVerdictAndApply(req.params.ctid, allReveals, allSummons, dag, scoring, config);
+        verdict = tallyVerdictAndApply(req.params.ctid, allReveals, allSummons, dag, scoring, config);
       }
 
       res.json({ success: true, tx_id: revealTx.tx_id, verdict });
@@ -1152,8 +1034,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     };
 
     // Dispute details
-    const disputeTxs = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
-      .filter(t => t.data?.ctid === req.params.ctid);
+    const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, req.params.ctid);
     const dispute = disputeTxs.length ? {
       disputer_tip_id: disputeTxs[0].data.disputer_tip_id,
       reason:          disputeTxs[0].data.reason,
@@ -1165,8 +1046,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     } : null;
 
     // AI classifier result
-    const classifierTxs = dag.getTxsByType(TX_TYPES.AI_CLASSIFIER_RESULT)
-      .filter(t => t.data?.ctid === req.params.ctid);
+    const classifierTxs = dag.getTxsByTypeAndCtid(TX_TYPES.AI_CLASSIFIER_RESULT, req.params.ctid);
     const ai_classifier = classifierTxs.length ? {
       confidence: classifierTxs[0].data.confidence,
       routing:    classifierTxs[0].data.routing,
@@ -1192,12 +1072,9 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     };
 
     // Jury status
-    const summonsTxs = dag.getTxsByType(TX_TYPES.JURY_SUMMONS)
-      .filter(t => t.data?.ctid === req.params.ctid);
-    const commitTxs = dag.getTxsByType(TX_TYPES.JURY_VOTE_COMMIT)
-      .filter(t => t.data?.ctid === req.params.ctid);
-    const revealTxs = dag.getTxsByType(TX_TYPES.JURY_VOTE_REVEAL)
-      .filter(t => t.data?.ctid === req.params.ctid);
+    const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, req.params.ctid);
+    const commitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, req.params.ctid);
+    const revealTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, req.params.ctid);
 
     const committedIds = new Set(commitTxs.map(t => t.data.juror_tip_id));
     const revealedIds  = new Set(revealTxs.map(t => t.data.juror_tip_id));
@@ -1217,8 +1094,7 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
     };
 
     // Existing verdict (if resolved)
-    const adjTxs = dag.getTxsByType(TX_TYPES.ADJUDICATION_RESULT)
-      .filter(t => t.data?.ctid === req.params.ctid);
+    const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, req.params.ctid);
     const verdict = adjTxs.length ? {
       verdict:          adjTxs[0].data.verdict,
       declared_origin:  adjTxs[0].data.declared_origin,

@@ -8,8 +8,11 @@ Stage 3: Expert appeal selection — same algorithm, higher threshold.
 License: TIPCL-1.0
 """
 
-from shared.crypto import shake256
-from shared.constants import Jury, Appeal
+from shared.crypto import shake256, compute_tx_id, sign_transaction
+from shared.constants import Jury, Appeal, Dispute, TxType
+from tip_node.logger import get_logger
+
+log = get_logger("jury")
 
 
 def _seeded_shuffle(arr: list, seed_hex: str) -> list:
@@ -116,3 +119,112 @@ def select_experts(dag, scoring, appeal_tx_id: str, author_tip_id: str, disputer
         "seed": seed,
         "identityCount": identity_count,
     }
+
+
+def _node_signed_auto(tx_body: dict, config: dict) -> dict:
+    tx_body.setdefault("data", {})["node_id"] = config.get("node_registered_id") or config.get("node_id")
+    tx_body["tx_id"] = compute_tx_id(tx_body)
+    return sign_transaction(tx_body, config["node_private_key"])
+
+
+def tally_verdict_and_apply(ctid: str, reveals: list, summons: list, dag, scoring, config: dict) -> dict:
+    """Tally jury votes and apply verdict + score effects."""
+    from datetime import datetime, timezone
+
+    match_count    = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MATCH")
+    mismatch_count = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MISMATCH")
+    abstain_count  = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "ABSTAIN")
+    total_votes    = match_count + mismatch_count + abstain_count
+    non_abstain    = match_count + mismatch_count
+
+    # Quorum check — penalize no-shows even on failure
+    if total_votes < Jury.QUORUM or non_abstain < Jury.MAJORITY_VOTE:
+        revealed_ids = {(r.get("data") or {}).get("juror_tip_id") for r in reveals}
+        for s in summons:
+            jid = (s.get("data") or {}).get("juror_tip_id")
+            if jid not in revealed_ids:
+                scoring.apply_score_event(jid, -Jury.NO_SHOW_PENALTY, f"Jury no-show on {ctid}")
+        return {"verdict": "NO_QUORUM", "message": "Insufficient votes — escalate to Stage 3",
+                "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count}
+
+    majority_needed = non_abstain // 2 + 1
+    decision = "UPHELD" if mismatch_count >= majority_needed else "DISMISSED"
+
+    rec = dag.get_content(ctid)
+    dispute_txs = dag.get_txs_by_type_and_ctid(TxType.CONTENT_DISPUTED, ctid)
+    dispute_data    = (dispute_txs[0].get("data") or {}) if dispute_txs else {}
+    disputer_tip_id = dispute_data.get("disputer_tip_id")
+    author_tip_id   = rec.get("author_tip_id") if rec else None
+
+    declared_origin = dispute_data.get("declared_origin") or (rec.get("origin_code") if rec else None)
+    confirmed_origin = None
+    if decision == "UPHELD":
+        origin_votes = [
+            (r.get("data") or {}).get("confirmed_origin")
+            for r in reveals
+            if (r.get("data") or {}).get("vote") == "MISMATCH" and (r.get("data") or {}).get("confirmed_origin")
+        ]
+        origin_counts: dict[str, int] = {}
+        for o in origin_votes:
+            origin_counts[o] = origin_counts.get(o, 0) + 1
+        confirmed_origin = max(origin_counts, key=origin_counts.get) if origin_counts else dispute_data.get("claimed_origin")
+
+    verdict = "DISMISSED" if decision == "DISMISSED" \
+        else "CONSERVATIVE_LABEL" if (declared_origin == "AG" and confirmed_origin == "OH") \
+        else "UPHELD"
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    result_tx = _node_signed_auto({
+        "tx_type":   TxType.ADJUDICATION_RESULT,
+        "timestamp": now_str,
+        "prev":      dag.get_recent_prev(),
+        "data": {
+            "ctid": ctid, "verdict": verdict,
+            "declared_origin": declared_origin, "confirmed_origin": confirmed_origin,
+            "reason": dispute_data.get("reason"), "author_tip_id": author_tip_id,
+            "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count,
+            "juror_votes": [{"juror_tip_id": (r.get("data") or {}).get("juror_tip_id"),
+                             "vote": (r.get("data") or {}).get("vote")} for r in reveals],
+        },
+    }, config)
+    dag.add_tx(result_tx)
+
+    # Juror score effects
+    is_tie = match_count == mismatch_count
+    if not is_tie:
+        majority_vote = "MISMATCH" if mismatch_count > match_count else "MATCH"
+        for r in reveals:
+            juror_id = (r.get("data") or {}).get("juror_tip_id")
+            v = (r.get("data") or {}).get("vote")
+            if v == "ABSTAIN":
+                continue
+            if v == majority_vote:
+                scoring.apply_score_event(juror_id, Jury.MAJORITY_BONUS, f"Jury majority vote on {ctid}")
+            else:
+                scoring.apply_score_event(juror_id, -Jury.MINORITY_PENALTY, f"Jury minority vote on {ctid}")
+
+    # No-show penalty
+    revealed_ids = {(r.get("data") or {}).get("juror_tip_id") for r in reveals}
+    for s in summons:
+        jid = (s.get("data") or {}).get("juror_tip_id")
+        if jid not in revealed_ids:
+            scoring.apply_score_event(jid, -Jury.NO_SHOW_PENALTY, f"Jury no-show on {ctid}")
+
+    # Disputer effects
+    if verdict == "UPHELD" and disputer_tip_id:
+        scoring.apply_score_event(disputer_tip_id, Dispute.UPHELD_BONUS, f"Dispute upheld on {ctid}")
+    elif verdict == "DISMISSED" and disputer_tip_id:
+        scoring.apply_score_event(disputer_tip_id, -Dispute.DISPUTER_STAKE, f"Dispute dismissed on {ctid}")
+
+    # Creator effects
+    if verdict == "UPHELD" and author_tip_id:
+        scoring.compute_score(author_tip_id)
+        if confirmed_origin:
+            dag.update_content_origin(ctid, confirmed_origin, "verified")
+            log.info(f"Verdict UPHELD: {ctid} origin {declared_origin} → {confirmed_origin}")
+    elif verdict in ("DISMISSED", "CONSERVATIVE_LABEL"):
+        dag.update_content_status(ctid, "registered")
+
+    return {"verdict": verdict, "confirmed_origin": confirmed_origin,
+            "match_count": match_count, "mismatch_count": mismatch_count,
+            "abstain_count": abstain_count, "tx_id": result_tx["tx_id"]}

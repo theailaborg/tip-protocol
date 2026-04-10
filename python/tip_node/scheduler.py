@@ -71,12 +71,47 @@ def start_scheduled_tasks(dag, scoring, gossip, config: dict) -> None:
             except Exception:
                 pass
 
+    # 4. Jury verdict auto-trigger (every 5 minutes)
+    def jury_verdict_check() -> None:
+        from tip_node.jury import tally_verdict_and_apply
+        while True:
+            threading.Event().wait(300)  # 5 minutes
+            try:
+                disputed = dag.get_content_by_status("disputed")
+                if not disputed:
+                    continue
+                now_ts = datetime.now(timezone.utc).timestamp()
+                for rec in disputed:
+                    ctid = rec.get("ctid")
+                    if not ctid:
+                        continue
+                    summons = dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                    if not summons:
+                        continue
+                    reveal_deadline = (summons[0].get("data") or {}).get("reveal_deadline", "")
+                    try:
+                        dl = datetime.fromisoformat(reveal_deadline.replace("Z", "+00:00")).timestamp()
+                    except (ValueError, AttributeError):
+                        continue
+                    if now_ts < dl:
+                        continue
+                    has_verdict = len(dag.get_txs_by_type_and_ctid(TxType.ADJUDICATION_RESULT, ctid)) > 0
+                    if has_verdict:
+                        continue
+                    reveals = dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+                    log.info(f"Auto-triggering verdict for {ctid}: {len(reveals)}/{len(summons)} reveals, deadline passed")
+                    result = tally_verdict_and_apply(ctid, reveals, summons, dag, scoring, config)
+                    log.info(f"Auto-verdict for {ctid}: {result.get('verdict')} ({result.get('match_count')}-{result.get('mismatch_count')}-{result.get('abstain_count')})")
+            except Exception as exc:
+                log.warning(f"Jury verdict auto-trigger failed: {exc}")
+
     for fn, name in [
-        (publish_merkle,    "scheduler.merkle"),
-        (recompute_scores,  "scheduler.scores"),
-        (peer_ping,         "scheduler.ping"),
+        (publish_merkle,      "scheduler.merkle"),
+        (recompute_scores,    "scheduler.scores"),
+        (peer_ping,           "scheduler.ping"),
+        (jury_verdict_check,  "scheduler.jury"),
     ]:
         t = threading.Thread(target=fn, name=name, daemon=True)
         t.start()
 
-    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping)")
+    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping, jury verdict)")

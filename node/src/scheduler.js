@@ -14,9 +14,10 @@
 
 "use strict";
 
-const { TX_TYPES }  = require("../../shared/constants");
-const { shake256Multi } = require("../../shared/crypto");
-const { log }       = require("./logger");
+const { TX_TYPES }          = require("../../shared/constants");
+const { shake256Multi }     = require("../../shared/crypto");
+const { tallyVerdictAndApply } = require("./jury");
+const { log }               = require("./logger");
 
 function scheduledTasks(dag, scoring, gossip, config) {
 
@@ -58,7 +59,43 @@ function scheduledTasks(dag, scoring, gossip, config) {
     }
   }, 30_000);
 
-  log.info("Scheduled tasks initialised (Merkle root, score recomputation, peer health)");
+  // 4. Jury verdict auto-trigger (every 5 minutes)
+  // Only checks content with status "disputed" — no full tx scan.
+  setInterval(() => {
+    try {
+      // Get only disputed content (small set)
+      const disputedContent = dag.getContentByStatus("disputed");
+      if (!disputedContent.length) return;
+
+      const now = Date.now();
+      for (const rec of disputedContent) {
+        const ctid = rec.ctid;
+
+        // Direct query per CTID — no full tx scan
+        const summons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid);
+        if (!summons.length) continue;
+
+        // Check reveal deadline passed
+        const revealDeadline = new Date(summons[0].data?.reveal_deadline).getTime();
+        if (isNaN(revealDeadline) || now < revealDeadline) continue;
+
+        // Check no verdict yet
+        const hasVerdict = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid).length > 0;
+        if (hasVerdict) continue;
+
+        // Gather reveals and trigger verdict
+        const reveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid);
+
+        log.info(`Auto-triggering verdict for ${ctid}: ${reveals.length}/${summons.length} reveals, deadline passed`);
+        const result = tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config);
+        log.info(`Auto-verdict for ${ctid}: ${result.verdict} (${result.matchCount}-${result.mismatchCount}-${result.abstainCount})`);
+      }
+    } catch (err) {
+      log.warn("Jury verdict auto-trigger failed:", err.message);
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+
+  log.info("Scheduled tasks initialised (Merkle root, score recomputation, peer health, jury verdict)");
 }
 
 module.exports = { scheduledTasks };

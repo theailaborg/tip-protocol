@@ -38,7 +38,7 @@ from shared.constants import (
     JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
     Dispute, Jury, AiClassifier,
 )
-from tip_node.jury import select_jury
+from tip_node.jury import select_jury, tally_verdict_and_apply
 from tip_node.validators.tx_validator import validate_transaction
 from tip_node.logger import get_logger
 
@@ -986,9 +986,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not verify_body_signature(body, signature, juror.get("public_key", ""), _COMMIT_FIELDS):
             self._send_json(403, {"error": "Juror signature verification failed"}); return
 
-        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
-                        if (t.get("data") or {}).get("ctid") == ctid
-                        and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        summons_txs = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                        if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
         if not summons_txs:
             self._send_json(403, {"error": "You were not summoned as a juror for this dispute"}); return
 
@@ -997,9 +996,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if datetime.now(timezone.utc) > commit_deadline:
             self._send_json(403, {"error": "Commit window has closed"}); return
 
-        existing = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_COMMIT)
-                    if (t.get("data") or {}).get("ctid") == ctid
-                    and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        existing = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_COMMIT, ctid)
+                    if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
         if existing:
             self._send_json(409, {"error": "You have already submitted a vote commitment"}); return
 
@@ -1039,9 +1037,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if not verify_body_signature(body, signature, juror.get("public_key", ""), _REVEAL_FIELDS):
             self._send_json(403, {"error": "Juror signature verification failed"}); return
 
-        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
-                        if (t.get("data") or {}).get("ctid") == ctid
-                        and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        summons_txs = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+                        if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
         if not summons_txs:
             self._send_json(403, {"error": "You were not summoned as a juror for this dispute"}); return
 
@@ -1064,9 +1061,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         if computed != commit_txs[0]["data"]["commitment"]:
             self._send_json(403, {"error": "Vote does not match commitment — vote discarded"}); return
 
-        existing_reveal = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL)
-                           if (t.get("data") or {}).get("ctid") == ctid
-                           and (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
+        existing_reveal = [t for t in self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+                           if (t.get("data") or {}).get("juror_tip_id") == juror_tip_id]
         if existing_reveal:
             self._send_json(409, {"error": "You have already revealed your vote"}); return
 
@@ -1081,113 +1077,14 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         self._broadcast(reveal_tx)
 
         # Check if all jurors revealed — trigger verdict
-        all_reveals = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL)
-                       if (t.get("data") or {}).get("ctid") == ctid]
-        all_summons = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS)
-                       if (t.get("data") or {}).get("ctid") == ctid]
+        all_reveals = self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
+        all_summons = self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
 
         verdict_result = None
         if len(all_reveals) >= len(all_summons):
-            verdict_result = self._tally_verdict(ctid, all_reveals, all_summons)
+            verdict_result = tally_verdict_and_apply(ctid, all_reveals, all_summons, self.dag, self.scoring, self.config)
 
         self._send_json(200, {"success": True, "tx_id": reveal_tx["tx_id"], "verdict": verdict_result})
-
-    def _tally_verdict(self, ctid: str, reveals: list, summons: list) -> dict:
-        match_count    = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MATCH")
-        mismatch_count = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "MISMATCH")
-        abstain_count  = sum(1 for r in reveals if (r.get("data") or {}).get("vote") == "ABSTAIN")
-        total_votes    = match_count + mismatch_count + abstain_count
-        non_abstain    = match_count + mismatch_count
-
-        if total_votes < Jury.QUORUM:
-            return {"verdict": "NO_QUORUM", "message": "Insufficient reveals", "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count}
-        if non_abstain < Jury.MAJORITY_VOTE:
-            return {"verdict": "NO_QUORUM", "message": "Insufficient non-abstain votes", "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count}
-
-        majority_needed = non_abstain // 2 + 1
-        decision = "UPHELD" if mismatch_count >= majority_needed else "DISMISSED"
-
-        rec = self.dag.get_content(ctid)
-        dispute_txs = [t for t in self.dag.get_txs_by_type(TxType.CONTENT_DISPUTED) if (t.get("data") or {}).get("ctid") == ctid]
-        dispute_data    = (dispute_txs[0].get("data") or {}) if dispute_txs else {}
-        disputer_tip_id = dispute_data.get("disputer_tip_id")
-        author_tip_id   = rec.get("author_tip_id") if rec else None
-
-        declared_origin = dispute_data.get("declared_origin") or (rec.get("origin_code") if rec else None)
-        confirmed_origin = None
-        if decision == "UPHELD":
-            # Pick most common confirmed_origin from MISMATCH voters
-            origin_votes = [
-                (r.get("data") or {}).get("confirmed_origin")
-                for r in reveals
-                if (r.get("data") or {}).get("vote") == "MISMATCH" and (r.get("data") or {}).get("confirmed_origin")
-            ]
-            origin_counts: dict[str, int] = {}
-            for o in origin_votes:
-                origin_counts[o] = origin_counts.get(o, 0) + 1
-            confirmed_origin = max(origin_counts, key=origin_counts.get) if origin_counts else dispute_data.get("claimed_origin")
-
-        from shared.constants import Origin
-        verdict = "DISMISSED" if decision == "DISMISSED" \
-            else "CONSERVATIVE_LABEL" if (declared_origin == "AG" and confirmed_origin == "OH") \
-            else "UPHELD"
-
-        result_tx = self._node_signed_auto({
-            "tx_type":   TxType.ADJUDICATION_RESULT,
-            "timestamp": _utc_now(),
-            "prev":      self.dag.get_recent_prev(),
-            "data": {
-                "ctid":            ctid,
-                "verdict":         verdict,
-                "declared_origin": declared_origin,
-                "confirmed_origin": confirmed_origin,
-                "reason":          dispute_data.get("reason"),
-                "author_tip_id":   author_tip_id,
-                "match_count":     match_count,
-                "mismatch_count":  mismatch_count,
-                "abstain_count":   abstain_count,
-                "juror_votes":     [{"juror_tip_id": (r.get("data") or {}).get("juror_tip_id"), "vote": (r.get("data") or {}).get("vote")} for r in reveals],
-            },
-        })
-        self.dag.add_tx(result_tx)
-        self._broadcast(result_tx)
-
-        # Juror score effects
-        is_tie = match_count == mismatch_count
-        if not is_tie:
-            majority_vote = "MISMATCH" if mismatch_count > match_count else "MATCH"
-            for r in reveals:
-                juror_id = (r.get("data") or {}).get("juror_tip_id")
-                v = (r.get("data") or {}).get("vote")
-                if v == "ABSTAIN": continue
-                if v == majority_vote:
-                    self.scoring.apply_score_event(juror_id, Jury.MAJORITY_BONUS, f"Jury majority vote on {ctid}")
-                else:
-                    self.scoring.apply_score_event(juror_id, -Jury.MINORITY_PENALTY, f"Jury minority vote on {ctid}")
-
-        # No-show penalty
-        revealed_ids = {(r.get("data") or {}).get("juror_tip_id") for r in reveals}
-        for s in summons:
-            jid = (s.get("data") or {}).get("juror_tip_id")
-            if jid not in revealed_ids:
-                self.scoring.apply_score_event(jid, -Jury.NO_SHOW_PENALTY, f"Jury no-show on {ctid}")
-
-        # Disputer effects
-        if verdict == "UPHELD" and disputer_tip_id:
-            self.scoring.apply_score_event(disputer_tip_id, Dispute.UPHELD_BONUS, f"Dispute upheld on {ctid}")
-        elif verdict == "DISMISSED" and disputer_tip_id:
-            self.scoring.apply_score_event(disputer_tip_id, -Dispute.DISPUTER_STAKE, f"Dispute dismissed on {ctid}")
-
-        # Creator effects
-        if verdict == "UPHELD" and author_tip_id:
-            self.scoring.compute_score(author_tip_id)
-            if confirmed_origin:
-                self.dag.update_content_origin(ctid, confirmed_origin, "verified")
-                log.info(f"Verdict UPHELD: {ctid} origin {declared_origin} → {confirmed_origin}")
-        elif verdict in ("DISMISSED", "CONSERVATIVE_LABEL"):
-            self.dag.update_content_status(ctid, "registered")
-
-        return {"verdict": verdict, "confirmed_origin": confirmed_origin, "match_count": match_count, "mismatch_count": mismatch_count, "abstain_count": abstain_count, "tx_id": result_tx["tx_id"]}
 
     def _dispute_case(self, ctid: str):
         rec = self.dag.get_content(ctid)
@@ -1200,7 +1097,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "status": rec.get("status"), "registered_at": rec.get("registered_at"),
         }
 
-        dispute_txs = [t for t in self.dag.get_txs_by_type(TxType.CONTENT_DISPUTED) if (t.get("data") or {}).get("ctid") == ctid]
+        dispute_txs = self.dag.get_txs_by_type_and_ctid(TxType.CONTENT_DISPUTED, ctid)
         dispute = {
             "disputer_tip_id": dispute_txs[0]["data"].get("disputer_tip_id"), "reason": dispute_txs[0]["data"].get("reason"),
             "claimed_origin": dispute_txs[0]["data"].get("claimed_origin"), "declared_origin": dispute_txs[0]["data"].get("declared_origin"),
@@ -1208,7 +1105,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "dispute_tx_id": dispute_txs[0].get("tx_id"),
         } if dispute_txs else None
 
-        classifier_txs = [t for t in self.dag.get_txs_by_type(TxType.AI_CLASSIFIER_RESULT) if (t.get("data") or {}).get("ctid") == ctid]
+        classifier_txs = self.dag.get_txs_by_type_and_ctid(TxType.AI_CLASSIFIER_RESULT, ctid)
         ai_classifier = {"confidence": classifier_txs[0]["data"].get("confidence"), "routing": classifier_txs[0]["data"].get("routing")} if classifier_txs else None
 
         author_tip_id = rec.get("author_tip_id", "")
@@ -1224,9 +1121,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "offense_count": author_score.get("offense_count", 0),
         }
 
-        summons_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_SUMMONS) if (t.get("data") or {}).get("ctid") == ctid]
-        commit_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_COMMIT) if (t.get("data") or {}).get("ctid") == ctid]
-        reveal_txs = [t for t in self.dag.get_txs_by_type(TxType.JURY_VOTE_REVEAL) if (t.get("data") or {}).get("ctid") == ctid]
+        summons_txs = self.dag.get_txs_by_type_and_ctid(TxType.JURY_SUMMONS, ctid)
+        commit_txs = self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_COMMIT, ctid)
+        reveal_txs = self.dag.get_txs_by_type_and_ctid(TxType.JURY_VOTE_REVEAL, ctid)
         committed_ids = {(t.get("data") or {}).get("juror_tip_id") for t in commit_txs}
         revealed_ids = {(t.get("data") or {}).get("juror_tip_id") for t in reveal_txs}
         jury = {
@@ -1239,7 +1136,7 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "total_summoned": len(summons_txs), "total_committed": len(commit_txs), "total_revealed": len(reveal_txs),
         }
 
-        adj_txs = [t for t in self.dag.get_txs_by_type(TxType.ADJUDICATION_RESULT) if (t.get("data") or {}).get("ctid") == ctid]
+        adj_txs = self.dag.get_txs_by_type_and_ctid(TxType.ADJUDICATION_RESULT, ctid)
         verdict = {
             "verdict": adj_txs[0]["data"].get("verdict"), "declared_origin": adj_txs[0]["data"].get("declared_origin"),
             "confirmed_origin": adj_txs[0]["data"].get("confirmed_origin"), "match_count": adj_txs[0]["data"].get("match_count"),

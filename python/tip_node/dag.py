@@ -172,6 +172,11 @@ class MemoryStore:
         with self._lock:
             return [dict(t) for t in self._txs.values() if t.get("tx_type") == tx_type]
 
+    def get_txs_by_type_and_ctid(self, tx_type: str, ctid: str) -> list[dict]:
+        with self._lock:
+            return [dict(t) for t in self._txs.values()
+                    if t.get("tx_type") == tx_type and (t.get("data") or {}).get("ctid") == ctid]
+
     def get_txs_by_tip_id(self, tip_id: str) -> list[dict]:
         with self._lock:
             result = []
@@ -217,6 +222,10 @@ class MemoryStore:
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         with self._lock:
             return [dict(c) for c in self._content.values() if c.get("author_tip_id") == tip_id]
+
+    def get_content_by_status(self, status: str) -> list[dict]:
+        with self._lock:
+            return [dict(c) for c in self._content.values() if c.get("status") == status]
 
     def has_verification(self, ctid: str, tip_id: str) -> bool:
         with self._lock:
@@ -406,6 +415,15 @@ class SQLiteStore:
         ).fetchall()
         return [self._row_to_tx(r) for r in rows]
 
+    def get_txs_by_type_and_ctid(self, tx_type: str, ctid: str) -> list[dict]:
+        rows = self._conn().execute(
+            """SELECT * FROM transactions
+               WHERE tx_type = ? AND json_extract(data,'$.ctid') = ?
+               ORDER BY created_at ASC""",
+            (tx_type, ctid),
+        ).fetchall()
+        return [self._row_to_tx(r) for r in rows]
+
     def get_txs_by_tip_id(self, tip_id: str) -> list[dict]:
         rows = self._conn().execute(
             """SELECT * FROM transactions
@@ -493,6 +511,12 @@ class SQLiteStore:
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         rows = self._conn().execute(
             "SELECT * FROM content WHERE author_tip_id = ?", (tip_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_content_by_status(self, status: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT * FROM content WHERE status = ?", (status,)
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -767,6 +791,9 @@ class DAG:
     def get_txs_by_type(self, tx_type: str) -> list[dict]:
         return self._store.get_txs_by_type(tx_type)
 
+    def get_txs_by_type_and_ctid(self, tx_type: str, ctid: str) -> list[dict]:
+        return self._store.get_txs_by_type_and_ctid(tx_type, ctid)
+
     def get_txs_by_tip_id(self, tip_id: str) -> list[dict]:
         return self._store.get_txs_by_tip_id(tip_id)
 
@@ -800,6 +827,9 @@ class DAG:
 
     def get_content_by_author(self, tip_id: str) -> list[dict]:
         return self._store.get_content_by_author(tip_id)
+
+    def get_content_by_status(self, status: str) -> list[dict]:
+        return self._store.get_content_by_status(status)
 
     def has_verification(self, ctid: str, tip_id: str) -> bool:
         return self._store.has_verification(ctid, tip_id)

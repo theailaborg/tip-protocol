@@ -56,6 +56,9 @@ class MemoryStore {
   getTxsByType(type) {
     return [...this._txs.values()].filter(t => t.tx_type === type);
   }
+  getTxsByTypeAndCtid(type, ctid) {
+    return [...this._txs.values()].filter(t => t.tx_type === type && t.data?.ctid === ctid);
+  }
   getTxsByTipId(tipId) {
     return [...this._txs.values()].filter(t =>
       t.data?.tip_id === tipId || t.data?.author_tip_id === tipId
@@ -77,6 +80,9 @@ class MemoryStore {
   updateContentOrigin(ctid, originCode, status) {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, origin_code: originCode, status });
+  }
+  getContentByStatus(status) {
+    return [...this._content.values()].filter(c => c.status === status);
   }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
@@ -259,6 +265,11 @@ class SQLiteStore {
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY created_at ASC"),
       countTxs:  this.db.prepare("SELECT COUNT(*) AS n FROM transactions"),
       txsByType: this.db.prepare("SELECT * FROM transactions WHERE tx_type=? ORDER BY created_at ASC"),
+      txsByTypeAndCtid: this.db.prepare(
+        `SELECT * FROM transactions
+         WHERE tx_type=? AND json_extract(data,'$.ctid')=?
+         ORDER BY created_at ASC`
+      ),
       txsByTipId: this.db.prepare(
         `SELECT * FROM transactions
          WHERE json_extract(data,'$.tip_id')=?
@@ -285,6 +296,7 @@ class SQLiteStore {
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
+      contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
       hasVerification: this.db.prepare(
         `SELECT 1 FROM transactions
          WHERE tx_type='CONTENT_VERIFIED'
@@ -356,6 +368,7 @@ class SQLiteStore {
   getAllTxs()  { return this._stmts.getAllTxs.all().map(r => this._parseTx(r)); }
   count()      { return this._stmts.countTxs.get().n; }
   getTxsByType(type)   { return this._stmts.txsByType.all(type).map(r => this._parseTx(r)); }
+  getTxsByTypeAndCtid(type, ctid) { return this._stmts.txsByTypeAndCtid.all(type, ctid).map(r => this._parseTx(r)); }
   getTxsByTipId(tipId) { return this._stmts.txsByTipId.all(tipId, tipId).map(r => this._parseTx(r)); }
 
   // ── Identities ────────────────────────────────────────────────────────────
@@ -392,6 +405,7 @@ class SQLiteStore {
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId)   { return this._stmts.contentByAuthor.all(tipId); }
+  getContentByStatus(status)  { return this._stmts.contentByStatus.all(status); }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
@@ -511,6 +525,7 @@ function initDAG(config) {
     getAllTxs:       ()        => store.getAllTxs(),
     count:           ()        => store.count(),
     getTxsByType:    (type)    => store.getTxsByType(type),
+    getTxsByTypeAndCtid: (type, ctid) => store.getTxsByTypeAndCtid(type, ctid),
     getTxsByTipId:   (tipId)   => store.getTxsByTipId(tipId),
     getRecentPrev:   ()        => [..._prev],
 
@@ -525,6 +540,7 @@ function initDAG(config) {
     updateContentStatus:  (ctid, s)     => store.updateContentStatus(ctid, s),
     updateContentOrigin:  (ctid, o, s)  => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor:   (id)          => store.getContentByAuthor(id),
+    getContentByStatus:   (s)           => store.getContentByStatus(s),
     hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),
 
