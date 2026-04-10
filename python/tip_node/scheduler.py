@@ -13,7 +13,7 @@ Tasks (all run in daemon threads):
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from shared.crypto import shake256_multi
 from shared.constants import TxType
@@ -71,7 +71,22 @@ def start_scheduled_tasks(dag, scoring, gossip, config: dict) -> None:
             except Exception:
                 pass
 
-    # 4. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
+    # 4. 90-day clean record bonus (every 24 hours)
+    # Single DAG query returns only eligible identities — no full scan.
+    def clean_record_check() -> None:
+        while True:
+            threading.Event().wait(24 * 3600)  # 24 hours
+            try:
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat().replace("+00:00", "Z")
+                eligible = dag.get_clean_record_eligible(cutoff)
+                for tip_id in eligible:
+                    scoring.apply_score_event(tip_id, 10, "clean_record_bonus")
+                if eligible:
+                    log.info(f"Clean record bonus: {len(eligible)} identities awarded +10")
+            except Exception as exc:
+                log.warning(f"Clean record bonus failed: {exc}")
+
+    # 5. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
     def verdict_check() -> None:
         from tip_node.jury import tally_verdict_and_apply, apply_appeal_verdict
         while True:
@@ -128,12 +143,13 @@ def start_scheduled_tasks(dag, scoring, gossip, config: dict) -> None:
                 log.warning(f"Verdict auto-trigger failed: {exc}")
 
     for fn, name in [
-        (publish_merkle,     "scheduler.merkle"),
-        (recompute_scores,   "scheduler.scores"),
-        (peer_ping,          "scheduler.ping"),
-        (verdict_check,      "scheduler.verdict"),
+        (publish_merkle,      "scheduler.merkle"),
+        (recompute_scores,    "scheduler.scores"),
+        (peer_ping,           "scheduler.ping"),
+        (clean_record_check,  "scheduler.clean_record"),
+        (verdict_check,       "scheduler.verdict"),
     ]:
         t = threading.Thread(target=fn, name=name, daemon=True)
         t.start()
 
-    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping, jury verdict, appeal verdict)")
+    log.info("Scheduled tasks started (Merkle root, score recomputation, peer ping, clean record, verdict)")

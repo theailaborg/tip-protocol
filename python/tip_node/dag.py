@@ -227,6 +227,24 @@ class MemoryStore:
         with self._lock:
             return [dict(c) for c in self._content.values() if c.get("status") == status]
 
+    def get_clean_record_eligible(self, cutoff: str) -> list[str]:
+        with self._lock:
+            txs = list(self._txs.values())
+            result = []
+            for ident in self._ids.values():
+                tip_id = ident.get("tip_id")
+                if ident.get("status") != "active":
+                    continue
+                user_txs = [t for t in txs if (t.get("data") or {}).get("tip_id") == tip_id or (t.get("data") or {}).get("author_tip_id") == tip_id]
+                if not any(t.get("timestamp", "") >= cutoff for t in user_txs):
+                    continue
+                if any(t.get("tx_type") == "ADJUDICATION_RESULT" and (t.get("data") or {}).get("verdict") == "UPHELD" and t.get("timestamp", "") >= cutoff for t in user_txs):
+                    continue
+                if any(t.get("tx_type") == "SCORE_UPDATE" and (t.get("data") or {}).get("reason") == "clean_record_bonus" and t.get("timestamp", "") >= cutoff for t in user_txs):
+                    continue
+                result.append(tip_id)
+            return result
+
     def has_verification(self, ctid: str, tip_id: str) -> bool:
         with self._lock:
             for tx in self._txs.values():
@@ -519,6 +537,34 @@ class SQLiteStore:
             "SELECT * FROM content WHERE status = ?", (status,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_clean_record_eligible(self, cutoff: str) -> list[str]:
+        rows = self._conn().execute("""
+            SELECT DISTINCT i.tip_id FROM identities i
+            WHERE i.status = 'active'
+              AND EXISTS (
+                SELECT 1 FROM transactions t
+                WHERE (json_extract(t.data,'$.tip_id') = i.tip_id
+                    OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
+                  AND t.timestamp >= ?
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM transactions t
+                WHERE t.tx_type = 'ADJUDICATION_RESULT'
+                  AND json_extract(t.data,'$.author_tip_id') = i.tip_id
+                  AND json_extract(t.data,'$.verdict') = 'UPHELD'
+                  AND t.timestamp >= ?
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM transactions t
+                WHERE t.tx_type = 'SCORE_UPDATE'
+                  AND (json_extract(t.data,'$.tip_id') = i.tip_id
+                    OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
+                  AND json_extract(t.data,'$.reason') = 'clean_record_bonus'
+                  AND t.timestamp >= ?
+              )
+        """, (cutoff, cutoff, cutoff)).fetchall()
+        return [r[0] for r in rows]
 
     def has_verification(self, ctid: str, tip_id: str) -> bool:
         row = self._conn().execute(
@@ -830,6 +876,9 @@ class DAG:
 
     def get_content_by_status(self, status: str) -> list[dict]:
         return self._store.get_content_by_status(status)
+
+    def get_clean_record_eligible(self, cutoff: str) -> list[str]:
+        return self._store.get_clean_record_eligible(cutoff)
 
     def has_verification(self, ctid: str, tip_id: str) -> bool:
         return self._store.has_verification(ctid, tip_id)

@@ -59,7 +59,22 @@ function scheduledTasks(dag, scoring, gossip, config) {
     }
   }, 30_000);
 
-  // 4. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
+  // 4. 90-day clean record bonus (every 24 hours)
+  // Single DAG query returns only eligible identities — no full scan.
+  setInterval(() => {
+    try {
+      const cutoff = new Date(Date.now() - 90 * 24 * 3600000).toISOString();
+      const eligible = dag.getCleanRecordEligible(cutoff);
+      for (const tipId of eligible) {
+        scoring.applyScoreEvent(tipId, 10, "clean_record_bonus");
+      }
+      if (eligible.length > 0) log.info(`Clean record bonus: ${eligible.length} identities awarded +10`);
+    } catch (err) {
+      log.warn("Clean record bonus failed:", err.message);
+    }
+  }, 24 * 60 * 60 * 1000); // every 24 hours
+
+  // 5. Verdict auto-trigger — jury + appeal in single pass (every 5 minutes)
   // Only processes disputed content with expired deadlines and no result yet.
   setInterval(() => {
     try {

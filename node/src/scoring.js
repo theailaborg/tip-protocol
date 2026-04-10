@@ -43,7 +43,8 @@ function initScoring(dag, config) {
     let score = 500;
     let offenseCount = 0;
     const history = [];
-    let lastCleanStart = null;
+    // lastCleanStart tracking removed — clean record bonus is now
+    // applied by the scheduler as a SCORE_UPDATE tx, not computed here.
 
     for (const tx of txs) {
       let delta = 0;
@@ -55,7 +56,7 @@ function initScoring(dag, config) {
           score = tx.data.attested || tx.data.social_attested ? 550 : 500;
           reason = tx.data.attested || tx.data.social_attested ? "Registration with social attestation (+50)" : "Registration";
           delta = tx.data.attested || tx.data.social_attested ? 50 : 0;
-          lastCleanStart = new Date(tx.timestamp);
+          // clean record start tracked by scheduler via ADJUDICATION_RESULT txs
           break;
 
         case TX_TYPES.REGISTER_CONTENT:
@@ -81,7 +82,7 @@ function initScoring(dag, config) {
           reason = `Adjudication: ${tx.data.verdict} on ${tx.data.ctid}`;
           if (delta < 0) {
             offenseCount++;
-            if (delta <= -100) lastCleanStart = null;
+            // offense tracked by scheduler for clean record eligibility
           }
           break;
 
@@ -117,23 +118,9 @@ function initScoring(dag, config) {
       }
     }
 
-    // ── 90-day clean record recovery (+10) ────────────────────────────────────
-    if (lastCleanStart) {
-      const daysSinceClean = (Date.now() - lastCleanStart) / (1000 * 60 * 60 * 24);
-      const periodsEarned = Math.floor(daysSinceClean / 90);
-      if (periodsEarned > 0) {
-        const cleanBonus = Math.min(periodsEarned * 10, 50); // cap at 50 total
-        score = Math.max(0, Math.min(1000, score + cleanBonus));
-        history.push({
-          tx_id: "synthetic:clean-record",
-          tx_type: "CLEAN_RECORD_BONUS",
-          delta: cleanBonus,
-          score_after: score,
-          reason: `${periodsEarned} × 90-day clean periods (+${cleanBonus})`,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
+    // 90-day clean record bonus is applied by the scheduler as a real
+    // SCORE_UPDATE tx (reason: "clean_record_bonus"). computeScore() replays
+    // it naturally via the SCORE_UPDATE case above — no special logic needed.
 
     const tier = getTier(score);
     dag.setScore(tipId, score, offenseCount);

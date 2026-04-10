@@ -78,7 +78,6 @@ class ScoringEngine:
         score         = ScoreEvent.INITIAL_NO_ATTESTATION
         offense_count = 0
         history       = []
-        last_clean_ts = None
 
         for tx in txs:
             tx_type = tx.get("tx_type", "")
@@ -93,7 +92,6 @@ class ScoringEngine:
                 delta    = ScoreEvent.ATTESTATION_BONUS if attested else 0
                 reason   = ("Registration with social attestation" if attested
                             else "Registration")
-                last_clean_ts = _parse_ts(ts)
 
             elif tx_type == TxType.CONTENT_VERIFIED:
                 weighted = int(data.get("weighted_delta", 2))
@@ -104,8 +102,7 @@ class ScoringEngine:
                 delta, reason = self._adjudication_delta(data, offense_count)
                 if delta < 0:
                     offense_count += 1
-                    if delta <= -100:
-                        last_clean_ts = None  # reset clean period on serious offense
+                    # offense tracked by scheduler for clean record eligibility
 
             elif tx_type == TxType.SCORE_UPDATE:
                 delta  = int(data.get("delta", 0))
@@ -128,24 +125,8 @@ class ScoringEngine:
                     "timestamp":   ts,
                 })
 
-        # ── 90-day clean record recovery (+10 per period) ─────────────────────
-        if last_clean_ts:
-            now = datetime.now(timezone.utc)
-            if last_clean_ts.tzinfo is None:
-                last_clean_ts = last_clean_ts.replace(tzinfo=timezone.utc)
-            days_clean    = (now - last_clean_ts).days
-            periods_earned = min(days_clean // 90, 5)  # cap at 5 periods
-            if periods_earned > 0:
-                bonus  = periods_earned * ScoreEvent.CLEAN_PERIOD_BONUS
-                score  = _clamp(score + bonus)
-                history.append({
-                    "tx_id":       "synthetic:clean-record",
-                    "tx_type":     "CLEAN_RECORD_BONUS",
-                    "delta":       bonus,
-                    "score_after": score,
-                    "reason":      f"{periods_earned} × 90-day clean periods (+{bonus})",
-                    "timestamp":   now.isoformat(),
-                })
+        # 90-day clean record bonus applied by scheduler as SCORE_UPDATE tx.
+        # computeScore replays it via the SCORE_UPDATE case above.
 
         tier = get_tier(score)
         self._dag.set_score(tip_id, score, offense_count)

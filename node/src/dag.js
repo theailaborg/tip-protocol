@@ -84,6 +84,23 @@ class MemoryStore {
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
+  getCleanRecordEligible(cutoff) {
+    const txs = [...this._txs.values()];
+    return [...this._identities.values()]
+      .filter(id => {
+        const tipId = id.tip_id;
+        if (id.status !== "active") return false;
+        const userTxs = txs.filter(t => t.data?.tip_id === tipId || t.data?.author_tip_id === tipId);
+        const hasActivity = userTxs.some(t => t.timestamp >= cutoff);
+        if (!hasActivity) return false;
+        const hasUpheld = userTxs.some(t => t.tx_type === "ADJUDICATION_RESULT" && t.data?.verdict === "UPHELD" && t.timestamp >= cutoff);
+        if (hasUpheld) return false;
+        const hasBonus = userTxs.some(t => t.tx_type === "SCORE_UPDATE" && t.data?.reason === "clean_record_bonus" && t.timestamp >= cutoff);
+        if (hasBonus) return false;
+        return true;
+      })
+      .map(id => id.tip_id);
+  }
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
   }
@@ -409,6 +426,34 @@ class SQLiteStore {
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
+  getCleanRecordEligible(cutoff) {
+    return this.db.prepare(`
+      SELECT DISTINCT i.tip_id FROM identities i
+      WHERE i.status = 'active'
+        AND EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE (json_extract(t.data,'$.tip_id') = i.tip_id
+              OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
+            AND t.timestamp >= ?
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.tx_type = 'ADJUDICATION_RESULT'
+            AND json_extract(t.data,'$.author_tip_id') = i.tip_id
+            AND json_extract(t.data,'$.verdict') = 'UPHELD'
+            AND t.timestamp >= ?
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM transactions t
+          WHERE t.tx_type = 'SCORE_UPDATE'
+            AND (json_extract(t.data,'$.tip_id') = i.tip_id
+              OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
+            AND json_extract(t.data,'$.reason') = 'clean_record_bonus'
+            AND t.timestamp >= ?
+        )
+    `).all(cutoff, cutoff, cutoff).map(r => r.tip_id);
+  }
+
   // ── Scores ────────────────────────────────────────────────────────────────
   setScore(tipId, score, offenseCount = 0) {
     this._stmts.setScore.run(
@@ -541,6 +586,7 @@ function initDAG(config) {
     updateContentOrigin:  (ctid, o, s)  => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor:   (id)          => store.getContentByAuthor(id),
     getContentByStatus:   (s)           => store.getContentByStatus(s),
+    getCleanRecordEligible: (cutoff)   => store.getCleanRecordEligible(cutoff),
     hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),
 
