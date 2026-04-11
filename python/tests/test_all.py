@@ -1104,6 +1104,30 @@ def test_api_endpoints() -> None:
     })
     check("Duplicate appeal returns 409",                st == 409)
 
+    # 9.19 Content retraction
+    retract_content = "Content for Python retraction test"
+    retract_sig = {"author_tip_id": test_tip_id, "origin_code": "OH", "content_hash": shake256(retract_content)}
+    st, body = _post(f"{base}/v1/content/register", {
+        "author_tip_id": test_tip_id, "origin_code": "OH", "content": retract_content,
+        "signature": _sign_body(retract_sig, test_author_priv),
+    })
+    retract_ctid = body.get("ctid", "")
+    retract_fields = {"author_tip_id": test_tip_id}
+    st, body = _post(f"{base}/v1/content/{quote(retract_ctid, safe='')}/retract", {
+        **retract_fields, "signature": _sign_body(retract_fields, test_author_priv),
+    })
+    check("Retraction returns 200",                     st == 200)
+    check("Retraction returns penalty -50",             body.get("penalty") == -50)
+
+    st, body = _get(f"{base}/v1/content/{quote(retract_ctid, safe='')}")
+    check("Retracted content status is retracted",      body.get("status") == "retracted")
+
+    # Duplicate retraction rejected
+    st, body = _post(f"{base}/v1/content/{quote(retract_ctid, safe='')}/retract", {
+        **retract_fields, "signature": _sign_body(retract_fields, test_author_priv),
+    })
+    check("Duplicate retraction returns 409",           st == 409)
+
     # 9.14b POST /v1/identity/verify-ownership — correct key
     import time
     challenge = f"test-{time.time()}"

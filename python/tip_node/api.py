@@ -293,6 +293,9 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         m = re.match(r"^/v1/content/([^/]+)/update-origin$", path)
         if m:
             return self._content_update_origin(_decode(m.group(1)), body)
+        m = re.match(r"^/v1/content/([^/]+)/retract$", path)
+        if m:
+            return self._content_retract(_decode(m.group(1)), body)
         m = re.match(r"^/v1/content/([^/]+)/jury/commit$", path)
         if m:
             return self._jury_commit(_decode(m.group(1)), body)
@@ -979,6 +982,38 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             "status":          new_status,
             "tx_id":           update_tx["tx_id"],
         })
+
+    def _content_retract(self, ctid: str, body: dict):
+        rec = self.dag.get_content(ctid)
+        if not rec:
+            self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+        author_tip_id = body.get("author_tip_id")
+        signature = body.get("signature")
+        if not author_tip_id: self._send_json(400, {"error": "author_tip_id required"}); return
+        if not signature: self._send_json(400, {"error": "signature required"}); return
+        if author_tip_id != rec.get("author_tip_id"):
+            self._send_json(403, {"error": "Only the content author can retract"}); return
+        if rec.get("status") == "retracted":
+            self._send_json(409, {"error": "Content is already retracted"}); return
+        if rec.get("status") == "disputed":
+            self._send_json(403, {"error": "Cannot retract content under dispute"}); return
+        author = self.dag.get_identity(author_tip_id)
+        if not author: self._send_json(404, {"error": "Author not found"}); return
+        if self.dag.is_revoked(author_tip_id): self._send_json(403, {"error": "Author is revoked"}); return
+        if not verify_body_signature(body, signature, author.get("public_key", ""), ["author_tip_id"]):
+            self._send_json(403, {"error": "Author signature verification failed"}); return
+
+        retract_tx = self._with_tx_id({
+            "tx_type": TxType.CONTENT_RETRACTED, "timestamp": _utc_now(), "prev": self.dag.get_recent_prev(),
+            "data": {"ctid": ctid, "author_tip_id": author_tip_id, "origin_code": rec.get("origin_code"),
+                     "pre_retract_status": rec.get("status")},
+        })
+        self.dag.add_tx(retract_tx)
+        self._broadcast(retract_tx)
+        self.scoring.apply_score_event(author_tip_id, ScoreEvent.CONTENT_RETRACTION, f"Content retracted: {ctid}")
+        self.dag.update_content_status(ctid, "retracted")
+        log.info(f"Content retracted: {ctid} by {author_tip_id} (penalty: {ScoreEvent.CONTENT_RETRACTION})")
+        self._send_json(200, {"success": True, "ctid": ctid, "penalty": ScoreEvent.CONTENT_RETRACTION, "tx_id": retract_tx["tx_id"]})
 
     def _jury_commit(self, ctid: str, body: dict):
         juror_tip_id = body.get("juror_tip_id")

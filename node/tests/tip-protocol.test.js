@@ -1655,4 +1655,60 @@ describe("Semantic Dedup", () => {
       .send({ ...f1, signature: signBody(f1, sdAuthorPriv) });
     expect(r2.status).toBe(409);
   });
+
+  test("9.19 Content retraction succeeds with -50 penalty", async () => {
+    const rc = "Content for retraction test.";
+    const rs = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(rc) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: rc, signature: signBody(rs, sdAuthorPriv) });
+    const rCtid = ctRes.body.ctid;
+
+    const retractFields = { author_tip_id: sdTipId };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(rCtid)}/retract`)
+      .send({ ...retractFields, signature: signBody(retractFields, sdAuthorPriv) });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.penalty).toBe(-50);
+
+    // Content status is retracted
+    const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(rCtid)}`);
+    expect(getRes.body.status).toBe("retracted");
+  });
+
+  test("9.20 Non-author cannot retract", async () => {
+    const nc = "Content for non-author retract test.";
+    const ns = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(nc) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: nc, signature: signBody(ns, sdAuthorPriv) });
+    const nCtid = ctRes.body.ctid;
+
+    const retractFields = { author_tip_id: sdVerifierId };
+    const res = await request(sdApp)
+      .post(`/v1/content/${encodeURIComponent(nCtid)}/retract`)
+      .send({ ...retractFields, signature: signBody(retractFields, sdVerifierPriv) });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/only.*author/i);
+  });
+
+  test("9.21 Duplicate retraction rejected", async () => {
+    const dc = "Content for duplicate retract test.";
+    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(dc) };
+    const ctRes = await request(sdApp)
+      .post("/v1/content/register")
+      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
+    const dCtid = ctRes.body.ctid;
+
+    // First retraction
+    const rf = { author_tip_id: sdTipId };
+    await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/retract`)
+      .send({ ...rf, signature: signBody(rf, sdAuthorPriv) });
+
+    // Second retraction — rejected
+    const res = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/retract`)
+      .send({ ...rf, signature: signBody(rf, sdAuthorPriv) });
+    expect(res.status).toBe(409);
+  });
 });

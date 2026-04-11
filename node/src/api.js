@@ -65,7 +65,7 @@ const { validateTransaction } = require("./validators/tx-validator");
 const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("./jury");
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
   getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
 } = require("../../shared/constants");
 
@@ -1432,6 +1432,72 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       new_origin_code,
       status:           newStatus,
       tx_id:            updateTx.tx_id,
+    });
+  });
+
+  /**
+   * POST /v1/content/:ctid/retract
+   * Creator voluntarily retracts their own content. Penalty: -50 score.
+   */
+  app.post("/v1/content/:ctid/retract", (req, res) => {
+    const rec = dag.getContent(req.params.ctid);
+    if (!rec) return res.status(404).json({ error: "Content record not found" });
+
+    const { author_tip_id, signature } = req.body;
+    if (!author_tip_id) return res.status(400).json({ error: "author_tip_id required" });
+    if (!signature)     return res.status(400).json({ error: "signature required" });
+
+    // Only author can retract
+    if (author_tip_id !== rec.author_tip_id) {
+      return res.status(403).json({ error: "Only the content author can retract" });
+    }
+
+    // Can't retract already retracted or disputed content
+    if (rec.status === "retracted") {
+      return res.status(409).json({ error: "Content is already retracted" });
+    }
+    if (rec.status === "disputed") {
+      return res.status(403).json({ error: "Cannot retract content that is under dispute" });
+    }
+
+    // Verify author identity + signature
+    const author = dag.getIdentity(author_tip_id);
+    if (!author) return res.status(404).json({ error: "Author identity not found" });
+    if (dag.isRevoked(author_tip_id)) return res.status(403).json({ error: "Author TIP-ID is revoked" });
+
+    const RETRACT_FIELDS = ["author_tip_id"];
+    if (!verifyBodySignature(req.body, signature, author.public_key, RETRACT_FIELDS)) {
+      return res.status(403).json({ error: "Author signature verification failed" });
+    }
+
+    // Write CONTENT_RETRACTED tx
+    const retractTx = withTxId({
+      tx_type:   TX_TYPES.CONTENT_RETRACTED,
+      timestamp: new Date().toISOString(),
+      prev:      dag.getRecentPrev(),
+      data: {
+        ctid:         req.params.ctid,
+        author_tip_id,
+        origin_code:  rec.origin_code,
+        pre_retract_status: rec.status,
+      },
+    });
+    dag.addTx(retractTx);
+    _broadcast(retractTx);
+
+    // Apply -50 score penalty
+    scoring.applyScoreEvent(author_tip_id, SCORE_EVENTS.CONTENT_RETRACTION.delta, `Content retracted: ${req.params.ctid}`);
+
+    // Update content status
+    dag.updateContentStatus(req.params.ctid, "retracted");
+
+    log.info(`Content retracted: ${req.params.ctid} by ${author_tip_id} (penalty: ${SCORE_EVENTS.CONTENT_RETRACTION.delta})`);
+
+    res.json({
+      success: true,
+      ctid:    req.params.ctid,
+      penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta,
+      tx_id:   retractTx.tx_id,
     });
   });
 

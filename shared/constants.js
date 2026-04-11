@@ -51,6 +51,7 @@ const SCORE_EVENTS = Object.freeze({
   FACTUAL_FALSEHOOD_MAJOR:   {  delta: -300              },
   SUCCESSFUL_APPEAL:         {  delta: "restore_50pct"   },
   CLEAN_90_DAYS:             {  delta:  +10              },
+  CONTENT_RETRACTION:        {  delta:  -50              },
   DEVICE_COMPROMISE_PENDING: {  delta:  -15              },
 });
 
@@ -114,6 +115,7 @@ const TX_TYPES = Object.freeze({
   // Content
   REGISTER_CONTENT:         "REGISTER_CONTENT",
   UPDATE_ORIGIN:            "UPDATE_ORIGIN",
+  CONTENT_RETRACTED:        "CONTENT_RETRACTED",
   // Trust
   CONTENT_VERIFIED:         "CONTENT_VERIFIED",
   CONTENT_DISPUTED:         "CONTENT_DISPUTED",

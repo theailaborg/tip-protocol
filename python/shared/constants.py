@@ -127,6 +127,7 @@ class TxType:
     # Content
     REGISTER_CONTENT       = "REGISTER_CONTENT"
     UPDATE_ORIGIN          = "UPDATE_ORIGIN"
+    CONTENT_RETRACTED      = "CONTENT_RETRACTED"
     # Trust
     CONTENT_VERIFIED       = "CONTENT_VERIFIED"
     CONTENT_DISPUTED       = "CONTENT_DISPUTED"
@@ -192,6 +193,7 @@ class ScoreEvent:
     FACTUAL_FALSEHOOD_MAJOR  = -300
     DEVICE_COMPROMISE        = -15
     CLEAN_PERIOD_BONUS       = 10   # per 90-day clean period
+    CONTENT_RETRACTION       = -50  # voluntary retraction penalty
 
     # Attestation
     VOUCHER_STAKE            = 25
