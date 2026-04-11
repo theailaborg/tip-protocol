@@ -19,6 +19,19 @@ const STATUS_CODES = {
 function errorHandler(err, req, res, _next) {
   const requestId = req.id || null;
 
+  // Express JSON parse error (malformed body)
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({
+      ok: false,
+      status: 400,
+      error: {
+        message: "Malformed JSON in request body",
+        code: "BAD_REQUEST",
+        request_id: requestId,
+      },
+    });
+  }
+
   if (err.status && err.error) {
     const message = Array.isArray(err.error) ? err.error.join("; ") : err.error;
     res.status(err.status).json({
