@@ -237,7 +237,8 @@ Any organisation can become a Verification Provider and issue TIP-IDs by:
 
 **Category A**: Identity-native organisations (banks, telecom, biometric companies like iProov, Jumio, Yoti)  
 **Category B**: Content platforms and journalism organisations (news publishers, CPJ, RSF, SPJ)  
-**Category C**: Government digital identity programmes (EU eIDAS, UK DSIT, Estonia e-Residency)
+**Category C**: Government digital identity programmes (EU eIDAS, UK DSIT, Estonia e-Residency)  
+**Category D**: Educational institutions (universities, colleges, research institutes)
 
 To apply for VP accreditation: **accreditation@theailab.org**
 

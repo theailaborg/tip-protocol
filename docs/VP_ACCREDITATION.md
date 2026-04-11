@@ -19,6 +19,9 @@ organisations, content authentication platforms.
 **Category C: Government digital identity programmes**  
 EU eIDAS nodes, UK DSIT, Estonia e-Residency, national digital ID schemes.
 
+**Category D: Educational institutions**  
+Universities, colleges, and research institutes.
+
 ---
 
 ## What a VP Can Do
@@ -136,6 +139,7 @@ The AI Lab:
 
 | Category | Annual Accreditation Fee | Notes |
 |---------- |-------------------------|-------|
+| Category D (Education) | None | Free for universities, colleges, and research institutes |
 | Category C (Government) | None | Free for government programmes |
 | Category B (Journalism/NGO) | None | Free for journalism and press freedom organisations |
 | Category A (< 10,000 verifications/month) | $5,000/year | Starter tier |

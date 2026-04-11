@@ -11,6 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+**VP Category D: Educational Institutions**
+- New VP accreditation category for universities, colleges, and research
+  institutes. Category D accreditation is free, consistent with the protocol's
+  commitment to keeping academic and public-interest participation accessible.
+- Updated across VP_ACCREDITATION.md, README.md, TIP Protocol Specification,
+  and interface.
+
 **Third Provisional Patent Filed (April 7, 2026)**
 - Application Number: 64/031,648 (Confirmation: 7072, Docket: AILAB-2026-PROV-03)
 - Six new claim groups (K-P) covering content normalization, dual-mode

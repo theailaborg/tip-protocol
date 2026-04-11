@@ -2326,6 +2326,7 @@ function AdminResponsibilities() {
         { label: "Category A: Identity-native orgs", color: C.green,  examples: "iProov, Jumio, Yoti, Onfido, banks with existing KYC, national ID programmes", pitch: "You already verify identities. TIP-ID is a new credential type you can issue at the end of your existing pipeline with minimal new code." },
         { label: "Category B: Content platforms", color: C.blue,    examples: "Major news publishers, journalism associations (CPJ, RSF, SPJ), academic institutions", pitch: "Your journalists are being impersonated. We will verify your credentialed journalists for free in year one. In return, you run a VP node." },
         { label: "Category C: Governments", color: C.purple, examples: "EU eIDAS notified bodies, UK DSIT, Estonia e-Residency, German eID", pitch: "Integrate TIP-ID issuance into your existing national digital ID programme as a value-add to existing digital ID holders." },
+        { label: "Category D: Education", color: C.teal, examples: "Universities, colleges, research institutes", pitch: "Verify faculty, researchers, and student identities. Issue TIP-IDs through your existing identity infrastructure at no cost." },
       ],
     },
     publishers: {

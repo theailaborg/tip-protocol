@@ -418,6 +418,8 @@ Any organization can become a VP by:
 
 **Category C**: Government digital identity programmes (EU eIDAS, UK DSIT, Estonia e-Residency)
 
+**Category D**: Educational institutions (universities, colleges, research institutes)
+
 ---
 
 ## 9. Privacy Architecture (v2)
