@@ -24,7 +24,29 @@ const ORIGIN_LABELS = Object.freeze({
 });
 
 // ─── Jury votes ─────────────────────────────────────────────────────────────
-const JURY_VOTES = Object.freeze(["MATCH", "MISMATCH", "ABSTAIN"]);
+const VOTE = Object.freeze({
+  MATCH: "MATCH",
+  MISMATCH: "MISMATCH",
+  ABSTAIN: "ABSTAIN",
+});
+const JURY_VOTES = Object.freeze([VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN]);
+
+// ─── Verdicts ───────────────────────────────────────────────────────────────
+const VERDICT = Object.freeze({
+  UPHELD: "UPHELD",
+  DISMISSED: "DISMISSED",
+  CONSERVATIVE_LABEL: "CONSERVATIVE_LABEL",
+  NO_QUORUM: "NO_QUORUM",
+});
+
+// ─── Content statuses ───────────────────────────────────────────────────────
+const CONTENT_STATUS = Object.freeze({
+  REGISTERED: "registered",
+  VERIFIED: "verified",
+  PENDING_REVIEW: "pending_review",
+  DISPUTED: "disputed",
+  RETRACTED: "retracted",
+});
 
 // ─── Trust tiers ─────────────────────────────────────────────────────────────
 const TIERS = Object.freeze([
@@ -226,7 +248,10 @@ const PROTOCOL = Object.freeze({
 module.exports = {
   ORIGIN,
   ORIGIN_LABELS,
+  VOTE,
   JURY_VOTES,
+  VERDICT,
+  CONTENT_STATUS,
   TIERS,
   getTier,
   SCORE_EVENTS,

@@ -1,7 +1,7 @@
 "use strict";
 
 const { shake256, verifyBodySignature } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN, JURY_VOTES } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS } = require("../../../shared/constants");
 const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("../jury");
@@ -16,8 +16,8 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
   function fileDispute(ctid, body) {
     const rec = dag.getContent(ctid);
     if (!rec) throw { status: 404, error: "Content record not found" };
-    if (rec.status === "retracted") throw { status: 403, error: "Content has been retracted — dispute not allowed" };
-    if (rec.status === "pending_review") throw { status: 403, error: "Content is pending review — wait for 24-hour grace period" };
+    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted — dispute not allowed" };
+    if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — wait for 24-hour grace period" };
 
     validate(body, { disputer_tip_id: { required: true }, signature: { required: true }, reason: { required: true } });
     const { disputer_tip_id, reason, claimed_origin, evidence_hash, signature } = body;
@@ -48,7 +48,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
 
     dag.addTx(disputeTx);
     broadcast(disputeTx);
-    dag.updateContentStatus(ctid, "disputed");
+    dag.updateContentStatus(ctid, CONTENT_STATUS.DISPUTED);
 
     // Stage 1: AI Classifier (always escalates for now)
     let stage1Result;
@@ -126,7 +126,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
   function juryReveal(ctid, body) {
     const { juror_tip_id, vote, salt, confirmed_origin, signature } = body;
     validate(body, { juror_tip_id: { required: true }, vote: { required: true, oneOf: JURY_VOTES }, salt: { required: true }, signature: { required: true } });
-    if (vote === "MISMATCH" && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
+    if (vote === VOTE.MISMATCH && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
     if (confirmed_origin && !ORIGIN_CODES.includes(confirmed_origin)) throw { status: 400, error: "Invalid confirmed_origin" };
 
     const juror = dag.getIdentity(juror_tip_id);
@@ -150,7 +150,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
     if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === "MISMATCH" ? confirmed_origin : null } });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null } });
     dag.addTx(revealTx);
     broadcast(revealTx);
 
@@ -187,7 +187,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
       content: { ctid, origin_code: rec.origin_code, origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code, content_hash: rec.content_hash, author_tip_id: rec.author_tip_id, status: rec.status, registered_at: rec.registered_at },
       dispute: disputeTxs.length ? { disputer_tip_id: disputeTxs[0].data.disputer_tip_id, reason: disputeTxs[0].data.reason, claimed_origin: disputeTxs[0].data.claimed_origin, declared_origin: disputeTxs[0].data.declared_origin, evidence_hash: disputeTxs[0].data.evidence_hash, filed_at: disputeTxs[0].timestamp, dispute_tx_id: disputeTxs[0].tx_id } : null,
       ai_classifier: classifierTxs.length ? { confidence: classifierTxs[0].data.confidence, routing: classifierTxs[0].data.routing } : null,
-      creator_history: { total_content: authorContent.length, verified_count: authorContent.filter(c => c.status === "verified").length, prior_disputes: priorDisputes.length, prior_upheld: priorAdj.filter(t => t.data?.verdict === "UPHELD").length, prior_dismissed: priorAdj.filter(t => t.data?.verdict === "DISMISSED").length, current_score: authorScore.score, current_tier: authorScore.tier.name, offense_count: authorScore.offense_count },
+      creator_history: { total_content: authorContent.length, verified_count: authorContent.filter(c => c.status === CONTENT_STATUS.VERIFIED).length, prior_disputes: priorDisputes.length, prior_upheld: priorAdj.filter(t => t.data?.verdict === VERDICT.UPHELD).length, prior_dismissed: priorAdj.filter(t => t.data?.verdict === VERDICT.DISMISSED).length, current_score: authorScore.score, current_tier: authorScore.tier.name, offense_count: authorScore.offense_count },
       jury: { jurors: summonsTxs.map(s => ({ juror_tip_id: s.data.juror_tip_id, status: revealedIds.has(s.data.juror_tip_id) ? "revealed" : committedIds.has(s.data.juror_tip_id) ? "committed" : "summoned" })), commit_deadline: summonsTxs[0]?.data?.commit_deadline, reveal_deadline: summonsTxs[0]?.data?.reveal_deadline, total_summoned: summonsTxs.length, total_committed: commitTxs.length, total_revealed: revealTxs.length },
       verdict: adjTxs.length ? { verdict: adjTxs[0].data.verdict, declared_origin: adjTxs[0].data.declared_origin, confirmed_origin: adjTxs[0].data.confirmed_origin, match_count: adjTxs[0].data.match_count, mismatch_count: adjTxs[0].data.mismatch_count, abstain_count: adjTxs[0].data.abstain_count, resolved_at: adjTxs[0].timestamp } : null,
     };
@@ -233,7 +233,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
       broadcast(summonsTx);
     }
 
-    dag.updateContentStatus(ctid, "disputed");
+    dag.updateContentStatus(ctid, CONTENT_STATUS.DISPUTED);
     log.info(`Appeal filed for ${ctid} by ${appellant_tip_id}`);
     return { success: true, appeal_tx_id: appealTx.tx_id, stake_at_risk: APPEAL.APPELLANT_STAKE, experts: { selected: experts.experts, count: experts.experts.length, insufficient: experts.insufficient, commit_deadline: commitDeadline, reveal_deadline: revealDeadline } };
   }
@@ -266,8 +266,8 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     if (!vote) throw { status: 400, error: "vote required" };
     if (!salt) throw { status: 400, error: "salt required" };
     if (!signature) throw { status: 400, error: "signature required" };
-    if (!["MATCH", "MISMATCH", "ABSTAIN"].includes(vote)) throw { status: 400, error: "Invalid vote" };
-    if (vote === "MISMATCH" && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
+    if (![VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN].includes(vote)) throw { status: 400, error: "Invalid vote" };
+    if (vote === VOTE.MISMATCH && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
     if (confirmed_origin && !ORIGIN[confirmed_origin]) throw { status: 400, error: "Invalid confirmed_origin" };
 
     const juror = dag.getIdentity(juror_tip_id);
@@ -290,7 +290,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
     if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === "MISMATCH" ? confirmed_origin : null, is_appeal: true } });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true } });
     dag.addTx(revealTx);
     broadcast(revealTx);
 

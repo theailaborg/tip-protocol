@@ -20,7 +20,7 @@
 
 "use strict";
 
-const { TX_TYPES, ORIGIN } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VERDICT } = require("../../shared/constants");
 const { SCORE_EVENTS, getTier } = require("../../shared/protocol-constants");
 const { log } = require("./logger");
 
@@ -136,9 +136,9 @@ function initScoring(dag, config) {
   function _adjudicationDelta(data, currentOffenseCount) {
     const { declared_origin, confirmed_origin, verdict } = data;
 
-    if (verdict === "DISMISSED") return 0;
-    if (verdict === "CONSERVATIVE_LABEL") return 0; // AG declared as OH — never penalised
-    if (verdict !== "UPHELD") return 0; // unknown verdict — no penalty
+    if (verdict === VERDICT.DISMISSED) return 0;
+    if (verdict === VERDICT.CONSERVATIVE_LABEL) return 0; // AG declared as OH — never penalised
+    if (verdict !== VERDICT.UPHELD) return 0; // unknown verdict — no penalty
 
     // Most serious: declared OH, confirmed AG
     if (declared_origin === ORIGIN.OH && confirmed_origin === ORIGIN.AG) {

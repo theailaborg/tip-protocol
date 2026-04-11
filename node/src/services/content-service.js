@@ -4,7 +4,7 @@ const {
   shake256, hashContent, perceptualHashText,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId } = require("./helpers");
@@ -39,7 +39,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     }
 
     const perceptHash = content ? perceptualHashText(content) : null;
-    const contentHistory = { verified_oh_count: dag.getContentByAuthor(author_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === "verified").length };
+    const contentHistory = { verified_oh_count: dag.getContentByAuthor(author_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
     const preScan = preScanContent(content || "", origin_code, contentHistory);
 
     const registeredAt = new Date().toISOString();
@@ -64,7 +64,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const tx = dag.addTx(signedTx);
     broadcast(tx);
 
-    const status = preScan.flagged ? "pending_review" : "registered";
+    const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
     dag.saveContent({
       ctid, origin_code, content_hash: contentHashFull, perceptual_hash: perceptHash,
       author_tip_id, status, registered_at: registeredAt, tx_id: tx.tx_id,
@@ -127,9 +127,9 @@ function createContentService({ dag, scoring, config, broadcast }) {
     if (dag.isRevoked(verifier_tip_id)) throw { status: 403, error: "Verifier TIP-ID is revoked" };
     if (verifier_tip_id === rec.author_tip_id) throw { status: 403, error: "Cannot verify your own content" };
 
-    if (rec.status === "retracted") throw { status: 403, error: "Content has been retracted by the author — verification not allowed" };
-    if (rec.status === "disputed") throw { status: 403, error: "Content is under dispute — verification blocked until resolved" };
-    if (rec.status === "pending_review") throw { status: 403, error: "Content is pending review — verification blocked until 24-hour grace period ends" };
+    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted by the author — verification not allowed" };
+    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Content is under dispute — verification blocked until resolved" };
+    if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — verification blocked until 24-hour grace period ends" };
 
     const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
     if (!verifyBodySignature(body, signature, verifier.public_key, VERIFY_FIELDS)) {
@@ -168,7 +168,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     broadcast(signedTx);
 
     if (weightedDelta > 0) scoring.applyScoreEvent(authorTipId, weightedDelta, `Content verified by ${verifier_tip_id}`);
-    if (rec.status === "registered") dag.updateContentStatus(ctid, "verified");
+    if (rec.status === CONTENT_STATUS.REGISTERED) dag.updateContentStatus(ctid, CONTENT_STATUS.VERIFIED);
 
     return {
       success: true, delta_applied: weightedDelta,
@@ -188,7 +188,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const { author_tip_id, new_origin_code, signature } = body;
 
     if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can update the origin code" };
-    if (rec.status !== "registered" && rec.status !== "pending_review") throw { status: 403, error: `Cannot update origin — content status is '${rec.status}'` };
+    if (rec.status !== CONTENT_STATUS.REGISTERED && rec.status !== CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: `Cannot update origin — content status is '${rec.status}'` };
 
     const registeredAt = new Date(rec.registered_at).getTime();
     if (Date.now() - registeredAt > 24 * 60 * 60 * 1000) throw { status: 403, error: "24-hour grace period has expired." };
@@ -210,7 +210,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     broadcast(updateTx);
 
     const preScan = preScanContent(rec.content_hash || "", new_origin_code, {});
-    const newStatus = preScan.flagged ? "pending_review" : "registered";
+    const newStatus = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
     dag.updateContentOrigin(ctid, new_origin_code, newStatus);
 
     log.info(`Origin updated: ${ctid} ${rec.origin_code} → ${new_origin_code} (by ${author_tip_id})`);
@@ -225,8 +225,8 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const { author_tip_id, signature } = body;
 
     if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can retract" };
-    if (rec.status === "retracted") throw { status: 409, error: "Content is already retracted" };
-    if (rec.status === "disputed") throw { status: 403, error: "Cannot retract content that is under dispute" };
+    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 409, error: "Content is already retracted" };
+    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Cannot retract content that is under dispute" };
 
     const author = dag.getIdentity(author_tip_id);
     if (!author) throw { status: 404, error: "Author identity not found" };
@@ -244,7 +244,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     broadcast(retractTx);
 
     scoring.applyScoreEvent(author_tip_id, SCORE_EVENTS.CONTENT_RETRACTION.delta, `Content retracted: ${ctid}`);
-    dag.updateContentStatus(ctid, "retracted");
+    dag.updateContentStatus(ctid, CONTENT_STATUS.RETRACTED);
 
     log.info(`Content retracted: ${ctid} by ${author_tip_id} (penalty: ${SCORE_EVENTS.CONTENT_RETRACTION.delta})`);
     return { success: true, ctid, penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta, tx_id: retractTx.tx_id };
