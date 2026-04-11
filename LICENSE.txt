@@ -73,9 +73,9 @@ contractual or practical ability to direct or cause the direction of the
 management and policies of an entity.
 
 "Commercial Use" means any Use of the Software in connection with a product
-or service where Your Annual Revenue exceeds USD $500,000 (five hundred
+or service where Your Annual Revenue exceeds USD $100,000 (one hundred
 thousand United States dollars). Use by an entity with Annual Revenue of
-exactly USD $500,000 does not constitute Commercial Use.
+exactly USD $100,000 does not constitute Commercial Use.
 
 "Free Use" means any Use that does not constitute Commercial Use and that
 qualifies under one of the categories in Section 2.1.
@@ -124,11 +124,11 @@ the Software if You fall into any of the following categories at the time
 of Use:
 
 (a) Individual Person. You are a natural person and Your Annual Revenue
-    does not exceed USD $500,000. An individual whose Annual Revenue
-    exceeds USD $500,000 may qualify under category (b) if a business
+    does not exceed USD $100,000. An individual whose Annual Revenue
+    exceeds USD $100,000 may qualify under category (b) if a business
     entity they operate meets that definition.
 
-(b) Small Business. Your Annual Revenue does not exceed USD $500,000 in
+(b) Small Business. Your Annual Revenue does not exceed USD $100,000 in
     the preceding twelve (12) calendar months.
 
 (c) Nonprofit Organization. You are a nonprofit organization, NGO, charity,
@@ -191,15 +191,19 @@ licensing@theailab.org or through theailab.org/licensing.
 
 Annual fees are denominated in United States Dollars (USD):
 
-  Sentinel   Over $500K up to and including $10M rev/yr    USD $2,750/year
-  Guardian   Over $10M up to and including $50M rev/yr    USD $11,000/year
-  Silver     Over $50M up to and including $500M rev/yr   USD $55,000/year
-  Gold       Over $500M up to and including $5B rev/yr   USD $165,000/year
-  Platinum   Over $5B rev/yr                             USD $550,000/year
+  Micro      Over $100K up to and including $250K rev/yr   USD $500/year
+  Seed       Over $250K up to and including $500K rev/yr  USD $1,100/year
+  Starter    Over $500K up to and including $5M rev/yr    USD $2,750/year
+  Growth     Over $5M up to and including $25M rev/yr     USD $8,250/year
+  Business   Over $25M up to and including $100M rev/yr   USD $27,500/year
+  Enterprise Over $100M up to and including $500M rev/yr  USD $71,500/year
+  Corporate  Over $500M up to and including $2B rev/yr    USD $165,000/year
+  Strategic  Over $2B up to and including $10B rev/yr     USD $385,000/year
+  Global     Over $10B rev/yr                             USD $550,000/year
 
-For the avoidance of doubt: Annual Revenue of exactly USD $10,000,000
-falls in the Sentinel tier. Annual Revenue exceeding USD $10,000,000 falls
-in the Guardian tier. The same inclusive/exclusive principle applies at
+For the avoidance of doubt: Annual Revenue of exactly USD $250,000
+falls in the Micro tier. Annual Revenue exceeding USD $250,000 falls
+in the Seed tier. The same inclusive/exclusive principle applies at
 each tier boundary: "up to and including" the upper bound falls in the
 lower tier; any amount strictly above the upper bound falls in the next
 higher tier.
@@ -211,10 +215,10 @@ takes effect at renewal.
 3.3  GRACE PERIOD
 
 You have ninety (90) days from the date Your Annual Revenue first exceeds
-USD $500,000 to obtain a Commercial License. Use during this period is
+USD $100,000 to obtain a Commercial License. Use during this period is
 provisionally licensed. If You do not obtain a Commercial License within
 ninety (90) days, the provisional license is void retroactively from the
-date Your Annual Revenue first exceeded USD $500,000, and all use during
+date Your Annual Revenue first exceeded USD $100,000, and all use during
 that period is unlicensed.
 
 3.4  ANTI-CIRCUMVENTION
@@ -223,7 +227,7 @@ You may not structure business activities, corporate entities, or revenue
 arrangements for the primary purpose of circumventing the Annual Revenue
 threshold. If a court or arbitrator determines that the use of multiple
 legal entities was structured primarily to reduce measured Annual Revenue
-below USD $500,000 in order to avoid this License's commercial requirements,
+below USD $100,000 in order to avoid this License's commercial requirements,
 all such entities shall be treated as a single Licensee for purposes of
 this License.
 

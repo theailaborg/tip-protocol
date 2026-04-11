@@ -22,8 +22,8 @@ See LICENSE.txt for full terms.
 
 Summary:
   - Free for individuals, nonprofits, journalists, governments, education,
-    and businesses with Annual Revenue under USD $500,000.
-  - Commercial use above $500,000 Annual Revenue requires a Commercial
+    and businesses with Annual Revenue under USD $100,000.
+  - Commercial use above $100,000 Annual Revenue requires a Commercial
     License from The AI Lab (licensing@theailab.org).
   - Mandatory attribution: "Built on TIP Protocol by The AI Lab
     Intelligence Unobscured, Inc. (theailab.org)"

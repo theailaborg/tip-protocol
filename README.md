@@ -361,13 +361,13 @@ TIP Protocol uses a layered licensing model:
 | Asset | License | Details |
 |-------|---------|---------|
 | Protocol Specification | **CC-BY 4.0** | Free for everyone, forever. Attribution required. |
-| Reference Implementation | **TIPCL-1.0** | Free under $500K revenue. Paid above. Converts to Apache 2.0 on January 1, 2031. |
+| Reference Implementation | **TIPCL-1.0** | Free under $100K revenue. Paid above. Converts to Apache 2.0 on January 1, 2031. |
 | TIP™ Trademarks | **Trademark Law** | Reserved by The AI Lab. Separate license required. |
 | Patent Claims (16 inventions, A-P) | **Patent Law** | Included in TIPCL commercial license. Valid to ~2047. |
 
-**Free for:** Individuals · Nonprofits · Journalism organisations · Governments · Education · Businesses under $500K annual revenue
+**Free for:** Individuals · Nonprofits · Journalism organisations · Governments · Education · Businesses under $100K annual revenue
 
-**Requires a Commercial License:** Any entity with Annual Revenue exceeding USD $500,000 using TIP Protocol in a revenue-generating product or service.
+**Requires a Commercial License:** Any entity with Annual Revenue exceeding USD $100,000 using TIP Protocol in a revenue-generating product or service.
 
 Mandatory attribution for all users:
 ```

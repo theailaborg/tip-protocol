@@ -36,8 +36,8 @@
  * LICENSING:
  *   Protocol Specification: CC-BY 4.0 (free for everyone, attribution required)
  *   Reference Implementation: TIP Community License v1.0 (TIPCL-1.0)
- *     - Free for individuals, nonprofits, journalists, governments, <$500K rev
- *     - Commercial license required for enterprises above $500K annual revenue
+ *     - Free for individuals, nonprofits, journalists, governments, <$100K rev
+ *     - Commercial license required for enterprises above $100K annual revenue
  *     - Mandatory attribution in UI: "Built on TIP Protocol by The AI Lab"
  *     - Converts to Apache 2.0 on January 1, 2031
  *     - NOTICE file attribution survives conversion permanently
@@ -1381,7 +1381,7 @@ function AdminLicensing() {
       <div className="rg3" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         {[
           { letter: "A", title: "Protocol Specification", license: "CC-BY 4.0", color: C.green, who: "Free for everyone. Forever.", desc: "The TIP™ spec is published under Creative Commons. Anyone can implement TIP™ from the spec alone, without paying, without asking permission. Like the HTTP RFC. Irrevocable." },
-          { letter: "B", title: "Reference Implementation", license: "TIP™ Community License", color: C.blue, who: "Free under $500K revenue. Paid above.", desc: "The AI Lab's code (node, SDK, tools) is licensed under TIPCL-1.0. Free for individuals, nonprofits, education, governments, journalists, and businesses under $500K annual revenue. Enterprises above $500K pay a tiered fee. Mandatory UI attribution: 'Built on TIP Protocol by The AI Lab'. Auto-converts to Apache 2.0 on January 1, 2031. NOTICE file attribution and trademark restrictions survive the conversion permanently." },
+          { letter: "B", title: "Reference Implementation", license: "TIP™ Community License", color: C.blue, who: "Free under $100K revenue. Paid above.", desc: "The AI Lab's code (node, SDK, tools) is licensed under TIPCL-1.0. Free for individuals, nonprofits, education, governments, journalists, and businesses under $100K annual revenue. Enterprises above $100K pay a tiered fee. Mandatory UI attribution: 'Built on TIP Protocol by The AI Lab'. Auto-converts to Apache 2.0 on January 1, 2031. NOTICE file attribution and trademark restrictions survive the conversion permanently." },
           { letter: "C", title: "Badge & Trademark System", license: "Two-tier: Open + Proprietary", color: C.gold, who: "Primary revenue engine.", desc: "The TIP™ Powered Mark is free. The AI Trust ID™ Seal and TIP™ Certified badge are proprietary, registry-issued, and require annual certification. The trademark never converts to open source. This is the permanent moat." },
         ].map((layer, i) => (
           <div key={i} style={{ background: C.bg, border: `1px solid ${layer.color}25`, borderRadius: 12, padding: 22, borderTop: `4px solid ${layer.color}` }}>
@@ -1403,29 +1403,18 @@ function AdminLicensing() {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
             <thead><tr style={{ background: C.surface }}>
-              {["Company Revenue", "Annual Fee", "Includes"].map(h => (<th key={h} style={{ padding: "10px 12px", textAlign: "left", color: C.gold, fontWeight: 600, borderBottom: `2px solid ${C.border}`, fontSize: 10, letterSpacing: 1 }}>{h}</th>))}
+              {["Tier", "Annual Revenue"].map(h => (<th key={h} style={{ padding: "10px 12px", textAlign: "left", color: C.gold, fontWeight: 600, borderBottom: `2px solid ${C.border}`, fontSize: 10, letterSpacing: 1 }}>{h}</th>))}
             </tr></thead>
             <tbody>
-              {[["$500K to $10M","$2,750/yr","Unlimited deployment of reference node, SDK, and tools"],["$10M to $50M","$11,000/yr","All above + priority support + dedicated onboarding"],["$50M to $500M","$55,000/yr","All above + SLA-backed API + custom integration support"],["$500M to $5B","$165,000/yr","All above + white-label options + source code escrow"],["$5B+","$550,000/yr","All above + protocol co-development + Gold council membership"]].map((row, i) => (
+              {[["Micro","$100K to $250K"],["Seed","$250K to $500K"],["Starter","$500K to $5M"],["Growth","$5M to $25M"],["Business","$25M to $100M"],["Enterprise","$100M to $500M"],["Corporate","$500M to $2B"],["Strategic","$2B to $10B"],["Global","$10B+"]].map((row, i) => (
                 <tr key={i} style={{ background: i % 2 === 0 ? C.surface : C.bg, borderBottom: `1px solid ${C.border}` }}>
-                  {row.map((cell, j) => (<td key={j} style={{ padding: "10px 12px", color: j===1 ? C.navy : C.textSecondary, fontWeight: j===1 ? 600 : 300, fontSize: 12 }}>{cell}</td>))}
+                  {row.map((cell, j) => (<td key={j} style={{ padding: "10px 12px", color: j===0 ? C.navy : C.textSecondary, fontWeight: j===0 ? 600 : 300, fontSize: 12 }}>{cell}</td>))}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </div>
-      <div className="card" style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 10, fontWeight: 600, color: C.gold, letterSpacing: 2, marginBottom: 16 }}>ENTERPRISE CERTIFICATION TIERS (LAYER C: PRIMARY REVENUE ENGINE)</div>
-        <div className="rg5" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 16 }}>
-          {[{ tier: "Sentinel", price: "$2.5K/yr", for: "Startups / SMEs" },{ tier: "Guardian", price: "$10K/yr", for: "Mid-market" },{ tier: "Silver", price: "$15K/yr", for: "Growth orgs" },{ tier: "Gold", price: "$50K/yr", for: "Industry leaders" },{ tier: "Platinum", price: "$100K/yr", for: "Enterprise" }].map((t, i) => (
-            <div key={i} style={{ padding: 14, background: C.surface, borderRadius: 8, border: `1px solid ${C.border}`, textAlign: "center" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.navy }}>{t.tier}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.gold, margin: "6px 0" }}>{t.price}</div>
-              <div style={{ fontSize: 10, color: C.textMuted, fontWeight: 300 }}>{t.for}</div>
-            </div>
-          ))}
-        </div>
+        <p style={{ fontSize: 11, color: C.textMuted, marginTop: 12, fontWeight: 300 }}>For current fee schedule, see LICENSE.txt or contact <a href="mailto:licensing@theailab.org" style={{ color: C.navy }}>licensing@theailab.org</a></p>
       </div>
 
       {/* WHY THIS STRUCTURE MATTERS -- admin context */}
@@ -1444,7 +1433,7 @@ function AdminLicensing() {
             {
               title: "TIPCL-1.0 commercial tier funds the infrastructure that keeps the free tier running",
               color: C.blue,
-              body: "Running the AI pre-scan classifier, maintaining the VP accreditation programme, operating founding nodes, responding to revocation broadcasts, publishing quarterly warrant canaries, and completing the DPIA -- all of this costs money. The commercial license revenue from enterprises above $500K is what funds the infrastructure that the free-tier users depend on. Without the paid tier, the free tier degrades or disappears. The commercial tier does not contradict the free tier -- it subsidises it.",
+              body: "Running the AI pre-scan classifier, maintaining the VP accreditation programme, operating founding nodes, responding to revocation broadcasts, publishing quarterly warrant canaries, and completing the DPIA -- all of this costs money. The commercial license revenue from enterprises above $100K is what funds the infrastructure that the free-tier users depend on. Without the paid tier, the free tier degrades or disappears. The commercial tier does not contradict the free tier -- it subsidises it.",
             },
             {
               title: "Trademarks are the permanent quality control mechanism",
@@ -3017,12 +3006,12 @@ PLAIN ENGLISH SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 FREE FOR:  Individuals · Nonprofits · Journalism organizations ·
-           Governments · Education · Businesses under $500K/yr revenue
+           Governments · Education · Businesses under $100K/yr revenue
            Research & development (any size)
 
-PAID FOR:  Commercial use above $500K annual revenue
-           Sentinel $2,750/yr · Guardian $11,000/yr · Silver $55,000/yr
-           Gold $165,000/yr · Platinum $550,000/yr
+PAID FOR:  Commercial use above $100K annual revenue
+           Nine tiers from Micro ($100K rev) to Global ($10B+ rev)
+           See LICENSE.txt for current fee schedule
 
 ALWAYS:    Display attribution: "Built on TIP Protocol by The AI Lab"
            Preserve the NOTICE file in all distributions
@@ -3053,7 +3042,7 @@ face a paywall to participate in a public-interest trust protocol.
 You qualify for FREE USE if you are:
 
 (a) An individual person (any income level)
-(b) A business with Annual Revenue under USD $500,000
+(b) A business with Annual Revenue under USD $100,000
 (c) A nonprofit, NGO, or tax-exempt charity (any size)
 (d) A university, college, or educational institution (any size)
 (e) A government entity (any size)
@@ -3073,11 +3062,15 @@ Any use that does not qualify as Free Use requires a Commercial
 License. Contact: licensing@theailab.org
 
 Tiers:
-  Sentinel  $500K–$10M rev    $2,750/yr
-  Guardian  $10M–$50M rev    $11,000/yr
-  Silver    $50M–$500M rev   $55,000/yr
-  Gold      $500M–$5B rev   $165,000/yr
-  Platinum  $5B+ rev        $550,000/yr
+  Micro      $100K–$250K rev     $500/yr
+  Seed       $250K–$500K rev   $1,100/yr
+  Starter    $500K–$5M rev     $2,750/yr
+  Growth     $5M–$25M rev      $8,250/yr
+  Business   $25M–$100M rev   $27,500/yr
+  Enterprise $100M–$500M rev  $71,500/yr
+  Corporate  $500M–$2B rev   $165,000/yr
+  Strategic  $2B–$10B rev    $385,000/yr
+  Global     $10B+ rev       $550,000/yr
 
 Commercial License includes a patent license for The AI Lab's
 essential patent claims covering TIP Protocol inventions.
@@ -3399,7 +3392,7 @@ function ProtocolDiagram({ mode = "public" }) {
         <text x={265} y={358} fontSize="9" fontWeight="700" fill="white">B</text>
         <text x={345} y={358} textAnchor="middle" fontSize="10" fontWeight="700" fill="white">Reference Code</text>
         <text x={345} y={373} textAnchor="middle" fontSize="9" fontWeight="600" fill="#2563A8">TIPCL-1.0</text>
-        <text x={345} y={386} textAnchor="middle" fontSize="8" fill="#4A5568">Free under $500K rev</text>
+        <text x={345} y={386} textAnchor="middle" fontSize="8" fill="#4A5568">Free under $100K rev</text>
         <text x={345} y={398} textAnchor="middle" fontSize="8" fill="#4A5568">Paid above. Converts to</text>
         <text x={345} y={410} textAnchor="middle" fontSize="8" fill="#4A5568">Apache 2.0 Jan 1, 2031.</text>
         <text x={345} y={428} textAnchor="middle" fontSize="8" fill="#2563A8" fontWeight="600">UI attribution required</text>
@@ -3561,8 +3554,8 @@ function PublicLicense() {
                 can: ["Build a custom TIP node from scratch", "Implement in any language", "Join the original network", "Publish the spec in your docs"],
                 cannot: ["Call your implementation TIP™", "Issue AI Trust ID™ Seals"] },
               { letter: "B", title: "Reference Implementation", badge: "TIPCL-1.0", color: C.blue, bg: "#F0F7FF",
-                who: "Free under $500K revenue. Paid above.",
-                desc: "The AI Lab's working code (Python node, Node.js node, SDK, CLI, browser extension) is licensed under TIPCL-1.0. Free for individuals, nonprofits, journalists, governments, education, and small businesses. Commercial use above $500K annual revenue requires a Commercial License.",
+                who: "Free under $100K revenue. Paid above.",
+                desc: "The AI Lab's working code (Python node, Node.js node, SDK, CLI, browser extension) is licensed under TIPCL-1.0. Free for individuals, nonprofits, journalists, governments, education, and small businesses. Commercial use above $100K annual revenue requires a Commercial License.",
                 can: ["Deploy the code as-is", "Modify it for your needs", "Distribute it to other free users", "Use the patent-protected inventions (free tier)"],
                 cannot: ["Remove The AI Lab attribution from the UI", "Use TIP™ trademarks", "Sub-license to commercial users"] },
               { letter: "C", title: "Badges and Trademarks", badge: "Trademark Law", color: C.gold, bg: "#FFFBEB",
@@ -3682,13 +3675,13 @@ function PublicLicense() {
                 <tbody>
                   {[
                     ["Individual developer",      "None",       "YES",    "YES", "YES"],
-                    ["Startup (under $500K rev)",  "< $500K",    "YES",    "YES", "YES"],
+                    ["Startup (under $100K rev)",  "< $100K",    "YES",    "YES", "YES"],
                     ["Nonprofit organization",     "None",       "YES",    "YES", "YES"],
                     ["Journalism organization",    "None",       "YES",    "YES", "YES (priority)"],
                     ["University / college",        "None",       "YES",    "YES", "YES"],
                     ["Government body",            "None",       "YES",    "YES", "YES"],
-                    ["Enterprise (over $500K rev)","Any",        "NO",     "YES", "YES"],
-                    ["Enterprise with license",    "> $500K",    "PAID",   "YES", "YES"],
+                    ["Enterprise (over $100K rev)","Any",        "NO",     "YES", "YES"],
+                    ["Enterprise with license",    "> $100K",    "PAID",   "YES", "YES"],
                   ].map((row, i) => (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, background: i%2===0 ? C.surface : C.bg }}>
                       {row.map((cell, ci) => (
@@ -3729,7 +3722,7 @@ function PublicLicense() {
             {[
               { q: "Can I build a competing trust protocol using TIP as a foundation?", a: "Yes, with two constraints. First, you must attribute The AI Lab as the origin in your NOTICE file and UI. Second, you cannot call it TIP™ or use any of The AI Lab's trademarks. Your product must have its own name and brand." },
               { q: "Can I fork the code and change the license to MIT or GPL?", a: "No. You can fork the code and distribute it under TIPCL-1.0. You cannot relicense it under a different license. The NOTICE file and attribution requirement survive any fork." },
-              { q: "I have a startup that just crossed $500K revenue. What happens?", a: "You have a 90-day grace period to purchase a Commercial License. Email licensing@theailab.org. The Sentinel tier ($2,750/yr) is designed for companies in this range." },
+              { q: "I have a startup that just crossed $100K revenue. What happens?", a: "You have a 90-day grace period to purchase a Commercial License. Email licensing@theailab.org. The Micro tier is designed for companies in the $100K\u2013$250K range." },
               { q: "Does TIPCL-1.0 affect the open protocol specification?", a: "No. The protocol specification (the document describing how TIP works) is separately licensed under CC-BY 4.0 and is completely unaffected by TIPCL-1.0. You can always implement TIP Protocol from scratch using only the spec." },
               { q: "After January 1, 2031, does the commercial license requirement go away?", a: "Yes. On January 1, 2031, the code converts to Apache 2.0 and the commercial license requirement ends. However, trademark restrictions and the NOTICE file attribution requirement survive the conversion permanently." },
               { q: "Can a government make TIP Protocol mandatory without paying?", a: "Yes. Government entities qualify for free use under TIPCL-1.0 regardless of their size or budget. A national government implementing TIP Protocol for citizen identity pays nothing for the code. Attribution in documentation is still required." },
@@ -3795,7 +3788,7 @@ function AdminLicenseDeep() {
               <tbody>
                 {[
                   ["A: Protocol Spec", "The rules document", "CC-BY 4.0", "Everyone, forever", "Never", "Citation required, permanent"],
-                  ["B: Reference Code", "Python + Node.js + SDK", "TIPCL-1.0 -> Apache 2.0", "Individuals, nonprofits, <$500K", "Converts Jan 1, 2031", "UI until 2031, NOTICE forever"],
+                  ["B: Reference Code", "Python + Node.js + SDK", "TIPCL-1.0 -> Apache 2.0", "Individuals, nonprofits, <$100K", "Converts Jan 1, 2031", "UI until 2031, NOTICE forever"],
                   ["C: Trademarks", "TIP™, AI Trust ID™, etc.", "Trademark Law", "N/A -- license required", "Never (renew q10yr)", "Cannot use marks -- permanent"],
                   ["D: Patents", "10 specific inventions", "Patent Law", "Free in TIPCL compliant impl.", "~2047", "N/A -- license required"],
                   ["E: Genesis Block", "Network founding record", "Cryptographic (SLH-DSA)", "N/A -- structural fact", "Never", "Baked into DAG permanently"],
@@ -3824,7 +3817,7 @@ function AdminLicenseDeep() {
               </div>
               <div style={{ padding: 16, background: `${C.green}06`, borderRadius: 8, border: `1px solid ${C.green}20` }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.green, marginBottom: 10 }}>TIPCL-1.0 (current)</div>
-                {["Mandatory UI attribution: The AI Lab name in every deployment","Commercial license required for $500K+ enterprises: revenue stream","Copyleft on protocol core: improvements flow back to network","5 years commercial leverage: 2026-2031 to build network effects","Trademark and NOTICE restrictions survive 2031 conversion","Free for journalists, nonprofits, governments: maximum adoption"].map((item, i) => (
+                {["Mandatory UI attribution: The AI Lab name in every deployment","Commercial license required for $100K+ enterprises: revenue stream","Copyleft on protocol core: improvements flow back to network","5 years commercial leverage: 2026-2031 to build network effects","Trademark and NOTICE restrictions survive 2031 conversion","Free for journalists, nonprofits, governments: maximum adoption"].map((item, i) => (
                   <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "flex-start" }}>
                     <span style={{ color: C.green, fontWeight: 700, fontSize: 11, flexShrink: 0 }}>+</span>
                     <span style={{ fontSize: 11, color: C.textSecondary, fontWeight: 300 }}>{item}</span>
