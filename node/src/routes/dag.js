@@ -7,13 +7,13 @@ const { computeMerkleRoot } = require("../services/helpers");
 function createRouter({ dag }) {
   const router = express.Router();
 
-  router.get("/v1/dag/tx/:txId", asyncHandler((req, res) => {
+  router.get("/dag/tx/:txId", asyncHandler((req, res) => {
     const tx = dag.getTx(req.params.txId);
     if (!tx) throw { status: 404, error: "Transaction not found" };
     res.json(tx);
   }));
 
-  router.get("/v1/dedup/merkle-root", asyncHandler((req, res) => {
+  router.get("/dedup/merkle-root", asyncHandler((req, res) => {
     res.json({
       merkle_root: computeMerkleRoot(dag),
       dedup_count: dag.dedupCount(),

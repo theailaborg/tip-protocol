@@ -101,13 +101,20 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   });
 
   // ── Mount routes ───────────────────────────────────────────────────────────
-  app.use(healthRoutes.createRouter(ctx));
-  app.use(identityRoutes.createRouter({ identityService }));
-  app.use(contentRoutes.createRouter({ contentService }));
-  app.use(disputeRoutes.createRouter({ disputeService }));
-  app.use(revocationRoutes.createRouter({ revocationService }));
-  app.use(governanceRoutes.createRouter({ governanceService }));
-  app.use(dagRoutes.createRouter(ctx));
+  const API_VERSION = "/v1";
+
+  // Health check at root (unversioned) + node info routes under /v1
+  const healthRouter = healthRoutes.createRouter(ctx);
+  app.use(healthRouter);
+  app.use(API_VERSION, healthRouter);
+
+  // All API routes under /v1
+  app.use(API_VERSION, identityRoutes.createRouter({ identityService }));
+  app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
+  app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
+  app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
+  app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
+  app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
   app.use((req, res) => {

@@ -38,7 +38,7 @@ function createRouter({ dag, scoring, config, broadcast }) {
     });
   });
 
-  router.get("/v1/node/info", (req, res) => {
+  router.get("/node/info", (req, res) => {
     res.json({
       node_id: config.nodeId,
       node_type: config.nodeType,
@@ -51,15 +51,15 @@ function createRouter({ dag, scoring, config, broadcast }) {
     });
   });
 
-  router.get("/v1/node/peers", (req, res) => {
+  router.get("/node/peers", (req, res) => {
     res.json({ peers: config.peers || [] });
   });
 
-  router.get("/v1/node/registry", (req, res) => {
+  router.get("/node/registry", (req, res) => {
     res.json({ nodes: dag.getAllNodes() });
   });
 
-  router.get("/v1/node/:nodeId", asyncHandler((req, res) => {
+  router.get("/node/:nodeId", asyncHandler((req, res) => {
     const node = dag.getNode(req.params.nodeId);
     if (!node) throw { status: 404, error: "Node not found" };
     res.json(node);
