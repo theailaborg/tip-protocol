@@ -467,6 +467,12 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
       const registeredAt = new Date().toISOString();
       const ctid         = generateCTID(origin_code, contentHashShort, author_tip_id);
 
+      // Reject if CTID already exists (same author + same content + same origin)
+      const existing = dag.getContent(ctid);
+      if (existing) {
+        return res.status(409).json({ error: `Content already registered with this origin code (CTID: ${ctid})`, ctid, status: existing.status });
+      }
+
       const contentTxBody = {
         tx_type:   TX_TYPES.REGISTER_CONTENT,
         timestamp: registeredAt,

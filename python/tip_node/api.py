@@ -581,6 +581,12 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         percept_hash = perceptual_hash_text(content)
 
         ctid          = generate_ctid(origin_code, content_hash_short, author_tip_id)
+
+        # Reject if CTID already exists
+        existing = self.dag.get_content(ctid)
+        if existing:
+            self._send_json(409, {"error": f"Content already registered with this origin code (CTID: {ctid})", "ctid": ctid, "status": existing.get("status")}); return
+
         registered_at = _utc_now()
 
         # Pre-scan (v2 FIX-03)
