@@ -76,7 +76,7 @@ beforeAll(async () => {
   const nodeKp = generateMLDSAKeypair();
   TEST_CONFIG = {
     nodeId: "test-node-001",
-    nodeVersion: "2.0.0",
+    nodeVersion: require("../../package.json").version,
     nodeType: "full",
     region: "US",
     publicUrl: "http://localhost:4000",

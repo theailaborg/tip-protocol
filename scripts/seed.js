@@ -816,7 +816,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
   head("STEP 7: Writing Seed Output");
 
   const output = {
-    seed_version: "2.0.0",
+    seed_version: require("../package.json").version,
     created_at: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
     genesis: {

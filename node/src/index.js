@@ -42,7 +42,7 @@ async function main() {
     log.warn("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.");
   }
 
-  log.info("=== TIP Protocol Node v2.0.0 ===");
+  log.info(`=== TIP Protocol Node v${config.nodeVersion} ===`);
   log.info(`Node ID     : ${config.nodeId}`);
   log.info(`Region      : ${config.region}`);
   log.info(`Port        : ${config.port}`);
