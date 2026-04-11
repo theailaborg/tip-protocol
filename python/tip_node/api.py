@@ -690,6 +690,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
             self._send_json(403, {"error": "Verifier TIP-ID is revoked"}); return
         if verifier_tip_id == rec.get("author_tip_id"):
             self._send_json(403, {"error": "Cannot verify your own content"}); return
+        if rec.get("status") == "retracted":
+            self._send_json(403, {"error": "Content has been retracted by the author — verification not allowed"}); return
         if rec.get("status") == "disputed":
             self._send_json(403, {"error": "Content is under dispute — verification blocked until resolved"}); return
         if rec.get("status") == "pending_review":
@@ -771,6 +773,8 @@ class TIPAPIHandler(BaseHTTPRequestHandler):
         rec = self.dag.get_content(ctid)
         if not rec:
             self._send_json(404, {"error": f"Content not found: {ctid}"}); return
+        if rec.get("status") == "retracted":
+            self._send_json(403, {"error": "Content has been retracted by the author — dispute not allowed"}); return
         if rec.get("status") == "pending_review":
             self._send_json(403, {"error": "Content is pending review — wait for 24-hour grace period to end before disputing"}); return
         disputer       = body.get("disputer_tip_id")
