@@ -8,13 +8,32 @@ function createRouter({ dag, scoring, config, broadcast }) {
   const router = express.Router();
 
   router.get("/health", (req, res) => {
-    res.json({
-      status: "ok",
+    // Deep check: verify DB is actually readable
+    let dbOk = true;
+    let dagCount = 0;
+    try {
+      dagCount = dag.count();
+    } catch {
+      dbOk = false;
+    }
+
+    const status = dbOk ? "ok" : "degraded";
+    const statusCode = dbOk ? 200 : 503;
+    const mem = process.memoryUsage();
+
+    res.status(statusCode).json({
+      status,
       node_id: config.nodeId,
       node_type: config.nodeType,
-      dag_count: dag.count(),
+      dag_count: dagCount,
       version: config.nodeVersion,
       protocol: PROTOCOL.version,
+      uptime_seconds: Math.floor(process.uptime()),
+      memory_mb: {
+        rss: Math.round(mem.rss / 1048576),
+        heap_used: Math.round(mem.heapUsed / 1048576),
+        heap_total: Math.round(mem.heapTotal / 1048576),
+      },
       timestamp: new Date().toISOString(),
     });
   });
