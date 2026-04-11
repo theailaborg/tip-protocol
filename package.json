@@ -1,6 +1,6 @@
 {
   "name": "tip-protocol",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "TIP Protocol — Trust Identity Protocol. Open, federated, post-quantum identity verification, content provenance, and deterministic trust scoring.",
   "private": true,
   "author": "Dinesh Mendhe <chairman@theailab.org> (https://theailab.org)",

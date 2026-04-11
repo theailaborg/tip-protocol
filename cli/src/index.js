@@ -86,7 +86,7 @@ function printScore(data) {
 program
   .name("tip")
   .description(`${C.bold}TIP™ Protocol CLI${C.reset} — Trust Identity Protocol v2.0\n  The AI Lab Intelligence Unobscured, Inc. | theailab.org`)
-  .version("2.0.0");
+  .version("1.0.0");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG

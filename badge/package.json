@@ -1,6 +1,6 @@
 {
   "name": "@tip-protocol/badge",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "TIP Protocol Badge Web Component — drop-in <tip-badge> custom element for trust seals and marks",
   "main": "src/index.js",
   "exports": {

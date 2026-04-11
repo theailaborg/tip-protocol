@@ -213,7 +213,7 @@ const API_PATHS = Object.freeze({
 const PROTOCOL = Object.freeze({
   name:       "Trust Identity Protocol",
   short:      "TIP",
-  version:    "2.0.0",
+  version:    "1.0.0",
   specUrl:    "https://theailab.org/trust-identity-protocol",
   license:    "CC-BY-4.0",
   issuer:     "The AI Lab Intelligence Unobscured, Inc.",

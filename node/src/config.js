@@ -26,7 +26,7 @@ function loadConfig() {
     nodeType:    process.env.TIP_NODE_TYPE    || "full",  // full | light | vp | archive
     region:      process.env.TIP_REGION       || "US",
     vpId:        process.env.TIP_VP_ID        || null,    // set if this is a VP node
-    nodeVersion: "2.0.0",
+    nodeVersion: "1.0.0",
 
     // ── Network ───────────────────────────────────────────────────────────────
     port:        parseInt(process.env.PORT    || "4000", 10),

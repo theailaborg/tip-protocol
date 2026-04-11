@@ -1,6 +1,6 @@
 {
   "name": "@tip-protocol/cli",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "TIP Protocol CLI — manage identities, register content, query trust scores from the command line",
   "main": "src/index.js",
   "bin": {

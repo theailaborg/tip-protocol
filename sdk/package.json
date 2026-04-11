@@ -1,6 +1,6 @@
 {
   "name": "@tip-protocol/sdk",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "TIP Protocol JavaScript SDK — integrate trust badges, verify identities, and register content",
   "main": "src/index.js",
   "exports": {
