@@ -14,7 +14,9 @@
 const { shake256, computeTxId, signTransaction } = require("../../shared/crypto");
 const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
-const { log } = require("./logger");
+const { getLogger } = require("./logger");
+
+const log = getLogger("tip.jury");
 
 /**
  * Deterministic seeded shuffle (Fisher-Yates with seed bytes instead of Math.random).

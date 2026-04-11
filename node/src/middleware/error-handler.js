@@ -1,6 +1,7 @@
 "use strict";
 
-const { log } = require("../logger");
+const { getLogger } = require("../logger");
+const log = getLogger("tip.error");
 
 const STATUS_CODES = {
   400: "BAD_REQUEST",

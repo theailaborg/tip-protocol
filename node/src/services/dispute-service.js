@@ -7,7 +7,9 @@ const { validateTransaction } = require("../validators/tx-validator");
 const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("../jury");
 const { withTxId, nodeSignedAuto, preScanContent } = require("./helpers");
 const { validate } = require("../middleware/validate");
-const { log } = require("../logger");
+const { getLogger } = require("../logger");
+
+const log = getLogger("tip.dispute");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
