@@ -109,6 +109,19 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   app.use(governanceRoutes.createRouter({ governanceService }));
   app.use(dagRoutes.createRouter(ctx));
 
+  // ── 404 catch-all (after all routes, before error handler) ─────────────────
+  app.use((req, res) => {
+    res.status(404).json({
+      ok: false,
+      status: 404,
+      error: {
+        message: `${req.method} ${req.path} not found`,
+        code: "NOT_FOUND",
+        request_id: req.id || null,
+      },
+    });
+  });
+
   // ── Global error handler (must be last) ────────────────────────────────────
   app.use(errorHandler);
 
