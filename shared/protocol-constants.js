@@ -162,6 +162,7 @@ const SCORE_EVENTS = {
 
 const PRESCAN_THRESHOLDS = {
   get default() { return _ps().default; },
+  get floor() { return _ps().floor; },
   get ceiling() { return _ps().ceiling; },
 };
 
