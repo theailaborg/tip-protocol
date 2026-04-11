@@ -68,7 +68,17 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   const limiter = rateLimit({
     windowMs: config.rateLimitWindow, max: config.rateLimitMax,
     standardHeaders: true, legacyHeaders: false,
-    message: { error: "Rate limit exceeded. Try again shortly." },
+    handler: (req, res) => {
+      res.status(429).json({
+        ok: false,
+        status: 429,
+        error: {
+          message: "Rate limit exceeded. Try again shortly.",
+          code: "RATE_LIMITED",
+          request_id: req.id || null,
+        },
+      });
+    },
   });
   app.use("/v1/", limiter);
 
