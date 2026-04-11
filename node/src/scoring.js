@@ -20,7 +20,8 @@
 
 "use strict";
 
-const { TX_TYPES, SCORE_EVENTS, getTier, ORIGIN } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN } = require("../../shared/constants");
+const { SCORE_EVENTS, getTier } = require("../../shared/protocol-constants");
 const { log } = require("./logger");
 
 function initScoring(dag, config) {

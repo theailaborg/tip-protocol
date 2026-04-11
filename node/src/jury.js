@@ -12,7 +12,8 @@
 "use strict";
 
 const { shake256, computeTxId, signTransaction } = require("../../shared/crypto");
-const { JURY, APPEAL, DISPUTE, TX_TYPES, ORIGIN } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN } = require("../../shared/constants");
+const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
 const { log } = require("./logger");
 
 /**

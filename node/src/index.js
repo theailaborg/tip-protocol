@@ -26,6 +26,7 @@ const { scheduledTasks }   = require("./scheduler");
 const { loadConfig }       = require("./config");
 const { log }              = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
+const PC = require("../../shared/protocol-constants");
 
 async function main() {
   await initCrypto();
@@ -62,6 +63,16 @@ async function main() {
 
   const dag = initDAG(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
+
+  // Load protocol constants from genesis block
+  const { getGenesisPayload } = require("./genesis");
+  const genesisPayload = getGenesisPayload();
+  if (genesisPayload?.protocol_constants) {
+    PC.init(genesisPayload.protocol_constants);
+    log.info("Protocol constants loaded from genesis block");
+  } else {
+    log.warn("No protocol_constants in genesis — using hardcoded defaults");
+  }
 
   // Look up this node's registered ID from the node registry (by public key)
   if (config.nodePublicKey) {

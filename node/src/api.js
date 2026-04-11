@@ -64,10 +64,14 @@ const { verifyDedupProof } = require("../../shared/zk");
 const { validateTransaction } = require("./validators/tx-validator");
 const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("./jury");
 
+// Enums and labels — not protocol constants, stay in constants.js
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, PROTOCOL } = require("../../shared/constants");
+
+// Protocol constants — loaded from genesis block via singleton hub
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  getTier, PRESCAN_THRESHOLDS, HTTP_HEADERS, PROTOCOL,
-} = require("../../shared/constants");
+  VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
+  PRESCAN_THRESHOLDS, getTier,
+} = require("../../shared/protocol-constants");
 
 const { log }  = require("./logger");
 const { getFoundingVP } = require("./genesis");

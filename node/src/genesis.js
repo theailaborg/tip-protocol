@@ -36,17 +36,17 @@
 "use strict";
 
 const crypto = require("crypto");
-const path   = require("path");
-const fs     = require("fs");
+const path = require("path");
+const fs = require("fs");
 const { shake256, shake256Multi, generateSLHDSAKeypair, mldsaSign, mldsaVerify, computeTxId, canonicalJson } = require("../../shared/crypto");
 const { TX_TYPES, PROTOCOL, ORIGIN } = require("../../shared/constants");
 const { log } = require("./logger");
 
 // ─── Genesis Block Constants ──────────────────────────────────────────────────
 // These are FIXED and must never change once the network is live.
-const GENESIS_TIMESTAMP  = "2026-03-15T00:00:00.000Z"; // Network launch date
-const GENESIS_CHAIN_ID   = "tip-mainnet-v2";
-const GENESIS_VP_REGION  = "US";
+const GENESIS_TIMESTAMP = "2026-03-15T00:00:00.000Z"; // Network launch date
+const GENESIS_CHAIN_ID = "tip-mainnet-v2";
+const GENESIS_VP_REGION = "US";
 
 // ─── Canonical Genesis Payload ────────────────────────────────────────────────
 // Protocol definition data only. Tx-level fields (tx_type, timestamp, prev)
@@ -55,75 +55,168 @@ const GENESIS_VP_REGION  = "US";
 // identical across every node in the network.
 
 const GENESIS_PAYLOAD = Object.freeze({
-  version:    "2",
+  version: "2",
 
   protocol: {
-    name:       PROTOCOL.name,
-    short:      PROTOCOL.short,
-    version:    PROTOCOL.version,
-    chain_id:   GENESIS_CHAIN_ID,
-    spec_url:   PROTOCOL.specUrl,
-    license:    PROTOCOL.license,
-    issuer:     PROTOCOL.issuer,
+    name: PROTOCOL.name,
+    short: PROTOCOL.short,
+    version: PROTOCOL.version,
+    chain_id: GENESIS_CHAIN_ID,
+    spec_url: PROTOCOL.specUrl,
+    license: PROTOCOL.license,
+    issuer: PROTOCOL.issuer,
     issuer_url: PROTOCOL.issuerUrl,
   },
 
-  initial_params: {
-    initial_score:            500,
-    initial_score_attested:   550,
-    max_score:                1000,
-    min_score:                0,
-    daily_verify_cap:         10,
-    juror_monthly_max:        20,
-    voucher_stake_points:     25,
-    attestation_voucher_count: 3,
-    attestation_min_score:    700,
-    clean_period_days:        90,
-    clean_period_bonus:       10,
-    prescan_default_threshold: 0.85,
-    prescan_floor:            0.80,
-    prescan_ceiling:          0.94,
+  // ── Protocol Constants (75 values — immutable, read by all nodes) ──────────
+  // These are loaded into ProtocolConstants singleton at boot.
+  // See my-notes/global-constant.md for the full specification.
+  protocol_constants: {
+    score: {
+      max_total: 1000,
+      max_identity: 530,
+      max_content: 350,
+      max_reputation: 50,
+      max_longevity: 70,
+      initial_identity: 500,
+    },
+    identity: {
+      social_link_bonus: 5,
+      max_social_accounts: 6,
+      max_social_bonus: 30,
+    },
+    content: {
+      registration_credit: 2,
+      verification_credit: 1,
+      oh_cap: 200,
+      aa_cap: 100,
+      ag_cap: 100,
+      mx_cap: 100,
+      per_content_lifetime_cap: 5,
+    },
+    reputation: {
+      clean_period_days: 90,
+      clean_period_bonus: 10,
+      dispute_cleared_bonus: 5,
+    },
+    longevity: {
+      tiers: [
+        { months: 6, points: 15 },
+        { months: 12, points: 30 },
+        { months: 24, points: 45 },
+        { months: 36, points: 60 },
+        { months: 60, points: 70 },
+      ],
+    },
+    penalties: {
+      oh_as_ag: [-100, -200, -350],   // 1st, 2nd, 3rd offense
+      oh_as_aa: [-40, -80, -160],
+      aa_as_ag: [-25, -50, -100],
+      minor_falsehood: -75,
+      major_falsehood: -300,
+      retraction: -50,
+      device_compromise: -15,
+      lost_dispute_stake: -15,
+      lost_jury_stake: -10,
+      lost_appeal_stake: -25,
+      appeal_restore_percent: 50,
+    },
+    jury: {
+      // Stakes — positive (amounts at risk, code applies ± based on outcome)
+      dispute_stake: 15,
+      jury_stake: 10,
+      appeal_stake: 25,
+      frivolous_dismiss_fee: 5,
+      // Thresholds — positive (score requirements)
+      dispute_filing_min_score: 400,
+      jury_min_score: 700,
+      expert_min_score: 850,
+      // Sizes and counts
+      jury_size: 7,
+      jury_majority_vote: 3,
+      jury_min_reveals: 5,
+      jury_max_same_country: 3,
+      jury_cooldown_days: 7,
+      expert_panel_size: 3,
+      expert_min_votes: 2,
+      // Bonuses — positive (always added)
+      jury_majority_bonus: 3,
+      appeal_win_bonus: 10,
+      vindication_bonus: 5,
+      upheld_bonus: 5,
+      // Penalties — negative (always subtracted)
+      jury_minority_penalty: -10,
+      jury_no_show_penalty: -10,
+      // Timing
+      jury_commit_hours: 72,
+      jury_reveal_hours: 6,
+      appeal_window_hours: 48,
+      appeal_commit_hours: 72,
+      appeal_reveal_hours: 6,
+      // AI classifier
+      ai_auto_dismiss_threshold: 0.30,
+      ai_auto_escalate_threshold: 0.90,
+      ai_timeout_seconds: 60,
+    },
+    tiers: {
+      highly_trusted: 850,
+      trusted: 650,
+      verified: 400,
+      caution: 200,
+    },
+    verify_caps: {
+      per_content: 5,
+      per_day: 5,
+      per_month: 30,
+      base_delta: 2,
+      high_trust_delta: 3,
+      high_trust_min: 800,
+    },
+    rate_limits: {
+      max_registrations_per_day: 50,
+      max_verifications_given_per_day: 5,
+      max_verifications_given_per_month: 30,
+      duplicate_perceptual_threshold: 0.90,
+    },
+    prescan: {
+      default: 0.85,
+      conversational: 0.82,
+      creative: 0.87,
+      academic: 0.92,
+      legal: 0.93,
+      floor: 0.80,
+      ceiling: 0.94,
+    },
+    network: {
+      chain_id: "tip-mainnet-v2",
+      merkle_publish_hours: 6,
+      score_cache_ttl_seconds: 21600,
+      revocation_cascade_days: 90,
+      warrant_canary_max_days: 90,
+      canary_advisory_window_days: 30,
+      origin_grace_period_hours: 24,
+    },
   },
 
   origin_categories: {
-    OH: { label: "Original Human",   color_hint: "blue"   },
-    AA: { label: "AI-Assisted",       color_hint: "purple" },
-    AG: { label: "AI-Generated",      color_hint: "amber"  },
-    MX: { label: "Mixed / Composite", color_hint: "gray"   },
-  },
-
-  tier_thresholds: [
-    { name: "HIGHLY_TRUSTED", min: 800, max: 1000 },
-    { name: "TRUSTED",        min: 600, max: 799  },
-    { name: "REVIEW_ADVISED", min: 400, max: 599  },
-    { name: "LOW_TRUST",      min: 200, max: 399  },
-    { name: "NOT_TRUSTED",    min: 0,   max: 199  },
-  ],
-
-  penalty_schedule: {
-    oh_confirmed_ag_1st:     -100,
-    oh_confirmed_aa:         -40,
-    aa_confirmed_ag:         -25,
-    ag_conservative:         0,
-    mismatch_2nd_offense:    -200,
-    mismatch_3rd_offense:    -350,
-    factual_falsehood_minor: -75,
-    factual_falsehood_major: -300,
-    device_compromise:       -15,
+    OH: { label: "Original Human", color_hint: "blue" },
+    AA: { label: "AI-Assisted", color_hint: "purple" },
+    AG: { label: "AI-Generated", color_hint: "amber" },
+    MX: { label: "Mixed / Composite", color_hint: "gray" },
   },
 
   founding_vp: {
-    vp_id:             "tip://id/VP-US-theailab-genesis",
-    name:              "The AI Lab Intelligence Unobscured, Inc.",
-    short_name:        "The AI Lab",
+    vp_id: "tip://id/VP-US-theailab-genesis",
+    name: "The AI Lab Intelligence Unobscured, Inc.",
+    short_name: "The AI Lab",
     jurisdiction_tier: "green",
-    jurisdiction:      "US",
-    url:               "https://theailab.org",
-    email:             "trust@theailab.org",
-    registered_at:     GENESIS_TIMESTAMP,
+    jurisdiction: "US",
+    url: "https://theailab.org",
+    email: "trust@theailab.org",
+    registered_at: GENESIS_TIMESTAMP,
     // Public key embedded by seed script. All nodes read this — never generate random keys.
     // Private key held by founding operator (env: TIP_FOUNDING_VP_PRIVATE_KEY).
-    public_key:        "660433c07225c5e2838f8a6fedc3074d5c8ab0db386810cdfb2c39cba6f69588949a593975bf6d3c2ae253d42ede861861ea0f9f0f0e64368d5b9a3bb43605fe8e4dda6953d505981d60706489dc418c5dfeb05ce6dd5974bf28dabbe52475575c87adb63b5980e00bcbd7ecf8d2640e142b6199b9074d1738eeb6cf27a3ab0d1029a045e917651fd84b5212dca9fd7fc34bc5b613a76e7807560a0557fa910ed92d6d73a4eb2fcc21045107fd5c90f29fb829a2ffc2d3d3991d61de1168d81eda70baa0c63fa289d4da967e52fe4c7361b2fdb6a7237a4bec2e577864671888c98d010eba961b4cf6f7c08279a8dae7b44d45a5021f0f7e47c95c2da0295ebfd901d704401257de6f42a6eaebef84a30e6061e25b6d670b14a86ca9aa8d36e1ea20668bf1e8cf820614b91d5f9a3939716b41d8f7f75b3e73ebc8988b58565f77580cee0baa9879e6b9f07e43387caf6d1408b9e67713dfab19b4bbf6fa0096bf2c3259d80294386a171433853c3086e8345b267ab492e7bf2790d1bab4aaff693dd4c9551054282bc15a6a64c3aebd20fcdec61a405c1c8389017accf194aa83be6b70a18b095f9fb09fb7386214bc2577c9be57a4940f5f371486631e73f4ca9fd29c2bc04452e66ce777c21a9c25efea0b70c6e138d44f7f02a15e7406d5dcd9d805e97c82b8323c9791be44556a5df3b2011c262f4234c9f499c0fd6176b75bd7748c6b944daa786a5d859acc72991a69b2a5479d4433f55ece15d39f545ab3440bc90ffdf8ee511bf54929d512808376b66d59a0bf3c07ac555dff20b032766a8e290da4a21243666351c850f0b8450ab1cbef81dd2fd6ae00a4075c11ff1bcdc36927007bc7ef9457705bc7e0e421e27693bcc50aac8f107894ada5523f2c307510bbd66138a138d1a8ee80071ce81af820cf07247bbfe9b42c4fb7d4aa6515d1d41eda7d2d3cab300f671cbfd9ec8d6dc03a998f09ddb4335503c94b5cb859807262a3c8dfe13a6830caa93c06601707932ed7daf23b7dada29027e9cfbb06ddb3b94afb4b1aec31cad8a8160cce29657b905eac9612abc41fcacf63918e8268db4ff3db69eac0bd062cd800d1c610a75f603b0439f1b582659a8bedb99063705c5d46be34c08966eb627bd2caf731b9f6f975ef1d7304515172ecfaad5a28c5a440c7c4b0f151ca6710b8d97949382cc56a27b0184f0660f370e1d5438ac231303bdb9bb7367663e09ccc3241625496c49d7136e2fe4355fa8b7cd7a041de511cf532272aeb192de5b7194e707e45319159e26abf6913b0eac783ab6d8a95b7413212e06da9d3982a9161d2b38dac2917717d8b2763f28716eaae98d312a4d12413f78b6749cc8a448a82f211ff64d0ee9fd055d709144ecf372dca6bfbdd00b5aff39a68742fe54d667ec177e1a6212c6aa09a238c53e3c62aa514499beafc9e7e7d64982a513d5b5850eaa0a049cd8ffe0b83731adb8de34019d4dc565a3c138310cd511dbaedc76fc9862c9d2851cf62961924aab4dac01881f6364f14522c49381fd9ee9eb697a5acdb9d86de754cdde485922576674b2521b97750326969dfdabc6299a4d91e1ca0587a642f07b68893dbf82aa2f19fa0031d562eee8d6f741b1ec53575ade435ace041140ccfe9db65b353670cd45f6b3f6e52107df77599fc6e8df7a10ac6cadd501d7218bffe19d3a00e6f379ce7458660239b1acea5597fbfbfc457b566c96f5ab1f1e3103614a575af961482f37647a26862765726047e77676a78d4f7a93c8073e3b33cbda865aee483603ad031784b30f073d9da12e0a42750b5133b42a59affea4273080be0b0051589c83f2fa9e25afd0f7e789f24755eed02ac2012e0cade0e0d36e642910bbb680ff69e9783e4d27c3c5ca9ddc7dfa1ca29dbf778248d7ab22587255079694daf1d6ed2e273c6cf1de93ff73ad56d1af0967f86986e1b04505f33fd69b35b2332605e0a22e9166966d1b487aedf178516f44ebc1c084ac96350a3ab1ae4688e240749d401b8104a7aeb884c26ee1575e03b0bca6db4fb35866094cbd9b5122a34387aa2b477d9b0749e2e8f5bbcf62ad51ac150e23c64d61841bc440a38e0727c65cbc0f488999c8fc241cf83d61f3065e8cea565e9799b588dc18ebda7ff29bbcc94be7d6780dabb4e7091643b785ad773dcdc2cde8510961347b79d9090683adab328713c179ea27c6d5a1e0fc68699677968673527561b82d464a102fd3879f590613061d40cce2046a95b6b7cf93ffde75e062e435ef378d2adae66cc01c242a1155828ed138295f4ef75983cc4336dfe29d9b49c0252c8c0130a0e52947958d2e36fe954157139c3c4d281f0243435324e3ce595f81b27770971f27bbb1ce913205ff467898de13c97ba786c6fd3cf55575b18c0de6f5e3c9680b4ddeb82d1b35243022875af55c5cff7f08f34b85029e203d4e48c9d3ce7594f7ccfbb50719d06ded4488adbd39fc7f9e211d206b987482c3e49c71274e02e9fbeb4aabe14794199b2c4c314bec22ad1b28dbee72a1bc0bbc595e506d5dd029c8f5df44b23b007794a51ded22814d101f6fb55c4df51addec39dd8082e7c0e2f9a54c7bbc91c3d50fbc5411565c0c873a7acaa3f48889f6ccb60256a79ce4c5545c6f84e95efc55f67e826d4aa61b001b42dc1e897c1148b6852f553acf3229f333a1aa6c368d447a8084cf15c359a21f6e58522d38bef1f913e30cccd40f1d9b6793fc7ba087f1f8d82",
+    public_key: "660433c07225c5e2838f8a6fedc3074d5c8ab0db386810cdfb2c39cba6f69588949a593975bf6d3c2ae253d42ede861861ea0f9f0f0e64368d5b9a3bb43605fe8e4dda6953d505981d60706489dc418c5dfeb05ce6dd5974bf28dabbe52475575c87adb63b5980e00bcbd7ecf8d2640e142b6199b9074d1738eeb6cf27a3ab0d1029a045e917651fd84b5212dca9fd7fc34bc5b613a76e7807560a0557fa910ed92d6d73a4eb2fcc21045107fd5c90f29fb829a2ffc2d3d3991d61de1168d81eda70baa0c63fa289d4da967e52fe4c7361b2fdb6a7237a4bec2e577864671888c98d010eba961b4cf6f7c08279a8dae7b44d45a5021f0f7e47c95c2da0295ebfd901d704401257de6f42a6eaebef84a30e6061e25b6d670b14a86ca9aa8d36e1ea20668bf1e8cf820614b91d5f9a3939716b41d8f7f75b3e73ebc8988b58565f77580cee0baa9879e6b9f07e43387caf6d1408b9e67713dfab19b4bbf6fa0096bf2c3259d80294386a171433853c3086e8345b267ab492e7bf2790d1bab4aaff693dd4c9551054282bc15a6a64c3aebd20fcdec61a405c1c8389017accf194aa83be6b70a18b095f9fb09fb7386214bc2577c9be57a4940f5f371486631e73f4ca9fd29c2bc04452e66ce777c21a9c25efea0b70c6e138d44f7f02a15e7406d5dcd9d805e97c82b8323c9791be44556a5df3b2011c262f4234c9f499c0fd6176b75bd7748c6b944daa786a5d859acc72991a69b2a5479d4433f55ece15d39f545ab3440bc90ffdf8ee511bf54929d512808376b66d59a0bf3c07ac555dff20b032766a8e290da4a21243666351c850f0b8450ab1cbef81dd2fd6ae00a4075c11ff1bcdc36927007bc7ef9457705bc7e0e421e27693bcc50aac8f107894ada5523f2c307510bbd66138a138d1a8ee80071ce81af820cf07247bbfe9b42c4fb7d4aa6515d1d41eda7d2d3cab300f671cbfd9ec8d6dc03a998f09ddb4335503c94b5cb859807262a3c8dfe13a6830caa93c06601707932ed7daf23b7dada29027e9cfbb06ddb3b94afb4b1aec31cad8a8160cce29657b905eac9612abc41fcacf63918e8268db4ff3db69eac0bd062cd800d1c610a75f603b0439f1b582659a8bedb99063705c5d46be34c08966eb627bd2caf731b9f6f975ef1d7304515172ecfaad5a28c5a440c7c4b0f151ca6710b8d97949382cc56a27b0184f0660f370e1d5438ac231303bdb9bb7367663e09ccc3241625496c49d7136e2fe4355fa8b7cd7a041de511cf532272aeb192de5b7194e707e45319159e26abf6913b0eac783ab6d8a95b7413212e06da9d3982a9161d2b38dac2917717d8b2763f28716eaae98d312a4d12413f78b6749cc8a448a82f211ff64d0ee9fd055d709144ecf372dca6bfbdd00b5aff39a68742fe54d667ec177e1a6212c6aa09a238c53e3c62aa514499beafc9e7e7d64982a513d5b5850eaa0a049cd8ffe0b83731adb8de34019d4dc565a3c138310cd511dbaedc76fc9862c9d2851cf62961924aab4dac01881f6364f14522c49381fd9ee9eb697a5acdb9d86de754cdde485922576674b2521b97750326969dfdabc6299a4d91e1ca0587a642f07b68893dbf82aa2f19fa0031d562eee8d6f741b1ec53575ade435ace041140ccfe9db65b353670cd45f6b3f6e52107df77599fc6e8df7a10ac6cadd501d7218bffe19d3a00e6f379ce7458660239b1acea5597fbfbfc457b566c96f5ab1f1e3103614a575af961482f37647a26862765726047e77676a78d4f7a93c8073e3b33cbda865aee483603ad031784b30f073d9da12e0a42750b5133b42a59affea4273080be0b0051589c83f2fa9e25afd0f7e789f24755eed02ac2012e0cade0e0d36e642910bbb680ff69e9783e4d27c3c5ca9ddc7dfa1ca29dbf778248d7ab22587255079694daf1d6ed2e273c6cf1de93ff73ad56d1af0967f86986e1b04505f33fd69b35b2332605e0a22e9166966d1b487aedf178516f44ebc1c084ac96350a3ab1ae4688e240749d401b8104a7aeb884c26ee1575e03b0bca6db4fb35866094cbd9b5122a34387aa2b477d9b0749e2e8f5bbcf62ad51ac150e23c64d61841bc440a38e0727c65cbc0f488999c8fc241cf83d61f3065e8cea565e9799b588dc18ebda7ff29bbcc94be7d6780dabb4e7091643b785ad773dcdc2cde8510961347b79d9090683adab328713c179ea27c6d5a1e0fc68699677968673527561b82d464a102fd3879f590613061d40cce2046a95b6b7cf93ffde75e062e435ef378d2adae66cc01c242a1155828ed138295f4ef75983cc4336dfe29d9b49c0252c8c0130a0e52947958d2e36fe954157139c3c4d281f0243435324e3ce595f81b27770971f27bbb1ce913205ff467898de13c97ba786c6fd3cf55575b18c0de6f5e3c9680b4ddeb82d1b35243022875af55c5cff7f08f34b85029e203d4e48c9d3ce7594f7ccfbb50719d06ded4488adbd39fc7f9e211d206b987482c3e49c71274e02e9fbeb4aabe14794199b2c4c314bec22ad1b28dbee72a1bc0bbc595e506d5dd029c8f5df44b23b007794a51ded22814d101f6fb55c4df51addec39dd8082e7c0e2f9a54c7bbc91c3d50fbc5411565c0c873a7acaa3f48889f6ccb60256a79ce4c5545c6f84e95efc55f67e826d4aa61b001b42dc1e897c1148b6852f553acf3229f333a1aa6c368d447a8084cf15c359a21f6e58522d38bef1f913e30cccd40f1d9b6793fc7ba087f1f8d82",
   },
 
   // Founding node commitment (public key hash only — not the full key)
@@ -132,7 +225,7 @@ const GENESIS_PAYLOAD = Object.freeze({
 
   // Genesis Ring — founding verified members
   // These are populated by the seed script and cannot be added after launch
-  genesis_ring: ["tip://id/US-96bbb7639f6b5109","tip://id/US-bfd737f1516012b6","tip://id/US-86747549e257c60c"],
+  genesis_ring: ["tip://id/US-96bbb7639f6b5109", "tip://id/US-bfd737f1516012b6", "tip://id/US-86747549e257c60c"],
 
   // Merkle root of the initial dedup registry (empty at genesis)
   initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
@@ -150,10 +243,10 @@ const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
 // ─── Content-addressed genesis tx ID ────────────────────────────────────────
 // Computed from the canonical form of the genesis tx, just like all other txs.
 const GENESIS_TX = Object.freeze({
-  tx_type:    "GENESIS",
-  timestamp:  GENESIS_TIMESTAMP,
-  prev:       [],
-  data:       GENESIS_PAYLOAD,
+  tx_type: "GENESIS",
+  timestamp: GENESIS_TIMESTAMP,
+  prev: [],
+  data: GENESIS_PAYLOAD,
 });
 
 const GENESIS_TX_ID = computeTxId(GENESIS_TX);
@@ -200,12 +293,12 @@ function buildGenesisBlock(genesisDataDir, signingKey) {
 
   const block = {
     ...GENESIS_PAYLOAD,
-    genesis_hash:       GENESIS_HASH,
-    canonical_hash:     shake256(canonicalJson(GENESIS_PAYLOAD)),
-    signed_at:          new Date().toISOString(),
-    signer_public_key:  devKey.publicKey,
-    signature:          mldsaSign(GENESIS_HASH, devKey.privateKey),
-    environment:        process.env.NODE_ENV || "development",
+    genesis_hash: GENESIS_HASH,
+    canonical_hash: shake256(canonicalJson(GENESIS_PAYLOAD)),
+    signed_at: new Date().toISOString(),
+    signer_public_key: devKey.publicKey,
+    signature: mldsaSign(GENESIS_HASH, devKey.privateKey),
+    environment: process.env.NODE_ENV || "development",
   };
 
   // Persist for subsequent node boots
