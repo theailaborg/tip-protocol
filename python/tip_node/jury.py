@@ -11,7 +11,8 @@ License: TIPCL-1.0
 
 from datetime import datetime, timezone
 from shared.crypto import shake256, compute_tx_id, sign_transaction
-from shared.constants import Jury, Appeal, Dispute, TxType
+from shared.constants import TxType
+from shared.protocol_constants import Jury, Appeal, Dispute
 from tip_node.logger import get_logger
 
 log = get_logger("jury")

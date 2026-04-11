@@ -34,9 +34,11 @@ from shared.crypto import (
 )
 from shared.zk import verify_dedup_proof
 from shared.constants import (
-    TxType, Origin, Protocol, HttpHeaders,
-    JurisdictionTier, get_tier, ScoreEvent, VerifyCaps,
-    Dispute, Jury, AiClassifier,
+    TxType, Origin, Protocol, HttpHeaders, JurisdictionTier,
+)
+from shared.protocol_constants import (
+    VerifyCaps, Dispute, Jury, Appeal, AiClassifier, ScoreEvent,
+    get_tier,
 )
 from tip_node.jury import select_jury, select_experts, tally_verdict_and_apply, apply_appeal_verdict, write_summons_txs
 from tip_node.validators.tx_validator import validate_transaction

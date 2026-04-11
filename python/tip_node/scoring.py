@@ -19,7 +19,8 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 
-from shared.constants import TxType, ScoreEvent, Origin, get_tier
+from shared.constants import TxType, ScoreEvent, Origin
+from shared.protocol_constants import get_tier
 from tip_node.logger import get_logger
 
 log = get_logger("scoring")
