@@ -9,7 +9,7 @@ function createRouter({ dag }) {
 
   router.get("/v1/dag/tx/:txId", asyncHandler((req, res) => {
     const tx = dag.getTx(req.params.txId);
-    if (!tx) return res.status(404).json({ error: "Transaction not found" });
+    if (!tx) throw { status: 404, error: "Transaction not found" };
     res.json(tx);
   }));
 

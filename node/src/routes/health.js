@@ -59,11 +59,11 @@ function createRouter({ dag, scoring, config, broadcast }) {
     res.json({ nodes: dag.getAllNodes() });
   });
 
-  router.get("/v1/node/:nodeId", (req, res) => {
+  router.get("/v1/node/:nodeId", asyncHandler((req, res) => {
     const node = dag.getNode(req.params.nodeId);
-    if (!node) return res.status(404).json({ error: "Node not found" });
+    if (!node) throw { status: 404, error: "Node not found" };
     res.json(node);
-  });
+  }));
 
   return router;
 }
