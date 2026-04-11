@@ -17,6 +17,8 @@ const STATUS_CODES = {
  * { ok: false, error: { message, code, status } }
  */
 function errorHandler(err, req, res, _next) {
+  const requestId = req.id || null;
+
   if (err.status && err.error) {
     const message = Array.isArray(err.error) ? err.error.join("; ") : err.error;
     res.status(err.status).json({
@@ -25,10 +27,11 @@ function errorHandler(err, req, res, _next) {
       error: {
         message,
         code: err.code || STATUS_CODES[err.status] || "ERROR",
+        request_id: requestId,
       },
     });
   } else {
-    log.error(`${req.method} ${req.path} — unhandled error:`, err.message || err);
+    log.error(`[${requestId}] ${req.method} ${req.path} — unhandled error:`, err.message || err);
     if (!res.headersSent) {
       res.status(500).json({
         ok: false,
@@ -36,6 +39,7 @@ function errorHandler(err, req, res, _next) {
         error: {
           message: "Internal server error",
           code: "INTERNAL_ERROR",
+          request_id: requestId,
         },
       });
     }

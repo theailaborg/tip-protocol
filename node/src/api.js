@@ -18,6 +18,7 @@ const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 
 const { errorHandler } = require("./middleware/error-handler");
+const { requestId } = require("./middleware/request-id");
 const { createBroadcast } = require("./services/helpers");
 
 // Services
@@ -58,9 +59,11 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   app.use("/download", express.static(path.resolve(__dirname, "../../browser-extension")));
 
   // Middleware
+  app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(express.json({ limit: "4mb" }));
-  app.use(morgan("[:date[iso]] :method :url :status :response-time ms"));
+  morgan.token("req-id", (req) => req.id);
+  app.use(morgan("[:date[iso]] :req-id :method :url :status :response-time ms"));
 
   const limiter = rateLimit({
     windowMs: config.rateLimitWindow, max: config.rateLimitMax,
