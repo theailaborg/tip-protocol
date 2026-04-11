@@ -12,9 +12,11 @@
 "use strict";
 
 const { shake256, computeTxId, signTransaction } = require("../../shared/crypto");
-const { TX_TYPES, ORIGIN } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
-const { log } = require("./logger");
+const { getLogger } = require("./logger");
+
+const log = getLogger("tip.jury");
 
 /**
  * Deterministic seeded shuffle (Fisher-Yates with seed bytes instead of Math.random).
@@ -136,19 +138,19 @@ function writeSummonsTxs(dag, config, ctid, disputeTxId, members, commitHours, r
 
   for (const tipId of members.jurors || members.experts || []) {
     const summonsTx = _nodeSignedAuto({
-      tx_type:   TX_TYPES.JURY_SUMMONS,
+      tx_type: TX_TYPES.JURY_SUMMONS,
       timestamp,
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
       data: {
         ctid,
-        dispute_tx_id:   disputeTxId,
-        juror_tip_id:    tipId,
-        stake:           JURY.JUROR_STAKE,
-        seed:            members.seed,
-        identity_count:  members.identityCount,
+        dispute_tx_id: disputeTxId,
+        juror_tip_id: tipId,
+        stake: JURY.JUROR_STAKE,
+        seed: members.seed,
+        identity_count: members.identityCount,
         commit_deadline: commitDeadline,
         reveal_deadline: revealDeadline,
-        is_appeal:       isAppeal,
+        is_appeal: isAppeal,
       },
     }, config);
     dag.addTx(summonsTx);
@@ -174,7 +176,7 @@ function penalizeNoShows(reveals, summons, ctid, scoring) {
  */
 function getMajorityOrigin(reveals, fallbackOrigin) {
   const originVotes = reveals
-    .filter(r => r.data?.vote === "MISMATCH" && r.data?.confirmed_origin)
+    .filter(r => r.data?.vote === VOTE.MISMATCH && r.data?.confirmed_origin)
     .map(r => r.data.confirmed_origin);
   const counts = {};
   for (const o of originVotes) counts[o] = (counts[o] || 0) + 1;
@@ -186,10 +188,10 @@ function getMajorityOrigin(reveals, fallbackOrigin) {
  * Called when all jurors have revealed (or reveal window expires via scheduler).
  */
 function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
-  const matchCount    = reveals.filter(r => r.data?.vote === "MATCH").length;
-  const mismatchCount = reveals.filter(r => r.data?.vote === "MISMATCH").length;
-  const abstainCount  = reveals.filter(r => r.data?.vote === "ABSTAIN").length;
-  const totalVotes    = matchCount + mismatchCount + abstainCount;
+  const matchCount = reveals.filter(r => r.data?.vote === VOTE.MATCH).length;
+  const mismatchCount = reveals.filter(r => r.data?.vote === VOTE.MISMATCH).length;
+  const abstainCount = reveals.filter(r => r.data?.vote === VOTE.ABSTAIN).length;
+  const totalVotes = matchCount + mismatchCount + abstainCount;
 
   // Quorum check: enough reveals AND enough actual votes (not just abstains)
   const nonAbstain = matchCount + mismatchCount;
@@ -204,7 +206,7 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
 
     const appealTx = _nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_FILED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: "NO_QUORUM", stake: 0 },
+      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
     }, config);
     dag.addTx(appealTx);
 
@@ -212,53 +214,53 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
     writeSummonsTxs(dag, config, ctid, appealTx.tx_id, experts, APPEAL.COMMIT_WINDOW_HOURS, APPEAL.REVEAL_WINDOW_HOURS, true);
 
     log.info(`Jury NO_QUORUM on ${ctid} — auto-escalated to Stage 3 with ${experts.experts.length} experts`);
-    return { verdict: "NO_QUORUM", auto_appeal: true, experts: experts.experts, matchCount, mismatchCount, abstainCount };
+    return { verdict: VERDICT.NO_QUORUM, auto_appeal: true, experts: experts.experts, matchCount, mismatchCount, abstainCount };
   }
 
   // Majority: need > 50% of non-abstain votes
   const majorityNeeded = Math.floor(nonAbstain / 2) + 1;
-  const decision = mismatchCount >= majorityNeeded ? "UPHELD" : "DISMISSED";
+  const decision = mismatchCount >= majorityNeeded ? VERDICT.UPHELD : VERDICT.DISMISSED;
 
   const rec = dag.getContent(ctid);
   const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid);
-  const disputeData   = disputeTxs[0]?.data || {};
+  const disputeData = disputeTxs[0]?.data || {};
   const disputerTipId = disputeData.disputer_tip_id;
-  const authorTipId   = rec?.author_tip_id;
+  const authorTipId = rec?.author_tip_id;
 
   // Origin codes: declared (what author said) vs confirmed (majority of MISMATCH jurors)
   const declared_origin = disputeData.declared_origin || rec?.origin_code;
   let confirmed_origin = null;
-  if (decision === "UPHELD") {
+  if (decision === VERDICT.UPHELD) {
     const originVotes = reveals
-      .filter(r => r.data?.vote === "MISMATCH" && r.data?.confirmed_origin)
+      .filter(r => r.data?.vote === VOTE.MISMATCH && r.data?.confirmed_origin)
       .map(r => r.data.confirmed_origin);
     const originCounts = {};
     for (const o of originVotes) originCounts[o] = (originCounts[o] || 0) + 1;
     confirmed_origin = Object.entries(originCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
-                     || disputeData.claimed_origin || null;
+      || disputeData.claimed_origin || null;
   }
 
   // Check for conservative label (AG declared, was actually OH — no penalty)
-  const verdict = decision === "DISMISSED" ? "DISMISSED"
-    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? "CONSERVATIVE_LABEL"
-    : "UPHELD";
+  const verdict = decision === VERDICT.DISMISSED ? VERDICT.DISMISSED
+    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? VERDICT.CONSERVATIVE_LABEL
+      : VERDICT.UPHELD;
 
   // Write ADJUDICATION_RESULT tx
   const resultTx = _nodeSignedAuto({
-    tx_type:   TX_TYPES.ADJUDICATION_RESULT,
+    tx_type: TX_TYPES.ADJUDICATION_RESULT,
     timestamp: new Date().toISOString(),
-    prev:      dag.getRecentPrev(),
+    prev: dag.getRecentPrev(),
     data: {
       ctid,
       verdict,
       declared_origin,
       confirmed_origin,
-      reason:          disputeData.reason,
-      author_tip_id:   authorTipId,
-      match_count:     matchCount,
-      mismatch_count:  mismatchCount,
-      abstain_count:   abstainCount,
-      juror_votes:     reveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
+      reason: disputeData.reason,
+      author_tip_id: authorTipId,
+      match_count: matchCount,
+      mismatch_count: mismatchCount,
+      abstain_count: abstainCount,
+      juror_votes: reveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
     },
   }, config);
   dag.addTx(resultTx);
@@ -268,10 +270,10 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
   if (isTie) {
     log.info(`Jury tie on ${ctid}: ${matchCount}-${mismatchCount} — no juror score changes`);
   } else {
-    const majorityVote = mismatchCount > matchCount ? "MISMATCH" : "MATCH";
+    const majorityVote = mismatchCount > matchCount ? VOTE.MISMATCH : VOTE.MATCH;
     for (const reveal of reveals) {
       const jurorTipId = reveal.data.juror_tip_id;
-      if (reveal.data.vote === "ABSTAIN") continue;
+      if (reveal.data.vote === VOTE.ABSTAIN) continue;
       if (reveal.data.vote === majorityVote) {
         scoring.applyScoreEvent(jurorTipId, JURY.MAJORITY_BONUS, `Jury majority vote on ${ctid}`);
       } else {
@@ -289,21 +291,21 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
   }
 
   // Disputer effects
-  if (verdict === "UPHELD" && disputerTipId) {
+  if (verdict === VERDICT.UPHELD && disputerTipId) {
     scoring.applyScoreEvent(disputerTipId, DISPUTE.UPHELD_BONUS, `Dispute upheld on ${ctid}`);
-  } else if (verdict === "DISMISSED" && disputerTipId) {
+  } else if (verdict === VERDICT.DISMISSED && disputerTipId) {
     scoring.applyScoreEvent(disputerTipId, -DISPUTE.DISPUTER_STAKE, `Dispute dismissed on ${ctid}`);
   }
 
   // Creator effects
-  if (verdict === "UPHELD" && authorTipId) {
+  if (verdict === VERDICT.UPHELD && authorTipId) {
     const current = scoring.computeScore(authorTipId);
     if (confirmed_origin) {
-      dag.updateContentOrigin(ctid, confirmed_origin, "verified");
+      dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
       log.info(`Verdict UPHELD: ${ctid} origin ${declared_origin} → ${confirmed_origin}, creator ${authorTipId} penalty (score: ${current.score})`);
     }
-  } else if (verdict === "DISMISSED" || verdict === "CONSERVATIVE_LABEL") {
-    dag.updateContentStatus(ctid, disputeData.pre_dispute_status || "registered");
+  } else if (verdict === VERDICT.DISMISSED || verdict === VERDICT.CONSERVATIVE_LABEL) {
+    dag.updateContentStatus(ctid, disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED);
   }
 
   return { verdict, confirmed_origin, matchCount, mismatchCount, abstainCount, tx_id: resultTx.tx_id };
@@ -314,10 +316,10 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
  * Expert decision is FINAL and IMMUTABLE.
  */
 function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
-  const matchCount    = reveals.filter(r => r.data?.vote === "MATCH").length;
-  const mismatchCount = reveals.filter(r => r.data?.vote === "MISMATCH").length;
-  const abstainCount  = reveals.filter(r => r.data?.vote === "ABSTAIN").length;
-  const nonAbstain    = matchCount + mismatchCount;
+  const matchCount = reveals.filter(r => r.data?.vote === VOTE.MATCH).length;
+  const mismatchCount = reveals.filter(r => r.data?.vote === VOTE.MISMATCH).length;
+  const abstainCount = reveals.filter(r => r.data?.vote === VOTE.ABSTAIN).length;
+  const nonAbstain = matchCount + mismatchCount;
 
   // Need at least APPEAL.MIN_VOTES non-abstain votes from experts
   if (nonAbstain < APPEAL.MIN_VOTES) {
@@ -325,15 +327,15 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
 
     // Default to DISMISSED — author wins if experts can't decide
     const dTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid);
-    const preStatus = dTxs[0]?.data?.pre_dispute_status || "registered";
+    const preStatus = dTxs[0]?.data?.pre_dispute_status || CONTENT_STATUS.REGISTERED;
 
     // Write APPEAL_RESULT tx so DAG records the outcome
     const resultTx = _nodeSignedAuto({
-      tx_type:   TX_TYPES.APPEAL_RESULT,
+      tx_type: TX_TYPES.APPEAL_RESULT,
       timestamp: new Date().toISOString(),
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
       data: {
-        ctid, verdict: "DISMISSED", overturned: false, defaulted: true,
+        ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
       },
     }, config);
@@ -341,12 +343,12 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
 
     dag.updateContentStatus(ctid, preStatus);
     log.info(`Appeal NO_QUORUM on ${ctid} — defaulted to DISMISSED, status restored to ${preStatus}`);
-    return { verdict: "DISMISSED", defaulted: true, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
+    return { verdict: VERDICT.DISMISSED, defaulted: true, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
   }
 
   // Same majority formula as jury: strict majority of non-abstain
   const majorityNeeded = Math.floor(nonAbstain / 2) + 1;
-  const expertDecision = mismatchCount >= majorityNeeded ? "UPHELD" : "DISMISSED";
+  const expertDecision = mismatchCount >= majorityNeeded ? VERDICT.UPHELD : VERDICT.DISMISSED;
 
   // Get Stage 2 verdict
   const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid);
@@ -361,29 +363,29 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
 
   // Confirmed origin from expert MISMATCH votes
   let confirmed_origin = null;
-  if (expertDecision === "UPHELD") {
+  if (expertDecision === VERDICT.UPHELD) {
     const originVotes = reveals
-      .filter(r => r.data?.vote === "MISMATCH" && r.data?.confirmed_origin)
+      .filter(r => r.data?.vote === VOTE.MISMATCH && r.data?.confirmed_origin)
       .map(r => r.data.confirmed_origin);
     const originCounts = {};
     for (const o of originVotes) originCounts[o] = (originCounts[o] || 0) + 1;
     confirmed_origin = Object.entries(originCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
-                     || disputeData.claimed_origin || null;
+      || disputeData.claimed_origin || null;
   }
 
   const declared_origin = disputeData.declared_origin || rec?.origin_code;
-  const verdict = expertDecision === "DISMISSED" ? "DISMISSED"
-    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? "CONSERVATIVE_LABEL"
-    : "UPHELD";
+  const verdict = expertDecision === VERDICT.DISMISSED ? VERDICT.DISMISSED
+    : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? VERDICT.CONSERVATIVE_LABEL
+      : VERDICT.UPHELD;
 
-  const overturned = (stage2Verdict === "UPHELD" && verdict === "DISMISSED")
-                  || (stage2Verdict === "DISMISSED" && verdict === "UPHELD");
+  const overturned = (stage2Verdict === VERDICT.UPHELD && verdict === VERDICT.DISMISSED)
+    || (stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD);
 
   // Write APPEAL_RESULT tx — FINAL
   const resultTx = _nodeSignedAuto({
-    tx_type:   TX_TYPES.APPEAL_RESULT,
+    tx_type: TX_TYPES.APPEAL_RESULT,
     timestamp: new Date().toISOString(),
-    prev:      dag.getRecentPrev(),
+    prev: dag.getRecentPrev(),
     data: {
       ctid, verdict, overturned, stage2_verdict: stage2Verdict,
       declared_origin, confirmed_origin,
@@ -394,38 +396,38 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
   dag.addTx(resultTx);
 
   // Appellant effects
-  const preStatus = disputeData.pre_dispute_status || "registered";
+  const preStatus = disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED;
 
   if (overturned && appellantTipId) {
     scoring.applyScoreEvent(appellantTipId, APPEAL.APPELLANT_STAKE + APPEAL.OVERTURN_BONUS, `Appeal overturned on ${ctid}`);
 
     // Reverse disputer's Stage 2 effect
     const disputerTipId = disputeData.disputer_tip_id;
-    if (stage2Verdict === "UPHELD" && disputerTipId) {
+    if (stage2Verdict === VERDICT.UPHELD && disputerTipId) {
       // Disputer got +5 at Stage 2 → take it back
       scoring.applyScoreEvent(disputerTipId, -DISPUTE.UPHELD_BONUS, `Appeal overturned: Stage 2 bonus reversed on ${ctid}`);
-    } else if (stage2Verdict === "DISMISSED" && disputerTipId) {
+    } else if (stage2Verdict === VERDICT.DISMISSED && disputerTipId) {
       // Disputer lost -15 at Stage 2 → give it back
       scoring.applyScoreEvent(disputerTipId, DISPUTE.DISPUTER_STAKE, `Appeal overturned: Stage 2 penalty reversed on ${ctid}`);
     }
 
-    if (stage2Verdict === "UPHELD" && authorTipId) {
+    if (stage2Verdict === VERDICT.UPHELD && authorTipId) {
       // Stage 2 penalized author → reverse: restore original origin + pre-dispute status
       scoring.computeScore(authorTipId);
       dag.updateContentOrigin(ctid, declared_origin, preStatus);
       log.info(`Appeal OVERTURNED: ${ctid} — penalty reversed, origin restored to ${declared_origin}, status to ${preStatus}`);
-    } else if (stage2Verdict === "DISMISSED") {
+    } else if (stage2Verdict === VERDICT.DISMISSED) {
       // Stage 2 dismissed → experts say UPHELD: apply penalty, update origin
       if (confirmed_origin) {
-        dag.updateContentOrigin(ctid, confirmed_origin, "verified");
+        dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
       }
       log.info(`Appeal OVERTURNED: ${ctid} — Stage 2 dismissal reversed, experts confirm mismatch`);
     }
   } else if (!overturned && appellantTipId) {
     scoring.applyScoreEvent(appellantTipId, -APPEAL.APPELLANT_STAKE, `Appeal failed on ${ctid}`);
-    if (verdict === "UPHELD" && confirmed_origin) {
+    if (verdict === VERDICT.UPHELD && confirmed_origin) {
       // Experts confirm UPHELD — verified by experts
-      dag.updateContentOrigin(ctid, confirmed_origin, "verified");
+      dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
     } else {
       // Experts confirm DISMISSED — restore pre-dispute status
       dag.updateContentStatus(ctid, preStatus);
@@ -436,9 +438,9 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
   // Expert score effects
   const isTie = matchCount === mismatchCount;
   if (!isTie) {
-    const majorityVote = mismatchCount > matchCount ? "MISMATCH" : "MATCH";
+    const majorityVote = mismatchCount > matchCount ? VOTE.MISMATCH : VOTE.MATCH;
     for (const reveal of reveals) {
-      if (reveal.data.vote === "ABSTAIN") continue;
+      if (reveal.data.vote === VOTE.ABSTAIN) continue;
       if (reveal.data.vote === majorityVote) {
         scoring.applyScoreEvent(reveal.data.juror_tip_id, JURY.MAJORITY_BONUS, `Expert majority vote on ${ctid}`);
       } else {

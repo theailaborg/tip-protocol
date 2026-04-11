@@ -9,8 +9,9 @@
 
 "use strict";
 
-const { getTier, SCORE_DISPLAY, TX_TYPES } = require("../../shared/constants");
-const { shake256Multi }                    = require("../../shared/crypto");
+const { SCORE_DISPLAY, TX_TYPES } = require("../../shared/constants");
+const { getTier } = require("../../shared/protocol-constants");
+const { shake256Multi } = require("../../shared/crypto");
 
 class TIPTrustClient {
   constructor(config) {
@@ -65,7 +66,7 @@ class TIPTrustClient {
     }
     const aboveThreshold = score >= threshold;
     const blindingFactor = shake256Multi(privateKey || "", Date.now().toString());
-    const commitment     = shake256Multi(score.toString(), blindingFactor);
+    const commitment = shake256Multi(score.toString(), blindingFactor);
 
     return {
       commitment,
@@ -129,9 +130,9 @@ class TIPTrustClient {
     return this._fetch("/v1/revocations", {
       method: "POST",
       body: {
-        tip_id:        tipId,
-        tx_type:       txType,
-        reason_code:   reasonCode,
+        tip_id: tipId,
+        tx_type: txType,
+        reason_code: reasonCode,
         evidence_hash: evidenceHash,
         issuing_vp_id: issuingVpId,
         signature,

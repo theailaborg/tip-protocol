@@ -22,11 +22,11 @@
 "use strict";
 
 const request = require("supertest");
-const path    = require("path");
+const path = require("path");
 
 // ─── Resolve shared module paths relative to this file ────────────────────────
 const SHARED = path.resolve(__dirname, "../../shared");
-const SRC    = path.resolve(__dirname, "../src");
+const SRC = path.resolve(__dirname, "../src");
 
 const {
   initCrypto,
@@ -42,18 +42,20 @@ const {
 process.env.ZK_SKIP_VERIFY = "true";
 
 // Mock Groth16 proof for tests (accepted when ZK_SKIP_VERIFY=true)
-const MOCK_ZK_PROOF   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
+const MOCK_ZK_PROOF = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
 const MOCK_DEDUP_HASH = "12345678901234567890123456789012345678901234567890123456789012345";
 
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, getTier, HTTP_HEADERS, PROTOCOL,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, PROTOCOL,
 } = require(path.join(SHARED, "constants"));
+const {
+  SCORE_EVENTS, PRESCAN_THRESHOLDS, getTier,
+} = require(path.join(SHARED, "protocol-constants"));
 
 const { initDAG } = require(path.join(SRC, "dag"));
-const { initScoring }       = require(path.join(SRC, "scoring"));
+const { initScoring } = require(path.join(SRC, "scoring"));
 const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
-const { createApp }     = require(path.join(SRC, "api"));
+const { createApp } = require(path.join(SRC, "api"));
 
 // ─── Test Fixtures ─────────────────────────────────────────────────────────────
 
@@ -66,29 +68,29 @@ let TEST_CONFIG;
 
 beforeAll(async () => {
   await initCrypto();
-  keypair1  = generateMLDSAKeypair();
-  keypair2  = generateMLDSAKeypair();
+  keypair1 = generateMLDSAKeypair();
+  keypair2 = generateMLDSAKeypair();
   vpKeypair = generateMLDSAKeypair();
 
   // Node keypair for tx-level signing
   const nodeKp = generateMLDSAKeypair();
   TEST_CONFIG = {
-    nodeId:           "test-node-001",
-    nodeVersion:      "2.0.0",
-    nodeType:         "full",
-    region:           "US",
-    publicUrl:        "http://localhost:4000",
-    peers:            [],
-    genesisHash:      "52f08c352f8866b400000000000000000000000000000000",
-    chainId:          "tip-testnet",
-    corsOrigins:      "*",
-    nodePrivateKey:   nodeKp.privateKey,
-    nodePublicKey:    nodeKp.publicKey,
-    rateLimitWindow:  60 * 1000,
-    rateLimitMax:     10000,
+    nodeId: "test-node-001",
+    nodeVersion: require("../../package.json").version,
+    nodeType: "full",
+    region: "US",
+    publicUrl: "http://localhost:4000",
+    peers: [],
+    genesisHash: "52f08c352f8866b400000000000000000000000000000000",
+    chainId: "tip-testnet",
+    corsOrigins: "*",
+    nodePrivateKey: nodeKp.privateKey,
+    nodePublicKey: nodeKp.publicKey,
+    rateLimitWindow: 60 * 1000,
+    rateLimitMax: 10000,
   };
 
-  dag     = initDAG({ dbPath: ":memory:" });
+  dag = initDAG({ dbPath: ":memory:" });
   scoring = initScoring(dag, TEST_CONFIG);
 
   // Get the founding VP and replace its public key with a known keypair
@@ -136,10 +138,10 @@ describe("Crypto Layer", () => {
 
   test("1.4 signTransaction and verifyTransaction roundtrip", () => {
     const tx = {
-      tx_type:   "SCORE_UPDATE",
+      tx_type: "SCORE_UPDATE",
       timestamp: "2026-01-01T00:00:00.000Z",
-      data:      { hello: "world" },
-      prev:      [],
+      data: { hello: "world" },
+      prev: [],
     };
     const signed = signTransaction(tx, keypair1.privateKey);
     expect(typeof signed.signature).toBe("string");
@@ -149,7 +151,7 @@ describe("Crypto Layer", () => {
 
   test("1.5 verifyTransaction rejects tampered payload", () => {
     const tx = { tx_type: "TEST", data: { score: 500 }, timestamp: "2026-01-01T00:00:00.000Z", prev: [] };
-    const signed  = signTransaction(tx, keypair1.privateKey);
+    const signed = signTransaction(tx, keypair1.privateKey);
     const tampered = { ...signed, data: { score: 999 } };
     expect(verifyTransaction(tampered, keypair1.publicKey)).toBe(false);
   });
@@ -269,11 +271,11 @@ describe("DAG Engine", () => {
 
   test("3.2 saveIdentity and getIdentity roundtrip", () => {
     dag.saveIdentity({
-      tip_id:      TIP_ID_1,
-      region:      "US",
-      public_key:  keypair1.publicKey,
-      status:      "active",
-      vp_id:       "tip://id/VP-US-test",
+      tip_id: TIP_ID_1,
+      region: "US",
+      public_key: keypair1.publicKey,
+      status: "active",
+      vp_id: "tip://id/VP-US-test",
       verified_at: new Date().toISOString(),
     });
     const id = dag.getIdentity(TIP_ID_1);
@@ -285,10 +287,10 @@ describe("DAG Engine", () => {
 
   test("3.3 saveTx and getTx roundtrip", () => {
     const txBody = {
-      tx_type:   TX_TYPES.REGISTER_IDENTITY,
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
-      data:      { tip_id: TIP_ID_1, attested: false },
-      prev:      [],
+      data: { tip_id: TIP_ID_1, attested: false },
+      prev: [],
       signature: mldsaSign(TIP_ID_1, keypair1.privateKey),
     };
     const tx = dag.addTx(txBody);
@@ -301,11 +303,11 @@ describe("DAG Engine", () => {
     const ctid = generateCTID(ORIGIN.OH, "test article content here", TIP_ID_1.slice(-8));
     dag.saveContent({
       ctid,
-      origin_code:    ORIGIN.OH,
-      content_hash:   hashContent("test article content here"),
-      author_tip_id:  TIP_ID_1,
-      status:         "verified",
-      registered_at:  new Date().toISOString(),
+      origin_code: ORIGIN.OH,
+      content_hash: hashContent("test article content here"),
+      author_tip_id: TIP_ID_1,
+      status: "verified",
+      registered_at: new Date().toISOString(),
     });
     const c = dag.getContent(ctid);
     expect(c).not.toBeNull();
@@ -328,10 +330,10 @@ describe("DAG Engine", () => {
 
   test("3.7 addRevocation and getRevocations roundtrip", () => {
     const revTs = new Date().toISOString();
-    const txId  = computeTxId({ tx_type: TX_TYPES.REVOKE_VOLUNTARY, data: { tip_id: TIP_ID_2 }, timestamp: revTs, prev: [] });
+    const txId = computeTxId({ tx_type: TX_TYPES.REVOKE_VOLUNTARY, data: { tip_id: TIP_ID_2 }, timestamp: revTs, prev: [] });
     dag.addRevocation(TIP_ID_2, TX_TYPES.REVOKE_VOLUNTARY, revTs, txId);
     const revs = dag.getRevocations();
-    const rev  = revs.find(r => r.tip_id === TIP_ID_2);
+    const rev = revs.find(r => r.tip_id === TIP_ID_2);
     expect(rev).toBeDefined();
     expect(rev.tx_type).toBe(TX_TYPES.REVOKE_VOLUNTARY);
   });
@@ -356,19 +358,19 @@ describe("Trust Scoring Engine", () => {
     TIP_ID_SCORE_TEST = generateTIPID("AU", generateMLDSAKeypair().publicKey);
     // Register identity in DAG
     dag.saveIdentity({
-      tip_id:      TIP_ID_SCORE_TEST,
-      region:      "AU",
-      public_key:  generateMLDSAKeypair().publicKey,
-      status:      "active",
-      vp_id:       "tip://id/VP-AU-test",
+      tip_id: TIP_ID_SCORE_TEST,
+      region: "AU",
+      public_key: generateMLDSAKeypair().publicKey,
+      status: "active",
+      vp_id: "tip://id/VP-AU-test",
       verified_at: new Date().toISOString(),
     });
     // Register transaction
     dag.addTx({
-      tx_type:   TX_TYPES.REGISTER_IDENTITY,
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
-      data:      { tip_id: TIP_ID_SCORE_TEST, attested: false },
-      prev:      [],
+      data: { tip_id: TIP_ID_SCORE_TEST, attested: false },
+      prev: [],
       signature: "test_sig",
     });
     dag.setScore(TIP_ID_SCORE_TEST, 500, 0);
@@ -381,15 +383,15 @@ describe("Trust Scoring Engine", () => {
 
   test("4.2 Score penalty for OH declared as AG", () => {
     dag.addTx({
-      tx_type:   TX_TYPES.SCORE_UPDATE,
+      tx_type: TX_TYPES.SCORE_UPDATE,
       timestamp: new Date().toISOString(),
-      data:      {
-        tip_id:   TIP_ID_SCORE_TEST,
-        delta:    SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta,
-        reason:   "Origin mismatch: declared OH, confirmed AG",
-        offense:  1,
+      data: {
+        tip_id: TIP_ID_SCORE_TEST,
+        delta: SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta,
+        reason: "Origin mismatch: declared OH, confirmed AG",
+        offense: 1,
       },
-      prev:      [],
+      prev: [],
       signature: "test_sig",
     });
     dag.setScore(TIP_ID_SCORE_TEST, 400, 1);
@@ -419,10 +421,10 @@ describe("Trust Scoring Engine", () => {
     // Apply multiple bonuses
     for (let i = 0; i < 20; i++) {
       dag.addTx({
-        tx_type:   TX_TYPES.CONTENT_VERIFIED,
+        tx_type: TX_TYPES.CONTENT_VERIFIED,
         timestamp: new Date().toISOString(),
-        data:      { tip_id: richId, delta: 5 },
-        prev:      [],
+        data: { tip_id: richId, delta: 5 },
+        prev: [],
         signature: "sig",
       });
     }
@@ -435,10 +437,10 @@ describe("Trust Scoring Engine", () => {
     const poorId = generateTIPID("NG", generateMLDSAKeypair().publicKey);
     dag.setScore(poorId, 10, 5);
     dag.addTx({
-      tx_type:   TX_TYPES.SCORE_UPDATE,
+      tx_type: TX_TYPES.SCORE_UPDATE,
       timestamp: new Date().toISOString(),
-      data:      { tip_id: poorId, delta: -500, reason: "Major violation" },
-      prev:      [],
+      data: { tip_id: poorId, delta: -500, reason: "Major violation" },
+      prev: [],
       signature: "sig",
     });
     dag.setScore(poorId, 0, 6);
@@ -458,9 +460,9 @@ describe("Transaction Validator", () => {
 
   beforeAll(() => {
     dag.saveVP({
-      vp_id:       VP_ID,
-      public_key:  vpKeypair.publicKey,
-      status:      "active",
+      vp_id: VP_ID,
+      public_key: vpKeypair.publicKey,
+      status: "active",
       jurisdiction_tier: "green",
       registered_at: new Date().toISOString(),
     });
@@ -471,19 +473,19 @@ describe("Transaction Validator", () => {
     const tipId = generateTIPID("US", freshKp.publicKey);
     const ts = new Date().toISOString();
     const txBody = {
-      tx_type:   TX_TYPES.REGISTER_IDENTITY,
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: ts,
       data: {
-        tip_id:            tipId,
-        region:            "US",
-        public_key:        freshKp.publicKey,
-        vp_id:             VP_ID,
-        attested:          false,
+        tip_id: tipId,
+        region: "US",
+        public_key: freshKp.publicKey,
+        vp_id: VP_ID,
+        attested: false,
         verification_tier: "T1",
-        dedup_hash:        "55667788990011223344556677889900112233445566778899001122334455667",
-        zk_proof:          MOCK_ZK_PROOF,
+        dedup_hash: "55667788990011223344556677889900112233445566778899001122334455667",
+        zk_proof: MOCK_ZK_PROOF,
       },
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: mldsaSign(tipId, freshKp.privateKey) };
     const result = validateTransaction(tx, dag);
@@ -492,10 +494,10 @@ describe("Transaction Validator", () => {
 
   test("5.2 REGISTER_IDENTITY with missing vp_id fails", () => {
     const txBody = {
-      tx_type:   TX_TYPES.REGISTER_IDENTITY,
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: new Date().toISOString(),
-      data:      { tip_id: "tip://id/US-abc", region: "US" }, // missing vp_id
-      prev:      dag.getRecentPrev(),
+      data: { tip_id: "tip://id/US-abc", region: "US" }, // missing vp_id
+      prev: dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTransaction(tx, dag);
@@ -514,16 +516,16 @@ describe("Transaction Validator", () => {
     const ctid = generateCTID(ORIGIN.OH, contentHashShort, tipId);
     const authorSig = mldsaSign(ctid + ORIGIN.OH, keypair1.privateKey);
     const txBody = {
-      tx_type:   TX_TYPES.REGISTER_CONTENT,
+      tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: new Date().toISOString(),
       data: {
         ctid, origin_code: ORIGIN.OH,
-        content_hash:  contentHashFull,
+        content_hash: contentHashFull,
         author_tip_id: tipId,
         pre_scan_passed: true,
-        signature:     authorSig,
+        signature: authorSig,
       },
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody) };
     const result = validateTransaction(tx, dag);
@@ -532,7 +534,7 @@ describe("Transaction Validator", () => {
 
   test("5.4 Invalid origin code fails validation", () => {
     const txBody = {
-      tx_type:   TX_TYPES.CONTENT_REGISTERED,
+      tx_type: TX_TYPES.CONTENT_REGISTERED,
       timestamp: new Date().toISOString(),
       data: {
         ctid: "tip://c/XX-invalid",
@@ -540,7 +542,7 @@ describe("Transaction Validator", () => {
         content_hash: "abc",
         author_tip_id: "tip://id/US-abc123",
       },
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
     };
     const tx = { ...txBody, tx_id: computeTxId(txBody), signature: "sig" };
     const result = validateTransaction(tx, dag);
@@ -549,17 +551,18 @@ describe("Transaction Validator", () => {
 
   test("5.5 REVOKE_VP requires evidence_hash", () => {
     const txBody = {
-      tx_type:  TX_TYPES.REVOKE_VP,
+      tx_type: TX_TYPES.REVOKE_VP,
       timestamp: new Date().toISOString(),
       data: {
-        tip_id:        "tip://id/US-abc123",
+        tip_id: "tip://id/US-abc123",
         issuing_vp_id: VP_ID,
-        reason_code:   "FRAUDULENT_REGISTRATION",
+        reason_code: "FRAUDULENT_REGISTRATION",
         // missing evidence_hash
       },
-      prev:      dag.getRecentPrev(),
+      prev: dag.getRecentPrev(),
     };
-    const tx = { ...txBody, tx_id: computeTxId(txBody),
+    const tx = {
+      ...txBody, tx_id: computeTxId(txBody),
       signature: mldsaSign("revoke", vpKeypair.privateKey),
     };
     const result = validateTransaction(tx, dag);
@@ -577,28 +580,28 @@ describe("REST API", () => {
   test("6.1 GET /health returns 200 with status ok", async () => {
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ok");
-    expect(res.body.node_id).toBeDefined();
-    expect(res.body.version).toBeDefined();
+    expect(res.body.data.status).toBe("ok");
+    expect(res.body.data.node_id).toBeDefined();
+    expect(res.body.data.version).toBeDefined();
   });
 
   test("6.2 GET /v1/node/info returns node metadata", async () => {
     const res = await request(app).get("/v1/node/info");
     expect(res.status).toBe(200);
-    expect(res.body.protocol_version).toBeDefined();
-    expect(res.body.node_id).toBe("test-node-001");
+    expect(res.body.data.protocol_version).toBeDefined();
+    expect(res.body.data.node_id).toBe("test-node-001");
   });
 
   test("6.3 GET /v1/node/peers returns array", async () => {
     const res = await request(app).get("/v1/node/peers");
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.peers)).toBe(true);
+    expect(Array.isArray(res.body.data.peers)).toBe(true);
   });
 
   test("6.4 GET /v1/node/info includes DAG statistics", async () => {
     const res = await request(app).get("/v1/node/info");
     expect(res.status).toBe(200);
-    expect(typeof res.body.dag_tx_count).toBe("number");
+    expect(typeof res.body.data.dag_tx_count).toBe("number");
   });
 
   let testVpKp; // VP keypair shared across tests 6.5–6.7
@@ -617,15 +620,15 @@ describe("REST API", () => {
       .post("/v1/vp/register")
       .send({ ...vpFields, council_signature: councilSig });
     expect([200, 201]).toContain(res.status);
-    expect(res.body.vp_id).toBeDefined();
-    testVpId = res.body.vp_id;
+    expect(res.body.data.vp_id).toBeDefined();
+    testVpId = res.body.data.vp_id;
   });
 
   test("6.6 GET /v1/vp/:vpId returns VP record", async () => {
     const vpId = encodeURIComponent(testVpId);
     const res = await request(app).get(`/v1/vp/${vpId}`);
     expect(res.status).toBe(200);
-    expect(res.body.vp_id).toBe(testVpId);
+    expect(res.body.data.vp_id).toBe(testVpId);
   });
 
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
@@ -640,12 +643,12 @@ describe("REST API", () => {
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: vpSig });
     expect([200, 201]).toContain(res.status);
-    expect(res.body.tip_id).toBeDefined();
-    authorId = res.body.tip_id;
+    expect(res.body.data.tip_id).toBeDefined();
+    authorId = res.body.data.tip_id;
   });
 
   test("6.8 GET /v1/identity/:tipId returns identity", async () => {
-    const kp    = generateMLDSAKeypair();
+    const kp = generateMLDSAKeypair();
     const tipId = generateTIPID("FR", kp.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "FR", public_key: kp.publicKey,
@@ -656,12 +659,12 @@ describe("REST API", () => {
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}`);
     expect(res.status).toBe(200);
-    expect(res.body.tip_id).toBe(tipId);
-    expect(res.body.status).toBe("active");
+    expect(res.body.data.tip_id).toBe(tipId);
+    expect(res.body.data.status).toBe("active");
   });
 
   test("6.9 GET /v1/identity/:tipId/score returns score", async () => {
-    const kp    = generateMLDSAKeypair();
+    const kp = generateMLDSAKeypair();
     const tipId = generateTIPID("JP", kp.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "JP", public_key: kp.publicKey,
@@ -673,8 +676,8 @@ describe("REST API", () => {
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}/score`);
     expect(res.status).toBe(200);
-    expect(typeof res.body.score).toBe("number");
-    expect(res.body.tier).toBeDefined();
+    expect(typeof res.body.data.score).toBe("number");
+    expect(res.body.data.tier).toBeDefined();
   });
 
   test("6.10 GET /v1/identity/:tipId returns 404 for unknown TIP-ID", async () => {
@@ -691,8 +694,8 @@ describe("REST API", () => {
       .post("/v1/identity/verify-ownership")
       .send({ tip_id: authorId, challenge, signature: sig });
     expect(res.status).toBe(200);
-    expect(res.body.verified).toBe(true);
-    expect(res.body.tip_id).toBe(authorId);
+    expect(res.body.data.verified).toBe(true);
+    expect(res.body.data.tip_id).toBe(authorId);
   });
 
   test("6.10c POST /v1/identity/verify-ownership fails with wrong key", async () => {
@@ -728,8 +731,8 @@ describe("REST API", () => {
       .post("/v1/content/register")
       .send(body);
     expect([200, 201]).toContain(res.status);
-    expect(res.body.ctid).toMatch(/^tip:\/\/c\/OH-/);
-    expect(res.body.status).toBeDefined();
+    expect(res.body.data.ctid).toMatch(/^tip:\/\/c\/OH-/);
+    expect(res.body.data.status).toBeDefined();
   });
 
   test("6.12 GET /v1/content/:ctid returns content record", async () => {
@@ -744,7 +747,7 @@ describe("REST API", () => {
       `/v1/content/${encodeURIComponent(ctid)}`
     );
     expect(res.status).toBe(200);
-    expect(res.body.origin_code).toBe(ORIGIN.AA);
+    expect(res.body.data.origin_code).toBe(ORIGIN.AA);
   });
 
   test("6.13 POST /v1/content/:ctid/dispute files a dispute", async () => {
@@ -771,17 +774,17 @@ describe("REST API", () => {
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({ ...disputeFields, signature: signBody(disputeFields, disputerKp.privateKey) });
     expect([200, 201]).toContain(res.status);
-    expect(res.body.success).toBe(true);
+    expect(res.body.data.success).toBe(true);
   });
 
   test("6.14 GET /v1/revocations returns revocation list", async () => {
     const res = await request(app).get("/v1/revocations");
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.revocations)).toBe(true);
+    expect(Array.isArray(res.body.data.revocations)).toBe(true);
   });
 
   test("6.15 POST /v1/revocations creates a revocation", async () => {
-    const kp    = generateMLDSAKeypair();
+    const kp = generateMLDSAKeypair();
     const tipId = generateTIPID("BR", kp.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "BR", public_key: kp.publicKey,
@@ -802,8 +805,8 @@ describe("REST API", () => {
   test("6.16 GET /v1/dedup/merkle-root returns merkle root", async () => {
     const res = await request(app).get("/v1/dedup/merkle-root");
     expect(res.status).toBe(200);
-    expect(res.body.merkle_root).toBeDefined();
-    expect(res.body.dedup_count).toBeGreaterThanOrEqual(0);
+    expect(res.body.data.merkle_root).toBeDefined();
+    expect(res.body.data.dedup_count).toBeGreaterThanOrEqual(0);
   });
 
   test("6.17 POST /v1/dedup/check is removed — dedup now inside register", async () => {
@@ -843,7 +846,7 @@ describe("Integration: Full Registration Flow", () => {
       .post("/v1/vp/register")
       .send({ ...vpFields, country: "SG", council_signature: intCouncilSig });
     expect([200, 201]).toContain(vpRes.status);
-    integrationVpId = vpRes.body.vp_id;
+    integrationVpId = vpRes.body.data.vp_id;
 
     // Step 2: Register Identity (client generates keypair)
     const authorKp2 = generateMLDSAKeypair();
@@ -859,18 +862,18 @@ describe("Integration: Full Registration Flow", () => {
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: intVpSig });
     expect([200, 201]).toContain(idRes.status);
-    integrationTipId = idRes.body.tip_id;
+    integrationTipId = idRes.body.data.tip_id;
     expect(integrationTipId).toBeDefined();
 
     // Step 3: Register Content (client has private key — never sent to server)
     const authorPrivateKey = authorKp2.privateKey;
-    const content  = "An original human-written article about trust and identity on the internet.";
+    const content = "An original human-written article about trust and identity on the internet.";
     const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
     const contentRes = await request(app)
       .post("/v1/content/register")
       .send({ author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content, title: "Trust and Identity", signature: signBody(ctSigFields, authorPrivateKey) });
     expect([200, 201]).toContain(contentRes.status);
-    const ctid = contentRes.body.ctid;
+    const ctid = contentRes.body.data.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
 
     // Step 4: Verify score
@@ -878,11 +881,11 @@ describe("Integration: Full Registration Flow", () => {
       `/v1/identity/${encodeURIComponent(integrationTipId)}/score`
     );
     expect(scoreRes.status).toBe(200);
-    expect(scoreRes.body.tier).toBeDefined();
+    expect(scoreRes.body.data.tier).toBeDefined();
   });
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
-    const dedup  = computeDedupHash("SG123456", "1988-11-22", "SG");
+    const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
     dag.addDedupHash(dedup);
 
     const dupKp = generateMLDSAKeypair();
@@ -918,11 +921,11 @@ describe("Gossip Broadcast Wiring", () => {
     };
 
     // Fresh DAG so no collisions with earlier test blocks
-    gossipDag     = initDAG({ dbPath: ":memory:" });
+    gossipDag = initDAG({ dbPath: ":memory:" });
     gossipScoring = initScoring(gossipDag, TEST_CONFIG);
 
     gFoundingVpKp = generateMLDSAKeypair();
-    const allVps  = gossipDag.getAllVPs();
+    const allVps = gossipDag.getAllVPs();
     gFoundingVpId = allVps[0].vp_id;
     gossipDag.saveVP({ ...allVps[0], public_key: gFoundingVpKp.publicKey });
 
@@ -983,11 +986,11 @@ describe("Gossip Broadcast Wiring", () => {
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: vpSig });
-    const tipId         = idRes.body.tip_id;
+    const tipId = idRes.body.data.tip_id;
     const authorPrivKey = kp83.privateKey;
 
     broadcastCalls = [];
-    const content  = "Gossip broadcast wiring test content article.";
+    const content = "Gossip broadcast wiring test content article.";
     const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
     const res = await request(gossipApp)
       .post("/v1/content/register")
@@ -1006,7 +1009,7 @@ describe("Gossip Broadcast Wiring", () => {
     const vpRes = await request(gossipApp)
       .post("/v1/vp/register")
       .send({ ...vpFields, council_signature: signBody(vpFields, gFoundingVpKp.privateKey) });
-    const rVpId = vpRes.body.vp_id;
+    const rVpId = vpRes.body.data.vp_id;
 
     const kp84 = generateMLDSAKeypair();
     const idFields = {
@@ -1018,7 +1021,7 @@ describe("Gossip Broadcast Wiring", () => {
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: signBody(idFields, rVpKp.privateKey) });
-    const rTipId = idRes.body.tip_id;
+    const rTipId = idRes.body.data.tip_id;
 
     broadcastCalls = [];
     const revokeFields = {
@@ -1044,15 +1047,15 @@ describe("Gossip Broadcast Wiring", () => {
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
       .send({ ...dIdFields, vp_signature: signBody(dIdFields, gFoundingVpKp.privateKey) });
-    const dTipId      = idRes.body.tip_id;
+    const dTipId = idRes.body.data.tip_id;
     const dAuthorPriv = kp85.privateKey;
 
-    const content  = "Dispute gossip broadcast test article.";
+    const content = "Dispute gossip broadcast test article.";
     const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
       .send({ author_tip_id: dTipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields2, dAuthorPriv) });
-    const ctid = cRes.body.ctid;
+    const ctid = cRes.body.data.ctid;
 
     broadcastCalls = [];
     const disputeFields = { disputer_tip_id: dTipId, reason: "gossip test" };
@@ -1081,7 +1084,7 @@ describe("Semantic Dedup", () => {
   let sdVerifierId, sdVerifierPriv;
 
   beforeAll(async () => {
-    sdDag     = initDAG({ dbPath: ":memory:" });
+    sdDag = initDAG({ dbPath: ":memory:" });
     sdScoring = initScoring(sdDag, TEST_CONFIG);
 
     sdVpKp = generateMLDSAKeypair();
@@ -1102,7 +1105,7 @@ describe("Semantic Dedup", () => {
     const idRes = await request(sdApp)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
-    sdTipId     = idRes.body.tip_id;
+    sdTipId = idRes.body.data.tip_id;
     sdAuthorPriv = sdKp.privateKey;
     sdDag.setScore(sdTipId, 800, 0);
 
@@ -1117,7 +1120,7 @@ describe("Semantic Dedup", () => {
     const vRes = await request(sdApp)
       .post("/v1/identity/register")
       .send({ ...vFields, vp_signature: signBody(vFields, sdVpKp.privateKey) });
-    sdVerifierId  = vRes.body.tip_id;
+    sdVerifierId = vRes.body.data.tip_id;
     sdVerifierPriv = vKp.privateKey;
     sdDag.setScore(sdVerifierId, 800, 0);
 
@@ -1127,7 +1130,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent, signature: signBody(sdCtSig, sdAuthorPriv) });
-    sdCtid = ctRes.body.ctid;
+    sdCtid = ctRes.body.data.ctid;
   });
 
   afterAll(() => { if (sdDag) sdDag.close(); });
@@ -1138,15 +1141,15 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    expect(res.body.data.success).toBe(true);
     // Verifier score is 800 → high-trust bonus → delta +3
-    expect(res.body.delta_applied).toBe(3);
+    expect(res.body.data.delta_applied).toBe(3);
     // Caps returned in response
-    expect(res.body.caps).toBeDefined();
-    expect(res.body.caps.content.used).toBe(3);
-    expect(res.body.caps.content.max).toBe(5);
-    expect(res.body.caps.daily.max).toBe(5);
-    expect(res.body.caps.monthly.max).toBe(30);
+    expect(res.body.data.caps).toBeDefined();
+    expect(res.body.data.caps.content.used).toBe(3);
+    expect(res.body.data.caps.content.max).toBe(5);
+    expect(res.body.data.caps.daily.max).toBe(5);
+    expect(res.body.data.caps.monthly.max).toBe(30);
   });
 
   test("9.2 Duplicate verify returns 409", async () => {
@@ -1155,7 +1158,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/already verified/i);
+    expect(res.body.error.message).toMatch(/already verified/i);
   });
 
   test("9.2b Per-content cap enforced", async () => {
@@ -1165,7 +1168,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: capContent, signature: signBody(capSig, sdAuthorPriv) });
-    const capCtid = ctRes.body.ctid;
+    const capCtid = ctRes.body.data.ctid;
 
     // Create 3 verifier identities to fill the cap
     const verifiers = [];
@@ -1180,8 +1183,8 @@ describe("Semantic Dedup", () => {
       const idRes = await request(sdApp)
         .post("/v1/identity/register")
         .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
-      sdDag.setScore(idRes.body.tip_id, 800, 0); // high-trust for +3 each
-      verifiers.push({ tipId: idRes.body.tip_id, priv: kp.privateKey });
+      sdDag.setScore(idRes.body.data.tip_id, 800, 0); // high-trust for +3 each
+      verifiers.push({ tipId: idRes.body.data.tip_id, priv: kp.privateKey });
     }
 
     // Daily cap already has 3 used from test 9.1 (sdTipId got +3 today)
@@ -1193,9 +1196,9 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f1, signature: signBody(f1, verifiers[0].priv) });
     expect(r1.status).toBe(200);
-    expect(r1.body.delta_applied).toBe(2); // daily cap: 5 - 3 = 2 remaining
-    expect(r1.body.caps.content.used).toBe(2);
-    expect(r1.body.caps.daily.used).toBe(5); // 3 + 2 = 5 (full)
+    expect(r1.body.data.delta_applied).toBe(2); // daily cap: 5 - 3 = 2 remaining
+    expect(r1.body.data.caps.content.used).toBe(2);
+    expect(r1.body.data.caps.daily.used).toBe(5); // 3 + 2 = 5 (full)
 
     // Verifier 2: +0 (daily cap hit)
     const f2 = { verifier_tip_id: verifiers[1].tipId, verdict: "ORIGIN_CONFIRMED" };
@@ -1203,8 +1206,8 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f2, signature: signBody(f2, verifiers[1].priv) });
     expect(r2.status).toBe(200);
-    expect(r2.body.delta_applied).toBe(0);
-    expect(r2.body.caps.daily.used).toBe(5); // still 5, no increase
+    expect(r2.body.data.delta_applied).toBe(0);
+    expect(r2.body.data.caps.daily.used).toBe(5); // still 5, no increase
 
     // Verifier 3: +0 (daily cap still hit)
     const f3 = { verifier_tip_id: verifiers[2].tipId, verdict: "ORIGIN_CONFIRMED" };
@@ -1212,7 +1215,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f3, signature: signBody(f3, verifiers[2].priv) });
     expect(r3.status).toBe(200);
-    expect(r3.body.delta_applied).toBe(0);
+    expect(r3.body.data.delta_applied).toBe(0);
   });
 
   test("9.3 First dispute succeeds", async () => {
@@ -1222,21 +1225,21 @@ describe("Semantic Dedup", () => {
     const ctRes2 = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent2, signature: signBody(sdCtSig2, sdAuthorPriv) });
-    const ctid2 = ctRes2.body.ctid;
+    const ctid2 = ctRes2.body.data.ctid;
 
     const fields = { disputer_tip_id: sdTipId, reason: "test dispute" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    expect(res.body.data.success).toBe(true);
 
     // Duplicate dispute
     const res2 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
     expect(res2.status).toBe(409);
-    expect(res2.body.error).toMatch(/already disputed/i);
+    expect(res2.body.error.message).toMatch(/already disputed/i);
   });
 
   test("9.4 Update origin within 24h succeeds", async () => {
@@ -1247,8 +1250,8 @@ describe("Semantic Dedup", () => {
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent, signature: signBody(updateSig, sdAuthorPriv) });
     expect(ctRes.status).toBe(201);
-    const updateCtid = ctRes.body.ctid;
-    expect(ctRes.body.status).toBe("registered");
+    const updateCtid = ctRes.body.data.ctid;
+    expect(ctRes.body.data.status).toBe("registered");
 
     // Update origin from OH to AA
     const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
@@ -1256,13 +1259,13 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(updateCtid)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.old_origin_code).toBe("OH");
-    expect(res.body.new_origin_code).toBe("AA");
+    expect(res.body.data.success).toBe(true);
+    expect(res.body.data.old_origin_code).toBe("OH");
+    expect(res.body.data.new_origin_code).toBe("AA");
 
     // Verify content record updated
     const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(updateCtid)}`);
-    expect(getRes.body.origin_code).toBe("AA");
+    expect(getRes.body.data.origin_code).toBe("AA");
   });
 
   test("9.5 Non-author cannot update origin", async () => {
@@ -1271,7 +1274,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent2, signature: signBody(updateSig2, sdAuthorPriv) });
-    const nonAuthorCtid = ctRes.body.ctid;
+    const nonAuthorCtid = ctRes.body.data.ctid;
 
     // Verifier (different identity) tries to update
     const fields = { author_tip_id: sdVerifierId, new_origin_code: ORIGIN.AG };
@@ -1279,7 +1282,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(nonAuthorCtid)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/only the content author/i);
+    expect(res.body.error.message).toMatch(/only the content author/i);
   });
 
   test("9.6 Dispute always escalates to Stage 2 with AI result", async () => {
@@ -1288,19 +1291,19 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content96, signature: signBody(sig96, sdAuthorPriv) });
-    const ctid96 = ctRes.body.ctid;
+    const ctid96 = ctRes.body.data.ctid;
 
     const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
     const dRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid96)}/dispute`)
       .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
     expect(dRes.status).toBe(200);
-    expect(dRes.body.stage1).toBeDefined();
-    expect(["escalate", "escalate_high"]).toContain(dRes.body.stage1.routing);
+    expect(dRes.body.data.stage1).toBeDefined();
+    expect(["escalate", "escalate_high"]).toContain(dRes.body.data.stage1.routing);
 
     // Content stays disputed (no auto-dismiss)
     const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(ctid96)}`);
-    expect(getRes.body.status).toBe("disputed");
+    expect(getRes.body.data.status).toBe("disputed");
   });
 
   test("9.7 Escalated dispute keeps content status as disputed", async () => {
@@ -1309,13 +1312,13 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content97, signature: signBody(sig97, sdAuthorPriv) });
-    const ctid97 = ctRes.body.ctid;
+    const ctid97 = ctRes.body.data.ctid;
 
     // Simulate escalated dispute (AI confidence >= 30%)
     sdDag.updateContentStatus(ctid97, "disputed");
 
     const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(ctid97)}`);
-    expect(getRes.body.status).toBe("disputed");
+    expect(getRes.body.data.status).toBe("disputed");
   });
 
   test("9.8 Verify blocked on disputed content", async () => {
@@ -1324,7 +1327,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content98, signature: signBody(sig98, sdAuthorPriv) });
-    const ctid98 = ctRes.body.ctid;
+    const ctid98 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid98, "disputed");
 
     const vFields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
@@ -1332,7 +1335,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(ctid98)}/verify`)
       .send({ ...vFields, signature: signBody(vFields, sdVerifierPriv) });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/under dispute/i);
+    expect(res.body.error.message).toMatch(/under dispute/i);
   });
 
   test("9.9 Update-origin blocked on disputed content", async () => {
@@ -1341,7 +1344,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content99, signature: signBody(sig99, sdAuthorPriv) });
-    const ctid99 = ctRes.body.ctid;
+    const ctid99 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid99, "disputed");
 
     const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
@@ -1349,7 +1352,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(ctid99)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/cannot update origin/i);
+    expect(res.body.error.message).toMatch(/cannot update origin/i);
   });
 
   test("9.10 Jury commit succeeds and duplicate rejected", async () => {
@@ -1359,17 +1362,19 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: juryContent, signature: signBody(jurySig, sdAuthorPriv) });
-    const juryCtid = ctRes.body.ctid;
+    const juryCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(juryCtid, "disputed");
 
     // Summon verifier as juror with future deadline
     const { computeTxId } = require("../../shared/crypto");
     const summonsTx = {
       tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: juryCtid, dispute_tx_id: "test-dispute-tx", juror_tip_id: sdVerifierId,
-              stake: 10, seed: "test", identity_count: 10,
-              commit_deadline: new Date(Date.now() + 72 * 3600000).toISOString(),
-              reveal_deadline: new Date(Date.now() + 78 * 3600000).toISOString() },
+      data: {
+        ctid: juryCtid, dispute_tx_id: "test-dispute-tx", juror_tip_id: sdVerifierId,
+        stake: 10, seed: "test", identity_count: 10,
+        commit_deadline: new Date(Date.now() + 72 * 3600000).toISOString(),
+        reveal_deadline: new Date(Date.now() + 78 * 3600000).toISOString()
+      },
     };
     summonsTx.tx_id = computeTxId(summonsTx);
     sdDag.addTx(summonsTx);
@@ -1381,7 +1386,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(juryCtid)}/jury/commit`)
       .send({ ...commitFields, signature: signBody(commitFields, sdVerifierPriv) });
     expect(commitRes.status).toBe(200);
-    expect(commitRes.body.success).toBe(true);
+    expect(commitRes.body.data.success).toBe(true);
 
     // Duplicate rejected
     const commitRes2 = await request(sdApp)
@@ -1397,7 +1402,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: revContent, signature: signBody(revSig, sdAuthorPriv) });
-    const revCtid = ctRes.body.ctid;
+    const revCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(revCtid, "disputed");
 
     const { computeTxId } = require("../../shared/crypto");
@@ -1407,9 +1412,11 @@ describe("Semantic Dedup", () => {
     const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString(); // future
     const summonsTx = {
       tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: revCtid, dispute_tx_id: "test-dispute-rev", juror_tip_id: sdVerifierId,
-              stake: 10, seed: "test", identity_count: 10,
-              commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+      data: {
+        ctid: revCtid, dispute_tx_id: "test-dispute-rev", juror_tip_id: sdVerifierId,
+        stake: 10, seed: "test", identity_count: 10,
+        commit_deadline: commitDeadline, reveal_deadline: revealDeadline
+      },
     };
     summonsTx.tx_id = computeTxId(summonsTx);
     sdDag.addTx(summonsTx);
@@ -1430,7 +1437,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(revCtid)}/jury/reveal`)
       .send({ ...revealFields, signature: signBody(revealFields, sdVerifierPriv) });
     expect(revRes.status).toBe(200);
-    expect(revRes.body.success).toBe(true);
+    expect(revRes.body.data.success).toBe(true);
 
     // Duplicate reveal rejected
     const dupFields = { juror_tip_id: sdVerifierId, vote: "MISMATCH", salt, confirmed_origin: "AG" };
@@ -1446,7 +1453,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: misContent, signature: signBody(misSig, sdAuthorPriv) });
-    const misCtid = ctRes.body.ctid;
+    const misCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(misCtid, "disputed");
 
     const { computeTxId } = require("../../shared/crypto");
@@ -1454,9 +1461,11 @@ describe("Semantic Dedup", () => {
     const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString();
     const summonsTx = {
       tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: misCtid, dispute_tx_id: "test-dispute-mis", juror_tip_id: sdVerifierId,
-              stake: 10, seed: "test", identity_count: 10,
-              commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+      data: {
+        ctid: misCtid, dispute_tx_id: "test-dispute-mis", juror_tip_id: sdVerifierId,
+        stake: 10, seed: "test", identity_count: 10,
+        commit_deadline: commitDeadline, reveal_deadline: revealDeadline
+      },
     };
     summonsTx.tx_id = computeTxId(summonsTx);
     sdDag.addTx(summonsTx);
@@ -1476,7 +1485,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(misCtid)}/jury/reveal`)
       .send({ ...noOriginFields, signature: signBody(noOriginFields, sdVerifierPriv) });
     expect(noOriginRes.status).toBe(400);
-    expect(noOriginRes.body.error).toMatch(/confirmed_origin required/i);
+    expect(noOriginRes.body.error.message).toMatch(/confirmed_origin required/i);
   });
 
   test("9.13 GET dispute-case returns full case details", async () => {
@@ -1486,7 +1495,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: caseContent, signature: signBody(caseSig, sdAuthorPriv) });
-    const caseCtid = ctRes.body.ctid;
+    const caseCtid = ctRes.body.data.ctid;
 
     // File dispute
     const dFields = { disputer_tip_id: sdVerifierId, reason: "origin_mismatch", claimed_origin: "AG", evidence_hash: "ev123" };
@@ -1500,34 +1509,34 @@ describe("Semantic Dedup", () => {
     expect(res.status).toBe(200);
 
     // Content section
-    expect(res.body.content).toBeDefined();
-    expect(res.body.content.ctid).toBe(caseCtid);
-    expect(res.body.content.origin_code).toBe("OH");
-    expect(res.body.content.author_tip_id).toBe(sdTipId);
+    expect(res.body.data.content).toBeDefined();
+    expect(res.body.data.content.ctid).toBe(caseCtid);
+    expect(res.body.data.content.origin_code).toBe("OH");
+    expect(res.body.data.content.author_tip_id).toBe(sdTipId);
 
     // Dispute section
-    expect(res.body.dispute).toBeDefined();
-    expect(res.body.dispute.disputer_tip_id).toBe(sdVerifierId);
-    expect(res.body.dispute.reason).toBe("origin_mismatch");
-    expect(res.body.dispute.claimed_origin).toBe("AG");
-    expect(res.body.dispute.declared_origin).toBe("OH");
+    expect(res.body.data.dispute).toBeDefined();
+    expect(res.body.data.dispute.disputer_tip_id).toBe(sdVerifierId);
+    expect(res.body.data.dispute.reason).toBe("origin_mismatch");
+    expect(res.body.data.dispute.claimed_origin).toBe("AG");
+    expect(res.body.data.dispute.declared_origin).toBe("OH");
 
     // AI classifier section
-    expect(res.body.ai_classifier).toBeDefined();
-    expect(res.body.ai_classifier.routing).toBeDefined();
+    expect(res.body.data.ai_classifier).toBeDefined();
+    expect(res.body.data.ai_classifier.routing).toBeDefined();
 
     // Creator history section
-    expect(res.body.creator_history).toBeDefined();
-    expect(res.body.creator_history.total_content).toBeGreaterThan(0);
-    expect(res.body.creator_history.current_score).toBeDefined();
+    expect(res.body.data.creator_history).toBeDefined();
+    expect(res.body.data.creator_history.total_content).toBeGreaterThan(0);
+    expect(res.body.data.creator_history.current_score).toBeDefined();
 
     // Jury section
-    expect(res.body.jury).toBeDefined();
-    expect(res.body.jury.total_summoned).toBeGreaterThanOrEqual(0);
-    expect(res.body.jury.commit_deadline).toBeDefined();
+    expect(res.body.data.jury).toBeDefined();
+    expect(res.body.data.jury.total_summoned).toBeGreaterThanOrEqual(0);
+    expect(res.body.data.jury.commit_deadline).toBeDefined();
 
     // No verdict yet
-    expect(res.body.verdict).toBeNull();
+    expect(res.body.data.verdict).toBeNull();
   });
 
   test("9.14 GET dispute-case returns 404 for unknown CTID", async () => {
@@ -1543,14 +1552,14 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appContent, signature: signBody(appSig, sdAuthorPriv) });
-    const appCtid = ctRes.body.ctid;
+    const appCtid = ctRes.body.data.ctid;
 
     const appFields = { appellant_tip_id: sdTipId };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(appCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
     expect(res.status).toBe(404);
-    expect(res.body.error).toMatch(/no stage 2 verdict/i);
+    expect(res.body.error.message).toMatch(/no stage 2 verdict/i);
   });
 
   test("9.16 Appeal filing succeeds with Stage 2 verdict", async () => {
@@ -1561,20 +1570,28 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appealContent, signature: signBody(appealSig, sdAuthorPriv) });
-    const appealCtid = ctRes.body.ctid;
+    const appealCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(appealCtid, "disputed");
 
     // Create dispute tx
-    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: appealCtid, disputer_tip_id: sdVerifierId, reason: "origin_mismatch",
-              claimed_origin: "AG", declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    const dTx = {
+      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: {
+        ctid: appealCtid, disputer_tip_id: sdVerifierId, reason: "origin_mismatch",
+        claimed_origin: "AG", declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered"
+      }
+    };
     dTx.tx_id = computeTxId(dTx);
     sdDag.addTx(dTx);
 
     // Create ADJUDICATION_RESULT tx (simulate jury UPHELD)
-    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: appealCtid, verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG",
-              author_tip_id: sdTipId, match_count: 1, mismatch_count: 5, abstain_count: 1 } };
+    const adjTx = {
+      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: {
+        ctid: appealCtid, verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG",
+        author_tip_id: sdTipId, match_count: 1, mismatch_count: 5, abstain_count: 1
+      }
+    };
     adjTx.tx_id = computeTxId(adjTx);
     sdDag.addTx(adjTx);
 
@@ -1584,23 +1601,25 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(appealCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.appeal_tx_id).toBeDefined();
-    expect(res.body.stake_at_risk).toBe(25);
-    expect(res.body.experts).toBeDefined();
+    expect(res.body.data.success).toBe(true);
+    expect(res.body.data.appeal_tx_id).toBeDefined();
+    expect(res.body.data.stake_at_risk).toBe(25);
+    expect(res.body.data.experts).toBeDefined();
   });
 
   test("9.17 Only author or disputer can appeal", async () => {
     // Create a third identity that is neither author nor disputer
     const { computeTxId } = require("../../shared/crypto");
     const thirdKp = generateMLDSAKeypair();
-    const thirdFields = { region: "US", public_key: thirdKp.publicKey,
+    const thirdFields = {
+      region: "US", public_key: thirdKp.publicKey,
       dedup_hash: "88001111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1", vp_id: sdVpId, social_attested: false };
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1", vp_id: sdVpId, social_attested: false
+    };
     const thirdRes = await request(sdApp)
       .post("/v1/identity/register")
       .send({ ...thirdFields, vp_signature: signBody(thirdFields, sdVpKp.privateKey) });
-    const thirdTipId = thirdRes.body.tip_id;
+    const thirdTipId = thirdRes.body.data.tip_id;
 
     // Register + simulate verdict
     const tc = "Content for third party appeal test.";
@@ -1608,13 +1627,17 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: tc, signature: signBody(ts, sdAuthorPriv) });
-    const tCtid = ctRes.body.ctid;
+    const tCtid = ctRes.body.data.ctid;
 
-    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: tCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    const dTx = {
+      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: tCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" }
+    };
     dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
-    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: tCtid, verdict: "UPHELD", author_tip_id: sdTipId } };
+    const adjTx = {
+      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: tCtid, verdict: "UPHELD", author_tip_id: sdTipId }
+    };
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
 
     // Third party tries to appeal
@@ -1623,7 +1646,7 @@ describe("Semantic Dedup", () => {
       .post(`/v1/content/${encodeURIComponent(tCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, thirdKp.privateKey) });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/only.*author.*disputer/i);
+    expect(res.body.error.message).toMatch(/only.*author.*disputer/i);
   });
 
   test("9.18 Duplicate appeal rejected", async () => {
@@ -1635,13 +1658,17 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
-    const dCtid = ctRes.body.ctid;
+    const dCtid = ctRes.body.data.ctid;
 
-    const dTx = { tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: dCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" } };
+    const dTx = {
+      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: dCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" }
+    };
     dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
-    const adjTx = { tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
-      data: { ctid: dCtid, verdict: "UPHELD", author_tip_id: sdTipId } };
+    const adjTx = {
+      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      data: { ctid: dCtid, verdict: "UPHELD", author_tip_id: sdTipId }
+    };
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
 
     // First appeal
@@ -1662,19 +1689,19 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: rc, signature: signBody(rs, sdAuthorPriv) });
-    const rCtid = ctRes.body.ctid;
+    const rCtid = ctRes.body.data.ctid;
 
     const retractFields = { author_tip_id: sdTipId };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(rCtid)}/retract`)
       .send({ ...retractFields, signature: signBody(retractFields, sdAuthorPriv) });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.penalty).toBe(-50);
+    expect(res.body.data.success).toBe(true);
+    expect(res.body.data.penalty).toBe(-50);
 
     // Content status is retracted
     const getRes = await request(sdApp).get(`/v1/content/${encodeURIComponent(rCtid)}`);
-    expect(getRes.body.status).toBe("retracted");
+    expect(getRes.body.data.status).toBe("retracted");
   });
 
   test("9.20 Non-author cannot retract", async () => {
@@ -1683,14 +1710,14 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: nc, signature: signBody(ns, sdAuthorPriv) });
-    const nCtid = ctRes.body.ctid;
+    const nCtid = ctRes.body.data.ctid;
 
     const retractFields = { author_tip_id: sdVerifierId };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(nCtid)}/retract`)
       .send({ ...retractFields, signature: signBody(retractFields, sdVerifierPriv) });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/only.*author/i);
+    expect(res.body.error.message).toMatch(/only.*author/i);
   });
 
   test("9.21 Duplicate retraction rejected", async () => {
@@ -1699,7 +1726,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
-    const dCtid = ctRes.body.ctid;
+    const dCtid = ctRes.body.data.ctid;
 
     // First retraction
     const rf = { author_tip_id: sdTipId };

@@ -17,14 +17,14 @@
 
 require("dotenv").config();
 
-const http    = require("http");
-const { createApp }        = require("./api");
-const { initDAG }          = require("./dag");
-const { initScoring }      = require("./scoring");
-const { initGossip }       = require("./gossip");
-const { scheduledTasks }   = require("./scheduler");
-const { loadConfig }       = require("./config");
-const { log }              = require("./logger");
+const http = require("http");
+const { createApp } = require("./api");
+const { initDAG } = require("./dag");
+const { initScoring } = require("./scoring");
+const { initGossip } = require("./gossip");
+const { scheduledTasks } = require("./scheduler");
+const { loadConfig } = require("./config");
+const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 const PC = require("../../shared/protocol-constants");
 
@@ -38,11 +38,11 @@ async function main() {
   } else {
     const kp = generateMLDSAKeypair();
     config.nodePrivateKey = kp.privateKey;
-    config.nodePublicKey  = kp.publicKey;
+    config.nodePublicKey = kp.publicKey;
     log.warn("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.");
   }
 
-  log.info("=== TIP Protocol Node v2.0.0 ===");
+  log.info(`=== TIP Protocol Node v${config.nodeVersion} ===`);
   log.info(`Node ID     : ${config.nodeId}`);
   log.info(`Region      : ${config.region}`);
   log.info(`Port        : ${config.port}`);
@@ -52,7 +52,7 @@ async function main() {
 
   // 1. Initialise DAG store
   // On first boot: if seed.db exists, copy it so founding data is available immediately
-  const fs   = require("fs");
+  const fs = require("fs");
   const path = require("path");
   const seedDb = path.resolve(__dirname, "../../genesis-data/seed.db");
   if (!fs.existsSync(config.dbPath) && fs.existsSync(seedDb)) {
@@ -113,13 +113,22 @@ async function main() {
   });
 
   // Graceful shutdown
-  process.on("SIGTERM", () => {
-    log.info("SIGTERM received — shutting down gracefully");
+  function shutdown(signal) {
+    log.info(`${signal} received — shutting down gracefully`);
     server.close(() => {
-      dag.close();
+      try { gossip.close?.(); } catch { }
+      try { dag.close(); } catch { }
+      log.info("Shutdown complete");
       process.exit(0);
     });
-  });
+    // Force exit if graceful shutdown takes too long
+    setTimeout(() => {
+      log.error("Graceful shutdown timed out — forcing exit");
+      process.exit(1);
+    }, 10000);
+  }
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch(err => {

@@ -30,9 +30,9 @@
 
 try { require("dotenv").config(); } catch { /* dotenv optional */ }
 
-const fs    = require("fs");
-const path  = require("path");
-const http  = require("http");
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
 const https = require("https");
 
 const {
@@ -51,10 +51,11 @@ const {
   canonicalJson,
 } = require("../shared/crypto");
 
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL, getTier } = require("../shared/constants");
-const { initDAG }     = require("../node/src/dag");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
+const { getTier } = require("../shared/protocol-constants");
+const { initDAG } = require("../node/src/dag");
 const { initScoring } = require("../node/src/scoring");
-const { loadConfig }  = require("../node/src/config");
+const { loadConfig } = require("../node/src/config");
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
@@ -73,35 +74,35 @@ const T = {
   bgNavy: "\x1b[44m", white: "\x1b[37m",
 };
 
-const ok    = (m) => console.log(`${T.green}  ✓${T.reset} ${m}`);
-const warn  = (m) => console.log(`${T.yellow}  ⚠${T.reset} ${m}`);
-const info  = (m) => console.log(`${T.cyan}  ℹ${T.reset} ${m}`);
+const ok = (m) => console.log(`${T.green}  ✓${T.reset} ${m}`);
+const warn = (m) => console.log(`${T.yellow}  ⚠${T.reset} ${m}`);
+const info = (m) => console.log(`${T.cyan}  ℹ${T.reset} ${m}`);
 const label = (k, v) => console.log(`    ${T.dim}${k.padEnd(28)}${T.reset}${v}`);
-const sep   = () => console.log(`${T.dim}  ${"─".repeat(62)}${T.reset}`);
-const head  = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`); sep(); };
+const sep = () => console.log(`${T.dim}  ${"─".repeat(62)}${T.reset}`);
+const head = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`); sep(); };
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const skipSampleContent  = args.includes("--no-sample-content") || process.env.NODE_ENV === "production";
-const nodeUrl            = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
-const useDirectMode      = args.includes("--direct") || !args.includes("--node-url");
+const skipSampleContent = args.includes("--no-sample-content") || process.env.NODE_ENV === "production";
+const nodeUrl = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
+const useDirectMode = args.includes("--direct") || !args.includes("--node-url");
 
-const DATA_DIR    = path.resolve(__dirname, "../genesis-data");
+const DATA_DIR = path.resolve(__dirname, "../genesis-data");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
-const SEED_FILE   = path.join(DATA_DIR, "seed-output.json");
+const SEED_FILE = path.join(DATA_DIR, "seed-output.json");
 
 // ─── HTTP helper (wraps Node.js http/https) ────────────────────────────────────
 function post(url, body) {
   return new Promise((resolve, reject) => {
-    const parsed  = new URL(url);
-    const lib     = parsed.protocol === "https:" ? https : http;
+    const parsed = new URL(url);
+    const lib = parsed.protocol === "https:" ? https : http;
     const payload = JSON.stringify(body);
-    const req     = lib.request({
+    const req = lib.request({
       hostname: parsed.hostname,
-      port:     parsed.port,
-      path:     parsed.pathname,
-      method:   "POST",
-      headers:  { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      port: parsed.port,
+      path: parsed.pathname,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
     }, (res) => {
       let data = "";
       res.on("data", c => data += c);
@@ -122,13 +123,13 @@ function post(url, body) {
 function get(url) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const lib    = parsed.protocol === "https:" ? https : http;
+    const lib = parsed.protocol === "https:" ? https : http;
     lib.get(url, (res) => {
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => {
         try { resolve(JSON.parse(data)); }
-        catch { reject(new Error(`Non-JSON response: ${data.slice(0,100)}`)); }
+        catch { reject(new Error(`Non-JSON response: ${data.slice(0, 100)}`)); }
       });
     }).on("error", reject);
   });
@@ -136,9 +137,9 @@ function get(url) {
 
 // ─── Founding members definition ─────────────────────────────────────────────
 const FOUNDING_MEMBERS = [
-  { name: "Dinesh Mendhe — Founder",      role: "Founder & Sole Inventor",    region: "US", tag: "founder" },
+  { name: "Dinesh Mendhe — Founder", role: "Founder & Sole Inventor", region: "US", tag: "founder" },
   { name: "Tushar Bhendarkar — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-tushar" },
-  { name: "Vishal — Co-Founder",          role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-vishal" },
+  { name: "Vishal — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-vishal" },
 ];
 
 // Keypairs generated in Step 2, used in Step 5
@@ -160,11 +161,11 @@ async function embedFoundingVPKey() {
     vpKeypair = generateMLDSAKeypair();
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(vpKeysFile, JSON.stringify({
-      algorithm:  vpKeypair.algorithm,
-      publicKey:  vpKeypair.publicKey,
+      algorithm: vpKeypair.algorithm,
+      publicKey: vpKeypair.publicKey,
       privateKey: vpKeypair.privateKey,
       created_at: new Date().toISOString(),
-      purpose:    "TIP™ Protocol Founding VP signing key",
+      purpose: "TIP™ Protocol Founding VP signing key",
     }, null, 2), { mode: 0o600 });
     ok("Founding VP keypair generated and saved");
     warn("SECURITY: founding-vp-keys.json is chmod 600. NEVER commit to git.");
@@ -193,7 +194,7 @@ async function embedFoundingVPKey() {
   info("Generating founding member keypairs...");
   _foundingKeypairs = FOUNDING_MEMBERS.map(member => {
     const keypair = generateMLDSAKeypair();
-    const tipId   = generateTIPID(member.region, keypair.publicKey);
+    const tipId = generateTIPID(member.region, keypair.publicKey);
     return { member, keypair, tipId };
   });
   const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
@@ -226,14 +227,14 @@ async function embedFoundingVPKey() {
   const genesisTxSig = mldsaSign(canonicalTx(freshGenesis.GENESIS_TX), vpKeypair.privateKey);
   // Sign VP registration tx (same structure as initDAG builds)
   const vpTxBody = {
-    tx_type:   "VP_REGISTERED",
+    tx_type: "VP_REGISTERED",
     timestamp: freshGenesis.GENESIS_TIMESTAMP,
-    prev:      [freshGenesis.GENESIS_TX_ID, freshGenesis.GENESIS_TX_ID],
+    prev: [freshGenesis.GENESIS_TX_ID, freshGenesis.GENESIS_TX_ID],
     data: {
-      vp_id:             freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
-      name:              freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
+      vp_id: freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
+      name: freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
       jurisdiction_tier: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction_tier,
-      public_key:        vpKeypair.publicKey,
+      public_key: vpKeypair.publicKey,
     },
   };
   const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey);
@@ -273,7 +274,7 @@ async function mintGenesisBlock(vpKeypair) {
     const existing = JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8"));
     const expectedHash = updatedGenesis.computeGenesisHash(updatedPayload);
     if (existing.genesis_hash === expectedHash) {
-      ok(`Genesis block valid. Hash: ${T.cyan}${existing.genesis_hash.slice(0,32)}...${T.reset}`);
+      ok(`Genesis block valid. Hash: ${T.cyan}${existing.genesis_hash.slice(0, 32)}...${T.reset}`);
       return existing;
     } else {
       // Key may have changed — delete stale genesis.json and re-mint
@@ -284,11 +285,11 @@ async function mintGenesisBlock(vpKeypair) {
 
   info("Computing genesis hash...");
   const genesisHash = updatedGenesis.computeGenesisHash(updatedPayload);
-  label("Genesis hash",     genesisHash.slice(0, 32) + "...");
-  label("Chain ID",         GENESIS_CHAIN_ID);
+  label("Genesis hash", genesisHash.slice(0, 32) + "...");
+  label("Chain ID", GENESIS_CHAIN_ID);
   label("Protocol version", PROTOCOL.version);
-  label("Timestamp",        GENESIS_TIMESTAMP);
-  label("Issuer",           PROTOCOL.issuer);
+  label("Timestamp", GENESIS_TIMESTAMP);
+  label("Issuer", PROTOCOL.issuer);
 
   info("Signing genesis block with founding VP key...");
   const signature = mldsaSign(genesisHash, vpKeypair.privateKey);
@@ -296,16 +297,16 @@ async function mintGenesisBlock(vpKeypair) {
 
   const genesisBlock = {
     ...updatedPayload,
-    genesis_hash:         genesisHash,
-    canonical_hash:       shake256(canonicalJson(updatedPayload)),
-    signed_at:            new Date().toISOString(),
-    signer_public_key:    vpKeypair.publicKey,
+    genesis_hash: genesisHash,
+    canonical_hash: shake256(canonicalJson(updatedPayload)),
+    signed_at: new Date().toISOString(),
+    signer_public_key: vpKeypair.publicKey,
     signature,
-    environment:          "production",
+    environment: "production",
     build_info: {
       node_version: process.version,
-      platform:     process.platform,
-      seed_script:  "scripts/seed.js",
+      platform: process.platform,
+      seed_script: "scripts/seed.js",
     },
   };
 
@@ -324,13 +325,13 @@ function initDirectDAG() {
 
   _nodeKp = generateMLDSAKeypair();
   const cfg = loadConfig();
-  cfg.dbPath         = path.join(DATA_DIR, "seed.db");
+  cfg.dbPath = path.join(DATA_DIR, "seed.db");
   cfg.nodePrivateKey = _nodeKp.privateKey;
-  cfg.nodePublicKey  = _nodeKp.publicKey;
+  cfg.nodePublicKey = _nodeKp.publicKey;
 
   if (fs.existsSync(cfg.dbPath)) fs.unlinkSync(cfg.dbPath);
 
-  _dag     = initDAG(cfg);
+  _dag = initDAG(cfg);
   _scoring = initScoring(_dag, cfg);
 
   ok("Direct-mode DAG initialized");
@@ -350,7 +351,7 @@ async function registerFoundingVP(genesisBlock, vpKeypair) {
 
   info(`Registering VP: ${foundingVP.name}`);
   label("Jurisdiction tier", foundingVP.jurisdiction_tier);
-  label("URL",               foundingVP.url);
+  label("URL", foundingVP.url);
 
   let vpRecord;
 
@@ -377,8 +378,8 @@ async function registerFoundingVP(genesisBlock, vpKeypair) {
     }
   }
 
-  label("VP ID",   vpRecord.vp_id);
-  label("Status",  vpRecord.status);
+  label("VP ID", vpRecord.vp_id);
+  label("Status", vpRecord.status);
 
   return { vpRecord, vpKeypair };
 }
@@ -392,31 +393,31 @@ async function registerSeedNode(vpKeypair) {
     return null;
   }
 
-  const nodeId       = generateTIPID("NODE", _nodeKp.publicKey);
+  const nodeId = generateTIPID("NODE", _nodeKp.publicKey);
   const registeredAt = new Date().toISOString();
 
   const nodeFields = { name: "Seed Node", public_key: _nodeKp.publicKey, approving_vp_id: getFoundingVP().vp_id };
   const councilSig = signBody(nodeFields, vpKeypair.privateKey);
 
   const nodeTxBody = {
-    tx_type:   TX_TYPES.NODE_REGISTERED,
+    tx_type: TX_TYPES.NODE_REGISTERED,
     timestamp: registeredAt,
-    prev:      _dag.getRecentPrev(),
+    prev: _dag.getRecentPrev(),
     data: {
-      node_id:           nodeId,
-      name:              "Seed Node",
-      public_key:        _nodeKp.publicKey,
+      node_id: nodeId,
+      name: "Seed Node",
+      public_key: _nodeKp.publicKey,
       council_signature: councilSig,
-      approving_vp_id:   getFoundingVP().vp_id,
+      approving_vp_id: getFoundingVP().vp_id,
     },
   };
   const signedTx = _withTxId(nodeTxBody);
   _dag.addTx(signedTx);
   _dag.saveNode({
-    node_id:       nodeId,
-    name:          "Seed Node",
-    public_key:    _nodeKp.publicKey,
-    status:        "active",
+    node_id: nodeId,
+    name: "Seed Node",
+    public_key: _nodeKp.publicKey,
+    status: "active",
     registered_at: registeredAt,
   });
 
@@ -425,7 +426,7 @@ async function registerSeedNode(vpKeypair) {
   if (fs.existsSync(envFile)) {
     let envSrc = fs.readFileSync(envFile, "utf8");
     envSrc = envSrc.replace(/TIP_NODE_PRIVATE_KEY=.*/, `TIP_NODE_PRIVATE_KEY=${_nodeKp.privateKey}`);
-    envSrc = envSrc.replace(/TIP_NODE_PUBLIC_KEY=.*/,  `TIP_NODE_PUBLIC_KEY=${_nodeKp.publicKey}`);
+    envSrc = envSrc.replace(/TIP_NODE_PUBLIC_KEY=.*/, `TIP_NODE_PUBLIC_KEY=${_nodeKp.publicKey}`);
     fs.writeFileSync(envFile, envSrc);
     ok("Node keys written to .env");
   }
@@ -445,7 +446,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 
     // Seed uses mock proof — production would call generateDedupProof() from shared/zk.js
     const mockDedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
-    const mockZkProof   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
+    const mockZkProof = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
 
     let regResult;
 
@@ -459,47 +460,47 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 
       const registeredAt = new Date().toISOString();
       const txBody = {
-        tx_type:   TX_TYPES.REGISTER_IDENTITY,
+        tx_type: TX_TYPES.REGISTER_IDENTITY,
         timestamp: registeredAt,
-        prev:      _dag.getRecentPrev(),
+        prev: _dag.getRecentPrev(),
         data: {
-          tip_id:            tipId,
-          region:            member.region.toUpperCase(),
-          public_key:        keypair.publicKey,
-          vp_id:             vpRecord.vp_id,
+          tip_id: tipId,
+          region: member.region.toUpperCase(),
+          public_key: keypair.publicKey,
+          vp_id: vpRecord.vp_id,
           verification_tier: "T1",
-          social_attested:   true,
-          founding:          true,
-          dedup_hash:        mockDedupHash,
-          zk_proof:          mockZkProof,
-          vp_signature:      vpSignature,
+          social_attested: true,
+          founding: true,
+          dedup_hash: mockDedupHash,
+          zk_proof: mockZkProof,
+          vp_signature: vpSignature,
         },
       };
       const signedTx = _withTxId(txBody);
       const tx = _dag.addTx(signedTx);
 
       _dag.saveIdentity({
-        tip_id:          tipId,
-        region:          member.region.toUpperCase(),
-        public_key:      keypair.publicKey,
-        vp_id:           vpRecord.vp_id,
+        tip_id: tipId,
+        region: member.region.toUpperCase(),
+        public_key: keypair.publicKey,
+        vp_id: vpRecord.vp_id,
         verification_tier: "T1",
-        founding:        true,
-        status:          "active",
-        registered_at:   registeredAt,
-        tx_id:           tx.tx_id,
+        founding: true,
+        status: "active",
+        registered_at: registeredAt,
+        tx_id: tx.tx_id,
       });
       _dag.addDedupHash(mockDedupHash);
       _dag.setScore(tipId, 550, 0);
 
       regResult = {
-        tip_id:          tipId,
-        public_key:      keypair.publicKey,
-        private_key:     keypair.privateKey,
-        score:           550,
-        registered_at:   registeredAt,
-        vp_id:           vpRecord.vp_id,
-        tx_id:           tx.tx_id,
+        tip_id: tipId,
+        public_key: keypair.publicKey,
+        private_key: keypair.privateKey,
+        score: 550,
+        registered_at: registeredAt,
+        vp_id: vpRecord.vp_id,
+        tx_id: tx.tx_id,
       };
     } else {
       try {
@@ -515,33 +516,33 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       } catch (e) {
         warn(`API registration failed for ${member.name}: ${e.message}`);
         regResult = {
-          tip_id:          tipId,
-          public_key:      keypair.publicKey,
-          private_key:     keypair.privateKey,
-          score:           550,
-          registered_at:   new Date().toISOString(),
-          vp_id:           vpRecord.vp_id,
+          tip_id: tipId,
+          public_key: keypair.publicKey,
+          private_key: keypair.privateKey,
+          score: 550,
+          registered_at: new Date().toISOString(),
+          vp_id: vpRecord.vp_id,
         };
       }
     }
 
     const identity = {
-      tag:             member.tag,
-      name:            member.name,
-      role:            member.role,
-      tip_id:          regResult.tip_id,
-      public_key:      keypair.publicKey,
-      private_key:     keypair.privateKey,  // Stored in seed output — replace with real keys in production
-      founding:        true,
-      score:           regResult.score || 550,
-      registered_at:   regResult.registered_at,
+      tag: member.tag,
+      name: member.name,
+      role: member.role,
+      tip_id: regResult.tip_id,
+      public_key: keypair.publicKey,
+      private_key: keypair.privateKey,  // Stored in seed output — replace with real keys in production
+      founding: true,
+      score: regResult.score || 550,
+      registered_at: regResult.registered_at,
     };
 
     identities.push(identity);
     ok(`  ${T.bold}${member.name}${T.reset}`);
-    label("    TIP-ID",  identity.tip_id);
-    label("    Score",   `${identity.score} / 1000 (${getTier(identity.score).label})`);
-    label("    Role",    member.role);
+    label("    TIP-ID", identity.tip_id);
+    label("    Score", `${identity.score} / 1000 (${getTier(identity.score).label})`);
+    label("    Role", member.role);
   }
 
   info(`Genesis Ring: ${identities.length} founding members created`);
@@ -557,23 +558,23 @@ async function registerSampleContent(identities) {
 
   const samples = [
     {
-      origin:  ORIGIN.OH,
-      title:   "TIP™ Protocol — Why the Internet Needs a Trust Layer",
+      origin: ORIGIN.OH,
+      title: "TIP™ Protocol — Why the Internet Needs a Trust Layer",
       content: "The internet was built without an identity layer. HTTP, TCP/IP, DNS, and TLS solve routing, delivery, naming, and encryption. But none of them answer the fundamental question: who created this content, and can I trust it? This was an acceptable gap when content creation required skill and equipment. It is an existential gap now that AI can generate indistinguishable text, images, video, and audio at near-zero marginal cost. TIP™ is the protocol layer that closes this gap.",
     },
     {
-      origin:  ORIGIN.AA,
-      title:   "AI-Assisted: Post-Quantum Cryptography Overview",
+      origin: ORIGIN.AA,
+      title: "AI-Assisted: Post-Quantum Cryptography Overview",
       content: "Post-quantum cryptography refers to cryptographic algorithms that are secure against attacks by quantum computers. The NIST post-quantum standardisation process has selected ML-DSA-65 (Dilithium), SLH-DSA-128s (SPHINCS+), and ML-KEM-768 (Kyber) as the primary algorithms. TIP™ Protocol mandates these algorithms at the protocol level, ensuring long-term security. [This introduction was drafted by the author and expanded with AI assistance for clarity and completeness.]",
     },
     {
-      origin:  ORIGIN.AG,
-      title:   "AI-Generated: Frequently Asked Questions about TIP™",
+      origin: ORIGIN.AG,
+      title: "AI-Generated: Frequently Asked Questions about TIP™",
       content: "Q: What is TIP™? A: TIP™ (Trust Identity Protocol) is an open, federated protocol for verifying human identity and declaring content provenance. Q: Is TIP™ free? A: Yes — the protocol specification is CC-BY 4.0 and free for everyone. Q: How does the trust score work? A: Scores are computed deterministically from your complete transaction history on the federated DAG. [This FAQ was generated entirely by AI from the protocol specification.]",
     },
     {
-      origin:  ORIGIN.MX,
-      title:   "Mixed: TIP™ Launch Announcement",
+      origin: ORIGIN.MX,
+      title: "Mixed: TIP™ Launch Announcement",
       content: "We are pleased to announce the launch of TIP™ Protocol v2.0. [Human-written announcement] This release includes five critical security and compliance fixes addressing privacy architecture, pre-scan calibration, identity revocation, GDPR compliance, and jurisdiction tier enforcement. [AI-generated technical summary] The cryptographic foundation uses NIST-standardised post-quantum algorithms. [Human-written conclusion] We invite developers, journalists, and researchers to implement TIP™ and join the founding network.",
     },
   ];
@@ -582,7 +583,7 @@ async function registerSampleContent(identities) {
 
   for (const sample of samples) {
     const contentHash = hashContent(sample.content);
-    const ctid        = generateCTID(sample.origin, contentHash, author.tip_id);
+    const ctid = generateCTID(sample.origin, contentHash, author.tip_id);
 
     const ctFields = { author_tip_id: author.tip_id, origin_code: sample.origin, content_hash: contentHash };
     const signature = signBody(ctFields, author.private_key);
@@ -591,21 +592,21 @@ async function registerSampleContent(identities) {
 
     if (useDirectMode) {
       const registeredAt = new Date().toISOString();
-      const perceptHash  = perceptualHashText(sample.content);
+      const perceptHash = perceptualHashText(sample.content);
 
       const contentTxBody = {
-        tx_type:   TX_TYPES.REGISTER_CONTENT,
+        tx_type: TX_TYPES.REGISTER_CONTENT,
         timestamp: registeredAt,
-        prev:      _dag.getRecentPrev(),
+        prev: _dag.getRecentPrev(),
         data: {
           ctid,
-          origin_code:       sample.origin,
-          origin_label:      ORIGIN_LABELS[sample.origin],
-          content_hash:      contentHash,
-          perceptual_hash:   perceptHash,
-          author_tip_id:     author.tip_id,
+          origin_code: sample.origin,
+          origin_label: ORIGIN_LABELS[sample.origin],
+          content_hash: contentHash,
+          perceptual_hash: perceptHash,
+          author_tip_id: author.tip_id,
           signature,
-          prescan_flagged:   false,
+          prescan_flagged: false,
           prescan_probability: 0,
         },
       };
@@ -614,30 +615,30 @@ async function registerSampleContent(identities) {
 
       _dag.saveContent({
         ctid,
-        origin_code:    sample.origin,
-        content_hash:   contentHash,
+        origin_code: sample.origin,
+        content_hash: contentHash,
         perceptual_hash: perceptHash,
-        author_tip_id:  author.tip_id,
-        status:         "verified",
-        registered_at:  registeredAt,
-        tx_id:          tx.tx_id,
+        author_tip_id: author.tip_id,
+        status: "verified",
+        registered_at: registeredAt,
+        tx_id: tx.tx_id,
       });
 
       result = {
         ctid,
-        origin_code:   sample.origin,
-        origin_label:  ORIGIN_LABELS[sample.origin],
-        content_hash:  contentHash,
+        origin_code: sample.origin,
+        origin_label: ORIGIN_LABELS[sample.origin],
+        content_hash: contentHash,
         author_tip_id: author.tip_id,
-        status:        "verified",
+        status: "verified",
         registered_at: registeredAt,
-        tx_id:         tx.tx_id,
+        tx_id: tx.tx_id,
       };
     } else {
       try {
         result = await post(`${nodeUrl}/v1/content/register`, {
           ...ctFields,
-          content:  sample.content,
+          content: sample.content,
           signature,
         });
       } catch (e) {
@@ -648,8 +649,8 @@ async function registerSampleContent(identities) {
 
     registered.push({ ...sample, ctid: result.ctid, status: result.status });
     ok(`  ${T.bold}${ORIGIN_LABELS[sample.origin]}${T.reset} — ${sample.title.slice(0, 45)}...`);
-    label("    CTID",    result.ctid);
-    label("    Status",  result.status);
+    label("    CTID", result.ctid);
+    label("    Status", result.status);
   }
 
   return registered;
@@ -669,7 +670,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   checks.push({
     name: "Genesis block hash",
     pass: genesisBlock.genesis_hash === expectedHash,
-    detail: `${genesisBlock.genesis_hash.slice(0,32)}...`,
+    detail: `${genesisBlock.genesis_hash.slice(0, 32)}...`,
   });
 
   // Genesis signature — real verification
@@ -767,7 +768,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   checks.push({
     name: "TIP-ID format valid",
     pass: badIds.length === 0,
-    detail: badIds.length === 0 ? "All valid" : `Invalid: ${badIds.map(i=>i.tip_id).join(", ")}`,
+    detail: badIds.length === 0 ? "All valid" : `Invalid: ${badIds.map(i => i.tip_id).join(", ")}`,
   });
 
   // CTID format check
@@ -775,7 +776,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   checks.push({
     name: "CTID format valid",
     pass: badCtids.length === 0,
-    detail: badCtids.length === 0 ? "All valid" : `Invalid: ${badCtids.map(c=>c.ctid).join(", ")}`,
+    detail: badCtids.length === 0 ? "All valid" : `Invalid: ${badCtids.map(c => c.ctid).join(", ")}`,
   });
 
   // Node health check (only in API mode)
@@ -800,7 +801,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
   console.log();
   let allPass = true;
   for (const check of checks) {
-    const icon  = check.pass ? `${T.green}✓${T.reset}` : `${T.red}✗${T.reset}`;
+    const icon = check.pass ? `${T.green}✓${T.reset}` : `${T.red}✗${T.reset}`;
     const color = check.pass ? T.reset : T.red;
     console.log(`  ${icon} ${check.name.padEnd(36)} ${T.dim}${check.detail}${T.reset}`);
     if (!check.pass) allPass = false;
@@ -815,39 +816,39 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
   head("STEP 7: Writing Seed Output");
 
   const output = {
-    seed_version:     "2.0.0",
-    created_at:       new Date().toISOString(),
-    environment:      process.env.NODE_ENV || "development",
+    seed_version: require("../package.json").version,
+    created_at: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
     genesis: {
-      hash:           genesisBlock.genesis_hash,
-      chain_id:       GENESIS_CHAIN_ID,
-      timestamp:      GENESIS_TIMESTAMP,
-      signer_pk:      genesisBlock.signer_public_key,
+      hash: genesisBlock.genesis_hash,
+      chain_id: GENESIS_CHAIN_ID,
+      timestamp: GENESIS_TIMESTAMP,
+      signer_pk: genesisBlock.signer_public_key,
     },
     founding_vp: {
-      vp_id:          vpRecord.vp_id,
-      name:           vpRecord.name,
+      vp_id: vpRecord.vp_id,
+      name: vpRecord.name,
       jurisdiction_tier: vpRecord.jurisdiction_tier,
-      public_key:     vpRecord.public_key || vpKeypair.publicKey,
+      public_key: vpRecord.public_key || vpKeypair.publicKey,
       // NOTE: VP private key intentionally NOT stored in seed output
       // It is stored in genesis-keys.json which must be kept secure
     },
     genesis_ring: identities.map(i => ({
-      tag:            i.tag,
-      name:           i.name,
-      role:           i.role,
-      tip_id:         i.tip_id,
-      founding:       true,
-      score:          i.score,
-      registered_at:  i.registered_at,
+      tag: i.tag,
+      name: i.name,
+      role: i.role,
+      tip_id: i.tip_id,
+      founding: true,
+      score: i.score,
+      registered_at: i.registered_at,
       // Private keys stored in separate secure file — see below
     })),
     sample_content: content.map(c => ({
-      origin:         c.origin,
-      origin_label:   ORIGIN_LABELS[c.origin],
-      title:          c.title,
-      ctid:           c.ctid,
-      status:         c.status,
+      origin: c.origin,
+      origin_label: ORIGIN_LABELS[c.origin],
+      title: c.title,
+      ctid: c.ctid,
+      status: c.status,
     })),
   };
 
@@ -861,14 +862,14 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
     created_at: new Date().toISOString(),
     security_notice: "HIGHLY SENSITIVE. Keep offline. Never commit to version control.",
     genesis_ring_keys: identities.map(i => ({
-      tag:          i.tag,
-      name:         i.name,
-      tip_id:       i.tip_id,
-      private_key:  i.private_key,
-      public_key:   i.public_key,
+      tag: i.tag,
+      name: i.name,
+      tip_id: i.tip_id,
+      private_key: i.private_key,
+      public_key: i.public_key,
     })),
     vp_private_key: vpKeypair.privateKey,
-    vp_public_key:  vpKeypair.publicKey,
+    vp_public_key: vpKeypair.publicKey,
   };
   fs.writeFileSync(keysOutputFile, JSON.stringify(keysOutput, null, 2), { mode: 0o600 });
   ok(`Founder keys written to: ${keysOutputFile} (chmod 600)`);
@@ -921,14 +922,14 @@ async function main() {
 
     // ── Final summary ────────────────────────────────────────────────────────
     head("SEED COMPLETE");
-    label("Genesis hash",        output.genesis.hash.slice(0, 48) + "...");
-    label("Chain ID",            output.genesis.chain_id);
-    label("Founding VP",         output.founding_vp.vp_id);
+    label("Genesis hash", output.genesis.hash.slice(0, 48) + "...");
+    label("Chain ID", output.genesis.chain_id);
+    label("Founding VP", output.founding_vp.vp_id);
     label("Genesis ring members", output.genesis_ring.length.toString());
-    label("Sample content",      `${output.sample_content.length} records (OH, AA, AG, MX)`);
-    if (seedNode) label("Seed node",     seedNode.nodeId);
+    label("Sample content", `${output.sample_content.length} records (OH, AA, AG, MX)`);
+    if (seedNode) label("Seed node", seedNode.nodeId);
     if (_dag) label("DAG transactions", `${_dag.count()}`);
-    label("Validation",          allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
+    label("Validation", allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
     console.log();
     ok(`${T.bold}TIP™ Protocol genesis complete.${T.reset}`);
     console.log();

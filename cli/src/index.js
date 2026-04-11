@@ -27,17 +27,18 @@
 
 "use strict";
 
-const { program, Command }  = require("commander");
-const fs                    = require("fs");
-const path                  = require("path");
-const { TIPClient }         = require("../../sdk/src/index");
+const { program, Command } = require("commander");
+const fs = require("fs");
+const path = require("path");
+const { TIPClient } = require("../../sdk/src/index");
 const {
   generateMLDSAKeypair,
   mldsaSign,
   shake256,
   shake256Multi,
-}                           = require("../../shared/crypto");
-const { ORIGIN, ORIGIN_LABELS, getTier } = require("../../shared/constants");
+} = require("../../shared/crypto");
+const { ORIGIN, ORIGIN_LABELS } = require("../../shared/constants");
+const { getTier } = require("../../shared/protocol-constants");
 
 // ── Simple config store (file-based) ─────────────────────────────────────────
 const CONFIG_PATH = path.join(require("os").homedir(), ".tip-cli.json");
@@ -63,17 +64,17 @@ const C = {
   red: "\x1b[31m", cyan: "\x1b[36m", gold: "\x1b[33m", grey: "\x1b[90m",
 };
 
-function ok(msg)    { console.log(`${C.green}✓${C.reset} ${msg}`); }
-function err(msg)   { console.error(`${C.red}✗${C.reset} ${msg}`); }
-function info(msg)  { console.log(`${C.cyan}ℹ${C.reset} ${msg}`); }
-function label(k, v){ console.log(`  ${C.dim}${k.padEnd(22)}${C.reset} ${v}`); }
+function ok(msg) { console.log(`${C.green}✓${C.reset} ${msg}`); }
+function err(msg) { console.error(`${C.red}✗${C.reset} ${msg}`); }
+function info(msg) { console.log(`${C.cyan}ℹ${C.reset} ${msg}`); }
+function label(k, v) { console.log(`  ${C.dim}${k.padEnd(22)}${C.reset} ${v}`); }
 
 function printScore(data) {
-  const tier  = getTier(data.score || 0);
-  const tClr  = data.score >= 800 ? C.green : data.score >= 600 ? C.blue : data.score >= 400 ? C.yellow : C.red;
+  const tier = getTier(data.score || 0);
+  const tClr = data.score >= 800 ? C.green : data.score >= 600 ? C.blue : data.score >= 400 ? C.yellow : C.red;
   console.log(`\n${C.bold}Trust Score${C.reset}`);
   if (data.score !== undefined) label("Score", `${tClr}${C.bold}${data.score}${C.reset} / 1000`);
-  label("Tier",   `${tClr}${data.tier || tier.name}${C.reset}`);
+  label("Tier", `${tClr}${data.tier || tier.name}${C.reset}`);
   if (data.verified_since) label("Verified since", data.verified_since);
   if (data.content_count !== undefined) label("Content count", data.content_count);
   if (data.status) label("Status", data.status);
@@ -86,7 +87,7 @@ function printScore(data) {
 program
   .name("tip")
   .description(`${C.bold}TIP™ Protocol CLI${C.reset} — Trust Identity Protocol v2.0\n  The AI Lab Intelligence Unobscured, Inc. | theailab.org`)
-  .version("2.0.0");
+  .version(require("../../package.json").version);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
@@ -131,10 +132,10 @@ configCmd
   .action(() => {
     const cfg = loadCLIConfig();
     console.log(`\n${C.bold}TIP CLI Configuration${C.reset}`);
-    label("Node URL",       cfg.nodeUrl     || "(not set — default: http://localhost:4000)");
+    label("Node URL", cfg.nodeUrl || "(not set — default: http://localhost:4000)");
     label("Default TIP-ID", cfg.defaultTipId || "(not set)");
-    label("Private key",    cfg.privateKey   ? "[stored]" : "(not set)");
-    label("Config file",    CONFIG_PATH);
+    label("Private key", cfg.privateKey ? "[stored]" : "(not set)");
+    label("Config file", CONFIG_PATH);
     console.log();
   });
 
@@ -150,8 +151,8 @@ identityCmd
   .action(() => {
     const kp = generateMLDSAKeypair();
     console.log(`\n${C.bold}New ML-DSA-65 Keypair${C.reset}`);
-    label("Algorithm",   kp.algorithm);
-    label("Public key",  kp.publicKey.slice(0, 32) + "...");
+    label("Algorithm", kp.algorithm);
+    label("Public key", kp.publicKey.slice(0, 32) + "...");
     label("Private key", kp.privateKey.slice(0, 32) + "...");
     info("Store your private key securely. Run: tip config set-key <privateKey>");
     console.log(`\n${C.dim}Full public key:${C.reset}\n${kp.publicKey}`);
@@ -161,20 +162,20 @@ identityCmd
 identityCmd
   .command("register")
   .description("[DEV ONLY] Register a TIP-ID with mock ZK proof (production: use VP SDK)")
-  .requiredOption("--vp-id <vpId>",       "Verification Provider ID")
-  .option("--region <region>",             "Region code (default: US)", "US")
-  .option("--tier <tier>",                 "Verification tier T1|T2|T3|T4 (default: T1)", "T1")
-  .option("--attested",                    "Has social attestation (3 vouchers)")
-  .option("--founding",                    "Founding member (Genesis Block)")
+  .requiredOption("--vp-id <vpId>", "Verification Provider ID")
+  .option("--region <region>", "Region code (default: US)", "US")
+  .option("--tier <tier>", "Verification tier T1|T2|T3|T4 (default: T1)", "T1")
+  .option("--attested", "Has social attestation (3 vouchers)")
+  .option("--founding", "Founding member (Genesis Block)")
   .requiredOption("--vp-key <vpPrivateKey>", "VP private key (hex) for signing the registration")
   .action(async (opts) => {
     const client = getClient();
     // Mock dedup hash and ZK proof — production: VP SDK calls generateDedupProof() on-device
     const mockDedupHash = shake256Multi("cli-registration", opts.region, opts.vpId);
-    const mockZkProof   = { pi_a: ["1","2","3"], pi_b: [["1","2"],["3","4"],["5","6"]], pi_c: ["1","2","3"], protocol: "groth16", curve: "bn128" };
+    const mockZkProof = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
 
     // VP signs canonical payload: dedup_hash + verification_tier + vp_id
-    const vpPayload   = mockDedupHash + opts.tier + opts.vpId;
+    const vpPayload = mockDedupHash + opts.tier + opts.vpId;
     const vpSignature = mldsaSign(vpPayload, opts.vpKey);
 
     console.log(`\n${C.bold}Registering TIP-ID...${C.reset}`);
@@ -185,20 +186,20 @@ identityCmd
 
     try {
       const res = await client.identity.register({
-        region:           opts.region,
-        vpId:             opts.vpId,
+        region: opts.region,
+        vpId: opts.vpId,
         vpSignature,
-        dedupHash:        mockDedupHash,
-        zkProof:          mockZkProof,
+        dedupHash: mockDedupHash,
+        zkProof: mockZkProof,
         verificationTier: opts.tier,
-        socialAttested:   !!opts.attested,
-        founding:         !!opts.founding,
+        socialAttested: !!opts.attested,
+        founding: !!opts.founding,
       });
 
       console.log(`\n${C.green}${C.bold}Identity registered successfully!${C.reset}\n`);
-      label("TIP-ID",        res.tip_id);
-      label("Score",         res.score);
-      label("TX ID",         res.tx_id);
+      label("TIP-ID", res.tip_id);
+      label("Score", res.score);
+      label("TX ID", res.tx_id);
       label("Registered at", res.registered_at);
       console.log(`\n${C.yellow}${C.bold}IMPORTANT: Save your private key now. It will not be shown again.${C.reset}`);
       console.log(`${C.dim}Private key:${C.reset}\n${res.private_key}`);
@@ -220,14 +221,14 @@ identityCmd
     try {
       const res = await client.identity.resolve(tipId);
       console.log(`\n${C.bold}Identity Record${C.reset}`);
-      label("TIP-ID",         res.tip_id);
-      label("Region",         res.region);
-      label("VP",             res.vp_id || "(none)");
-      label("Tier",           res.verification_tier);
-      label("Status",         res.status);
-      label("Founding",       res.founding ? "Yes ★" : "No");
-      label("Content count",  res.content_count);
-      label("Registered at",  res.registered_at);
+      label("TIP-ID", res.tip_id);
+      label("Region", res.region);
+      label("VP", res.vp_id || "(none)");
+      label("Tier", res.verification_tier);
+      label("Status", res.status);
+      label("Founding", res.founding ? "Yes ★" : "No");
+      label("Content count", res.content_count);
+      label("Registered at", res.registered_at);
       printScore(res);
       console.log();
     } catch (e) {
@@ -264,7 +265,7 @@ identityCmd
         info("No score events found.");
       } else {
         res.history.forEach(ev => {
-          const sign  = ev.delta >= 0 ? `${C.green}+${ev.delta}${C.reset}` : `${C.red}${ev.delta}${C.reset}`;
+          const sign = ev.delta >= 0 ? `${C.green}+${ev.delta}${C.reset}` : `${C.red}${ev.delta}${C.reset}`;
           console.log(`  ${C.dim}${ev.timestamp}${C.reset}  ${sign.padEnd(12)}  ${ev.score_after.toString().padStart(4)} pts  ${C.dim}${ev.reason}${C.reset}`);
         });
       }
@@ -284,18 +285,18 @@ const contentCmd = program.command("content").alias("c").description("Content pr
 contentCmd
   .command("register")
   .description("Register content with a mandatory origin declaration")
-  .option("--file <path>",      "Path to content file")
-  .option("--text <text>",      "Inline content text")
-  .option("--hash <hash>",      "Pre-computed content hash (for binary content)")
-  .requiredOption("--origin <code>",  "Origin code: OH | AA | AG | MX")
-  .option("--tip-id <tipId>",   "Author TIP-ID (uses default if set)")
+  .option("--file <path>", "Path to content file")
+  .option("--text <text>", "Inline content text")
+  .option("--hash <hash>", "Pre-computed content hash (for binary content)")
+  .requiredOption("--origin <code>", "Origin code: OH | AA | AG | MX")
+  .option("--tip-id <tipId>", "Author TIP-ID (uses default if set)")
   .option("--key <privateKey>", "ML-DSA-65 private key (uses config if set)")
   .action(async (opts) => {
-    const cfg     = loadCLIConfig();
-    const tipId   = opts.tipId || cfg.defaultTipId;
-    const privKey = opts.key   || cfg.privateKey;
+    const cfg = loadCLIConfig();
+    const tipId = opts.tipId || cfg.defaultTipId;
+    const privKey = opts.key || cfg.privateKey;
 
-    if (!tipId)  { err("--tip-id required (or set default: tip config set-identity <tipId>)"); process.exit(1); }
+    if (!tipId) { err("--tip-id required (or set default: tip config set-identity <tipId>)"); process.exit(1); }
     if (!ORIGIN[opts.origin]) { err(`Invalid --origin. Must be one of: ${Object.keys(ORIGIN).join(", ")}`); process.exit(1); }
 
     let content = opts.text || null;
@@ -309,23 +310,23 @@ contentCmd
     console.log(`\n${C.bold}Registering content...${C.reset}`);
     info(`Author: ${tipId}`);
     info(`Origin: ${opts.origin} (${ORIGIN_LABELS[opts.origin]})`);
-    if (opts.file) info(`File:   ${opts.file} (${(content||"").length} chars)`);
+    if (opts.file) info(`File:   ${opts.file} (${(content || "").length} chars)`);
 
     try {
       const res = await client.content.register({
-        authorTipId:  tipId,
-        privateKey:   privKey,
-        originCode:   opts.origin,
-        content:      content,
-        contentHash:  opts.hash,
+        authorTipId: tipId,
+        privateKey: privKey,
+        originCode: opts.origin,
+        content: content,
+        contentHash: opts.hash,
       });
 
       console.log(`\n${C.green}${C.bold}Content registered!${C.reset}\n`);
-      label("CTID",          res.ctid);
-      label("Origin",        `${res.originCode} — ${res.originLabel}`);
-      label("Content hash",  res.contentHash);
-      label("Status",        res.status);
-      label("TX ID",         res.txId);
+      label("CTID", res.ctid);
+      label("Origin", `${res.originCode} — ${res.originLabel}`);
+      label("Content hash", res.contentHash);
+      label("Status", res.status);
+      label("TX ID", res.txId);
       if (res.preScanFlagged) {
         console.log(`\n${C.yellow}⚠ Pre-scan flagged${C.reset}: ${res.preScanNote}`);
       }
@@ -350,11 +351,11 @@ contentCmd
     try {
       const res = await client.content.resolve(ctid);
       console.log(`\n${C.bold}Content Record${C.reset}`);
-      label("CTID",          res.ctid);
-      label("Origin",        `${res.origin_code} — ${res.origin_label || ORIGIN_LABELS[res.origin_code]}`);
-      label("Author",        res.author_tip_id);
-      label("Status",        res.status);
-      label("Disputes",      res.dispute_count);
+      label("CTID", res.ctid);
+      label("Origin", `${res.origin_code} — ${res.origin_label || ORIGIN_LABELS[res.origin_code]}`);
+      label("Author", res.author_tip_id);
+      label("Status", res.status);
+      label("Disputes", res.dispute_count);
       label("Verifications", res.verification_count);
       label("Registered at", res.registered_at);
       console.log();
@@ -370,8 +371,8 @@ contentCmd
   .option("--as <tipId>", "Verifier TIP-ID (uses default if set)")
   .option("--key <privateKey>", "ML-DSA-65 private key (uses config if set)")
   .action(async (ctid, opts) => {
-    const cfg    = loadCLIConfig();
-    const tipId  = opts.as || cfg.defaultTipId;
+    const cfg = loadCLIConfig();
+    const tipId = opts.as || cfg.defaultTipId;
     if (!tipId) { err("--as <tipId> required"); process.exit(1); }
     const privKey = opts.key || cfg.privateKey;
     if (!privKey) { err("--key <privateKey> required (or set via: tip config set-key)"); process.exit(1); }
@@ -389,10 +390,10 @@ contentCmd
 contentCmd
   .command("dispute <ctid>")
   .description("File an origin dispute against a content record")
-  .requiredOption("--as <tipId>",      "Disputer TIP-ID")
+  .requiredOption("--as <tipId>", "Disputer TIP-ID")
   .requiredOption("--reason <reason>", "Reason for dispute")
-  .option("--key <privateKey>",         "ML-DSA-65 private key (uses config if set)")
-  .option("--evidence <hash>",          "SHAKE-256 hash of supporting evidence")
+  .option("--key <privateKey>", "ML-DSA-65 private key (uses config if set)")
+  .option("--evidence <hash>", "SHAKE-256 hash of supporting evidence")
   .action(async (ctid, opts) => {
     const cfg = loadCLIConfig();
     const privKey = opts.key || cfg.privateKey;
@@ -458,10 +459,10 @@ trustCmd
     try {
       const res = await client.trust.getMerkleRoot();
       console.log(`\n${C.bold}Dedup Merkle Root${C.reset}`);
-      label("Merkle root",   res.merkle_root);
-      label("Dedup count",   res.dedup_count);
+      label("Merkle root", res.merkle_root);
+      label("Dedup count", res.dedup_count);
       label("Identity count", res.identity_count);
-      label("Generated",     res.generated);
+      label("Generated", res.generated);
       console.log();
     } catch (e) {
       err(e.message); process.exit(1);
@@ -477,9 +478,9 @@ const vpCmd = program.command("vp").description("Verification Provider managemen
 vpCmd
   .command("register")
   .description("Register a new Verification Provider")
-  .requiredOption("--name <name>",        "VP display name")
-  .option("--tier <tier>",                "Jurisdiction tier: green|amber (default: green)", "green")
-  .option("--key <publicKey>",            "VP ML-DSA-65 public key (generates if omitted)")
+  .requiredOption("--name <name>", "VP display name")
+  .option("--tier <tier>", "Jurisdiction tier: green|amber (default: green)", "green")
+  .option("--key <publicKey>", "VP ML-DSA-65 public key (generates if omitted)")
   .action(async (opts) => {
     const client = getClient();
     let pubKey = opts.key;
@@ -495,8 +496,8 @@ vpCmd
         body: { name: opts.name, jurisdiction_tier: opts.tier, public_key: pubKey },
       });
       ok(`VP registered: ${res.vp_id}`);
-      label("Name",  res.name);
-      label("Tier",  res.jurisdiction_tier);
+      label("Name", res.name);
+      label("Tier", res.jurisdiction_tier);
       label("VP ID", res.vp_id);
     } catch (e) {
       err(e.message); process.exit(1);
@@ -561,7 +562,7 @@ nodeCmd
   .command("ping")
   .description("Check node health")
   .action(async () => {
-    const cfg    = loadCLIConfig();
+    const cfg = loadCLIConfig();
     const nodeUrl = cfg.nodeUrl || "http://localhost:4000";
     const client = new TIPClient({ nodeUrl });
     info(`Pinging ${nodeUrl}...`);
@@ -583,18 +584,18 @@ const badgeCmd = program.command("badge").alias("b").description("Badge generati
 badgeCmd
   .command("seal")
   .description("Generate an AI Trust ID™ Seal SVG")
-  .requiredOption("--score <n>",    "Trust score (0–1000)", parseInt)
-  .option("--size <n>",             "Size in pixels (default: 200)", parseInt)
-  .option("--variant <v>",          "gold-dark | light | dark (default: gold-dark)", "gold-dark")
-  .option("--founding",             "Show founding star")
-  .option("--out <path>",           "Output file (prints to stdout if omitted)")
+  .requiredOption("--score <n>", "Trust score (0–1000)", parseInt)
+  .option("--size <n>", "Size in pixels (default: 200)", parseInt)
+  .option("--variant <v>", "gold-dark | light | dark (default: gold-dark)", "gold-dark")
+  .option("--founding", "Show founding star")
+  .option("--out <path>", "Output file (prints to stdout if omitted)")
   .action((opts) => {
     const { TIPBadgesClient } = require("../../sdk/src/badges");
     const badges = new TIPBadgesClient({});
     const svg = badges.renderSeal({
-      score:    opts.score,
-      size:     opts.size || 200,
-      variant:  opts.variant,
+      score: opts.score,
+      size: opts.size || 200,
+      variant: opts.variant,
       founding: !!opts.founding,
     });
     if (opts.out) {
@@ -608,9 +609,9 @@ badgeCmd
 badgeCmd
   .command("mark")
   .description("Generate a TIP™ Powered Mark SVG (open — no permission needed)")
-  .option("--size <n>",    "Size in pixels (default: 140)", parseInt)
+  .option("--size <n>", "Size in pixels (default: 140)", parseInt)
   .option("--variant <v>", "light | dark (default: light)", "light")
-  .option("--out <path>",  "Output file")
+  .option("--out <path>", "Output file")
   .action((opts) => {
     const { TIPBadgesClient } = require("../../sdk/src/badges");
     const badges = new TIPBadgesClient({});
@@ -627,9 +628,9 @@ badgeCmd
   .command("shield")
   .description("Generate an inline shield badge SVG")
   .requiredOption("--score <n>", "Trust score (0–1000)", parseInt)
-  .option("--size <n>",          "Size (default: 48)", parseInt)
-  .option("--founding",          "Founding border")
-  .option("--out <path>",        "Output file")
+  .option("--size <n>", "Size (default: 48)", parseInt)
+  .option("--founding", "Founding border")
+  .option("--out <path>", "Output file")
   .action((opts) => {
     const { TIPBadgesClient } = require("../../sdk/src/badges");
     const badges = new TIPBadgesClient({});
@@ -641,20 +642,20 @@ badgeCmd
 badgeCmd
   .command("headers")
   .description("Generate HTTP header config for your web server")
-  .requiredOption("--tip-id <id>",  "Author TIP-ID")
-  .requiredOption("--ctid <ctid>",  "Content CTID")
-  .requiredOption("--origin <code>","Origin code: OH|AA|AG|MX")
-  .requiredOption("--score <n>",    "Author trust score", parseInt)
-  .option("--sig <sig>",            "ML-DSA-65 signature")
-  .option("--format <f>",           "nginx|apache|caddy|cloudflare|netlify (default: nginx)", "nginx")
+  .requiredOption("--tip-id <id>", "Author TIP-ID")
+  .requiredOption("--ctid <ctid>", "Content CTID")
+  .requiredOption("--origin <code>", "Origin code: OH|AA|AG|MX")
+  .requiredOption("--score <n>", "Author trust score", parseInt)
+  .option("--sig <sig>", "ML-DSA-65 signature")
+  .option("--format <f>", "nginx|apache|caddy|cloudflare|netlify (default: nginx)", "nginx")
   .action((opts) => {
     const { TIPBadgesClient } = require("../../sdk/src/badges");
     const badges = new TIPBadgesClient({});
     const cfg = badges.generateHTTPConfig({
-      tipId:     opts.tipId,
-      ctid:      opts.ctid,
+      tipId: opts.tipId,
+      ctid: opts.ctid,
       originCode: opts.origin,
-      score:     opts.score,
+      score: opts.score,
       signature: opts.sig,
     });
     console.log(`\n${C.bold}${opts.format.toUpperCase()} Configuration${C.reset}\n`);
