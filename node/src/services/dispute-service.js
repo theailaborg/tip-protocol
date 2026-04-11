@@ -1,12 +1,15 @@
 "use strict";
 
 const { shake256, verifyBodySignature } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, JURY_VOTES } = require("../../../shared/constants");
 const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { selectJury, selectExperts, tallyVerdictAndApply, applyAppealVerdict } = require("../jury");
 const { withTxId, nodeSignedAuto, preScanContent } = require("./helpers");
+const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
+
+const ORIGIN_CODES = Object.keys(ORIGIN);
 
 function createDisputeService({ dag, scoring, config, broadcast }) {
 
@@ -16,12 +19,10 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     if (rec.status === "retracted") throw { status: 403, error: "Content has been retracted — dispute not allowed" };
     if (rec.status === "pending_review") throw { status: 403, error: "Content is pending review — wait for 24-hour grace period" };
 
+    validate(body, { disputer_tip_id: { required: true }, signature: { required: true }, reason: { required: true } });
     const { disputer_tip_id, reason, claimed_origin, evidence_hash, signature } = body;
-    if (!disputer_tip_id) throw { status: 400, error: "disputer_tip_id required" };
-    if (!signature) throw { status: 400, error: "signature is required" };
-    if (!reason) throw { status: 400, error: "reason required (origin_mismatch or factual_falsehood)" };
     if (reason === "origin_mismatch" && !claimed_origin) throw { status: 400, error: "claimed_origin required for origin_mismatch disputes" };
-    if (claimed_origin && !ORIGIN[claimed_origin]) throw { status: 400, error: `Invalid claimed_origin` };
+    if (claimed_origin && !ORIGIN_CODES.includes(claimed_origin)) throw { status: 400, error: `Invalid claimed_origin. Must be one of: ${ORIGIN_CODES.join(", ")}` };
 
     const disputer = dag.getIdentity(disputer_tip_id);
     if (!disputer) throw { status: 404, error: "Disputer TIP-ID not found" };
@@ -100,9 +101,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
 
   function juryCommit(ctid, body) {
     const { juror_tip_id, commitment, signature } = body;
-    if (!juror_tip_id) throw { status: 400, error: "juror_tip_id required" };
-    if (!commitment) throw { status: 400, error: "commitment required" };
-    if (!signature) throw { status: 400, error: "signature required" };
+    validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
     const juror = dag.getIdentity(juror_tip_id);
     if (!juror) throw { status: 404, error: "Juror TIP-ID not found" };
@@ -126,13 +125,9 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
 
   function juryReveal(ctid, body) {
     const { juror_tip_id, vote, salt, confirmed_origin, signature } = body;
-    if (!juror_tip_id) throw { status: 400, error: "juror_tip_id required" };
-    if (!vote) throw { status: 400, error: "vote required (MATCH, MISMATCH, or ABSTAIN)" };
-    if (!salt) throw { status: 400, error: "salt required" };
-    if (!signature) throw { status: 400, error: "signature required" };
-    if (!["MATCH", "MISMATCH", "ABSTAIN"].includes(vote)) throw { status: 400, error: "Invalid vote" };
+    validate(body, { juror_tip_id: { required: true }, vote: { required: true, oneOf: JURY_VOTES }, salt: { required: true }, signature: { required: true } });
     if (vote === "MISMATCH" && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
-    if (confirmed_origin && !ORIGIN[confirmed_origin]) throw { status: 400, error: "Invalid confirmed_origin" };
+    if (confirmed_origin && !ORIGIN_CODES.includes(confirmed_origin)) throw { status: 400, error: "Invalid confirmed_origin" };
 
     const juror = dag.getIdentity(juror_tip_id);
     if (!juror) throw { status: 404, error: "Juror TIP-ID not found" };
@@ -201,9 +196,8 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
   // ── Appeal endpoints ──────────────────────────────────────────────────────
 
   function fileAppeal(ctid, body) {
+    validate(body, { appellant_tip_id: { required: true }, signature: { required: true } });
     const { appellant_tip_id, signature } = body;
-    if (!appellant_tip_id) throw { status: 400, error: "appellant_tip_id required" };
-    if (!signature) throw { status: 400, error: "signature required" };
 
     const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid);
     if (!adjTxs.length) throw { status: 404, error: "No Stage 2 verdict found for this content" };
@@ -246,9 +240,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
 
   function appealCommit(ctid, body) {
     const { juror_tip_id, commitment, signature } = body;
-    if (!juror_tip_id) throw { status: 400, error: "juror_tip_id required" };
-    if (!commitment) throw { status: 400, error: "commitment required" };
-    if (!signature) throw { status: 400, error: "signature required" };
+    validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
     const juror = dag.getIdentity(juror_tip_id);
     if (!juror) throw { status: 404, error: "Expert TIP-ID not found" };

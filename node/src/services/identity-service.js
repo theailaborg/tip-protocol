@@ -7,21 +7,24 @@ const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId } = require("./helpers");
+const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
 function createIdentityService({ dag, scoring, config, broadcast }) {
 
   async function register(body) {
+    validate(body, {
+      public_key: { required: true },
+      dedup_hash: { required: true },
+      zk_proof: { required: true },
+      vp_id: { required: true },
+      vp_signature: { required: true },
+    });
+
     const {
       region = "US", public_key, dedup_hash, zk_proof,
       verification_tier = "T1", vp_id, vp_signature, social_attested = false,
     } = body;
-
-    if (!public_key) throw { status: 400, error: "public_key is required (client-generated ML-DSA-65)" };
-    if (!dedup_hash) throw { status: 400, error: "dedup_hash is required" };
-    if (!zk_proof) throw { status: 400, error: "zk_proof is required" };
-    if (!vp_id) throw { status: 400, error: "vp_id is required" };
-    if (!vp_signature) throw { status: 400, error: "vp_signature is required" };
 
     const vp = dag.getVP(vp_id);
     if (!vp || vp.status !== "active") throw { status: 403, error: "Verification provider not found or suspended" };
@@ -88,10 +91,8 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
   }
 
   function verifyOwnership(body) {
+    validate(body, { tip_id: { required: true }, challenge: { required: true }, signature: { required: true } });
     const { tip_id, challenge, signature } = body;
-    if (!tip_id) throw { status: 400, error: "tip_id is required" };
-    if (!challenge) throw { status: 400, error: "challenge is required" };
-    if (!signature) throw { status: 400, error: "signature is required" };
 
     const identity = dag.getIdentity(tip_id);
     if (!identity) throw { status: 404, error: "TIP-ID not found" };

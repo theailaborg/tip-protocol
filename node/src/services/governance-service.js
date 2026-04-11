@@ -4,17 +4,15 @@ const { generateTIPID, verifyBodySignature } = require("../../../shared/crypto")
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId } = require("./helpers");
+const { validate } = require("../middleware/validate");
 const { getFoundingVP } = require("../genesis");
 const { log } = require("../logger");
 
 function createGovernanceService({ dag, scoring, config, broadcast }) {
 
   function registerVP(body) {
+    validate(body, { name: { required: true }, public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
     const { name, jurisdiction_tier = "green", public_key, council_signature, approving_vp_id } = body;
-    if (!name) throw { status: 400, error: "name is required" };
-    if (!public_key) throw { status: 400, error: "public_key is required" };
-    if (!council_signature) throw { status: 400, error: "council_signature is required" };
-    if (!approving_vp_id) throw { status: 400, error: "approving_vp_id is required" };
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP (${foundingVpId}) can approve new VPs` };
@@ -53,10 +51,8 @@ function createGovernanceService({ dag, scoring, config, broadcast }) {
   }
 
   function registerNode(body) {
+    validate(body, { public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
     const { name, public_key, council_signature, approving_vp_id } = body;
-    if (!public_key) throw { status: 400, error: "public_key is required" };
-    if (!council_signature) throw { status: 400, error: "council_signature is required" };
-    if (!approving_vp_id) throw { status: 400, error: "approving_vp_id is required" };
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP can approve nodes` };

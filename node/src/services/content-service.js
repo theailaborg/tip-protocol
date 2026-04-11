@@ -9,18 +9,21 @@ const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constant
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId } = require("./helpers");
 const { preScanContent } = require("./helpers");
+const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
+
+const ORIGIN_CODES = Object.keys(ORIGIN);
 
 function createContentService({ dag, scoring, config, broadcast }) {
 
   function register(body) {
+    validate(body, {
+      author_tip_id: { required: true },
+      origin_code: { required: true, oneOf: ORIGIN_CODES },
+      content: { required: true },
+      signature: { required: true },
+    });
     const { author_tip_id, origin_code, content, signature } = body;
-
-    if (!author_tip_id) throw { status: 400, error: "author_tip_id is required" };
-    if (!origin_code) throw { status: 400, error: "origin_code is required" };
-    if (!ORIGIN[origin_code]) throw { status: 400, error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` };
-    if (!content) throw { status: 400, error: "content is required" };
-    if (!signature) throw { status: 400, error: "signature is required" };
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
@@ -116,9 +119,8 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const rec = dag.getContent(ctid);
     if (!rec) throw { status: 404, error: "Content record not found" };
 
+    validate(body, { verifier_tip_id: { required: true }, signature: { required: true } });
     const { verifier_tip_id, verdict, signature } = body;
-    if (!verifier_tip_id) throw { status: 400, error: "verifier_tip_id required" };
-    if (!signature) throw { status: 400, error: "signature is required" };
 
     const verifier = dag.getIdentity(verifier_tip_id);
     if (!verifier) throw { status: 404, error: "Verifier TIP-ID not found" };
@@ -182,10 +184,8 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const rec = dag.getContent(ctid);
     if (!rec) throw { status: 404, error: "Content record not found" };
 
+    validate(body, { author_tip_id: { required: true }, new_origin_code: { required: true }, signature: { required: true } });
     const { author_tip_id, new_origin_code, signature } = body;
-    if (!author_tip_id) throw { status: 400, error: "author_tip_id required" };
-    if (!new_origin_code) throw { status: 400, error: "new_origin_code required" };
-    if (!signature) throw { status: 400, error: "signature required" };
 
     if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can update the origin code" };
     if (rec.status !== "registered" && rec.status !== "pending_review") throw { status: 403, error: `Cannot update origin — content status is '${rec.status}'` };
@@ -221,9 +221,8 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const rec = dag.getContent(ctid);
     if (!rec) throw { status: 404, error: "Content record not found" };
 
+    validate(body, { author_tip_id: { required: true }, signature: { required: true } });
     const { author_tip_id, signature } = body;
-    if (!author_tip_id) throw { status: 400, error: "author_tip_id required" };
-    if (!signature) throw { status: 400, error: "signature required" };
 
     if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can retract" };
     if (rec.status === "retracted") throw { status: 409, error: "Content is already retracted" };

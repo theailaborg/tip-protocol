@@ -4,6 +4,7 @@ const { verifyBodySignature } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId, nodeSignedAuto } = require("./helpers");
+const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
 function createRevocationService({ dag, scoring, config, broadcast }) {
@@ -14,11 +15,8 @@ function createRevocationService({ dag, scoring, config, broadcast }) {
   }
 
   function create(body) {
+    validate(body, { tip_id: { required: true }, tx_type: { required: true }, issuing_vp_id: { required: true }, signature: { required: true } });
     const { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id, signature } = body;
-    if (!tip_id) throw { status: 400, error: "tip_id is required" };
-    if (!tx_type) throw { status: 400, error: "tx_type is required" };
-    if (!issuing_vp_id) throw { status: 400, error: "issuing_vp_id is required" };
-    if (!signature) throw { status: 400, error: "signature is required" };
 
     const validTypes = [TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP, TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE];
     if (!validTypes.includes(tx_type)) throw { status: 400, error: `Invalid tx_type. Must be one of: ${validTypes.join(", ")}` };
