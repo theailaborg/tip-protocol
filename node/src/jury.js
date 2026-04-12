@@ -424,6 +424,7 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
       if (stage2Delta < 0) {
         scoring.applyScoreEvent(authorTipId, -stage2Delta, `Appeal overturned: Stage 2 penalty reversed on ${ctid}`);
       }
+      // restore original origin + pre - dispute status
       dag.updateContentOrigin(ctid, declared_origin, preStatus);
       log.info(`Appeal OVERTURNED: ${ctid} — author penalty reversed (+${-stage2Delta}), origin restored to ${declared_origin}`);
     } else if (stage2Verdict === VERDICT.DISMISSED && authorTipId) {
@@ -441,8 +442,10 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
     // Appellant loses: penalty only (no stake was deducted at filing)
     scoring.applyScoreEvent(appellantTipId, -APPEAL.APPELLANT_STAKE, `Appeal failed on ${ctid}`);
     if (verdict === VERDICT.UPHELD && confirmed_origin) {
+      // Experts confirm UPHELD — verified by experts
       dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
     } else {
+      // Experts confirm DISMISSED — restore pre-dispute status
       dag.updateContentStatus(ctid, preStatus);
     }
     log.info(`Appeal CONFIRMED: ${ctid} — Stage 2 stands, appellant loses ${APPEAL.APPELLANT_STAKE}`);

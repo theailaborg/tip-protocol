@@ -31,34 +31,48 @@ function verifyIncomingTx(tx, dag) {
   try {
     if (tt === TX_TYPES.REGISTER_CONTENT) {
       const identity = dag.getIdentity(d.author_tip_id);
-      if (!identity || !d.signature) return true; // can't verify — accept
+      if (!identity || !d.signature) {
+        log.warn(`Gossip: rejected REGISTER_CONTENT — missing author identity or signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.signature, identity.public_key,
         ["author_tip_id", "origin_code", "content_hash"]);
     }
 
     if (tt === TX_TYPES.REGISTER_IDENTITY) {
       const vp = dag.getVP(d.vp_id);
-      if (!vp || !d.vp_signature) return true;
+      if (!vp || !d.vp_signature) {
+        log.warn(`Gossip: rejected REGISTER_IDENTITY — VP ${d.vp_id} not in registry or missing signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.vp_signature, vp.public_key,
         ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
     }
 
     if (tt === TX_TYPES.CONTENT_VERIFIED) {
       const verifier = dag.getIdentity(d.verifier_tip_id);
-      if (!verifier || !d.signature) return true;
+      if (!verifier || !d.signature) {
+        log.warn(`Gossip: rejected CONTENT_VERIFIED — missing verifier identity or signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.signature, verifier.public_key,
         ["verifier_tip_id", "verdict"]);
     }
 
     if (tt === TX_TYPES.CONTENT_DISPUTED) {
       if (d.auto) {
-        // Auto dispute — verify node signature
         const node = dag.getNode(d.node_id);
-        if (!node || !tx.signature) return true;
+        if (!node || !tx.signature) {
+          log.warn(`Gossip: rejected auto CONTENT_DISPUTED — node ${d.node_id} not in registry or missing signature`);
+          return false;
+        }
         return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
       }
       const disputer = dag.getIdentity(d.disputer_tip_id);
-      if (!disputer || !d.signature) return true;
+      if (!disputer || !d.signature) {
+        log.warn(`Gossip: rejected CONTENT_DISPUTED — missing disputer identity or signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.signature, disputer.public_key,
         ["disputer_tip_id", "reason", "evidence_hash"]);
     }
@@ -66,24 +80,85 @@ function verifyIncomingTx(tx, dag) {
     if (tt === TX_TYPES.REVOKE_VOLUNTARY || tt === TX_TYPES.REVOKE_VP ||
         tt === TX_TYPES.REVOKE_DECEASED || tt === TX_TYPES.REVOKE_DEVICE) {
       const vp = dag.getVP(d.issuing_vp_id);
-      if (!vp || !d.signature) return true;
+      if (!vp || !d.signature) {
+        log.warn(`Gossip: rejected ${tt} — VP ${d.issuing_vp_id} not in registry or missing signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.signature, vp.public_key,
         ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"]);
     }
 
     if (tt === TX_TYPES.VP_REGISTERED) {
       const vp = dag.getVP(d.approving_vp_id);
-      if (!vp || !d.council_signature) return true;
+      if (!vp || !d.council_signature) {
+        log.warn(`Gossip: rejected VP_REGISTERED — approving VP ${d.approving_vp_id} not in registry or missing signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.council_signature, vp.public_key,
         ["name", "jurisdiction_tier", "public_key", "approving_vp_id"]);
     }
 
     if (tt === TX_TYPES.NODE_REGISTERED) {
       const vp = dag.getVP(d.approving_vp_id);
-      if (!vp || !d.council_signature) return true;
+      if (!vp || !d.council_signature) {
+        log.warn(`Gossip: rejected NODE_REGISTERED — approving VP ${d.approving_vp_id} not in registry or missing signature`);
+        return false;
+      }
       return verifyBodySignature(d, d.council_signature, vp.public_key,
         ["name", "public_key", "approving_vp_id"]);
     }
+    // ── SCORE_UPDATE bounds check (defense-in-depth) ────────────────────────
+    if (tt === TX_TYPES.SCORE_UPDATE) {
+      const delta = d.delta || 0;
+      if (delta > 100 || delta < -350) {
+        log.warn(`Gossip: rejected SCORE_UPDATE with out-of-bounds delta ${delta}`);
+        return false;
+      }
+    }
+
+    // ── Node-signed system txs ────────────────────────────────────────────
+    // SCORE_UPDATE, ADJUDICATION_RESULT, APPEAL_RESULT, JURY_SUMMONS,
+    // AI_CLASSIFIER_RESULT, MERKLE_ROOT_PUBLISHED — all signed by the issuing node.
+    const NODE_SIGNED_TYPES = [
+      TX_TYPES.SCORE_UPDATE, TX_TYPES.ADJUDICATION_RESULT, TX_TYPES.APPEAL_RESULT,
+      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED,
+    ];
+    if (NODE_SIGNED_TYPES.includes(tt)) {
+      const nodeId = d.node_id;
+      if (!nodeId || !tx.signature) {
+        log.warn(`Gossip: rejected ${tt} — missing node_id or signature`);
+        return false;
+      }
+      const node = dag.getNode(nodeId);
+      if (!node) {
+        log.warn(`Gossip: rejected ${tt} — node ${nodeId} not in registry`);
+        return false;
+      }
+      return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
+    }
+
+    // ── Juror-signed txs ─────────────────────────────────────────────────
+    if (tt === TX_TYPES.JURY_VOTE_COMMIT) {
+      const juror = dag.getIdentity(d.juror_tip_id);
+      if (!juror || !d.signature) {
+        log.warn(`Gossip: rejected JURY_VOTE_COMMIT — missing juror identity or signature`);
+        return false;
+      }
+      return verifyBodySignature(d, d.signature, juror.public_key, ["juror_tip_id", "commitment"]);
+    }
+
+    if (tt === TX_TYPES.JURY_VOTE_REVEAL) {
+      const juror = dag.getIdentity(d.juror_tip_id);
+      if (!juror || !d.signature) {
+        log.warn(`Gossip: rejected JURY_VOTE_REVEAL — missing juror identity or signature`);
+        return false;
+      }
+      const fields = d.confirmed_origin
+        ? ["juror_tip_id", "vote", "salt", "confirmed_origin"]
+        : ["juror_tip_id", "vote", "salt"];
+      return verifyBodySignature(d, d.signature, juror.public_key, fields);
+    }
+
   } catch (err) {
     log.warn(`Gossip: body sig verification error for ${tt}: ${err.message}`);
     return false;
