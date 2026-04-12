@@ -103,11 +103,16 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const author = dag.getIdentity(rec.author_tip_id);
     const authorValid = !!author && author.status === "active" && !dag.isRevoked(rec.author_tip_id);
 
+    const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
+    const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
+
     return {
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
+      verify_count: verifyCount,
+      dispute_count: disputeCount,
       verification: {
         tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid,
         author_valid: authorValid, author_revoked: dag.isRevoked(rec.author_tip_id), on_dag: true,
@@ -127,6 +132,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     if (dag.isRevoked(verifier_tip_id)) throw { status: 403, error: "Verifier TIP-ID is revoked" };
     if (verifier_tip_id === rec.author_tip_id) throw { status: 403, error: "Cannot verify your own content" };
 
+    if (dag.isRevoked(rec.author_tip_id)) throw { status: 403, error: "Content author has been revoked — verification not allowed" };
     if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted by the author — verification not allowed" };
     if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Content is under dispute — verification blocked until resolved" };
     if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — verification blocked until 24-hour grace period ends" };

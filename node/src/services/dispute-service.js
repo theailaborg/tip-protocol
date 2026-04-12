@@ -19,6 +19,7 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const rec = dag.getContent(ctid);
     if (!rec) throw { status: 404, error: "Content record not found" };
     if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted — dispute not allowed" };
+    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Content is already under dispute — wait for adjudication result" };
     if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — wait for 24-hour grace period" };
 
     validate(body, { disputer_tip_id: { required: true }, signature: { required: true }, reason: { required: true } });

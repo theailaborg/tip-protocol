@@ -1065,12 +1065,12 @@ describe("Gossip Broadcast Wiring", () => {
     expect(res.status).toBe(200);
     expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
 
-    // Duplicate dispute should be rejected (semantic dedup)
+    // Duplicate dispute should be rejected (content already under dispute)
     broadcastCalls = [];
     const res2 = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
-    expect(res2.status).toBe(409);
+    expect(res2.status).toBe(403);
   });
 });
 
@@ -1234,12 +1234,12 @@ describe("Semantic Dedup", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.success).toBe(true);
 
-    // Duplicate dispute
+    // Duplicate dispute — content already under dispute
     const res2 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
-    expect(res2.status).toBe(409);
-    expect(res2.body.error.message).toMatch(/already disputed/i);
+    expect(res2.status).toBe(403);
+    expect(res2.body.error.message).toMatch(/already under dispute/i);
   });
 
   test("9.4 Update origin within 24h succeeds", async () => {
