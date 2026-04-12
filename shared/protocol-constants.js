@@ -166,6 +166,20 @@ const PRESCAN_THRESHOLDS = {
   get ceiling() { return _ps().ceiling; },
 };
 
+const _n = () => get().network;
+const _r = () => get().reputation;
+
+const NETWORK = {
+  get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
+  get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
+  get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },
+};
+
+const REPUTATION = {
+  get CLEAN_PERIOD_DAYS() { return _r().clean_period_days; },
+  get CLEAN_PERIOD_BONUS() { return _r().clean_period_bonus; },
+};
+
 function getTier(score) {
   const t = _t();
   if (score >= t.highly_trusted) return { name: "HIGHLY_TRUSTED", label: "Highly Trusted", color: "#1A8A5C" };
@@ -180,5 +194,5 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, getTier,
+  PRESCAN_THRESHOLDS, NETWORK, REPUTATION, getTier,
 };

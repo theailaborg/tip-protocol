@@ -62,8 +62,10 @@ function loadConfig() {
     preScanEnabled:        true,
     preScanDefaultThreshold: 0.85,
 
-    // ── Merkle root publishing ─────────────────────────────────────────────────
-    merklePublishInterval: 6 * 60 * 60 * 1000,  // every 6 hours
+    // ── Scheduler intervals (node-local tuning, not protocol constants) ────────
+    scoreRecomputeInterval:   parseInt(process.env.TIP_SCORE_RECOMPUTE_MS || 12 * 60 * 60 * 1000, 10),  // 12 hours
+    verdictCheckInterval:     parseInt(process.env.TIP_VERDICT_CHECK_MS   || 5 * 60 * 1000, 10),        // 5 minutes
+    peerHealthInterval:       parseInt(process.env.TIP_PEER_HEALTH_MS     || 30 * 1000, 10),            // 30 seconds
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),

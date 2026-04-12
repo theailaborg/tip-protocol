@@ -22,7 +22,7 @@ const { createApp } = require("./api");
 const { initDAG } = require("./dag");
 const { initScoring } = require("./scoring");
 const { initGossip } = require("./gossip");
-const { scheduledTasks } = require("./scheduler");
+const { createScheduler } = require("./scheduler");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
@@ -103,7 +103,7 @@ async function main() {
   log.info(`Gossip server ready (WebSocket)`);
 
   // 6. Scheduled tasks (Merkle root publish, score recomputation, etc.)
-  scheduledTasks(dag, scoring, gossip, config);
+  const scheduler = createScheduler(dag, scoring, gossip, config);
 
   // 7. Start listening
   server.listen(config.port, () => {
@@ -116,6 +116,7 @@ async function main() {
   function shutdown(signal) {
     log.info(`${signal} received — shutting down gracefully`);
     server.close(() => {
+      try { scheduler.stop(); } catch { }
       try { gossip.close?.(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
