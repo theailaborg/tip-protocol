@@ -68,6 +68,14 @@ function loadConfig() {
     verdictCheckInterval:     parseInt(process.env.TIP_VERDICT_CHECK_MS    || 5 * 60 * 1000, 10),        // 5 minutes
     peerHealthInterval:       parseInt(process.env.TIP_PEER_HEALTH_MS      || 30 * 1000, 10),            // 30 seconds
 
+    // ── Media size limits (node-level, client-side enforcement) ────────────────
+    mediaLimits: {
+      max_video_bytes:  parseInt(process.env.TIP_MAX_VIDEO_BYTES  || 5 * 1024 * 1024 * 1024, 10),   // 5 GB
+      max_image_bytes:  parseInt(process.env.TIP_MAX_IMAGE_BYTES  || 50 * 1024 * 1024, 10),          // 50 MB
+      max_audio_bytes:  parseInt(process.env.TIP_MAX_AUDIO_BYTES  || 500 * 1024 * 1024, 10),         // 500 MB
+      max_text_bytes:   parseInt(process.env.TIP_MAX_TEXT_BYTES   || 10 * 1024 * 1024, 10),          // 10 MB
+    },
+
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),
 

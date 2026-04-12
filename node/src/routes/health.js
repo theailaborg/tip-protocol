@@ -2,6 +2,7 @@
 
 const express = require("express");
 const { TX_TYPES, PROTOCOL } = require("../../../shared/constants");
+const PC = require("../../../shared/protocol-constants");
 const { asyncHandler } = require("../middleware/error-handler");
 
 function createRouter({ dag, scoring, config, broadcast }) {
@@ -57,6 +58,13 @@ function createRouter({ dag, scoring, config, broadcast }) {
 
   router.get("/node/registry", (req, res) => {
     res.json({ nodes: dag.getAllNodes() });
+  });
+
+  router.get("/constants", (req, res) => {
+    res.json({
+      ...PC.get(),
+      media_limits: config.mediaLimits,
+    });
   });
 
   router.get("/node/:nodeId", asyncHandler((req, res) => {
