@@ -34,7 +34,7 @@ FROM node:20-alpine AS runtime
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"
 LABEL org.opencontainers.image.description="Trust Identity Protocol -- full node, REST API, DAG, trust scoring"
-LABEL org.opencontainers.image.version="2.2.0"
+LABEL org.opencontainers.image.version="2.0.0"
 LABEL org.opencontainers.image.authors="Dinesh Mendhe <chairman@theailab.org>"
 LABEL org.opencontainers.image.vendor="The AI Lab Intelligence Unobscured, Inc."
 LABEL org.opencontainers.image.url="https://theailab.org"
@@ -55,7 +55,8 @@ COPY node/src/         ./node/src/
 COPY node/package.json ./node/package.json
 COPY shared/           ./shared/
 COPY circuits/         ./circuits/
-COPY browser-extension/*.zip ./browser-extension/
+# Copy browser extension zip if present (glob trick: bracket makes COPY no-op if missing)
+COPY browser-extensio[n]/*.zip ./browser-extension/
 COPY package.json      ./package.json
 
 # Copy genesis data (seed.db for first boot auto-copy)

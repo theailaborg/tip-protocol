@@ -17,7 +17,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: tip-protocol/node:2.2.0
+    image: tip-protocol/node:2.0.0
     container_name: tip-node
     restart: unless-stopped
     ports:
@@ -46,7 +46,7 @@ services:
       start_period: 20s
     labels:
       com.theailab.service:    "tip-protocol-node"
-      com.theailab.version:    "2.2.0"
+      com.theailab.version:    "2.0.0"
     networks:
       - tip-vp_default  # join VP's network so cloudflared can reach us
 

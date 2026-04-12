@@ -63,9 +63,10 @@ function loadConfig() {
     preScanDefaultThreshold: 0.85,
 
     // ── Scheduler intervals (node-local tuning, not protocol constants) ────────
-    scoreRecomputeInterval:   parseInt(process.env.TIP_SCORE_RECOMPUTE_MS || 12 * 60 * 60 * 1000, 10),  // 12 hours
-    verdictCheckInterval:     parseInt(process.env.TIP_VERDICT_CHECK_MS   || 5 * 60 * 1000, 10),        // 5 minutes
-    peerHealthInterval:       parseInt(process.env.TIP_PEER_HEALTH_MS     || 30 * 1000, 10),            // 30 seconds
+    scoreRecomputeInterval:   parseInt(process.env.TIP_SCORE_RECOMPUTE_MS  || 12 * 60 * 60 * 1000, 10),  // 12 hours
+    cleanRecordInterval:      parseInt(process.env.TIP_CLEAN_RECORD_MS     || 24 * 60 * 60 * 1000, 10),  // 24 hours
+    verdictCheckInterval:     parseInt(process.env.TIP_VERDICT_CHECK_MS    || 5 * 60 * 1000, 10),        // 5 minutes
+    peerHealthInterval:       parseInt(process.env.TIP_PEER_HEALTH_MS      || 30 * 1000, 10),            // 30 seconds
 
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),
