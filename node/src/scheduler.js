@@ -94,7 +94,8 @@ function createScheduler(dag, scoring, gossip, config) {
   // 3. Clean-record bonus (genesis: clean_period_days — check runs daily)
   register("clean-record", config.cleanRecordInterval, () => {
     const cutoff = new Date(Date.now() - REPUTATION.CLEAN_PERIOD_DAYS * 24 * 3600000).toISOString();
-    const eligible = dag.getCleanRecordEligible(cutoff);
+    const eligible = dag.getCleanRecordEligible(cutoff)
+      .filter(tipId => !dag.isRevoked(tipId));
     for (const tipId of eligible) {
       scoring.applyScoreEvent(tipId, REPUTATION.CLEAN_PERIOD_BONUS, "clean_record_bonus");
     }

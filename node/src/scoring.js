@@ -43,9 +43,8 @@ function initScoring(dag, config) {
 
     let score = 500;
     let offenseCount = 0;
+    let frozen = false; // true after any revocation — blocks positive deltas
     const history = [];
-    // lastCleanStart tracking removed — clean record bonus is now
-    // applied by the scheduler as a SCORE_UPDATE tx, not computed here.
 
     for (const tx of txs) {
       let delta = 0;
@@ -103,11 +102,30 @@ function initScoring(dag, config) {
         case TX_TYPES.REVOKE_DEVICE:
           delta = SCORE_EVENTS.DEVICE_COMPROMISE_PENDING.delta;
           reason = "Device compromise pending re-verification";
+          frozen = true;
+          break;
+
+        case TX_TYPES.REVOKE_VP:
+          reason = "Revoked by VP (fraud/violation)";
+          frozen = true;
+          break;
+
+        case TX_TYPES.REVOKE_VOLUNTARY:
+          reason = "Voluntary revocation";
+          frozen = true;
+          break;
+
+        case TX_TYPES.REVOKE_DECEASED:
+          reason = "Deceased";
+          frozen = true;
           break;
 
         default:
           break;
       }
+
+      // Frozen: block positive deltas after revocation (penalties still apply)
+      if (frozen && delta > 0) delta = 0;
 
       if (delta !== 0) {
         score = Math.max(0, Math.min(1000, score + delta));
