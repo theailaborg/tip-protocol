@@ -245,6 +245,11 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
     : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? VERDICT.CONSERVATIVE_LABEL
       : VERDICT.UPHELD;
 
+  // Compute author penalty before writing tx (so we can store it for appeal reversal)
+  const authorScoreDelta = (verdict === VERDICT.UPHELD && authorTipId)
+    ? scoring.getAdjudicationDelta(authorTipId, { declared_origin, confirmed_origin, verdict })
+    : 0;
+
   // Write ADJUDICATION_RESULT tx
   const resultTx = _nodeSignedAuto({
     tx_type: TX_TYPES.ADJUDICATION_RESULT,
@@ -257,6 +262,7 @@ function tallyVerdictAndApply(ctid, reveals, summons, dag, scoring, config) {
       confirmed_origin,
       reason: disputeData.reason,
       author_tip_id: authorTipId,
+      author_score_delta: authorScoreDelta,
       match_count: matchCount,
       mismatch_count: mismatchCount,
       abstain_count: abstainCount,
@@ -399,7 +405,8 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
   const preStatus = disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED;
 
   if (overturned && appellantTipId) {
-    scoring.applyScoreEvent(appellantTipId, APPEAL.APPELLANT_STAKE + APPEAL.OVERTURN_BONUS, `Appeal overturned on ${ctid}`);
+    // Appellant wins: bonus only (no stake was deducted at filing)
+    scoring.applyScoreEvent(appellantTipId, APPEAL.OVERTURN_BONUS, `Appeal overturned on ${ctid}`);
 
     // Reverse disputer's Stage 2 effect
     const disputerTipId = disputeData.disputer_tip_id;
@@ -412,24 +419,30 @@ function applyAppealVerdict(ctid, reveals, summons, dag, scoring, config) {
     }
 
     if (stage2Verdict === VERDICT.UPHELD && authorTipId) {
-      // Stage 2 penalized author → reverse: restore original origin + pre-dispute status
-      scoring.computeScore(authorTipId);
+      // Stage 2 penalized author → reverse using exact delta stored in ADJUDICATION_RESULT tx
+      const stage2Delta = adjTxs[0].data.author_score_delta || 0;
+      if (stage2Delta < 0) {
+        scoring.applyScoreEvent(authorTipId, -stage2Delta, `Appeal overturned: Stage 2 penalty reversed on ${ctid}`);
+      }
       dag.updateContentOrigin(ctid, declared_origin, preStatus);
-      log.info(`Appeal OVERTURNED: ${ctid} — penalty reversed, origin restored to ${declared_origin}, status to ${preStatus}`);
-    } else if (stage2Verdict === VERDICT.DISMISSED) {
-      // Stage 2 dismissed → experts say UPHELD: apply penalty, update origin
+      log.info(`Appeal OVERTURNED: ${ctid} — author penalty reversed (+${-stage2Delta}), origin restored to ${declared_origin}`);
+    } else if (stage2Verdict === VERDICT.DISMISSED && authorTipId) {
+      // Stage 2 dismissed → experts say UPHELD: apply author penalty now
+      const appealDelta = scoring.getAdjudicationDelta(authorTipId, { declared_origin, confirmed_origin, verdict });
+      if (appealDelta < 0) {
+        scoring.applyScoreEvent(authorTipId, appealDelta, `Appeal overturned: mismatch confirmed on ${ctid}`);
+      }
       if (confirmed_origin) {
         dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
       }
-      log.info(`Appeal OVERTURNED: ${ctid} — Stage 2 dismissal reversed, experts confirm mismatch`);
+      log.info(`Appeal OVERTURNED: ${ctid} — Stage 2 dismissal reversed, author penalized (${appealDelta}), origin → ${confirmed_origin}`);
     }
   } else if (!overturned && appellantTipId) {
+    // Appellant loses: penalty only (no stake was deducted at filing)
     scoring.applyScoreEvent(appellantTipId, -APPEAL.APPELLANT_STAKE, `Appeal failed on ${ctid}`);
     if (verdict === VERDICT.UPHELD && confirmed_origin) {
-      // Experts confirm UPHELD — verified by experts
       dag.updateContentOrigin(ctid, confirmed_origin, CONTENT_STATUS.VERIFIED);
     } else {
-      // Experts confirm DISMISSED — restore pre-dispute status
       dag.updateContentStatus(ctid, preStatus);
     }
     log.info(`Appeal CONFIRMED: ${ctid} — Stage 2 stands, appellant loses ${APPEAL.APPELLANT_STAKE}`);

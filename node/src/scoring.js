@@ -87,12 +87,17 @@ function initScoring(dag, config) {
           }
           break;
 
+        case TX_TYPES.APPEAL_RESULT:
+          // If appeal overturned a Stage 2 UPHELD → that offense no longer counts
+          if (tx.data.overturned && tx.data.stage2_verdict === VERDICT.UPHELD && offenseCount > 0) {
+            offenseCount--;
+          }
+          // delta = 0 here — appeal score effects are applied via SCORE_UPDATE txs
+          break;
+
         case TX_TYPES.SCORE_UPDATE:
           delta = tx.data.delta || 0;
           reason = tx.data.reason || "Score update";
-          if (delta > 0 && tx.data.type === "appeal_restore") {
-            reason = "Successful appeal (+50% restored)";
-          }
           break;
 
         case TX_TYPES.REVOKE_DEVICE:
@@ -226,12 +231,22 @@ function initScoring(dag, config) {
     return s.score >= 700;
   }
 
+  /**
+   * Compute what the adjudication penalty would be for a given author + verdict data.
+   * Used by jury.js to store exact delta in ADJUDICATION_RESULT tx.
+   */
+  function getAdjudicationDelta(authorTipId, verdictData) {
+    const { offense_count } = computeScore(authorTipId);
+    return _adjudicationDelta(verdictData, offense_count);
+  }
+
   return {
     computeScore,
     applyScoreEvent,
     getScore,
     recomputeAll,
     isJuryEligible,
+    getAdjudicationDelta,
   };
 }
 
