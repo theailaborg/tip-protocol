@@ -183,6 +183,9 @@ class MemoryStore {
   }
   certificateCount() { return this._certs.size; }
 
+  // ── Transactions (DB-level) ────────────────────────────────────────────
+  runInTransaction(fn) { return fn(); } // no-op wrapper for in-memory store
+
   // ── Persistent Mempool ────────────────────────────────────────────────
   saveMempoolTx(tx) { this._mempool.set(tx.tx_id, tx); }
   getMempoolTxs() { return [...this._mempool.values()]; }
@@ -645,6 +648,16 @@ class SQLiteStore {
     return this._stmts.countMempool.get().n;
   }
 
+  /**
+   * Run a function inside a SQLite transaction (BEGIN → fn() → COMMIT).
+   * If fn throws, the transaction is rolled back. Crash-safe.
+   * @param {Function} fn  Function to run inside the transaction
+   * @returns {*} Return value of fn
+   */
+  runInTransaction(fn) {
+    return this.db.transaction(fn)();
+  }
+
   close() {
     try { this.db.close(); } catch { /* ignore */ }
   }
@@ -768,6 +781,9 @@ function initDAG(config) {
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
     mempoolCount: () => store.mempoolCount(),
+
+    // ── DB Transactions ──────────────────────────────────────────────────
+    runInTransaction: (fn) => store.runInTransaction(fn),
 
     close: () => store.close(),
   };

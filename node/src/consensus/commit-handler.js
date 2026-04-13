@@ -45,47 +45,55 @@ function createCommitHandler({ dag, scoring, config }) {
    * @returns {{ committed: number, dropped: number }}
    */
   function commitOrderedTxs(orderedTxs, round) {
-    let committed = 0;
+    // Phase 1: Validate all txs BEFORE writing anything
+    const validated = [];
     let dropped = 0;
 
     for (const tx of orderedTxs) {
-      try {
-        // Skip invalid txs
-        if (!tx || !tx.tx_id || !tx.tx_type) {
-          dropped++;
-          continue;
-        }
-
-        // Skip if already in DAG (dedup — same tx may appear in multiple certificates)
-        if (dag.getTx(tx.tx_id)) {
-          continue;
-        }
-
-        // Validate tx structure and signatures before committing
-        const validation = validateTransaction(tx, dag, { skipState: true });
-        if (!validation.valid) {
-          log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — validation: ${validation.errors.join("; ")}`);
-          dropped++;
-          continue;
-        }
-
-        // Verify body signatures (same checks as gossip verifyIncomingTx)
-        if (!_verifyTxSignature(tx)) {
-          log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature verification failed`);
-          dropped++;
-          continue;
-        }
-
-        // Write to DAG
-        dag.addTx(tx);
-
-        // Update derived state based on tx type
-        _applyDerivedState(tx);
-
-        committed++;
-      } catch (err) {
-        log.warn(`Round ${round}: dropped tx ${tx.tx_id?.slice(0, 16)} (${tx.tx_type}): ${err.message}`);
+      if (!tx || !tx.tx_id || !tx.tx_type) {
         dropped++;
+        continue;
+      }
+
+      // Skip if already in DAG
+      if (dag.getTx(tx.tx_id)) continue;
+
+      // Validate structure
+      const validation = validateTransaction(tx, dag, { skipState: true });
+      if (!validation.valid) {
+        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${validation.errors.join("; ")}`);
+        dropped++;
+        continue;
+      }
+
+      // Verify signature
+      if (!_verifyTxSignature(tx)) {
+        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature failed`);
+        dropped++;
+        continue;
+      }
+
+      validated.push(tx);
+    }
+
+    // Phase 2: Write all validated txs in one atomic SQLite transaction
+    let committed = 0;
+    if (validated.length > 0) {
+      try {
+        dag.runInTransaction(() => {
+          for (const tx of validated) {
+            dag.addTx(tx);
+            _applyDerivedState(tx);
+            committed++;
+          }
+          // Remove committed txs from mempool in the same transaction
+          const txIds = validated.map(t => t.tx_id);
+          dag.deleteMempoolTxs(txIds);
+        });
+      } catch (err) {
+        log.error(`Round ${round}: transaction commit failed — rolled back ${validated.length} txs: ${err.message}`);
+        committed = 0;
+        dropped += validated.length;
       }
     }
 
