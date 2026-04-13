@@ -23,6 +23,9 @@ const { initDAG } = require("./dag");
 const { initScoring } = require("./scoring");
 const { initGossip } = require("./gossip");
 const { createScheduler } = require("./scheduler");
+const { initConsensus } = require("./consensus");
+const { createNetworkNode } = require("./network/node");
+const { loadTypes } = require("./network/proto");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
@@ -90,39 +93,86 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 3. Build Express app (gossip ref injected after init — circular dep: gossip needs server needs app)
-  const gossipRef = { current: null };
-  const app = createApp({ dag, scoring, config, gossip: gossipRef });
+  // 3. Load Protobuf schemas
+  await loadTypes();
 
-  // 4. HTTP server
+  // 4. Build Express app
+  const gossipRef = { current: null };
+  const consensusRef = { current: null };
+  const app = createApp({ dag, scoring, config, gossip: gossipRef, consensus: consensusRef });
+
+  // 5. HTTP server
   const server = http.createServer(app);
 
-  // 5. WebSocket gossip layer
+  // 6. WebSocket gossip layer (legacy — will be replaced by consensus layer)
   const gossip = initGossip(server, dag, config);
   gossipRef.current = gossip;
-  log.info(`Gossip server ready (WebSocket)`);
+  log.info("Gossip server ready (WebSocket — legacy)");
 
-  // 6. Scheduled tasks (Merkle root publish, score recomputation, etc.)
+  // 7. libp2p network node + Narwhal/Bullshark consensus
+  const p2pPort = parseInt(process.env.TIP_P2P_PORT || "4001", 10);
+  const bootstrapPeers = (process.env.TIP_BOOTSTRAP_PEERS || "").split(",").map(s => s.trim()).filter(Boolean);
+  const enableMdns = process.env.TIP_ENABLE_MDNS !== "false";
+
+  let network = null;
+  let consensus = null;
+
+  try {
+    network = await createNetworkNode({
+      port: p2pPort,
+      bootstrapPeers,
+      enableMdns,
+      handlers: {},  // handlers wired below after consensus init
+    });
+
+    consensus = initConsensus({ dag, scoring, config, network });
+    consensusRef.current = consensus;
+
+    // Wire GossipSub topic handlers to consensus
+    const { TOPICS } = require("./network/node");
+    const pubsub = network.node.services.pubsub;
+    pubsub.addEventListener("message", (event) => {
+      const { topic, data } = event.detail;
+      try {
+        if (topic === TOPICS.MEMPOOL) consensus.handlers.onBatch(data);
+        else if (topic === TOPICS.CONSENSUS) consensus.handlers.onAck(data);
+        else if (topic === TOPICS.CERTIFICATES) consensus.handlers.onCertificate(data);
+      } catch (err) {
+        log.error(`Consensus message error on ${topic}: ${err.message}`);
+      }
+    });
+
+    // Start consensus rounds
+    consensus.start();
+    log.info(`Consensus ready: Narwhal + Bullshark on port ${p2pPort}`);
+  } catch (err) {
+    log.warn(`Consensus layer failed to start: ${err.message}`);
+    log.warn("Node running without consensus — single-node mode only");
+  }
+
+  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
   const scheduler = createScheduler(dag, scoring, gossip, config);
 
-  // 7. Start listening
+  // 9. Start listening
   server.listen(config.port, () => {
     log.info(`Node listening on http://0.0.0.0:${config.port}`);
     log.info(`REST API   : http://0.0.0.0:${config.port}/v1/`);
     log.info(`Health     : http://0.0.0.0:${config.port}/health`);
+    if (network) log.info(`P2P        : ${network.multiaddrs().join(", ")}`);
   });
 
   // Graceful shutdown
   function shutdown(signal) {
     log.info(`${signal} received — shutting down gracefully`);
-    server.close(() => {
+    server.close(async () => {
       try { scheduler.stop(); } catch { }
+      try { if (consensus) consensus.stop(); } catch { }
+      try { if (network) await network.stop(); } catch { }
       try { gossip.close?.(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
       process.exit(0);
     });
-    // Force exit if graceful shutdown takes too long
     setTimeout(() => {
       log.error("Graceful shutdown timed out — forcing exit");
       process.exit(1);

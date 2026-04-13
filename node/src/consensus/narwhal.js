@@ -98,6 +98,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Phase 1: Create batch from mempool and broadcast
     const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+
+    // If no txs AND no connected peers, wait before retrying — avoids empty certificate spam
+    if (txs.length === 0 && network.peerCount() === 0) {
+      log.debug(`Round ${_currentRound}: idle — no txs, no peers`);
+      _roundTimer = setTimeout(() => { _roundTimer = null; if (_running) _beginRound(); }, CONSENSUS.ROUND_TIMEOUT_MS);
+      return;
+    }
+
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);
 
@@ -388,9 +396,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Advance
     _currentRound++;
 
-    // Start next round after brief settle
+    // Start next round after minimum interval (prevents spinning on empty rounds)
     if (_running) {
-      setImmediate(() => _beginRound());
+      setTimeout(() => _beginRound(), CONSENSUS.ROUND_TIMEOUT_MS);
     }
   }
 
