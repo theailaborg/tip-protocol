@@ -88,6 +88,7 @@ beforeAll(async () => {
     nodePublicKey: nodeKp.publicKey,
     rateLimitWindow: 60 * 1000,
     rateLimitMax: 10000,
+    mediaLimits: require(path.join(SHARED, "constants")).MEDIA_LIMITS,
   };
 
   dag = initDAG({ dbPath: ":memory:" });

@@ -9,7 +9,7 @@ const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constant
 const { validateTransaction } = require("../validators/tx-validator");
 const { withTxId } = require("./helpers");
 const { preScanContent } = require("./helpers");
-const { validate } = require("../middleware/validate");
+const { validate, validateContentSize } = require("../middleware/validate");
 const { log } = require("../logger");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
@@ -23,7 +23,8 @@ function createContentService({ dag, scoring, config, broadcast }) {
       content: { required: true },
       signature: { required: true },
     });
-    const { author_tip_id, origin_code, content, signature } = body;
+    const { author_tip_id, origin_code, content, content_type, signature } = body;
+    validateContentSize(content, content_type, config.mediaLimits);
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };

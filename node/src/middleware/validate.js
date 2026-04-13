@@ -49,4 +49,33 @@ function validate(body, schema) {
   }
 }
 
-module.exports = { validate };
+/**
+ * Validate content size against media limits from config.
+ * Content type must be provided by the client — node does not detect type.
+ * For text: raw content is sent, node hashes and verifies.
+ * For media: raw content will be sent (future), node hashes and verifies.
+ *
+ * @param {string|Buffer} content      Raw content
+ * @param {string}        contentType  "video" | "audio" | "image" | "text"
+ * @param {Object}        mediaLimits  config.mediaLimits
+ */
+function validateContentSize(content, contentType, mediaLimits) {
+  const bytes = Buffer.byteLength(content);
+  const type = contentType || "text";
+  const VALID_TYPES = ["video", "audio", "image", "text"];
+  if (!VALID_TYPES.includes(type)) {
+    throw { status: 400, error: `content_type must be one of: ${VALID_TYPES.join(", ")}` };
+  }
+  const limitMap = {
+    video: mediaLimits.max_video_bytes,
+    audio: mediaLimits.max_audio_bytes,
+    image: mediaLimits.max_image_bytes,
+    text: mediaLimits.max_text_bytes,
+  };
+  const maxBytes = limitMap[type];
+  if (bytes > maxBytes) {
+    throw { status: 400, error: `Content exceeds ${type} size limit (${bytes} bytes, max ${maxBytes})` };
+  }
+}
+
+module.exports = { validate, validateContentSize };

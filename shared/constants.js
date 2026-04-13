@@ -87,6 +87,14 @@ const TX_TYPES = Object.freeze({
 });
 
 
+// ─── Media size limits (defaults — node config can override via env) ─────────
+const MEDIA_LIMITS = Object.freeze({
+  max_video_bytes:  5 * 1024 * 1024 * 1024,   // 5 GB
+  max_image_bytes:  50 * 1024 * 1024,          // 50 MB
+  max_audio_bytes:  500 * 1024 * 1024,         // 500 MB
+  max_text_bytes:   10 * 1024 * 1024,          // 10 MB
+});
+
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
 const SCORE_DISPLAY = Object.freeze({
   FULL_PUBLIC: "FULL_PUBLIC",
@@ -163,6 +171,7 @@ module.exports = {
   TX_TYPES,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
+  MEDIA_LIMITS,
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,
