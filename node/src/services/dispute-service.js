@@ -13,7 +13,7 @@ const log = getLogger("tip.dispute");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
-function createDisputeService({ dag, scoring, config, broadcast, submitTx, submitBatch }) {
+function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
 
   function fileDispute(ctid, body) {
     const rec = dag.getContent(ctid);

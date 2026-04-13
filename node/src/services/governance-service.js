@@ -8,7 +8,7 @@ const { validate } = require("../middleware/validate");
 const { getFoundingVP } = require("../genesis");
 const { log } = require("../logger");
 
-function createGovernanceService({ dag, scoring, config, broadcast, submitTx }) {
+function createGovernanceService({ dag, scoring, config, submitTx }) {
 
   function registerVP(body) {
     validate(body, { name: { required: true }, public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });

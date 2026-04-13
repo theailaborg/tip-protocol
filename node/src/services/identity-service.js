@@ -10,7 +10,7 @@ const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createIdentityService({ dag, scoring, config, broadcast, submitTx }) {
+function createIdentityService({ dag, scoring, config, submitTx }) {
 
   async function register(body) {
     validate(body, {

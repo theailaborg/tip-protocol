@@ -940,22 +940,14 @@ describe("Integration: Full Registration Flow", () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe("Gossip Broadcast Wiring", () => {
-  let gossipApp, gossipDag, gossipScoring, broadcastCalls;
+  let gossipApp, gossipDag, gossipScoring;
   let gFoundingVpId, gFoundingVpKp;
 
   beforeAll(async () => {
-    broadcastCalls = [];
-    const mockGossipRef = {
-      current: {
-        broadcast: (tx) => { broadcastCalls.push(tx); },
-      },
-    };
-
-    // Fresh DAG so no collisions with earlier test blocks
     gossipDag = initDAG({ dbPath: ":memory:" });
     gossipScoring = initScoring(gossipDag, TEST_CONFIG);
 
-    // Register test node in gossip DAG
+    // Register test node
     gossipDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: new Date().toISOString() });
 
     gFoundingVpKp = generateMLDSAKeypair();
@@ -964,7 +956,7 @@ describe("Gossip Broadcast Wiring", () => {
     gossipDag.saveVP({ ...allVps[0], public_key: gFoundingVpKp.publicKey });
 
     const gossipConsensus = createTestConsensus(gossipDag, gossipScoring, TEST_CONFIG);
-    gossipApp = createApp({ dag: gossipDag, scoring: gossipScoring, config: TEST_CONFIG, gossip: mockGossipRef, consensus: gossipConsensus });
+    gossipApp = createApp({ dag: gossipDag, scoring: gossipScoring, config: TEST_CONFIG, consensus: gossipConsensus });
   });
 
   afterAll(() => {
@@ -972,7 +964,7 @@ describe("Gossip Broadcast Wiring", () => {
   });
 
   beforeEach(() => {
-    broadcastCalls = [];
+    // (gossip broadcast removed — txs go through consensus)
   });
 
   test("8.1 VP register triggers gossip broadcast", async () => {
@@ -1028,7 +1020,7 @@ describe("Gossip Broadcast Wiring", () => {
     const tipId = idRes.body.data.tip_id;
     const authorPrivKey = kp83.privateKey;
 
-    broadcastCalls = [];
+    // (gossip broadcast removed — txs go through consensus)
     const content = "Gossip broadcast wiring test content article.";
     const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
     const res = await request(gossipApp)
@@ -1064,7 +1056,7 @@ describe("Gossip Broadcast Wiring", () => {
       .send({ ...idFields, vp_signature: signBody(idFields, rVpKp.privateKey) });
     const rTipId = idRes.body.data.tip_id;
 
-    broadcastCalls = [];
+    // (gossip broadcast removed — txs go through consensus)
     const revokeFields = {
       tx_type: TX_TYPES.REVOKE_VOLUNTARY, tip_id: rTipId,
       reason_code: "gossip_test", issuing_vp_id: rVpId,
@@ -1098,7 +1090,7 @@ describe("Gossip Broadcast Wiring", () => {
       .send({ author_tip_id: dTipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields2, dAuthorPriv) });
     const ctid = cRes.body.data.ctid;
 
-    broadcastCalls = [];
+    // (gossip broadcast removed — txs go through consensus)
     const disputeFields = { disputer_tip_id: dTipId, reason: "gossip test" };
     const res = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
@@ -1109,7 +1101,7 @@ describe("Gossip Broadcast Wiring", () => {
     expect(disputedContent.status).toBe("disputed");
 
     // Duplicate dispute should be rejected (content already under dispute)
-    broadcastCalls = [];
+    // (gossip broadcast removed — txs go through consensus)
     const res2 = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });

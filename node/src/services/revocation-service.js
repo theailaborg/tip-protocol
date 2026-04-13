@@ -7,7 +7,7 @@ const { withTxId, nodeSignedAuto } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createRevocationService({ dag, scoring, config, broadcast, submitTx, submitBatch }) {
+function createRevocationService({ dag, scoring, config, submitTx, submitBatch }) {
 
   function list(since) {
     const revocations = dag.getRevocations(since || undefined);

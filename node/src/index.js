@@ -21,7 +21,6 @@ const http = require("http");
 const { createApp } = require("./api");
 const { initDAG } = require("./dag");
 const { initScoring } = require("./scoring");
-const { initGossip } = require("./gossip");
 const { createScheduler } = require("./scheduler");
 const { initConsensus } = require("./consensus");
 const { createNetworkNode } = require("./network/node");
@@ -97,19 +96,13 @@ async function main() {
   await loadTypes();
 
   // 4. Build Express app
-  const gossipRef = { current: null };
   const consensusRef = { current: null };
-  const app = createApp({ dag, scoring, config, gossip: gossipRef, consensus: consensusRef });
+  const app = createApp({ dag, scoring, config, consensus: consensusRef });
 
   // 5. HTTP server
   const server = http.createServer(app);
 
-  // 6. WebSocket gossip layer (legacy — will be replaced by consensus layer)
-  const gossip = initGossip(server, dag, config);
-  gossipRef.current = gossip;
-  log.info("Gossip server ready (WebSocket — legacy)");
-
-  // 7. libp2p network node + Narwhal/Bullshark consensus
+  // 6. libp2p network node + Narwhal/Bullshark consensus
   const p2pPort = parseInt(process.env.TIP_P2P_PORT || "4001", 10);
   const bootstrapPeers = (process.env.TIP_BOOTSTRAP_PEERS || "").split(",").map(s => s.trim()).filter(Boolean);
   const enableMdns = process.env.TIP_ENABLE_MDNS !== "false";
@@ -168,7 +161,7 @@ async function main() {
   }
 
   // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
-  const scheduler = createScheduler(dag, scoring, gossip, config);
+  const scheduler = createScheduler(dag, scoring, network, config);
 
   // 9. Start listening
   server.listen(config.port, () => {
@@ -185,7 +178,6 @@ async function main() {
       try { scheduler.stop(); } catch { }
       try { if (consensus) consensus.stop(); } catch { }
       try { if (network) await network.stop(); } catch { }
-      try { gossip.close?.(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
       process.exit(0);

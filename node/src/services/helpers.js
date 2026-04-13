@@ -24,17 +24,6 @@ function nodeSignedAuto(txBody, config) {
 }
 
 /**
- * Broadcast tx via gossip if available.
- */
-function createBroadcast(gossipRef) {
-  return (tx) => {
-    if (!gossipRef || !gossipRef.current) return;
-    try { gossipRef.current.broadcast(tx); }
-    catch (err) { log.error(`Gossip broadcast failed for tx ${tx.tx_id}: ${err.message}`); }
-  };
-}
-
-/**
  * AI pre-scan for content origin mismatch detection.
  */
 function preScanContent(content, originCode, creatorHistory) {
@@ -122,7 +111,6 @@ function createTxSubmitter(consensusRef) {
 module.exports = {
   withTxId,
   nodeSignedAuto,
-  createBroadcast,
   createTxSubmitter,
   preScanContent,
   computeMerkleRoot,

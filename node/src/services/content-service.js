@@ -14,7 +14,7 @@ const { log } = require("../logger");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
-function createContentService({ dag, scoring, config, broadcast, submitTx }) {
+function createContentService({ dag, scoring, config, submitTx }) {
 
   function register(body) {
     validate(body, {

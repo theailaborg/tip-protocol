@@ -19,7 +19,7 @@ const morgan = require("morgan");
 
 const { errorHandler } = require("./middleware/error-handler");
 const { requestId } = require("./middleware/request-id");
-const { createBroadcast, createTxSubmitter } = require("./services/helpers");
+const { createTxSubmitter } = require("./services/helpers");
 
 // Services
 const { createIdentityService } = require("./services/identity-service");
@@ -37,10 +37,9 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 
-function createApp({ dag, scoring, config, gossip: gossipRef = null, consensus: consensusRef = null }) {
-  const broadcast = createBroadcast(gossipRef);
+function createApp({ dag, scoring, config, consensus: consensusRef = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
-  const ctx = { dag, scoring, config, broadcast, submitTx, submitBatch };
+  const ctx = { dag, scoring, config, submitTx, submitBatch };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
