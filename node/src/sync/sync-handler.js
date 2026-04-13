@@ -42,7 +42,13 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.consensus   Consensus orchestrator (for commit handler)
  * @returns {Object} Sync handler
  */
-function createSyncHandler({ dag, network }) {
+/**
+ * @param {Object} options
+ * @param {Object} options.dag         DAG store
+ * @param {Object} options.network     libp2p network node
+ * @param {Function} options.isAuthorizedPeer  (peerId) => boolean
+ */
+function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
   // Build Merkle tree from existing certificates
   const _merkle = _buildMerkleFromDAG();
 
@@ -91,11 +97,17 @@ function createSyncHandler({ dag, network }) {
       return;
     }
 
-    await network.handle(SYNC_PROTOCOL, async ({ stream }) => {
+    await network.handle(SYNC_PROTOCOL, async ({ stream, connection }) => {
+      const remotePeer = connection?.remotePeer?.toString() || "unknown";
       try {
-        await _handleIncomingSync(stream);
+        if (!isAuthorizedPeer(remotePeer)) {
+          log.warn(`Sync: rejected request from unauthorized peer ${remotePeer}`);
+          try { stream.close(); } catch { /* ignore */ }
+          return;
+        }
+        await _handleIncomingSync(stream, remotePeer);
       } catch (err) {
-        log.error(`Sync handler error: ${err.message}`);
+        log.error(`Sync handler error from ${remotePeer}: ${err.message}`);
         try { stream.close(); } catch { /* ignore */ }
       }
     });
@@ -106,7 +118,7 @@ function createSyncHandler({ dag, network }) {
   /**
    * Handle an incoming sync request — send certificates the peer is missing.
    */
-  async function _handleIncomingSync(stream) {
+  async function _handleIncomingSync(stream, remotePeer) {
     // Read SyncRequest from stream
     const chunks = [];
     for await (const chunk of stream.source) {

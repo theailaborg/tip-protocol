@@ -40,7 +40,7 @@ const log = getLogger("tip.consensus");
  * @param {Object} options.network   libp2p network node (from network/node.js)
  * @returns {Object} Consensus interface
  */
-function initConsensus({ dag, scoring, config, network }) {
+function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () => false }) {
   // ── Helper: get registered node public key ────────────────────────────────
   function getNodeKey(nodeId) {
     const node = dag.getNode(nodeId);
@@ -68,7 +68,7 @@ function initConsensus({ dag, scoring, config, network }) {
   const commitHandler = createCommitHandler({ dag, scoring, config });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
-  const syncHandler = createSyncHandler({ dag, network });
+  const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
 
   // ── Create Bullshark (ordering) ───────────────────────────────────────────
   const bullshark = createBullshark({

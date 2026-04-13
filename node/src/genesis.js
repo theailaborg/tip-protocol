@@ -195,6 +195,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       certificate_max_bytes: 1048576,     // 1 MB max certificate size
       sync_batch_size: 100,               // certificates per sync response batch
       ordered_hash_cache_size: 10000,     // max cert hashes kept in Bullshark ordering dedup
+      max_msgs_per_peer_per_sec: 100,    // rate limit: max GossipSub messages per peer per second
     },
     network: {
       chain_id: "tip-mainnet-v2",

@@ -17,6 +17,7 @@
 
 "use strict";
 
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.network");
@@ -136,10 +137,37 @@ async function createNetworkNode(options = {}) {
   pubsub.subscribe(TOPICS.CONSENSUS);
   log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
 
-  // Handle incoming messages
+  // Per-peer rate limiting
+  const _peerMsgCounts = new Map();
+
+  function _checkRateLimit(peerId) {
+    const now = Date.now();
+    let entry = _peerMsgCounts.get(peerId);
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 0, resetAt: now + 1000 };
+      _peerMsgCounts.set(peerId, entry);
+    }
+    entry.count++;
+    return entry.count <= CONSENSUS.MAX_MSGS_PER_PEER_PER_SEC;
+  }
+
+  // Cleanup stale rate limit entries
+  const _rateLimitCleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [id, entry] of _peerMsgCounts) {
+      if (now >= entry.resetAt + 5000) _peerMsgCounts.delete(id);
+    }
+  }, 30000);
+
+  // Handle incoming messages with rate limiting
   pubsub.addEventListener("message", (event) => {
     const { topic, data } = event.detail;
     const peerId = event.detail.from?.toString() || "unknown";
+
+    if (!_checkRateLimit(peerId)) {
+      log.warn(`Rate limited peer ${peerId}: exceeded ${CONSENSUS.MAX_MSGS_PER_PEER_PER_SEC} msgs/sec`);
+      return;
+    }
 
     try {
       switch (topic) {
@@ -241,6 +269,8 @@ async function createNetworkNode(options = {}) {
 
     /** Stop the node gracefully */
     async stop() {
+      clearInterval(_rateLimitCleanup);
+      _peerMsgCounts.clear();
       pubsub.unsubscribe(TOPICS.CERTIFICATES);
       pubsub.unsubscribe(TOPICS.MEMPOOL);
       pubsub.unsubscribe(TOPICS.CONSENSUS);

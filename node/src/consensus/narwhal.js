@@ -182,6 +182,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function handleIncomingBatch(data) {
     if (!_running) return;
 
+    // Enforce size limit (batch is part of certificate, share the limit)
+    if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
+      log.warn(`Rejected oversized batch: ${data.length} bytes`);
+      return;
+    }
+
     let batch;
     try {
       batch = _deserializeBatch(decode("Batch", data));
@@ -317,10 +323,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
 
-    // Broadcast on CERTIFICATES topic
+    // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
       const certBuf = encode("Certificate", _serializeCertificate(cert));
-      network.publish(network.TOPICS.CERTIFICATES, certBuf);
+      if (certBuf.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
+        log.error(`Round ${_currentRound}: certificate too large (${certBuf.length} bytes, max ${CONSENSUS.CERTIFICATE_MAX_BYTES}) — not broadcast`);
+      } else {
+        network.publish(network.TOPICS.CERTIFICATES, certBuf);
+      }
     } catch (err) {
       log.error(`Failed to broadcast certificate: ${err.message}`);
     }
@@ -337,6 +347,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    */
   function handleIncomingCertificate(data) {
     if (!_running) return;
+
+    // Enforce size limit
+    if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
+      log.warn(`Rejected oversized certificate: ${data.length} bytes (max ${CONSENSUS.CERTIFICATE_MAX_BYTES})`);
+      return;
+    }
 
     let cert;
     try {

@@ -142,7 +142,7 @@ async function main() {
       isAuthorizedPeer,
     });
 
-    consensus = initConsensus({ dag, scoring, config, network });
+    consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
     consensusRef.current = consensus;
 
     // Wire GossipSub topic handlers to consensus
