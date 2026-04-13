@@ -22,11 +22,11 @@
 
 "use strict";
 
-const path   = require("path");
-const fs     = require("fs");
+const path = require("path");
+const fs = require("fs");
 const { shake256, computeTxId, verifyTxId } = require("../../shared/crypto");
-const { TX_TYPES }               = require("../../shared/constants");
-const { log }                    = require("./logger");
+const { TX_TYPES } = require("../../shared/constants");
+const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
 let Database = null;
@@ -37,21 +37,23 @@ try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 // ══════════════════════════════════════════════════════════════════════════════
 class MemoryStore {
   constructor() {
-    this._txs         = new Map();  // tx_id -> tx
-    this._identities  = new Map();  // tip_id -> record
-    this._content     = new Map();  // ctid -> record
-    this._scores      = new Map();  // tip_id -> { score, offense_count, last_updated }
-    this._dedup       = new Set();  // dedup_hash strings (Poseidon field elements)
+    this._txs = new Map();  // tx_id -> tx
+    this._identities = new Map();  // tip_id -> record
+    this._content = new Map();  // ctid -> record
+    this._scores = new Map();  // tip_id -> { score, offense_count, last_updated }
+    this._dedup = new Set();  // dedup_hash strings (Poseidon field elements)
     this._revocations = new Map();  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
-    this._vps         = new Map();  // vp_id -> record
-    this._nodes       = new Map();  // node_id -> record
+    this._vps = new Map();  // vp_id -> record
+    this._nodes = new Map();  // node_id -> record
+    this._certs = new Map();  // cert hash -> certificate
+    this._mempool = new Map();  // tx_id -> tx
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
   saveTx(tx) { this._txs.set(tx.tx_id, { ...tx }); }
-  getTx(id)  { return this._txs.get(id) || null; }
+  getTx(id) { return this._txs.get(id) || null; }
   getAllTxs() { return [...this._txs.values()]; }
-  count()    { return this._txs.size; }
+  count() { return this._txs.size; }
 
   getTxsByType(type) {
     return [...this._txs.values()].filter(t => t.tx_type === type);
@@ -67,12 +69,12 @@ class MemoryStore {
 
   // ── Identities ────────────────────────────────────────────────────────────
   saveIdentity(rec) { this._identities.set(rec.tip_id, { ...rec }); }
-  getIdentity(id)   { return this._identities.get(id) || null; }
+  getIdentity(id) { return this._identities.get(id) || null; }
   getAllIdentities() { return [...this._identities.values()]; }
 
   // ── Content ───────────────────────────────────────────────────────────────
-  saveContent(rec)  { this._content.set(rec.ctid, { ...rec }); }
-  getContent(ctid)  { return this._content.get(ctid) || null; }
+  saveContent(rec) { this._content.set(rec.ctid, { ...rec }); }
+  getContent(ctid) { return this._content.get(ctid) || null; }
   updateContentStatus(ctid, status) {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, status });
@@ -108,7 +110,7 @@ class MemoryStore {
   hasVerification(ctid, tipId) {
     for (const tx of this._txs.values()) {
       if (tx.tx_type === "CONTENT_VERIFIED" &&
-          tx.data?.ctid === ctid && tx.data?.verifier_tip_id === tipId) return true;
+        tx.data?.ctid === ctid && tx.data?.verifier_tip_id === tipId) return true;
     }
     return false;
   }
@@ -116,7 +118,7 @@ class MemoryStore {
   hasDispute(ctid, tipId) {
     for (const tx of this._txs.values()) {
       if (tx.tx_type === "CONTENT_DISPUTED" &&
-          tx.data?.ctid === ctid && tx.data?.disputer_tip_id === tipId) return true;
+        tx.data?.ctid === ctid && tx.data?.disputer_tip_id === tipId) return true;
     }
     return false;
   }
@@ -124,17 +126,17 @@ class MemoryStore {
   // ── Scores ────────────────────────────────────────────────────────────────
   setScore(tipId, score, offenseCount = 0) {
     this._scores.set(tipId, {
-      score:          Math.max(0, Math.min(1000, score)),
-      offense_count:  offenseCount || 0,
-      last_updated:   new Date().toISOString(),
+      score: Math.max(0, Math.min(1000, score)),
+      offense_count: offenseCount || 0,
+      last_updated: new Date().toISOString(),
     });
   }
   getScore(tipId) { return this._scores.get(tipId) || null; }
 
   // ── Dedup registry ────────────────────────────────────────────────────────
-  addDedupHash(hash)  { this._dedup.add(hash); }
-  hasDedupHash(hash)  { return this._dedup.has(hash); }
-  dedupCount()        { return this._dedup.size; }
+  addDedupHash(hash) { this._dedup.add(hash); }
+  hasDedupHash(hash) { return this._dedup.has(hash); }
+  dedupCount() { return this._dedup.size; }
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
@@ -151,12 +153,43 @@ class MemoryStore {
   // ── Verification Providers ────────────────────────────────────────────────
   saveVP(rec) { this._vps.set(rec.vp_id, { ...rec }); }
   getVP(vpId) { return this._vps.get(vpId) || null; }
-  getAllVPs()  { return [...this._vps.values()]; }
+  getAllVPs() { return [...this._vps.values()]; }
 
   // ── Nodes ───────────────────────────────────────────────────────────────
   saveNode(rec) { this._nodes.set(rec.node_id, { ...rec }); }
   getNode(nodeId) { return this._nodes.get(nodeId) || null; }
-  getAllNodes()  { return [...this._nodes.values()]; }
+  getAllNodes() { return [...this._nodes.values()]; }
+
+  // ── Certificates (Narwhal consensus) ──────────────────────────────────
+  saveCertificate(cert) { this._certs.set(cert.hash, { ...cert }); }
+  getCertificate(hash) { return this._certs.get(hash) || null; }
+  getCertificatesByRound(round) {
+    return [...this._certs.values()]
+      .filter(c => c.round === round)
+      .sort((a, b) => a.author_node_id.localeCompare(b.author_node_id));
+  }
+  getCertificateByAuthorRound(authorNodeId, round) {
+    return [...this._certs.values()].find(c => c.author_node_id === authorNodeId && c.round === round) || null;
+  }
+  getLatestRound() {
+    let max = 0;
+    for (const c of this._certs.values()) { if (c.round > max) max = c.round; }
+    return max;
+  }
+  getCertificatesFromRound(fromRound) {
+    return [...this._certs.values()]
+      .filter(c => c.round >= fromRound)
+      .sort((a, b) => a.round !== b.round ? a.round - b.round : a.author_node_id.localeCompare(b.author_node_id));
+  }
+  certificateCount() { return this._certs.size; }
+
+  // ── Persistent Mempool ────────────────────────────────────────────────
+  saveMempoolTx(tx) { this._mempool.set(tx.tx_id, tx); }
+  getMempoolTxs() { return [...this._mempool.values()]; }
+  deleteMempoolTx(txId) { this._mempool.delete(txId); }
+  deleteMempoolTxs(txIds) { for (const id of txIds) this._mempool.delete(id); }
+  clearStaleMempoolTxs() { /* no-op for in-memory tests */ }
+  mempoolCount() { return this._mempool.size; }
 
   close() { /* no-op for in-memory */ }
 }
@@ -301,7 +334,7 @@ class SQLiteStore {
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY created_at ASC"),
-      countTxs:  this.db.prepare("SELECT COUNT(*) AS n FROM transactions"),
+      countTxs: this.db.prepare("SELECT COUNT(*) AS n FROM transactions"),
       txsByType: this.db.prepare("SELECT * FROM transactions WHERE tx_type=? ORDER BY created_at ASC"),
       txsByTypeAndCtid: this.db.prepare(
         `SELECT * FROM transactions
@@ -330,7 +363,7 @@ class SQLiteStore {
             status,prescan_flagged,registered_at,tx_id)
          VALUES (?,?,?,?,?,?,?,?,?)`
       ),
-      getContent:  this.db.prepare("SELECT * FROM content WHERE ctid=?"),
+      getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
@@ -356,17 +389,17 @@ class SQLiteStore {
       ),
       getScore: this.db.prepare("SELECT * FROM scores WHERE tip_id=?"),
 
-      addDedupHash:   this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash) VALUES (?)"),
-      hasDedupHash:   this.db.prepare("SELECT 1 FROM dedup_registry WHERE dedup_hash=?"),
-      dedupCount:     this.db.prepare("SELECT COUNT(*) AS n FROM dedup_registry"),
+      addDedupHash: this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash) VALUES (?)"),
+      hasDedupHash: this.db.prepare("SELECT 1 FROM dedup_registry WHERE dedup_hash=?"),
+      dedupCount: this.db.prepare("SELECT COUNT(*) AS n FROM dedup_registry"),
 
-      addRevoc:    this.db.prepare(
+      addRevoc: this.db.prepare(
         `INSERT OR REPLACE INTO revocations (tip_id,tx_type,timestamp,tx_id)
          VALUES (?,?,?,?)`
       ),
-      isRevoked:   this.db.prepare("SELECT 1 FROM revocations WHERE tip_id=?"),
-      revocAll:    this.db.prepare("SELECT * FROM revocations ORDER BY timestamp DESC"),
-      revocSince:  this.db.prepare("SELECT * FROM revocations WHERE timestamp>? ORDER BY timestamp DESC"),
+      isRevoked: this.db.prepare("SELECT 1 FROM revocations WHERE tip_id=?"),
+      revocAll: this.db.prepare("SELECT * FROM revocations ORDER BY timestamp DESC"),
+      revocSince: this.db.prepare("SELECT * FROM revocations WHERE timestamp>? ORDER BY timestamp DESC"),
       revokeIdent: this.db.prepare("UPDATE identities SET status='revoked' WHERE tip_id=?"),
 
       saveVP: this.db.prepare(
@@ -374,14 +407,14 @@ class SQLiteStore {
            (vp_id,name,jurisdiction_tier,public_key,status,registered_at)
          VALUES (?,?,?,?,?,?)`
       ),
-      getVP:    this.db.prepare("SELECT * FROM verification_providers WHERE vp_id=?"),
+      getVP: this.db.prepare("SELECT * FROM verification_providers WHERE vp_id=?"),
       getAllVPs: this.db.prepare("SELECT * FROM verification_providers"),
 
       saveNode: this.db.prepare(
         `INSERT OR REPLACE INTO nodes (node_id,name,public_key,status,registered_at)
          VALUES (?,?,?,?,?)`
       ),
-      getNode:    this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
+      getNode: this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
       getAllNodes: this.db.prepare("SELECT * FROM nodes"),
 
       // Certificates
@@ -422,10 +455,10 @@ class SQLiteStore {
       tx.signature || null
     );
   }
-  getTx(id)    { return this._parseTx(this._stmts.getTx.get(id)); }
-  getAllTxs()  { return this._stmts.getAllTxs.all().map(r => this._parseTx(r)); }
-  count()      { return this._stmts.countTxs.get().n; }
-  getTxsByType(type)   { return this._stmts.txsByType.all(type).map(r => this._parseTx(r)); }
+  getTx(id) { return this._parseTx(this._stmts.getTx.get(id)); }
+  getAllTxs() { return this._stmts.getAllTxs.all().map(r => this._parseTx(r)); }
+  count() { return this._stmts.countTxs.get().n; }
+  getTxsByType(type) { return this._stmts.txsByType.all(type).map(r => this._parseTx(r)); }
   getTxsByTypeAndCtid(type, ctid) { return this._stmts.txsByTypeAndCtid.all(type, ctid).map(r => this._parseTx(r)); }
   getTxsByTipId(tipId) { return this._stmts.txsByTipId.all(tipId, tipId).map(r => this._parseTx(r)); }
 
@@ -459,13 +492,13 @@ class SQLiteStore {
       rec.registered_at, rec.tx_id || null
     );
   }
-  getContent(ctid)            { return this._stmts.getContent.get(ctid) || null; }
+  getContent(ctid) { return this._stmts.getContent.get(ctid) || null; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
-  getContentByAuthor(tipId)   { return this._stmts.contentByAuthor.all(tipId); }
-  getContentByStatus(status)  { return this._stmts.contentByStatus.all(status); }
+  getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId); }
+  getContentByStatus(status) { return this._stmts.contentByStatus.all(status); }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
-  hasDispute(ctid, tipId)      { return !!this._stmts.hasDispute.get(ctid, tipId); }
+  hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
   getCleanRecordEligible(cutoff) {
     return this.db.prepare(`
@@ -507,9 +540,9 @@ class SQLiteStore {
   getScore(tipId) { return this._stmts.getScore.get(tipId) || null; }
 
   // ── Dedup registry ────────────────────────────────────────────────────────
-  addDedupHash(hash)  { this._stmts.addDedupHash.run(hash); }
-  hasDedupHash(hash)  { return !!this._stmts.hasDedupHash.get(hash); }
-  dedupCount()        { return this._stmts.dedupCount.get().n; }
+  addDedupHash(hash) { this._stmts.addDedupHash.run(hash); }
+  hasDedupHash(hash) { return !!this._stmts.hasDedupHash.get(hash); }
+  dedupCount() { return this._stmts.dedupCount.get().n; }
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
@@ -533,8 +566,8 @@ class SQLiteStore {
       rec.registered_at || new Date().toISOString()
     );
   }
-  getVP(vpId)  { return this._stmts.getVP.get(vpId) || null; }
-  getAllVPs()   { return this._stmts.getAllVPs.all(); }
+  getVP(vpId) { return this._stmts.getVP.get(vpId) || null; }
+  getAllVPs() { return this._stmts.getAllVPs.all(); }
 
   // ── Nodes ───────────────────────────────────────────────────────────────
   saveNode(rec) {
@@ -546,7 +579,7 @@ class SQLiteStore {
     );
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
-  getAllNodes()    { return this._stmts.getAllNodes.all(); }
+  getAllNodes() { return this._stmts.getAllNodes.all(); }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────────
   saveCertificate(cert) {
@@ -665,78 +698,78 @@ function initDAG(config) {
       if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
       const hadTxId = !!tx.tx_id;
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
-      
+
       if (!tx.tx_id) tx.tx_id = computeTxId(tx);
       store.saveTx(tx);
       _updatePrev(tx.tx_id);
       return tx;
     },
-    getTx:          (id)      => store.getTx(id),
-    getAllTxs:       ()        => store.getAllTxs(),
-    count:           ()        => store.count(),
-    getTxsByType:    (type)    => store.getTxsByType(type),
+    getTx: (id) => store.getTx(id),
+    getAllTxs: () => store.getAllTxs(),
+    count: () => store.count(),
+    getTxsByType: (type) => store.getTxsByType(type),
     getTxsByTypeAndCtid: (type, ctid) => store.getTxsByTypeAndCtid(type, ctid),
-    getTxsByTipId:   (tipId)   => store.getTxsByTipId(tipId),
-    getRecentPrev:   ()        => [..._prev],
+    getTxsByTipId: (tipId) => store.getTxsByTipId(tipId),
+    getRecentPrev: () => [..._prev],
 
     // ── Identity ──────────────────────────────────────────────────────────
-    saveIdentity:    (rec)     => store.saveIdentity(rec),
-    getIdentity:     (id)      => store.getIdentity(id),
-    getAllIdentities: ()       => store.getAllIdentities(),
+    saveIdentity: (rec) => store.saveIdentity(rec),
+    getIdentity: (id) => store.getIdentity(id),
+    getAllIdentities: () => store.getAllIdentities(),
 
     // ── Content ───────────────────────────────────────────────────────────
-    saveContent:          (rec)         => store.saveContent(rec),
-    getContent:           (ctid)        => store.getContent(ctid),
-    updateContentStatus:  (ctid, s)     => store.updateContentStatus(ctid, s),
-    updateContentOrigin:  (ctid, o, s)  => store.updateContentOrigin(ctid, o, s),
-    getContentByAuthor:   (id)          => store.getContentByAuthor(id),
-    getContentByStatus:   (s)           => store.getContentByStatus(s),
-    getCleanRecordEligible: (cutoff)   => store.getCleanRecordEligible(cutoff),
-    hasVerification:   (ctid, tipId) => store.hasVerification(ctid, tipId),
-    hasDispute:        (ctid, tipId) => store.hasDispute(ctid, tipId),
+    saveContent: (rec) => store.saveContent(rec),
+    getContent: (ctid) => store.getContent(ctid),
+    updateContentStatus: (ctid, s) => store.updateContentStatus(ctid, s),
+    updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
+    getContentByAuthor: (id) => store.getContentByAuthor(id),
+    getContentByStatus: (s) => store.getContentByStatus(s),
+    getCleanRecordEligible: (cutoff) => store.getCleanRecordEligible(cutoff),
+    hasVerification: (ctid, tipId) => store.hasVerification(ctid, tipId),
+    hasDispute: (ctid, tipId) => store.hasDispute(ctid, tipId),
 
     // ── Scores ────────────────────────────────────────────────────────────
-    setScore:        (id, s, o) => store.setScore(id, s, o),
-    getScore:        (id)       => store.getScore(id),
+    setScore: (id, s, o) => store.setScore(id, s, o),
+    getScore: (id) => store.getScore(id),
 
     // ── Dedup registry ────────────────────────────────────────────────────
-    addDedupHash:    (h)        => store.addDedupHash(h),
-    hasDedupHash:    (h)        => store.hasDedupHash(h),
-    dedupCount:      ()         => store.dedupCount(),
+    addDedupHash: (h) => store.addDedupHash(h),
+    hasDedupHash: (h) => store.hasDedupHash(h),
+    dedupCount: () => store.dedupCount(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
-    addRevocation:   (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
-    isRevoked:       (id)       => store.isRevoked(id),
-    getRevocations:  (since)    => store.getRevocations(since),
+    addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
+    isRevoked: (id) => store.isRevoked(id),
+    getRevocations: (since) => store.getRevocations(since),
 
     // ── Verification Providers ────────────────────────────────────────────
-    saveVP:          (rec)      => store.saveVP(rec),
-    getVP:           (id)       => store.getVP(id),
-    getAllVPs:        ()         => store.getAllVPs(),
+    saveVP: (rec) => store.saveVP(rec),
+    getVP: (id) => store.getVP(id),
+    getAllVPs: () => store.getAllVPs(),
 
     // ── Nodes ────────────────────────────────────────────────────────────
-    saveNode:        (rec)      => store.saveNode(rec),
-    getNode:         (id)       => store.getNode(id),
-    getAllNodes:      ()         => store.getAllNodes(),
+    saveNode: (rec) => store.saveNode(rec),
+    getNode: (id) => store.getNode(id),
+    getAllNodes: () => store.getAllNodes(),
 
     // ── Certificates (Narwhal consensus) ─────────────────────────────────
-    saveCertificate:           (cert)        => store.saveCertificate(cert),
-    getCertificate:            (hash)        => store.getCertificate(hash),
-    getCertificatesByRound:    (round)       => store.getCertificatesByRound(round),
+    saveCertificate: (cert) => store.saveCertificate(cert),
+    getCertificate: (hash) => store.getCertificate(hash),
+    getCertificatesByRound: (round) => store.getCertificatesByRound(round),
     getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
-    getLatestRound:            ()            => store.getLatestRound(),
-    getCertificatesFromRound:  (fromRound)   => store.getCertificatesFromRound(fromRound),
-    certificateCount:          ()            => store.certificateCount(),
+    getLatestRound: () => store.getLatestRound(),
+    getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
+    certificateCount: () => store.certificateCount(),
 
     // ── Persistent Mempool ────────────────────────────────────────────────
-    saveMempoolTx:             (tx)          => store.saveMempoolTx(tx),
-    getMempoolTxs:             ()            => store.getMempoolTxs(),
-    deleteMempoolTx:           (txId)        => store.deleteMempoolTx(txId),
-    deleteMempoolTxs:          (txIds)       => store.deleteMempoolTxs(txIds),
-    clearStaleMempoolTxs:      (before)      => store.clearStaleMempoolTxs(before),
-    mempoolCount:              ()            => store.mempoolCount(),
+    saveMempoolTx: (tx) => store.saveMempoolTx(tx),
+    getMempoolTxs: () => store.getMempoolTxs(),
+    deleteMempoolTx: (txId) => store.deleteMempoolTx(txId),
+    deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
+    clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
+    mempoolCount: () => store.mempoolCount(),
 
-    close:           ()         => store.close(),
+    close: () => store.close(),
   };
 
   return dag;
@@ -756,24 +789,24 @@ function _writeGenesisBlock(store, config) {
   const foundingVP = getFoundingVP();
 
   store.saveVP({
-    vp_id:             foundingVP.vp_id,
-    name:              foundingVP.name,
+    vp_id: foundingVP.vp_id,
+    name: foundingVP.name,
     jurisdiction_tier: foundingVP.jurisdiction_tier,
-    public_key:        foundingVP.public_key,
-    status:            "active",
-    registered_at:     GENESIS_TIMESTAMP,
+    public_key: foundingVP.public_key,
+    status: "active",
+    registered_at: GENESIS_TIMESTAMP,
   });
 
   // VP registration transaction — pre-signed by founding VP
   const vpTx = {
-    tx_type:   TX_TYPES.VP_REGISTERED,
+    tx_type: TX_TYPES.VP_REGISTERED,
     timestamp: GENESIS_TIMESTAMP,
-    prev:      [GENESIS_TX_ID, GENESIS_TX_ID],
+    prev: [GENESIS_TX_ID, GENESIS_TX_ID],
     data: {
-      vp_id:             foundingVP.vp_id,
-      name:              foundingVP.name,
+      vp_id: foundingVP.vp_id,
+      name: foundingVP.name,
       jurisdiction_tier: foundingVP.jurisdiction_tier,
-      public_key:        foundingVP.public_key,
+      public_key: foundingVP.public_key,
     },
   };
   store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx), signature: GENESIS_VP_TX_SIGNATURE });
