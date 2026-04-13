@@ -39,6 +39,7 @@ const TOPICS = Object.freeze({
  * @param {Function} options.handlers.onCertificate   (data, peerId) => void
  * @param {Function} options.handlers.onMempoolTx     (data, peerId) => void
  * @param {Function} options.handlers.onConsensus     (data, peerId) => void
+ * @param {Function} options.isAuthorizedPeer (peerId) => boolean — checks if peer is registered node
  * @returns {Promise<Object>} Network node interface
  */
 async function createNetworkNode(options = {}) {
@@ -47,7 +48,11 @@ async function createNetworkNode(options = {}) {
     bootstrapPeers = [],
     enableMdns = true,
     handlers = {},
+    isAuthorizedPeer = () => false,
   } = options;
+
+  // Track verified peers
+  const _authorizedPeers = new Set();
 
   // Dynamic imports (libp2p ecosystem is ESM-only)
   const { createLibp2p } = await import("libp2p");
@@ -78,7 +83,7 @@ async function createNetworkNode(options = {}) {
     peerDiscovery.push(bootstrap({ list: bootstrapPeers }));
   }
 
-  // Create libp2p node
+  // Create libp2p node with connection gating — rejects unauthorized peers
   const node = await createLibp2p({
     addresses: {
       listen: [`/ip4/0.0.0.0/tcp/${port}`],
@@ -88,6 +93,30 @@ async function createNetworkNode(options = {}) {
     streamMuxers: [yamux()],
     peerDiscovery,
     services,
+    connectionGater: {
+      denyDialPeer: (peerId) => {
+        const id = peerId.toString();
+        if (!isAuthorizedPeer(id)) {
+          log.warn(`Connection denied (outbound): ${id} - not a registered node`);
+          return true;
+        }
+        return false;
+      },
+      denyInboundConnection: () => false, // allow TCP handshake to get peerId
+      denyOutboundConnection: () => false,
+      denyDialMultiaddr: () => false,
+      denyInboundEncryptedConnection: (peerId) => {
+        const id = peerId.toString();
+        if (!isAuthorizedPeer(id)) {
+          log.warn(`Connection denied (inbound): ${id} - not a registered node`);
+          return true;
+        }
+        return false;
+      },
+      denyOutboundEncryptedConnection: () => false,
+      denyInboundUpgradedConnection: () => false,
+      denyOutboundUpgradedConnection: () => false,
+    },
   });
 
   // Start the node
