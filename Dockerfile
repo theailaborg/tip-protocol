@@ -15,7 +15,7 @@
 # Licensed under TIPCL-1.0
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /build
 
@@ -29,7 +29,7 @@ COPY node/package*.json ./node/
 RUN npm install --omit=dev
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"
@@ -75,8 +75,10 @@ RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
 # Switch to non-root user
 USER tipnode
 
-# REST API + WebSocket gossip on same port
+# REST API
 EXPOSE 4000
+# libp2p P2P consensus
+EXPOSE 4001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

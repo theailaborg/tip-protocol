@@ -22,6 +22,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-4000}:4000"
+      - "${TIP_P2P_PORT:-4001}:4001"
     volumes:
       - ./data:/app/data
     environment:
@@ -36,6 +37,9 @@ services:
       TIP_PEERS:             ${TIP_PEERS:-}
       TIP_CORS_ORIGINS:      ${TIP_CORS_ORIGINS:-*}
       TIP_LOG_LEVEL:         ${TIP_LOG_LEVEL:-info}
+      TIP_P2P_PORT:          4001
+      TIP_BOOTSTRAP_PEERS:   ${TIP_BOOTSTRAP_PEERS:-}
+      TIP_ENABLE_MDNS:       ${TIP_ENABLE_MDNS:-true}
       TIP_DB_PATH:           /app/data/tip.db
       TIP_DATA_DIR:          /app/data
     healthcheck:
