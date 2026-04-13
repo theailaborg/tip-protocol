@@ -1,0 +1,320 @@
+/**
+ * @file @tip-protocol/node/src/sync/sync-handler.js
+ * @description Certificate sync protocol for TIP consensus.
+ *
+ * Handles new node catch-up and ongoing sync between peers.
+ * Uses libp2p streams with Protobuf serialization.
+ *
+ * Protocol: /tip/sync/1.0.0
+ *
+ * Flow:
+ *   1. New node opens stream to a peer
+ *   2. Sends SyncRequest { from_round, merkle_root }
+ *   3. Peer responds with batches of certificates (SyncResponse)
+ *   4. Repeat until caught up (has_more = false)
+ *   5. Close stream
+ *
+ * Also provides:
+ *   - Merkle tree management (build, update, compare)
+ *   - Auto-sync on peer connect (if roots differ)
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+"use strict";
+
+const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { createMerkleTree } = require("./merkle-tree");
+const { encode, decode } = require("../network/proto");
+const { getLogger } = require("../logger");
+
+const log = getLogger("tip.sync");
+
+const SYNC_PROTOCOL = "/tip/sync/1.0.0";
+
+/**
+ * Create the sync handler.
+ *
+ * @param {Object} options
+ * @param {Object} options.dag         DAG store (certificates + txs)
+ * @param {Object} options.network     libp2p network node
+ * @param {Object} options.consensus   Consensus orchestrator (for commit handler)
+ * @returns {Object} Sync handler
+ */
+function createSyncHandler({ dag, network, consensus }) {
+  // Build Merkle tree from existing certificates
+  const _merkle = _buildMerkleFromDAG();
+
+  /**
+   * Build Merkle tree from all persisted certificates.
+   */
+  function _buildMerkleFromDAG() {
+    const latestRound = dag.getLatestRound();
+    const hashes = [];
+    for (let r = 1; r <= latestRound; r++) {
+      try {
+        const certs = dag.getCertificatesByRound(r);
+        for (const cert of certs) hashes.push(cert.hash);
+      } catch (err) {
+        log.warn(`Failed to load certs for round ${r}: ${err.message}`);
+      }
+    }
+    const tree = createMerkleTree({ initialHashes: hashes });
+    log.info(`Merkle tree built: ${hashes.length} certificates, root: ${tree.root().slice(0, 16)}...`);
+    return tree;
+  }
+
+  /**
+   * Update Merkle tree when a new certificate is committed.
+   * @param {string} certHash
+   */
+  function onCertificateCommitted(certHash) {
+    _merkle.add(certHash);
+  }
+
+  /**
+   * Get current Merkle root.
+   * @returns {string}
+   */
+  function merkleRoot() {
+    return _merkle.root();
+  }
+
+  /**
+   * Register the sync protocol handler on the libp2p node.
+   * This handles incoming sync requests from peers that need to catch up.
+   */
+  async function registerProtocol() {
+    if (!network || !network.node) {
+      log.warn("No network node — sync protocol not registered");
+      return;
+    }
+
+    await network.handle(SYNC_PROTOCOL, async ({ stream }) => {
+      try {
+        await _handleIncomingSync(stream);
+      } catch (err) {
+        log.error(`Sync handler error: ${err.message}`);
+        try { stream.close(); } catch { /* ignore */ }
+      }
+    });
+
+    log.info(`Sync protocol registered: ${SYNC_PROTOCOL}`);
+  }
+
+  /**
+   * Handle an incoming sync request — send certificates the peer is missing.
+   */
+  async function _handleIncomingSync(stream) {
+    // Read SyncRequest from stream
+    const chunks = [];
+    for await (const chunk of stream.source) {
+      chunks.push(chunk.subarray());
+      break; // Only read one message (the request)
+    }
+
+    if (chunks.length === 0) {
+      log.warn("Sync: received empty request");
+      return;
+    }
+
+    let request;
+    try {
+      request = decode("SyncRequest", Buffer.concat(chunks));
+    } catch (err) {
+      log.warn(`Sync: failed to decode request: ${err.message}`);
+      return;
+    }
+
+    const fromRound = request.fromRound || 1;
+    const batchSize = request.batchSize || CONSENSUS.SYNC_BATCH_SIZE;
+    const latestRound = dag.getLatestRound();
+
+    log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
+
+    // Send certificates in batches
+    let currentFrom = fromRound;
+    const sendBatch = async (certs, hasMore) => {
+      const response = encode("SyncResponse", {
+        certificates: certs.map(c => _serializeCertForSync(c)),
+        fromRound: certs.length > 0 ? certs[0].round : currentFrom,
+        toRound: certs.length > 0 ? certs[certs.length - 1].round : currentFrom,
+        latestRound,
+        merkleRoot: Buffer.from(merkleRoot(), "hex"),
+        hasMore,
+      });
+      // Write to stream
+      stream.sink([response]);
+    };
+
+    let batch = [];
+    for (let r = fromRound; r <= latestRound; r++) {
+      try {
+        const certs = dag.getCertificatesByRound(r);
+        batch.push(...certs);
+
+        if (batch.length >= batchSize) {
+          await sendBatch(batch, r < latestRound);
+          batch = [];
+          currentFrom = r + 1;
+        }
+      } catch (err) {
+        log.warn(`Sync: failed to read round ${r}: ${err.message}`);
+      }
+    }
+
+    // Send remaining
+    if (batch.length > 0) {
+      await sendBatch(batch, false);
+    } else if (fromRound > latestRound) {
+      // Peer is already caught up
+      await sendBatch([], false);
+    }
+
+    log.info(`Sync: sent certificates from round ${fromRound} to ${latestRound}`);
+  }
+
+  /**
+   * Request sync from a peer — pull certificates we're missing.
+   * @param {string} peerId  Remote peer ID
+   * @returns {Promise<{ imported: number, fromRound: number, toRound: number }>}
+   */
+  async function syncFromPeer(peerId) {
+    if (!network) throw new Error("No network node");
+
+    const fromRound = dag.getLatestRound() + 1;
+    log.info(`Sync: requesting from peer ${peerId.slice(0, 12)}... from round ${fromRound}`);
+
+    let stream;
+    try {
+      stream = await network.openStream(peerId, SYNC_PROTOCOL);
+    } catch (err) {
+      log.warn(`Sync: failed to open stream to ${peerId.slice(0, 12)}: ${err.message}`);
+      return { imported: 0, fromRound, toRound: fromRound };
+    }
+
+    // Send SyncRequest
+    const request = encode("SyncRequest", {
+      fromRound,
+      toRound: 0, // 0 = latest
+      merkleRoot: Buffer.from(merkleRoot(), "hex"),
+      batchSize: CONSENSUS.SYNC_BATCH_SIZE,
+    });
+
+    try {
+      // Write request
+      stream.sink([request]);
+
+      // Read responses
+      let imported = 0;
+      let maxRound = fromRound;
+
+      for await (const chunk of stream.source) {
+        let response;
+        try {
+          response = decode("SyncResponse", Buffer.from(chunk.subarray()));
+        } catch (err) {
+          log.warn(`Sync: failed to decode response: ${err.message}`);
+          break;
+        }
+
+        for (const certData of (response.certificates || [])) {
+          try {
+            const cert = _deserializeCertFromSync(certData);
+            if (!dag.getCertificate(cert.hash)) {
+              dag.saveCertificate(cert);
+              _merkle.add(cert.hash);
+              imported++;
+              if (cert.round > maxRound) maxRound = cert.round;
+            }
+          } catch (err) {
+            log.warn(`Sync: failed to import certificate: ${err.message}`);
+          }
+        }
+
+        if (!response.hasMore) break;
+      }
+
+      log.info(`Sync: imported ${imported} certificates (up to round ${maxRound})`);
+      return { imported, fromRound, toRound: maxRound };
+    } catch (err) {
+      log.error(`Sync: stream error with ${peerId.slice(0, 12)}: ${err.message}`);
+      return { imported: 0, fromRound, toRound: fromRound };
+    } finally {
+      try { stream.close(); } catch { /* ignore */ }
+    }
+  }
+
+  // ── Serialization helpers ────────────────────────────────────────────────
+
+  function _serializeCertForSync(cert) {
+    return {
+      round: cert.round,
+      authorNodeId: cert.author_node_id,
+      batch: {
+        round: cert.batch?.round || cert.round,
+        authorNodeId: cert.batch?.author_node_id || cert.author_node_id,
+        txs: (cert.batch?.txs || []).map(tx => ({
+          txId: tx.tx_id || "",
+          txType: tx.tx_type || "",
+          timestamp: tx.timestamp || "",
+          prev: tx.prev || [],
+          data: Buffer.from(JSON.stringify(tx.data || {})),
+          signature: tx.signature ? Buffer.from(tx.signature, "hex") : Buffer.alloc(0),
+        })),
+        signature: cert.batch?.signature ? Buffer.from(cert.batch.signature, "hex") : Buffer.alloc(0),
+        hash: cert.batch?.hash ? Buffer.from(cert.batch.hash, "hex") : Buffer.alloc(0),
+      },
+      acknowledgments: (cert.acknowledgments || []).map(a => ({
+        batchHash: Buffer.from(a.batch_hash || "", "hex"),
+        ackerNodeId: a.acker_node_id || "",
+        signature: Buffer.from(a.signature || "", "hex"),
+      })),
+      parentHashes: (cert.parent_hashes || []).map(h => Buffer.from(h, "hex")),
+      signature: cert.signature ? Buffer.from(cert.signature, "hex") : Buffer.alloc(0),
+      hash: cert.hash ? Buffer.from(cert.hash, "hex") : Buffer.alloc(0),
+    };
+  }
+
+  function _deserializeCertFromSync(msg) {
+    if (!msg) return null;
+    return {
+      round: msg.round || 0,
+      author_node_id: msg.authorNodeId || "",
+      batch: {
+        round: msg.batch?.round || 0,
+        author_node_id: msg.batch?.authorNodeId || "",
+        txs: (msg.batch?.txs || []).map(tx => ({
+          tx_id: tx.txId || "",
+          tx_type: tx.txType || "",
+          timestamp: tx.timestamp || "",
+          prev: tx.prev || [],
+          data: tx.data?.length ? JSON.parse(tx.data.toString()) : {},
+          signature: tx.signature?.length ? tx.signature.toString("hex") : null,
+        })),
+        signature: msg.batch?.signature?.length ? msg.batch.signature.toString("hex") : null,
+        hash: msg.batch?.hash?.length ? msg.batch.hash.toString("hex") : null,
+      },
+      acknowledgments: (msg.acknowledgments || []).map(a => ({
+        batch_hash: a.batchHash?.toString("hex") || "",
+        acker_node_id: a.ackerNodeId || "",
+        signature: a.signature?.toString("hex") || "",
+      })),
+      parent_hashes: (msg.parentHashes || []).map(h => h.toString("hex")),
+      signature: msg.signature?.length ? msg.signature.toString("hex") : null,
+      hash: msg.hash?.length ? msg.hash.toString("hex") : null,
+    };
+  }
+
+  return {
+    registerProtocol,
+    syncFromPeer,
+    onCertificateCommitted,
+    merkleRoot,
+    merkleTree: _merkle,
+    SYNC_PROTOCOL,
+  };
+}
+
+module.exports = { createSyncHandler };

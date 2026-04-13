@@ -142,8 +142,8 @@ async function main() {
       }
     });
 
-    // Start consensus rounds
-    consensus.start();
+    // Start consensus rounds + sync protocol
+    await consensus.start();
     log.info(`Consensus ready: Narwhal + Bullshark on port ${p2pPort}`);
   } catch (err) {
     log.warn(`Consensus layer failed to start: ${err.message}`);

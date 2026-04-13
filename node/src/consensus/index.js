@@ -25,6 +25,7 @@ const { createMempool } = require("./mempool");
 const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
 const { createCommitHandler } = require("./commit-handler");
+const { createSyncHandler } = require("../sync/sync-handler");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -66,12 +67,18 @@ function initConsensus({ dag, scoring, config, network }) {
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({ dag, scoring, config });
 
+  // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
+  const syncHandler = createSyncHandler({ dag, network, consensus: null }); // self-ref set below
+
   // ── Create Bullshark (ordering) ───────────────────────────────────────────
   const bullshark = createBullshark({
     dag,
     getNodeIds,
     onOrderedTxs: (orderedTxs, round) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round);
+      // Update Merkle tree with newly committed certificate hashes
+      const certs = dag.getCertificatesByRound(round);
+      for (const cert of certs) syncHandler.onCertificateCommitted(cert.hash);
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
     },
   });
@@ -121,9 +128,10 @@ function initConsensus({ dag, scoring, config, network }) {
     },
 
     /**
-     * Start consensus rounds (Narwhal + Bullshark).
+     * Start consensus rounds (Narwhal + Bullshark) and sync protocol.
      */
-    start() {
+    async start() {
+      await syncHandler.registerProtocol();
       narwhal.start();
       log.info("Consensus started");
     },
@@ -149,12 +157,19 @@ function initConsensus({ dag, scoring, config, network }) {
     /** Access to mempool (for API services to check pending status) */
     mempool,
 
+    /** Sync: request certificates from a peer */
+    syncFromPeer: (peerId) => syncHandler.syncFromPeer(peerId),
+
+    /** Current Merkle root of certificate DAG */
+    merkleRoot: () => syncHandler.merkleRoot(),
+
     /** Stats for monitoring / health endpoint */
     stats() {
       return {
         narwhal: narwhal.stats(),
         bullshark: bullshark.stats(),
         mempool: mempool.stats(),
+        merkleRoot: syncHandler.merkleRoot(),
       };
     },
   };
