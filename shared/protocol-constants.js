@@ -166,8 +166,18 @@ const PRESCAN_THRESHOLDS = {
   get ceiling() { return _ps().ceiling; },
 };
 
+const _c = () => get().consensus;
 const _n = () => get().network;
 const _r = () => get().reputation;
+
+const CONSENSUS = {
+  get ROUND_TIMEOUT_MS() { return _c().round_timeout_ms; },
+  get MAX_TXS_PER_CERTIFICATE() { return _c().max_txs_per_certificate; },
+  get MEMPOOL_MAX_SIZE() { return _c().mempool_max_size; },
+  get MEMPOOL_TX_TTL_SECONDS() { return _c().mempool_tx_ttl_seconds; },
+  get CERTIFICATE_MAX_BYTES() { return _c().certificate_max_bytes; },
+  get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
+};
 
 const NETWORK = {
   get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
@@ -194,5 +204,5 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, NETWORK, REPUTATION, getTier,
+  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, getTier,
 };

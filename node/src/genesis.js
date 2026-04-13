@@ -187,6 +187,14 @@ const GENESIS_PAYLOAD = Object.freeze({
       floor: 0.80,
       ceiling: 0.94,
     },
+    consensus: {
+      round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round
+      max_txs_per_certificate: 500,       // max txs drained from mempool per certificate
+      mempool_max_size: 10000,            // max pending txs in mempool
+      mempool_tx_ttl_seconds: 300,        // evict txs older than 5 minutes
+      certificate_max_bytes: 1048576,     // 1 MB max certificate size
+      sync_batch_size: 100,               // certificates per sync response batch
+    },
     network: {
       chain_id: "tip-mainnet-v2",
       merkle_publish_hours: 6,
