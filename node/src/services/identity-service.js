@@ -10,7 +10,7 @@ const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createIdentityService({ dag, scoring, config, broadcast }) {
+function createIdentityService({ dag, scoring, config, broadcast, submitTx }) {
 
   async function register(body) {
     validate(body, {
@@ -47,26 +47,21 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
-      data: { tip_id: tipId, region: region.toUpperCase(), public_key, vp_id, verification_tier, social_attested, founding, dedup_hash, zk_proof },
+      data: { tip_id: tipId, region: region.toUpperCase(), public_key, vp_id, vp_signature, verification_tier, social_attested, founding, dedup_hash, zk_proof },
     };
     const signedTx = withTxId(txBody);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    const tx = dag.addTx(signedTx);
-    broadcast(tx);
+    submitTx(signedTx);
+    log.info(`Identity proposed: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
 
-    dag.saveIdentity({
-      tip_id: tipId, region: region.toUpperCase(), public_key, vp_id,
-      verification_tier, founding, status: "active", registered_at: registeredAt, tx_id: tx.tx_id,
-    });
-    dag.addDedupHash(dedup_hash);
-    dag.setScore(tipId, social_attested ? 550 : 500, 0);
-
-    log.info(`Identity registered: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
-
-    return { tip_id: tipId, public_key, tx_id: tx.tx_id, score: social_attested ? 550 : 500, registered_at: registeredAt };
+    return {
+      tip_id: tipId, public_key, tx_id: signedTx.tx_id,
+      score: social_attested ? 550 : 500, registered_at: registeredAt,
+      confirmation: "proposed",
+    };
   }
 
   function resolve(tipId) {

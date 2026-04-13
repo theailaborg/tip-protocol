@@ -14,7 +14,7 @@ const { log } = require("../logger");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
-function createContentService({ dag, scoring, config, broadcast }) {
+function createContentService({ dag, scoring, config, broadcast, submitTx }) {
 
   function register(body) {
     validate(body, {
@@ -62,21 +62,16 @@ function createContentService({ dag, scoring, config, broadcast }) {
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    const tx = dag.addTx(signedTx);
-    broadcast(tx);
+    submitTx(signedTx);
 
     const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
-    dag.saveContent({
-      ctid, origin_code, content_hash: contentHashFull, perceptual_hash: perceptHash,
-      author_tip_id, status, registered_at: registeredAt, tx_id: tx.tx_id,
-    });
-
-    log.info(`Content registered: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
+    log.info(`Content proposed: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
 
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
-      content_hash: contentHashFull, author_tip_id, tx_id: tx.tx_id,
+      content_hash: contentHashFull, author_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
+      confirmation: "proposed",
       prescan_flagged: preScan.flagged,
       prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
       http_headers: {
@@ -165,20 +160,17 @@ function createContentService({ dag, scoring, config, broadcast }) {
 
     const verifyTxBody = {
       tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-      data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId },
+      data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId, signature },
     };
     const signedTx = withTxId(verifyTxBody);
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    dag.addTx(signedTx);
-    broadcast(signedTx);
-
-    if (weightedDelta > 0) scoring.applyScoreEvent(authorTipId, weightedDelta, `Content verified by ${verifier_tip_id}`);
-    if (rec.status === CONTENT_STATUS.REGISTERED) dag.updateContentStatus(ctid, CONTENT_STATUS.VERIFIED);
+    submitTx(signedTx);
 
     return {
       success: true, delta_applied: weightedDelta,
+      confirmation: "proposed",
       caps: {
         content: { used: contentDeltaSum + weightedDelta, max: VERIFY_CAPS.PER_CONTENT },
         daily: { used: dailyDeltaSum + weightedDelta, max: VERIFY_CAPS.PER_DAY },
@@ -197,6 +189,10 @@ function createContentService({ dag, scoring, config, broadcast }) {
     if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can update the origin code" };
     if (rec.status !== CONTENT_STATUS.REGISTERED && rec.status !== CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: `Cannot update origin — content status is '${rec.status}'` };
 
+    // Only one origin update allowed
+    const existingUpdates = dag.getTxsByTypeAndCtid(TX_TYPES.UPDATE_ORIGIN, ctid);
+    if (existingUpdates.length > 0) throw { status: 409, error: "Origin has already been updated once — no further changes allowed" };
+
     const registeredAt = new Date(rec.registered_at).getTime();
     if (Date.now() - registeredAt > 24 * 60 * 60 * 1000) throw { status: 403, error: "24-hour grace period has expired." };
     if (!ORIGIN[new_origin_code]) throw { status: 400, error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` };
@@ -211,17 +207,12 @@ function createContentService({ dag, scoring, config, broadcast }) {
 
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-      data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id },
+      data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id, signature },
     });
-    dag.addTx(updateTx);
-    broadcast(updateTx);
+    submitTx(updateTx);
 
-    const preScan = preScanContent(rec.content_hash || "", new_origin_code, {});
-    const newStatus = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
-    dag.updateContentOrigin(ctid, new_origin_code, newStatus);
-
-    log.info(`Origin updated: ${ctid} ${rec.origin_code} → ${new_origin_code} (by ${author_tip_id})`);
-    return { success: true, ctid, old_origin_code: rec.origin_code, new_origin_code, status: newStatus, tx_id: updateTx.tx_id };
+    log.info(`Origin update proposed: ${ctid} ${rec.origin_code} → ${new_origin_code} (by ${author_tip_id})`);
+    return { success: true, ctid, old_origin_code: rec.origin_code, new_origin_code, tx_id: updateTx.tx_id, confirmation: "proposed" };
   }
 
   function retract(ctid, body) {
@@ -245,16 +236,12 @@ function createContentService({ dag, scoring, config, broadcast }) {
 
     const retractTx = withTxId({
       tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-      data: { ctid, author_tip_id, origin_code: rec.origin_code, pre_retract_status: rec.status },
+      data: { ctid, author_tip_id, signature, origin_code: rec.origin_code, pre_retract_status: rec.status },
     });
-    dag.addTx(retractTx);
-    broadcast(retractTx);
+    submitTx(retractTx);
 
-    scoring.applyScoreEvent(author_tip_id, SCORE_EVENTS.CONTENT_RETRACTION.delta, `Content retracted: ${ctid}`);
-    dag.updateContentStatus(ctid, CONTENT_STATUS.RETRACTED);
-
-    log.info(`Content retracted: ${ctid} by ${author_tip_id} (penalty: ${SCORE_EVENTS.CONTENT_RETRACTION.delta})`);
-    return { success: true, ctid, penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta, tx_id: retractTx.tx_id };
+    log.info(`Content retraction proposed: ${ctid} by ${author_tip_id}`);
+    return { success: true, ctid, penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta, tx_id: retractTx.tx_id, confirmation: "proposed" };
   }
 
   return { register, resolve, verify, updateOrigin, retract };

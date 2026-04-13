@@ -8,7 +8,7 @@ const { validate } = require("../middleware/validate");
 const { getFoundingVP } = require("../genesis");
 const { log } = require("../logger");
 
-function createGovernanceService({ dag, scoring, config, broadcast }) {
+function createGovernanceService({ dag, scoring, config, broadcast, submitTx }) {
 
   function registerVP(body) {
     validate(body, { name: { required: true }, public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
@@ -37,11 +37,9 @@ function createGovernanceService({ dag, scoring, config, broadcast }) {
     const validation = validateTransaction(vpTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    dag.addTx(vpTx);
-    broadcast(vpTx);
-    dag.saveVP({ vp_id: vpId, name, jurisdiction_tier, public_key, status: "active", registered_at: registeredAt });
+    submitTx(vpTx);
 
-    return { vp_id: vpId, name, jurisdiction_tier, registered_at: registeredAt };
+    return { vp_id: vpId, name, jurisdiction_tier, registered_at: registeredAt, confirmation: "proposed" };
   }
 
   function resolveVP(vpId) {
@@ -77,12 +75,10 @@ function createGovernanceService({ dag, scoring, config, broadcast }) {
     const validation = validateTransaction(nodeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    dag.addTx(nodeTx);
-    broadcast(nodeTx);
-    dag.saveNode({ node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, public_key, status: "active", registered_at: registeredAt });
+    submitTx(nodeTx);
 
-    log.info(`Node registered: ${nodeId}`);
-    return { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, registered_at: registeredAt };
+    log.info(`Node registration proposed: ${nodeId}`);
+    return { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, registered_at: registeredAt, confirmation: "proposed" };
   }
 
   return { registerVP, resolveVP, registerNode };

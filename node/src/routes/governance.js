@@ -7,7 +7,7 @@ function createRouter({ governanceService }) {
   const router = express.Router();
 
   router.post("/vp/register", asyncHandler((req, res) => {
-    res.status(201).json(governanceService.registerVP(req.body));
+    res.status(202).json(governanceService.registerVP(req.body));
   }));
 
   router.get("/vp/:vpId", asyncHandler((req, res) => {
@@ -15,7 +15,7 @@ function createRouter({ governanceService }) {
   }));
 
   router.post("/node/register", asyncHandler((req, res) => {
-    res.status(201).json(governanceService.registerNode(req.body));
+    res.status(202).json(governanceService.registerNode(req.body));
   }));
 
   return router;

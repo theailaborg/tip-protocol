@@ -19,6 +19,7 @@
 "use strict";
 
 const { TX_TYPES, CONTENT_STATUS } = require("../../../shared/constants");
+const { SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { verifyBodySignature, mldsaVerify, canonicalTx } = require("../../../shared/crypto");
 const { getLogger } = require("../logger");
@@ -164,12 +165,22 @@ function createCommitHandler({ dag, scoring, config }) {
       case TX_TYPES.CONTENT_RETRACTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.RETRACTED);
+          if (d.author_tip_id && scoring) {
+            scoring.applyScoreEvent(d.author_tip_id, SCORE_EVENTS.CONTENT_RETRACTION.delta, `Content retracted: ${d.ctid}`);
+          }
         }
         break;
 
       // ── Verification ──────────────────────────────────────────────────
       case TX_TYPES.CONTENT_VERIFIED:
-        // Score effect handled by scoring.computeScore() replay
+        // Score effect handled by scoring.computeScore() replay (reads weighted_delta from tx.data)
+        // Update content status: registered → verified on first verification
+        if (d.ctid) {
+          const content = dag.getContent(d.ctid);
+          if (content && content.status === CONTENT_STATUS.REGISTERED) {
+            dag.updateContentStatus(d.ctid, CONTENT_STATUS.VERIFIED);
+          }
+        }
         break;
 
       // ── Dispute ───────────────────────────────────────────────────────
@@ -283,6 +294,18 @@ function createCommitHandler({ dag, scoring, config }) {
         return verifyBodySignature(d, d.signature, verifier.public_key, ["verifier_tip_id", "verdict"]);
       }
 
+      if (tt === TX_TYPES.UPDATE_ORIGIN) {
+        const author = dag.getIdentity(d.author_tip_id);
+        if (!author || !d.signature) return false;
+        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "new_origin_code"]);
+      }
+
+      if (tt === TX_TYPES.CONTENT_RETRACTED) {
+        const author = dag.getIdentity(d.author_tip_id);
+        if (!author || !d.signature) return false;
+        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id"]);
+      }
+
       if (tt === TX_TYPES.CONTENT_DISPUTED) {
         if (d.auto) {
           const node = dag.getNode(d.node_id);
@@ -291,7 +314,8 @@ function createCommitHandler({ dag, scoring, config }) {
         }
         const disputer = dag.getIdentity(d.disputer_tip_id);
         if (!disputer || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, disputer.public_key, ["disputer_tip_id", "reason", "evidence_hash"]);
+        const disputeFields = d.claimed_origin ? ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"] : ["disputer_tip_id", "reason", "evidence_hash"];
+        return verifyBodySignature(d, d.signature, disputer.public_key, disputeFields);
       }
 
       if (tt === TX_TYPES.JURY_VOTE_COMMIT) {
@@ -305,6 +329,19 @@ function createCommitHandler({ dag, scoring, config }) {
         if (!juror || !d.signature) return false;
         const fields = d.confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
         return verifyBodySignature(d, d.signature, juror.public_key, fields);
+      }
+
+      if (tt === TX_TYPES.APPEAL_FILED) {
+        if (d.appellant_tip_id === "SYSTEM_AUTO_ESCALATION") {
+          // Auto-escalated by node on NO_QUORUM — verify node signature
+          const node = dag.getNode(d.node_id);
+          if (!node || !tx.signature) return false;
+          return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
+        }
+        // User-filed appeal — verify appellant signature
+        const appellant = dag.getIdentity(d.appellant_tip_id);
+        if (!appellant || !d.signature) return false;
+        return verifyBodySignature(d, d.signature, appellant.public_key, ["appellant_tip_id"]);
       }
 
       if ([TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP, TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE].includes(tt)) {
@@ -324,7 +361,7 @@ function createCommitHandler({ dag, scoring, config }) {
       }
 
       const NODE_SIGNED = [TX_TYPES.SCORE_UPDATE, TX_TYPES.ADJUDICATION_RESULT, TX_TYPES.APPEAL_RESULT,
-      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED, TX_TYPES.APPEAL_FILED];
+        TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED];
       if (NODE_SIGNED.includes(tt)) {
         const node = dag.getNode(d.node_id);
         if (!node || !tx.signature) return false;

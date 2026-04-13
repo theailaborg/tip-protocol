@@ -56,6 +56,25 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 const { createApp } = require(path.join(SRC, "api"));
+const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
+
+/**
+ * Create a test consensus that immediately commits txs to DAG.
+ * Simulates the full consensus path without Narwhal/Bullshark/libp2p.
+ */
+function createTestConsensus(dag, scoring, config) {
+  const commitHandler = createCommitHandler({ dag, scoring, config });
+  return {
+    current: {
+      addTx(tx) {
+        // Immediately commit — simulates instant single-node consensus
+        commitHandler.commitOrderedTxs([tx], 0);
+        return { added: true };
+      },
+      mempool: { remove: () => 0 },
+    },
+  };
+}
 
 // ─── Test Fixtures ─────────────────────────────────────────────────────────────
 
@@ -94,6 +113,16 @@ beforeAll(async () => {
   dag = initDAG({ dbPath: ":memory:" });
   scoring = initScoring(dag, TEST_CONFIG);
 
+  // Register the test node so node-signed txs can be verified
+  dag.saveNode({
+    node_id: TEST_CONFIG.nodeId,
+    name: "test-node",
+    public_key: nodeKp.publicKey,
+    status: "active",
+    registered_at: new Date().toISOString(),
+  });
+  TEST_CONFIG.nodeRegisteredId = TEST_CONFIG.nodeId;
+
   // Get the founding VP and replace its public key with a known keypair
   // so tests can sign council approvals
   foundingVpKp = generateMLDSAKeypair();
@@ -101,7 +130,8 @@ beforeAll(async () => {
   foundingVpId = allVps[0].vp_id;
   dag.saveVP({ ...allVps[0], public_key: foundingVpKp.publicKey });
 
-  app = createApp({ dag, scoring, config: TEST_CONFIG });
+  const testConsensus = createTestConsensus(dag, scoring, TEST_CONFIG);
+  app = createApp({ dag, scoring, config: TEST_CONFIG, consensus: testConsensus });
 });
 
 afterAll(() => {
@@ -620,7 +650,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post("/v1/vp/register")
       .send({ ...vpFields, council_signature: councilSig });
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.vp_id).toBeDefined();
     testVpId = res.body.data.vp_id;
   });
@@ -643,7 +673,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: vpSig });
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.tip_id).toBeDefined();
     authorId = res.body.data.tip_id;
   });
@@ -731,7 +761,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post("/v1/content/register")
       .send(body);
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.ctid).toMatch(/^tip:\/\/c\/OH-/);
     expect(res.body.data.status).toBeDefined();
   });
@@ -774,7 +804,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({ ...disputeFields, signature: signBody(disputeFields, disputerKp.privateKey) });
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.success).toBe(true);
   });
 
@@ -800,7 +830,7 @@ describe("REST API", () => {
     const res = await request(app)
       .post("/v1/revocations")
       .send({ ...revokeFields, signature: vpSig });
-    expect([200, 201]).toContain(res.status);
+    expect([200, 201, 202]).toContain(res.status);
   });
 
   test("6.16 GET /v1/dedup/merkle-root returns merkle root", async () => {
@@ -846,7 +876,7 @@ describe("Integration: Full Registration Flow", () => {
     const vpRes = await request(app)
       .post("/v1/vp/register")
       .send({ ...vpFields, country: "SG", council_signature: intCouncilSig });
-    expect([200, 201]).toContain(vpRes.status);
+    expect([200, 201, 202]).toContain(vpRes.status);
     integrationVpId = vpRes.body.data.vp_id;
 
     // Step 2: Register Identity (client generates keypair)
@@ -862,7 +892,7 @@ describe("Integration: Full Registration Flow", () => {
     const idRes = await request(app)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: intVpSig });
-    expect([200, 201]).toContain(idRes.status);
+    expect([200, 201, 202]).toContain(idRes.status);
     integrationTipId = idRes.body.data.tip_id;
     expect(integrationTipId).toBeDefined();
 
@@ -873,7 +903,7 @@ describe("Integration: Full Registration Flow", () => {
     const contentRes = await request(app)
       .post("/v1/content/register")
       .send({ author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content, title: "Trust and Identity", signature: signBody(ctSigFields, authorPrivateKey) });
-    expect([200, 201]).toContain(contentRes.status);
+    expect([200, 201, 202]).toContain(contentRes.status);
     const ctid = contentRes.body.data.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
 
@@ -925,12 +955,16 @@ describe("Gossip Broadcast Wiring", () => {
     gossipDag = initDAG({ dbPath: ":memory:" });
     gossipScoring = initScoring(gossipDag, TEST_CONFIG);
 
+    // Register test node in gossip DAG
+    gossipDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: new Date().toISOString() });
+
     gFoundingVpKp = generateMLDSAKeypair();
     const allVps = gossipDag.getAllVPs();
     gFoundingVpId = allVps[0].vp_id;
     gossipDag.saveVP({ ...allVps[0], public_key: gFoundingVpKp.publicKey });
 
-    gossipApp = createApp({ dag: gossipDag, scoring: gossipScoring, config: TEST_CONFIG, gossip: mockGossipRef });
+    const gossipConsensus = createTestConsensus(gossipDag, gossipScoring, TEST_CONFIG);
+    gossipApp = createApp({ dag: gossipDag, scoring: gossipScoring, config: TEST_CONFIG, gossip: mockGossipRef, consensus: gossipConsensus });
   });
 
   afterAll(() => {
@@ -952,9 +986,11 @@ describe("Gossip Broadcast Wiring", () => {
     const res = await request(gossipApp)
       .post("/v1/vp/register")
       .send({ ...vpFields, council_signature: sig });
-    expect([200, 201]).toContain(res.status);
-    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
-    expect(broadcastCalls[0]).toHaveProperty("tx_id");
+    expect([200, 201, 202]).toContain(res.status);
+    // With consensus, tx goes to mempool → commit handler → DAG (no gossip broadcast)
+    expect(res.body.data.vp_id).toBeDefined();
+    const vp = gossipDag.getVP(res.body.data.vp_id);
+    expect(vp).toBeTruthy();
   });
 
   test("8.2 Identity register triggers gossip broadcast", async () => {
@@ -970,8 +1006,10 @@ describe("Gossip Broadcast Wiring", () => {
     const res = await request(gossipApp)
       .post("/v1/identity/register")
       .send({ ...idFields, vp_signature: vpSig });
-    expect([200, 201]).toContain(res.status);
-    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect([200, 201, 202]).toContain(res.status);
+    expect(res.body.data.tip_id).toBeDefined();
+    const identity = gossipDag.getIdentity(res.body.data.tip_id);
+    expect(identity).toBeTruthy();
   });
 
   test("8.3 Content register triggers gossip broadcast", async () => {
@@ -996,8 +1034,10 @@ describe("Gossip Broadcast Wiring", () => {
     const res = await request(gossipApp)
       .post("/v1/content/register")
       .send({ author_tip_id: tipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields, authorPrivKey) });
-    expect([200, 201]).toContain(res.status);
-    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect([200, 201, 202]).toContain(res.status);
+    expect(res.body.data.ctid).toBeDefined();
+    const registeredContent = gossipDag.getContent(res.body.data.ctid);
+    expect(registeredContent).toBeTruthy();
   });
 
   test("8.4 Revocation triggers gossip broadcast", async () => {
@@ -1032,8 +1072,8 @@ describe("Gossip Broadcast Wiring", () => {
     const res = await request(gossipApp)
       .post("/v1/revocations")
       .send({ ...revokeFields, signature: signBody(revokeFields, rVpKp.privateKey) });
-    expect([200, 201]).toContain(res.status);
-    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect([200, 201, 202]).toContain(res.status);
+    expect(gossipDag.isRevoked(rTipId)).toBe(true);
   });
 
   test("8.5 Dispute triggers gossip broadcast", async () => {
@@ -1063,8 +1103,10 @@ describe("Gossip Broadcast Wiring", () => {
     const res = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
       .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
-    expect(res.status).toBe(200);
-    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect(res.status).toBe(202);
+    expect(res.body.data.dispute_tx_id).toBeDefined();
+    const disputedContent = gossipDag.getContent(ctid);
+    expect(disputedContent.status).toBe("disputed");
 
     // Duplicate dispute should be rejected (content already under dispute)
     broadcastCalls = [];
@@ -1088,12 +1130,16 @@ describe("Semantic Dedup", () => {
     sdDag = initDAG({ dbPath: ":memory:" });
     sdScoring = initScoring(sdDag, TEST_CONFIG);
 
+    // Register test node in SD DAG
+    sdDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: new Date().toISOString() });
+
     sdVpKp = generateMLDSAKeypair();
     const allVps = sdDag.getAllVPs();
     sdVpId = allVps[0].vp_id;
     sdDag.saveVP({ ...allVps[0], public_key: sdVpKp.publicKey });
 
-    sdApp = createApp({ dag: sdDag, scoring: sdScoring, config: TEST_CONFIG });
+    const sdConsensus = createTestConsensus(sdDag, sdScoring, TEST_CONFIG);
+    sdApp = createApp({ dag: sdDag, scoring: sdScoring, config: TEST_CONFIG, consensus: sdConsensus });
 
     // Register author identity
     const sdKp = generateMLDSAKeypair();
@@ -1141,7 +1187,7 @@ describe("Semantic Dedup", () => {
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
     // Verifier score is 800 → high-trust bonus → delta +3
     expect(res.body.data.delta_applied).toBe(3);
@@ -1196,7 +1242,7 @@ describe("Semantic Dedup", () => {
     const r1 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f1, signature: signBody(f1, verifiers[0].priv) });
-    expect(r1.status).toBe(200);
+    expect(r1.status).toBe(202);
     expect(r1.body.data.delta_applied).toBe(2); // daily cap: 5 - 3 = 2 remaining
     expect(r1.body.data.caps.content.used).toBe(2);
     expect(r1.body.data.caps.daily.used).toBe(5); // 3 + 2 = 5 (full)
@@ -1206,7 +1252,7 @@ describe("Semantic Dedup", () => {
     const r2 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f2, signature: signBody(f2, verifiers[1].priv) });
-    expect(r2.status).toBe(200);
+    expect(r2.status).toBe(202);
     expect(r2.body.data.delta_applied).toBe(0);
     expect(r2.body.data.caps.daily.used).toBe(5); // still 5, no increase
 
@@ -1215,7 +1261,7 @@ describe("Semantic Dedup", () => {
     const r3 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f3, signature: signBody(f3, verifiers[2].priv) });
-    expect(r3.status).toBe(200);
+    expect(r3.status).toBe(202);
     expect(r3.body.data.delta_applied).toBe(0);
   });
 
@@ -1232,7 +1278,7 @@ describe("Semantic Dedup", () => {
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
 
     // Duplicate dispute — content already under dispute
@@ -1250,7 +1296,7 @@ describe("Semantic Dedup", () => {
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent, signature: signBody(updateSig, sdAuthorPriv) });
-    expect(ctRes.status).toBe(201);
+    expect(ctRes.status).toBe(202);
     const updateCtid = ctRes.body.data.ctid;
     expect(ctRes.body.data.status).toBe("registered");
 
@@ -1259,7 +1305,7 @@ describe("Semantic Dedup", () => {
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(updateCtid)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
     expect(res.body.data.old_origin_code).toBe("OH");
     expect(res.body.data.new_origin_code).toBe("AA");
@@ -1298,7 +1344,7 @@ describe("Semantic Dedup", () => {
     const dRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid96)}/dispute`)
       .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
-    expect(dRes.status).toBe(200);
+    expect(dRes.status).toBe(202);
     expect(dRes.body.data.stage1).toBeDefined();
     expect(["escalate", "escalate_high"]).toContain(dRes.body.data.stage1.routing);
 
@@ -1386,7 +1432,7 @@ describe("Semantic Dedup", () => {
     const commitRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(juryCtid)}/jury/commit`)
       .send({ ...commitFields, signature: signBody(commitFields, sdVerifierPriv) });
-    expect(commitRes.status).toBe(200);
+    expect(commitRes.status).toBe(202);
     expect(commitRes.body.data.success).toBe(true);
 
     // Duplicate rejected
@@ -1437,7 +1483,7 @@ describe("Semantic Dedup", () => {
     const revRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(revCtid)}/jury/reveal`)
       .send({ ...revealFields, signature: signBody(revealFields, sdVerifierPriv) });
-    expect(revRes.status).toBe(200);
+    expect(revRes.status).toBe(202);
     expect(revRes.body.data.success).toBe(true);
 
     // Duplicate reveal rejected
@@ -1503,7 +1549,7 @@ describe("Semantic Dedup", () => {
     const disputeRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(caseCtid)}/dispute`)
       .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
-    expect(disputeRes.status).toBe(200);
+    expect(disputeRes.status).toBe(202);
 
     const res = await request(sdApp)
       .get(`/v1/content/${encodeURIComponent(caseCtid)}/dispute-case`);
@@ -1601,7 +1647,7 @@ describe("Semantic Dedup", () => {
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(appealCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
     expect(res.body.data.appeal_tx_id).toBeDefined();
     expect(res.body.data.stake_at_risk).toBe(25);
@@ -1676,7 +1722,7 @@ describe("Semantic Dedup", () => {
     const f1 = { appellant_tip_id: sdTipId };
     const r1 = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/appeal`)
       .send({ ...f1, signature: signBody(f1, sdAuthorPriv) });
-    expect(r1.status).toBe(200);
+    expect(r1.status).toBe(202);
 
     // Second appeal — rejected
     const r2 = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/appeal`)
@@ -1696,7 +1742,7 @@ describe("Semantic Dedup", () => {
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(rCtid)}/retract`)
       .send({ ...retractFields, signature: signBody(retractFields, sdAuthorPriv) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
     expect(res.body.data.penalty).toBe(-50);
 
