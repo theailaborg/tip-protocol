@@ -1,0 +1,143 @@
+/**
+ * TIP Protocol — Consensus Layer Message Definitions
+ *
+ * Used by Narwhal (data availability) + Bullshark (ordering) consensus.
+ * All node-to-node communication uses these Protobuf messages via libp2p.
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+syntax = "proto3";
+
+package tip.consensus;
+
+// ─── Core Data Types ─────────────────────────────────────────────────────────
+
+/**
+ * A single DAG transaction.
+ * Identical structure to the JSON tx format used in the REST API.
+ */
+message Transaction {
+  string tx_id = 1;
+  string tx_type = 2;
+  string timestamp = 3;
+  repeated string prev = 4;
+  bytes data = 5;               // JSON-encoded tx.data as bytes
+  bytes signature = 6;          // ML-DSA-65 signature over canonical tx
+}
+
+/**
+ * A batch of transactions proposed by a single node in one round.
+ * Narwhal Phase 1: each node creates a batch from its mempool and broadcasts.
+ */
+message Batch {
+  uint64 round = 1;
+  string author_node_id = 2;
+  repeated Transaction txs = 3;
+  bytes signature = 4;          // author's ML-DSA-65 signature over (round + txs)
+  bytes hash = 5;               // SHAKE-256 hash of this batch
+}
+
+/**
+ * Acknowledgment that a node has received a batch for the current round.
+ * Collected by the batch author to form a certificate.
+ */
+message BatchAck {
+  bytes batch_hash = 1;         // hash of the batch being acknowledged
+  string acker_node_id = 2;     // node that received the batch
+  bytes signature = 3;          // acker's ML-DSA-65 signature over batch_hash
+}
+
+/**
+ * A certificate proves that 2/3+ nodes received a batch.
+ * Narwhal Phase 2: a node collects BatchAcks and creates a certificate.
+ * Certificates form a DAG via parent_hashes.
+ */
+message Certificate {
+  uint64 round = 1;
+  string author_node_id = 2;
+  Batch batch = 3;                      // the original batch
+  repeated BatchAck acknowledgments = 4; // 2/3+ acks from other nodes
+  repeated bytes parent_hashes = 5;     // hashes of parent certificates (round - 1)
+  bytes signature = 6;                  // author's ML-DSA-65 signature over certificate
+  bytes hash = 7;                       // SHAKE-256 hash of this certificate
+}
+
+// ─── Sync Protocol ───────────────────────────────────────────────────────────
+
+/**
+ * Request to sync certificates from a peer.
+ * Used by new nodes joining or nodes catching up after downtime.
+ */
+message SyncRequest {
+  uint64 from_round = 1;       // start syncing from this round
+  uint64 to_round = 2;         // sync up to this round (0 = latest)
+  bytes merkle_root = 3;       // requester's current Merkle root (for diff)
+  uint32 batch_size = 4;       // max certificates per response
+}
+
+/**
+ * Response with a batch of certificates for sync.
+ * Streamed — peer sends multiple SyncResponses until caught up.
+ */
+message SyncResponse {
+  repeated Certificate certificates = 1;
+  uint64 from_round = 2;       // first round in this batch
+  uint64 to_round = 3;         // last round in this batch
+  uint64 latest_round = 4;     // peer's current latest round
+  bytes merkle_root = 5;       // peer's current Merkle root
+  bool has_more = 6;           // true if more batches to follow
+}
+
+// ─── Consensus Messages ──────────────────────────────────────────────────────
+
+/**
+ * Round advancement signal.
+ * Broadcast when a node has collected 2/3 certificates and advances to the next round.
+ */
+message RoundAdvance {
+  uint64 round = 1;            // the round the node has advanced TO
+  string node_id = 2;
+  repeated bytes certificate_hashes = 3;  // the 2/3+ cert hashes that triggered advance
+  bytes signature = 4;
+}
+
+// ─── Mempool ─────────────────────────────────────────────────────────────────
+
+/**
+ * A pending transaction shared between nodes before certificate creation.
+ * Nodes share mempool txs so the next certificate includes txs from all nodes.
+ */
+message MempoolTx {
+  Transaction tx = 1;
+  string origin_node_id = 2;   // which node received this tx via API
+  string received_at = 3;      // ISO timestamp
+}
+
+// ─── Node Identity ───────────────────────────────────────────────────────────
+
+/**
+ * Handshake message for initial peer connection.
+ * Includes the node's identity for verification against the node registry.
+ */
+message Handshake {
+  string node_id = 1;
+  bytes public_key = 2;        // ML-DSA-65 public key
+  uint64 latest_round = 3;     // node's current consensus round
+  bytes merkle_root = 4;       // node's current Merkle root
+  string protocol_version = 5; // e.g. "2.0.0"
+  string chain_id = 6;         // e.g. "tip-mainnet-v2" (must match genesis)
+  bytes signature = 7;         // signature over (node_id + latest_round + chain_id)
+}
+
+/**
+ * Handshake response.
+ */
+message HandshakeAck {
+  string node_id = 1;
+  uint64 latest_round = 2;
+  bytes merkle_root = 3;
+  bool sync_needed = 4;        // true if rounds diverge
+  bytes signature = 5;
+}
