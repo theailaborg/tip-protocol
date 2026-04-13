@@ -48,8 +48,14 @@ function createCommitHandler({ dag, scoring, config }) {
 
     for (const tx of orderedTxs) {
       try {
+        // Skip invalid txs
+        if (!tx || !tx.tx_id || !tx.tx_type) {
+          dropped++;
+          continue;
+        }
+
         // Skip if already in DAG (dedup — same tx may appear in multiple certificates)
-        if (tx.tx_id && dag.getTx(tx.tx_id)) {
+        if (dag.getTx(tx.tx_id)) {
           continue;
         }
 

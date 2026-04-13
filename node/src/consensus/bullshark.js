@@ -26,6 +26,7 @@
 "use strict";
 
 const { computeQuorum } = require("./certificate");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.bullshark");
@@ -163,6 +164,21 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     }
 
     _lastCommittedRound = voteRound;
+    _pruneOrderedCache();
+  }
+
+  /**
+   * Prune _orderedCertHashes to prevent unbounded memory growth.
+   * Keeps only the most recent hashes up to CONSENSUS.ORDERED_HASH_CACHE_SIZE.
+   */
+  function _pruneOrderedCache() {
+    const maxSize = CONSENSUS.ORDERED_HASH_CACHE_SIZE;
+    if (_orderedCertHashes.size <= maxSize) return;
+    const excess = _orderedCertHashes.size - maxSize;
+    const iter = _orderedCertHashes.values();
+    for (let i = 0; i < excess; i++) {
+      _orderedCertHashes.delete(iter.next().value);
+    }
   }
 
   /**

@@ -45,7 +45,8 @@ const log = getLogger("tip.narwhal");
  * @returns {Object} Narwhal instance
  */
 function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, onCommit }) {
-  let _currentRound = dag.getLatestRound() + 1;
+  let _currentRound;
+  try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
   let _roundTimer = null;
   let _retryTimer = null;
@@ -284,6 +285,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    * Record an ack, deduplicating by acker node.
    */
   function _recordAck(batchHash, ack) {
+    if (!batchHash || !ack || !ack.acker_node_id) return;
     if (!_batchAcks.has(batchHash)) _batchAcks.set(batchHash, []);
     const acks = _batchAcks.get(batchHash);
     if (!acks.find(a => a.acker_node_id === ack.acker_node_id)) {
@@ -435,7 +437,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         tx_type: tx.txType || "",
         timestamp: tx.timestamp || "",
         prev: tx.prev || [],
-        data: tx.data?.length ? JSON.parse(tx.data.toString()) : {},
+        data: tx.data?.length ? (() => { try { return JSON.parse(tx.data.toString()); } catch { return {}; } })() : {},
         signature: tx.signature?.length ? tx.signature.toString("hex") : null,
       })),
       signature: msg.signature?.length ? msg.signature.toString("hex") : null,

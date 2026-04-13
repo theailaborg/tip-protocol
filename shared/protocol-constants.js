@@ -177,6 +177,7 @@ const CONSENSUS = {
   get MEMPOOL_TX_TTL_SECONDS() { return _c().mempool_tx_ttl_seconds; },
   get CERTIFICATE_MAX_BYTES() { return _c().certificate_max_bytes; },
   get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
+  get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
 };
 
 const NETWORK = {

@@ -42,7 +42,7 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.consensus   Consensus orchestrator (for commit handler)
  * @returns {Object} Sync handler
  */
-function createSyncHandler({ dag, network, consensus }) {
+function createSyncHandler({ dag, network }) {
   // Build Merkle tree from existing certificates
   const _merkle = _buildMerkleFromDAG();
 
@@ -145,7 +145,7 @@ function createSyncHandler({ dag, network, consensus }) {
         hasMore,
       });
       // Write to stream
-      stream.sink([response]);
+      try { await stream.sink([response]); } catch (err) { log.warn(`Sync: stream write failed: ${err.message}`); }
     };
 
     let batch = [];
@@ -204,7 +204,7 @@ function createSyncHandler({ dag, network, consensus }) {
 
     try {
       // Write request
-      stream.sink([request]);
+      try { await stream.sink([request]); } catch (err) { throw new Error(`Failed to send sync request: ${err.message}`); }
 
       // Read responses
       let imported = 0;
@@ -290,7 +290,7 @@ function createSyncHandler({ dag, network, consensus }) {
           tx_type: tx.txType || "",
           timestamp: tx.timestamp || "",
           prev: tx.prev || [],
-          data: tx.data?.length ? JSON.parse(tx.data.toString()) : {},
+          data: tx.data?.length ? (() => { try { return JSON.parse(tx.data.toString()); } catch { return {}; } })() : {},
           signature: tx.signature?.length ? tx.signature.toString("hex") : null,
         })),
         signature: msg.batch?.signature?.length ? msg.batch.signature.toString("hex") : null,

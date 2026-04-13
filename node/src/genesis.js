@@ -194,6 +194,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       mempool_tx_ttl_seconds: 300,        // evict txs older than 5 minutes
       certificate_max_bytes: 1048576,     // 1 MB max certificate size
       sync_batch_size: 100,               // certificates per sync response batch
+      ordered_hash_cache_size: 10000,     // max cert hashes kept in Bullshark ordering dedup
     },
     network: {
       chain_id: "tip-mainnet-v2",

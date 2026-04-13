@@ -68,7 +68,7 @@ function initConsensus({ dag, scoring, config, network }) {
   const commitHandler = createCommitHandler({ dag, scoring, config });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
-  const syncHandler = createSyncHandler({ dag, network, consensus: null }); // self-ref set below
+  const syncHandler = createSyncHandler({ dag, network });
 
   // ── Create Bullshark (ordering) ───────────────────────────────────────────
   const bullshark = createBullshark({

@@ -37,7 +37,7 @@ function createBatch(round, authorNodeId, txs, privateKey) {
   };
 
   // Hash: SHAKE-256(round + author + sorted tx_ids)
-  const txIds = txs.map(t => t.tx_id).sort().join(",");
+  const txIds = txs.filter(t => t && t.tx_id).map(t => t.tx_id).sort().join(",");
   batch.hash = shake256(`batch:${round}:${authorNodeId}:${txIds}`);
 
   // Sign the hash with node's private key
@@ -58,7 +58,7 @@ function verifyBatch(batch, publicKey) {
   }
 
   // Recompute hash
-  const txIds = (batch.txs || []).map(t => t.tx_id).sort().join(",");
+  const txIds = (batch.txs || []).filter(t => t && t.tx_id).map(t => t.tx_id).sort().join(",");
   const expectedHash = shake256(`batch:${batch.round}:${batch.author_node_id}:${txIds}`);
 
   if (expectedHash !== batch.hash) {
