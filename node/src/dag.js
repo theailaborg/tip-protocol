@@ -267,6 +267,27 @@ class SQLiteStore {
         status          TEXT NOT NULL DEFAULT 'active',
         registered_at   TEXT NOT NULL
       );
+
+      -- ── Consensus: Certificates (Narwhal) ─────────────────────────
+      CREATE TABLE IF NOT EXISTS certificates (
+        hash            TEXT PRIMARY KEY,
+        round           INTEGER NOT NULL,
+        author_node_id  TEXT NOT NULL,
+        batch_data      TEXT NOT NULL,
+        acknowledgments TEXT NOT NULL,
+        parent_hashes   TEXT NOT NULL,
+        signature       TEXT NOT NULL,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
+      CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
+
+      -- ── Consensus: Persistent Mempool ──────────────────────────────
+      CREATE TABLE IF NOT EXISTS mempool (
+        tx_id           TEXT PRIMARY KEY,
+        tx_data         TEXT NOT NULL,
+        received_at     INTEGER NOT NULL DEFAULT (unixepoch())
+      );
     `);
   }
 
@@ -362,6 +383,26 @@ class SQLiteStore {
       ),
       getNode:    this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
       getAllNodes: this.db.prepare("SELECT * FROM nodes"),
+
+      // Certificates
+      saveCert: this.db.prepare(
+        `INSERT OR IGNORE INTO certificates
+           (hash,round,author_node_id,batch_data,acknowledgments,parent_hashes,signature)
+         VALUES (?,?,?,?,?,?,?)`
+      ),
+      getCert: this.db.prepare("SELECT * FROM certificates WHERE hash=?"),
+      getCertsByRound: this.db.prepare("SELECT * FROM certificates WHERE round=? ORDER BY author_node_id"),
+      getCertsByAuthorRound: this.db.prepare("SELECT * FROM certificates WHERE author_node_id=? AND round=?"),
+      getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
+      getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
+      countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
+
+      // Persistent mempool
+      saveMempoolTx: this.db.prepare("INSERT OR IGNORE INTO mempool (tx_id,tx_data) VALUES (?,?)"),
+      getMempoolTxs: this.db.prepare("SELECT * FROM mempool ORDER BY received_at ASC"),
+      deleteMempoolTx: this.db.prepare("DELETE FROM mempool WHERE tx_id=?"),
+      clearMempoolBefore: this.db.prepare("DELETE FROM mempool WHERE received_at < ?"),
+      countMempool: this.db.prepare("SELECT COUNT(*) AS n FROM mempool"),
     };
   }
 
@@ -507,6 +548,70 @@ class SQLiteStore {
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes()    { return this._stmts.getAllNodes.all(); }
 
+  // ── Certificates (Narwhal consensus) ──────────────────────────────────────
+  saveCertificate(cert) {
+    this._stmts.saveCert.run(
+      cert.hash,
+      cert.round,
+      cert.author_node_id,
+      JSON.stringify(cert.batch),
+      JSON.stringify(cert.acknowledgments),
+      JSON.stringify(cert.parent_hashes || []),
+      cert.signature
+    );
+  }
+  getCertificate(hash) {
+    const row = this._stmts.getCert.get(hash);
+    return row ? this._parseCert(row) : null;
+  }
+  getCertificatesByRound(round) {
+    return this._stmts.getCertsByRound.all(round).map(r => this._parseCert(r));
+  }
+  getCertificateByAuthorRound(authorNodeId, round) {
+    const row = this._stmts.getCertsByAuthorRound.get(authorNodeId, round);
+    return row ? this._parseCert(row) : null;
+  }
+  getLatestRound() {
+    return this._stmts.getLatestRound.get().latest || 0;
+  }
+  getCertificatesFromRound(fromRound) {
+    return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
+  }
+  certificateCount() {
+    return this._stmts.countCerts.get().n;
+  }
+  _parseCert(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      batch: JSON.parse(row.batch_data),
+      acknowledgments: JSON.parse(row.acknowledgments),
+      parent_hashes: JSON.parse(row.parent_hashes),
+    };
+  }
+
+  // ── Persistent Mempool ────────────────────────────────────────────────────
+  saveMempoolTx(tx) {
+    this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx));
+  }
+  getMempoolTxs() {
+    return this._stmts.getMempoolTxs.all().map(r => JSON.parse(r.tx_data));
+  }
+  deleteMempoolTx(txId) {
+    this._stmts.deleteMempoolTx.run(txId);
+  }
+  deleteMempoolTxs(txIds) {
+    const del = this._stmts.deleteMempoolTx;
+    const batch = this.db.transaction((ids) => { for (const id of ids) del.run(id); });
+    batch(txIds);
+  }
+  clearStaleMempoolTxs(beforeUnixSec) {
+    this._stmts.clearMempoolBefore.run(beforeUnixSec);
+  }
+  mempoolCount() {
+    return this._stmts.countMempool.get().n;
+  }
+
   close() {
     try { this.db.close(); } catch { /* ignore */ }
   }
@@ -613,6 +718,23 @@ function initDAG(config) {
     saveNode:        (rec)      => store.saveNode(rec),
     getNode:         (id)       => store.getNode(id),
     getAllNodes:      ()         => store.getAllNodes(),
+
+    // ── Certificates (Narwhal consensus) ─────────────────────────────────
+    saveCertificate:           (cert)        => store.saveCertificate(cert),
+    getCertificate:            (hash)        => store.getCertificate(hash),
+    getCertificatesByRound:    (round)       => store.getCertificatesByRound(round),
+    getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
+    getLatestRound:            ()            => store.getLatestRound(),
+    getCertificatesFromRound:  (fromRound)   => store.getCertificatesFromRound(fromRound),
+    certificateCount:          ()            => store.certificateCount(),
+
+    // ── Persistent Mempool ────────────────────────────────────────────────
+    saveMempoolTx:             (tx)          => store.saveMempoolTx(tx),
+    getMempoolTxs:             ()            => store.getMempoolTxs(),
+    deleteMempoolTx:           (txId)        => store.deleteMempoolTx(txId),
+    deleteMempoolTxs:          (txIds)       => store.deleteMempoolTxs(txIds),
+    clearStaleMempoolTxs:      (before)      => store.clearStaleMempoolTxs(before),
+    mempoolCount:              ()            => store.mempoolCount(),
 
     close:           ()         => store.close(),
   };

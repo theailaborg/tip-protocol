@@ -1,16 +1,17 @@
 /**
  * @file @tip-protocol/node/src/consensus/mempool.js
- * @description Transaction mempool for Narwhal consensus.
+ * @description Persistent transaction mempool for Narwhal consensus.
  *
  * Holds validated transactions that have been accepted via the API
  * but not yet included in a certificate (and thus not yet ordered/committed).
  *
  * Features:
+ *   - Disk persistence: every tx written to SQLite via dag.saveMempoolTx()
+ *   - Restored on restart: reloads pending txs from disk
  *   - Dedup by tx_id (no duplicate txs)
  *   - Max size cap (reject when full)
  *   - Drain: returns and removes txs for certificate creation
  *   - Age-based eviction (txs older than TTL are dropped)
- *   - Thread-safe for single-threaded Node.js (no locking needed)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -24,18 +25,38 @@ const { getLogger } = require("../logger");
 const log = getLogger("tip.mempool");
 
 /**
- * @param {Object} [options]  Override genesis defaults (mainly for testing)
- * @param {number} [options.maxSize]       Max pending txs
- * @param {number} [options.maxTxAgeSec]   Evict txs older than this
+ * @param {Object}  dag               DAG instance (for disk persistence)
+ * @param {Object}  [options]         Override genesis defaults (mainly for testing)
+ * @param {number}  [options.maxSize]
+ * @param {number}  [options.maxTxAgeSec]
  */
-function createMempool(options = {}) {
+function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
+
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
 
+  // ── Restore from disk on startup ────────────────────────────────────────
+  if (dag && typeof dag.getMempoolTxs === "function") {
+    try {
+      const persisted = dag.getMempoolTxs();
+      for (const tx of persisted) {
+        if (tx && tx.tx_id) {
+          _pending.set(tx.tx_id, { tx, receivedAt: Date.now() });
+        }
+      }
+      if (persisted.length > 0) {
+        log.info(`Mempool restored ${persisted.length} pending txs from disk`);
+      }
+    } catch (err) {
+      log.warn(`Mempool restore failed: ${err.message}`);
+    }
+  }
+
   /**
    * Add a validated tx to the mempool.
+   * Persists to disk immediately for crash recovery.
    * @param {Object} tx  A validated transaction (must have tx_id)
    * @returns {{ added: boolean, reason?: string }}
    */
@@ -54,23 +75,42 @@ function createMempool(options = {}) {
     }
 
     _pending.set(tx.tx_id, { tx, receivedAt: Date.now() });
+
+    // Persist to disk
+    if (dag && typeof dag.saveMempoolTx === "function") {
+      try { dag.saveMempoolTx(tx); } catch (err) {
+        log.warn(`Mempool persist failed for ${tx.tx_id}: ${err.message}`);
+      }
+    }
+
     return { added: true };
   }
 
   /**
    * Drain up to `limit` txs from the mempool for certificate creation.
-   * Removes drained txs from the pool. Evicts stale txs first.
-   * @param {number} limit  Max txs to drain (default: 500)
+   * Removes drained txs from memory and disk. Evicts stale txs first.
+   * @param {number} limit  Max txs to drain
    * @returns {Array<Object>}  The drained txs
    */
   function drain(limit = CONSENSUS.MAX_TXS_PER_CERTIFICATE) {
     _evictStale();
 
     const drained = [];
+    const drainedIds = [];
     for (const [txId, entry] of _pending) {
       if (drained.length >= limit) break;
       drained.push(entry.tx);
-      _pending.delete(txId);
+      drainedIds.push(txId);
+    }
+
+    // Remove from memory
+    for (const id of drainedIds) _pending.delete(id);
+
+    // Remove from disk
+    if (drainedIds.length > 0 && dag && typeof dag.deleteMempoolTxs === "function") {
+      try { dag.deleteMempoolTxs(drainedIds); } catch (err) {
+        log.warn(`Mempool disk cleanup failed: ${err.message}`);
+      }
     }
 
     if (drained.length > 0) {
@@ -81,15 +121,24 @@ function createMempool(options = {}) {
   }
 
   /**
-   * Remove specific tx_ids from the mempool.
+   * Remove specific tx_ids from the mempool (memory + disk).
    * Used when txs are committed via a certificate from another node.
    * @param {Array<string>} txIds
    * @returns {number}  Count of removed txs
    */
   function remove(txIds) {
     let removed = 0;
+    const toDelete = [];
     for (const id of txIds) {
-      if (_pending.delete(id)) removed++;
+      if (_pending.delete(id)) {
+        removed++;
+        toDelete.push(id);
+      }
+    }
+    if (toDelete.length > 0 && dag && typeof dag.deleteMempoolTxs === "function") {
+      try { dag.deleteMempoolTxs(toDelete); } catch (err) {
+        log.warn(`Mempool disk remove failed: ${err.message}`);
+      }
     }
     return removed;
   }
@@ -122,27 +171,38 @@ function createMempool(options = {}) {
   }
 
   /**
-   * Clear all pending txs.
+   * Clear all pending txs (memory + disk).
    */
   function clear() {
+    const ids = Array.from(_pending.keys());
     _pending.clear();
+    if (ids.length > 0 && dag && typeof dag.deleteMempoolTxs === "function") {
+      try { dag.deleteMempoolTxs(ids); } catch (err) {
+        log.warn(`Mempool disk clear failed: ${err.message}`);
+      }
+    }
   }
 
   /**
    * Remove txs that have been in the mempool too long.
-   * Prevents stale txs from accumulating if they're never included in a certificate.
+   * Cleans both memory and disk.
    */
   function _evictStale() {
     const cutoff = Date.now() - (maxTxAgeSec * 1000);
-    let evicted = 0;
+    const evicted = [];
     for (const [txId, entry] of _pending) {
       if (entry.receivedAt < cutoff) {
         _pending.delete(txId);
-        evicted++;
+        evicted.push(txId);
       }
     }
-    if (evicted > 0) {
-      log.info(`Mempool evicted ${evicted} stale txs (older than ${maxTxAgeSec}s)`);
+    if (evicted.length > 0) {
+      log.info(`Mempool evicted ${evicted.length} stale txs (older than ${maxTxAgeSec}s)`);
+      if (dag && typeof dag.deleteMempoolTxs === "function") {
+        try { dag.deleteMempoolTxs(evicted); } catch (err) {
+          log.warn(`Mempool disk eviction failed: ${err.message}`);
+        }
+      }
     }
   }
 
