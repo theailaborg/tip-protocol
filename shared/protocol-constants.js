@@ -180,6 +180,7 @@ const CONSENSUS = {
   get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
   get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
   get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
+  get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
 };
 
 const NETWORK = {

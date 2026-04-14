@@ -49,7 +49,7 @@ const log = getLogger("tip.narwhal");
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, onCommit }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, activeParticipants: _activeParticipants, onCommit }) {
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -64,6 +64,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
   const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
+
+  // _activeParticipants is shared with Bullshark via the orchestrator.
+  // Nodes are added when we see their batches/certificates.
+  // Quorum is based on this set, not the full registry.
 
   const nodeId = config.nodeRegisteredId || config.nodeId;
   const privateKey = config.nodePrivateKey;
@@ -84,7 +88,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _wake();
     });
 
-    log.info(`Narwhal started at round ${_currentRound} (quorum: ${_getQuorum()}/${getNodeCount()}) — idle, waiting for work`);
+    log.info(`Narwhal started at round ${_currentRound} (active: ${_activeParticipants.size}, registered: ${getNodeCount()}, quorum: ${_getQuorum()}) — idle, waiting for work`);
 
     // If mempool already has pending txs (restored from crash), wake immediately
     if (mempool.size() > 0) {
@@ -293,6 +297,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     _peerBatches.set(batch.author_node_id, batch);
 
+    // Track as active participant (affects quorum from next round)
+    if (!_activeParticipants.has(batch.author_node_id)) {
+      _activeParticipants.add(batch.author_node_id);
+      log.info(`Active participant joined: ${batch.author_node_id} (active: ${_activeParticipants.size}, quorum: ${_getQuorum()})`);
+    }
+
     // Send ack
     const ack = createBatchAck(batch.hash, nodeId, privateKey);
     _recordAck(batch.hash, ack);
@@ -451,9 +461,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Persist
     dag.saveCertificate(cert);
 
-    // Track if current round
+    // Track if current round — peer is in sync and actively participating
     if (cert.round === _currentRound) {
       _roundCertificates.set(cert.author_node_id, cert);
+
+      // Add to active participants only when peer is producing current-round certs
+      if (!_activeParticipants.has(cert.author_node_id)) {
+        _activeParticipants.add(cert.author_node_id);
+        log.info(`Active participant joined: ${cert.author_node_id} (active: ${_activeParticipants.size}, quorum: ${_getQuorum()})`);
+      }
+
       _tryAdvanceRound();
     }
 
@@ -470,7 +487,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const quorum = _getQuorum();
     if (_roundCertificates.size < quorum) return;
 
-    log.info(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${getNodeCount()} certificates)`);
+    log.info(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_activeParticipants.size} certificates)`);
 
     // Clear timers
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
@@ -505,7 +522,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function _getQuorum() {
-    return computeQuorum(getNodeCount());
+    return computeQuorum(_activeParticipants.size);
   }
 
   function _serializeBatch(batch) {
@@ -580,6 +597,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     start,
     stop,
     currentRound,
+    /** Advance _currentRound after certificate sync so we join at the right round */
+    resyncRound() {
+      const synced = dag.getLatestRound();
+      if (synced >= _currentRound) {
+        const oldRound = _currentRound;
+        _currentRound = synced + 1;
+        log.info(`Round resynced: ${oldRound} → ${_currentRound} (after certificate sync)`);
+      }
+    },
     handleIncomingBatch,
     handleIncomingAck,
     handleIncomingCertificate,
@@ -590,7 +616,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       batchesThisRound: _peerBatches.size,
       certificatesThisRound: _roundCertificates.size,
       quorum: _getQuorum(),
-      nodeCount: getNodeCount(),
+      activeParticipants: _activeParticipants.size,
+      registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
     }),
   };

@@ -24,8 +24,10 @@
 const { createMempool } = require("./mempool");
 const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
+const { computeQuorum } = require("./certificate");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -60,6 +62,18 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     return dag.getAllNodes().filter(n => n.status === "active").length;
   }
 
+  // ── Active participants tracking ──────────────────────────────────────────
+  // Quorum is based on nodes actually participating (producing certs), not
+  // the full registry. Prevents registered-but-offline nodes from inflating
+  // quorum and blocking consensus. Shared between Narwhal and Bullshark.
+  const activeParticipants = new Set();
+  const nodeId = config.nodeRegisteredId || config.nodeId;
+  activeParticipants.add(nodeId); // self is always active
+
+  function getActiveNodeIds() {
+    return [...activeParticipants].sort();
+  }
+
   // ── Create mempool (persistent) ───────────────────────────────────────────
   const mempool = createMempool(dag);
   log.info(`Mempool initialized (${mempool.size()} pending txs restored)`);
@@ -73,7 +87,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ── Create Bullshark (ordering) ───────────────────────────────────────────
   const bullshark = createBullshark({
     dag,
-    getNodeIds,
+    getNodeIds: getActiveNodeIds,
     onOrderedTxs: (orderedTxs, round) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round);
       // Update Merkle tree with newly committed certificate hashes
@@ -91,25 +105,68 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     config,
     getNodeKey,
     getNodeCount,
+    activeParticipants,
     onCommit: (certificates, round) => {
       bullshark.onRoundComplete(certificates, round);
     },
   });
 
-  // ── Wire network message handlers ────────────────────────────────────────
-  // These are called by the libp2p GossipSub topic subscriptions.
-  // Each topic routes to the correct Narwhal handler.
+  // ── Wire network event handlers ──────────────────────────────────────────
   function _wireNetworkHandlers() {
     if (!network) {
       log.warn("No network node — consensus running in local-only mode");
       return;
     }
 
-    // Narwhal listens for:
-    // MEMPOOL topic → incoming batches from peers
-    // CONSENSUS topic → incoming batch acks from peers
-    // CERTIFICATES topic → incoming certificates from peers
+    // Auto-sync when a new peer connects — catch up on missed certificates
+    network.node.addEventListener("peer:connect", async (event) => {
+      const peerId = event.detail.toString();
+      log.info(`Peer connected — syncing certificates from ${peerId.slice(0, 12)}...`);
+      try {
+        const result = await syncHandler.syncFromPeer(peerId);
+        if (result.imported > 0) {
+          log.info(`Synced ${result.imported} certificates from peer (rounds ${result.fromRound}-${result.toRound})`);
+          narwhal.resyncRound();
+        }
+      } catch (err) {
+        log.warn(`Sync from peer ${peerId.slice(0, 12)} failed: ${err.message}`);
+      }
+    });
+
+    // Remove stale participants on peer disconnect
+    network.node.addEventListener("peer:disconnect", () => {
+      _pruneInactiveParticipants();
+    });
+
     log.info("Consensus network handlers wired");
+  }
+
+  /**
+   * Remove participants that haven't produced a certificate in the last N rounds.
+   * Called on peer disconnect to clean up stale entries.
+   */
+  function _pruneInactiveParticipants() {
+    const inactiveThreshold = CONSENSUS.PARTICIPANT_INACTIVE_ROUNDS;
+    const latestRound = dag.getLatestRound();
+    if (latestRound < inactiveThreshold) return;
+
+    const recentAuthors = new Set();
+    for (let r = Math.max(1, latestRound - inactiveThreshold + 1); r <= latestRound; r++) {
+      try {
+        const certs = dag.getCertificatesByRound(r);
+        for (const cert of certs) recentAuthors.add(cert.author_node_id);
+      } catch { /* ignore */ }
+    }
+
+    // Always keep self
+    recentAuthors.add(nodeId);
+
+    for (const participant of activeParticipants) {
+      if (!recentAuthors.has(participant)) {
+        activeParticipants.delete(participant);
+        log.info(`Removed inactive participant: ${participant} (active: ${activeParticipants.size}, quorum: ${computeQuorum(activeParticipants.size)})`);
+      }
+    }
   }
 
   _wireNetworkHandlers();
