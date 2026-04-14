@@ -5,7 +5,7 @@ const { TX_TYPES, PROTOCOL } = require("../../../shared/constants");
 const PC = require("../../../shared/protocol-constants");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ dag, scoring, config, broadcast }) {
+function createRouter({ dag, scoring, config, consensus, network }) {
   const router = express.Router();
 
   router.get("/health", (req, res) => {
@@ -22,21 +22,38 @@ function createRouter({ dag, scoring, config, broadcast }) {
     const statusCode = dbOk ? 200 : 503;
     const mem = process.memoryUsage();
 
-    res.status(statusCode).json({
+    // Live network stats
+    const net = network?.current;
+    const cons = consensus?.current;
+    const peerCount = net ? net.peerCount() : 0;
+    const connectedPeers = net ? net.peers().map(p => p.toString()) : [];
+
+    const body = {
       status,
-      node_id: config.nodeId,
+      node_id: config.nodeRegisteredId || config.nodeId,
       node_type: config.nodeType,
       dag_count: dagCount,
       version: config.nodeVersion,
       protocol: PROTOCOL.version,
       uptime_seconds: Math.floor(process.uptime()),
+      peers: {
+        connected: peerCount,
+        peer_ids: connectedPeers,
+      },
       memory_mb: {
         rss: Math.round(mem.rss / 1048576),
         heap_used: Math.round(mem.heapUsed / 1048576),
         heap_total: Math.round(mem.heapTotal / 1048576),
       },
       timestamp: new Date().toISOString(),
-    });
+    };
+
+    // Consensus stats (if running)
+    if (cons) {
+      body.consensus = cons.stats();
+    }
+
+    res.status(statusCode).json(body);
   });
 
   router.get("/node/info", (req, res) => {
@@ -53,7 +70,11 @@ function createRouter({ dag, scoring, config, broadcast }) {
   });
 
   router.get("/node/peers", (req, res) => {
-    res.json({ peers: config.peers || [] });
+    const net = network?.current;
+    res.json({
+      connected: net ? net.peerCount() : 0,
+      peers: net ? net.peers().map(p => p.toString()) : [],
+    });
   });
 
   router.get("/node/registry", (req, res) => {

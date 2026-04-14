@@ -20,6 +20,10 @@ genesis-data/founding-vp-keys.json
 genesis-data/genesis-keys.json
 genesis-data/backups/
 
+# Node registration output (private keys)
+node2/
+node3/
+
 # Genesis public data — OK to commit
 !genesis-data/seed.db
 !genesis-data/seed-output.json

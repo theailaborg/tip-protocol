@@ -37,9 +37,9 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 
-function createApp({ dag, scoring, config, consensus: consensusRef = null }) {
+function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
-  const ctx = { dag, scoring, config, submitTx, submitBatch };
+  const ctx = { dag, scoring, config, submitTx, submitBatch, consensus: consensusRef, network: networkRef };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);

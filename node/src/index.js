@@ -97,7 +97,8 @@ async function main() {
 
   // 4. Build Express app
   const consensusRef = { current: null };
-  const app = createApp({ dag, scoring, config, consensus: consensusRef });
+  const networkRef = { current: null };
+  const app = createApp({ dag, scoring, config, consensus: consensusRef, network: networkRef });
 
   // 5. HTTP server
   const server = http.createServer(app);
@@ -135,6 +136,7 @@ async function main() {
       isAuthorizedPeer,
     });
 
+    networkRef.current = network;
     consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
     consensusRef.current = consensus;
 
