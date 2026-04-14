@@ -63,6 +63,9 @@ async function createNetworkNode(options = {}) {
   // Only peers that complete the TIP handshake are authorized.
   const _authorizedPeers = new Map();
 
+  // Callback when a peer completes handshake — used by consensus for sync
+  let _onPeerAuthorized = null;
+
   // Dynamic imports (libp2p ecosystem is ESM-only)
   const { createLibp2p } = await import("libp2p");
   const { tcp } = await import("@libp2p/tcp");
@@ -204,6 +207,7 @@ async function createNetworkNode(options = {}) {
       // Authorized!
       _authorizedPeers.set(remotePeerId, peerNodeId);
       log.info(`Handshake OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
+      if (_onPeerAuthorized) _onPeerAuthorized(remotePeerId, peerNodeId);
 
     } catch (err) {
       log.warn(`Handshake error from ${remotePeerId.slice(0, 12)}: ${err.message}`);
@@ -221,13 +225,21 @@ async function createNetworkNode(options = {}) {
       return;
     }
 
+    const { peerIdFromString } = await import("@libp2p/peer-id");
+    const maxRetries = CONSENSUS.HANDSHAKE_MAX_RETRIES;
     let stream;
-    try {
-      const { peerIdFromString } = await import("@libp2p/peer-id");
-      stream = await node.dialProtocol(peerIdFromString(remotePeerId), handshakeProtocol);
-    } catch (err) {
-      log.debug(`Handshake dial to ${remotePeerId.slice(0, 12)} failed: ${err.message}`);
-      return;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        stream = await node.dialProtocol(peerIdFromString(remotePeerId), handshakeProtocol);
+        break;
+      } catch (err) {
+        if (attempt === maxRetries) {
+          log.warn(`Handshake dial to ${remotePeerId.slice(0, 12)} failed after ${maxRetries} attempts: ${err.message}`);
+          return;
+        }
+        log.debug(`Handshake dial attempt ${attempt}/${maxRetries} to ${remotePeerId.slice(0, 12)} failed, retrying...`);
+        await new Promise(r => setTimeout(r, attempt * 500));
+      }
     }
 
     try {
@@ -282,6 +294,7 @@ async function createNetworkNode(options = {}) {
 
       _authorizedPeers.set(remotePeerId, peerNodeId);
       log.info(`Handshake OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
+      if (_onPeerAuthorized) _onPeerAuthorized(remotePeerId, peerNodeId);
 
     } catch (err) {
       log.warn(`Handshake initiate to ${remotePeerId.slice(0, 12)} failed: ${err.message}`);
@@ -381,6 +394,9 @@ async function createNetworkNode(options = {}) {
 
     /** This node's peer ID string */
     peerId: node.peerId.toString(),
+
+    /** Register callback for when a peer completes TIP handshake */
+    onPeerAuthorized(fn) { _onPeerAuthorized = fn; },
 
     /** All listen multiaddrs */
     multiaddrs: () => node.getMultiaddrs().map(ma => ma.toString()),

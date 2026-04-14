@@ -118,10 +118,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       return;
     }
 
-    // Auto-sync when a new peer connects — catch up on missed certificates
-    network.node.addEventListener("peer:connect", async (event) => {
-      const peerId = event.detail.toString();
-      log.info(`Peer connected — syncing certificates from ${peerId.slice(0, 12)}...`);
+    // Auto-sync AFTER handshake completes (peer is authorized)
+    network.onPeerAuthorized(async (peerId, tipNodeId) => {
+      log.info(`Peer authorized: ${tipNodeId} — syncing certificates from ${peerId.slice(0, 12)}...`);
       try {
         const result = await syncHandler.syncFromPeer(peerId);
         if (result.imported > 0) {

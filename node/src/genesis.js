@@ -199,6 +199,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       max_msgs_per_peer_per_sec: 100,    // rate limit: max GossipSub messages per peer per second
       participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
       handshake_timeout_ms: 10000,      // max time to complete TIP handshake after connection
+      handshake_max_retries: 3,         // max dial attempts for handshake before giving up
     },
     network: {
       chain_id: "tip-mainnet-v2",

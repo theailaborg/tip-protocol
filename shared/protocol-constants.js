@@ -182,6 +182,7 @@ const CONSENSUS = {
   get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
   get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
   get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
+  get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
 };
 
 const NETWORK = {
