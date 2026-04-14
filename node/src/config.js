@@ -33,6 +33,8 @@ function loadConfig() {
     port:        parseInt(process.env.PORT    || "4000", 10),
     host:        process.env.HOST             || "0.0.0.0",
     publicUrl:   process.env.TIP_PUBLIC_URL   || `http://localhost:4000`,
+    publicIp:    process.env.TIP_PUBLIC_IP   || null,    // external IP for bootstrap_addr in health
+    p2pPort:     parseInt(process.env.TIP_P2P_PORT || "4001", 10),
     peers:       parsePeers(process.env.TIP_PEERS),
 
     // ── Storage ───────────────────────────────────────────────────────────────

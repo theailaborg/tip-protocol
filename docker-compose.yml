@@ -41,6 +41,7 @@ services:
       TIP_P2P_PORT:          4001
       TIP_BOOTSTRAP_PEERS:   ${TIP_BOOTSTRAP_PEERS:-}
       TIP_ENABLE_MDNS:       ${TIP_ENABLE_MDNS:-true}
+      TIP_PUBLIC_IP:         ${TIP_PUBLIC_IP:-}
       TIP_DB_PATH:           /app/data/tip.db
       TIP_DATA_DIR:          /app/data
     healthcheck:

@@ -36,6 +36,13 @@ function createRouter({ dag, scoring, config, consensus, network }) {
       version: config.nodeVersion,
       protocol: PROTOCOL.version,
       uptime_seconds: Math.floor(process.uptime()),
+      p2p: net ? {
+        peer_id: net.peerId,
+        multiaddrs: net.multiaddrs(),
+        bootstrap_addr: config.publicIp
+          ? `/ip4/${config.publicIp}/tcp/${config.p2pPort || 4001}/p2p/${net.peerId}`
+          : null,
+      } : null,
       peers: {
         connected: peerCount,
         peer_ids: connectedPeers,
