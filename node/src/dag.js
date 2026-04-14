@@ -796,7 +796,7 @@ function initDAG(config) {
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
 function _writeGenesisBlock(store, config) {
   const {
-    GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH,
+    GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH, GENESIS_PAYLOAD,
     GENESIS_TX_SIGNATURE, GENESIS_VP_TX_SIGNATURE, getFoundingVP,
   } = require("./genesis");
 
@@ -831,8 +831,58 @@ function _writeGenesisBlock(store, config) {
   };
   store.saveTx({ ...vpTx, tx_id: computeTxId(vpTx), signature: GENESIS_VP_TX_SIGNATURE });
 
+  // Bootstrap founding identities from genesis_ring_keys (embedded by seed script)
+  const ringKeys = GENESIS_PAYLOAD.genesis_ring_keys || [];
+  const vpTxId = computeTxId(vpTx);
+  let lastTxId = vpTxId;
+
+  for (const member of ringKeys) {
+    if (!member.tip_id || !member.public_key) continue;
+
+    const mockZkProof = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
+    const registeredAt = GENESIS_TIMESTAMP;
+    const idTx = {
+      tx_type: TX_TYPES.REGISTER_IDENTITY,
+      timestamp: registeredAt,
+      prev: [lastTxId, lastTxId],
+      data: {
+        tip_id: member.tip_id,
+        region: member.region || "US",
+        public_key: member.public_key,
+        vp_id: foundingVP.vp_id,
+        verification_tier: "T1",
+        social_attested: true,
+        founding: true,
+        dedup_hash: member.dedup_hash,
+        zk_proof: mockZkProof,
+        vp_signature: member.vp_signature,
+      },
+    };
+    const idTxId = computeTxId(idTx);
+    store.saveTx({ ...idTx, tx_id: idTxId });
+
+    store.saveIdentity({
+      tip_id: member.tip_id,
+      region: member.region || "US",
+      public_key: member.public_key,
+      vp_id: foundingVP.vp_id,
+      verification_tier: "T1",
+      founding: true,
+      status: "active",
+      registered_at: registeredAt,
+      tx_id: idTxId,
+    });
+
+    if (member.dedup_hash) store.addDedupHash(member.dedup_hash);
+    store.setScore(member.tip_id, 550, 0);
+    lastTxId = idTxId;
+
+    log.info(`Founding identity registered: ${member.tip_id}`);
+  }
+
   log.info(`Genesis block written. Chain: tip-mainnet-v2 | Hash: ${GENESIS_HASH.slice(0, 16)}...`);
   log.info(`Founding VP registered: ${foundingVP.vp_id}`);
+  if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
 module.exports = { initDAG };

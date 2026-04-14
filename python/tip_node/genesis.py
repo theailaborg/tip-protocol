@@ -116,7 +116,7 @@ GENESIS_PAYLOAD: dict[str, Any] = {
 
     "founding_node_commitment": None,
 
-    "genesis_ring": ["tip://id/US-c0e4e450d940415d","tip://id/US-23feda24f9924319","tip://id/US-ffcb19ea211e78ca"],
+    "genesis_ring": ["tip://id/US-0542baa2e9118843","tip://id/US-f4a808d08f8cdddc","tip://id/US-cc31ee2e0ee38f1a"],
 
     "initial_dedup_merkle_root": shake256("empty-dedup-registry-v2"),
 

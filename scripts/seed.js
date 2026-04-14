@@ -226,6 +226,22 @@ async function embedFoundingVPKey() {
   fs.writeFileSync(genesisPyFile, pySrc);
   ok("Embedded genesis_ring (founding TIP-IDs) in genesis source files");
 
+  // Embed genesis_ring_keys (public keys + dedup hashes + VP signatures for initDAG)
+  const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
+    const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
+    const idFields = {
+      region: member.region, dedup_hash: dedupHash,
+      zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+      verification_tier: "T1", vp_id: vpId, social_attested: true,
+    };
+    const vpSignature = signBody(idFields, vpKeypair.privateKey);
+    return { tip_id: tipId, region: member.region.toUpperCase(), public_key: keypair.publicKey, dedup_hash: dedupHash, vp_signature: vpSignature };
+  });
+  jsSrc = fs.readFileSync(genesisJsFile, "utf8");
+  jsSrc = jsSrc.replace(/genesis_ring_keys:\s*\[.*?\]/s, `genesis_ring_keys: ${JSON.stringify(ringKeys)}`);
+  fs.writeFileSync(genesisJsFile, jsSrc);
+  ok("Embedded genesis_ring_keys (public keys + VP signatures) in genesis.js");
+
   // Clear Node.js require cache so genesis.js is re-read with updated key + ring
   const genesisModule = require.resolve("../node/src/genesis");
   delete require.cache[genesisModule];

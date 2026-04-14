@@ -59,11 +59,9 @@ COPY circuits/         ./circuits/
 COPY browser-extensio[n]/*.zip ./browser-extension/
 COPY package.json      ./package.json
 
-# Copy genesis data (seed.db for first boot auto-copy)
-COPY genesis-data/     ./genesis-data/
-
-# Copy scripts
-COPY scripts/seed.js   ./scripts/seed.js
+# Genesis state is bootstrapped from genesis.js constants by initDAG — no seed.db needed.
+# genesis.json is copied for hash verification / metadata only.
+COPY genesis-data/genesis.json ./genesis-data/genesis.json
 
 # Copy license/notice if they exist
 COPY NOTICE.tx[t]      ./

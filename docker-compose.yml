@@ -3,6 +3,7 @@
 # Quick start:
 #   npm run seed          # run once before first launch
 #   docker compose up
+# Genesis state is bootstrapped automatically from genesis.js on first boot.
 #
 # View logs:
 #   docker compose logs -f tip-node
