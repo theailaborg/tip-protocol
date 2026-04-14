@@ -110,20 +110,10 @@ async function main() {
   let consensus = null;
 
   try {
-    // Peer authorization: only accept connections from nodes in our registry
-    // The peerId is a libp2p identifier — we match it against registered node public keys
-    // For now, all registered nodes are authorized. When multiaddr is added to registry,
-    // we can match peerId more precisely.
-    const registeredNodeIds = new Set(dag.getAllNodes().map(n => n.node_id));
-    const isAuthorizedPeer = (peerId) => {
-      // In production with multiaddr in registry, match peerId against node registry.
-      // For now, authorize if we have any registered nodes (bootstrap trust).
-      // A node with zero registered nodes (first boot) authorizes all peers.
-      if (registeredNodeIds.size === 0) return true;
-      // Check if this peerId was provided in bootstrap peers (trusted config)
-      if (bootstrapPeers.some(addr => addr.includes(peerId))) return true;
-      // TODO: When NODE_REGISTERED stores libp2p peerId, match directly
-      return false;
+    // Node registry lookup for handshake verification
+    const getNodeKey = (nId) => {
+      const n = dag.getNode(nId);
+      return n?.public_key || null;
     };
 
     network = await createNetworkNode({
@@ -131,10 +121,16 @@ async function main() {
       bootstrapPeers,
       enableMdns,
       handlers: {},
-      isAuthorizedPeer,
+      nodeId: config.nodeRegisteredId || config.nodeId,
+      nodePrivateKey: config.nodePrivateKey,
+      getNodeKey,
+      getLatestRound: () => dag.getLatestRound(),
+      getMerkleRoot: () => "",
     });
 
     networkRef.current = network;
+    // Peer authorization via TIP handshake — network.authorizedPeers() has verified peers
+    const isAuthorizedPeer = (peerId) => !!network.authorizedPeers()[peerId];
     consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
     consensusRef.current = consensus;
 

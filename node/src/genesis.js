@@ -198,9 +198,11 @@ const GENESIS_PAYLOAD = Object.freeze({
       ordered_hash_cache_size: 10000,     // max cert hashes kept in Bullshark ordering dedup
       max_msgs_per_peer_per_sec: 100,    // rate limit: max GossipSub messages per peer per second
       participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
+      handshake_timeout_ms: 10000,      // max time to complete TIP handshake after connection
     },
     network: {
       chain_id: "tip-mainnet-v2",
+      handshake_protocol: "/tip/handshake/1.0.0",
       merkle_publish_hours: 6,
       score_cache_ttl_seconds: 21600,
       revocation_cascade_days: 90,

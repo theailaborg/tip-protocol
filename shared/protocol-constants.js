@@ -181,9 +181,11 @@ const CONSENSUS = {
   get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
   get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
   get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
+  get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
 };
 
 const NETWORK = {
+  get HANDSHAKE_PROTOCOL() { return _n().handshake_protocol; },
   get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
   get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },
