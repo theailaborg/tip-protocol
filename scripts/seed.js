@@ -467,6 +467,14 @@ async function registerSeedNode(vpKeypair) {
     ok("Node keys written to .env");
   }
 
+  // Embed founding node in genesis.js so initDAG can bootstrap it on any node
+  const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
+  const foundingNodeData = { node_id: nodeId, name: nodeName, public_key: _nodeKp.publicKey, council_signature: councilSig, approving_vp_id: vpId };
+  let gSrc = fs.readFileSync(genesisJsFile, "utf8");
+  gSrc = gSrc.replace(/founding_node:\s*(?:null|{[^}]*})/s, `founding_node: ${JSON.stringify(foundingNodeData)}`);
+  fs.writeFileSync(genesisJsFile, gSrc);
+  ok("Embedded founding node in genesis.js");
+
   ok(`Seed node registered: ${nodeId}`);
   label("Node ID", nodeId);
   return { nodeId, name: nodeName, publicKey: _nodeKp.publicKey };

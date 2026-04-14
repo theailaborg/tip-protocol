@@ -880,6 +880,32 @@ function _writeGenesisBlock(store, config) {
     log.info(`Founding identity registered: ${member.tip_id}`);
   }
 
+  // Bootstrap founding node from genesis payload (embedded by seed script)
+  const foundingNode = GENESIS_PAYLOAD.founding_node;
+  if (foundingNode && foundingNode.node_id && foundingNode.public_key) {
+    const nodeTx = {
+      tx_type: TX_TYPES.NODE_REGISTERED,
+      timestamp: GENESIS_TIMESTAMP,
+      prev: [lastTxId, lastTxId],
+      data: {
+        node_id: foundingNode.node_id,
+        name: foundingNode.name,
+        public_key: foundingNode.public_key,
+        council_signature: foundingNode.council_signature,
+        approving_vp_id: foundingNode.approving_vp_id,
+      },
+    };
+    store.saveTx({ ...nodeTx, tx_id: computeTxId(nodeTx) });
+    store.saveNode({
+      node_id: foundingNode.node_id,
+      name: foundingNode.name,
+      public_key: foundingNode.public_key,
+      status: "active",
+      registered_at: GENESIS_TIMESTAMP,
+    });
+    log.info(`Founding node registered: ${foundingNode.node_id}`);
+  }
+
   log.info(`Genesis block written. Chain: tip-mainnet-v2 | Hash: ${GENESIS_HASH.slice(0, 16)}...`);
   log.info(`Founding VP registered: ${foundingVP.vp_id}`);
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);

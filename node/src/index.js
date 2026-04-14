@@ -82,7 +82,7 @@ async function main() {
       config.nodeRegisteredId = myNode.node_id;
       log.info(`Node registered as: ${myNode.node_id}`);
     } else {
-      log.warn("This node is not in the node registry — gossip auth will be unverified");
+      log.error("This node's public key is not in the node registry. Certificates will use an unregistered ID. Re-run seed or register this node.");
     }
   }
 
