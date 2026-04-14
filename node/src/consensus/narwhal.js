@@ -2,7 +2,12 @@
  * @file @tip-protocol/node/src/consensus/narwhal.js
  * @description Narwhal data availability layer for TIP consensus.
  *
- * Each round:
+ * Event-driven design:
+ *   - IDLE when no work: zero certificates, zero DB writes, zero cost
+ *   - Wakes on: local tx added to mempool, or peer batch received
+ *   - Runs one complete wave (propose + vote) then returns to idle if no more work
+ *
+ * Each round (when active):
  *   1. Drain txs from mempool → create Batch → broadcast on MEMPOOL topic
  *   2. Receive batches from peers → send BatchAck on CONSENSUS topic
  *   3. Collect 2/3+ BatchAcks → create Certificate → broadcast on CERTIFICATES topic
@@ -48,14 +53,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
+  let _active = false;                              // false = idle, true = running rounds
   let _roundTimer = null;
   let _retryTimer = null;
+  let _batchWaitTimer = null;                       // batch accumulation timer
 
   // Per-round state
   let _myBatch = null;
-  const _peerBatches = new Map();               // nodeId → batch
-  const _batchAcks = new Map();                 // batchHash → [ack, ack, ...]
-  const _roundCertificates = new Map();         // nodeId → certificate
+  const _peerBatches = new Map();                   // nodeId → batch
+  const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
+  const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
 
   const nodeId = config.nodeRegisteredId || config.nodeId;
@@ -64,22 +71,36 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   /**
-   * Start the Narwhal round loop.
+   * Start the Narwhal consensus layer.
+   * Subscribes to mempool events but stays idle until work arrives.
    */
   function start() {
     if (_running) return;
     _running = true;
-    log.info(`Narwhal started at round ${_currentRound} (quorum: ${_getQuorum()}/${getNodeCount()})`);
-    _beginRound();
+
+    // Subscribe to mempool — wake from idle when a tx arrives
+    mempool.onTxAdded(() => {
+      if (!_running) return;
+      _wake();
+    });
+
+    log.info(`Narwhal started at round ${_currentRound} (quorum: ${_getQuorum()}/${getNodeCount()}) — idle, waiting for work`);
+
+    // If mempool already has pending txs (restored from crash), wake immediately
+    if (mempool.size() > 0) {
+      _wake();
+    }
   }
 
   /**
-   * Stop the Narwhal round loop.
+   * Stop the Narwhal consensus layer.
    */
   function stop() {
     _running = false;
+    _active = false;
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    if (_batchWaitTimer) { clearTimeout(_batchWaitTimer); _batchWaitTimer = null; }
     log.info("Narwhal stopped");
   }
 
@@ -90,22 +111,63 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return _currentRound;
   }
 
+  // ── Wake / idle transitions ─────────────────────────────────────────────
+
+  /**
+   * Wake from idle state.
+   * @param {boolean} [immediate=false]  Skip batch accumulation (e.g. peer sent a batch)
+   */
+  function _wake(immediate = false) {
+    if (_active) return; // already running rounds
+    _active = true;
+
+    // If already waiting for batch accumulation, let it continue
+    if (_batchWaitTimer) return;
+
+    if (immediate) {
+      // Peer is already running a round — start immediately to participate
+      log.debug("Narwhal waking — immediate (peer activity)");
+      _beginRound();
+    } else {
+      // Local tx — wait for more txs to accumulate (e.g. dispute = 9 txs together)
+      _batchWaitTimer = setTimeout(() => {
+        _batchWaitTimer = null;
+        if (_running && _active) _beginRound();
+      }, CONSENSUS.BATCH_WAIT_MS);
+      log.debug(`Narwhal waking — accumulating batch (${CONSENSUS.BATCH_WAIT_MS}ms)`);
+    }
+  }
+
+  /**
+   * Check if we should go idle after a wave completes.
+   * Safe for both single and multi-node: if a peer starts a round while
+   * we're idle, their batch arrives via GossipSub → handleIncomingBatch
+   * calls _wake() → we participate immediately.
+   */
+  function _checkIdle() {
+    // Only check after even rounds (vote round done = wave complete)
+    // _currentRound was already incremented, so it's now odd
+    if (_currentRound % 2 !== 1) return;
+
+    // Still have work in mempool
+    if (mempool.size() > 0) return;
+
+    // No work → go idle (works for single and multi-node)
+    _active = false;
+    if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    log.debug(`Round ${_currentRound}: idle — no pending work`);
+  }
+
   // ── Round lifecycle ──────────────────────────────────────────────────────
 
   function _beginRound() {
-    if (!_running) return;
+    if (!_running || !_active) return;
 
     _resetRoundState();
 
     // Phase 1: Create batch from mempool and broadcast
     const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
-
-    // If no txs AND no connected peers, wait before retrying — avoids empty certificate spam
-    if (txs.length === 0 && network.peerCount() === 0) {
-      log.debug(`Round ${_currentRound}: idle — no txs, no peers`);
-      _roundTimer = setTimeout(() => { _roundTimer = null; if (_running) _beginRound(); }, CONSENSUS.ROUND_TIMEOUT_MS);
-      return;
-    }
 
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);
@@ -121,45 +183,52 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (txs.length > 0) {
       log.info(`Round ${_currentRound}: batch created with ${txs.length} txs`);
     } else {
-      log.debug(`Round ${_currentRound}: empty batch`);
+      log.debug(`Round ${_currentRound}: empty batch (vote round)`);
     }
 
     // Self-ack our own batch
     _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, privateKey));
 
     // Try certificate immediately (works in single-node mode where quorum=1)
+    // In single-node, this will create cert + advance round synchronously.
+    const roundBeforeTry = _currentRound;
     _tryCreateCertificate();
 
-    // Round timeout — retry certificate creation + check advancement
-    _roundTimer = setTimeout(() => {
-      _roundTimer = null;
-      if (!_running) return;
+    // Only set the timeout if the round hasn't already advanced.
+    // In single-node, _tryCreateCertificate → _tryAdvanceRound fires synchronously,
+    // so _currentRound is already incremented. Setting a timer here would fire on
+    // stale state and cause spurious round advances.
+    if (_currentRound === roundBeforeTry) {
+      _roundTimer = setTimeout(() => {
+        _roundTimer = null;
+        if (!_running) return;
 
-      if (!_myCertificateCreated) {
-        log.debug(`Round ${_currentRound}: timeout — attempting certificate with ${(_batchAcks.get(_myBatch?.hash) || []).length} acks`);
-        _tryCreateCertificate();
-      }
-      _tryAdvanceRound();
+        if (!_myCertificateCreated) {
+          log.debug(`Round ${_currentRound}: timeout — attempting certificate with ${(_batchAcks.get(_myBatch?.hash) || []).length} acks`);
+          _tryCreateCertificate();
+        }
+        _tryAdvanceRound();
 
-      // If still stuck, schedule periodic retry
-      if (_running && _roundCertificates.size < _getQuorum()) {
-        _scheduleRetry();
-      }
-    }, CONSENSUS.ROUND_TIMEOUT_MS);
+        // If still stuck, schedule periodic retry
+        if (_running && _active && _roundCertificates.size < _getQuorum()) {
+          _scheduleRetry();
+        }
+      }, CONSENSUS.ROUND_TIMEOUT_MS);
+    }
   }
 
   /**
    * Periodic retry when round can't advance (e.g. waiting for peers).
    */
   function _scheduleRetry() {
-    if (_retryTimer || !_running) return;
+    if (_retryTimer || !_running || !_active) return;
     _retryTimer = setTimeout(() => {
       _retryTimer = null;
-      if (!_running) return;
+      if (!_running || !_active) return;
       _tryCreateCertificate();
       _tryAdvanceRound();
       // Keep retrying if still stuck
-      if (_running && _roundCertificates.size < _getQuorum()) {
+      if (_running && _active && _roundCertificates.size < _getQuorum()) {
         _scheduleRetry();
       }
     }, CONSENSUS.ROUND_TIMEOUT_MS);
@@ -181,6 +250,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    */
   function handleIncomingBatch(data) {
     if (!_running) return;
+
+    // Peer is active — wake up immediately to participate
+    if (!_active) _wake(true);
 
     // Enforce size limit (batch is part of certificate, share the limit)
     if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
@@ -348,6 +420,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function handleIncomingCertificate(data) {
     if (!_running) return;
 
+    // Peer is active — wake up immediately to participate
+    if (!_active) _wake(true);
+
     // Enforce size limit
     if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
       log.warn(`Rejected oversized certificate: ${data.length} bytes (max ${CONSENSUS.CERTIFICATE_MAX_BYTES})`);
@@ -414,9 +489,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Advance
     _currentRound++;
 
-    // Start next round after minimum interval (prevents spinning on empty rounds)
-    if (_running) {
-      setTimeout(() => _beginRound(), CONSENSUS.ROUND_TIMEOUT_MS);
+    // Check if we should go idle (only after even rounds — wave complete)
+    _checkIdle();
+
+    // If still active, start next round
+    if (_active && _running) {
+      // Use batch_wait_ms if mempool has new txs, otherwise start immediately
+      // (vote round shouldn't wait — it needs to happen promptly)
+      const hasNewTxs = mempool.size() > 0;
+      const delay = hasNewTxs ? CONSENSUS.BATCH_WAIT_MS : 0;
+      setTimeout(() => _beginRound(), delay);
     }
   }
 
@@ -504,6 +586,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     stats: () => ({
       round: _currentRound,
       running: _running,
+      active: _active,
       batchesThisRound: _peerBatches.size,
       certificatesThisRound: _roundCertificates.size,
       quorum: _getQuorum(),

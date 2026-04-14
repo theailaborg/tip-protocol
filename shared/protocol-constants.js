@@ -172,6 +172,7 @@ const _r = () => get().reputation;
 
 const CONSENSUS = {
   get ROUND_TIMEOUT_MS() { return _c().round_timeout_ms; },
+  get BATCH_WAIT_MS() { return _c().batch_wait_ms; },
   get MAX_TXS_PER_CERTIFICATE() { return _c().max_txs_per_certificate; },
   get MEMPOOL_MAX_SIZE() { return _c().mempool_max_size; },
   get MEMPOOL_TX_TTL_SECONDS() { return _c().mempool_tx_ttl_seconds; },

@@ -37,6 +37,9 @@ function createMempool(dag, options = {}) {
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
 
+  /** @type {Function|null} Callback when a tx is added (used by Narwhal to wake from idle) */
+  let _onTxAdded = null;
+
   // ── Restore from disk on startup ────────────────────────────────────────
   if (dag && typeof dag.getMempoolTxs === "function") {
     try {
@@ -82,6 +85,9 @@ function createMempool(dag, options = {}) {
         log.warn(`Mempool persist failed for ${tx.tx_id}: ${err.message}`);
       }
     }
+
+    // Notify listener (Narwhal wakes from idle)
+    if (_onTxAdded) _onTxAdded(tx);
 
     return { added: true };
   }
@@ -223,7 +229,13 @@ function createMempool(dag, options = {}) {
     };
   }
 
-  return { add, drain, remove, has, getAll, size, clear, stats };
+  /**
+   * Register a callback for when a tx is added.
+   * @param {Function} fn  Called with (tx) when a new tx enters the mempool
+   */
+  function onTxAdded(fn) { _onTxAdded = fn; }
+
+  return { add, drain, remove, has, getAll, size, clear, stats, onTxAdded };
 }
 
 module.exports = { createMempool };

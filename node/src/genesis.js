@@ -189,6 +189,7 @@ const GENESIS_PAYLOAD = Object.freeze({
     },
     consensus: {
       round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round
+      batch_wait_ms: 200,                 // after first tx, wait this long for more txs before starting round
       max_txs_per_certificate: 500,       // max txs drained from mempool per certificate
       mempool_max_size: 10000,            // max pending txs in mempool
       mempool_tx_ttl_seconds: 300,        // evict txs older than 5 minutes
@@ -235,7 +236,7 @@ const GENESIS_PAYLOAD = Object.freeze({
 
   // Genesis Ring — founding verified members
   // These are populated by the seed script and cannot be added after launch
-  genesis_ring: ["tip://id/US-c0e4e450d940415d","tip://id/US-23feda24f9924319","tip://id/US-ffcb19ea211e78ca"],
+  genesis_ring: ["tip://id/US-c0e4e450d940415d", "tip://id/US-23feda24f9924319", "tip://id/US-ffcb19ea211e78ca"],
 
   // Merkle root of the initial dedup registry (empty at genesis)
   initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
