@@ -5,7 +5,7 @@ TIP Protocol Python CLI
 Usage:
   python -m cli.main --help
   python -m cli.main config set-node http://localhost:4000
-  python -m cli.main identity register --vp-id tip://id/VP-... --region US
+  python -m cli.main identity register --vp-id tip://vp/... --region US
   python -m cli.main identity score tip://id/US-...
   python -m cli.main content register --file article.txt --origin OH
   python -m cli.main badge seal --score 892 --out seal.svg

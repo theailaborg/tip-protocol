@@ -10,7 +10,7 @@ Usage:
 
     # Register identity
     identity = tip.identity.register(
-        region="US", vp_id="tip://id/VP-US-...",
+        region="US", vp_id="tip://vp/US-...",
         zk_dedup_proof="zkp:..."
     )
 

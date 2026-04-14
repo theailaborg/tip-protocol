@@ -18,6 +18,7 @@ genesis_root_key.*
 genesis-data/founder-keys.json
 genesis-data/founding-vp-keys.json
 genesis-data/genesis-keys.json
+genesis-data/backups/
 
 # Genesis public data — OK to commit
 !genesis-data/seed.db

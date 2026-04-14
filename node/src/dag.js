@@ -289,6 +289,7 @@ class SQLiteStore {
       CREATE TABLE IF NOT EXISTS verification_providers (
         vp_id              TEXT PRIMARY KEY,
         name               TEXT NOT NULL,
+        jurisdiction       TEXT NOT NULL DEFAULT 'US',
         jurisdiction_tier  TEXT NOT NULL DEFAULT 'green',
         public_key         TEXT,
         status             TEXT NOT NULL DEFAULT 'active',
@@ -407,8 +408,8 @@ class SQLiteStore {
 
       saveVP: this.db.prepare(
         `INSERT OR REPLACE INTO verification_providers
-           (vp_id,name,jurisdiction_tier,public_key,status,registered_at)
-         VALUES (?,?,?,?,?,?)`
+           (vp_id,name,jurisdiction,jurisdiction_tier,public_key,status,registered_at)
+         VALUES (?,?,?,?,?,?,?)`
       ),
       getVP: this.db.prepare("SELECT * FROM verification_providers WHERE vp_id=?"),
       getAllVPs: this.db.prepare("SELECT * FROM verification_providers"),
@@ -563,6 +564,7 @@ class SQLiteStore {
   saveVP(rec) {
     this._stmts.saveVP.run(
       rec.vp_id, rec.name,
+      rec.jurisdiction || "US",
       rec.jurisdiction_tier || "green",
       rec.public_key || null,
       rec.status || "active",
@@ -807,6 +809,7 @@ function _writeGenesisBlock(store, config) {
   store.saveVP({
     vp_id: foundingVP.vp_id,
     name: foundingVP.name,
+    jurisdiction: foundingVP.jurisdiction,
     jurisdiction_tier: foundingVP.jurisdiction_tier,
     public_key: foundingVP.public_key,
     status: "active",
@@ -821,6 +824,7 @@ function _writeGenesisBlock(store, config) {
     data: {
       vp_id: foundingVP.vp_id,
       name: foundingVP.name,
+      jurisdiction: foundingVP.jurisdiction,
       jurisdiction_tier: foundingVP.jurisdiction_tier,
       public_key: foundingVP.public_key,
     },

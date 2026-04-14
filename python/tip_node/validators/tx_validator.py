@@ -52,7 +52,7 @@ _TIP_ID_RE   = re.compile(r"^tip://id/[A-Z]{2,}-[0-9a-f]{16}$")
 _CTID_RE     = re.compile(r"^tip://c/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$")
 _HASH64_RE   = re.compile(r"^[0-9a-f]{64}$")
 _HEX_TX_RE   = re.compile(r"^[0-9a-f]{64}$")
-_VP_ID_RE    = re.compile(r"^tip://id/VP-")
+_VP_ID_RE    = re.compile(r"^tip://vp/")
 _ISO_TS_RE   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 
@@ -291,7 +291,7 @@ def _validate_business(tx: dict) -> ValidationResult:
             )
         vp_id = data.get("vp_id", "")
         if vp_id and not _VP_ID_RE.match(vp_id):
-            errors.append(f"VP ID must start with 'tip://id/VP-', got: '{vp_id}'")
+            errors.append(f"VP ID must start with 'tip://vp/', got: '{vp_id}'")
 
     return ValidationResult.fail("business_rules", *errors) if errors else ValidationResult.ok()
 

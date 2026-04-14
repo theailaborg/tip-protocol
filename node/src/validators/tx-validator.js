@@ -215,8 +215,8 @@ function validateBusinessRules(tx) {
         errors.push(`Invalid jurisdiction_tier: "${d.jurisdiction_tier}". VPs in red-tier jurisdictions cannot be accredited.`);
       }
       // VP-ID format
-      if (d.vp_id && !d.vp_id.startsWith("tip://id/VP-")) {
-        errors.push(`VP ID must start with "tip://id/VP-"`);
+      if (d.vp_id && !d.vp_id.startsWith("tip://vp/")) {
+        errors.push(`VP ID must start with "tip://vp/"`);
       }
       break;
     }

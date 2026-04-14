@@ -306,7 +306,7 @@ describe("DAG Engine", () => {
       region: "US",
       public_key: keypair1.publicKey,
       status: "active",
-      vp_id: "tip://id/VP-US-test",
+      vp_id: "tip://vp/US-test",
       verified_at: new Date().toISOString(),
     });
     const id = dag.getIdentity(TIP_ID_1);
@@ -393,7 +393,7 @@ describe("Trust Scoring Engine", () => {
       region: "AU",
       public_key: generateMLDSAKeypair().publicKey,
       status: "active",
-      vp_id: "tip://id/VP-AU-test",
+      vp_id: "tip://vp/AU-test",
       verified_at: new Date().toISOString(),
     });
     // Register transaction
@@ -487,7 +487,7 @@ describe("Trust Scoring Engine", () => {
 
 describe("Transaction Validator", () => {
 
-  const VP_ID = "tip://id/VP-US-validator-test";
+  const VP_ID = "tip://vp/US-validator-test";
 
   beforeAll(() => {
     dag.saveVP({
@@ -848,7 +848,7 @@ describe("REST API", () => {
   test("6.18 VP register rejects missing required fields", async () => {
     const res = await request(app)
       .post("/v1/vp/register")
-      .send({ vp_id: "tip://id/VP-XX-unauthorized" }); // missing name and public_key
+      .send({ vp_id: "tip://vp/XX-unauthorized" }); // missing name and public_key
     expect([400, 401, 403]).toContain(res.status);
   });
 

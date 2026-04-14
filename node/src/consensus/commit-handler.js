@@ -228,6 +228,7 @@ function createCommitHandler({ dag, scoring, config }) {
           dag.saveVP({
             vp_id: d.vp_id,
             name: d.name || "",
+            jurisdiction: d.jurisdiction || "US",
             jurisdiction_tier: d.jurisdiction_tier || "green",
             public_key: d.public_key || "",
             status: "active",
@@ -355,7 +356,7 @@ function createCommitHandler({ dag, scoring, config }) {
         const vp = dag.getVP(d.approving_vp_id);
         if (!vp || !d.council_signature) return false;
         const fields = tt === TX_TYPES.VP_REGISTERED
-          ? ["name", "jurisdiction_tier", "public_key", "approving_vp_id"]
+          ? ["name", "jurisdiction", "jurisdiction_tier", "public_key", "approving_vp_id"]
           : ["name", "public_key", "approving_vp_id"];
         return verifyBodySignature(d, d.council_signature, vp.public_key, fields);
       }
