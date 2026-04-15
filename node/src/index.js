@@ -124,7 +124,6 @@ async function main() {
       port: p2pPort,
       bootstrapPeers,
       enableMdns,
-      handlers: {},
       nodeId: config.nodeRegisteredId || config.nodeId,
       nodePrivateKey: config.nodePrivateKey,
       getNodeKey,
@@ -138,18 +137,12 @@ async function main() {
     consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
     consensusRef.current = consensus;
 
-    // Wire GossipSub topic handlers to consensus
-    const { TOPICS } = require("./network/node");
-    const pubsub = network.node.services.pubsub;
-    pubsub.addEventListener("message", (event) => {
-      const { topic, data } = event.detail;
-      try {
-        if (topic === TOPICS.MEMPOOL) consensus.handlers.onBatch(data);
-        else if (topic === TOPICS.CONSENSUS) consensus.handlers.onAck(data);
-        else if (topic === TOPICS.CERTIFICATES) consensus.handlers.onCertificate(data);
-      } catch (err) {
-        log.error(`Consensus message error on ${topic}: ${err.message}`);
-      }
+    // Wire GossipSub topic handlers — network node handles auth + rate limiting,
+    // then forwards to these consensus callbacks
+    network.setTopicHandlers({
+      onMempoolTx: (data) => consensus.handlers.onBatch(data),
+      onConsensus: (data) => consensus.handlers.onAck(data),
+      onCertificate: (data) => consensus.handlers.onCertificate(data),
     });
 
     // Start consensus rounds + sync protocol

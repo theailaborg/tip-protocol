@@ -125,6 +125,26 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         const result = await syncHandler.syncFromPeer(peerId);
         if (result.imported > 0) {
           log.info(`Synced ${result.imported} certificates from peer (rounds ${result.fromRound}-${result.toRound})`);
+
+          // Replay transactions from synced certificates through the commit handler
+          // so that identities, nodes, content, etc. are applied to the DAG.
+          let committed = 0;
+          for (let r = result.fromRound; r <= result.toRound; r++) {
+            try {
+              const certs = dag.getCertificatesByRound(r);
+              for (const cert of certs) {
+                const txs = cert.batch?.txs || [];
+                if (txs.length > 0) {
+                  const res = commitHandler.commitOrderedTxs(txs, r);
+                  committed += res.committed;
+                }
+              }
+            } catch (err) {
+              log.warn(`Failed to replay round ${r}: ${err.message}`);
+            }
+          }
+          if (committed > 0) log.info(`Replayed ${committed} transactions from synced certificates`);
+
           narwhal.resyncRound();
         }
       } catch (err) {

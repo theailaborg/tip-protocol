@@ -51,13 +51,15 @@ async function createNetworkNode(options = {}) {
     port = 4001,
     bootstrapPeers = [],
     enableMdns = true,
-    handlers = {},
     nodeId = null,
     nodePrivateKey = null,
     getNodeKey = () => null,
     getLatestRound = () => 0,
     getMerkleRoot = () => "",
   } = options;
+
+  // Topic handlers — set after consensus is initialized via setTopicHandlers()
+  let _topicHandlers = {};
 
   // Authorized peers: libp2p peerId → TIP node_id
   // Only peers that complete the TIP handshake are authorized.
@@ -373,13 +375,13 @@ async function createNetworkNode(options = {}) {
     try {
       switch (topic) {
         case TOPICS.CERTIFICATES:
-          if (handlers.onCertificate) handlers.onCertificate(data, peerId);
+          if (_topicHandlers.onCertificate) _topicHandlers.onCertificate(data, peerId);
           break;
         case TOPICS.MEMPOOL:
-          if (handlers.onMempoolTx) handlers.onMempoolTx(data, peerId);
+          if (_topicHandlers.onMempoolTx) _topicHandlers.onMempoolTx(data, peerId);
           break;
         case TOPICS.CONSENSUS:
-          if (handlers.onConsensus) handlers.onConsensus(data, peerId);
+          if (_topicHandlers.onConsensus) _topicHandlers.onConsensus(data, peerId);
           break;
         default:
           log.debug(`Unknown topic message: ${topic}`);
@@ -422,6 +424,9 @@ async function createNetworkNode(options = {}) {
 
     /** Register callback for when a peer completes TIP handshake */
     onPeerAuthorized(fn) { _onPeerAuthorized = fn; },
+
+    /** Set GossipSub topic handlers (called after consensus init) */
+    setTopicHandlers(h) { _topicHandlers = h; },
 
     /** All listen multiaddrs */
     multiaddrs: () => node.getMultiaddrs().map(ma => ma.toString()),
