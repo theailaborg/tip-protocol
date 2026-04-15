@@ -164,10 +164,7 @@ async function createNetworkNode(options = {}) {
 
   /**
    * Handle incoming handshake stream (we are the responder).
-   *
-   * libp2p 3.x streams: sink() consumes an async iterable and closes
-   * the write side when done. We use a single sink() call that first
-   * reads the peer's message from source, then yields our ack.
+   * Reads the peer's handshake, verifies it, sends our ack.
    */
   async function _handleIncomingHandshake({ stream, connection }) {
     const remotePeerId = connection.remotePeer.toString();
@@ -181,7 +178,7 @@ async function createNetworkNode(options = {}) {
 
       if (!handshakeData) {
         log.warn(`Handshake: empty message from ${remotePeerId.slice(0, 12)}`);
-        try { stream.abort(new Error("empty handshake")); } catch { /* ignore */ }
+        await stream.close();
         return;
       }
 
@@ -195,7 +192,7 @@ async function createNetworkNode(options = {}) {
 
       if (!result.valid) {
         log.warn(`Handshake rejected from ${remotePeerId.slice(0, 12)}: ${result.error}`);
-        try { stream.abort(new Error(result.error)); } catch { /* ignore */ }
+        await stream.close();
         node.hangUp(connection.remotePeer).catch(() => { });
         return;
       }
@@ -219,7 +216,7 @@ async function createNetworkNode(options = {}) {
 
     } catch (err) {
       log.warn(`Handshake error from ${remotePeerId.slice(0, 12)}: ${err.message}`);
-      try { stream.abort(err); } catch { /* ignore */ }
+      try { await stream.close(); } catch { /* ignore */ }
     }
   }
 
@@ -251,7 +248,7 @@ async function createNetworkNode(options = {}) {
     }
 
     try {
-      // Build handshake message
+      // Send our handshake
       const hs = _createHandshakePayload();
       const msg = encode("Handshake", {
         nodeId: hs.nodeId,
@@ -263,29 +260,23 @@ async function createNetworkNode(options = {}) {
         signature: Buffer.from(hs.signature, "hex"),
       });
 
-      // libp2p 3.x: sink() and source must be used concurrently.
-      // sink() blocks until the iterable is consumed AND the remote closes.
-      // Start reading the ack in parallel with sending our message.
-      let ackData = null;
-      const readPromise = (async () => {
-        for await (const chunk of stream.source) {
-          ackData = chunk.subarray();
-          break;
-        }
-      })();
-
-      // Send our handshake — write then close our write side
       await stream.sink([msg]);
 
-      // Wait for ack with timeout
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("handshake ack timeout")), handshakeTimeoutMs)
-      );
-      await Promise.race([readPromise, timeoutPromise]);
+      // Read ack with timeout
+      const timeout = setTimeout(() => {
+        try { stream.close(); } catch { /* ignore */ }
+      }, handshakeTimeoutMs);
+
+      let ackData = null;
+      for await (const chunk of stream.source) {
+        ackData = chunk.subarray();
+        break;
+      }
+      clearTimeout(timeout);
 
       if (!ackData) {
         log.warn(`Handshake: no ack from ${remotePeerId.slice(0, 12)}`);
-        try { stream.abort(new Error("no ack")); } catch { /* ignore */ }
+        await stream.close();
         node.hangUp(peerIdFromString(remotePeerId)).catch(() => { });
         return;
       }
@@ -296,10 +287,12 @@ async function createNetworkNode(options = {}) {
       const peerSignature = ack.signature?.toString("hex") || "";
 
       // Verify ack — use the same chain ID (ack doesn't include chainId)
-      const verifyResult = _verifyHandshake(peerNodeId, chainId, peerRound, peerSignature);
+      const result = _verifyHandshake(peerNodeId, chainId, peerRound, peerSignature);
 
-      if (!verifyResult.valid) {
-        log.warn(`Handshake ack rejected from ${remotePeerId.slice(0, 12)}: ${verifyResult.error}`);
+      await stream.close();
+
+      if (!result.valid) {
+        log.warn(`Handshake ack rejected from ${remotePeerId.slice(0, 12)}: ${result.error}`);
         node.hangUp(peerIdFromString(remotePeerId)).catch(() => { });
         return;
       }
@@ -310,7 +303,7 @@ async function createNetworkNode(options = {}) {
 
     } catch (err) {
       log.warn(`Handshake initiate to ${remotePeerId.slice(0, 12)} failed: ${err.message}`);
-      try { stream.abort(err); } catch { /* ignore */ }
+      try { await stream.close(); } catch { /* ignore */ }
     }
   }
 
