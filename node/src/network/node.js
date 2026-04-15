@@ -402,8 +402,14 @@ async function createNetworkNode(options = {}) {
 
   node.addEventListener("peer:connect", (event) => {
     const remotePeerId = event.detail.toString();
-    log.info(`Peer connected: ${remotePeerId.slice(0, 16)}... — initiating handshake`);
-    _initiateHandshake(remotePeerId);
+    const myPeerId = node.peerId.toString();
+    // Only one side initiates handshake — lower peerId goes first (deterministic)
+    if (myPeerId < remotePeerId) {
+      log.info(`Peer connected: ${remotePeerId.slice(0, 16)}... — initiating handshake (we are lower ID)`);
+      _initiateHandshake(remotePeerId);
+    } else {
+      log.info(`Peer connected: ${remotePeerId.slice(0, 16)}... — waiting for their handshake (they are lower ID)`);
+    }
   });
 
   node.addEventListener("peer:disconnect", (event) => {
