@@ -81,6 +81,10 @@ async function main() {
     if (myNode) {
       config.nodeRegisteredId = myNode.node_id;
       log.info(`Node registered as: ${myNode.node_id}`);
+    } else if (config.nodeId.startsWith("tip://node/")) {
+      // Node registered on another node but not yet synced locally — use TIP_NODE_ID from .env
+      config.nodeRegisteredId = config.nodeId;
+      log.info(`Node ID from env (pending sync): ${config.nodeId}`);
     } else {
       log.error("This node's public key is not in the node registry. Certificates will use an unregistered ID. Re-run seed or register this node.");
     }
