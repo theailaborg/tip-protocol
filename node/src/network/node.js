@@ -89,7 +89,12 @@ async function createNetworkNode(options = {}) {
   // Build peer discovery config
   const peerDiscovery = [];
   if (enableMdns) peerDiscovery.push(mdns());
-  if (bootstrapPeers.length > 0) peerDiscovery.push(bootstrapDiscovery({ list: bootstrapPeers }));
+  if (bootstrapPeers.length > 0) {
+    log.info(`Bootstrap peers: ${bootstrapPeers.join(", ")}`);
+    peerDiscovery.push(bootstrapDiscovery({ list: bootstrapPeers }));
+  } else {
+    log.warn("No bootstrap peers configured — discovery via mDNS only");
+  }
 
   // Announce public IP if set (required for Docker / NAT deployments)
   const publicIp = process.env.TIP_PUBLIC_IP;
@@ -230,7 +235,9 @@ async function createNetworkNode(options = {}) {
     let stream;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        stream = await node.dialProtocol(peerIdFromString(remotePeerId), handshakeProtocol);
+        const result = await node.dialProtocol(peerIdFromString(remotePeerId), handshakeProtocol);
+        // libp2p may return { stream, protocol } or the stream directly
+        stream = result.stream || result;
         break;
       } catch (err) {
         if (attempt === maxRetries) {
@@ -373,6 +380,13 @@ async function createNetworkNode(options = {}) {
 
   // ── Peer events ─────────────────────────────────────────────────────────
 
+  // Log when a peer is discovered (before connection attempt)
+  node.addEventListener("peer:discovery", (event) => {
+    const peerId = event.detail.id.toString();
+    const addrs = event.detail.multiaddrs?.map(ma => ma.toString()) || [];
+    log.info(`Peer discovered: ${peerId.slice(0, 16)}... at ${addrs.join(", ") || "unknown"}`);
+  });
+
   node.addEventListener("peer:connect", (event) => {
     const remotePeerId = event.detail.toString();
     log.info(`Peer connected: ${remotePeerId.slice(0, 16)}... — initiating handshake`);
@@ -442,7 +456,8 @@ async function createNetworkNode(options = {}) {
     async openStream(peerId, protocol) {
       const { peerIdFromString } = await import("@libp2p/peer-id");
       const remotePeer = peerIdFromString(peerId);
-      return node.dialProtocol(remotePeer, protocol);
+      const result = await node.dialProtocol(remotePeer, protocol);
+      return result.stream || result;
     },
 
     /** GossipSub topic constants */
