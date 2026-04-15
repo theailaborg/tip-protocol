@@ -75,6 +75,18 @@ async function createNetworkNode(options = {}) {
   const { identify } = await import("@libp2p/identify");
   const { mdns } = await import("@libp2p/mdns");
   const { bootstrap: bootstrapDiscovery } = await import("@libp2p/bootstrap");
+  const { generateKeyPairFromSeed } = await import("@libp2p/crypto/keys");
+
+  // Derive a deterministic libp2p peer ID from the TIP node ID.
+  // libp2p requires Ed25519 — we hash the node ID to get a stable 32-byte seed.
+  // Same TIP node ID = same peer ID across restarts.
+  let privateKey;
+  if (nodeId) {
+    const { shake256 } = require("../../../shared/crypto");
+    const seed = Buffer.from(shake256(nodeId + ":libp2p-peer-key"), "hex").subarray(0, 32);
+    privateKey = await generateKeyPairFromSeed("Ed25519", seed);
+    log.info(`Peer ID derived from TIP node ID: ${nodeId}`);
+  }
 
   // Build service config
   const services = {
@@ -103,6 +115,7 @@ async function createNetworkNode(options = {}) {
   // Create libp2p node — allow all connections at TCP level,
   // authorization happens via TIP handshake protocol after connect.
   const node = await createLibp2p({
+    privateKey,
     addresses: {
       listen: [`/ip4/0.0.0.0/tcp/${port}`],
       announce: announceAddrs.length > 0 ? announceAddrs : undefined,
