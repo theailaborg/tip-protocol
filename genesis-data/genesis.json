@@ -156,10 +156,15 @@
       "sync_batch_size": 100,
       "ordered_hash_cache_size": 10000,
       "max_msgs_per_peer_per_sec": 100,
-      "participant_inactive_rounds": 4
+      "participant_inactive_rounds": 4,
+      "sync_max_retries": 5,
+      "sync_retry_base_ms": 1000,
+      "handshake_timeout_ms": 10000,
+      "handshake_max_retries": 3
     },
     "network": {
       "chain_id": "tip-mainnet-v2",
+      "handshake_protocol": "/tip/handshake/1.0.0",
       "merkle_publish_hours": 6,
       "score_cache_ttl_seconds": 21600,
       "revocation_cascade_days": 90,

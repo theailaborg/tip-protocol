@@ -121,8 +121,21 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // Auto-sync AFTER handshake completes (peer is authorized)
     network.onPeerAuthorized(async (peerId, tipNodeId) => {
       log.info(`Peer authorized: ${tipNodeId} — syncing certificates from ${peerId.slice(0, 12)}...`);
+
+      // Retry sync with exponential backoff — connection may not be ready immediately
+      const maxRetries = CONSENSUS.SYNC_MAX_RETRIES;
+      const retryBaseMs = CONSENSUS.SYNC_RETRY_BASE_MS;
+      let result = { imported: 0 };
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          result = await syncHandler.syncFromPeer(peerId);
+          break; // success
+        } catch (err) {
+          log.warn(`Sync attempt ${attempt}/${maxRetries} from ${peerId.slice(0, 12)} failed: ${err.message}`);
+          if (attempt < maxRetries) await new Promise(r => setTimeout(r, attempt * retryBaseMs));
+        }
+      }
       try {
-        const result = await syncHandler.syncFromPeer(peerId);
         if (result.imported > 0) {
           log.info(`Synced ${result.imported} certificates from peer (rounds ${result.fromRound}-${result.toRound})`);
 

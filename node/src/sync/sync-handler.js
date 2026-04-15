@@ -202,8 +202,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     try {
       stream = await network.openStream(peerId, SYNC_PROTOCOL);
     } catch (err) {
-      log.warn(`Sync: failed to open stream to ${peerId.slice(0, 12)}: ${err.message}`);
-      return { imported: 0, fromRound, toRound: fromRound };
+      throw new Error(`Sync: failed to open stream to ${peerId.slice(0, 12)}: ${err.message}`);
     }
 
     // Send SyncRequest
@@ -251,8 +250,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       log.info(`Sync: imported ${imported} certificates (up to round ${maxRound})`);
       return { imported, fromRound, toRound: maxRound };
     } catch (err) {
-      log.error(`Sync: stream error with ${peerId.slice(0, 12)}: ${err.message}`);
-      return { imported: 0, fromRound, toRound: fromRound };
+      throw new Error(`Sync stream error with ${peerId.slice(0, 12)}: ${err.message}`);
     } finally {
       try { stream.close(); } catch { /* ignore */ }
     }

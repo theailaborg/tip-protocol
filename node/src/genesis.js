@@ -197,6 +197,8 @@ const GENESIS_PAYLOAD = Object.freeze({
       sync_batch_size: 100,               // certificates per sync response batch
       ordered_hash_cache_size: 10000,     // max cert hashes kept in Bullshark ordering dedup
       max_msgs_per_peer_per_sec: 100,    // rate limit: max GossipSub messages per peer per second
+      sync_max_retries: 5,               // max retry attempts for certificate sync after peer connect
+      sync_retry_base_ms: 1000,          // base delay between retries (multiplied by attempt number)
       participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
       handshake_timeout_ms: 10000,      // max time to complete TIP handshake after connection
       handshake_max_retries: 3,         // max dial attempts for handshake before giving up

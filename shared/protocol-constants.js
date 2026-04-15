@@ -180,6 +180,8 @@ const CONSENSUS = {
   get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
   get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
   get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
+  get SYNC_MAX_RETRIES() { return _c().sync_max_retries; },
+  get SYNC_RETRY_BASE_MS() { return _c().sync_retry_base_ms; },
   get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
   get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
   get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
