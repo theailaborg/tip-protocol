@@ -23,6 +23,22 @@ const { loadTypes } = require("./network/proto");
 const { log } = require("./logger");
 
 /**
+ * Look up a node's public key from the DAG registry.
+ * Used by handshake to verify peer identity.
+ */
+function getNodeKey(dag, nodeId) {
+  const node = dag.getNode(nodeId);
+  return node?.public_key || null;
+}
+
+/**
+ * Check if a libp2p peerId has been authorized via TIP handshake.
+ */
+function isAuthorizedPeer(network, peerId) {
+  return !!network.authorizedPeers()[peerId];
+}
+
+/**
  * Initialize the P2P network and consensus layer.
  * Safe to call — catches errors and falls back to null.
  *
@@ -41,24 +57,21 @@ async function initNetworkAndConsensus({ dag, scoring, config }) {
       .split(",").map(s => s.trim()).filter(Boolean);
     const enableMdns = process.env.TIP_ENABLE_MDNS !== "false";
 
-    const getNodeKey = (nodeId) => {
-      const node = dag.getNode(nodeId);
-      return node?.public_key || null;
-    };
-
     const network = await createNetworkNode({
       port: p2pPort,
       bootstrapPeers,
       enableMdns,
       nodeId: config.nodeRegisteredId || config.nodeId,
       nodePrivateKey: config.nodePrivateKey,
-      getNodeKey,
+      getNodeKey: (nodeId) => getNodeKey(dag, nodeId),
       getLatestRound: () => dag.getLatestRound(),
       getMerkleRoot: () => "",
     });
 
-    const isAuthorizedPeer = (peerId) => !!network.authorizedPeers()[peerId];
-    const consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
+    const consensus = initConsensus({
+      dag, scoring, config, network,
+      isAuthorizedPeer: (peerId) => isAuthorizedPeer(network, peerId),
+    });
 
     network.setTopicHandlers({
       onMempoolTx: (data) => consensus.handlers.onBatch(data),
