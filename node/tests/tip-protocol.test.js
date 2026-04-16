@@ -646,7 +646,7 @@ describe("REST API", () => {
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
     const vpFields = {
-      name: "Test VP UK", jurisdiction_tier: "green",
+      name: "Test VP UK", jurisdiction: "UK", jurisdiction_tier: "green",
       public_key: testVpKp.publicKey, approving_vp_id: foundingVpId,
     };
     const councilSig = signBody(vpFields, foundingVpKp.privateKey);
@@ -872,7 +872,7 @@ describe("Integration: Full Registration Flow", () => {
 
     // Step 1: Register VP (approved by founding VP)
     const vpFields = {
-      name: "Integration Test VP SG", jurisdiction_tier: "green",
+      name: "Integration Test VP SG", jurisdiction: "SG", jurisdiction_tier: "green",
       public_key: integrationKp.publicKey, approving_vp_id: foundingVpId,
     };
     const intCouncilSig = signBody(vpFields, foundingVpKp.privateKey);
@@ -973,7 +973,7 @@ describe("Gossip Broadcast Wiring", () => {
   test("8.1 VP register triggers gossip broadcast", async () => {
     const vpKp = generateMLDSAKeypair();
     const vpFields = {
-      name: "Gossip Test VP", jurisdiction_tier: "green",
+      name: "Gossip Test VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: vpKp.publicKey, approving_vp_id: gFoundingVpId,
     };
     const sig = signBody(vpFields, gFoundingVpKp.privateKey);
@@ -1039,7 +1039,7 @@ describe("Gossip Broadcast Wiring", () => {
     // Register a VP + identity, then revoke
     const rVpKp = generateMLDSAKeypair();
     const vpFields = {
-      name: "Revoke Broadcast VP", jurisdiction_tier: "green",
+      name: "Revoke Broadcast VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: rVpKp.publicKey, approving_vp_id: gFoundingVpId,
     };
     const vpRes = await request(gossipApp)
