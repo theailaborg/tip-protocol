@@ -362,7 +362,7 @@ function createCommitHandler({ dag, scoring, config }) {
       }
 
       const NODE_SIGNED = [TX_TYPES.SCORE_UPDATE, TX_TYPES.ADJUDICATION_RESULT, TX_TYPES.APPEAL_RESULT,
-        TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED];
+      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED];
       if (NODE_SIGNED.includes(tt)) {
         const node = dag.getNode(d.node_id);
         if (!node || !tx.signature) return false;
