@@ -71,6 +71,9 @@ function createTestConsensus(dag, scoring, config) {
         commitHandler.commitOrderedTxs([tx], 0);
         return { added: true };
       },
+      stats() {
+        return { narwhal: {}, bullshark: {}, mempool: { size: 0 } };
+      },
       mempool: { remove: () => 0 },
     },
   };

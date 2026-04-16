@@ -15,16 +15,14 @@
 
 "use strict";
 
-require("dotenv").config();
+require("dotenv").config({ path: process.env.DOTENV_PATH || ".env" });
 
 const http = require("http");
 const { createApp } = require("./api");
 const { initDAG } = require("./dag");
 const { initScoring } = require("./scoring");
 const { createScheduler } = require("./scheduler");
-const { initConsensus } = require("./consensus");
-const { createNetworkNode } = require("./network/node");
-const { loadTypes } = require("./network/proto");
+const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
@@ -94,64 +92,18 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 3. Load Protobuf schemas
-  await loadTypes();
-
-  // 4. Build Express app
+  // 3. Build Express app
   const consensusRef = { current: null };
   const networkRef = { current: null };
   const app = createApp({ dag, scoring, config, consensus: consensusRef, network: networkRef });
 
-  // 5. HTTP server
+  // 4. HTTP server
   const server = http.createServer(app);
 
-  // 6. libp2p network node + Narwhal/Bullshark consensus
-  const p2pPort = parseInt(process.env.TIP_P2P_PORT || "4001", 10);
-  const bootstrapPeers = (process.env.TIP_BOOTSTRAP_PEERS || "").split(",").map(s => s.trim()).filter(Boolean);
-  const enableMdns = process.env.TIP_ENABLE_MDNS !== "false";
-
-  let network = null;
-  let consensus = null;
-
-  try {
-    // Node registry lookup for handshake verification
-    const getNodeKey = (nId) => {
-      const n = dag.getNode(nId);
-      return n?.public_key || null;
-    };
-
-    network = await createNetworkNode({
-      port: p2pPort,
-      bootstrapPeers,
-      enableMdns,
-      nodeId: config.nodeRegisteredId || config.nodeId,
-      nodePrivateKey: config.nodePrivateKey,
-      getNodeKey,
-      getLatestRound: () => dag.getLatestRound(),
-      getMerkleRoot: () => "",
-    });
-
-    networkRef.current = network;
-    // Peer authorization via TIP handshake — network.authorizedPeers() has verified peers
-    const isAuthorizedPeer = (peerId) => !!network.authorizedPeers()[peerId];
-    consensus = initConsensus({ dag, scoring, config, network, isAuthorizedPeer });
-    consensusRef.current = consensus;
-
-    // Wire GossipSub topic handlers — network node handles auth + rate limiting,
-    // then forwards to these consensus callbacks
-    network.setTopicHandlers({
-      onMempoolTx: (data) => consensus.handlers.onBatch(data),
-      onConsensus: (data) => consensus.handlers.onAck(data),
-      onCertificate: (data) => consensus.handlers.onCertificate(data),
-    });
-
-    // Start consensus rounds + sync protocol
-    await consensus.start();
-    log.info(`Consensus ready: Narwhal + Bullshark on port ${p2pPort}`);
-  } catch (err) {
-    log.warn(`Consensus layer failed to start: ${err.message}`);
-    log.warn("Node running without consensus — single-node mode only");
-  }
+  // 5. P2P network + Narwhal/Bullshark consensus (returns nulls on failure)
+  const { network, consensus } = await initNetworkAndConsensus({ dag, scoring, config });
+  networkRef.current = network;
+  consensusRef.current = consensus;
 
   // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
   const scheduler = createScheduler(dag, scoring, network, config);
