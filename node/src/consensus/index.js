@@ -22,20 +22,11 @@ const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
-const { getNodeCount, pruneInactive } = require("./participants");
+const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
-
-/**
- * Get sorted list of active participant node IDs.
- * @param {Set} activeParticipants  Active participant set
- * @returns {string[]}
- */
-function getActiveNodeIds(activeParticipants) {
-  return [...activeParticipants].sort();
-}
 
 /**
  * Look up a node's public key from the DAG registry.
@@ -64,9 +55,6 @@ function getNodeKey(dag, nodeId) {
 function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () => false }) {
   const nodeId = config.nodeRegisteredId || config.nodeId;
 
-  // Active participants — quorum based on who's actually producing certificates
-  const activeParticipants = new Set([nodeId]);
-
   // ── Create mempool (persistent) ───────────────────────────────────────────
   const mempool = createMempool(dag);
   log.info(`Mempool initialized (${mempool.size()} pending txs restored)`);
@@ -77,16 +65,22 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
   const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
 
+  // Active committee is derived deterministically from DAG state: registered +
+  // produced a cert in the last K rounds. Every node reading the same DAG
+  // computes the same committee, so leader rotation and quorum match.
+  // `narwhalRef.current` is populated below; this closure is called from
+  // Bullshark / Narwhal after both are wired.
+  const narwhalRef = { current: null };
+  const getCommittee = (round) => {
+    const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
+    return getActiveCommittee(dag, r);
+  };
+
   const bullshark = createBullshark({
     dag,
-    getNodeIds: () => getActiveNodeIds(activeParticipants),
+    getNodeIds: getCommittee,
     onOrderedTxs: (orderedTxs, round) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round);
-      // Update Merkle tree with newly committed certificate hashes
-      try {
-        const certs = dag.getCertificatesByRound(round);
-        for (const cert of certs) syncHandler.onCertificateCommitted(cert.hash);
-      } catch { /* ignore */ }
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
     },
   });
@@ -95,23 +89,22 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     dag, mempool, network, config,
     getNodeKey: (nId) => getNodeKey(dag, nId),
     getNodeCount: () => getNodeCount(dag),
-    activeParticipants,
+    getCommittee,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
     notePendingTxCert: (cert) => bullshark.notePendingTxCert(cert),
     hasPendingWork: () => bullshark.hasPendingWork(),
+    // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
+    // so the root always reflects canonical DAG state.
+    onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
   });
+  narwhalRef.current = narwhal;
 
   // ── Wire network events ────────────────────────────────────────────────
 
   if (network) {
     // Auto-sync after handshake completes
     network.onPeerAuthorized(async (peerId, tipNodeId) => {
-      await onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark, activeParticipants });
-    });
-
-    // Prune inactive participants on peer disconnect
-    network.node.addEventListener("peer:disconnect", () => {
-      pruneInactive(activeParticipants, nodeId, dag);
+      await onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark });
     });
 
     log.info("Consensus network handlers wired");

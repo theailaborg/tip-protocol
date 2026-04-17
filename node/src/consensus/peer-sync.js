@@ -76,9 +76,9 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
  *
  * @param {string} peerId        libp2p peer ID
  * @param {string} tipNodeId     TIP node ID of the peer
- * @param {Object} deps          { syncHandler, commitHandler, dag, narwhal, bullshark, activeParticipants }
+ * @param {Object} deps          { syncHandler, commitHandler, dag, narwhal, bullshark }
  */
-async function onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark, activeParticipants }) {
+async function onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark }) {
   log.info(`Peer authorized: ${tipNodeId} — syncing certificates from ${peerId.slice(0, 12)}...`);
 
   // Enter sync mode — suppress all round production until sync + first peer batch
@@ -103,13 +103,8 @@ async function onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler,
       narwhal.exitSyncMode();
     }
 
-    // Add peer to active participants after successful sync.
-    // Quorum now reflects real network size — node can't create solo certificates.
-    // Stays idle after this — waits for peer's live batch to learn current round.
-    if (activeParticipants && !activeParticipants.has(tipNodeId)) {
-      activeParticipants.add(tipNodeId);
-      log.info(`Added peer ${tipNodeId} to active participants (active: ${activeParticipants.size})`);
-    }
+    // Committee is derived from DAG state — peer's certs landing in the DAG
+    // during sync automatically includes them next round. No local mutation.
   } catch (err) {
     log.warn(`Sync from peer ${peerId.slice(0, 12)} failed: ${err.message}`);
   }

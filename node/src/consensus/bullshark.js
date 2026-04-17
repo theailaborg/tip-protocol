@@ -140,7 +140,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       return;
     }
 
-    const nodeIds = getNodeIds();
+    // Committee is wave-stable — use voteRound's wave (same as proposeRound's)
+    // so quorum matches what the vote-round cert authors were computing when
+    // they signed. Deterministic across nodes regardless of current round.
+    const nodeIds = getNodeIds(voteRound);
     if (!nodeIds || nodeIds.length === 0) {
       log.warn(`Round ${voteRound}: no registered nodes`);
       return;
@@ -299,7 +302,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
    * @returns {string|null}
    */
   function _getLeader(round) {
-    const nodeIds = getNodeIds();
+    // Committee is wave-stable, so use this round's wave to pick leader
+    // consistently across both propose and vote rounds of the wave.
+    const nodeIds = getNodeIds(round);
     if (!nodeIds || nodeIds.length === 0) return null;
     const wave = Math.floor((round - 1) / 2);
     return nodeIds[wave % nodeIds.length];

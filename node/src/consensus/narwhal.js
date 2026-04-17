@@ -49,9 +49,11 @@ const log = getLogger("tip.narwhal");
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, activeParticipants: _activeParticipants, onCommit, notePendingTxCert, hasPendingWork }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, notePendingTxCert, hasPendingWork, onCertSaved }) {
   const _notePending = typeof notePendingTxCert === "function" ? notePendingTxCert : () => { };
   const _hasPendingWork = typeof hasPendingWork === "function" ? hasPendingWork : () => false;
+  const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
+  const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -73,9 +75,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
 
-  // _activeParticipants is shared with Bullshark via the orchestrator.
-  // Nodes are added when we see their batches/certificates.
-  // Quorum is based on this set, not the full registry.
+  // Committee is derived deterministically from the DAG via getCommittee(),
+  // not tracked locally. Every node reading the same DAG sees the same
+  // committee, eliminating the handshake-history divergence class of bugs.
 
   const nodeId = config.nodeRegisteredId || config.nodeId;
   const privateKey = config.nodePrivateKey;
@@ -101,7 +103,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _wake();
     });
 
-    log.info(`Narwhal started at round ${_currentRound} (active: ${_activeParticipants.size}, registered: ${getNodeCount()}, quorum: ${_getQuorum()}) — idle, waiting for work`);
+    log.info(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()}) — idle, waiting for work`);
 
     // If mempool already has pending txs (restored from crash), wake immediately
     if (mempool.size() > 0) {
@@ -340,12 +342,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     _peerBatches.set(batch.author_node_id, batch);
 
-    // Track as active participant (affects quorum from next round)
-    if (!_activeParticipants.has(batch.author_node_id)) {
-      _activeParticipants.add(batch.author_node_id);
-      log.info(`Active participant joined: ${batch.author_node_id} (active: ${_activeParticipants.size}, quorum: ${_getQuorum()})`);
-    }
-
     // Send ack
     const ack = createBatchAck(batch.hash, nodeId, privateKey);
     _recordAck(batch.hash, ack);
@@ -445,6 +441,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Persist
     dag.saveCertificate(cert);
+    _onCertSaved(cert);
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
 
@@ -496,8 +493,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Skip if already persisted
     if (dag.getCertificate(cert.hash)) return;
 
-    // Full verification
-    const quorum = _getQuorum();
+    // Full verification — use the committee AT this cert's wave, not current.
+    // Committee is wave-stable, so cert.round maps to the cert's wave's
+    // committee. Every node computes the same value from the same DAG, so
+    // ack-count validation matches what the author used when signing.
+    const quorum = computeQuorum(_getCommittee(cert.round).length);
     const result = verifyCertificate(cert, getNodeKey, quorum);
     if (!result.valid) {
       log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: ${result.error}`);
@@ -506,20 +506,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Persist
     dag.saveCertificate(cert);
+    _onCertSaved(cert);
 
     // Drain-to-idle: register pending commit work if the peer's cert carries txs.
     if ((cert.batch?.txs || []).length > 0) _notePending(cert);
 
-    // Track if current round — peer is in sync and actively participating
+    // Track if current round — peer is in sync and actively participating.
+    // Committee membership is now a pure function of DAG state (saveCertificate
+    // above is enough), so no local mutation here.
     if (cert.round === _currentRound) {
       _roundCertificates.set(cert.author_node_id, cert);
-
-      // Add to active participants only when peer is producing current-round certs
-      if (!_activeParticipants.has(cert.author_node_id)) {
-        _activeParticipants.add(cert.author_node_id);
-        log.info(`Active participant joined: ${cert.author_node_id} (active: ${_activeParticipants.size}, quorum: ${_getQuorum()})`);
-      }
-
       _tryAdvanceRound();
     }
 
@@ -536,7 +532,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const quorum = _getQuorum();
     if (_roundCertificates.size < quorum) return;
 
-    log.info(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_activeParticipants.size} certificates)`);
+    log.info(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
 
     // Clear timers
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
@@ -571,7 +567,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function _getQuorum() {
-    return computeQuorum(_activeParticipants.size);
+    return computeQuorum(_getCommittee().length);
   }
 
   function _serializeBatch(batch) {
@@ -677,7 +673,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       batchesThisRound: _peerBatches.size,
       certificatesThisRound: _roundCertificates.size,
       quorum: _getQuorum(),
-      activeParticipants: _activeParticipants.size,
+      activeParticipants: _getCommittee().length,
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
     }),

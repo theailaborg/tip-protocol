@@ -50,10 +50,14 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  */
 function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
   // Build Merkle tree from existing certificates
-  const _merkle = _buildMerkleFromDAG();
+  let _merkle = _buildMerkleFromDAG();
 
   /**
    * Build Merkle tree from all persisted certificates.
+   * Iterates rounds in ascending order and uses getCertificatesByRound, which
+   * returns certs sorted by author_node_id. This gives a canonical ordering
+   * that's identical across nodes with identical DAG state, making the root
+   * a deterministic summary of "what's in my DAG."
    */
   function _buildMerkleFromDAG() {
     const latestRound = dag.getLatestRound();
@@ -72,11 +76,14 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
   }
 
   /**
-   * Update Merkle tree when a new certificate is committed.
-   * @param {string} certHash
+   * Rebuild the Merkle tree from DAG state so the root reflects every
+   * saved cert in canonical (round, author_node_id) order. Called whenever
+   * a new certificate is saved — either via anchor commit, live gossip, or
+   * sync import. The rebuild cost is O(N) certs, which is trivial for the
+   * permissioned-federation scale TIP targets.
    */
-  function onCertificateCommitted(certHash) {
-    _merkle.add(certHash);
+  function onCertificateCommitted(_certHash) {
+    _merkle = _buildMerkleFromDAG();
   }
 
   /**
@@ -240,7 +247,6 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
             const cert = _deserializeCertFromSync(certData);
             if (!dag.getCertificate(cert.hash)) {
               dag.saveCertificate(cert);
-              _merkle.add(cert.hash);
               imported++;
               if (cert.round > maxRound) maxRound = cert.round;
             }
@@ -248,6 +254,9 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
             log.warn(`Sync: failed to import certificate: ${err.message}`);
           }
         }
+
+        // Rebuild merkle once for the whole batch — deterministic from DAG state.
+        if (imported > 0) _merkle = _buildMerkleFromDAG();
       }
 
       log.info(`Sync: imported ${imported} certificates (up to round ${maxRound})`);
