@@ -54,6 +54,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
   let _active = false;                              // false = idle, true = running rounds
+
+  // Join state machine: controls when a joining node can start producing.
+  //   "ready"               — normal operation, wake on txs and batches
+  //   "syncing"             — sync in progress, suppress all waking
+  //   "awaiting_peer_round" — sync done, wait for peer's batch to learn correct round
+  let _joinState = "ready";
   let _roundTimer = null;
   let _retryTimer = null;
   let _batchWaitTimer = null;                       // batch accumulation timer
@@ -85,6 +91,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Subscribe to mempool — wake from idle when a tx arrives
     mempool.onTxAdded(() => {
       if (!_running) return;
+      // Syncing or waiting for peer's round — don't wake yet.
+      if (_joinState !== "ready") {
+        log.debug(`Mempool tx added — suppressed wake (${_joinState})`);
+        return;
+      }
       _wake();
     });
 
@@ -255,9 +266,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function handleIncomingBatch(data) {
     if (!_running) return;
 
-    // Peer is active — wake up immediately to participate
-    if (!_active) _wake(true);
-
     // Enforce size limit (batch is part of certificate, share the limit)
     if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
       log.warn(`Rejected oversized batch: ${data.length} bytes`);
@@ -286,11 +294,36 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
+    // During sync — ignore batches, our round is stale and will be resynced.
+    if (_joinState === "syncing") {
+      log.debug(`Ignoring batch from ${batch.author_node_id} — sync in progress`);
+      return;
+    }
+
+    // After sync — adopt peer's round as truth and transition to ready.
+    if (_joinState === "awaiting_peer_round") {
+      if (batch.round !== _currentRound) {
+        log.info(`Adopting peer round ${batch.round} (was ${_currentRound})`);
+        _currentRound = batch.round;
+      }
+      _joinState = "ready";
+      log.info(`Peer round received — ready to participate at round ${_currentRound}`);
+    }
+
+    // Normal operation — if idle and peer is ahead, adopt their round.
+    if (_joinState === "ready" && !_active && batch.round > _currentRound) {
+      log.info(`Adopting peer round ${batch.round} (was ${_currentRound})`);
+      _currentRound = batch.round;
+    }
+
     // Only accept batches for current round
     if (batch.round !== _currentRound) {
       log.debug(`Round ${_currentRound}: ignoring batch for round ${batch.round} from ${batch.author_node_id}`);
       return;
     }
+
+    // Peer is active — wake up immediately to participate
+    if (!_active) _wake(true);
 
     // Deduplicate
     if (_peerBatches.has(batch.author_node_id)) return;
@@ -430,8 +463,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function handleIncomingCertificate(data) {
     if (!_running) return;
 
-    // Peer is active — wake up immediately to participate
-    if (!_active) _wake(true);
+    // Don't wake on certificates — they're just data to store.
+    // Only batches are an invitation to participate in a round.
 
     // Enforce size limit
     if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
@@ -597,14 +630,26 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     start,
     stop,
     currentRound,
-    /** Advance _currentRound after certificate sync so we join at the right round */
+    /** Enter sync mode — suppress all waking until sync + first peer batch */
+    enterSyncMode() {
+      _joinState = "syncing";
+      log.info("Entering sync mode — suppressing round production");
+    },
+    /** Exit sync mode — nothing to sync, go back to normal operation */
+    exitSyncMode() {
+      _joinState = "ready";
+      log.info("Exiting sync mode — no certificates to sync, resuming normal operation");
+    },
+    /** Advance _currentRound after certificate sync, then wait for peer's batch */
     resyncRound() {
       const synced = dag.getLatestRound();
       if (synced >= _currentRound) {
         const oldRound = _currentRound;
         _currentRound = synced + 1;
-        log.info(`Round resynced: ${oldRound} → ${_currentRound} (after certificate sync)`);
+        log.info(`Round resynced: ${oldRound} → ${_currentRound}`);
       }
+      _joinState = "awaiting_peer_round";
+      log.info(`Awaiting peer batch for exact round (current: ${_currentRound})`);
     },
     handleIncomingBatch,
     handleIncomingAck,

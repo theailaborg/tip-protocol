@@ -62,6 +62,7 @@ function verifyBatch(batch, publicKey) {
   const expectedHash = shake256(`batch:${batch.round}:${batch.author_node_id}:${txIds}`);
 
   if (expectedHash !== batch.hash) {
+    log.warn(`Batch hash mismatch debug — expected: ${expectedHash.slice(0, 16)}, got: ${batch.hash.slice(0, 16)}, input: "batch:${batch.round}:${batch.author_node_id}:${txIds}"`);
     return { valid: false, error: "Batch hash mismatch" };
   }
 
@@ -161,6 +162,8 @@ function verifyCertificate(cert, getNodeKey, quorum) {
     `cert:${cert.round}:${cert.author_node_id}:${cert.batch.hash}:${sortedParents}:${sortedAckers}`
   );
   if (expectedHash !== cert.hash) {
+    log.warn(`Cert hash mismatch debug — expected: ${expectedHash.slice(0, 16)}, got: ${cert.hash.slice(0, 16)}`);
+    log.warn(`  input: "cert:${cert.round}:${cert.author_node_id}:${cert.batch?.hash}:${sortedParents}:${sortedAckers}"`);
     return { valid: false, error: "Certificate hash mismatch" };
   }
 

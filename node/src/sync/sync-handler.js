@@ -217,17 +217,22 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       // Write request
       try { await stream.sink([request]); } catch (err) { throw new Error(`Failed to send sync request: ${err.message}`); }
 
-      // Read responses
+      // Read entire response — stream may split protobuf across multiple chunks
+      const chunks = [];
+      for await (const chunk of stream.source) {
+        chunks.push(chunk.subarray());
+      }
+
       let imported = 0;
       let maxRound = fromRound;
 
-      for await (const chunk of stream.source) {
+      if (chunks.length > 0) {
         let response;
         try {
-          response = decode("SyncResponse", Buffer.from(chunk.subarray()));
+          response = decode("SyncResponse", Buffer.concat(chunks));
         } catch (err) {
-          log.warn(`Sync: failed to decode response: ${err.message}`);
-          break;
+          log.warn(`Sync: failed to decode response (${Buffer.concat(chunks).length} bytes): ${err.message}`);
+          return { imported: 0, fromRound, toRound: fromRound };
         }
 
         for (const certData of (response.certificates || [])) {
@@ -243,8 +248,6 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
             log.warn(`Sync: failed to import certificate: ${err.message}`);
           }
         }
-
-        if (!response.hasMore) break;
       }
 
       log.info(`Sync: imported ${imported} certificates (up to round ${maxRound})`);

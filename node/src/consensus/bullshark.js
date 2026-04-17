@@ -291,6 +291,22 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     /** Get the last committed round */
     lastCommittedRound: () => _lastCommittedRound,
 
+    /**
+     * Mark all certificates up to a round as already ordered.
+     * Called after certificate sync + tx replay so Bullshark
+     * doesn't re-commit txs that were already applied.
+     */
+    markOrderedUpTo(round) {
+      for (let r = 1; r <= round; r++) {
+        try {
+          const certs = dag.getCertificatesByRound(r);
+          for (const cert of certs) _orderedCertHashes.add(cert.hash);
+        } catch { /* ignore */ }
+      }
+      if (round > _lastCommittedRound) _lastCommittedRound = round;
+      log.info(`Bullshark: marked certificates as ordered up to round ${round}`);
+    },
+
     /** Stats for monitoring */
     stats: () => ({
       lastCommittedRound: _lastCommittedRound,

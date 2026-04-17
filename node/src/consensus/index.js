@@ -104,7 +104,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   if (network) {
     // Auto-sync after handshake completes
     network.onPeerAuthorized(async (peerId, tipNodeId) => {
-      await onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal });
+      await onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark, activeParticipants });
     });
 
     // Prune inactive participants on peer disconnect
