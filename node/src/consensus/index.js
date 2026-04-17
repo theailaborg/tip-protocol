@@ -97,6 +97,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getNodeCount: () => getNodeCount(dag),
     activeParticipants,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
+    notePendingTxCert: (cert) => bullshark.notePendingTxCert(cert),
+    hasPendingWork: () => bullshark.hasPendingWork(),
   });
 
   // ── Wire network events ────────────────────────────────────────────────

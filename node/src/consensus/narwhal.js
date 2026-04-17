@@ -49,7 +49,9 @@ const log = getLogger("tip.narwhal");
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, activeParticipants: _activeParticipants, onCommit }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, activeParticipants: _activeParticipants, onCommit, notePendingTxCert, hasPendingWork }) {
+  const _notePending = typeof notePendingTxCert === "function" ? notePendingTxCert : () => { };
+  const _hasPendingWork = typeof hasPendingWork === "function" ? hasPendingWork : () => false;
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -166,6 +168,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Still have work in mempool
     if (mempool.size() > 0) return;
+
+    // Drain-to-idle: a tx-carrying cert is in the DAG but Bullshark hasn't
+    // ordered it yet. Keep producing rounds (empty batches ok) so a future
+    // anchor commit can sweep its causal history into the ordered set.
+    if (_hasPendingWork()) {
+      log.debug(`Round ${_currentRound}: staying active — pending commit work`);
+      return;
+    }
 
     // No work → go idle (works for single and multi-node)
     _active = false;
@@ -438,6 +448,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
 
+    // Drain-to-idle: register pending commit work if this cert carries txs.
+    if ((cert.batch?.txs || []).length > 0) _notePending(cert);
+
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
       const certBuf = encode("Certificate", _serializeCertificate(cert));
@@ -493,6 +506,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Persist
     dag.saveCertificate(cert);
+
+    // Drain-to-idle: register pending commit work if the peer's cert carries txs.
+    if ((cert.batch?.txs || []).length > 0) _notePending(cert);
 
     // Track if current round — peer is in sync and actively participating
     if (cert.round === _currentRound) {
