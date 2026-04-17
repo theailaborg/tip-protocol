@@ -59,10 +59,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _running = false;
   let _active = false;                              // false = idle, true = running rounds
 
-  // Join state machine: controls when a joining node can start producing.
-  //   "ready"               — normal operation, wake on txs and batches
-  //   "syncing"             — sync in progress, suppress all waking
-  //   "awaiting_peer_round" — sync done, wait for peer's batch to learn correct round
+  // Join state: controls when a joining node can start producing.
+  //   "ready"   — normal operation, wake on txs and batches
+  //   "syncing" — sync in progress, suppress all waking
+  // After sync, SyncResponse.latestRound gives the authoritative peer round,
+  // so we transition "syncing" → "ready" directly. The existing "adopt higher
+  // round on incoming batch" logic in handleIncomingBatch catches any drift
+  // between sync completion and first production.
   let _joinState = "ready";
   let _roundTimer = null;
   let _retryTimer = null;
@@ -312,18 +315,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
-    // After sync — adopt peer's round as truth and transition to ready.
-    if (_joinState === "awaiting_peer_round") {
-      if (batch.round !== _currentRound) {
-        log.info(`Adopting peer round ${batch.round} (was ${_currentRound})`);
-        _currentRound = batch.round;
-      }
-      _joinState = "ready";
-      log.info(`Peer round received — ready to participate at round ${_currentRound}`);
-    }
-
-    // Normal operation — if idle and peer is ahead, adopt their round.
-    if (_joinState === "ready" && !_active && batch.round > _currentRound) {
+    // If idle and peer is ahead, adopt their round. Covers both the normal
+    // "peer kept advancing while we were idle" case and the post-sync drift
+    // case where the cluster advanced between sync completion and our first
+    // production attempt.
+    if (!_active && batch.round > _currentRound) {
       log.info(`Adopting peer round ${batch.round} (was ${_currentRound})`);
       _currentRound = batch.round;
     }
@@ -642,26 +638,28 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     start,
     stop,
     currentRound,
-    /** Enter sync mode — suppress all waking until sync + first peer batch */
+    /** Enter sync mode — suppress all waking during sync */
     enterSyncMode() {
       _joinState = "syncing";
       log.info("Entering sync mode — suppressing round production");
     },
-    /** Exit sync mode — nothing to sync, go back to normal operation */
-    exitSyncMode() {
-      _joinState = "ready";
-      log.info("Exiting sync mode — no certificates to sync, resuming normal operation");
-    },
-    /** Advance _currentRound after certificate sync, then wait for peer's batch */
-    resyncRound() {
-      const synced = dag.getLatestRound();
-      if (synced >= _currentRound) {
+    /**
+     * Exit sync mode and resume normal operation. Uses peer's authoritative
+     * latestRound (from SyncResponse) as the starting round; if not provided,
+     * falls back to local DAG's latest round. Post-sync drift is handled by
+     * handleIncomingBatch adopting higher rounds from incoming batches.
+     * @param {number} [peerLatestRound]  Peer's current round from SyncResponse
+     */
+    exitSyncMode(peerLatestRound = 0) {
+      const fromDag = dag.getLatestRound();
+      const target = Math.max(peerLatestRound, fromDag) + 1;
+      if (target > _currentRound) {
         const oldRound = _currentRound;
-        _currentRound = synced + 1;
-        log.info(`Round resynced: ${oldRound} → ${_currentRound}`);
+        _currentRound = target;
+        log.info(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
       }
-      _joinState = "awaiting_peer_round";
-      log.info(`Awaiting peer batch for exact round (current: ${_currentRound})`);
+      _joinState = "ready";
+      log.info(`Exiting sync mode — ready at round ${_currentRound}`);
     },
     handleIncomingBatch,
     handleIncomingAck,

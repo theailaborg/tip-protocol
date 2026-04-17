@@ -95,13 +95,13 @@ async function onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler,
 
       // Mark synced certificates as ordered so Bullshark doesn't re-commit their txs
       bullshark.markOrderedUpTo(result.toRound);
-
-      // Resync round and wait for peer's batch to learn the exact round
-      narwhal.resyncRound();
-    } else {
-      // Nothing to sync — this node is already up to date, go back to ready
-      narwhal.exitSyncMode();
     }
+
+    // Transition back to ready using the peer's authoritative latest round.
+    // SyncResponse.latestRound is always present — use it to set _currentRound
+    // so we start producing at the same round the cluster is on (or one after).
+    // Falls back to DAG-derived round if peer didn't report one.
+    narwhal.exitSyncMode(result.peerLatestRound || 0);
 
     // Committee is derived from DAG state — peer's certs landing in the DAG
     // during sync automatically includes them next round. No local mutation.

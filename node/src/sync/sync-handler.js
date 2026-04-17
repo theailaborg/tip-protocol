@@ -232,6 +232,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
 
       let imported = 0;
       let maxRound = fromRound;
+      let peerLatestRound = 0;
 
       if (chunks.length > 0) {
         let response;
@@ -239,8 +240,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
           response = decode("SyncResponse", Buffer.concat(chunks));
         } catch (err) {
           log.warn(`Sync: failed to decode response (${Buffer.concat(chunks).length} bytes): ${err.message}`);
-          return { imported: 0, fromRound, toRound: fromRound };
+          return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
         }
+
+        peerLatestRound = response.latestRound || 0;
 
         for (const certData of (response.certificates || [])) {
           try {
@@ -259,8 +262,8 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
         if (imported > 0) _merkle = _buildMerkleFromDAG();
       }
 
-      log.info(`Sync: imported ${imported} certificates (up to round ${maxRound})`);
-      return { imported, fromRound, toRound: maxRound };
+      log.info(`Sync: imported ${imported} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
+      return { imported, fromRound, toRound: maxRound, peerLatestRound };
     } catch (err) {
       throw new Error(`Sync stream error with ${peerId.slice(0, 12)}: ${err.message}`);
     } finally {
