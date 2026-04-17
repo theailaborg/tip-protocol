@@ -272,14 +272,22 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
   }
 
   /**
-   * Get the leader node for a given round (deterministic round-robin).
+   * Get the leader node for a given round.
+   *
+   * Narwhal/Bullshark groups rounds into waves of 2 (propose + vote). Leader
+   * rotates per wave, not per round — this guarantees every node gets a turn
+   * regardless of N. A per-round formula biases for even N (only nodes at
+   * even indices ever lead, since anchors run on odd propose rounds and
+   * `(odd - 1) % even_N` only yields even residues).
+   *
    * @param {number} round
    * @returns {string|null}
    */
   function _getLeader(round) {
     const nodeIds = getNodeIds();
     if (!nodeIds || nodeIds.length === 0) return null;
-    return nodeIds[(round - 1) % nodeIds.length];
+    const wave = Math.floor((round - 1) / 2);
+    return nodeIds[wave % nodeIds.length];
   }
 
   return {
