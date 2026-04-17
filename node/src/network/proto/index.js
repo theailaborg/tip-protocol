@@ -96,4 +96,41 @@ function decode(typeName, buffer) {
   });
 }
 
-module.exports = { loadTypes, getTypes, encode, decode };
+// ─── Byte-field conversion helpers ───────────────────────────────────────────
+//
+// protobufjs honours `bytes: Buffer` for top-level fields but may return
+// Uint8Array for nested or repeated bytes. Uint8Array.toString("hex") silently
+// ignores the encoding arg and returns comma-separated decimals, corrupting
+// hashes at verify time. These helpers normalise both directions.
+
+/**
+ * Convert a bytes-like value (Buffer, Uint8Array, or hex string) to a hex string.
+ */
+function bytesToHex(b) {
+  if (b == null) return null;
+  if (typeof b === "string") return b;
+  if (!b.length) return null;
+  return Buffer.from(b).toString("hex");
+}
+
+/**
+ * Convert a hex string (or bytes-like value) to a Buffer for protobuf encoding.
+ */
+function hexToBytes(h) {
+  if (h == null) return Buffer.alloc(0);
+  if (Buffer.isBuffer(h)) return h;
+  if (h instanceof Uint8Array) return Buffer.from(h);
+  return Buffer.from(h, "hex");
+}
+
+/**
+ * Convert a bytes-like value to a UTF-8 string (e.g. for JSON.parse).
+ */
+function bytesToUtf8(b) {
+  if (b == null) return "";
+  if (typeof b === "string") return b;
+  if (!b.length) return "";
+  return Buffer.from(b).toString();
+}
+
+module.exports = { loadTypes, getTypes, encode, decode, bytesToHex, hexToBytes, bytesToUtf8 };

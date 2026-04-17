@@ -31,7 +31,7 @@ const {
   createCertificate, verifyCertificate,
   computeQuorum,
 } = require("./certificate");
-const { encode, decode } = require("../network/proto");
+const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
@@ -343,9 +343,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Broadcast ack on CONSENSUS topic
     try {
       const ackBuf = encode("BatchAck", {
-        batchHash: Buffer.from(batch.hash, "hex"),
+        batchHash: hexToBytes(batch.hash),
         ackerNodeId: nodeId,
-        signature: Buffer.from(ack.signature, "hex"),
+        signature: hexToBytes(ack.signature),
       });
       network.publish(network.TOPICS.CONSENSUS, ackBuf);
     } catch (err) {
@@ -367,9 +367,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     try {
       const ackMsg = decode("BatchAck", data);
       ack = {
-        batch_hash: ackMsg.batchHash?.toString("hex") || "",
+        batch_hash: bytesToHex(ackMsg.batchHash) || "",
         acker_node_id: ackMsg.ackerNodeId || "",
-        signature: ackMsg.signature?.toString("hex") || "",
+        signature: bytesToHex(ackMsg.signature) || "",
       };
     } catch (err) {
       log.warn(`Failed to decode incoming ack: ${err.message}`);
@@ -568,10 +568,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         timestamp: tx.timestamp || "",
         prev: tx.prev || [],
         data: Buffer.from(JSON.stringify(tx.data || {})),
-        signature: tx.signature ? Buffer.from(tx.signature, "hex") : Buffer.alloc(0),
+        signature: hexToBytes(tx.signature),
       })),
-      signature: batch.signature ? Buffer.from(batch.signature, "hex") : Buffer.alloc(0),
-      hash: batch.hash ? Buffer.from(batch.hash, "hex") : Buffer.alloc(0),
+      signature: hexToBytes(batch.signature),
+      hash: hexToBytes(batch.hash),
     };
   }
 
@@ -585,11 +585,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         tx_type: tx.txType || "",
         timestamp: tx.timestamp || "",
         prev: tx.prev || [],
-        data: tx.data?.length ? (() => { try { return JSON.parse(tx.data.toString()); } catch { return {}; } })() : {},
-        signature: tx.signature?.length ? tx.signature.toString("hex") : null,
+        data: tx.data?.length ? (() => { try { return JSON.parse(bytesToUtf8(tx.data)); } catch { return {}; } })() : {},
+        signature: bytesToHex(tx.signature),
       })),
-      signature: msg.signature?.length ? msg.signature.toString("hex") : null,
-      hash: msg.hash?.length ? msg.hash.toString("hex") : null,
+      signature: bytesToHex(msg.signature),
+      hash: bytesToHex(msg.hash),
     };
   }
 
@@ -599,13 +599,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       authorNodeId: cert.author_node_id,
       batch: _serializeBatch(cert.batch),
       acknowledgments: (cert.acknowledgments || []).map(a => ({
-        batchHash: Buffer.from(a.batch_hash || "", "hex"),
+        batchHash: hexToBytes(a.batch_hash),
         ackerNodeId: a.acker_node_id || "",
-        signature: Buffer.from(a.signature || "", "hex"),
+        signature: hexToBytes(a.signature),
       })),
-      parentHashes: (cert.parent_hashes || []).map(h => Buffer.from(h, "hex")),
-      signature: cert.signature ? Buffer.from(cert.signature, "hex") : Buffer.alloc(0),
-      hash: cert.hash ? Buffer.from(cert.hash, "hex") : Buffer.alloc(0),
+      parentHashes: (cert.parent_hashes || []).map(h => hexToBytes(h)),
+      signature: hexToBytes(cert.signature),
+      hash: hexToBytes(cert.hash),
     };
   }
 
@@ -616,13 +616,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       author_node_id: msg.authorNodeId || "",
       batch: _deserializeBatch(msg.batch),
       acknowledgments: (msg.acknowledgments || []).map(a => ({
-        batch_hash: a.batchHash?.toString("hex") || "",
+        batch_hash: bytesToHex(a.batchHash) || "",
         acker_node_id: a.ackerNodeId || "",
-        signature: a.signature?.toString("hex") || "",
+        signature: bytesToHex(a.signature) || "",
       })),
-      parent_hashes: (msg.parentHashes || []).map(h => h.toString("hex")),
-      signature: msg.signature?.length ? msg.signature.toString("hex") : null,
-      hash: msg.hash?.length ? msg.hash.toString("hex") : null,
+      parent_hashes: (msg.parentHashes || []).map(h => bytesToHex(h)).filter(Boolean),
+      signature: bytesToHex(msg.signature),
+      hash: bytesToHex(msg.hash),
     };
   }
 

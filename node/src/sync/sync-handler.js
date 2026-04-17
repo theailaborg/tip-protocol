@@ -26,7 +26,7 @@
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { createMerkleTree } = require("./merkle-tree");
-const { encode, decode } = require("../network/proto");
+const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.sync");
@@ -153,7 +153,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
         fromRound: certs.length > 0 ? certs[0].round : currentFrom,
         toRound: certs.length > 0 ? certs[certs.length - 1].round : currentFrom,
         latestRound,
-        merkleRoot: Buffer.from(merkleRoot(), "hex"),
+        merkleRoot: hexToBytes(merkleRoot()),
         hasMore,
       });
       // Write to stream
@@ -209,7 +209,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     const request = encode("SyncRequest", {
       fromRound,
       toRound: 0, // 0 = latest
-      merkleRoot: Buffer.from(merkleRoot(), "hex"),
+      merkleRoot: hexToBytes(merkleRoot()),
       batchSize: CONSENSUS.SYNC_BATCH_SIZE,
     });
 
@@ -274,19 +274,19 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
           timestamp: tx.timestamp || "",
           prev: tx.prev || [],
           data: Buffer.from(JSON.stringify(tx.data || {})),
-          signature: tx.signature ? Buffer.from(tx.signature, "hex") : Buffer.alloc(0),
+          signature: hexToBytes(tx.signature),
         })),
-        signature: cert.batch?.signature ? Buffer.from(cert.batch.signature, "hex") : Buffer.alloc(0),
-        hash: cert.batch?.hash ? Buffer.from(cert.batch.hash, "hex") : Buffer.alloc(0),
+        signature: hexToBytes(cert.batch?.signature),
+        hash: hexToBytes(cert.batch?.hash),
       },
       acknowledgments: (cert.acknowledgments || []).map(a => ({
-        batchHash: Buffer.from(a.batch_hash || "", "hex"),
+        batchHash: hexToBytes(a.batch_hash),
         ackerNodeId: a.acker_node_id || "",
-        signature: Buffer.from(a.signature || "", "hex"),
+        signature: hexToBytes(a.signature),
       })),
-      parentHashes: (cert.parent_hashes || []).map(h => Buffer.from(h, "hex")),
-      signature: cert.signature ? Buffer.from(cert.signature, "hex") : Buffer.alloc(0),
-      hash: cert.hash ? Buffer.from(cert.hash, "hex") : Buffer.alloc(0),
+      parentHashes: (cert.parent_hashes || []).map(h => hexToBytes(h)),
+      signature: hexToBytes(cert.signature),
+      hash: hexToBytes(cert.hash),
     };
   }
 
@@ -303,20 +303,20 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
           tx_type: tx.txType || "",
           timestamp: tx.timestamp || "",
           prev: tx.prev || [],
-          data: tx.data?.length ? (() => { try { return JSON.parse(tx.data.toString()); } catch { return {}; } })() : {},
-          signature: tx.signature?.length ? tx.signature.toString("hex") : null,
+          data: tx.data?.length ? (() => { try { return JSON.parse(bytesToUtf8(tx.data)); } catch { return {}; } })() : {},
+          signature: bytesToHex(tx.signature),
         })),
-        signature: msg.batch?.signature?.length ? msg.batch.signature.toString("hex") : null,
-        hash: msg.batch?.hash?.length ? msg.batch.hash.toString("hex") : null,
+        signature: bytesToHex(msg.batch?.signature),
+        hash: bytesToHex(msg.batch?.hash),
       },
       acknowledgments: (msg.acknowledgments || []).map(a => ({
-        batch_hash: a.batchHash?.toString("hex") || "",
+        batch_hash: bytesToHex(a.batchHash) || "",
         acker_node_id: a.ackerNodeId || "",
-        signature: a.signature?.toString("hex") || "",
+        signature: bytesToHex(a.signature) || "",
       })),
-      parent_hashes: (msg.parentHashes || []).map(h => h.toString("hex")),
-      signature: msg.signature?.length ? msg.signature.toString("hex") : null,
-      hash: msg.hash?.length ? msg.hash.toString("hex") : null,
+      parent_hashes: (msg.parentHashes || []).map(h => bytesToHex(h)).filter(Boolean),
+      signature: bytesToHex(msg.signature),
+      hash: bytesToHex(msg.hash),
     };
   }
 
