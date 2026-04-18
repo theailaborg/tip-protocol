@@ -54,6 +54,13 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     txs_committed: 0,
   };
 
+  // Monotonic commit sequence number (§15). One per successful anchor
+  // commit, regardless of round. Restored from persisted commits on boot so
+  // the index survives restarts. Exposed downstream via saveCommit so
+  // indexers / audit tools can resume from "give me everything after N".
+  let _consensusIndex = 0;
+  try { _consensusIndex = dag.getLatestConsensusIndex ? dag.getLatestConsensusIndex() : 0; } catch { _consensusIndex = 0; }
+
   // Initialize from persisted state
   function _initFromDAG() {
     try {
@@ -168,12 +175,45 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
 
     const orderedTxs = _collectOrderedTxs(leaderCert);
 
-    if (orderedTxs.length > 0 && onOrderedTxs) {
+    // Only persist a checkpoint when state actually changed. Empty
+    // anchors (no txs to commit) carry no new information — committee
+    // is unchanged, state is unchanged, there's nothing to record.
+    // Writing a row every round would make the commits table grow on
+    // wall-clock time rather than activity, exactly the pathology we're
+    // trying to avoid.
+    //
+    // consensus_index increments only on real commits — downstream
+    // consumers get a dense event counter, not a tick stream.
+    //
+    // Under future GC (§2 in narwhal-parity-gap.md), empty-round certs
+    // can be pruned freely because no commit row references them.
+    if (orderedTxs.length > 0) {
       _metrics.txs_committed += orderedTxs.length;
       log.info(`Round ${voteRound}: committing ${orderedTxs.length} ordered txs`);
       // Only advance committed round AFTER successful processing
       // If onOrderedTxs throws, we don't advance — will retry next round
-      onOrderedTxs(orderedTxs, voteRound);
+      if (onOrderedTxs) onOrderedTxs(orderedTxs, voteRound);
+
+      // §15 commit checkpoint — committee snapshot + consensus_index for
+      // the anchor that committed these txs.
+      _consensusIndex += 1;
+      try {
+        if (dag.saveCommit) {
+          dag.saveCommit({
+            round: voteRound,
+            anchor_cert_hash: leaderCert.hash,
+            leader_node_id: leader,
+            committee: [...nodeIds].sort(),
+            support_count: supportCount,
+            consensus_index: _consensusIndex,
+            committed_at: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        // Checkpoint write is best-effort — a failure here doesn't invalidate
+        // the commit itself (txs already applied), but we need to know.
+        log.warn(`Round ${voteRound}: commit checkpoint save failed: ${err.message}`);
+      }
     }
 
     _lastCommittedRound = voteRound;
@@ -335,6 +375,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       lastCommittedRound: _lastCommittedRound,
       orderedCertificates: _orderedCertHashes.size,
       nodeCount: getNodeIds().length,
+      consensusIndex: _consensusIndex,
       metrics: { ..._metrics },
     }),
   };

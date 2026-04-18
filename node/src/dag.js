@@ -46,6 +46,7 @@ class MemoryStore {
     this._vps = new Map();  // vp_id -> record
     this._nodes = new Map();  // node_id -> record
     this._certs = new Map();  // cert hash -> certificate
+    this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._mempool = new Map();  // tx_id -> tx
   }
 
@@ -183,6 +184,30 @@ class MemoryStore {
   }
   certificateCount() { return this._certs.size; }
 
+  // ── Commit checkpoints (§15) ──────────────────────────────────────────
+  saveCommit(rec) {
+    if (this._commits.has(rec.round)) return; // idempotent like INSERT OR IGNORE
+    this._commits.set(rec.round, { ...rec, committee: [...(rec.committee || [])] });
+  }
+  getCommit(round) { return this._commits.get(round) || null; }
+  getLatestCommit() {
+    let latest = null;
+    for (const c of this._commits.values()) {
+      if (!latest || c.round > latest.round) latest = c;
+    }
+    return latest;
+  }
+  getCommitsFromRound(fromRound) {
+    return [...this._commits.values()]
+      .filter(c => c.round >= fromRound)
+      .sort((a, b) => a.round - b.round);
+  }
+  getLatestConsensusIndex() {
+    let max = 0;
+    for (const c of this._commits.values()) { if (c.consensus_index > max) max = c.consensus_index; }
+    return max;
+  }
+
   // ── Transactions (DB-level) ────────────────────────────────────────────
   runInTransaction(fn) { return fn(); } // no-op wrapper for in-memory store
 
@@ -319,6 +344,25 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
       CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
 
+      -- ── Consensus: Commit checkpoints (§15) ────────────────────────
+      -- One row per Bullshark anchor commit. Durable record of
+      -- "at round R, consensus agreed these nodes were the committee,
+      --  this was the commit sequence number, this was the anchor cert."
+      -- Enables Byzantine-robust state-snapshot sync (§14), commit-time
+      -- committee divergence detection, and audit queries without
+      -- replaying the DAG.
+      CREATE TABLE IF NOT EXISTS commits (
+        round            INTEGER PRIMARY KEY,
+        anchor_cert_hash TEXT NOT NULL,
+        leader_node_id   TEXT NOT NULL,
+        committee        TEXT NOT NULL,   -- JSON sorted array of node_ids
+        support_count    INTEGER NOT NULL,
+        consensus_index  INTEGER NOT NULL,
+        committed_at     TEXT NOT NULL,   -- ISO8601 wall-clock
+        created_at       INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
+
       -- ── Consensus: Persistent Mempool ──────────────────────────────
       CREATE TABLE IF NOT EXISTS mempool (
         tx_id           TEXT PRIMARY KEY,
@@ -433,6 +477,23 @@ class SQLiteStore {
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
+
+      // Commit checkpoints (§15)
+      saveCommit: this.db.prepare(
+        `INSERT OR IGNORE INTO commits
+           (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at)
+         VALUES (?,?,?,?,?,?,?)`
+      ),
+      getCommit: this.db.prepare("SELECT * FROM commits WHERE round=?"),
+      getCommitsFromRound: this.db.prepare(
+        "SELECT * FROM commits WHERE round>=? ORDER BY round ASC"
+      ),
+      getLatestCommit: this.db.prepare(
+        "SELECT * FROM commits ORDER BY round DESC LIMIT 1"
+      ),
+      getLatestConsensusIndex: this.db.prepare(
+        "SELECT MAX(consensus_index) AS idx FROM commits"
+      ),
 
       // Persistent mempool
       saveMempoolTx: this.db.prepare("INSERT OR IGNORE INTO mempool (tx_id,tx_data) VALUES (?,?)"),
@@ -628,6 +689,48 @@ class SQLiteStore {
     };
   }
 
+  // ── Commit checkpoints (§15) ───────────────────────────────────────────────
+  // One row per Bullshark anchor commit. Durable answer to:
+  //   "what was the committee / consensus_index / anchor at round R?"
+  // Populated by bullshark._checkAnchorCommit on every successful commit.
+  saveCommit(rec) {
+    this._stmts.saveCommit.run(
+      rec.round,
+      rec.anchor_cert_hash,
+      rec.leader_node_id,
+      JSON.stringify(rec.committee || []),
+      rec.support_count,
+      rec.consensus_index,
+      rec.committed_at
+    );
+  }
+  getCommit(round) {
+    const row = this._stmts.getCommit.get(round);
+    return row ? this._parseCommit(row) : null;
+  }
+  getLatestCommit() {
+    const row = this._stmts.getLatestCommit.get();
+    return row ? this._parseCommit(row) : null;
+  }
+  getCommitsFromRound(fromRound) {
+    return this._stmts.getCommitsFromRound.all(fromRound).map(r => this._parseCommit(r));
+  }
+  getLatestConsensusIndex() {
+    return this._stmts.getLatestConsensusIndex.get().idx || 0;
+  }
+  _parseCommit(row) {
+    if (!row) return null;
+    return {
+      round: row.round,
+      anchor_cert_hash: row.anchor_cert_hash,
+      leader_node_id: row.leader_node_id,
+      committee: JSON.parse(row.committee),
+      support_count: row.support_count,
+      consensus_index: row.consensus_index,
+      committed_at: row.committed_at,
+    };
+  }
+
   // ── Persistent Mempool ────────────────────────────────────────────────────
   saveMempoolTx(tx) {
     this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx));
@@ -775,6 +878,13 @@ function initDAG(config) {
     getLatestRound: () => store.getLatestRound(),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
+
+    // ── Commit checkpoints (§15 Bullshark anchor commits) ───────────────
+    saveCommit: (rec) => store.saveCommit(rec),
+    getCommit: (round) => store.getCommit(round),
+    getLatestCommit: () => store.getLatestCommit(),
+    getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),
+    getLatestConsensusIndex: () => store.getLatestConsensusIndex(),
 
     // ── Persistent Mempool ────────────────────────────────────────────────
     saveMempoolTx: (tx) => store.saveMempoolTx(tx),
