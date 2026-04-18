@@ -91,8 +91,6 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getNodeCount: () => getNodeCount(dag),
     getCommittee,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
-    notePendingTxCert: (cert) => bullshark.notePendingTxCert(cert),
-    hasPendingWork: () => bullshark.hasPendingWork(),
     // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
     // so the root always reflects canonical DAG state.
     onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
@@ -125,11 +123,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
     /**
      * Start consensus rounds (Narwhal + Bullshark) and sync protocol.
+     * Pass { awaitPeers: true } for joiner nodes so production is gated on
+     * the first peer handshake + sync, preventing premature batch/ack
+     * broadcasts that would be rejected by peers whose node registries
+     * haven't yet incorporated us via consensus.
      */
-    async start() {
+    async start({ awaitPeers = false } = {}) {
       await syncHandler.registerProtocol();
+      if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
-      log.info("Consensus started");
+      log.info(`Consensus started${awaitPeers ? " — awaiting peer sync" : ""}`);
     },
 
     /**

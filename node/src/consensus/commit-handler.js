@@ -43,9 +43,18 @@ function createCommitHandler({ dag, scoring, config }) {
    *
    * @param {Array<Object>} orderedTxs  Deterministically ordered txs from Bullshark
    * @param {number} round              The round number that committed these txs
+   * @param {Object} [opts]
+   * @param {boolean} [opts.fromSync]   True when replaying txs freshly imported from a peer.
+   *                                    Skips prev-reference existence check because some
+   *                                    internal writers (scheduler, scoring, jury — see
+   *                                    issue #13) insert txs directly into the DAG without
+   *                                    broadcasting, so their tx_ids won't exist on this
+   *                                    node. The BFT cert wrapping the tx provides the
+   *                                    integrity guarantee that the prev-check normally would.
    * @returns {{ committed: number, dropped: number }}
    */
-  function commitOrderedTxs(orderedTxs, round) {
+  function commitOrderedTxs(orderedTxs, round, opts = {}) {
+    const { fromSync = false } = opts;
     // Phase 1: Validate all txs BEFORE writing anything
     const validated = [];
     let dropped = 0;
@@ -60,7 +69,7 @@ function createCommitHandler({ dag, scoring, config }) {
       if (dag.getTx(tx.tx_id)) continue;
 
       // Validate structure
-      const validation = validateTransaction(tx, dag, { skipState: true });
+      const validation = validateTransaction(tx, dag, { skipState: true, skipPrevCheck: fromSync });
       if (!validation.valid) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${validation.errors.join("; ")}`);
         dropped++;

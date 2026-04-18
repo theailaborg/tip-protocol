@@ -2,16 +2,18 @@
  * @file @tip-protocol/node/src/consensus/narwhal.js
  * @description Narwhal data availability layer for TIP consensus.
  *
- * Event-driven design:
- *   - IDLE when no work: zero certificates, zero DB writes, zero cost
- *   - Wakes on: local tx added to mempool, or peer batch received
- *   - Runs one complete wave (propose + vote) then returns to idle if no more work
+ * Continuous-production design (reference Narwhal-faithful):
+ *   - While running, every round produces a batch + cert (empty ok), no idle
+ *   - Chain is always extended so late-arriving peer certs can self-heal
+ *   - CertificateWaiter parks peer certs whose parents are missing in our DAG
+ *     and reprocesses them once the parents land
  *
- * Each round (when active):
+ * Each round:
  *   1. Drain txs from mempool → create Batch → broadcast on MEMPOOL topic
  *   2. Receive batches from peers → send BatchAck on CONSENSUS topic
  *   3. Collect 2/3+ BatchAcks → create Certificate → broadcast on CERTIFICATES topic
  *   4. Collect 2/3+ Certificates → advance to next round → notify Bullshark
+ *   5. Immediately begin next round after a short inter-round delay
  *
  * Message routing:
  *   MEMPOOL topic     → Batch messages
@@ -49,27 +51,22 @@ const log = getLogger("tip.narwhal");
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, notePendingTxCert, hasPendingWork, onCertSaved }) {
-  const _notePending = typeof notePendingTxCert === "function" ? notePendingTxCert : () => { };
-  const _hasPendingWork = typeof hasPendingWork === "function" ? hasPendingWork : () => false;
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
-  let _active = false;                              // false = idle, true = running rounds
 
   // Join state: controls when a joining node can start producing.
-  //   "ready"   — normal operation, wake on txs and batches
-  //   "syncing" — sync in progress, suppress all waking
+  //   "ready"   — normal operation
+  //   "syncing" — sync in progress, suppress round production
   // After sync, SyncResponse.latestRound gives the authoritative peer round,
-  // so we transition "syncing" → "ready" directly. The existing "adopt higher
-  // round on incoming batch" logic in handleIncomingBatch catches any drift
-  // between sync completion and first production.
+  // so we transition "syncing" → "ready" directly and resume ticking.
   let _joinState = "ready";
-  let _roundTimer = null;
-  let _retryTimer = null;
-  let _batchWaitTimer = null;                       // batch accumulation timer
+  let _roundTimer = null;                           // per-round liveness timeout
+  let _retryTimer = null;                           // retry while stuck below quorum
+  let _nextRoundTimer = null;                       // inter-round scheduler
 
   // Per-round state
   let _myBatch = null;
@@ -77,6 +74,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _batchAcks = new Map();                     // batchHash → [ack, ack, ...]
   const _roundCertificates = new Map();             // nodeId → certificate
   let _myCertificateCreated = false;
+
+  // CertificateWaiter: peer certs whose parent hashes aren't in our DAG yet.
+  // Parked on receive, reprocessed when the missing parent lands. Guarantees
+  // no peer cert is silently dropped for arriving before its parents.
+  const _pendingCerts = new Map();                  // certHash → { cert, missing: Set<parentHash> }
+  const _pendingByParent = new Map();               // parentHash → Set<certHash>
 
   // Committee is derived deterministically from the DAG via getCommittee(),
   // not tracked locally. Every node reading the same DAG sees the same
@@ -88,30 +91,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   /**
-   * Start the Narwhal consensus layer.
-   * Subscribes to mempool events but stays idle until work arrives.
+   * Start the Narwhal consensus layer. Begins continuous round production
+   * unless join state is "syncing" (in which case the first round will be
+   * kicked off by exitSyncMode()).
    */
   function start() {
     if (_running) return;
     _running = true;
 
-    // Subscribe to mempool — wake from idle when a tx arrives
-    mempool.onTxAdded(() => {
-      if (!_running) return;
-      // Syncing or waiting for peer's round — don't wake yet.
-      if (_joinState !== "ready") {
-        log.debug(`Mempool tx added — suppressed wake (${_joinState})`);
-        return;
-      }
-      _wake();
-    });
+    log.info(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
 
-    log.info(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()}) — idle, waiting for work`);
-
-    // If mempool already has pending txs (restored from crash), wake immediately
-    if (mempool.size() > 0) {
-      _wake();
-    }
+    if (_joinState === "ready") _scheduleNextRound(0);
   }
 
   /**
@@ -119,10 +109,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    */
   function stop() {
     _running = false;
-    _active = false;
-    if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
-    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
-    if (_batchWaitTimer) { clearTimeout(_batchWaitTimer); _batchWaitTimer = null; }
+    _clearAllTimers();
     log.info("Narwhal stopped");
   }
 
@@ -133,66 +120,29 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return _currentRound;
   }
 
-  // ── Wake / idle transitions ─────────────────────────────────────────────
-
-  /**
-   * Wake from idle state.
-   * @param {boolean} [immediate=false]  Skip batch accumulation (e.g. peer sent a batch)
-   */
-  function _wake(immediate = false) {
-    if (_active) return; // already running rounds
-    _active = true;
-
-    // If already waiting for batch accumulation, let it continue
-    if (_batchWaitTimer) return;
-
-    if (immediate) {
-      // Peer is already running a round — start immediately to participate
-      log.debug("Narwhal waking — immediate (peer activity)");
-      _beginRound();
-    } else {
-      // Local tx — wait for more txs to accumulate (e.g. dispute = 9 txs together)
-      _batchWaitTimer = setTimeout(() => {
-        _batchWaitTimer = null;
-        if (_running && _active) _beginRound();
-      }, CONSENSUS.BATCH_WAIT_MS);
-      log.debug(`Narwhal waking — accumulating batch (${CONSENSUS.BATCH_WAIT_MS}ms)`);
-    }
+  function _clearAllTimers() {
+    if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
   }
 
   /**
-   * Check if we should go idle after a wave completes.
-   * Safe for both single and multi-node: if a peer starts a round while
-   * we're idle, their batch arrives via GossipSub → handleIncomingBatch
-   * calls _wake() → we participate immediately.
+   * Schedule the next _beginRound() call. Replaces any currently pending
+   * next-round timer. Called from start, _tryAdvanceRound, and exitSyncMode.
    */
-  function _checkIdle() {
-    // Only check after even rounds (vote round done = wave complete)
-    // _currentRound was already incremented, so it's now odd
-    if (_currentRound % 2 !== 1) return;
-
-    // Still have work in mempool
-    if (mempool.size() > 0) return;
-
-    // Drain-to-idle: a tx-carrying cert is in the DAG but Bullshark hasn't
-    // ordered it yet. Keep producing rounds (empty batches ok) so a future
-    // anchor commit can sweep its causal history into the ordered set.
-    if (_hasPendingWork()) {
-      log.debug(`Round ${_currentRound}: staying active — pending commit work`);
-      return;
-    }
-
-    // No work → go idle (works for single and multi-node)
-    _active = false;
-    if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
-    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
-    log.debug(`Round ${_currentRound}: idle — no pending work`);
+  function _scheduleNextRound(delayMs) {
+    if (!_running) return;
+    if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
+    _nextRoundTimer = setTimeout(() => {
+      _nextRoundTimer = null;
+      _beginRound();
+    }, delayMs);
   }
 
   // ── Round lifecycle ──────────────────────────────────────────────────────
 
   function _beginRound() {
-    if (!_running || !_active) return;
+    if (!_running || _joinState !== "ready") return;
 
     _resetRoundState();
 
@@ -240,7 +190,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _tryAdvanceRound();
 
         // If still stuck, schedule periodic retry
-        if (_running && _active && _roundCertificates.size < _getQuorum()) {
+        if (_running && _roundCertificates.size < _getQuorum()) {
           _scheduleRetry();
         }
       }, CONSENSUS.ROUND_TIMEOUT_MS);
@@ -251,17 +201,52 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
    * Periodic retry when round can't advance (e.g. waiting for peers).
    */
   function _scheduleRetry() {
-    if (_retryTimer || !_running || !_active) return;
+    if (_retryTimer || !_running) return;
     _retryTimer = setTimeout(() => {
       _retryTimer = null;
-      if (!_running || !_active) return;
+      if (!_running) return;
+
+      // GossipSub is best-effort — a dropped batch or cert means this round
+      // can never reach quorum. On each retry, re-broadcast whatever we
+      // already have so peers that missed the original publish can still
+      // collect it. Receivers dedup on message hash, so re-publishing to
+      // peers that already got the message is a no-op.
+      _rebroadcastOwnBatch();
+      _rebroadcastOwnCertificate();
+
       _tryCreateCertificate();
       _tryAdvanceRound();
       // Keep retrying if still stuck
-      if (_running && _active && _roundCertificates.size < _getQuorum()) {
+      if (_running && _roundCertificates.size < _getQuorum()) {
         _scheduleRetry();
       }
     }, CONSENSUS.ROUND_TIMEOUT_MS);
+  }
+
+  function _rebroadcastOwnBatch() {
+    if (!_myBatch) return;
+    try {
+      const buf = encode("Batch", _serializeBatch(_myBatch));
+      network.publish(network.TOPICS.MEMPOOL, buf);
+      log.debug(`Round ${_currentRound}: re-broadcast own batch`);
+    } catch (err) {
+      log.warn(`Round ${_currentRound}: batch re-broadcast failed: ${err.message}`);
+    }
+  }
+
+  function _rebroadcastOwnCertificate() {
+    if (!_myCertificateCreated) return;
+    const cert = _roundCertificates.get(nodeId);
+    if (!cert) return;
+    try {
+      const buf = encode("Certificate", _serializeCertificate(cert));
+      if (buf.length <= CONSENSUS.CERTIFICATE_MAX_BYTES) {
+        network.publish(network.TOPICS.CERTIFICATES, buf);
+        log.debug(`Round ${_currentRound}: re-broadcast own certificate`);
+      }
+    } catch (err) {
+      log.warn(`Round ${_currentRound}: cert re-broadcast failed: ${err.message}`);
+    }
   }
 
   function _resetRoundState() {
@@ -315,23 +300,44 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
-    // If idle and peer is ahead, adopt their round. Covers both the normal
-    // "peer kept advancing while we were idle" case and the post-sync drift
-    // case where the cluster advanced between sync completion and our first
-    // production attempt.
-    if (!_active && batch.round > _currentRound) {
-      log.info(`Adopting peer round ${batch.round} (was ${_currentRound})`);
+    // Round-drift recovery: if a peer is producing at a higher round, the
+    // cluster has moved on without us (we advanced slower, or missed a quorum
+    // window). Fast-forward to catch up — abandon any in-flight round state,
+    // join the peer's round, and immediately begin our own round so we can
+    // contribute a batch + ack this peer's batch too.
+    if (batch.round > _currentRound) {
+      log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
+      // Before discarding _myBatch, return its txs to the mempool so they're
+      // drained again in the next _beginRound. Without this, txs we drained
+      // but never got a cert for would be silently lost. Only needed when we
+      // haven't already wrapped the batch in a cert — if _myCertificateCreated
+      // is true, those txs live in the DAG permanently via our cert.
+      if (_myBatch && !_myCertificateCreated) {
+        const txs = _myBatch.txs || [];
+        if (txs.length > 0) {
+          let requeued = 0;
+          for (const tx of txs) {
+            const r = mempool.add(tx);
+            if (r && r.added) requeued++;
+          }
+          log.info(`Fast-forward: returned ${requeued}/${txs.length} uncommitted txs to mempool`);
+        }
+      }
       _currentRound = batch.round;
+      _resetRoundState();
+      if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+      if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
+      // Kick off our own production at the new round, then fall through to
+      // store + ack the peer batch below.
+      _beginRound();
     }
 
-    // Only accept batches for current round
-    if (batch.round !== _currentRound) {
-      log.debug(`Round ${_currentRound}: ignoring batch for round ${batch.round} from ${batch.author_node_id}`);
+    // Drop stale batches for older rounds (peer is behind; they'll catch up
+    // via their own handleIncomingBatch when one of our batches reaches them).
+    if (batch.round < _currentRound) {
+      log.debug(`Round ${_currentRound}: ignoring stale batch for round ${batch.round} from ${batch.author_node_id}`);
       return;
     }
-
-    // Peer is active — wake up immediately to participate
-    if (!_active) _wake(true);
 
     // Deduplicate
     if (_peerBatches.has(batch.author_node_id)) return;
@@ -436,13 +442,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     );
 
     // Persist
-    dag.saveCertificate(cert);
-    _onCertSaved(cert);
+    _saveCertAndNotify(cert);
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
-
-    // Drain-to-idle: register pending commit work if this cert carries txs.
-    if ((cert.batch?.txs || []).length > 0) _notePending(cert);
 
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
@@ -486,8 +488,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
-    // Skip if already persisted
+    // Skip if already persisted or already parked
     if (dag.getCertificate(cert.hash)) return;
+    if (_pendingCerts.has(cert.hash)) return;
 
     // Full verification — use the committee AT this cert's wave, not current.
     // Committee is wave-stable, so cert.round maps to the cert's wave's
@@ -500,12 +503,36 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
-    // Persist
+    // CertificateWaiter: if any parent is missing from the DAG, park the cert
+    // and reprocess when the missing parent lands. Ensures no peer cert gets
+    // dropped for arriving before its causal history has propagated.
+    const missing = (cert.parent_hashes || []).filter(h => h && !dag.getCertificate(h));
+    if (missing.length > 0) {
+      _parkPendingCert(cert, missing);
+      log.debug(`Round ${cert.round}: parked cert from ${cert.author_node_id} — waiting on ${missing.length} parent(s)`);
+      return;
+    }
+
+    _processVerifiedCertificate(cert);
+  }
+
+  /**
+   * Persist, emit save events, and flush any pending certs whose last
+   * missing parent is this one.
+   */
+  function _saveCertAndNotify(cert) {
     dag.saveCertificate(cert);
     _onCertSaved(cert);
+    _flushPendingForParent(cert.hash);
+  }
 
-    // Drain-to-idle: register pending commit work if the peer's cert carries txs.
-    if ((cert.batch?.txs || []).length > 0) _notePending(cert);
+  /**
+   * Final step for a verified cert whose parents are all present. Runs after
+   * the initial receive OR after a waiter unblock. Idempotent via the
+   * dag.getCertificate() guard in handleIncomingCertificate.
+   */
+  function _processVerifiedCertificate(cert) {
+    _saveCertAndNotify(cert);
 
     // Track if current round — peer is in sync and actively participating.
     // Committee membership is now a pure function of DAG state (saveCertificate
@@ -520,6 +547,39 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (txIds.length > 0) mempool.remove(txIds);
 
     log.debug(`Round ${cert.round}: received certificate from ${cert.author_node_id} (${(cert.batch?.txs || []).length} txs)`);
+  }
+
+  /**
+   * Park a verified cert whose parents aren't all in the DAG yet. Indexed
+   * by each missing parent hash for O(1) flush on parent arrival.
+   */
+  function _parkPendingCert(cert, missingParents) {
+    const missingSet = new Set(missingParents);
+    _pendingCerts.set(cert.hash, { cert, missing: missingSet });
+    for (const parentHash of missingSet) {
+      if (!_pendingByParent.has(parentHash)) _pendingByParent.set(parentHash, new Set());
+      _pendingByParent.get(parentHash).add(cert.hash);
+    }
+  }
+
+  /**
+   * When a cert is saved, check whether it unblocks any parked children.
+   * Recursive via _processVerifiedCertificate → _saveCertAndNotify.
+   */
+  function _flushPendingForParent(parentHash) {
+    const waiters = _pendingByParent.get(parentHash);
+    if (!waiters || waiters.size === 0) return;
+    _pendingByParent.delete(parentHash);
+
+    for (const childHash of waiters) {
+      const entry = _pendingCerts.get(childHash);
+      if (!entry) continue;
+      entry.missing.delete(parentHash);
+      if (entry.missing.size === 0) {
+        _pendingCerts.delete(childHash);
+        _processVerifiedCertificate(entry.cert);
+      }
+    }
   }
 
   // ── Round advancement ────────────────────────────────────────────────────
@@ -547,17 +607,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Advance
     _currentRound++;
 
-    // Check if we should go idle (only after even rounds — wave complete)
-    _checkIdle();
-
-    // If still active, start next round
-    if (_active && _running) {
-      // Use batch_wait_ms if mempool has new txs, otherwise start immediately
-      // (vote round shouldn't wait — it needs to happen promptly)
-      const hasNewTxs = mempool.size() > 0;
-      const delay = hasNewTxs ? CONSENSUS.BATCH_WAIT_MS : 0;
-      setTimeout(() => _beginRound(), delay);
-    }
+    // Continuous production: always schedule the next round. Short delay so
+    // gossip has time to deliver peer certs for round-R before we freeze
+    // parent_hashes for R+1. Chain extension is what lets late-arriving
+    // tx-carrying certs get swept into a future anchor commit.
+    _scheduleNextRound(CONSENSUS.BATCH_WAIT_MS);
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -656,10 +710,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (target > _currentRound) {
         const oldRound = _currentRound;
         _currentRound = target;
+        // Any in-flight round state at the old round is now stale
+        _resetRoundState();
+        if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
         log.info(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
       }
       _joinState = "ready";
       log.info(`Exiting sync mode — ready at round ${_currentRound}`);
+      if (_running) _scheduleNextRound(0);
     },
     handleIncomingBatch,
     handleIncomingAck,
@@ -667,9 +725,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     stats: () => ({
       round: _currentRound,
       running: _running,
-      active: _active,
+      joinState: _joinState,
       batchesThisRound: _peerBatches.size,
       certificatesThisRound: _roundCertificates.size,
+      pendingCerts: _pendingCerts.size,
       quorum: _getQuorum(),
       activeParticipants: _getCommittee().length,
       registeredNodes: getNodeCount(),

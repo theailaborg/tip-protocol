@@ -79,7 +79,15 @@ async function initNetworkAndConsensus({ dag, scoring, config }) {
       onCertificate: (data) => consensus.handlers.onCertificate(data),
     });
 
-    await consensus.start();
+    // Joiner gating: a fresh node whose own record isn't yet in the DAG
+    // registry (i.e. not the founder, and has never synced before) must wait
+    // for the first peer handshake + sync before producing. Otherwise its
+    // batches/acks get rejected by peers that haven't yet seen it. Founders
+    // (in genesis) and previously-synced restarts both have their own node
+    // record in DAG and can start producing immediately.
+    const ourNodeId = config.nodeRegisteredId || config.nodeId;
+    const weAreRegistered = ourNodeId && dag.getNode(ourNodeId);
+    await consensus.start({ awaitPeers: !weAreRegistered });
     log.info(`Consensus ready: Narwhal + Bullshark on port ${p2pPort}`);
 
     return { network, consensus };

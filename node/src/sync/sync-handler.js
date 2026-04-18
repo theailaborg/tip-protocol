@@ -147,51 +147,41 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     }
 
     const fromRound = request.fromRound || 1;
-    const batchSize = request.batchSize || CONSENSUS.SYNC_BATCH_SIZE;
     const latestRound = dag.getLatestRound();
 
     log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
 
-    // Send certificates in batches
-    let currentFrom = fromRound;
-    const sendBatch = async (certs, hasMore) => {
-      const response = encode("SyncResponse", {
-        certificates: certs.map(c => _serializeCertForSync(c)),
-        fromRound: certs.length > 0 ? certs[0].round : currentFrom,
-        toRound: certs.length > 0 ? certs[certs.length - 1].round : currentFrom,
-        latestRound,
-        merkleRoot: hexToBytes(merkleRoot()),
-        hasMore,
-      });
-      // Write to stream
-      try { await stream.sink([response]); } catch (err) { log.warn(`Sync: stream write failed: ${err.message}`); }
-    };
-
-    let batch = [];
+    // Collect all requested certs into one response. libp2p stream.sink is
+    // single-use per stream, so the former multi-batch path silently dropped
+    // anything past the first batch. For our federation scale this fits
+    // comfortably in one message; if certs ever exceed CERTIFICATE_MAX_BYTES
+    // * many, we'd need proper length-prefixed framing.
+    const allCerts = [];
     for (let r = fromRound; r <= latestRound; r++) {
       try {
         const certs = dag.getCertificatesByRound(r);
-        batch.push(...certs);
-
-        if (batch.length >= batchSize) {
-          await sendBatch(batch, r < latestRound);
-          batch = [];
-          currentFrom = r + 1;
-        }
+        allCerts.push(...certs);
       } catch (err) {
         log.warn(`Sync: failed to read round ${r}: ${err.message}`);
       }
     }
 
-    // Send remaining
-    if (batch.length > 0) {
-      await sendBatch(batch, false);
-    } else if (fromRound > latestRound) {
-      // Peer is already caught up
-      await sendBatch([], false);
+    const response = encode("SyncResponse", {
+      certificates: allCerts.map(c => _serializeCertForSync(c)),
+      fromRound: allCerts.length > 0 ? allCerts[0].round : fromRound,
+      toRound: allCerts.length > 0 ? allCerts[allCerts.length - 1].round : fromRound,
+      latestRound,
+      merkleRoot: hexToBytes(merkleRoot()),
+      hasMore: false,
+    });
+
+    try {
+      await stream.sink([response]);
+    } catch (err) {
+      log.warn(`Sync: stream write failed: ${err.message}`);
     }
 
-    log.info(`Sync: sent certificates from round ${fromRound} to ${latestRound}`);
+    log.info(`Sync: sent ${allCerts.length} certificates (rounds ${fromRound}-${latestRound})`);
   }
 
   /**

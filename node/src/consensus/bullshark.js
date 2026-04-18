@@ -47,14 +47,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
   // Track last committed round to avoid re-processing
   let _lastCommittedRound = 0;
 
-  // Hashes of tx-carrying certificates that haven't been ordered yet.
-  // Drives Narwhal's drain-to-idle: while this set is non-empty, round
-  // production must continue so a subsequent anchor commit can sweep these
-  // certs into the ordered set via causal history. Tracking by hash (not
-  // round) lets us prune the moment the tx-carrying cert itself is ordered,
-  // without waiting for its empty sibling certs to be swept.
-  const _pendingTxCertHashes = new Set();
-
   // Initialize from persisted state
   function _initFromDAG() {
     try {
@@ -172,13 +164,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       // Only advance committed round AFTER successful processing
       // If onOrderedTxs throws, we don't advance — will retry next round
       onOrderedTxs(orderedTxs, voteRound);
-    }
-
-    // Prune pending tx-certs whose hash is now in the ordered set. The anchor's
-    // BFS adds every cert it traverses to _orderedCertHashes, so any pending
-    // tx-cert reached via the anchor's causal history is cleared here.
-    for (const h of _pendingTxCertHashes) {
-      if (_orderedCertHashes.has(h)) _pendingTxCertHashes.delete(h);
     }
 
     _lastCommittedRound = voteRound;
@@ -331,38 +316,14 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
           for (const cert of certs) _orderedCertHashes.add(cert.hash);
         } catch { /* ignore */ }
       }
-      for (const h of _pendingTxCertHashes) {
-        if (_orderedCertHashes.has(h)) _pendingTxCertHashes.delete(h);
-      }
       if (round > _lastCommittedRound) _lastCommittedRound = round;
       log.info(`Bullshark: marked certificates as ordered up to round ${round}`);
     },
-
-    /**
-     * Register a tx-carrying certificate as pending commit work.
-     * Narwhal calls this when it creates or receives any cert whose batch
-     * has txs. Drives the drain-to-idle decision in _checkIdle.
-     */
-    notePendingTxCert(cert) {
-      if (!cert || !cert.hash) return;
-      if (!cert.batch || !cert.batch.txs || cert.batch.txs.length === 0) return;
-      if (_orderedCertHashes.has(cert.hash)) return;
-      _pendingTxCertHashes.add(cert.hash);
-    },
-
-    /**
-     * Drain-to-idle signal. True while any tx-carrying cert in the DAG
-     * hasn't been ordered yet. Narwhal keeps producing rounds (with empty
-     * batches if needed) while this is true, so a subsequent anchor commit
-     * can sweep the pending certs into the ordered set.
-     */
-    hasPendingWork: () => _pendingTxCertHashes.size > 0,
 
     /** Stats for monitoring */
     stats: () => ({
       lastCommittedRound: _lastCommittedRound,
       orderedCertificates: _orderedCertHashes.size,
-      pendingTxCerts: _pendingTxCertHashes.size,
       nodeCount: getNodeIds().length,
     }),
   };
