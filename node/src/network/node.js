@@ -17,7 +17,7 @@
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { shake256 } = require("../../../shared/crypto");
-const { GENESIS_CHAIN_ID } = require("../genesis");
+const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
 const { getLogger } = require("../logger");
@@ -137,6 +137,10 @@ async function createNetworkNode(options = {}) {
   const ctx = {
     node, nodeId, nodePrivateKey, getNodeKey, getLatestRound, getMerkleRoot, peerIdFromString,
     chainId: GENESIS_CHAIN_ID || "tip-mainnet-v2",
+    // Genesis hash is the cryptographic network anchor. Chain_id is just a
+    // label; two forks could share the same string. The hash can't collide
+    // unless the entire genesis payload is identical. See issue #17.
+    genesisHash: getGenesisHash(),
     handshakeProtocol: NETWORK.HANDSHAKE_PROTOCOL,
     handshakeTimeoutMs: CONSENSUS.HANDSHAKE_TIMEOUT_MS,
     authorizedPeers: _authorizedPeers,

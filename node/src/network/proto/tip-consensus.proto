@@ -127,12 +127,15 @@ message Handshake {
   uint64 latest_round = 3;     // node's current consensus round
   bytes merkle_root = 4;       // node's current Merkle root
   string protocol_version = 5; // e.g. "2.0.0"
-  string chain_id = 6;         // e.g. "tip-mainnet-v2" (must match genesis)
-  bytes signature = 7;         // signature over (node_id + latest_round + chain_id)
+  string chain_id = 6;         // human-readable label (e.g. "tip-mainnet-v2")
+  bytes signature = 7;         // signature over (node_id + latest_round + chain_id + genesis_hash)
+  bytes genesis_hash = 8;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
 }
 
 /**
- * Handshake response.
+ * Handshake response. A non-empty `error` means rejection; all other fields
+ * may be empty in that case. Success path: `error` is empty, all other fields
+ * populated, initiator verifies signature + genesis_hash.
  */
 message HandshakeAck {
   string node_id = 1;
@@ -140,4 +143,6 @@ message HandshakeAck {
   bytes merkle_root = 3;
   bool sync_needed = 4;        // true if rounds diverge
   bytes signature = 5;
+  bytes genesis_hash = 6;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
+  string error = 7;            // non-empty = responder rejected our handshake (e.g. "Genesis hash mismatch")
 }

@@ -23,29 +23,40 @@
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { PROTOCOL } = require("../../../shared/constants");
 const { mldsaSign, mldsaVerify } = require("../../../shared/crypto");
-const { encode, decode } = require("./proto");
+const { encode, decode, bytesToHex, hexToBytes } = require("./proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.handshake");
 
 /**
  * Create handshake payload and signature.
- * Signs: "${nodeId}:${round}:${chainId}" with ML-DSA-65.
+ * Signs: "${nodeId}:${round}:${chainId}:${genesisHash}" with ML-DSA-65.
+ * The genesis hash is the cryptographic anchor — chain_id is only a
+ * human-readable label and can collide across forks, so we include the
+ * hash (SHAKE-256 over canonical genesis payload) in both the payload
+ * and the signature. Peers with mismatched genesis are rejected even if
+ * their chain_id label happens to match.
  */
-function createPayload(nodeId, nodePrivateKey, chainId, getLatestRound) {
+function createPayload(nodeId, nodePrivateKey, chainId, genesisHash, getLatestRound) {
   const round = getLatestRound();
-  const payload = `${nodeId}:${round}:${chainId}`;
+  const payload = `${nodeId}:${round}:${chainId}:${genesisHash}`;
   const signature = nodePrivateKey ? mldsaSign(payload, nodePrivateKey) : "";
-  return { nodeId, round, chainId, signature };
+  return { nodeId, round, chainId, genesisHash, signature };
 }
 
 /**
  * Verify a peer's handshake signature against the node registry.
+ * Rejects peers whose genesis_hash doesn't match ours — prevents joining
+ * a forked network that happens to share our chain_id label.
  * @returns {{ valid: boolean, nodeId?: string, error?: string }}
  */
-function verify(peerNodeId, peerChainId, peerRound, peerSignature, chainId, getNodeKey) {
+function verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, chainId, genesisHash, getNodeKey) {
   if (peerChainId !== chainId) {
     return { valid: false, error: `Chain ID mismatch: ${peerChainId} !== ${chainId}` };
+  }
+
+  if (!peerGenesisHash || peerGenesisHash !== genesisHash) {
+    return { valid: false, error: `Genesis hash mismatch: peer=${(peerGenesisHash || "").slice(0, 16)} ours=${genesisHash.slice(0, 16)}` };
   }
 
   const pubKey = getNodeKey(peerNodeId);
@@ -53,7 +64,7 @@ function verify(peerNodeId, peerChainId, peerRound, peerSignature, chainId, getN
     return { valid: false, error: `Node ${peerNodeId} not in registry` };
   }
 
-  const payload = `${peerNodeId}:${peerRound}:${peerChainId}`;
+  const payload = `${peerNodeId}:${peerRound}:${peerChainId}:${peerGenesisHash}`;
   if (!mldsaVerify(payload, peerSignature, pubKey)) {
     return { valid: false, error: `Invalid signature from ${peerNodeId}` };
   }
@@ -88,26 +99,43 @@ async function handleIncoming({ stream, connection }, ctx) {
     const peerNodeId = msg.nodeId || "";
     const peerChainId = msg.chainId || "";
     const peerRound = Number(msg.latestRound || 0);
-    const peerSignature = msg.signature?.toString("hex") || "";
+    const peerSignature = bytesToHex(msg.signature) || "";
+    const peerGenesisHash = bytesToHex(msg.genesisHash) || "";
 
-    // Verify against node registry
-    const result = verify(peerNodeId, peerChainId, peerRound, peerSignature, ctx.chainId, ctx.getNodeKey);
+    // Verify against node registry + genesis anchor
+    const result = verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, ctx.chainId, ctx.genesisHash, ctx.getNodeKey);
 
     if (!result.valid) {
       log.warn(`Rejected from ${remotePeerId.slice(0, 12)}: ${result.error}`);
+      // Tell the peer why we're closing — otherwise they only see their
+      // own "No ack from X" timeout and have no idea whether it's a config
+      // problem on their side, a registry miss, or a genesis mismatch.
+      try {
+        const rejectMsg = encode("HandshakeAck", {
+          nodeId: ctx.nodeId || "",
+          latestRound: 0,
+          merkleRoot: Buffer.alloc(0),
+          syncNeeded: false,
+          signature: Buffer.alloc(0),
+          genesisHash: Buffer.alloc(0),
+          error: result.error,
+        });
+        await stream.sink([rejectMsg]);
+      } catch { /* best-effort — if we can't send the reject, we still close */ }
       await stream.close();
       ctx.node.hangUp(connection.remotePeer).catch(() => { });
       return;
     }
 
     // Send our ack
-    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.getLatestRound);
+    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
     const ack = encode("HandshakeAck", {
       nodeId: hs.nodeId,
       latestRound: hs.round,
-      merkleRoot: Buffer.from(ctx.getMerkleRoot() || "", "hex"),
+      merkleRoot: hexToBytes(ctx.getMerkleRoot() || ""),
       syncNeeded: Math.abs(peerRound - hs.round) > 2,
-      signature: Buffer.from(hs.signature, "hex"),
+      signature: hexToBytes(hs.signature),
+      genesisHash: hexToBytes(hs.genesisHash),
     });
 
     await stream.sink([ack]);
@@ -156,15 +184,16 @@ async function initiate(remotePeerId, ctx) {
 
   try {
     // Send our handshake
-    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.getLatestRound);
+    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
     const msg = encode("Handshake", {
       nodeId: hs.nodeId,
       publicKey: Buffer.alloc(0), // not needed — registry has the key
       latestRound: hs.round,
-      merkleRoot: Buffer.from(ctx.getMerkleRoot() || "", "hex"),
+      merkleRoot: hexToBytes(ctx.getMerkleRoot() || ""),
       protocolVersion: PROTOCOL.version,
       chainId: hs.chainId,
-      signature: Buffer.from(hs.signature, "hex"),
+      signature: hexToBytes(hs.signature),
+      genesisHash: hexToBytes(hs.genesisHash),
     });
 
     await stream.sink([msg]);
@@ -188,13 +217,26 @@ async function initiate(remotePeerId, ctx) {
       return;
     }
 
-    // Verify ack (ack doesn't include chainId — use ours)
+    // Verify ack. Ack doesn't carry chain_id on the wire (always ours), but
+    // it does carry genesis_hash so we can reject a peer with a colliding
+    // chain_id label but different genesis.
     const ack = decode("HandshakeAck", ackData);
+
+    // Explicit rejection from peer — they told us why they're closing.
+    // Much more useful than the previous "No ack from X" silent timeout.
+    if (ack.error) {
+      log.warn(`Rejected by ${remotePeerId.slice(0, 12)}: ${ack.error}`);
+      await stream.close();
+      ctx.node.hangUp(ctx.peerIdFromString(remotePeerId)).catch(() => { });
+      return;
+    }
+
     const peerNodeId = ack.nodeId || "";
     const peerRound = Number(ack.latestRound || 0);
-    const peerSignature = ack.signature?.toString("hex") || "";
+    const peerSignature = bytesToHex(ack.signature) || "";
+    const peerGenesisHash = bytesToHex(ack.genesisHash) || "";
 
-    const result = verify(peerNodeId, ctx.chainId, peerRound, peerSignature, ctx.chainId, ctx.getNodeKey);
+    const result = verify(peerNodeId, ctx.chainId, peerRound, peerSignature, peerGenesisHash, ctx.chainId, ctx.genesisHash, ctx.getNodeKey);
     await stream.close();
 
     if (!result.valid) {
