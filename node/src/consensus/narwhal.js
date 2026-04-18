@@ -95,6 +95,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     rounds_advanced: 0,
     fast_forwards: 0,
     retries: 0,
+    equivocation_refused: 0,  // §1: count of refused double-attestations
   };
 
   // Committee is derived deterministically from the DAG via getCommittee(),
@@ -359,11 +360,42 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
 
+    // §1 Equivocation defense: refuse to sign a second attestation for the
+    // same (round, author) with different content. Persistent across restarts
+    // so a crash mid-round can't leave us attesting to two different batches.
+    // Peer equivocation (same author broadcasting two batches at same round)
+    // is also caught here — we endorse only the first one we saw.
+    const priorVote = dag.getSeenVote(batch.round, batch.author_node_id);
+    if (priorVote) {
+      if (priorVote.batch_hash !== batch.hash) {
+        log.error(`EQUIVOCATION detected from ${batch.author_node_id} at round ${batch.round}: ` +
+                  `already attested to ${priorVote.batch_hash.slice(0, 16)}, now seeing ${batch.hash.slice(0, 16)} — refusing`);
+        _metrics.equivocation_refused = (_metrics.equivocation_refused || 0) + 1;
+        return;
+      }
+      // Same (round, author, batch) arriving again — fall through to in-memory
+      // dedup. Re-signing is safe (ML-DSA is randomized, same payload → valid
+      // but non-identical signature; both are equally valid attestations).
+    }
+
     // Deduplicate
     if (_peerBatches.has(batch.author_node_id)) return;
 
     _peerBatches.set(batch.author_node_id, batch);
     _metrics.batches_received++;
+
+    // Persist the commitment BEFORE signing + broadcasting. If we crash
+    // after persist but before broadcast, restart is safe: peer re-sends
+    // the same batch, we see the prior-vote record, re-sign harmlessly.
+    // If we crashed between sign+broadcast and persist, restart would allow
+    // a fresh attestation to a potentially different batch — which is the
+    // exact fork scenario we're closing.
+    try {
+      dag.recordSeenVote(batch.round, batch.author_node_id, batch.hash);
+    } catch (err) {
+      log.warn(`Round ${batch.round}: failed to persist vote commitment: ${err.message}`);
+      // Proceed anyway — in-memory dedup is fallback for this message.
+    }
 
     // Send ack
     const ack = createBatchAck(batch.hash, nodeId, privateKey);
@@ -453,6 +485,29 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const quorum = _getQuorum();
 
     if (acks.length < quorum) return;
+
+    // §1 Own-cert equivocation defense (no new storage — reuses the
+    // existing certs table). If a cert authored by us at this round
+    // already exists (from a prior process instance that persisted it
+    // before crashing), don't create a second one. Adopt the existing
+    // one and re-broadcast to shake off any GossipSub loss.
+    const existingOwn = dag.getCertificateByAuthorRound(nodeId, _currentRound);
+    if (existingOwn) {
+      log.info(`Round ${_currentRound}: own cert exists from prior session — reusing instead of re-signing`);
+      _roundCertificates.set(nodeId, existingOwn);
+      _myCertificateCreated = true;
+      // Re-broadcast in case peers missed it
+      try {
+        const certBuf = encode("Certificate", _serializeCertificate(existingOwn));
+        if (certBuf.length <= CONSENSUS.CERTIFICATE_MAX_BYTES) {
+          network.publish(network.TOPICS.CERTIFICATES, certBuf);
+        }
+      } catch (err) {
+        log.warn(`Round ${_currentRound}: re-broadcast of existing own cert failed: ${err.message}`);
+      }
+      _tryAdvanceRound();
+      return;
+    }
 
     // Parent certificate hashes from previous round
     const parentHashes = _currentRound > 1
@@ -633,6 +688,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Advance
     _currentRound++;
+
+    // §1 votes_seen auto-prune. We only need the last few rounds' commitments
+    // (old rounds can't be re-entered). Pruning here — tied to round advance
+    // — means the table is bounded to ~VOTES_RETENTION_ROUNDS × committee_size
+    // rows forever, with no separate timer or GC job.
+    try {
+      const cutoff = _currentRound - CONSENSUS.VOTES_RETENTION_ROUNDS;
+      if (cutoff > 0 && dag.pruneVotesSeenBefore) dag.pruneVotesSeenBefore(cutoff);
+    } catch (err) {
+      log.debug(`votes_seen prune failed: ${err.message}`);
+    }
 
     // Continuous production: always schedule the next round. Short delay so
     // gossip has time to deliver peer certs for round-R before we freeze

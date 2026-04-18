@@ -191,6 +191,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round
       batch_wait_ms: 500,                 // inter-round delay (reference Narwhal max_header_delay)
       consensus_summary_interval_ms: 60000, // periodic consensus heartbeat summary (cadence of INFO roll-up log)
+      votes_retention_rounds: 5,          // §1 equivocation defense: keep votes_seen rows for this many recent rounds before auto-prune
       max_txs_per_certificate: 500,       // max txs drained from mempool per certificate
       mempool_max_size: 10000,            // max pending txs in mempool
       mempool_tx_ttl_seconds: 300,        // evict txs older than 5 minutes

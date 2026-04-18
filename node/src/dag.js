@@ -184,6 +184,28 @@ class MemoryStore {
   }
   certificateCount() { return this._certs.size; }
 
+  // ── Equivocation defense: votes_seen (§1) ───────────────────────────────
+  // Key: "${round}:${author}". Mirrors SQLiteStore semantics.
+  recordSeenVote(round, author, batchHash) {
+    if (!this._votes) this._votes = new Map();
+    const key = `${round}:${author}`;
+    if (this._votes.has(key)) return false;
+    this._votes.set(key, { round, author, batch_hash: batchHash });
+    return true;
+  }
+  getSeenVote(round, author) {
+    if (!this._votes) return null;
+    return this._votes.get(`${round}:${author}`) || null;
+  }
+  pruneVotesSeenBefore(cutoffRound) {
+    if (!this._votes) return 0;
+    let n = 0;
+    for (const [key, row] of this._votes) {
+      if (row.round < cutoffRound) { this._votes.delete(key); n++; }
+    }
+    return n;
+  }
+
   // ── Commit checkpoints (§15) ──────────────────────────────────────────
   saveCommit(rec) {
     if (this._commits.has(rec.round)) return; // idempotent like INSERT OR IGNORE
@@ -363,6 +385,27 @@ class SQLiteStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
 
+      -- ── Consensus: Equivocation defense (§1) ──────────────────────
+      -- Durable record of "what I've already attested to at (round, author)".
+      -- Checked before signing any ack; refuse if a different batch_hash
+      -- exists for the same (round, author). Prevents our node from being
+      -- coerced (by peer equivocation or our own crash-restart) into signing
+      -- two different attestations for the same logical position — which
+      -- would let an author collect quorum on both of two conflicting
+      -- batches and fork network state.
+      --
+      -- Bounded storage: pruned by _tryAdvanceRound on every round advance
+      -- to a window of (current_round - VOTES_RETENTION_ROUNDS). Steady-state
+      -- row count = VOTES_RETENTION_ROUNDS × committee_size (tens of rows).
+      CREATE TABLE IF NOT EXISTS votes_seen (
+        round       INTEGER NOT NULL,
+        author      TEXT NOT NULL,
+        batch_hash  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (round, author)
+      );
+      CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
+
       -- ── Consensus: Persistent Mempool ──────────────────────────────
       CREATE TABLE IF NOT EXISTS mempool (
         tx_id           TEXT PRIMARY KEY,
@@ -493,6 +536,19 @@ class SQLiteStore {
       ),
       getLatestConsensusIndex: this.db.prepare(
         "SELECT MAX(consensus_index) AS idx FROM commits"
+      ),
+
+      // §1 Equivocation defense — votes_seen
+      saveSeenVote: this.db.prepare(
+        `INSERT OR IGNORE INTO votes_seen
+           (round,author,batch_hash)
+         VALUES (?,?,?)`
+      ),
+      getSeenVote: this.db.prepare(
+        "SELECT round, author, batch_hash FROM votes_seen WHERE round=? AND author=?"
+      ),
+      pruneVotesSeenBefore: this.db.prepare(
+        "DELETE FROM votes_seen WHERE round < ?"
       ),
 
       // Persistent mempool
@@ -731,6 +787,21 @@ class SQLiteStore {
     };
   }
 
+  // ── Equivocation defense: votes_seen (§1) ──────────────────────────────────
+  // recordSeenVote returns `true` if we inserted a new row, `false` if a row
+  // for (round, author) already existed (the caller should then check the
+  // stored batch_hash via getSeenVote before signing anything).
+  recordSeenVote(round, author, batchHash) {
+    const res = this._stmts.saveSeenVote.run(round, author, batchHash);
+    return res.changes > 0;
+  }
+  getSeenVote(round, author) {
+    return this._stmts.getSeenVote.get(round, author) || null;
+  }
+  pruneVotesSeenBefore(cutoffRound) {
+    return this._stmts.pruneVotesSeenBefore.run(cutoffRound).changes;
+  }
+
   // ── Persistent Mempool ────────────────────────────────────────────────────
   saveMempoolTx(tx) {
     this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx));
@@ -885,6 +956,11 @@ function initDAG(config) {
     getLatestCommit: () => store.getLatestCommit(),
     getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),
     getLatestConsensusIndex: () => store.getLatestConsensusIndex(),
+
+    // ── Equivocation defense: votes_seen (§1) ────────────────────────────
+    recordSeenVote: (round, author, batchHash) => store.recordSeenVote(round, author, batchHash),
+    getSeenVote: (round, author) => store.getSeenVote(round, author),
+    pruneVotesSeenBefore: (cutoff) => store.pruneVotesSeenBefore(cutoff),
 
     // ── Persistent Mempool ────────────────────────────────────────────────
     saveMempoolTx: (tx) => store.saveMempoolTx(tx),
