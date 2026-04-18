@@ -47,6 +47,13 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
   // Track last committed round to avoid re-processing
   let _lastCommittedRound = 0;
 
+  // Bullshark counters — cumulative over process lifetime.
+  const _metrics = {
+    anchors_committed: 0,
+    anchors_no_support: 0,
+    txs_committed: 0,
+  };
+
   // Initialize from persisted state
   function _initFromDAG() {
     try {
@@ -150,16 +157,19 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     }
 
     if (supportCount < quorum) {
+      _metrics.anchors_no_support++;
       log.debug(`Round ${voteRound}: anchor ${leader} not committed (${supportCount}/${quorum} support)`);
       return;
     }
 
     // ANCHOR COMMITTED
-    log.info(`Round ${voteRound}: anchor COMMITTED — leader ${leader}, support ${supportCount}/${nodeIds.length}`);
+    _metrics.anchors_committed++;
+    log.debug(`Round ${voteRound}: anchor COMMITTED — leader ${leader}, support ${supportCount}/${nodeIds.length}`);
 
     const orderedTxs = _collectOrderedTxs(leaderCert);
 
     if (orderedTxs.length > 0 && onOrderedTxs) {
+      _metrics.txs_committed += orderedTxs.length;
       log.info(`Round ${voteRound}: committing ${orderedTxs.length} ordered txs`);
       // Only advance committed round AFTER successful processing
       // If onOrderedTxs throws, we don't advance — will retry next round
@@ -325,6 +335,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       lastCommittedRound: _lastCommittedRound,
       orderedCertificates: _orderedCertHashes.size,
       nodeCount: getNodeIds().length,
+      metrics: { ..._metrics },
     }),
   };
 }

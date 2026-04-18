@@ -24,6 +24,8 @@ const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
+const { createConsensusSummary } = require("./summary");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -97,6 +99,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   });
   narwhalRef.current = narwhal;
 
+  // Periodic heartbeat summary — emits one INFO line per interval with
+  // deltas, stays silent during true idle. Per-round events are debug-level.
+  const summary = createConsensusSummary({
+    narwhal, bullshark,
+    intervalMs: CONSENSUS.CONSENSUS_SUMMARY_INTERVAL_MS,
+  });
+
   // ── Wire network events ────────────────────────────────────────────────
 
   if (network) {
@@ -132,15 +141,17 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await syncHandler.registerProtocol();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
-      log.info(`Consensus started${awaitPeers ? " — awaiting peer sync" : ""}`);
+      summary.start();
+      log.notice(`Consensus started${awaitPeers ? " — awaiting peer sync" : ""}`);
     },
 
     /**
      * Stop consensus gracefully.
      */
     stop() {
+      summary.stop();
       narwhal.stop();
-      log.info("Consensus stopped");
+      log.notice("Consensus stopped");
     },
 
     /**

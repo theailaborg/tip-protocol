@@ -30,6 +30,7 @@ const { createGovernanceService } = require("./services/governance-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
+const statsRoutes = require("./routes/stats");
 const identityRoutes = require("./routes/identity");
 const contentRoutes = require("./routes/content");
 const disputeRoutes = require("./routes/dispute");
@@ -107,6 +108,10 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const healthRouter = healthRoutes.createRouter(ctx);
   app.use(healthRouter);
   app.use(API_VERSION, healthRouter);
+
+  // Observability endpoints — detailed stats for dashboards (heavy-ish
+  // payload; not on the /health path so load-balancer probes stay fast).
+  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
 
   // All API routes under /v1
   app.use(API_VERSION, identityRoutes.createRouter({ identityService }));

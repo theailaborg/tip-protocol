@@ -71,7 +71,9 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       }
     }
     const tree = createMerkleTree({ initialHashes: hashes });
-    log.info(`Merkle tree built: ${hashes.length} certificates, root: ${tree.root().slice(0, 16)}...`);
+    // Debug: this rebuilds on every cert save and is chatty. Operators can
+    // read the current root via /v1/stats or the merkleRoot() export.
+    log.debug(`Merkle tree built: ${hashes.length} certificates, root: ${tree.root().slice(0, 16)}...`);
     return tree;
   }
 

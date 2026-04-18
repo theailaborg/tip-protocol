@@ -114,7 +114,7 @@ async function handleIncoming({ stream, connection }, ctx) {
 
     // Authorized
     ctx.authorizedPeers.set(remotePeerId, peerNodeId);
-    log.info(`OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
+    log.notice(`OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
     if (ctx.onPeerAuthorized) ctx.onPeerAuthorized(remotePeerId, peerNodeId);
 
   } catch (err) {
@@ -205,7 +205,7 @@ async function initiate(remotePeerId, ctx) {
 
     // Authorized
     ctx.authorizedPeers.set(remotePeerId, peerNodeId);
-    log.info(`OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
+    log.notice(`OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
     if (ctx.onPeerAuthorized) ctx.onPeerAuthorized(remotePeerId, peerNodeId);
 
   } catch (err) {

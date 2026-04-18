@@ -81,6 +81,22 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   const _pendingCerts = new Map();                  // certHash → { cert, missing: Set<parentHash> }
   const _pendingByParent = new Map();               // parentHash → Set<certHash>
 
+  // Consensus counters — read by stats() for /v1/stats and periodic summary.
+  // These are cumulative for the lifetime of the process; a supervisor can
+  // compute deltas across snapshots for rate/throughput.
+  const _metrics = {
+    batches_created: 0,
+    batches_received: 0,
+    acks_received: 0,
+    certs_created: 0,
+    certs_received: 0,
+    certs_parked: 0,
+    certs_unblocked: 0,
+    rounds_advanced: 0,
+    fast_forwards: 0,
+    retries: 0,
+  };
+
   // Committee is derived deterministically from the DAG via getCommittee(),
   // not tracked locally. Every node reading the same DAG sees the same
   // committee, eliminating the handshake-history divergence class of bugs.
@@ -99,7 +115,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_running) return;
     _running = true;
 
-    log.info(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
+    log.notice(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
 
     if (_joinState === "ready") _scheduleNextRound(0);
   }
@@ -110,7 +126,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function stop() {
     _running = false;
     _clearAllTimers();
-    log.info("Narwhal stopped");
+    log.notice("Narwhal stopped");
   }
 
   /**
@@ -161,10 +177,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     if (txs.length > 0) {
+      // Only this branch is operator-relevant (real txs hit a round).
       log.info(`Round ${_currentRound}: batch created with ${txs.length} txs`);
     } else {
       log.debug(`Round ${_currentRound}: empty batch (vote round)`);
     }
+    _metrics.batches_created++;
 
     // Self-ack our own batch
     _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, privateKey));
@@ -206,6 +224,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _retryTimer = null;
       if (!_running) return;
 
+      _metrics.retries++;
       // GossipSub is best-effort — a dropped batch or cert means this round
       // can never reach quorum. On each retry, re-broadcast whatever we
       // already have so peers that missed the original publish can still
@@ -306,6 +325,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // join the peer's round, and immediately begin our own round so we can
     // contribute a batch + ack this peer's batch too.
     if (batch.round > _currentRound) {
+      _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
       // Before discarding _myBatch, return its txs to the mempool so they're
       // drained again in the next _beginRound. Without this, txs we drained
@@ -343,6 +363,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_peerBatches.has(batch.author_node_id)) return;
 
     _peerBatches.set(batch.author_node_id, batch);
+    _metrics.batches_received++;
 
     // Send ack
     const ack = createBatchAck(batch.hash, nodeId, privateKey);
@@ -403,6 +424,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Store and check
     _recordAck(ack.batch_hash, ack);
+    _metrics.acks_received++;
 
     // If this ack is for our batch, try to create certificate
     if (ack.batch_hash === _myBatch?.hash) {
@@ -458,7 +480,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       log.error(`Failed to broadcast certificate: ${err.message}`);
     }
 
-    log.info(`Round ${_currentRound}: certificate created (${acks.length} acks, ${(cert.batch.txs || []).length} txs)`);
+    _metrics.certs_created++;
+    log.debug(`Round ${_currentRound}: certificate created (${acks.length} acks, ${(cert.batch.txs || []).length} txs)`);
 
     _tryAdvanceRound();
   }
@@ -509,10 +532,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const missing = (cert.parent_hashes || []).filter(h => h && !dag.getCertificate(h));
     if (missing.length > 0) {
       _parkPendingCert(cert, missing);
+      _metrics.certs_parked++;
       log.debug(`Round ${cert.round}: parked cert from ${cert.author_node_id} — waiting on ${missing.length} parent(s)`);
       return;
     }
 
+    _metrics.certs_received++;
     _processVerifiedCertificate(cert);
   }
 
@@ -577,6 +602,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       entry.missing.delete(parentHash);
       if (entry.missing.size === 0) {
         _pendingCerts.delete(childHash);
+        _metrics.certs_unblocked++;
         _processVerifiedCertificate(entry.cert);
       }
     }
@@ -588,7 +614,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const quorum = _getQuorum();
     if (_roundCertificates.size < quorum) return;
 
-    log.info(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
+    _metrics.rounds_advanced++;
+    log.debug(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
 
     // Clear timers
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
@@ -695,7 +722,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     /** Enter sync mode — suppress all waking during sync */
     enterSyncMode() {
       _joinState = "syncing";
-      log.info("Entering sync mode — suppressing round production");
+      log.notice("Entering sync mode — suppressing round production");
     },
     /**
      * Exit sync mode and resume normal operation. Uses peer's authoritative
@@ -713,10 +740,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         // Any in-flight round state at the old round is now stale
         _resetRoundState();
         if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
-        log.info(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
+        log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
       }
       _joinState = "ready";
-      log.info(`Exiting sync mode — ready at round ${_currentRound}`);
+      log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
       if (_running) _scheduleNextRound(0);
     },
     handleIncomingBatch,
@@ -733,6 +760,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       activeParticipants: _getCommittee().length,
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
+      metrics: { ..._metrics },
     }),
   };
 }

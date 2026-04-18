@@ -42,13 +42,14 @@ async function main() {
     log.warn("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.");
   }
 
-  log.info(`=== TIP Protocol Node v${config.nodeVersion} ===`);
-  log.info(`Node ID     : ${config.nodeId}`);
-  log.info(`Region      : ${config.region}`);
-  log.info(`Port        : ${config.port}`);
-  log.info(`Data dir    : ${config.dataDir}`);
-  log.info(`Node type   : ${config.nodeType}`);
-  log.info("================================");
+  // Startup banner: notice-level so it always shows regardless of TIP_CONSOLE_LEVEL
+  log.notice(`=== TIP Protocol Node v${config.nodeVersion} ===`);
+  log.notice(`Node ID     : ${config.nodeId}`);
+  log.notice(`Region      : ${config.region}`);
+  log.notice(`Port        : ${config.port}`);
+  log.notice(`Data dir    : ${config.dataDir}`);
+  log.notice(`Node type   : ${config.nodeType}`);
+  log.notice("================================");
 
   // 1. Initialise DAG store
   // initDAG creates genesis block + VP + founding identities from genesis.js
@@ -110,7 +111,7 @@ async function main() {
 
   // 9. Start listening
   server.listen(config.port, () => {
-    log.info(`Node listening on http://0.0.0.0:${config.port}`);
+    log.notice(`Node listening on http://0.0.0.0:${config.port}`);
     log.info(`REST API   : http://0.0.0.0:${config.port}/v1/`);
     log.info(`Health     : http://0.0.0.0:${config.port}/health`);
     if (network) log.info(`P2P        : ${network.multiaddrs().join(", ")}`);

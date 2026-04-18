@@ -84,7 +84,7 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
  * @param {Object} deps          { syncHandler, commitHandler, dag, narwhal, bullshark }
  */
 async function onPeerAuthorized(peerId, tipNodeId, { syncHandler, commitHandler, dag, narwhal, bullshark }) {
-  log.info(`Peer authorized: ${tipNodeId} — syncing certificates from ${peerId.slice(0, 12)}...`);
+  log.notice(`Peer authorized: ${tipNodeId} — syncing certificates from ${peerId.slice(0, 12)}...`);
 
   // Enter sync mode — suppress all round production until sync + first peer batch
   narwhal.enterSyncMode();

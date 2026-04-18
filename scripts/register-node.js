@@ -208,6 +208,7 @@ async function main() {
     `TIP_DB_PATH=./data/tip.db`,
     `TIP_CORS_ORIGINS=*`,
     `TIP_LOG_LEVEL=info`,
+    `TIP_CONSOLE_LEVEL=warn`,
     ``,
     `# ─── Node Identity ─────────────────────────────────────────────────────────`,
     `TIP_NODE_ID=${result.node_id}`,

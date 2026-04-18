@@ -149,6 +149,7 @@
     "consensus": {
       "round_timeout_ms": 2000,
       "batch_wait_ms": 500,
+      "consensus_summary_interval_ms": 60000,
       "max_txs_per_certificate": 500,
       "mempool_max_size": 10000,
       "mempool_tx_ttl_seconds": 300,
