@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  shake256, hashContent, perceptualHashText,
+  shake256, hashContent, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
@@ -23,18 +23,23 @@ function createContentService({ dag, scoring, config, broadcast }) {
       content: { required: true },
       signature: { required: true },
     });
-    const { author_tip_id, origin_code, content, content_type, signature } = body;
+    const { author_tip_id, origin_code, content, content_type, signature, registered_url } = body;
     validateContentSize(content, content_type, config.mediaLimits);
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
     if (dag.isRevoked(author_tip_id)) throw { status: 403, error: "Author TIP-ID is revoked" };
 
-    const contentHashFull = shake256(content);
-    const contentHashShort = hashContent(content);
+    const contentHashFull = shake256(tipNormalize(content));
+    const contentHashShort = hashContent(content);  // hashContent already applies tipNormalize
 
-    const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"];
+    // Signature binds author + origin + content_hash, and optionally registered_url.
+    // The fields list must match exactly what the client signed.
+    const CONTENT_FIELDS = registered_url
+      ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
+      : ["author_tip_id", "origin_code", "content_hash"];
     const sigBody = { author_tip_id, origin_code, content_hash: contentHashFull };
+    if (registered_url) sigBody.registered_url = registered_url;
     if (!verifyBodySignature(sigBody, signature, identity.public_key, CONTENT_FIELDS)) {
       throw { status: 403, error: "Content signature verification failed" };
     }

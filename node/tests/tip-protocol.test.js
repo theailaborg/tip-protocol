@@ -30,7 +30,7 @@ const SRC = path.resolve(__dirname, "../src");
 
 const {
   initCrypto,
-  shake256, shake256Multi,
+  shake256, shake256Multi, tipNormalize,
   hashContent, perceptualHashText,
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
@@ -726,7 +726,7 @@ describe("REST API", () => {
     });
     dag.setScore(authorId, 500, 0);
     const content = "This is a test article written by a human author with enough words to pass.";
-    const sigFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
+    const sigFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const body = { author_tip_id: authorId, origin_code: ORIGIN.OH, content, title: "Test Article", signature: signBody(sigFields, authorKp.privateKey) };
     const res = await request(app)
       .post("/v1/content/register")
@@ -740,7 +740,7 @@ describe("REST API", () => {
     const ctid = generateCTID(ORIGIN.AA, "ai assisted article test", "test001");
     dag.saveContent({
       ctid, origin_code: ORIGIN.AA,
-      content_hash: shake256("ai assisted article test"),
+      content_hash: shake256(tipNormalize("ai assisted article test")),
       author_tip_id: "tip://id/US-test001",
       status: "verified", registered_at: new Date().toISOString(),
     });
@@ -755,7 +755,7 @@ describe("REST API", () => {
     const ctid = generateCTID(ORIGIN.OH, "disputed content test here", "disp001");
     dag.saveContent({
       ctid, origin_code: ORIGIN.OH,
-      content_hash: shake256("disputed content test here"),
+      content_hash: shake256(tipNormalize("disputed content test here")),
       author_tip_id: "tip://id/US-disp001",
       status: "verified", registered_at: new Date().toISOString(),
     });
@@ -869,7 +869,7 @@ describe("Integration: Full Registration Flow", () => {
     // Step 3: Register Content (client has private key — never sent to server)
     const authorPrivateKey = authorKp2.privateKey;
     const content = "An original human-written article about trust and identity on the internet.";
-    const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
+    const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const contentRes = await request(app)
       .post("/v1/content/register")
       .send({ author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content, title: "Trust and Identity", signature: signBody(ctSigFields, authorPrivateKey) });
@@ -992,7 +992,7 @@ describe("Gossip Broadcast Wiring", () => {
 
     broadcastCalls = [];
     const content = "Gossip broadcast wiring test content article.";
-    const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
+    const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const res = await request(gossipApp)
       .post("/v1/content/register")
       .send({ author_tip_id: tipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields, authorPrivKey) });
@@ -1052,7 +1052,7 @@ describe("Gossip Broadcast Wiring", () => {
     const dAuthorPriv = kp85.privateKey;
 
     const content = "Dispute gossip broadcast test article.";
-    const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: shake256(content) };
+    const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
       .send({ author_tip_id: dTipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields2, dAuthorPriv) });
@@ -1127,7 +1127,7 @@ describe("Semantic Dedup", () => {
 
     // Register content
     const sdContent = "Semantic dedup test content.";
-    const sdCtSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(sdContent) };
+    const sdCtSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(sdContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent, signature: signBody(sdCtSig, sdAuthorPriv) });
@@ -1165,7 +1165,7 @@ describe("Semantic Dedup", () => {
   test("9.2b Per-content cap enforced", async () => {
     // Register fresh content for cap test
     const capContent = "Content for verification cap test.";
-    const capSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(capContent) };
+    const capSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(capContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: capContent, signature: signBody(capSig, sdAuthorPriv) });
@@ -1222,7 +1222,7 @@ describe("Semantic Dedup", () => {
   test("9.3 First dispute succeeds", async () => {
     // Register second content for dispute test
     const sdContent2 = "Second content for dispute dedup.";
-    const sdCtSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(sdContent2) };
+    const sdCtSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(sdContent2)) };
     const ctRes2 = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent2, signature: signBody(sdCtSig2, sdAuthorPriv) });
@@ -1246,7 +1246,7 @@ describe("Semantic Dedup", () => {
   test("9.4 Update origin within 24h succeeds", async () => {
     // Register fresh content for update test
     const updateContent = "Content for origin update test.";
-    const updateSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(updateContent) };
+    const updateSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(updateContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent, signature: signBody(updateSig, sdAuthorPriv) });
@@ -1271,7 +1271,7 @@ describe("Semantic Dedup", () => {
 
   test("9.5 Non-author cannot update origin", async () => {
     const updateContent2 = "Content for non-author update test.";
-    const updateSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(updateContent2) };
+    const updateSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(updateContent2)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent2, signature: signBody(updateSig2, sdAuthorPriv) });
@@ -1288,7 +1288,7 @@ describe("Semantic Dedup", () => {
 
   test("9.6 Dispute always escalates to Stage 2 with AI result", async () => {
     const content96 = "Short dispute escalate test.";
-    const sig96 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content96) };
+    const sig96 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content96)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content96, signature: signBody(sig96, sdAuthorPriv) });
@@ -1309,7 +1309,7 @@ describe("Semantic Dedup", () => {
 
   test("9.7 Escalated dispute keeps content status as disputed", async () => {
     const content97 = "Escalated dispute test content.";
-    const sig97 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content97) };
+    const sig97 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content97)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content97, signature: signBody(sig97, sdAuthorPriv) });
@@ -1324,7 +1324,7 @@ describe("Semantic Dedup", () => {
 
   test("9.8 Verify blocked on disputed content", async () => {
     const content98 = "Verify block test content.";
-    const sig98 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content98) };
+    const sig98 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content98)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content98, signature: signBody(sig98, sdAuthorPriv) });
@@ -1341,7 +1341,7 @@ describe("Semantic Dedup", () => {
 
   test("9.9 Update-origin blocked on disputed content", async () => {
     const content99 = "Update origin block test content.";
-    const sig99 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(content99) };
+    const sig99 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content99)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content99, signature: signBody(sig99, sdAuthorPriv) });
@@ -1359,7 +1359,7 @@ describe("Semantic Dedup", () => {
   test("9.10 Jury commit succeeds and duplicate rejected", async () => {
     // Register content
     const juryContent = "Content for jury commit test.";
-    const jurySig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(juryContent) };
+    const jurySig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(juryContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: juryContent, signature: signBody(jurySig, sdAuthorPriv) });
@@ -1399,7 +1399,7 @@ describe("Semantic Dedup", () => {
   test("9.11 Jury reveal verifies commitment and records vote", async () => {
     // Register content + set disputed
     const revContent = "Content for jury reveal test.";
-    const revSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(revContent) };
+    const revSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(revContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: revContent, signature: signBody(revSig, sdAuthorPriv) });
@@ -1450,7 +1450,7 @@ describe("Semantic Dedup", () => {
 
   test("9.12 MISMATCH vote requires confirmed_origin", async () => {
     const misContent = "Content for mismatch origin test.";
-    const misSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(misContent) };
+    const misSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(misContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: misContent, signature: signBody(misSig, sdAuthorPriv) });
@@ -1492,7 +1492,7 @@ describe("Semantic Dedup", () => {
   test("9.13 GET dispute-case returns full case details", async () => {
     // Register content
     const caseContent = "Content for dispute case test.";
-    const caseSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(caseContent) };
+    const caseSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(caseContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: caseContent, signature: signBody(caseSig, sdAuthorPriv) });
@@ -1549,7 +1549,7 @@ describe("Semantic Dedup", () => {
   test("9.15 Appeal filing requires Stage 2 verdict", async () => {
     // Content without any verdict — appeal should fail
     const appContent = "Content for appeal test without verdict.";
-    const appSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(appContent) };
+    const appSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(appContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appContent, signature: signBody(appSig, sdAuthorPriv) });
@@ -1567,7 +1567,7 @@ describe("Semantic Dedup", () => {
     // Register content + simulate full dispute flow
     const { computeTxId } = require("../../shared/crypto");
     const appealContent = "Content for appeal flow test.";
-    const appealSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(appealContent) };
+    const appealSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(appealContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appealContent, signature: signBody(appealSig, sdAuthorPriv) });
@@ -1624,7 +1624,7 @@ describe("Semantic Dedup", () => {
 
     // Register + simulate verdict
     const tc = "Content for third party appeal test.";
-    const ts = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tc) };
+    const ts = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(tc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: tc, signature: signBody(ts, sdAuthorPriv) });
@@ -1655,7 +1655,7 @@ describe("Semantic Dedup", () => {
     // Register new content for this test
     const { computeTxId } = require("../../shared/crypto");
     const dc = "Content for duplicate appeal test.";
-    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(dc) };
+    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(dc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
@@ -1686,7 +1686,7 @@ describe("Semantic Dedup", () => {
 
   test("9.19 Content retraction succeeds with -50 penalty", async () => {
     const rc = "Content for retraction test.";
-    const rs = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(rc) };
+    const rs = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(rc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: rc, signature: signBody(rs, sdAuthorPriv) });
@@ -1707,7 +1707,7 @@ describe("Semantic Dedup", () => {
 
   test("9.20 Non-author cannot retract", async () => {
     const nc = "Content for non-author retract test.";
-    const ns = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(nc) };
+    const ns = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(nc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: nc, signature: signBody(ns, sdAuthorPriv) });
@@ -1723,7 +1723,7 @@ describe("Semantic Dedup", () => {
 
   test("9.21 Duplicate retraction rejected", async () => {
     const dc = "Content for duplicate retract test.";
-    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(dc) };
+    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(dc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });

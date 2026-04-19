@@ -184,15 +184,93 @@ function slhdsaVerify(data, signatureHex, publicKeyHex) {
   }
 }
 
+// ─── CNA-2: CONTENT NORMALIZATION ALGORITHM v2 ──────────────────────────────
+//
+// Produces identical SHAKE-256 hashes for semantically identical content
+// regardless of platform formatting, encoding, or syndication.
+// Keeps ONLY Unicode lowercase letters, numbers, and combining marks.
+//
+// 10-step pipeline:
+//   0. Strip TIP artifacts        (CTIDs, TIP-IDs, VP-IDs, promotional boilerplate)
+//   1. Decode URL encoding        (%XX -> chars)
+//   2. Strip CDATA wrappers       (RSS/Atom syndication)
+//   3. Strip HTML/XML tags        (<tag> -> "")
+//   4. Decode numeric entities    (&#233; -> char, &#xE9; -> char)
+//   5. Remove named entities      (&amp; &nbsp; etc. -> "")
+//   6. Strip Markdown URLs        (keep link text, remove targets)
+//   7. Unicode NFC                (canonical composition)
+//   8. Lowercase                  (case-insensitive matching)
+//   9. Keep only \p{L}, \p{N}, \p{M}  (strips whitespace, punctuation, symbols)
+//
+// Step 0 exists for verification round-trip correctness: the CTID is derived
+// FROM the content hash, so it cannot exist until after registration. When a
+// verifier later re-hashes the published post (which now includes the pasted
+// CTID), stripping TIP artifacts ensures the hash still matches.
+
+const TIP_URI_PATTERN      = /tip:\/\/(?:id|vp)\/[A-Z]{2}-[0-9a-f]{16}/gi;
+const TIP_CTID_URI_PATTERN = /tip:\/\/c\/(?:OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}/gi;
+const TIP_BARE_CTID_PATTERN = /\b(?:OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}\b/g;
+const TIP_PROMO_PATTERNS = [
+  /\bpowered\s+by\s+tip(?:\s+protocol)?\b/gi,
+  /\bai\s+trust\s+id\b/gi,
+  /\bai\s+trust\s+registry\b/gi,
+  /\btrust\s+seal\b/gi,
+  /\bverified\s+by\s+tip\b/gi,
+  /\btip[\s-]+verified\b/gi,
+  /\btip[\s-]+powered\b/gi,
+  /\btip\s+protocol\b/gi,
+  /#\s*(?:tip|tipprotocol|aitrustid|aitrustregistry|tipverified)\b/gi,
+];
+
+function stripTipArtifacts(text) {
+  if (!text) return '';
+  let s = text;
+  s = s.replace(TIP_URI_PATTERN, '');
+  s = s.replace(TIP_CTID_URI_PATTERN, '');
+  s = s.replace(TIP_BARE_CTID_PATTERN, '');
+  for (const re of TIP_PROMO_PATTERNS) s = s.replace(re, '');
+  return s;
+}
+
+/**
+ * CNA-2 normalize content for canonical hashing.
+ * @param {string} text
+ * @returns {string} normalized text
+ */
+function tipNormalize(text) {
+  if (!text) return '';
+  let s = text;
+  s = stripTipArtifacts(s);
+  try { s = decodeURIComponent(s.replace(/\+/g, ' ')); } catch { /* keep original */ }
+  s = s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1');
+  s = s.replace(/<[^>]+>/g, '');
+  s = s.replace(/&#x([0-9a-fA-F]+);/gi, (_, h) => {
+    try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; }
+  });
+  s = s.replace(/&#(\d+);/g, (_, d) => {
+    try { return String.fromCodePoint(parseInt(d, 10)); } catch { return ''; }
+  });
+  s = s.replace(/&[a-zA-Z][a-zA-Z0-9]*;/g, '');
+  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+  s = s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+  s = s.replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1');
+  s = s.replace(/^\[[^\]]+\]:\s.*$/gm, '');
+  s = s.normalize('NFC');
+  s = s.toLowerCase();
+  s = s.replace(/[^\p{L}\p{N}\p{M}]/gu, '');
+  return s;
+}
+
 // ─── CONTENT HASHING ─────────────────────────────────────────────────────────
 
 /**
- * Compute SHAKE-256 hash of content (used in CTID generation).
+ * Compute CNA-2 normalized SHAKE-256 hash of content (used in CTID generation).
  * @param {string|Buffer} content
  * @returns {string} 14-char truncated hex (as used in tip:// URIs)
  */
 function hashContent(content) {
-  const full = shake256(content, 32);
+  const normalized = typeof content === "string" ? tipNormalize(content) : content;
+  const full = shake256(normalized, 32);
   return full.slice(0, 14); // first 14 hex chars = 56 bits
 }
 
@@ -408,6 +486,7 @@ module.exports = {
   generateSLHDSAKeypair,
   slhdsaSign,
   slhdsaVerify,
+  tipNormalize,
   hashContent,
   perceptualHashText,
   computeDedupHash,
