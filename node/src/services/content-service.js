@@ -20,18 +20,32 @@ function createContentService({ dag, scoring, config, broadcast }) {
     validate(body, {
       author_tip_id: { required: true },
       origin_code: { required: true, oneOf: ORIGIN_CODES },
-      content: { required: true },
       signature: { required: true },
     });
-    const { author_tip_id, origin_code, content, content_type, signature, registered_url } = body;
-    validateContentSize(content, content_type, config.mediaLimits);
+    const {
+      author_tip_id, origin_code, content, content_type, signature, registered_url,
+      media_canonical_hash, media_exact_hash, media_perceptual_hash, media_normalization_version,
+    } = body;
+    // content is required unless media hash is provided
+    if (!content && !media_canonical_hash) throw { status: 400, error: "content or media_canonical_hash required" };
+    if (content) validateContentSize(content, content_type, config.mediaLimits);
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
     if (dag.isRevoked(author_tip_id)) throw { status: 403, error: "Author TIP-ID is revoked" };
 
-    const contentHashFull = shake256(tipNormalize(content));
-    const contentHashShort = hashContent(content);  // hashContent already applies tipNormalize
+    // CNA-MIX-1: when media hash is present, combine media + text hashes.
+    // The client signs the combined hash, so the node must reproduce it.
+    const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
+    let contentHashFull;
+    let normalizationVersion = "CNA-2";
+    if (media_canonical_hash) {
+      contentHashFull = shake256(media_canonical_hash + textHashFull);
+      normalizationVersion = "CNA-MIX-1";
+    } else {
+      contentHashFull = textHashFull;
+    }
+    const contentHashShort = hashContent(content || media_canonical_hash || "");
 
     // Signature binds author + origin + content_hash, and optionally registered_url.
     // The fields list must match exactly what the client signed.
@@ -71,10 +85,16 @@ function createContentService({ dag, scoring, config, broadcast }) {
     broadcast(tx);
 
     const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
-    dag.saveContent({
+    const contentRecord = {
       ctid, origin_code, content_hash: contentHashFull, perceptual_hash: perceptHash,
       author_tip_id, status, registered_at: registeredAt, tx_id: tx.tx_id,
-    });
+      normalization_version: normalizationVersion,
+    };
+    if (media_canonical_hash)        contentRecord.media_canonical_hash        = media_canonical_hash;
+    if (media_exact_hash)            contentRecord.media_exact_hash            = media_exact_hash;
+    if (media_perceptual_hash)       contentRecord.media_perceptual_hash       = media_perceptual_hash;
+    if (media_normalization_version) contentRecord.media_normalization_version  = media_normalization_version;
+    dag.saveContent(contentRecord);
 
     log.info(`Content registered: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
 
