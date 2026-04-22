@@ -43,6 +43,11 @@ async function loadTypes() {
     "tip.consensus.MempoolTx",
     "tip.consensus.Handshake",
     "tip.consensus.HandshakeAck",
+    // §14 state-snapshot sync
+    "tip.consensus.SnapshotRequest",
+    "tip.consensus.SnapshotHeader",
+    "tip.consensus.SnapshotStateRow",
+    "tip.consensus.SnapshotEnd",
   ];
 
   _types = {};

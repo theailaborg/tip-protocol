@@ -147,7 +147,12 @@ function initScoring(dag, config) {
     // it naturally via the SCORE_UPDATE case above — no special logic needed.
 
     const tier = getTier(score);
-    dag.setScore(tipId, score, offenseCount);
+    // Only persist to the scores table when there's real tx history. An
+    // unknown tipId with no txs isn't a registered identity — writing a row
+    // would invent state no other node would derive.
+    if (txs.length > 0) {
+      dag.setScore(tipId, score, offenseCount);
+    }
 
     return { score, tier, offense_count: offenseCount, history };
   }

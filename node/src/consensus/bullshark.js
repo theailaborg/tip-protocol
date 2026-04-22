@@ -26,6 +26,7 @@
 "use strict";
 
 const { computeQuorum } = require("./certificate");
+const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
@@ -194,11 +195,27 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       // If onOrderedTxs throws, we don't advance — will retry next round
       if (onOrderedTxs) onOrderedTxs(orderedTxs, voteRound);
 
-      // §15 commit checkpoint — committee snapshot + consensus_index for
-      // the anchor that committed these txs.
+      // §15 + §14 commit checkpoint.
+      //
+      // Roots are computed AFTER onOrderedTxs so derived state reflects
+      // this round's applied txs (state_merkle_root commits to the post-
+      // state; txs_merkle_root commits to the ordered tx_ids of this
+      // round only).
+      //
+      // Ack signers/signatures come straight from the leader's anchor
+      // cert. By Narwhal's 2f+1 certification rule, the anchor already
+      // carries supermajority attestations over its batch hash — we
+      // persist them so new joiners can verify the commit row without
+      // replaying the DAG (§14 Byzantine-robust state sync).
       _consensusIndex += 1;
       try {
         if (dag.saveCommit) {
+          const stateRoot = computeStateMerkleRoot(dag);
+          const txsRoot = computeTxsMerkleRoot(orderedTxs);
+          const acks = leaderCert.acknowledgments || [];
+          const ackSignerIds = acks.map(a => a.acker_node_id);
+          const ackSignatures = acks.map(a => a.signature);
+
           dag.saveCommit({
             round: voteRound,
             anchor_cert_hash: leaderCert.hash,
@@ -207,6 +224,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
             support_count: supportCount,
             consensus_index: _consensusIndex,
             committed_at: new Date().toISOString(),
+            state_merkle_root: stateRoot,
+            txs_merkle_root: txsRoot,
+            ack_signer_ids: ackSignerIds,
+            ack_signatures: ackSignatures,
           });
         }
       } catch (err) {

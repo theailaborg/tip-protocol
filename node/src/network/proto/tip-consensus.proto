@@ -146,3 +146,79 @@ message HandshakeAck {
   bytes genesis_hash = 6;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
   string error = 7;            // non-empty = responder rejected our handshake (e.g. "Genesis hash mismatch")
 }
+
+// ─── State Snapshot Protocol (§14) ───────────────────────────────────────────
+//
+// Protocol: /tip/state-snapshot/1.0.0
+//
+// Purpose: let new joiners fast-sync the full derived-state at a recent
+// Bullshark commit without replaying the entire certificate DAG. Every
+// commit row carries a state_merkle_root, a txs_merkle_root, and 2f+1
+// committee ack signatures (see Part 1, `dag.js` commits table). The
+// joiner pulls the post-state at round R + the commit header; rehashes
+// the state → must match state_merkle_root; verifies 2f+1 acks over the
+// anchor cert batch hash → then installs state and resumes live consensus.
+//
+// Stream framing: a single libp2p stream carries length-prefixed messages
+// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow, then
+// SnapshotEnd. Sender writes 4-byte big-endian length prefix before each
+// message; receiver parses one message per length prefix.
+
+/**
+ * Joiner's request. Asks for the peer's latest committed state at or
+ * after `min_round`; peer may decline if its latest commit is older.
+ */
+message SnapshotRequest {
+  uint64 min_round = 1;             // 0 = give me latest
+  string requester_node_id = 2;     // for logging / authz
+}
+
+/**
+ * First message in the response stream — everything the joiner needs to
+ * verify the snapshot that follows. Mirrors the `commits` table row plus
+ * the anchor cert's batch_hash (which the joiner needs to reconstruct
+ * the payload each ack signature signed).
+ *
+ * If `error` is non-empty, no SnapshotStateRow / SnapshotEnd follow.
+ */
+message SnapshotHeader {
+  uint64 round = 1;
+  bytes anchor_cert_hash = 2;
+  string leader_node_id = 3;
+  repeated string committee = 4;    // sorted node_ids at commit time
+  uint32 support_count = 5;
+  uint64 consensus_index = 6;
+  string committed_at = 7;
+  bytes state_merkle_root = 8;
+  bytes txs_merkle_root = 9;
+  repeated string ack_signer_ids = 10;
+  repeated bytes ack_signatures = 11;
+
+  // The anchor cert's batch hash. Joiner reconstructs each ack's signed
+  // payload as `"ack:${batch_hash}:${acker_node_id}"` and verifies with
+  // the acker's public key (from the nodes table in the snapshot itself).
+  bytes anchor_batch_hash = 12;
+
+  string error = 13;                // peer rejected — no body follows
+}
+
+/**
+ * One row from the canonical derived-state. Sent in the exact order
+ * `dag.iterateCanonicalState()` yields — table order fixed, rows sorted
+ * by primary key within each table. `canonical_json` is the exact byte
+ * output of `canonicalJson(row)` — joiner feeds it into a SHAKE-256
+ * hasher mirroring `computeStateMerkleRoot` to derive the root.
+ */
+message SnapshotStateRow {
+  string table = 1;
+  bytes canonical_json = 2;
+}
+
+/**
+ * Terminator. `row_count` is a sanity check — joiner verifies it matches
+ * the number of SnapshotStateRow messages actually received (guards
+ * against silent truncation on the wire).
+ */
+message SnapshotEnd {
+  uint64 row_count = 1;
+}

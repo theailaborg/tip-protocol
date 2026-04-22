@@ -191,6 +191,9 @@ const CONSENSUS = {
 
 const NETWORK = {
   get HANDSHAKE_PROTOCOL() { return _n().handshake_protocol; },
+  get SNAPSHOT_PROTOCOL() { return _n().snapshot_protocol; },
+  get SNAPSHOT_LENGTH_PREFIX_BYTES() { return _n().snapshot_length_prefix_bytes; },
+  get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
   get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
   get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },

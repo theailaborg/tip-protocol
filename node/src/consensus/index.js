@@ -22,6 +22,7 @@ const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
+const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
@@ -66,6 +67,14 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
   const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
+
+  // ── Create snapshot handler (§14 state-snapshot fast-sync) ─────────────────
+  // Serves the latest committed state + 2f+1 acks to new joiners so they
+  // can catch up in O(state size) instead of O(chain length). Orthogonal to
+  // sync-handler (which does cert replay) — a joiner typically tries
+  // snapshot first and falls back to cert sync if no peer has a recent enough
+  // commit. Fallback wiring lives in the join flow (not in this orchestrator).
+  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer });
 
   // Active committee is derived deterministically from DAG state: registered +
   // produced a cert in the last K rounds. Every node reading the same DAG
@@ -139,6 +148,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      */
     async start({ awaitPeers = false } = {}) {
       await syncHandler.registerProtocol();
+      await snapshotHandler.registerProtocol();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
@@ -169,6 +179,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
     /** Sync: request certificates from a peer */
     syncFromPeer: (peerId) => syncHandler.syncFromPeer(peerId),
+
+    /** §14: fast-sync derived state from a peer via the snapshot protocol */
+    requestSnapshotFromPeer: (peerId, opts) => snapshotHandler.requestSnapshotFromPeer(peerId, opts),
 
     /** Current Merkle root of certificate DAG */
     merkleRoot: () => syncHandler.merkleRoot(),

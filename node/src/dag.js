@@ -32,6 +32,93 @@ const { log } = require("./logger");
 let Database = null;
 try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 
+// ─── Canonical row shapers (§14 snapshot-sync) ────────────────────────────
+// Both stores project their row shapes through these before yielding from
+// iterateCanonicalState. Single source of truth for which fields of each
+// table participate in the state_merkle_root. Adding or removing a field
+// here is a consensus-breaking change — every node in the network must
+// upgrade simultaneously or commit rows will mismatch.
+//
+// Every column of each table IS included. This is only safe because every
+// field is populated from tx data (tx.timestamp, tx.tx_id, tx.data.*) —
+// never from Date.now() / unixepoch() / other local-clock sources.
+// See setScore() and addDedupHash() for the determinism contract.
+function _canonIdentity(r) {
+  return {
+    tip_id: r.tip_id,
+    region: r.region,
+    public_key: r.public_key,
+    root_public_key: r.root_public_key || null,
+    vp_id: r.vp_id || null,
+    verification_tier: r.verification_tier,
+    score_display_mode: r.score_display_mode || "TIER_ONLY",
+    founding: r.founding ? 1 : 0,
+    status: r.status,
+    registered_at: r.registered_at,
+    tx_id: r.tx_id || null,
+  };
+}
+function _canonContent(r) {
+  // Intentionally excluded: `dispute_count`, `verification_count`. Both are
+  // dead columns today (always 0 — never written) and would trap a future
+  // writer that updates them non-deterministically. Re-add if/when they
+  // start being incremented from commit-handler with tx context.
+  return {
+    ctid: r.ctid,
+    origin_code: r.origin_code,
+    content_hash: r.content_hash,
+    perceptual_hash: r.perceptual_hash || null,
+    author_tip_id: r.author_tip_id,
+    status: r.status,
+    prescan_flagged: r.prescan_flagged ? 1 : 0,
+    registered_at: r.registered_at,
+    tx_id: r.tx_id || null,
+  };
+}
+// Staged for §14.5 — unused today (scores excluded from state root per
+// issues.md Consensus #31). Kept here so re-enabling is a one-line iterator
+// change once applyScoreEvent / scheduler route through consensus.
+// eslint-disable-next-line no-unused-vars
+function _canonScore(tip_id, v) {
+  return {
+    tip_id,
+    score: v.score,
+    offense_count: v.offense_count,
+    last_updated: v.last_updated,
+  };
+}
+function _canonDedup(hash, createdAt) {
+  return { dedup_hash: hash, created_at: createdAt };
+}
+function _canonRevocation(r) {
+  return {
+    tip_id: r.tip_id,
+    tx_type: r.tx_type,
+    timestamp: r.timestamp,
+    tx_id: r.tx_id,
+  };
+}
+function _canonVP(r) {
+  return {
+    vp_id: r.vp_id,
+    name: r.name,
+    jurisdiction: r.jurisdiction,
+    jurisdiction_tier: r.jurisdiction_tier,
+    public_key: r.public_key || null,
+    status: r.status,
+    registered_at: r.registered_at,
+  };
+}
+function _canonNode(r) {
+  return {
+    node_id: r.node_id,
+    name: r.name || null,
+    public_key: r.public_key,
+    status: r.status,
+    registered_at: r.registered_at,
+  };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // IN-MEMORY STORE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -125,6 +212,12 @@ class MemoryStore {
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
+  // The scores table is a CACHE derived from replaying the tx log via
+  // scoring.computeScore(). `last_updated` is a local-clock stamp, not
+  // consensus state — so this table is NOT hashed into state_merkle_root
+  // today (see issues.md Consensus #31). When applyScoreEvent/scheduler
+  // are routed through consensus, `last_updated` will come from tx.timestamp
+  // and the table can be added back to iterateCanonicalState.
   setScore(tipId, score, offenseCount = 0) {
     this._scores.set(tipId, {
       score: Math.max(0, Math.min(1000, score)),
@@ -135,7 +228,17 @@ class MemoryStore {
   getScore(tipId) { return this._scores.get(tipId) || null; }
 
   // ── Dedup registry ────────────────────────────────────────────────────────
-  addDedupHash(hash) { this._dedup.add(hash); }
+  // `createdAt` is the unix-seconds timestamp of the tx that introduced this
+  // dedup hash (derived from tx.timestamp). Deterministic — never Date.now().
+  addDedupHash(hash, createdAt) {
+    if (createdAt == null) {
+      throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
+    }
+    if (this._dedup.has(hash)) return;
+    this._dedup.add(hash);
+    if (!this._dedupCreated) this._dedupCreated = new Map();
+    this._dedupCreated.set(hash, createdAt);
+  }
   hasDedupHash(hash) { return this._dedup.has(hash); }
   dedupCount() { return this._dedup.size; }
 
@@ -230,6 +333,50 @@ class MemoryStore {
     return max;
   }
 
+  // ── Canonical derived state (§14 snapshot-sync) ─────────────────────────
+  // Streaming iterator yielding { table, row } in a deterministic order
+  // (table order fixed, rows sorted by primary key within each table).
+  // Consumed by consensus/state-root.js to hash state row-by-row without
+  // ever materialising the full state in memory.
+  //
+  // Consensus-critical: the set of tables, their order, the sort order, and
+  // the field subset per row MUST be identical across all nodes — otherwise
+  // the computed state_merkle_root diverges and the commit row forks.
+  //
+  // We include ALL rows (not just status='active'). Revoked identities,
+  // suspended nodes, etc. are part of consensus state — two nodes that have
+  // applied the same tx sequence must agree on the full set, including
+  // terminal states. Filtering is a view concern, not a state concern.
+  *iterateCanonicalState() {
+    for (const r of [...this._identities.values()]
+      .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
+      yield { table: "identities", row: _canonIdentity(r) };
+    }
+    for (const r of [...this._content.values()]
+      .sort((a, b) => a.ctid.localeCompare(b.ctid))) {
+      yield { table: "content", row: _canonContent(r) };
+    }
+    // TODO §14.5 — re-include `scores` here once applyScoreEvent / scheduler
+    // route through consensus and last_updated comes from tx.timestamp
+    // (issues.md Consensus #31). _canonScore helper is already written.
+    for (const h of [...this._dedup].sort()) {
+      const createdAt = this._dedupCreated ? this._dedupCreated.get(h) : null;
+      yield { table: "dedup_registry", row: _canonDedup(h, createdAt) };
+    }
+    for (const r of [...this._revocations.values()]
+      .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
+      yield { table: "revocations", row: _canonRevocation(r) };
+    }
+    for (const r of [...this._vps.values()]
+      .sort((a, b) => a.vp_id.localeCompare(b.vp_id))) {
+      yield { table: "verification_providers", row: _canonVP(r) };
+    }
+    for (const r of [...this._nodes.values()]
+      .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
+      yield { table: "nodes", row: _canonNode(r) };
+    }
+  }
+
   // ── Transactions (DB-level) ────────────────────────────────────────────
   runInTransaction(fn) { return fn(); } // no-op wrapper for in-memory store
 
@@ -319,9 +466,12 @@ class SQLiteStore {
       );
 
       -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──
+      -- created_at is unix-seconds from tx.timestamp (the REGISTER_IDENTITY tx
+      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch())
+      -- value — that would read the local clock and break the state_merkle_root.
       CREATE TABLE IF NOT EXISTS dedup_registry (
         dedup_hash  TEXT PRIMARY KEY,
-        created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at  INTEGER NOT NULL
       );
 
       -- ── Revocations ───────────────────────────────────────────────────
@@ -374,14 +524,19 @@ class SQLiteStore {
       -- committee divergence detection, and audit queries without
       -- replaying the DAG.
       CREATE TABLE IF NOT EXISTS commits (
-        round            INTEGER PRIMARY KEY,
-        anchor_cert_hash TEXT NOT NULL,
-        leader_node_id   TEXT NOT NULL,
-        committee        TEXT NOT NULL,   -- JSON sorted array of node_ids
-        support_count    INTEGER NOT NULL,
-        consensus_index  INTEGER NOT NULL,
-        committed_at     TEXT NOT NULL,   -- ISO8601 wall-clock
-        created_at       INTEGER NOT NULL DEFAULT (unixepoch())
+        round             INTEGER PRIMARY KEY,
+        anchor_cert_hash  TEXT NOT NULL,
+        leader_node_id    TEXT NOT NULL,
+        committee         TEXT NOT NULL,   -- JSON sorted array of node_ids
+        support_count     INTEGER NOT NULL,
+        consensus_index   INTEGER NOT NULL,
+        committed_at      TEXT NOT NULL,   -- ISO8601 wall-clock
+        -- §14 snapshot-sync fields (two separate roots, both signed by 2f+1 committee):
+        state_merkle_root TEXT NOT NULL,   -- hash over canonical derived state tables (answers "is my app state at round R correct?")
+        txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
+        ack_signer_ids    TEXT NOT NULL,   -- JSON array of node_ids that ack'd the anchor cert
+        ack_signatures    TEXT NOT NULL,   -- JSON array of hex signatures, same order as ack_signer_ids
+        created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
 
@@ -480,7 +635,7 @@ class SQLiteStore {
       ),
       getScore: this.db.prepare("SELECT * FROM scores WHERE tip_id=?"),
 
-      addDedupHash: this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash) VALUES (?)"),
+      addDedupHash: this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash, created_at) VALUES (?, ?)"),
       hasDedupHash: this.db.prepare("SELECT 1 FROM dedup_registry WHERE dedup_hash=?"),
       dedupCount: this.db.prepare("SELECT COUNT(*) AS n FROM dedup_registry"),
 
@@ -521,11 +676,15 @@ class SQLiteStore {
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
 
-      // Commit checkpoints (§15)
+      // Commit checkpoints (§15 base + §14 snapshot-sync fields).
+      // 11 columns: round, anchor_cert_hash, leader_node_id, committee,
+      // support_count, consensus_index, committed_at, state_merkle_root,
+      // txs_merkle_root, ack_signer_ids, ack_signatures.
       saveCommit: this.db.prepare(
         `INSERT OR IGNORE INTO commits
-           (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at)
-         VALUES (?,?,?,?,?,?,?)`
+           (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at,
+            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getCommit: this.db.prepare("SELECT * FROM commits WHERE round=?"),
       getCommitsFromRound: this.db.prepare(
@@ -650,6 +809,8 @@ class SQLiteStore {
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
+  // See MemoryStore.setScore — cache, not consensus state. Currently excluded
+  // from state_merkle_root (issues.md Consensus #31).
   setScore(tipId, score, offenseCount = 0) {
     this._stmts.setScore.run(
       tipId,
@@ -661,7 +822,13 @@ class SQLiteStore {
   getScore(tipId) { return this._stmts.getScore.get(tipId) || null; }
 
   // ── Dedup registry ────────────────────────────────────────────────────────
-  addDedupHash(hash) { this._stmts.addDedupHash.run(hash); }
+  // createdAt (unix seconds) must come from tx.timestamp — see MemoryStore.
+  addDedupHash(hash, createdAt) {
+    if (createdAt == null) {
+      throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
+    }
+    this._stmts.addDedupHash.run(hash, createdAt);
+  }
   hasDedupHash(hash) { return !!this._stmts.hasDedupHash.get(hash); }
   dedupCount() { return this._stmts.dedupCount.get().n; }
 
@@ -757,7 +924,11 @@ class SQLiteStore {
       JSON.stringify(rec.committee || []),
       rec.support_count,
       rec.consensus_index,
-      rec.committed_at
+      rec.committed_at,
+      rec.state_merkle_root,
+      rec.txs_merkle_root,
+      JSON.stringify(rec.ack_signer_ids || []),
+      JSON.stringify(rec.ack_signatures || []),
     );
   }
   getCommit(round) {
@@ -784,7 +955,40 @@ class SQLiteStore {
       support_count: row.support_count,
       consensus_index: row.consensus_index,
       committed_at: row.committed_at,
+      state_merkle_root: row.state_merkle_root,
+      txs_merkle_root: row.txs_merkle_root,
+      ack_signer_ids: JSON.parse(row.ack_signer_ids),
+      ack_signatures: JSON.parse(row.ack_signatures),
     };
+  }
+
+  // ── Canonical derived state (§14 snapshot-sync) ───────────────────────────
+  // See MemoryStore.iterateCanonicalState for the contract. SQLite version
+  // uses prepared-statement cursors (better-sqlite3 iterate()) so rows flow
+  // one at a time without loading the whole table. `ORDER BY <pk>` uses the
+  // primary-key index, so sorting is free (no temp table / external sort).
+  *iterateCanonicalState() {
+    const db = this.db;
+    for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
+      yield { table: "identities", row: _canonIdentity({ ...r, founding: r.founding === 1 }) };
+    }
+    for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
+      yield { table: "content", row: _canonContent({ ...r, prescan_flagged: r.prescan_flagged === 1 }) };
+    }
+    // TODO §14.5 — see MemoryStore.iterateCanonicalState for the exclusion
+    // rationale (issues.md Consensus #31).
+    for (const r of db.prepare("SELECT dedup_hash, created_at FROM dedup_registry ORDER BY dedup_hash").iterate()) {
+      yield { table: "dedup_registry", row: _canonDedup(r.dedup_hash, r.created_at) };
+    }
+    for (const r of db.prepare("SELECT * FROM revocations ORDER BY tip_id").iterate()) {
+      yield { table: "revocations", row: _canonRevocation(r) };
+    }
+    for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
+      yield { table: "verification_providers", row: _canonVP(r) };
+    }
+    for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
+      yield { table: "nodes", row: _canonNode(r) };
+    }
   }
 
   // ── Equivocation defense: votes_seen (§1) ──────────────────────────────────
@@ -922,9 +1126,14 @@ function initDAG(config) {
     getScore: (id) => store.getScore(id),
 
     // ── Dedup registry ────────────────────────────────────────────────────
-    addDedupHash: (h) => store.addDedupHash(h),
+    addDedupHash: (h, createdAt) => store.addDedupHash(h, createdAt),
     hasDedupHash: (h) => store.hasDedupHash(h),
     dedupCount: () => store.dedupCount(),
+
+    // ── Canonical derived state (§14 snapshot-sync) ──────────────────────
+    // Streaming iterator over all derived-state tables in deterministic
+    // order. Consumed by consensus/state-root.js to hash row-by-row.
+    iterateCanonicalState: () => store.iterateCanonicalState(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
@@ -1059,7 +1268,11 @@ function _writeGenesisBlock(store, config) {
       tx_id: idTxId,
     });
 
-    if (member.dedup_hash) store.addDedupHash(member.dedup_hash);
+    if (member.dedup_hash) {
+      // Genesis bootstrap — created_at derived from the genesis timestamp
+      // (same on every node that ships the same genesis). Deterministic.
+      store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
+    }
     store.setScore(member.tip_id, 550, 0);
     lastTxId = idTxId;
 

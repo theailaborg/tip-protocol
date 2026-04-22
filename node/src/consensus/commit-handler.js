@@ -126,7 +126,8 @@ function createCommitHandler({ dag, scoring, config }) {
       // ── Identity ──────────────────────────────────────────────────────
       case TX_TYPES.REGISTER_IDENTITY:
         if (d.dedup_hash && !dag.hasDedupHash(d.dedup_hash)) {
-          dag.addDedupHash(d.dedup_hash);
+          // Unix seconds derived from the tx timestamp (deterministic across nodes).
+          dag.addDedupHash(d.dedup_hash, Math.floor(new Date(tx.timestamp).getTime() / 1000));
         }
         if (d.tip_id && !dag.getIdentity(d.tip_id)) {
           dag.saveIdentity({
@@ -141,7 +142,7 @@ function createCommitHandler({ dag, scoring, config }) {
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
           });
-          // Initial score
+          // Initial score (scores table is a cache, see Consensus issue #31).
           if (d.tip_id) {
             const initial = d.social_attested || d.attested ? 550 : 500;
             dag.setScore(d.tip_id, initial, 0);

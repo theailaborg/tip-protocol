@@ -167,6 +167,9 @@
     "network": {
       "chain_id": "tip-mainnet-v2",
       "handshake_protocol": "/tip/handshake/1.0.0",
+      "snapshot_protocol": "/tip/state-snapshot/1.0.0",
+      "snapshot_length_prefix_bytes": 4,
+      "snapshot_max_frame_bytes": 16777216,
       "merkle_publish_hours": 6,
       "score_cache_ttl_seconds": 21600,
       "revocation_cascade_days": 90,

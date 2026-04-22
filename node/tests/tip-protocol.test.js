@@ -358,7 +358,7 @@ describe("DAG Engine", () => {
   test("3.6 Deduplication hash check and registration", () => {
     const dedupHash = computeDedupHash("ID12345", "1985-06-15", "US");
     expect(dag.hasDedupHash(dedupHash)).toBe(false);
-    dag.addDedupHash(dedupHash);
+    dag.addDedupHash(dedupHash, Math.floor(Date.now() / 1000));
     expect(dag.hasDedupHash(dedupHash)).toBe(true);
   });
 
@@ -920,7 +920,7 @@ describe("Integration: Full Registration Flow", () => {
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
     const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
-    dag.addDedupHash(dedup);
+    dag.addDedupHash(dedup, Math.floor(Date.now() / 1000));
 
     const dupKp = generateMLDSAKeypair();
     const dupFields = {
