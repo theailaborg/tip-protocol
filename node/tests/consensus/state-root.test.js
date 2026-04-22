@@ -87,6 +87,63 @@ describe("state_merkle_root", () => {
     b.finalize();
     expect(() => b.finalize()).toThrow(/already called/);
   });
+
+  test("SQLite and in-memory stores compute identical state_merkle_root", () => {
+    // Consensus-critical: our two store implementations (SQLite + in-mem)
+    // MUST hash to the same root for the same writes. If they diverge,
+    // a mixed-store network forks silently on the first commit.
+    const fs = require("fs");
+    const os = require("os");
+    const dbPath = path.join(os.tmpdir(), `tip-state-root-parity-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+
+    let sqliteDag, memDag;
+    try {
+      sqliteDag = initDAG({ dbPath });                // real SQLite file
+      memDag    = initDAG({ dbPath: ":memory:" });    // MemoryStore
+
+      // Apply the exact same writes to both stores in the same order.
+      const writes = [
+        () => {
+          const rec = {
+            tip_id: "tip:dev:us:alpha", region: "US",
+            public_key: "aa", root_public_key: "bb",
+            vp_id: "vp:founding", verification_tier: "T1",
+            founding: false, status: "active",
+            registered_at: "2026-01-01T00:00:00.000Z", tx_id: "tx-alpha",
+          };
+          sqliteDag.saveIdentity(rec); memDag.saveIdentity(rec);
+        },
+        () => {
+          const rec = {
+            node_id: "NODE_P", name: "peer node",
+            public_key: "cc", status: "active",
+            registered_at: "2026-01-01T00:00:00.000Z",
+          };
+          sqliteDag.saveNode(rec); memDag.saveNode(rec);
+        },
+        () => {
+          sqliteDag.addDedupHash("dh-1", 1735689600);
+          memDag.addDedupHash("dh-1", 1735689600);
+        },
+        () => {
+          sqliteDag.addRevocation("tip:dev:us:alpha", "REVOKE_VOLUNTARY",
+            "2026-02-01T00:00:00.000Z", "tx-revoke");
+          memDag.addRevocation("tip:dev:us:alpha", "REVOKE_VOLUNTARY",
+            "2026-02-01T00:00:00.000Z", "tx-revoke");
+        },
+      ];
+      for (const w of writes) w();
+
+      expect(computeStateMerkleRoot(sqliteDag)).toBe(computeStateMerkleRoot(memDag));
+    } finally {
+      // Cleanup: SQLite handle + file + WAL/SHM siblings.
+      try { sqliteDag?.close?.(); } catch { /* ignore */ }
+      try { memDag?.close?.(); } catch { /* ignore */ }
+      for (const ext of ["", "-wal", "-shm"]) {
+        try { fs.unlinkSync(dbPath + ext); } catch { /* not present */ }
+      }
+    }
+  });
 });
 
 describe("txs_merkle_root", () => {

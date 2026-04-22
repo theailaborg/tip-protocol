@@ -188,13 +188,19 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
 
   /**
    * Request sync from a peer — pull certificates we're missing.
-   * @param {string} peerId  Remote peer ID
-   * @returns {Promise<{ imported: number, fromRound: number, toRound: number }>}
+   *
+   * @param {string} peerId               Remote peer ID
+   * @param {Object} [opts]
+   * @param {number} [opts.fromRound]     Override start round. Defaults to
+   *   `dag.getLatestRound() + 1` (pull everything newer than our DAG). Callers
+   *   who installed state via §14 snapshot sync pass `snapRound + 1` so we
+   *   only fetch the catch-up gap instead of the whole chain from round 1.
+   * @returns {Promise<{ imported: number, fromRound: number, toRound: number, peerLatestRound: number }>}
    */
-  async function syncFromPeer(peerId) {
+  async function syncFromPeer(peerId, { fromRound: overrideFromRound } = {}) {
     if (!network) throw new Error("No network node");
 
-    const fromRound = dag.getLatestRound() + 1;
+    const fromRound = overrideFromRound != null ? overrideFromRound : dag.getLatestRound() + 1;
     log.info(`Sync: requesting from peer ${peerId.slice(0, 12)}... from round ${fromRound}`);
 
     let stream;

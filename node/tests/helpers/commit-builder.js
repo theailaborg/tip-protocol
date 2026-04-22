@@ -29,16 +29,21 @@ const { computeStateMerkleRoot, computeTxsMerkleRoot } = require(path.join(SRC, 
  * Build a source DAG with a signed anchor commit.
  *
  * @param {Object} [opts]
- * @param {number} [opts.committeeSize=1]  Number of committee nodes to register
- * @param {number} [opts.dropSigs=0]       Number of tail sigs to omit (simulates quorum shortfall)
- * @param {number} [opts.round=2]          Commit round number
+ * @param {number}   [opts.committeeSize=1]  Number of committee nodes to register
+ * @param {number}   [opts.dropSigs=0]       Number of tail sigs to omit (simulates quorum shortfall)
+ * @param {number}   [opts.round=2]          Commit round number
+ * @param {Function} [opts.ackTransform]     Optional `(acks, fx) => acks` hook.
+ *   `acks` is `{ signerIds: string[], signatures: string[] }`; `fx` exposes
+ *   `committeeKeys`, `committee`, `anchorBatchHash` so tests can craft
+ *   malformed ack arrays (non-committee signer, duplicates, corrupted sigs).
+ *   Must mutate or return a new `{signerIds, signatures}`; return value wins.
  * @returns {{
  *   sourceDag, committee, committeeKeys,
  *   anchorCertHash, anchorBatchHash,
  *   stateRoot, txsRoot, consensusIndex,
  * }}
  */
-function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2 } = {}) {
+function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, ackTransform } = {}) {
   const sourceDag = initDAG({ dbPath: ":memory:" });
 
   // Register committee nodes. Public key in the nodes table must match the
@@ -67,13 +72,24 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2 } = {}) 
   const leaderNodeId = committeeKeys[0].nodeId;
 
   // Sign acks (omit trailing N for quorum-shortfall tests).
-  const ackSignerIds = [];
-  const ackSignatures = [];
+  let ackSignerIds = [];
+  let ackSignatures = [];
   for (let i = 0; i < committeeKeys.length - dropSigs; i++) {
     const { nodeId, privateKey } = committeeKeys[i];
     const payload = `ack:${anchorBatchHash}:${nodeId}`;
     ackSignerIds.push(nodeId);
     ackSignatures.push(mldsaSign(payload, privateKey));
+  }
+
+  // Let callers craft malformed ack arrays (security tests: non-committee
+  // signer, duplicates, corrupted sig bytes, etc.) after the default
+  // signatures are produced.
+  if (typeof ackTransform === "function") {
+    const acks = { signerIds: ackSignerIds, signatures: ackSignatures };
+    const fx = { committeeKeys, committee, anchorBatchHash };
+    const transformed = ackTransform(acks, fx) || acks;
+    ackSignerIds = transformed.signerIds;
+    ackSignatures = transformed.signatures;
   }
 
   // Persist the anchor certificate. saveCertificate is used straight —
