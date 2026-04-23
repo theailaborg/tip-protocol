@@ -127,6 +127,193 @@ npm test
 # Gossip:    tcp://localhost:4001
 ```
 
+### Register a Node on the DAG
+
+Every peer's public key must be on the DAG (signed by the founding VP) before gossip auth will accept it — new nodes cannot self-register. This step is run by an existing operator who holds the founding VP key.
+
+**Prerequisites**
+
+```bash
+ls genesis-data/founding-vp-keys.json   # must exist
+curl -s http://localhost:4000/health    # must return ok
+```
+
+**Step 1.** Generate a keypair and write a `NODE_REGISTERED` tx to the DAG:
+
+```bash
+node scripts/register-peer-node.js \
+  --name=<node-name> \
+  --port=<node-port> \
+  --peer=ws://<existing-node-host>:4000
+```
+
+**Step 2.** The script writes two files to `generated-nodes/<node-name>/`:
+
+```
+generated-nodes/<node-name>/
+├── keys.json   # node_id, public_key, private_key, algorithm, approving_vp
+└── .env        # TIP_NODE_ID, TIP_NODE_PRIVATE_KEY, TIP_NODE_PUBLIC_KEY,
+                # PORT, TIP_DATA_DIR, TIP_DB_PATH, TIP_PEERS
+```
+
+**Step 3.** Deliver both files to the node operator out-of-band (Bitwarden Send, Signal, hardware token). The genesis seed (`genesis-data/seed.db`) already ships in the repo and does not need to be delivered.
+
+---
+
+### Starting a Node
+
+This runbook is run by the node operator after receiving `keys.json` and `.env` from the registering operator.
+
+**Step 1.** Clone the repo and install dependencies:
+
+```bash
+git clone https://github.com/theailab/tip-protocol.git
+cd tip-protocol
+npm install
+```
+
+**Step 2.** Place the delivered files in the repo:
+
+```bash
+mkdir -p generated-nodes/<node-name>
+mv /path/to/delivered/keys.json generated-nodes/<node-name>/keys.json
+cp /path/to/delivered/.env .env
+chmod 600 generated-nodes/<node-name>/keys.json .env
+```
+
+**Step 3.** Open `.env` and adjust the deployment-specific values. Identity fields (`TIP_NODE_ID`, `TIP_NODE_PRIVATE_KEY`, `TIP_NODE_PUBLIC_KEY`) must remain exactly as delivered:
+
+```bash
+# ── Identity — from the registration bundle, do not regenerate ────────────
+TIP_NODE_ID=<as delivered>
+TIP_NODE_PRIVATE_KEY=<as delivered>
+TIP_NODE_PUBLIC_KEY=<as delivered>
+
+# ── Network — adjust per deployment ───────────────────────────────────────
+PORT=4000
+HOST=0.0.0.0
+TIP_PUBLIC_URL=https://tip.example.org
+TIP_PEERS=wss://node.theailab.org            # The AI Lab public bootstrap node
+TIP_DATA_DIR=/var/lib/tip/data
+TIP_DB_PATH=/var/lib/tip/data/tip.db
+
+# ── Optional ──────────────────────────────────────────────────────────────
+TIP_REGION=US
+TIP_NODE_TYPE=full                           # full | light | vp | archive
+TIP_VP_ID=                                   # set only for a VP node
+TIP_LOG_LEVEL=info                           # debug | info | warn | error
+TIP_CORS_ORIGINS=https://example.org         # comma-separated, or "*"
+
+# ── Optional tuning (scheduler intervals in ms) ───────────────────────────
+# TIP_SCORE_RECOMPUTE_MS=43200000
+# TIP_CLEAN_RECORD_MS=86400000
+# TIP_VERDICT_CHECK_MS=300000
+# TIP_PEER_HEALTH_MS=30000
+
+# ── Optional media size caps (bytes) ──────────────────────────────────────
+# TIP_MAX_VIDEO_BYTES=5368709120
+# TIP_MAX_IMAGE_BYTES=52428800
+# TIP_MAX_AUDIO_BYTES=524288000
+# TIP_MAX_TEXT_BYTES=10485760
+```
+
+> `TIP_PEERS` accepts a comma-separated list of `ws://` or `wss://` URLs — the node appends `/gossip` to each. `wss://node.theailab.org` is the public bootstrap node operated by The AI Lab; additional peers may be added as the federation grows.
+>
+> Regenerating the identity keys invalidates the DAG registration — the gossip handshake will fail with `Node authentication failed`.
+
+**Step 4.** Open the firewall on `PORT` for inbound gossip WebSocket and HTTP.
+
+**Step 5.** Start the node using either method:
+
+Native (Node.js):
+
+```bash
+npm start --prefix node
+```
+
+Docker Compose:
+
+```bash
+docker compose up -d          # starts tip-node in the background
+docker compose logs -f tip-node
+```
+
+The compose file reads `.env` from the repo root and mounts `./data` into the container at `/app/data`, so `TIP_DATA_DIR` and `TIP_DB_PATH` are set automatically inside the container. Only the `.env` values need to be configured — no additional Docker arguments are required.
+
+On first boot, `genesis-data/seed.db` is auto-copied to `TIP_DB_PATH` (node/src/index.js:57-61) so the founding VP and genesis block are available immediately.
+
+**Step 6.** Within ~10s, these log lines should appear:
+
+```
+Node registered as: <node_id>
+Gossip: connected to peer wss://node.theailab.org
+Gossip: node <peer-node-id> authenticated (registered)
+Gossip: sync imported <N> transactions
+```
+
+Troubleshooting:
+- `Node authentication failed` — identity env vars were edited or regenerated; restore the delivered values.
+- `could not connect to wss://…` — firewall, DNS, TLS cert, or the peer node is down.
+
+**Step 7.** Verify the API:
+
+```bash
+curl http://localhost:$PORT/health
+curl http://localhost:$PORT/v1/constants
+```
+
+---
+
+#### Environment variable ownership
+
+| Delivered by operator         | Set by node runner          |
+|-------------------------------|-----------------------------|
+| `TIP_NODE_ID`                 | `PORT`                      |
+| `TIP_NODE_PRIVATE_KEY`        | `TIP_DATA_DIR`              |
+| `TIP_NODE_PUBLIC_KEY`         | `TIP_DB_PATH`               |
+| `TIP_PEERS` (peer gossip URL) | `TIP_PUBLIC_URL`            |
+| `genesis-data/seed.db`        | `TIP_CORS_ORIGINS`, TLS, supervisor, backups |
+
+---
+
+### Assigning Peers
+
+`TIP_PEERS` is a comma-separated list of `ws://` or `wss://` URLs that a node dials on startup. The node appends `/gossip` to each URL (node/src/gossip.js:419) and retries with 30s backoff on disconnect (gossip.js:428-431). Inbound connections from any source are also accepted, provided the peer passes the ML-DSA challenge against the DAG node registry.
+
+#### Every node lists every other node
+
+For the pilot, every participating node must list all other nodes in its `TIP_PEERS`. Each pair of nodes therefore dials each other, producing two sockets per pair — one in each direction. This is what the current gossip implementation requires for bidirectional transaction propagation.
+
+Example for a 4-node network (The AI Lab bootstrap plus three partners):
+
+```
+Node on node.theailab.org
+  TIP_PEERS=wss://node.partner1.io,wss://node.partner2.com,wss://node.partner3.xyz
+
+Node on node.partner1.io
+  TIP_PEERS=wss://node.theailab.org,wss://node.partner2.com,wss://node.partner3.xyz
+
+Node on node.partner2.com
+  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner3.xyz
+
+Node on node.partner3.xyz
+  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner2.com
+```
+
+A transaction created on any node is broadcast to its three directly connected peers. Each peer validates, stores, and relays with TTL=2 (gossip.js:354-356); duplicates are deduplicated by `seenTx` (gossip.js:336-338). All four DAGs converge on the same state.
+
+If one node goes offline, its sockets close on the remaining nodes and outbound connections retry with 30s backoff. The remaining nodes continue to gossip among themselves, and the mesh heals automatically when the node returns.
+
+#### Bootstrapping a fresh node
+
+A new node's DAG contains only what shipped in `genesis-data/seed.db` — it does not yet know about other peers' `NODE_REGISTERED` txs. The first successful handshake must therefore be with a node that already has those txs. After that handshake, `SYNC_REQUEST` / `SYNC_RESPONSE` (gossip.js:326-366) backfills the DAG and subsequent peer handshakes succeed.
+
+For this reason, every `TIP_PEERS` list should include `wss://node.theailab.org` — the public bootstrap node operated by The AI Lab — so a fresh node can sync the registry on first boot.
+
+#### TLS
+
+`wss://` is terminated at the reverse proxy or load balancer in front of the node — the Node.js process itself serves plain HTTP + WebSocket on `PORT`. Nginx, Caddy, Cloudflare, or an L7 LB in front is sufficient; no TLS configuration inside the node is required.
+
 ### Run a Node (Python)
 
 ```bash
