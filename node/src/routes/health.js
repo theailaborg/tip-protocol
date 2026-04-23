@@ -18,15 +18,25 @@ function createRouter({ dag, scoring, config, consensus, network }) {
       dbOk = false;
     }
 
-    const status = dbOk ? "ok" : "degraded";
-    const statusCode = dbOk ? 200 : 503;
-    const mem = process.memoryUsage();
-
     // Live network stats
     const net = network?.current;
     const cons = consensus?.current;
     const peerCount = net ? net.peerCount() : 0;
     const connectedPeers = net ? net.peers().map(p => p.toString()) : [];
+
+    // Consensus halt check — report explicitly when sub-quorum so load
+    // balancers / orchestrators can take this instance out of rotation
+    // until it recovers. Monitors should alert on status=halted.
+    let consensusHalt = null;
+    try { consensusHalt = cons?.isConsensusHalted ? cons.isConsensusHalted() : null; }
+    catch { /* best-effort — if the check itself throws, treat as unknown */ }
+
+    let status, statusCode;
+    if (!dbOk)                         { status = "degraded"; statusCode = 503; }
+    else if (consensusHalt?.halted)    { status = "halted";   statusCode = 503; }
+    else                               { status = "ok";       statusCode = 200; }
+
+    const mem = process.memoryUsage();
 
     const body = {
       status,
@@ -58,6 +68,7 @@ function createRouter({ dag, scoring, config, consensus, network }) {
     // Consensus stats (if running)
     if (cons) {
       body.consensus = cons.stats();
+      if (consensusHalt) body.consensus.halt = consensusHalt;
     }
 
     res.status(statusCode).json(body);

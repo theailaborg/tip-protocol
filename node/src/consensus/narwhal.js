@@ -98,6 +98,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     equivocation_refused: 0,  // §1: count of refused double-attestations
   };
 
+  // Wall-clock timestamp of the last successful round advance. Used by
+  // the consensus-halt gate: if no rounds advance within the stuck-
+  // threshold window (N × ROUND_TIMEOUT_MS) while we're supposed to be
+  // running, the network is sub-quorum — writes get 503'd and /health
+  // reports degraded status. Initialised to start() time so we don't
+  // false-positive during the grace period before the first round lands.
+  let _lastRoundAdvanceAt = 0;
+
   // Committee is derived deterministically from the DAG via getCommittee(),
   // not tracked locally. Every node reading the same DAG sees the same
   // committee, eliminating the handshake-history divergence class of bugs.
@@ -115,6 +123,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function start() {
     if (_running) return;
     _running = true;
+    // Grace period for the halt detector — without this, a freshly-booted
+    // node would report "halted" for the first few seconds before any
+    // round completes.
+    _lastRoundAdvanceAt = Date.now();
 
     log.notice(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
 
@@ -369,7 +381,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (priorVote) {
       if (priorVote.batch_hash !== batch.hash) {
         log.error(`EQUIVOCATION detected from ${batch.author_node_id} at round ${batch.round}: ` +
-                  `already attested to ${priorVote.batch_hash.slice(0, 16)}, now seeing ${batch.hash.slice(0, 16)} — refusing`);
+          `already attested to ${priorVote.batch_hash.slice(0, 16)}, now seeing ${batch.hash.slice(0, 16)} — refusing`);
         _metrics.equivocation_refused = (_metrics.equivocation_refused || 0) + 1;
         return;
       }
@@ -670,6 +682,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_roundCertificates.size < quorum) return;
 
     _metrics.rounds_advanced++;
+    _lastRoundAdvanceAt = Date.now();
     log.debug(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
 
     // Clear timers
@@ -815,6 +828,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     handleIncomingBatch,
     handleIncomingAck,
     handleIncomingCertificate,
+    lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
     stats: () => ({
       round: _currentRound,
       running: _running,
@@ -826,6 +840,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       activeParticipants: _getCommittee().length,
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
+      lastRoundAdvanceAt: _lastRoundAdvanceAt,
       metrics: { ..._metrics },
     }),
   };

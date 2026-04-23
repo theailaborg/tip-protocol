@@ -19,6 +19,7 @@ const morgan = require("morgan");
 
 const { errorHandler } = require("./middleware/error-handler");
 const { requestId } = require("./middleware/request-id");
+const { createConsensusGate } = require("./middleware/consensus-gate");
 const { createTxSubmitter } = require("./services/helpers");
 
 // Services
@@ -112,6 +113,12 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Observability endpoints — detailed stats for dashboards (heavy-ish
   // payload; not on the /health path so load-balancer probes stay fast).
   app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+
+  // Consensus-halt gate — 503s write requests (POST/PUT/PATCH/DELETE) when
+  // the network is sub-quorum. Reads stay open. Mounted AFTER health + stats
+  // so operators can still observe state during a halt; BEFORE business
+  // routes so the gate shows up on anything that would touch the mempool.
+  app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
   app.use(API_VERSION, identityRoutes.createRouter({ identityService }));

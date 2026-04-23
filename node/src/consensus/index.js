@@ -23,6 +23,7 @@ const { createBullshark } = require("./bullshark");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
+const { computeHaltStatus } = require("./halt-status");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
@@ -178,6 +179,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
     /** Access to mempool (for API services to check pending status) */
     mempool,
+
+    /**
+     * "Can we make forward progress right now?" Returns
+     * `{ halted, reason, lastAdvanceAt, staleMs, [message] }`. Halted when
+     * consensus is running but hasn't advanced a round in > 3× ROUND_TIMEOUT_MS
+     * (quorum unreachable — peers offline, partition). Loud, honest signal
+     * used by the /v1 write gate to 503 new requests and by /health to
+     * surface degraded status.
+     *
+     * Implementation delegates to `computeHaltStatus` — see that file for
+     * the full decision tree. Accepts an injectable `now` for tests.
+     */
+    isConsensusHalted({ now } = {}) {
+      return computeHaltStatus(narwhal.stats(), {
+        roundTimeoutMs: CONSENSUS.ROUND_TIMEOUT_MS,
+        now,
+      });
+    },
 
     /** Sync: request certificates from a peer */
     syncFromPeer: (peerId) => syncHandler.syncFromPeer(peerId),
