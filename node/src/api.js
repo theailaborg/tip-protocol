@@ -32,6 +32,7 @@ const { createGovernanceService } = require("./services/governance-service");
 // Routes
 const healthRoutes = require("./routes/health");
 const statsRoutes = require("./routes/stats");
+const metricsRoutes = require("./routes/metrics");
 const identityRoutes = require("./routes/identity");
 const contentRoutes = require("./routes/content");
 const disputeRoutes = require("./routes/dispute");
@@ -113,6 +114,12 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Observability endpoints — detailed stats for dashboards (heavy-ish
   // payload; not on the /health path so load-balancer probes stay fast).
   app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+
+  // Prometheus /metrics — top-level (NOT under /v1) per Prometheus scraper
+  // convention. Mounted before the consensus gate so the endpoint is
+  // ALWAYS scrapable even while /v1/* writes are 503'd; halt itself is
+  // visible via the tip_consensus_halted gauge.
+  app.use(metricsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
 
   // Consensus-halt gate — 503s write requests (POST/PUT/PATCH/DELETE) when
   // the network is sub-quorum. Reads stay open. Mounted AFTER health + stats
