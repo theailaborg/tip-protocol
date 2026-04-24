@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS content (
     verification_count  INTEGER NOT NULL DEFAULT 0,
     prescan_flagged     INTEGER NOT NULL DEFAULT 0,
     registered_at       TEXT NOT NULL,
+    registered_url      TEXT,
     tx_id               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
@@ -381,6 +382,10 @@ class SQLiteStore:
     def _execute_schema(self) -> None:
         conn = self._conn()
         conn.executescript(_SCHEMA)
+        # Backfill registered_url column for pre-existing content tables
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(content)").fetchall()]
+        if "registered_url" not in cols:
+            conn.execute("ALTER TABLE content ADD COLUMN registered_url TEXT")
         conn.commit()
 
     def _row_to_tx(self, row) -> dict:
@@ -495,8 +500,8 @@ class SQLiteStore:
         conn.execute(
             """INSERT OR REPLACE INTO content
                (ctid, origin_code, content_hash, perceptual_hash, author_tip_id,
-                status, prescan_flagged, registered_at, tx_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                status, prescan_flagged, registered_at, registered_url, tx_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rec["ctid"],
                 rec["origin_code"],
@@ -506,6 +511,7 @@ class SQLiteStore:
                 rec.get("status", "verified"),
                 1 if rec.get("prescan_flagged") else 0,
                 rec["registered_at"],
+                rec.get("registered_url"),
                 rec.get("tx_id"),
             ),
         )

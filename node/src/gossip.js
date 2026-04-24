@@ -35,8 +35,12 @@ function verifyIncomingTx(tx, dag) {
         log.warn(`Gossip: rejected REGISTER_CONTENT — missing author identity or signature`);
         return false;
       }
-      return verifyBodySignature(d, d.signature, identity.public_key,
-        ["author_tip_id", "origin_code", "content_hash"]);
+      // Field list must match what the author signed: registered_url is included
+      // in the signature payload only when it was provided at registration time.
+      const fields = d.registered_url
+        ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
+        : ["author_tip_id", "origin_code", "content_hash"];
+      return verifyBodySignature(d, d.signature, identity.public_key, fields);
     }
 
     if (tt === TX_TYPES.REGISTER_IDENTITY) {
@@ -217,6 +221,7 @@ function replayDerivedState(dag, tx) {
           author_tip_id:   d.author_tip_id,
           status:          d.prescan_flagged ? "pending_review" : "verified",
           registered_at:   tx.timestamp,
+          registered_url:  d.registered_url || null,
           tx_id:           tx.tx_id,
         });
       }

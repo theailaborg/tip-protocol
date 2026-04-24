@@ -61,6 +61,7 @@ def _replay_derived_state(dag, tx: dict) -> None:
                 "author_tip_id":   d.get("author_tip_id"),
                 "status":          "pending_review" if d.get("prescan_flagged") else "verified",
                 "registered_at":   tx.get("timestamp", ""),
+                "registered_url":  d.get("registered_url"),
                 "tx_id":           tx.get("tx_id", ""),
             })
 
@@ -104,8 +105,12 @@ def _verify_incoming_tx(tx: dict, dag) -> bool:
         if tt == TxType.REGISTER_CONTENT:
             identity = dag.get_identity(d.get("author_tip_id", ""))
             if not identity or not d.get("signature"): return True
-            return verify_body_signature(d, d["signature"], identity["public_key"],
-                ["author_tip_id", "origin_code", "content_hash"])
+            # Field list must match what the author signed: registered_url is
+            # included only when it was provided at registration time.
+            fields = (["author_tip_id", "origin_code", "content_hash", "registered_url"]
+                      if d.get("registered_url")
+                      else ["author_tip_id", "origin_code", "content_hash"])
+            return verify_body_signature(d, d["signature"], identity["public_key"], fields)
 
         if tt == TxType.REGISTER_IDENTITY:
             vp = dag.get_vp(d.get("vp_id", ""))

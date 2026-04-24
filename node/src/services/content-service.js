@@ -75,6 +75,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
         content_hash: contentHashFull, perceptual_hash: perceptHash,
         author_tip_id, signature,
         prescan_flagged: preScan.flagged, prescan_probability: preScan.probability,
+        ...(registered_url ? { registered_url } : {}),
       },
     };
     const signedTx = withTxId(txBody);
@@ -89,6 +90,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
       ctid, origin_code, content_hash: contentHashFull, perceptual_hash: perceptHash,
       author_tip_id, status, registered_at: registeredAt, tx_id: tx.tx_id,
       normalization_version: normalizationVersion,
+      registered_url: registered_url || null,
     };
     if (media_canonical_hash)        contentRecord.media_canonical_hash        = media_canonical_hash;
     if (media_exact_hash)            contentRecord.media_exact_hash            = media_exact_hash;
@@ -102,6 +104,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
       content_hash: contentHashFull, author_tip_id, tx_id: tx.tx_id,
       registered_at: registeredAt, status,
+      registered_url: registered_url || null,
       prescan_flagged: preScan.flagged,
       prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
       http_headers: {
