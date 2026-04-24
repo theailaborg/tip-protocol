@@ -204,6 +204,7 @@ class SQLiteStore {
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
         registered_at       TEXT NOT NULL,
+        creator_name        TEXT,
         tx_id               TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_id_vp     ON identities(vp_id);
@@ -275,6 +276,11 @@ class SQLiteStore {
     if (!contentCols.includes("registered_url")) {
       this.db.exec("ALTER TABLE content ADD COLUMN registered_url TEXT");
     }
+    // Backfill creator_name column for pre-existing identities tables
+    const idCols = this.db.prepare("PRAGMA table_info(identities)").all().map(c => c.name);
+    if (!idCols.includes("creator_name")) {
+      this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
+    }
   }
 
   _prepare() {
@@ -304,8 +310,8 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,founding,status,registered_at,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
+            verification_tier,founding,status,registered_at,creator_name,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -403,7 +409,7 @@ class SQLiteStore {
       rec.vp_id || null, rec.verification_tier || "T1",
       rec.founding ? 1 : 0,
       rec.status || "active",
-      rec.registered_at, rec.tx_id || null
+      rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
   getIdentity(id) {

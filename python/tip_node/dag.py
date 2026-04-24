@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS identities (
     founding            INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'active',
     registered_at       TEXT NOT NULL,
+    creator_name        TEXT,
     tx_id               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_id_vp     ON identities(vp_id);
@@ -386,6 +387,9 @@ class SQLiteStore:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(content)").fetchall()]
         if "registered_url" not in cols:
             conn.execute("ALTER TABLE content ADD COLUMN registered_url TEXT")
+        id_cols = [r[1] for r in conn.execute("PRAGMA table_info(identities)").fetchall()]
+        if "creator_name" not in id_cols:
+            conn.execute("ALTER TABLE identities ADD COLUMN creator_name TEXT")
         conn.commit()
 
     def _row_to_tx(self, row) -> dict:
@@ -463,8 +467,8 @@ class SQLiteStore:
         conn.execute(
             """INSERT OR REPLACE INTO identities
                (tip_id, region, public_key, root_public_key, vp_id,
-                verification_tier, founding, status, registered_at, tx_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                verification_tier, founding, status, registered_at, creator_name, tx_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rec["tip_id"],
                 rec.get("region", "US"),
@@ -475,6 +479,7 @@ class SQLiteStore:
                 1 if rec.get("founding") else 0,
                 rec.get("status", "active"),
                 rec["registered_at"],
+                rec.get("creator_name"),
                 rec.get("tx_id"),
             ),
         )

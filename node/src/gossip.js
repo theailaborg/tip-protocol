@@ -49,8 +49,11 @@ function verifyIncomingTx(tx, dag) {
         log.warn(`Gossip: rejected REGISTER_IDENTITY — VP ${d.vp_id} not in registry or missing signature`);
         return false;
       }
-      return verifyBodySignature(d, d.vp_signature, vp.public_key,
-        ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
+      // Field list must match what the VP signed: creator_name is included
+      // in the signature payload only when it was provided at registration.
+      const BASE = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+      const fields = d.creator_name ? [...BASE, "creator_name"] : BASE;
+      return verifyBodySignature(d, d.vp_signature, vp.public_key, fields);
     }
 
     if (tt === TX_TYPES.CONTENT_VERIFIED) {
@@ -206,6 +209,7 @@ function replayDerivedState(dag, tx) {
           founding:        d.founding || false,
           status:          "active",
           registered_at:   tx.timestamp,
+          creator_name:    d.creator_name || null,
           tx_id:           tx.tx_id,
         });
       }

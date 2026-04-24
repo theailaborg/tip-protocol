@@ -103,6 +103,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
       content_hash: contentHashFull, author_tip_id, tx_id: tx.tx_id,
+      author_name: identity.creator_name || null,
       registered_at: registeredAt, status,
       registered_url: registered_url || null,
       prescan_flagged: preScan.flagged,
@@ -138,6 +139,7 @@ function createContentService({ dag, scoring, config, broadcast }) {
     return {
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
       verify_count: verifyCount,

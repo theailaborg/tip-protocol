@@ -47,6 +47,7 @@ def _replay_derived_state(dag, tx: dict) -> None:
                 "founding":          d.get("founding", False),
                 "status":            "active",
                 "registered_at":     tx.get("timestamp", ""),
+                "creator_name":      d.get("creator_name"),
                 "tx_id":             tx.get("tx_id", ""),
             })
 
@@ -115,8 +116,12 @@ def _verify_incoming_tx(tx: dict, dag) -> bool:
         if tt == TxType.REGISTER_IDENTITY:
             vp = dag.get_vp(d.get("vp_id", ""))
             if not vp or not d.get("vp_signature"): return True
-            return verify_body_signature(d, d["vp_signature"], vp["public_key"],
-                ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"])
+            # Field list must match what the VP signed: creator_name is
+            # included only when it was provided at registration time.
+            base = ["region", "public_key", "dedup_hash", "zk_proof",
+                    "verification_tier", "vp_id", "social_attested"]
+            fields = base + ["creator_name"] if d.get("creator_name") else base
+            return verify_body_signature(d, d["vp_signature"], vp["public_key"], fields)
 
         if tt == TxType.CONTENT_VERIFIED:
             verifier = dag.get_identity(d.get("verifier_tip_id", ""))
