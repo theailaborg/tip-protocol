@@ -153,6 +153,37 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
 
     log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
 
+    // §2 cert GC interaction: if the joiner asks from a round we've already
+    // pruned, we'd return certs 501+ but none of 1-500, and their import
+    // would break on the first parent reference into the pruned range. The
+    // right answer is "use snapshot sync, not cert replay". `getEarliestCertRound`
+    // is O(1) on SQLite (indexed MIN) and bounded-O(N) on MemoryStore where
+    // N is already bounded by GC. An empty table returns 0 → fallback to 1
+    // so fromRound=1 against an empty DAG isn't flagged as below-horizon.
+    let earliestRound = 1;
+    try {
+      const e = dag.getEarliestCertRound();
+      if (e > 0) earliestRound = e;
+    } catch { /* earliestRound stays 1 */ }
+
+    const snapshotRequired = fromRound < earliestRound;
+    if (snapshotRequired) {
+      log.info(`Sync: peer requested round ${fromRound} below GC horizon (earliest=${earliestRound}); signaling snapshot_required`);
+      const response = encode("SyncResponse", {
+        certificates: [],
+        fromRound,
+        toRound: fromRound,
+        latestRound,
+        merkleRoot: hexToBytes(merkleRoot()),
+        hasMore: false,
+        snapshotRequired: true,
+        earliestAvailableRound: earliestRound,
+      });
+      try { await stream.sink([response]); }
+      catch (err) { log.warn(`Sync: stream write failed: ${err.message}`); }
+      return;
+    }
+
     // Collect all requested certs into one response. libp2p stream.sink is
     // single-use per stream, so the former multi-batch path silently dropped
     // anything past the first batch. For our federation scale this fits
@@ -175,6 +206,8 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       latestRound,
       merkleRoot: hexToBytes(merkleRoot()),
       hasMore: false,
+      snapshotRequired: false,
+      earliestAvailableRound: earliestRound,
     });
 
     try {
@@ -242,6 +275,24 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
         }
 
         peerLatestRound = response.latestRound || 0;
+
+        // §2 cert GC: peer can't serve our requested range because it's
+        // below their GC horizon. Surface this to the caller so the
+        // join-flow (`peer-sync.js`) falls back to §14 snapshot sync
+        // instead of cert replay. Return early with the signal — any
+        // certs the peer sent here would be in a range that doesn't
+        // chain back to a valid parent, so importing them is unsafe.
+        if (response.snapshotRequired) {
+          log.info(`Sync: peer ${peerId.slice(0, 12)} signals snapshot_required (earliest available: ${response.earliestAvailableRound}); falling back to snapshot sync`);
+          return {
+            imported: 0,
+            fromRound,
+            toRound: fromRound,
+            peerLatestRound,
+            snapshotRequired: true,
+            earliestAvailableRound: response.earliestAvailableRound || 0,
+          };
+        }
 
         for (const certData of (response.certificates || [])) {
           try {
@@ -337,6 +388,10 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     merkleRoot,
     merkleTree: _merkle,
     SYNC_PROTOCOL,
+    // Exposed for tests and for ops replay: run the server-side handler
+    // against an arbitrary stream pair. Production paths always reach it
+    // via libp2p's handle() callback installed in registerProtocol.
+    handleIncomingSync: _handleIncomingSync,
   };
 }
 

@@ -88,6 +88,12 @@ message SyncResponse {
   uint64 latest_round = 4;     // peer's current latest round
   bytes merkle_root = 5;       // peer's current Merkle root
   bool has_more = 6;           // true if more batches to follow
+  // §2 cert GC signal: server sets this when the requested from_round falls
+  // below its GC horizon, so the joiner would only receive partial data
+  // with a parent-chain gap. Joiner should stop cert-replay and switch to
+  // §14 state-snapshot sync via /tip/state-snapshot/1.0.0 instead.
+  bool snapshot_required = 7;
+  uint64 earliest_available_round = 8;  // lowest round the server still has certs for (info for joiner)
 }
 
 // ─── Consensus Messages ──────────────────────────────────────────────────────

@@ -204,6 +204,8 @@ const GENESIS_PAYLOAD = Object.freeze({
       participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
       handshake_timeout_ms: 10000,      // max time to complete TIP handshake after connection
       handshake_max_retries: 3,         // max dial attempts for handshake before giving up
+      gc_depth: 500,                     // cert GC: retain this many rounds of certs behind last committed round; older rows pruned from DAG + in-memory waiters. At 2s rounds = ~17 min of history, enough for consensus parent refs, cert waiter, and brief-offline recovery (anti-entropy covers longer gaps). Reference Narwhal uses 50-500 depending on committee size.
+      gc_interval_commits: 10,          // cert GC: run prune every Nth commit (modulo-based throttle). At ~one commit every few seconds this runs ~20-60s apart, keeping SQLite churn bounded.
     },
     network: {
       chain_id: "tip-mainnet-v2",

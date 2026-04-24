@@ -187,6 +187,8 @@ const CONSENSUS = {
   get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
   get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
   get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
+  get GC_DEPTH() { return _c().gc_depth ?? 500; },
+  get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
 };
 
 const NETWORK = {

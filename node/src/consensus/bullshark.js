@@ -53,6 +53,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     anchors_committed: 0,
     anchors_no_support: 0,
     txs_committed: 0,
+    certs_pruned: 0,
+    gc_runs: 0,
+    gc_failures: 0,
+    gc_skipped_disabled: 0,
   };
 
   // Monotonic commit sequence number (§15). One per successful anchor
@@ -239,6 +243,78 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
 
     _lastCommittedRound = voteRound;
     _pruneOrderedCache();
+    _maybeRunCertGC();
+  }
+
+  /**
+   * Cert GC (§2 in narwhal-parity-gap.md). Pruned cadence: every
+   * GC_INTERVAL_COMMITS consensus commits, drop every cert with
+   * `round < lastCommittedRound - GC_DEPTH` from the SQLite certs table.
+   *
+   * Safety:
+   *   - Commits checkpoint table (§15) survives — one row per real
+   *     commit with anchor_cert_hash, committee, state_merkle_root.
+   *     Audit queries ("what happened at round R") still work without
+   *     the cert body.
+   *   - Transactions table is NOT pruned. Every committed tx lives
+   *     there forever as the authoritative state-of-record.
+   *   - Derived state tables (identities, content, scores) untouched.
+   *   - GC_DEPTH default 500 = ~17 min at 2s rounds, enough for
+   *     active consensus parent refs, cert waiter, brief-offline
+   *     recovery. Longer gaps are handled by §14 snapshot-sync
+   *     (fresh joiners) and §7 anti-entropy (briefly-offline nodes).
+   *
+   * Throttled to avoid SQLite churn: only runs on every Nth commit
+   * (GC_INTERVAL_COMMITS default 10), so ~20-60s between prune calls
+   * depending on commit rate.
+   */
+  function _maybeRunCertGC() {
+    const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    if (!interval || interval <= 0) return;
+    if (_metrics.anchors_committed % interval !== 0) return;
+
+    // Throttle gate passed — we're at a GC tick. Check runtime disable
+    // here so `gc_skipped_disabled` counts tick-aligned skips (useful for
+    // ops dashboards: "how many prune cycles did we skip?") rather than
+    // raw commit count.
+    if (process.env.TIP_GC_DISABLED === "1") {
+      _metrics.gc_skipped_disabled++;
+      return;
+    }
+
+    const gcDepth = CONSENSUS.GC_DEPTH;
+    if (!gcDepth || gcDepth <= 0) return;
+
+    const cutoff = _lastCommittedRound - gcDepth;
+    if (cutoff <= 0) return;
+
+    try {
+      if (typeof dag.pruneCertificatesBefore !== "function") return;
+      const n = dag.pruneCertificatesBefore(cutoff);
+      _metrics.gc_runs++;
+      if (n > 0) {
+        _metrics.certs_pruned += n;
+        log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${gcDepth} rounds)`);
+
+        // Reclaim freed SQLite pages back to the filesystem. Without this
+        // the DB file keeps growing even with row count bounded — DELETE
+        // only returns pages to the internal free-list. Bounded to 1000
+        // pages per call (~4 MB) to cap the blocking time at tens of ms.
+        // Best-effort: MemoryStore is a no-op, and a failure here doesn't
+        // invalidate the prune — accounted in gc_failures so ops can see.
+        try {
+          if (typeof dag.incrementalVacuum === "function") {
+            dag.incrementalVacuum(1000);
+          }
+        } catch (err) {
+          _metrics.gc_failures++;
+          log.warn(`Cert GC: incremental_vacuum failed: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      _metrics.gc_failures++;
+      log.warn(`Cert GC prune failed at cutoff ${cutoff}: ${err.message}`);
+    }
   }
 
   /**

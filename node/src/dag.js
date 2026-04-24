@@ -280,12 +280,38 @@ class MemoryStore {
     for (const c of this._certs.values()) { if (c.round > max) max = c.round; }
     return max;
   }
+  // Earliest round with at least one cert still in storage. Returns 0 if
+  // the certs table is empty. Used by the sync handler to detect when a
+  // joiner's requested from_round falls below our GC horizon. Cheap: O(N)
+  // on MemoryStore (necessary — no ordering), but sync requests are rare.
+  getEarliestCertRound() {
+    let min = 0;
+    for (const c of this._certs.values()) {
+      if (min === 0 || c.round < min) min = c.round;
+    }
+    return min;
+  }
   getCertificatesFromRound(fromRound) {
     return [...this._certs.values()]
       .filter(c => c.round >= fromRound)
       .sort((a, b) => a.round !== b.round ? a.round - b.round : a.author_node_id.localeCompare(b.author_node_id));
   }
   certificateCount() { return this._certs.size; }
+  // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
+  // of rows deleted. Callers must ensure the cutoff leaves enough history
+  // for still-active consensus (parent refs, waiter, fast-forward).
+  pruneCertificatesBefore(cutoffRound) {
+    let n = 0;
+    for (const [hash, cert] of this._certs) {
+      if (cert.round < cutoffRound) {
+        this._certs.delete(hash);
+        n++;
+      }
+    }
+    return n;
+  }
+  // In-memory store has no disk-backed pages to reclaim — no-op for parity.
+  incrementalVacuum(_maxPages) { /* no-op */ }
 
   // ── Equivocation defense: votes_seen (§1) ───────────────────────────────
   // Key: "${round}:${author}". Mirrors SQLiteStore semantics.
@@ -402,8 +428,38 @@ class SQLiteStore {
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("cache_size = -32000");   // 32 MB page cache
+
+    // Cert GC (§2) requires the DB file to shrink after DELETE; SQLite's
+    // default (auto_vacuum = NONE) leaves freed pages on a free-list but
+    // never returns them to the filesystem. Switch to INCREMENTAL so pages
+    // freed by pruneCertificatesBefore are reclaimable via PRAGMA
+    // incremental_vacuum. Mode switch from NONE → INCREMENTAL only takes
+    // effect after a full VACUUM on the existing DB — cheap on a fresh DB,
+    // minutes on a multi-GB file. Skipped if already INCREMENTAL.
+    //   0 = NONE, 1 = FULL, 2 = INCREMENTAL
+    const currentAV = this.db.pragma("auto_vacuum", { simple: true });
+    if (currentAV !== 2) {
+      this.db.pragma("auto_vacuum = INCREMENTAL");
+      // VACUUM rewrites the DB; it's a no-op on an empty file.
+      this.db.exec("VACUUM");
+    }
+
     this._migrate();
     this._prepare();
+  }
+
+  /**
+   * Reclaim up to `maxPages` free pages back to the filesystem. Called from
+   * bullshark after cert GC so the DB file actually shrinks. Safe to call
+   * even when no pages are free (no-op in that case).
+   *
+   * Passing 0 or undefined reclaims ALL free pages. For large batches
+   * prefer a bounded value (~1000) to keep the blocking time short — each
+   * reclaimed page is ~4KB, so 1000 pages ≈ 4 MB per call, tens of ms.
+   */
+  incrementalVacuum(maxPages) {
+    const n = (maxPages && maxPages > 0) ? `(${maxPages | 0})` : "";
+    this.db.exec(`PRAGMA incremental_vacuum${n}`);
   }
 
   _migrate() {
@@ -673,8 +729,10 @@ class SQLiteStore {
       getCertsByRound: this.db.prepare("SELECT * FROM certificates WHERE round=? ORDER BY author_node_id"),
       getCertsByAuthorRound: this.db.prepare("SELECT * FROM certificates WHERE author_node_id=? AND round=?"),
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
+      getEarliestCertRound: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
+      pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
       // Commit checkpoints (§15 base + §14 snapshot-sync fields).
       // 11 columns: round, anchor_cert_hash, leader_node_id, committee,
@@ -896,11 +954,24 @@ class SQLiteStore {
   getLatestRound() {
     return this._stmts.getLatestRound.get().latest || 0;
   }
+  // Earliest round with at least one cert still in storage. Returns 0 on
+  // empty. O(1) via indexed MIN(round). Used by sync-handler to detect
+  // below-GC-horizon joiner requests without loading the full cert table.
+  getEarliestCertRound() {
+    return this._stmts.getEarliestCertRound.get().earliest || 0;
+  }
   getCertificatesFromRound(fromRound) {
     return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
   }
   certificateCount() {
     return this._stmts.countCerts.get().n;
+  }
+  // Cert GC (§2): drop every cert with round < cutoffRound. Returns rows
+  // deleted. SQLite DELETE also removes the INSERT OR IGNORE dedup key so
+  // the same cert hash would be accepted again if it re-arrived — by
+  // design, since GC only targets rounds consensus has moved past.
+  pruneCertificatesBefore(cutoffRound) {
+    return this._stmts.pruneCertsBefore.run(cutoffRound).changes;
   }
   _parseCert(row) {
     if (!row) return null;
@@ -1156,8 +1227,11 @@ function initDAG(config) {
     getCertificatesByRound: (round) => store.getCertificatesByRound(round),
     getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
     getLatestRound: () => store.getLatestRound(),
+    getEarliestCertRound: () => store.getEarliestCertRound(),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
+    pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),
+    incrementalVacuum: (maxPages) => store.incrementalVacuum(maxPages),
 
     // ── Commit checkpoints (§15 Bullshark anchor commits) ───────────────
     saveCommit: (rec) => store.saveCommit(rec),

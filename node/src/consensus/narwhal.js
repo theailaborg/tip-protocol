@@ -655,6 +655,39 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   /**
+   * §2 cert-waiter GC: drop parked certs whose round falls behind the
+   * cert-GC horizon. Their parents are either pruned or will never arrive,
+   * and consensus has already committed past their round — holding them
+   * in memory is pointless and unbounded under adversarial conditions.
+   * Also cleans up `_pendingByParent` entries that only referenced
+   * now-dropped children so the parent-indexed map stays bounded.
+   */
+  function _prunePendingCertsBefore(cutoffRound) {
+    if (_pendingCerts.size === 0) return 0;
+
+    const toDrop = [];
+    for (const [childHash, entry] of _pendingCerts) {
+      if (entry.cert.round < cutoffRound) toDrop.push(childHash);
+    }
+    if (toDrop.length === 0) return 0;
+
+    for (const childHash of toDrop) {
+      const entry = _pendingCerts.get(childHash);
+      _pendingCerts.delete(childHash);
+      if (!entry) continue;
+      for (const parentHash of entry.missing) {
+        const siblings = _pendingByParent.get(parentHash);
+        if (!siblings) continue;
+        siblings.delete(childHash);
+        if (siblings.size === 0) _pendingByParent.delete(parentHash);
+      }
+    }
+    _metrics.pending_certs_pruned = (_metrics.pending_certs_pruned || 0) + toDrop.length;
+    log.debug(`Pending-cert GC: dropped ${toDrop.length} stale waiters (round < ${cutoffRound})`);
+    return toDrop.length;
+  }
+
+  /**
    * When a cert is saved, check whether it unblocks any parked children.
    * Recursive via _processVerifiedCertificate → _saveCertAndNotify.
    */
@@ -711,6 +744,22 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (cutoff > 0 && dag.pruneVotesSeenBefore) dag.pruneVotesSeenBefore(cutoff);
     } catch (err) {
       log.debug(`votes_seen prune failed: ${err.message}`);
+    }
+
+    // §2 cert-waiter GC. `_pendingCerts` holds certs parked because their
+    // parent hasn't arrived yet. If a parked cert's round falls behind the
+    // cert-GC horizon (currentRound - GC_DEPTH), consensus has committed past
+    // it and the cert can never unblock (its parent is pruned or never will
+    // land). Drop it outright so the waiter maps stay bounded even under
+    // adversarial or long-partition conditions.
+    try {
+      const gcDepth = CONSENSUS.GC_DEPTH;
+      if (gcDepth && gcDepth > 0) {
+        const cutoff = _currentRound - gcDepth;
+        if (cutoff > 0) _prunePendingCertsBefore(cutoff);
+      }
+    } catch (err) {
+      log.debug(`pending-cert prune failed: ${err.message}`);
     }
 
     // Continuous production: always schedule the next round. Short delay so
@@ -829,6 +878,30 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     handleIncomingAck,
     handleIncomingCertificate,
     lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
+
+    /**
+     * Force-prune parked cert waiters below `cutoffRound`. Normally fires
+     * on every round advance (§2 GC). Exposed here for ops diagnostics
+     * ("I see pendingCerts stuck, drop anything older than X") and to let
+     * tests exercise the prune path without driving a full round cycle.
+     * Returns the number of parked certs dropped.
+     */
+    prunePendingCertsBefore: (cutoff) => _prunePendingCertsBefore(cutoff),
+
+    /**
+     * Park an already-verified cert whose parents aren't in the DAG yet.
+     * Mirrors the internal path used by handleIncomingCertificate when
+     * parent hashes are missing. Exposed for ops recovery scenarios and
+     * for tests that need to populate the waiter state without running
+     * the full signature-verification pipeline.
+     *
+     * Caller is responsible for ensuring the cert is valid — this
+     * bypasses the verification that handleIncomingCertificate performs.
+     */
+    parkPendingCert: (cert, missingParents) => _parkPendingCert(cert, missingParents),
+
+    /** Count of currently-parked cert waiters (ops diagnostic). */
+    pendingCertCount: () => _pendingCerts.size,
     stats: () => ({
       round: _currentRound,
       running: _running,
