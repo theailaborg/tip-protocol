@@ -5,6 +5,10 @@
  * Creates and configures the P2P node:
  *   - TCP transport + Noise encryption + Yamux multiplexing
  *   - GossipSub pub/sub (certificate + mempool + consensus topics)
+ *   - GossipSub DirectPeers: authorized federation peers are added to the
+ *     pubsub direct set on handshake complete, forcing a full mesh among
+ *     committee members. Bypasses random mesh selection and score-based
+ *     prune so consensus messages reach every peer on the fastest path.
  *   - mDNS (local) + Bootstrap (remote) peer discovery
  *   - TIP Handshake for mutual node authentication (see handshake.js)
  *   - Per-peer rate limiting on GossipSub messages (see rate-limiter.js)
@@ -20,6 +24,7 @@ const { shake256 } = require("../../../shared/crypto");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
+const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.network");
@@ -133,7 +138,20 @@ async function createNetworkNode(options = {}) {
   log.info(`Peer ID: ${node.peerId.toString()}`);
   for (const addr of node.getMultiaddrs()) log.info(`Listening: ${addr.toString()}`);
 
-  // Handshake context (shared with handshake.js functions)
+  // ── GossipSub + DirectPeers (needed by handshake ctx below) ────────────
+  const pubsub = node.services.pubsub;
+  pubsub.subscribe(TOPICS.CERTIFICATES);
+  pubsub.subscribe(TOPICS.MEMPOOL);
+  pubsub.subscribe(TOPICS.CONSENSUS);
+  log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
+  const directPeers = createDirectPeersManager(pubsub, log);
+
+  // Handshake context (shared with handshake.js functions).
+  // onPeerAuthorized wires two concerns: (1) add peer to gossipsub
+  // DirectPeers so consensus mesh is stable, (2) invoke the
+  // consumer-registered callback. The user callback is read lazily via
+  // a closure getter so late registration (after ctx construction) is
+  // honored. See `makeAuthorizationWrapper` in direct-peers.js.
   const ctx = {
     node, nodeId, nodePrivateKey, getNodeKey, getLatestRound, getMerkleRoot, peerIdFromString,
     chainId: GENESIS_CHAIN_ID || "tip-mainnet-v2",
@@ -144,19 +162,12 @@ async function createNetworkNode(options = {}) {
     handshakeProtocol: NETWORK.HANDSHAKE_PROTOCOL,
     handshakeTimeoutMs: CONSENSUS.HANDSHAKE_TIMEOUT_MS,
     authorizedPeers: _authorizedPeers,
-    get onPeerAuthorized() { return _onPeerAuthorized; },
+    onPeerAuthorized: makeAuthorizationWrapper(directPeers, () => _onPeerAuthorized),
   };
 
   // Register handshake protocol handler
   await node.handle(ctx.handshakeProtocol, (args) => handleIncoming(args, ctx));
   log.info(`Registered protocol handler: ${ctx.handshakeProtocol}`);
-
-  // ── GossipSub
-  const pubsub = node.services.pubsub;
-  pubsub.subscribe(TOPICS.CERTIFICATES);
-  pubsub.subscribe(TOPICS.MEMPOOL);
-  pubsub.subscribe(TOPICS.CONSENSUS);
-  log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
 
   // ── Message handler — auth + rate limit + route to topic handlers
   const rateLimiter = createRateLimiter();
@@ -216,6 +227,7 @@ async function createNetworkNode(options = {}) {
     const remotePeerId = event.detail.toString();
     const tipNodeId = _authorizedPeers.get(remotePeerId);
     _authorizedPeers.delete(remotePeerId);
+    directPeers.remove(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
   });
 
@@ -245,6 +257,9 @@ async function createNetworkNode(options = {}) {
 
     /** Map of authorized libp2p peerId → TIP node_id */
     authorizedPeers: () => Object.fromEntries(_authorizedPeers),
+
+    /** Snapshot of gossipsub DirectPeers set (for tests + ops diagnostics) */
+    directPeers: () => directPeers.list(),
 
     /**
      * Publish a message to a GossipSub topic.
