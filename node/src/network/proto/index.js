@@ -39,6 +39,8 @@ async function loadTypes() {
     "tip.consensus.Certificate",
     "tip.consensus.SyncRequest",
     "tip.consensus.SyncResponse",
+    "tip.consensus.SyncResponseHeader",
+    "tip.consensus.SyncResponseFooter",
     "tip.consensus.RoundAdvance",
     "tip.consensus.MempoolTx",
     "tip.consensus.Handshake",

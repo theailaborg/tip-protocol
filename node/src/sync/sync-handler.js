@@ -27,6 +27,7 @@
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { createMerkleTree } = require("./merkle-tree");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
+const { frame, parseLengthPrefixedFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.sync");
@@ -125,24 +126,34 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
   }
 
   /**
-   * Handle an incoming sync request — send certificates the peer is missing.
+   * Handle an incoming sync request — stream certificates the peer is missing
+   * as length-prefixed frames (§19).
+   *
+   * Wire format (response stream):
+   *   [SyncResponseHeader][Certificate][Certificate]...[SyncResponseFooter]
+   *
+   * Streaming the body frame-by-frame (rather than encoding one giant
+   * SyncResponse) eliminates the O(N) memory spike on the sender —
+   * critical once the DAG gets large enough that the encoded aggregate
+   * would approach or exceed 16 MB.
    */
   async function _handleIncomingSync(stream, remotePeer) {
-    // Read SyncRequest from stream
-    const chunks = [];
+    // Request is still a single unframed message — one-shot request path
+    // matches snapshot-handler's convention.
+    const reqChunks = [];
     for await (const chunk of stream.source) {
-      chunks.push(chunk.subarray());
-      break; // Only read one message (the request)
+      reqChunks.push(chunk.subarray ? chunk.subarray() : chunk);
+      break;
     }
 
-    if (chunks.length === 0) {
+    if (reqChunks.length === 0) {
       log.warn("Sync: received empty request");
       return;
     }
 
     let request;
     try {
-      request = decode("SyncRequest", Buffer.concat(chunks));
+      request = decode("SyncRequest", Buffer.concat(reqChunks));
     } catch (err) {
       log.warn(`Sync: failed to decode request: ${err.message}`);
       return;
@@ -154,69 +165,92 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     log.info(`Sync: peer requested from round ${fromRound} (we have ${latestRound})`);
 
     // §2 cert GC interaction: if the joiner asks from a round we've already
-    // pruned, we'd return certs 501+ but none of 1-500, and their import
-    // would break on the first parent reference into the pruned range. The
-    // right answer is "use snapshot sync, not cert replay". `getEarliestCertRound`
-    // is O(1) on SQLite (indexed MIN) and bounded-O(N) on MemoryStore where
-    // N is already bounded by GC. An empty table returns 0 → fallback to 1
-    // so fromRound=1 against an empty DAG isn't flagged as below-horizon.
+    // pruned, cert replay would break on the first parent reference into the
+    // pruned range. Respond with a header carrying snapshot_required and no
+    // cert frames; joiner falls back to §14 snapshot sync.
     let earliestRound = 1;
     try {
       const e = dag.getEarliestCertRound();
       if (e > 0) earliestRound = e;
     } catch { /* earliestRound stays 1 */ }
 
+    const currentMerkleRoot = merkleRoot();
     const snapshotRequired = fromRound < earliestRound;
     if (snapshotRequired) {
       log.info(`Sync: peer requested round ${fromRound} below GC horizon (earliest=${earliestRound}); signaling snapshot_required`);
-      const response = encode("SyncResponse", {
-        certificates: [],
-        fromRound,
-        toRound: fromRound,
-        latestRound,
-        merkleRoot: hexToBytes(merkleRoot()),
-        hasMore: false,
-        snapshotRequired: true,
-        earliestAvailableRound: earliestRound,
+      await _sendFramedResponse(stream, remotePeer, {
+        header: {
+          fromRound, toRound: fromRound, latestRound,
+          merkleRoot: hexToBytes(currentMerkleRoot),
+          snapshotRequired: true,
+          earliestAvailableRound: earliestRound,
+        },
+        certsGenerator: null,
+        footer: { certCount: 0, merkleRoot: hexToBytes(currentMerkleRoot) },
       });
-      try { await stream.sink([response]); }
-      catch (err) { log.warn(`Sync: stream write failed: ${err.message}`); }
       return;
     }
 
-    // Collect all requested certs into one response. libp2p stream.sink is
-    // single-use per stream, so the former multi-batch path silently dropped
-    // anything past the first batch. For our federation scale this fits
-    // comfortably in one message; if certs ever exceed CERTIFICATE_MAX_BYTES
-    // * many, we'd need proper length-prefixed framing.
-    const allCerts = [];
-    for (let r = fromRound; r <= latestRound; r++) {
-      try {
-        const certs = dag.getCertificatesByRound(r);
-        allCerts.push(...certs);
-      } catch (err) {
-        log.warn(`Sync: failed to read round ${r}: ${err.message}`);
-      }
-    }
-
-    const response = encode("SyncResponse", {
-      certificates: allCerts.map(c => _serializeCertForSync(c)),
-      fromRound: allCerts.length > 0 ? allCerts[0].round : fromRound,
-      toRound: allCerts.length > 0 ? allCerts[allCerts.length - 1].round : fromRound,
-      latestRound,
-      merkleRoot: hexToBytes(merkleRoot()),
-      hasMore: false,
-      snapshotRequired: false,
-      earliestAvailableRound: earliestRound,
+    // Happy path: stream header + one frame per cert + footer. Memory
+    // consumption on the sender is bounded by a single Certificate's
+    // protobuf encoding (few KB), not by total cert count.
+    let certsSent = 0;
+    await _sendFramedResponse(stream, remotePeer, {
+      header: {
+        fromRound, toRound: latestRound, latestRound,
+        merkleRoot: hexToBytes(currentMerkleRoot),
+        snapshotRequired: false,
+        earliestAvailableRound: earliestRound,
+      },
+      certsGenerator: function* () {
+        for (let r = fromRound; r <= latestRound; r++) {
+          let certs;
+          try { certs = dag.getCertificatesByRound(r); }
+          catch (err) {
+            log.warn(`Sync: failed to read round ${r}: ${err.message}`);
+            continue;
+          }
+          for (const cert of certs) {
+            yield cert;
+            certsSent++;
+          }
+        }
+      },
+      // Footer is computed lazily so certsSent reflects actual emission.
+      footer: () => ({ certCount: certsSent, merkleRoot: hexToBytes(currentMerkleRoot) }),
     });
 
-    try {
-      await stream.sink([response]);
-    } catch (err) {
-      log.warn(`Sync: stream write failed: ${err.message}`);
-    }
+    log.info(`Sync: sent ${certsSent} certificates (rounds ${fromRound}-${latestRound})`);
+  }
 
-    log.info(`Sync: sent ${allCerts.length} certificates (rounds ${fromRound}-${latestRound})`);
+  /**
+   * Emit a framed sync response: header + optional cert-stream + footer.
+   * Pulled out of _handleIncomingSync to keep the request-handling flow
+   * readable and to make the frame sequence easy to test in isolation.
+   *
+   * @param stream                      libp2p stream
+   * @param remotePeer                  peer ID for logging
+   * @param opts.header                 SyncResponseHeader payload (camelCase field names)
+   * @param opts.certsGenerator         optional generator<Certificate> — null if snapshot_required/error
+   * @param opts.footer                 SyncResponseFooter payload, or () => payload for lazy construction
+   */
+  async function _sendFramedResponse(stream, remotePeer, { header, certsGenerator, footer }) {
+    try {
+      await stream.sink((async function* () {
+        yield frame(encode("SyncResponseHeader", header));
+
+        if (typeof certsGenerator === "function") {
+          for (const cert of certsGenerator()) {
+            yield frame(encode("Certificate", _serializeCertForSync(cert)));
+          }
+        }
+
+        const footerPayload = typeof footer === "function" ? footer() : footer;
+        yield frame(encode("SyncResponseFooter", footerPayload));
+      })());
+    } catch (err) {
+      log.warn(`Sync: stream write failed to ${remotePeer}: ${err.message}`);
+    }
   }
 
   /**
@@ -230,7 +264,11 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
    *   only fetch the catch-up gap instead of the whole chain from round 1.
    * @returns {Promise<{ imported: number, fromRound: number, toRound: number, peerLatestRound: number }>}
    */
-  async function syncFromPeer(peerId, { fromRound: overrideFromRound } = {}) {
+  async function syncFromPeer(peerId, {
+    fromRound: overrideFromRound,
+    totalTimeoutMs: overrideTimeoutMs,
+    maxResponseBytes: overrideMaxBytes,
+  } = {}) {
     if (!network) throw new Error("No network node");
 
     const fromRound = overrideFromRound != null ? overrideFromRound : dag.getLatestRound() + 1;
@@ -255,63 +293,144 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       // Write request
       try { await stream.sink([request]); } catch (err) { throw new Error(`Failed to send sync request: ${err.message}`); }
 
-      // Read entire response — stream may split protobuf across multiple chunks
-      const chunks = [];
-      for await (const chunk of stream.source) {
-        chunks.push(chunk.subarray());
+      // Read framed response: [Header][Cert]*[Footer]
+      //
+      // Safety limits:
+      //   - Per-frame cap enforced by parseLengthPrefixedFrames (16 MB,
+      //     from NETWORK.SNAPSHOT_MAX_FRAME_BYTES) — hostile peer can't
+      //     send one giant frame.
+      //   - Total-bytes cap enforced inline (CONSENSUS.SYNC_MAX_RESPONSE_BYTES,
+      //     default 1 GB) — hostile peer can't drip-feed infinite small
+      //     frames until our heap dies.
+      //   - Overall timeout wraps the whole read via Promise.race
+      //     (CONSENSUS.SYNC_TOTAL_TIMEOUT_MS, default 30s) — hanging
+      //     peer can't block the caller forever.
+      // Constants default to genesis values but can be overridden per-call
+      // for tests and ops-emergency shrinks (e.g. tightening the cap while
+      // investigating a runaway sync from a misbehaving peer). Tests use
+      // small values to exercise the cap/timeout paths in <1s.
+      const maxResponseBytes = overrideMaxBytes != null ? overrideMaxBytes : CONSENSUS.SYNC_MAX_RESPONSE_BYTES;
+      const totalTimeoutMs = overrideTimeoutMs != null ? overrideTimeoutMs : CONSENSUS.SYNC_TOTAL_TIMEOUT_MS;
+
+      const readPromise = (async () => {
+        const chunks = [];
+        let total = 0;
+        for await (const chunk of stream.source) {
+          const c = chunk.subarray ? chunk.subarray() : chunk;
+          total += c.length;
+          if (total > maxResponseBytes) {
+            throw new Error(`response exceeded max bytes: ${total} > ${maxResponseBytes}`);
+          }
+          chunks.push(c);
+        }
+        return chunks;
+      })();
+
+      let timeoutHandle;
+      const timeoutPromise = new Promise((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+          try { stream.close(); } catch { /* ignore — forces the for-await above to end */ }
+          reject(new Error(`sync timeout after ${totalTimeoutMs}ms`));
+        }, totalTimeoutMs);
+      });
+
+      let chunks;
+      try {
+        chunks = await Promise.race([readPromise, timeoutPromise]);
+      } catch (err) {
+        clearTimeout(timeoutHandle);
+        log.warn(`Sync: read failed from ${peerId.slice(0, 12)}: ${err.message}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
+      }
+      clearTimeout(timeoutHandle);
+
+      if (chunks.length === 0) {
+        log.warn(`Sync: empty response from peer ${peerId.slice(0, 12)}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
+      }
+
+      let frames;
+      try {
+        frames = parseLengthPrefixedFrames(Buffer.concat(chunks));
+      } catch (err) {
+        log.warn(`Sync: framing parse failed from ${peerId.slice(0, 12)}: ${err.message}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
+      }
+
+      if (frames.length < 2) {
+        log.warn(`Sync: response missing header+footer (got ${frames.length} frames)`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
+      }
+
+      // Decode header.
+      let header;
+      try { header = decode("SyncResponseHeader", frames[0]); }
+      catch (err) {
+        log.warn(`Sync: header decode failed: ${err.message}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
+      }
+
+      if (header.error) {
+        log.warn(`Sync: peer ${peerId.slice(0, 12)} returned error: ${header.error}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: Number(header.latestRound || 0), error: header.error };
+      }
+
+      const peerLatestRound = Number(header.latestRound || 0);
+
+      // §2 cert GC: peer can't serve our requested range because it's
+      // below their GC horizon. Joiner falls back to §14 snapshot sync.
+      if (header.snapshotRequired) {
+        log.info(`Sync: peer ${peerId.slice(0, 12)} signals snapshot_required (earliest available: ${Number(header.earliestAvailableRound || 0)}); falling back to snapshot sync`);
+        return {
+          imported: 0,
+          fromRound,
+          toRound: fromRound,
+          peerLatestRound,
+          snapshotRequired: true,
+          earliestAvailableRound: Number(header.earliestAvailableRound || 0),
+        };
+      }
+
+      // Decode footer (always the last frame). Everything between header
+      // and footer should be Certificate frames.
+      let footer;
+      try { footer = decode("SyncResponseFooter", frames[frames.length - 1]); }
+      catch (err) {
+        log.warn(`Sync: footer decode failed: ${err.message}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound };
+      }
+
+      const certFrames = frames.slice(1, -1);
+      const declaredCount = Number(footer.certCount || 0);
+      if (declaredCount !== certFrames.length) {
+        // Silent-truncation guard: if the peer's footer disagrees with
+        // what we received, something ate frames on the wire. Reject
+        // the whole response rather than import a partial set.
+        log.warn(`Sync: cert count mismatch from ${peerId.slice(0, 12)} — footer says ${declaredCount}, received ${certFrames.length}`);
+        return { imported: 0, fromRound, toRound: fromRound, peerLatestRound };
       }
 
       let imported = 0;
       let maxRound = fromRound;
-      let peerLatestRound = 0;
-
-      if (chunks.length > 0) {
-        let response;
+      for (const certFrame of certFrames) {
         try {
-          response = decode("SyncResponse", Buffer.concat(chunks));
-        } catch (err) {
-          log.warn(`Sync: failed to decode response (${Buffer.concat(chunks).length} bytes): ${err.message}`);
-          return { imported: 0, fromRound, toRound: fromRound, peerLatestRound: 0 };
-        }
-
-        peerLatestRound = response.latestRound || 0;
-
-        // §2 cert GC: peer can't serve our requested range because it's
-        // below their GC horizon. Surface this to the caller so the
-        // join-flow (`peer-sync.js`) falls back to §14 snapshot sync
-        // instead of cert replay. Return early with the signal — any
-        // certs the peer sent here would be in a range that doesn't
-        // chain back to a valid parent, so importing them is unsafe.
-        if (response.snapshotRequired) {
-          log.info(`Sync: peer ${peerId.slice(0, 12)} signals snapshot_required (earliest available: ${response.earliestAvailableRound}); falling back to snapshot sync`);
-          return {
-            imported: 0,
-            fromRound,
-            toRound: fromRound,
-            peerLatestRound,
-            snapshotRequired: true,
-            earliestAvailableRound: response.earliestAvailableRound || 0,
-          };
-        }
-
-        for (const certData of (response.certificates || [])) {
-          try {
-            const cert = _deserializeCertFromSync(certData);
-            if (!dag.getCertificate(cert.hash)) {
-              dag.saveCertificate(cert);
-              imported++;
-              if (cert.round > maxRound) maxRound = cert.round;
-            }
-          } catch (err) {
-            log.warn(`Sync: failed to import certificate: ${err.message}`);
+          const msg = decode("Certificate", certFrame);
+          const cert = _deserializeCertFromSync(msg);
+          if (!cert || !cert.hash) continue;
+          if (!dag.getCertificate(cert.hash)) {
+            dag.saveCertificate(cert);
+            imported++;
+            if (cert.round > maxRound) maxRound = cert.round;
           }
+        } catch (err) {
+          log.warn(`Sync: failed to import certificate: ${err.message}`);
         }
-
-        // Rebuild merkle once for the whole batch — deterministic from DAG state.
-        if (imported > 0) _merkle = _buildMerkleFromDAG();
       }
 
-      log.info(`Sync: imported ${imported} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
+      // Rebuild merkle once for the whole batch — deterministic from DAG state.
+      if (imported > 0) _merkle = _buildMerkleFromDAG();
+
+      log.info(`Sync: imported ${imported}/${certFrames.length} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
       return { imported, fromRound, toRound: maxRound, peerLatestRound };
     } catch (err) {
       throw new Error(`Sync stream error with ${peerId.slice(0, 12)}: ${err.message}`);

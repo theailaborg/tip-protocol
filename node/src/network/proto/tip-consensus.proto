@@ -78,22 +78,56 @@ message SyncRequest {
 }
 
 /**
- * Response with a batch of certificates for sync.
- * Streamed — peer sends multiple SyncResponses until caught up.
+ * DEPRECATED — replaced by SyncResponseHeader + streamed Certificate
+ * frames + SyncResponseFooter. Left in the schema as a forward-compat
+ * placeholder for older nodes / external inspectors that may still
+ * decode the field numbers. Do not emit from new code.
  */
 message SyncResponse {
   repeated Certificate certificates = 1;
-  uint64 from_round = 2;       // first round in this batch
-  uint64 to_round = 3;         // last round in this batch
-  uint64 latest_round = 4;     // peer's current latest round
-  bytes merkle_root = 5;       // peer's current Merkle root
-  bool has_more = 6;           // true if more batches to follow
-  // §2 cert GC signal: server sets this when the requested from_round falls
-  // below its GC horizon, so the joiner would only receive partial data
-  // with a parent-chain gap. Joiner should stop cert-replay and switch to
-  // §14 state-snapshot sync via /tip/state-snapshot/1.0.0 instead.
+  uint64 from_round = 2;
+  uint64 to_round = 3;
+  uint64 latest_round = 4;
+  bytes merkle_root = 5;
+  bool has_more = 6;
   bool snapshot_required = 7;
-  uint64 earliest_available_round = 8;  // lowest round the server still has certs for (info for joiner)
+  uint64 earliest_available_round = 8;
+}
+
+/**
+ * §19 Framed sync — first frame on the /tip/sync/1.0.0 response stream.
+ *
+ * Wire layout (length-prefixed frames, same framing as /tip/state-snapshot/1.0.0):
+ *   [SyncResponseHeader][Certificate][Certificate]...[SyncResponseFooter]
+ *
+ * Sender writes header first, streams per-cert frames as it reads the DAG
+ * (no full-batch materialisation), closes with a footer carrying
+ * `cert_count` so the receiver can sanity-check frame count.
+ *
+ * If `error` is non-empty OR `snapshot_required` is true, no Certificate
+ * frames follow — the footer is the next and last frame.
+ */
+message SyncResponseHeader {
+  uint64 from_round = 1;             // first cert round the server will send (0 if none)
+  uint64 to_round = 2;               // last cert round the server will send (0 if none)
+  uint64 latest_round = 3;           // server's current latest round
+  bytes merkle_root = 4;             // server's current cert-DAG merkle root
+  // §2 cert GC signal: server sets this when the requested from_round falls
+  // below its GC horizon. Joiner aborts cert replay and falls back to §14
+  // snapshot sync via /tip/state-snapshot/1.0.0.
+  bool snapshot_required = 5;
+  uint64 earliest_available_round = 6;   // lowest round the server still has certs for
+  string error = 7;                   // non-empty = server rejected the request (no frames will follow)
+}
+
+/**
+ * §19 Framed sync — terminator frame. `cert_count` is a sanity check;
+ * joiner verifies it matches the number of Certificate frames actually
+ * received between header and footer (guards against silent truncation).
+ */
+message SyncResponseFooter {
+  uint64 cert_count = 1;              // number of Certificate frames between header and this footer
+  bytes merkle_root = 2;              // redundant snapshot of the server's merkle_root at end-of-send (for op-level drift detection)
 }
 
 // ─── Consensus Messages ──────────────────────────────────────────────────────

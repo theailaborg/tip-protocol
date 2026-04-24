@@ -47,6 +47,7 @@ const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
+const { frame: _frame, parseLengthPrefixedFrames: _parseLengthPrefixedFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.snapshot");
@@ -370,46 +371,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
 }
 
 // ─── Framing helpers ────────────────────────────────────────────────────────
-
-/**
- * Wrap a payload in a big-endian length prefix (width from genesis —
- * NETWORK.SNAPSHOT_LENGTH_PREFIX_BYTES, typically 4).
- */
-function _frame(payload) {
-  const widthBytes = NETWORK.SNAPSHOT_LENGTH_PREFIX_BYTES;
-  const len = Buffer.allocUnsafe(widthBytes);
-  len.writeUIntBE(payload.length, 0, widthBytes);
-  return Buffer.concat([len, Buffer.from(payload)]);
-}
-
-/**
- * Parse a buffer containing zero or more length-prefixed frames.
- * Throws if a frame declares a size exceeding NETWORK.SNAPSHOT_MAX_FRAME_BYTES
- * or if the buffer is truncated mid-frame.
- */
-function _parseLengthPrefixedFrames(buf) {
-  const widthBytes = NETWORK.SNAPSHOT_LENGTH_PREFIX_BYTES;
-  const maxFrameBytes = NETWORK.SNAPSHOT_MAX_FRAME_BYTES;
-  const frames = [];
-  let offset = 0;
-  while (offset < buf.length) {
-    if (offset + widthBytes > buf.length) {
-      throw new Error(`truncated frame: ${buf.length - offset} bytes remain at offset ${offset}, need ${widthBytes}`);
-    }
-    const len = buf.readUIntBE(offset, widthBytes);
-    if (len > maxFrameBytes) {
-      throw new Error(`frame exceeds max size: ${len} > ${maxFrameBytes} at offset ${offset}`);
-    }
-    const start = offset + widthBytes;
-    const end = start + len;
-    if (end > buf.length) {
-      throw new Error(`truncated frame body: need ${len} bytes at offset ${start}, have ${buf.length - start}`);
-    }
-    frames.push(buf.subarray(start, end));
-    offset = end;
-  }
-  return frames;
-}
+// Length-prefix framing shared with /tip/sync/1.0.0; see network/framing.js.
 
 /**
  * Read exactly one protobuf message off a libp2p stream (no length prefix —

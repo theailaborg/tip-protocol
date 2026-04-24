@@ -191,6 +191,8 @@ const CONSENSUS = {
   get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
   get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
+  get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
+  get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
 };
 
 const NETWORK = {

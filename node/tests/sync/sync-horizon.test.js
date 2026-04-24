@@ -1,16 +1,15 @@
 /**
  * @file tests/sync/sync-horizon.test.js
- * @description §2 cert GC interaction with the cert-sync protocol.
+ * @description §2 cert GC interaction with the cert-sync protocol, now
+ * reading the §19 framed wire format.
  *
  * When a joiner asks for `fromRound` that falls below the server's GC
- * horizon (i.e. the server has pruned all certs below some minimum),
- * cert-replay can't possibly succeed — the peer would hand back only
- * certs whose parent chain points into pruned territory. The server
- * detects this and responds with `snapshot_required: true`; the client
- * short-circuits cert-replay and returns the signal so the join-flow
- * can fall back to §14 state-snapshot sync.
+ * horizon, the server responds with a SyncResponseHeader carrying
+ * `snapshot_required: true` and zero Certificate frames between header
+ * and footer. Client short-circuits and falls back to §14.
  *
- * This file exercises both sides end-to-end via an in-memory stream pair.
+ * Wire shape: [SyncResponseHeader][Certificate]*[SyncResponseFooter],
+ * each length-prefixed per network/framing.js.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -25,7 +24,8 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const { initCrypto, shake256 } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createSyncHandler } = require(path.join(SRC, "sync", "sync-handler"));
-const { loadTypes } = require(path.join(SRC, "network", "proto"));
+const { loadTypes, encode, decode } = require(path.join(SRC, "network", "proto"));
+const { parseLengthPrefixedFrames } = require(path.join(SRC, "network", "framing"));
 const { createStreamPair } = require("../helpers/stream-pair");
 
 beforeAll(async () => {
@@ -48,16 +48,29 @@ function fakeCert(round) {
 
 function setup() {
   const dag = initDAG({ dbPath: ":memory:" });
-  // Stub network — sync-handler only uses it for openStream, which we
-  // override per-test via the stream pair.
   const network = {
-    handle: () => { /* no-op — we call _handleIncomingSync directly */ },
+    handle: () => { },
     openStream: async () => { throw new Error("not used in this test"); },
   };
   return { dag, network };
 }
 
-describe("sync handler GC horizon signaling", () => {
+/**
+ * Read the full stream, parse frames, decode into structured
+ * {header, certs[], footer}. Mirrors what the real client does but
+ * returns the intermediate structure for test assertions.
+ */
+async function readFramedResponse(client) {
+  const chunks = [];
+  for await (const chunk of client.source) chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+  const frames = parseLengthPrefixedFrames(Buffer.concat(chunks));
+  const header = decode("SyncResponseHeader", frames[0]);
+  const footer = decode("SyncResponseFooter", frames[frames.length - 1]);
+  const certs = frames.slice(1, -1).map(f => decode("Certificate", f));
+  return { header, certs, footer, frameCount: frames.length };
+}
+
+describe("sync handler GC horizon signaling (framed wire)", () => {
   test("peer requesting from_round >= earliest available → normal reply, snapshot_required=false", async () => {
     const { dag: serverDag, network: serverNet } = setup();
     const serverSync = createSyncHandler({ dag: serverDag, network: serverNet });
@@ -66,81 +79,65 @@ describe("sync handler GC horizon signaling", () => {
     // rounds < 10 have been pruned).
     for (let r = 10; r <= 15; r++) serverDag.saveCertificate(fakeCert(r));
 
-    // Client asks from round 12 — inside horizon.
-    const { loadTypes } = require(path.join(SRC, "network", "proto"));
-    await loadTypes();
-    const { encode, decode } = require(path.join(SRC, "network", "proto"));
     const { client, server } = createStreamPair();
-
     const serverPromise = serverSync.handleIncomingSync(server, "peer-x");
 
-    // Write the client's SyncRequest.
+    // Send the request (unframed, single message).
     await client.sink((async function* () {
       yield encode("SyncRequest", { fromRound: 12, toRound: 0, merkleRoot: new Uint8Array(), batchSize: 100 });
     })());
 
-    // Collect the server's response.
-    const chunks = [];
-    for await (const chunk of client.source) chunks.push(chunk);
+    const { header, certs, footer } = await readFramedResponse(client);
     await serverPromise;
 
-    const response = decode("SyncResponse", Buffer.concat(chunks));
-    expect(response.snapshotRequired).toBe(false);
-    expect(response.earliestAvailableRound).toBe(10);
-    expect(response.certificates.length).toBeGreaterThan(0);
+    expect(header.snapshotRequired).toBe(false);
+    expect(Number(header.earliestAvailableRound)).toBe(10);
+    expect(Number(header.latestRound)).toBe(15);
+    expect(certs.length).toBeGreaterThan(0);
+    expect(Number(footer.certCount)).toBe(certs.length);
   });
 
-  test("peer requesting from_round < earliest available → snapshot_required=true, no certs", async () => {
+  test("peer requesting from_round < earliest available → snapshot_required=true, zero cert frames between header and footer", async () => {
     const { dag: serverDag, network: serverNet } = setup();
     const serverSync = createSyncHandler({ dag: serverDag, network: serverNet });
 
     // Server has certs only at rounds 100-105 (simulates post-GC horizon).
     for (let r = 100; r <= 105; r++) serverDag.saveCertificate(fakeCert(r));
 
-    const { encode, decode } = require(path.join(SRC, "network", "proto"));
     const { client, server } = createStreamPair();
-
     const serverPromise = serverSync.handleIncomingSync(server, "peer-x");
 
-    // Client asks from round 1 — below horizon (server's earliest is 100).
     await client.sink((async function* () {
       yield encode("SyncRequest", { fromRound: 1, toRound: 0, merkleRoot: new Uint8Array(), batchSize: 100 });
     })());
 
-    const chunks = [];
-    for await (const chunk of client.source) chunks.push(chunk);
+    const { header, certs, footer } = await readFramedResponse(client);
     await serverPromise;
 
-    const response = decode("SyncResponse", Buffer.concat(chunks));
-    expect(response.snapshotRequired).toBe(true);
-    expect(response.earliestAvailableRound).toBe(100);
-    expect(response.certificates).toHaveLength(0);
-    expect(response.latestRound).toBe(105);
+    expect(header.snapshotRequired).toBe(true);
+    expect(Number(header.earliestAvailableRound)).toBe(100);
+    expect(Number(header.latestRound)).toBe(105);
+    expect(certs).toHaveLength(0);
+    expect(Number(footer.certCount)).toBe(0);
   });
 
-  test("empty DAG → earliest = 1 (fallback), fromRound=1 accepted as normal", async () => {
+  test("empty DAG → earliest=1 (fallback), fromRound=1 accepted as normal (0 certs)", async () => {
     const { dag: serverDag, network: serverNet } = setup();
     const serverSync = createSyncHandler({ dag: serverDag, network: serverNet });
     // No certs seeded.
 
-    const { encode, decode } = require(path.join(SRC, "network", "proto"));
     const { client, server } = createStreamPair();
-
     const serverPromise = serverSync.handleIncomingSync(server, "peer-x");
 
     await client.sink((async function* () {
       yield encode("SyncRequest", { fromRound: 1, toRound: 0, merkleRoot: new Uint8Array(), batchSize: 100 });
     })());
 
-    const chunks = [];
-    for await (const chunk of client.source) chunks.push(chunk);
+    const { header, certs } = await readFramedResponse(client);
     await serverPromise;
 
-    const response = decode("SyncResponse", Buffer.concat(chunks));
-    // On empty DAG, earliestRound stays at 1 (fallback), fromRound=1 is
-    // NOT below horizon, so normal reply with no certs.
-    expect(response.snapshotRequired).toBe(false);
-    expect(response.certificates).toHaveLength(0);
+    expect(header.snapshotRequired).toBe(false);
+    expect(certs).toHaveLength(0);
   });
 
   test("client syncFromPeer surfaces snapshot_required signal to caller", async () => {
@@ -148,10 +145,8 @@ describe("sync handler GC horizon signaling", () => {
     const { dag: clientDag } = setup();
     const serverSync = createSyncHandler({ dag: serverDag, network: serverNet });
 
-    // Seed server with a post-GC horizon at round 100.
     for (let r = 100; r <= 105; r++) serverDag.saveCertificate(fakeCert(r));
 
-    // Client sync handler — but override openStream to wire our pair.
     const { client, server } = createStreamPair();
     const clientNet = {
       handle: () => { },
@@ -159,9 +154,7 @@ describe("sync handler GC horizon signaling", () => {
     };
     const clientSync = createSyncHandler({ dag: clientDag, network: clientNet });
 
-    // Kick the server handler in parallel.
     const serverPromise = serverSync.handleIncomingSync(server, "peer-y");
-
     const result = await clientSync.syncFromPeer("peer-y", { fromRound: 1 });
     await serverPromise;
 
