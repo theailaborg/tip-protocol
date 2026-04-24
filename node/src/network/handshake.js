@@ -24,6 +24,7 @@ const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { PROTOCOL } = require("../../../shared/constants");
 const { mldsaSign, mldsaVerify } = require("../../../shared/crypto");
 const { encode, decode, bytesToHex, hexToBytes } = require("./proto");
+const { buildKnownPeers, dialKnownPeers } = require("./peer-discovery");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.handshake");
@@ -127,8 +128,13 @@ async function handleIncoming({ stream, connection }, ctx) {
       return;
     }
 
-    // Send our ack
+    // Send our ack. Include a `known_peers` hint (#38) so the joiner can
+    // dial the rest of the federation without env-var coordination. The
+    // list reflects our current authorized set + live connection addresses
+    // at this moment; stale entries are omitted (peers we've lost
+    // connection to don't make useful bootstrap hints).
     const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
+    const knownPeers = buildKnownPeers(ctx.node, ctx.authorizedPeers, remotePeerId, ctx.peerIdFromString);
     const ack = encode("HandshakeAck", {
       nodeId: hs.nodeId,
       latestRound: hs.round,
@@ -136,6 +142,7 @@ async function handleIncoming({ stream, connection }, ctx) {
       syncNeeded: Math.abs(peerRound - hs.round) > 2,
       signature: hexToBytes(hs.signature),
       genesisHash: hexToBytes(hs.genesisHash),
+      knownPeers: knownPeers.map(kp => ({ nodeId: kp.node_id, multiaddrs: kp.multiaddrs })),
     });
 
     await stream.sink([ack]);
@@ -249,6 +256,20 @@ async function initiate(remotePeerId, ctx) {
     ctx.authorizedPeers.set(remotePeerId, peerNodeId);
     log.notice(`OK: ${peerNodeId} (peer ${remotePeerId.slice(0, 12)}) — authorized`);
     if (ctx.onPeerAuthorized) ctx.onPeerAuthorized(remotePeerId, peerNodeId);
+
+    // #38: auto-dial peers the responder hinted at. Fire-and-forget —
+    // each dial triggers its own peer:connect event which runs `initiate`
+    // against the new peer, so trust isn't transitive — every discovered
+    // peer still proves identity via TIP handshake. Empty or missing
+    // list is a no-op (peer hasn't upgraded, or we're the only
+    // authorized peer they know).
+    const knownPeers = (ack.knownPeers || []).map(kp => ({
+      node_id: kp.nodeId || "",
+      multiaddrs: Array.isArray(kp.multiaddrs) ? kp.multiaddrs : [],
+    }));
+    if (knownPeers.length > 0) {
+      dialKnownPeers(ctx.node, knownPeers, ctx.authorizedPeers, ctx.nodeId, log);
+    }
 
   } catch (err) {
     log.warn(`Initiate to ${remotePeerId.slice(0, 12)} failed: ${err.message}`);

@@ -139,6 +139,21 @@ message Handshake {
 }
 
 /**
+ * One peer the responder already considers authorized, offered to the
+ * joiner as a discovery hint. Shipped in HandshakeAck.known_peers so a
+ * joiner that dialed a single bootstrap learns about the rest of the
+ * federation in one round-trip (#38 libp2p-native peer discovery).
+ * The joiner will dial each multiaddr and run the TIP handshake
+ * normally — trust comes from the registry + signature, not from the
+ * hint. Responder populates this list from its current authorized
+ * peer set + libp2p peerStore multiaddrs.
+ */
+message KnownPeer {
+  string node_id = 1;
+  repeated string multiaddrs = 2;
+}
+
+/**
  * Handshake response. A non-empty `error` means rejection; all other fields
  * may be empty in that case. Success path: `error` is empty, all other fields
  * populated, initiator verifies signature + genesis_hash.
@@ -151,6 +166,10 @@ message HandshakeAck {
   bytes signature = 5;
   bytes genesis_hash = 6;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
   string error = 7;            // non-empty = responder rejected our handshake (e.g. "Genesis hash mismatch")
+  // #38: other authorized peers the responder knows about. Joiner auto-
+  // dials each and runs TIP handshake against them — no env-var list
+  // to maintain. Excludes the joiner itself and the responder.
+  repeated KnownPeer known_peers = 8;
 }
 
 // ─── State Snapshot Protocol (§14) ───────────────────────────────────────────

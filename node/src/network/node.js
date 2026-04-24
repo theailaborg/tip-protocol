@@ -129,7 +129,20 @@ async function createNetworkNode(options = {}) {
     peerDiscovery,
     services: {
       identify: identify(),
-      pubsub: gossipsub({ emitSelf: false, allowPublishToZeroTopicPeers: true, heartbeatInterval: 700 }),
+      pubsub: gossipsub({
+        emitSelf: false,
+        allowPublishToZeroTopicPeers: true,
+        heartbeatInterval: 700,
+        // #38: enable Peer Exchange — when gossipsub prunes a peer from
+        // the mesh it sends the peer a list of other peers it knows
+        // (with signed peer records) so the pruned peer can re-graft
+        // elsewhere. For TIP's small authorized federation this rarely
+        // fires (DirectPeers keeps committee members pinned in the
+        // mesh), but it's the right default and costs nothing when
+        // idle. Discovery's primary mechanism remains the handshake's
+        // known_peers[] field.
+        doPX: true,
+      }),
     },
   });
 
