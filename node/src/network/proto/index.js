@@ -44,6 +44,9 @@ async function loadTypes() {
     "tip.consensus.Handshake",
     "tip.consensus.HandshakeAck",
     "tip.consensus.KnownPeer",
+    // §28 anti-entropy
+    "tip.consensus.SyncStatusRequest",
+    "tip.consensus.SyncStatusResponse",
     // §14 state-snapshot sync
     "tip.consensus.SnapshotRequest",
     "tip.consensus.SnapshotHeader",

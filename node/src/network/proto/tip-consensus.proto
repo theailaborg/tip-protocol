@@ -172,6 +172,36 @@ message HandshakeAck {
   repeated KnownPeer known_peers = 8;
 }
 
+// ─── Sync-status Protocol (§28 anti-entropy) ─────────────────────────────────
+//
+// Protocol: /tip/sync-status/1.0.0
+//
+// Lightweight request/response RPC (NOT gossipsub). Each authorized peer
+// periodically asks every other authorized peer for its current consensus
+// state. On divergence:
+//   - self behind (peer.round > self.round)   → pull gap via /tip/sync/1.0.0
+//   - self ahead or equal (matching roots)     → no-op
+//   - equal round, different roots             → REAL FORK; log + metric
+//
+// The protocol itself is stateless. Each call carries the whole response
+// in a single libp2p message, so no length-prefixed framing is needed.
+
+message SyncStatusRequest {
+  // No fields — stateless probe. Kept as a message so we can version-extend
+  // later (e.g. request-specific filters) without breaking the wire.
+}
+
+message SyncStatusResponse {
+  string node_id = 1;               // peer's TIP node_id
+  uint64 round = 2;                  // peer's latest cert round (narwhal current - 1)
+  uint64 committed_round = 3;        // peer's last Bullshark-committed round
+  uint64 consensus_index = 4;        // peer's monotonic commit counter (§15)
+  bytes state_merkle_root = 5;       // derived-state root at last commit
+  bytes txs_merkle_root = 6;         // ordered-tx root at last commit
+  bytes cert_merkle_root = 7;        // cert-DAG merkle root (from sync-handler)
+  string error = 8;                  // non-empty = peer rejected the probe
+}
+
 // ─── State Snapshot Protocol (§14) ───────────────────────────────────────────
 //
 // Protocol: /tip/state-snapshot/1.0.0

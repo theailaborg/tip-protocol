@@ -206,11 +206,14 @@ const GENESIS_PAYLOAD = Object.freeze({
       handshake_max_retries: 3,         // max dial attempts for handshake before giving up
       gc_depth: 500,                     // cert GC: retain this many rounds of certs behind last committed round; older rows pruned from DAG + in-memory waiters. At 2s rounds = ~17 min of history, enough for consensus parent refs, cert waiter, and brief-offline recovery (anti-entropy covers longer gaps). Reference Narwhal uses 50-500 depending on committee size.
       gc_interval_commits: 10,          // cert GC: run prune every Nth commit (modulo-based throttle). At ~one commit every few seconds this runs ~20-60s apart, keeping SQLite churn bounded.
+      anti_entropy_interval_ms: 4000,    // §28: how often the anti-entropy loop polls every authorized peer for its sync state. Default = 2 × batch_wait_ms. Shorter = faster divergence detection, more network chatter; longer = slower but cheaper. 4s is light chatter (~one RPC per peer per 4s).
+      anti_entropy_peer_timeout_ms: 2000, // §28: per-peer RPC deadline. Slow peer must not block the loop — times out and marked stale, retried next cycle.
     },
     network: {
       chain_id: "tip-mainnet-v2",
       handshake_protocol: "/tip/handshake/1.0.0",
       snapshot_protocol: "/tip/state-snapshot/1.0.0",
+      sync_status_protocol: "/tip/sync-status/1.0.0",
       snapshot_length_prefix_bytes: 4,
       snapshot_max_frame_bytes: 16777216,   // 16 MB per frame — hard cap against hostile peers
       merkle_publish_hours: 6,

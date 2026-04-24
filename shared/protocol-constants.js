@@ -189,6 +189,8 @@ const CONSENSUS = {
   get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
   get GC_DEPTH() { return _c().gc_depth ?? 500; },
   get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
+  get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
+  get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
 };
 
 const NETWORK = {
@@ -197,6 +199,7 @@ const NETWORK = {
   get SNAPSHOT_LENGTH_PREFIX_BYTES() { return _n().snapshot_length_prefix_bytes; },
   get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
   get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
+  get SYNC_STATUS_PROTOCOL() { return _n().sync_status_protocol ?? "/tip/sync-status/1.0.0"; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
   get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },
 };

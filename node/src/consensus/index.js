@@ -27,6 +27,7 @@ const { computeHaltStatus } = require("./halt-status");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
+const { createAntiEntropy } = require("./anti-entropy");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
@@ -116,6 +117,33 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     intervalMs: CONSENSUS.CONSENSUS_SUMMARY_INTERVAL_MS,
   });
 
+  // §28 anti-entropy reconciliation loop. Pull-side safety net: every
+  // ANTI_ENTROPY_INTERVAL_MS each authorized peer is probed for its
+  // committed_round + state_merkle_root. Self-behind → pull gap via
+  // /tip/sync/1.0.0; equal round but divergent root → byzantine fork
+  // signal (log + metric, no auto-resolve). Pairs with cert GC (§2)
+  // which otherwise leaves briefly-offline nodes unable to recover
+  // via GossipSub retention alone.
+  const antiEntropy = createAntiEntropy({
+    network, syncHandler,
+    isAuthorizedPeer,
+    getSelfNodeId: () => nodeId,
+    getConsensusState: () => ({
+      round: narwhal.currentRound(),
+      committed_round: bullshark.lastCommittedRound(),
+      consensus_index: bullshark.stats().consensusIndex || 0,
+      state_merkle_root: (() => {
+        const latest = dag.getLatestCommit && dag.getLatestCommit();
+        return latest?.state_merkle_root || "";
+      })(),
+      txs_merkle_root: (() => {
+        const latest = dag.getLatestCommit && dag.getLatestCommit();
+        return latest?.txs_merkle_root || "";
+      })(),
+      cert_merkle_root: syncHandler.merkleRoot(),
+    }),
+  });
+
   // ── Wire network events ────────────────────────────────────────────────
 
   if (network) {
@@ -152,6 +180,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     async start({ awaitPeers = false } = {}) {
       await syncHandler.registerProtocol();
       await snapshotHandler.registerProtocol();
+      await antiEntropy.start();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
@@ -162,6 +191,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      * Stop consensus gracefully.
      */
     stop() {
+      antiEntropy.stop();
       summary.stop();
       narwhal.stop();
       log.notice("Consensus stopped");
@@ -207,6 +237,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     /** Current Merkle root of certificate DAG */
     merkleRoot: () => syncHandler.merkleRoot(),
 
+    /** §28 anti-entropy cluster sync view — for GET /v1/sync-status */
+    getSyncStatus: () => antiEntropy.getStatus(),
+
     /** Stats for monitoring / health endpoint */
     stats() {
       return {
@@ -214,6 +247,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         bullshark: bullshark.stats(),
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
+        antiEntropy: antiEntropy.stats(),
       };
     },
   };

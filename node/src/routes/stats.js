@@ -12,6 +12,7 @@
  * Endpoints:
  *   GET /v1/stats             — full snapshot (node + network + consensus)
  *   GET /v1/stats/consensus   — consensus subset only (narwhal + bullshark)
+ *   GET /v1/sync-status       — §28 anti-entropy cluster sync view
  *
  * For Prometheus-compatible /metrics see issue #29.
  *
@@ -71,6 +72,24 @@ function createRouter({ dag, config, consensus, network }) {
       consensus: cons.stats(),
       timestamp: new Date().toISOString(),
     });
+  });
+
+  // §28: cluster-wide sync state. Returns self + every authorized peer
+  // we've successfully probed via /tip/sync-status/1.0.0, with an
+  // in_sync flag (same committed_round + same state_merkle_root) and
+  // the top-level `in_sync` = all peers match. Ops dashboards use this
+  // to verify N-node convergence at a glance.
+  router.get("/sync-status", (_req, res) => {
+    const cons = consensus?.current;
+    if (!cons || typeof cons.getSyncStatus !== "function") {
+      res.status(503).json({ error: "Consensus not running", sync_status: null });
+      return;
+    }
+    try {
+      res.json(cons.getSyncStatus());
+    } catch (err) {
+      res.status(500).json({ error: `sync-status failed: ${err.message}` });
+    }
   });
 
   return router;
