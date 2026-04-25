@@ -148,9 +148,11 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_bullshark_anchors_committed_total 20$/m);
-    expect(res.text).toMatch(/^tip_bullshark_txs_committed_total 150$/m);
-    expect(res.text).toMatch(/^tip_narwhal_rounds_advanced_total 41$/m);
+    // All metrics carry an injected `node` label (TIP node identity, short
+    // hex form). With config.nodeId="tip://node/self", nodeShort="self".
+    expect(res.text).toMatch(/^tip_bullshark_anchors_committed_total\{node="tip:\/\/node\/self"\} 20$/m);
+    expect(res.text).toMatch(/^tip_bullshark_txs_committed_total\{node="tip:\/\/node\/self"\} 150$/m);
+    expect(res.text).toMatch(/^tip_narwhal_rounds_advanced_total\{node="tip:\/\/node\/self"\} 41$/m);
   });
 
   test("gauge values reflect underlying stats()", async () => {
@@ -158,18 +160,18 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_narwhal_current_round\{[^}]+\} 42$|^tip_narwhal_current_round 42$/m);
-    expect(res.text).toMatch(/^tip_bullshark_last_committed_round 40$/m);
-    expect(res.text).toMatch(/^tip_narwhal_mempool_size 7$/m);
+    expect(res.text).toMatch(/^tip_narwhal_current_round\{node="tip:\/\/node\/self"\} 42$/m);
+    expect(res.text).toMatch(/^tip_bullshark_last_committed_round\{node="tip:\/\/node\/self"\} 40$/m);
+    expect(res.text).toMatch(/^tip_narwhal_mempool_size\{node="tip:\/\/node\/self"\} 7$/m);
   });
 
-  test("labels are properly formatted (node_id, version)", async () => {
+  test("labels are properly formatted (node_id, version, node)", async () => {
     const app = makeApp({
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    // Uptime has node_id + version labels.
-    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",version="2\.0\.0"\} \d+$/m);
+    // Uptime has node_id + version + injected node label.
+    expect(res.text).toMatch(/^tip_process_uptime_seconds\{node_id="tip:\/\/node\/self",version="2\.0\.0",node="tip:\/\/node\/self"\} \d+$/m);
   });
 
   test("consensus_divergence_total is ALWAYS present and zero when healthy", async () => {
@@ -180,7 +182,7 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_consensus_divergence_total 0$/m);
+    expect(res.text).toMatch(/^tip_consensus_divergence_total\{node="tip:\/\/node\/self"\} 0$/m);
     expect(res.text).toMatch(/^# HELP tip_consensus_divergence_total BYZANTINE EVENT/m);
   });
 
@@ -194,8 +196,12 @@ describe("GET /metrics — Prometheus exposition format", () => {
       },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_consensus_halted\{reason="sub_quorum"\} 1$/m);
-    expect(res.text).toMatch(/^tip_consensus_stale_ms 8000$/m);
+    // Halt is a single label-free gauge (no churn on reason change). The
+    // reason rides on a separate info metric. Both carry the injected
+    // `node` label so dashboards group by real identity.
+    expect(res.text).toMatch(/^tip_consensus_halted\{node="tip:\/\/node\/self"\} 1$/m);
+    expect(res.text).toMatch(/^tip_consensus_halt_reason\{reason="sub_quorum",node="tip:\/\/node\/self"\} 1$/m);
+    expect(res.text).toMatch(/^tip_consensus_stale_ms\{node="tip:\/\/node\/self"\} 8000$/m);
   });
 
   test("metrics endpoint scrapable even when consensus is null (node not running consensus)", async () => {
@@ -203,10 +209,11 @@ describe("GET /metrics — Prometheus exposition format", () => {
     const res = await request(app).get("/metrics");
     expect(res.status).toBe(200);
     // Halt gauge is 1 with reason=consensus_not_running — operators see the outage.
-    expect(res.text).toMatch(/^tip_consensus_halted\{reason="consensus_not_running"\} 1$/m);
+    expect(res.text).toMatch(/^tip_consensus_halted\{node="tip:\/\/node\/self"\} 1$/m);
+    expect(res.text).toMatch(/^tip_consensus_halt_reason\{reason="consensus_not_running",node="tip:\/\/node\/self"\} 1$/m);
     // Process + DAG metrics still emit.
     expect(res.text).toMatch(/^tip_process_uptime_seconds/m);
-    expect(res.text).toMatch(/^tip_dag_tx_count /m);
+    expect(res.text).toMatch(/^tip_dag_tx_count/m);
   });
 
   test("network metrics appear when network is running", async () => {
@@ -220,8 +227,8 @@ describe("GET /metrics — Prometheus exposition format", () => {
       },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_network_peers_authorized 3$/m);
-    expect(res.text).toMatch(/^tip_network_direct_peers 3$/m);
+    expect(res.text).toMatch(/^tip_network_peers_authorized\{node="tip:\/\/node\/self"\} 3$/m);
+    expect(res.text).toMatch(/^tip_network_direct_peers\{node="tip:\/\/node\/self"\} 3$/m);
   });
 
   test("mempool capacity emitted when available", async () => {
@@ -234,8 +241,8 @@ describe("GET /metrics — Prometheus exposition format", () => {
       },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_mempool_size 5$/m);
-    expect(res.text).toMatch(/^tip_mempool_capacity 10000$/m);
+    expect(res.text).toMatch(/^tip_mempool_size\{node="tip:\/\/node\/self"\} 5$/m);
+    expect(res.text).toMatch(/^tip_mempool_capacity\{node="tip:\/\/node\/self"\} 10000$/m);
   });
 
   test("merkle root emitted as info-style metric with label", async () => {
@@ -243,7 +250,7 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_cert_merkle_root_info\{root="[a-f0-9]{16}"\} 1$/m);
+    expect(res.text).toMatch(/^tip_cert_merkle_root_info\{root="[a-f0-9]{16}",node="tip:\/\/node\/self"\} 1$/m);
   });
 
   test("body ends with a trailing newline (Prometheus format requirement)", async () => {
@@ -262,7 +269,7 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => stats, isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_consensus_divergence_total 3$/m);
+    expect(res.text).toMatch(/^tip_consensus_divergence_total\{node="tip:\/\/node\/self"\} 3$/m);
   });
 
   test("non-numeric / missing counter values default to 0", async () => {
@@ -275,7 +282,7 @@ describe("GET /metrics — Prometheus exposition format", () => {
       consensus: { current: { stats: () => stats, isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
     });
     const res = await request(app).get("/metrics");
-    expect(res.text).toMatch(/^tip_bullshark_certs_pruned_total 0$/m);
+    expect(res.text).toMatch(/^tip_bullshark_certs_pruned_total\{node="tip:\/\/node\/self"\} 0$/m);
   });
 
   test("does NOT get wrapped in {ok, data} JSON envelope", async () => {
