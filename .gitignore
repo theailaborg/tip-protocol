@@ -24,6 +24,9 @@ genesis-data/backups/
 node2/
 node3/
 
+# Generated per-node keys + .env from scripts/register-peer-node.js
+generated-nodes/
+
 # Genesis public data — OK to commit
 !genesis-data/seed.db
 !genesis-data/seed-output.json

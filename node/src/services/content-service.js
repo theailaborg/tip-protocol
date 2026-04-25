@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  shake256, hashContent, perceptualHashText,
+  shake256, hashContent, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
@@ -20,21 +20,40 @@ function createContentService({ dag, scoring, config, submitTx }) {
     validate(body, {
       author_tip_id: { required: true },
       origin_code: { required: true, oneOf: ORIGIN_CODES },
-      content: { required: true },
       signature: { required: true },
     });
-    const { author_tip_id, origin_code, content, content_type, signature } = body;
-    validateContentSize(content, content_type, config.mediaLimits);
+    const {
+      author_tip_id, origin_code, content, content_type, signature, registered_url,
+      media_canonical_hash, media_exact_hash, media_perceptual_hash, media_normalization_version,
+    } = body;
+    // content is required unless media hash is provided
+    if (!content && !media_canonical_hash) throw { status: 400, error: "content or media_canonical_hash required" };
+    if (content) validateContentSize(content, content_type, config.mediaLimits);
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
     if (dag.isRevoked(author_tip_id)) throw { status: 403, error: "Author TIP-ID is revoked" };
 
-    const contentHashFull = shake256(content);
-    const contentHashShort = hashContent(content);
+    // CNA-MIX-1: when media hash is present, combine media + text hashes.
+    // The client signs the combined hash, so the node must reproduce it.
+    const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
+    let contentHashFull;
+    let normalizationVersion = "CNA-2";
+    if (media_canonical_hash) {
+      contentHashFull = shake256(media_canonical_hash + textHashFull);
+      normalizationVersion = "CNA-MIX-1";
+    } else {
+      contentHashFull = textHashFull;
+    }
+    const contentHashShort = hashContent(content || media_canonical_hash || "");
 
-    const CONTENT_FIELDS = ["author_tip_id", "origin_code", "content_hash"];
+    // Signature binds author + origin + content_hash, and optionally registered_url.
+    // The fields list must match exactly what the client signed.
+    const CONTENT_FIELDS = registered_url
+      ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
+      : ["author_tip_id", "origin_code", "content_hash"];
     const sigBody = { author_tip_id, origin_code, content_hash: contentHashFull };
+    if (registered_url) sigBody.registered_url = registered_url;
     if (!verifyBodySignature(sigBody, signature, identity.public_key, CONTENT_FIELDS)) {
       throw { status: 403, error: "Content signature verification failed" };
     }
@@ -56,6 +75,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
         content_hash: contentHashFull, perceptual_hash: perceptHash,
         author_tip_id, signature,
         prescan_flagged: preScan.flagged, prescan_probability: preScan.probability,
+        ...(registered_url ? { registered_url } : {}),
       },
     };
     const signedTx = withTxId(txBody);
@@ -67,11 +87,16 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
     log.info(`Content proposed: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
 
+    // Note: direct dag.saveContent happens in commit-handler when the tx
+    // commits via consensus. API returns 202-style "proposed" so client
+    // knows to expect async finalization.
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
       content_hash: contentHashFull, author_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
+      author_name: identity.creator_name || null,
+      registered_url: registered_url || null,
       prescan_flagged: preScan.flagged,
       prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
       http_headers: {
@@ -105,6 +130,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
     return {
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
       verify_count: verifyCount,

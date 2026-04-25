@@ -58,8 +58,8 @@ services:
       com.theailab.service:    "tip-protocol-node"
       com.theailab.version:    "2.0.0"
     networks:
-      - tip-vp_default  # join VP's network so cloudflared can reach us
+      - tip-vp-with-mobile-web-app_default  # join VP's network so cloudflared can reach us
 
 networks:
-  tip-vp_default:
+  tip-vp-with-mobile-web-app_default:
     external: true  # created by the VP docker-compose
