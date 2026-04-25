@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    federation: 'tip-local'
+
+scrape_configs:
+  - job_name: 'tip-federation'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['host.docker.internal:4000']
+        labels:
+          node: 'node1'
+          role: 'founding'
+      - targets: ['host.docker.internal:4100']
+        labels:
+          node: 'node2'
+          role: 'peer'
+      - targets: ['host.docker.internal:4200']
+        labels:
+          node: 'node3'
+          role: 'peer'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

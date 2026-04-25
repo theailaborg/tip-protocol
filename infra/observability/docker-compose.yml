@@ -1,0 +1,46 @@
+# Variables resolve from `infra/observability/.env` (auto-loaded by
+# docker compose). Defaults shown via `${VAR:-default}` so the stack
+# still boots even if .env is missing.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: tip-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-7d}
+      - --web.enable-lifecycle
+    ports:
+      - "${PROM_HTTP_PORT:-9090}:9090"
+    extra_hosts:
+      # Lets the container reach TIP nodes running on the host (Mac/Linux).
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: tip-grafana
+    ports:
+      - "${GF_HTTP_PORT:-3030}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_ANON_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=dark
+      - GF_LOG_LEVEL=warn
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - graf-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prom-data:
+  graf-data:

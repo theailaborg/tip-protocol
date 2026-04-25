@@ -1,0 +1,293 @@
+{
+  "uid": "tip-federation",
+  "title": "TIP Federation",
+  "tags": ["tip", "consensus", "narwhal", "bullshark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "label": "Node",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prom-tip" },
+        "query": { "qryType": 1, "query": "label_values(tip_narwhal_current_round, node)", "refId": "Variable" },
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": true,
+        "refresh": 1,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Peers connected",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_network_peers_connected{node=~\"$node\"}", "legendFormat": "{{node}}", "instant": false }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 2 }
+            ]
+          },
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Halt status",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_consensus_halted{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "HALTED", "color": "red" } } }
+          ],
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Consensus divergence (byzantine-fork canary)",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "sum(tip_consensus_divergence_total)", "legendFormat": "total" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Active committee size (per node)",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_narwhal_active_committee{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "green", "value": 3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Mempool depth",
+      "gridPos": { "x": 8, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_mempool_size{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Last committed round",
+      "gridPos": { "x": 16, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_bullshark_last_committed_round{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "horizontal"
+      }
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Narwhal current round",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_narwhal_current_round{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Bullshark commits / 5s",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m])", "legendFormat": "{{node}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "color": { "mode": "palette-classic" },
+          "unit": "ops"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Mempool size over time",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_mempool_size{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Txs committed (cumulative)",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "tip_bullshark_txs_committed_total{node=~\"$node\"}", "legendFormat": "{{node}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Anti-entropy: peers queried / gaps pulled",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m])", "legendFormat": "{{node}} queried" },
+        { "refId": "B", "expr": "rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m])", "legendFormat": "{{node}} pulled" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" },
+          "color": { "mode": "palette-classic" },
+          "unit": "ops"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean"] } }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Cert GC (rounds pruned)",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prom-tip" },
+      "targets": [
+        { "refId": "A", "expr": "rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m])", "legendFormat": "{{node}} runs" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "color": { "mode": "palette-classic" },
+          "unit": "ops"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean"] } }
+    }
+  ]
+}
