@@ -204,6 +204,7 @@ class SQLiteStore {
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
         registered_at       TEXT NOT NULL,
+        creator_name        TEXT,
         tx_id               TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_id_vp     ON identities(vp_id);
@@ -221,6 +222,7 @@ class SQLiteStore {
         verification_count  INTEGER NOT NULL DEFAULT 0,
         prescan_flagged     INTEGER NOT NULL DEFAULT 0,
         registered_at       TEXT NOT NULL,
+        registered_url      TEXT,
         tx_id               TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
@@ -268,6 +270,17 @@ class SQLiteStore {
         registered_at   TEXT NOT NULL
       );
     `);
+
+    // Backfill registered_url column for pre-existing content tables
+    const contentCols = this.db.prepare("PRAGMA table_info(content)").all().map(c => c.name);
+    if (!contentCols.includes("registered_url")) {
+      this.db.exec("ALTER TABLE content ADD COLUMN registered_url TEXT");
+    }
+    // Backfill creator_name column for pre-existing identities tables
+    const idCols = this.db.prepare("PRAGMA table_info(identities)").all().map(c => c.name);
+    if (!idCols.includes("creator_name")) {
+      this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
+    }
   }
 
   _prepare() {
@@ -297,8 +310,8 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,founding,status,registered_at,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
+            verification_tier,founding,status,registered_at,creator_name,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -306,8 +319,8 @@ class SQLiteStore {
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
            (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,
-            status,prescan_flagged,registered_at,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?)`
+            status,prescan_flagged,registered_at,registered_url,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent:  this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -396,7 +409,7 @@ class SQLiteStore {
       rec.vp_id || null, rec.verification_tier || "T1",
       rec.founding ? 1 : 0,
       rec.status || "active",
-      rec.registered_at, rec.tx_id || null
+      rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
   getIdentity(id) {
@@ -415,7 +428,7 @@ class SQLiteStore {
       rec.author_tip_id,
       rec.status || "registered",
       rec.prescan_flagged ? 1 : 0,
-      rec.registered_at, rec.tx_id || null
+      rec.registered_at, rec.registered_url || null, rec.tx_id || null
     );
   }
   getContent(ctid)            { return this._stmts.getContent.get(ctid) || null; }

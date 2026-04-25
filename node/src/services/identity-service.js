@@ -24,12 +24,16 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     const {
       region = "US", public_key, dedup_hash, zk_proof,
       verification_tier = "T1", vp_id, vp_signature, social_attested = false,
+      creator_name,
     } = body;
 
     const vp = dag.getVP(vp_id);
     if (!vp || vp.status !== "active") throw { status: 403, error: "Verification provider not found or suspended" };
 
-    const VP_IDENTITY_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+    // VP signs all required fields; creator_name is included in the signed
+    // payload only when the VP attested a name for the identity.
+    const BASE_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+    const VP_IDENTITY_FIELDS = creator_name ? [...BASE_FIELDS, "creator_name"] : BASE_FIELDS;
     if (!verifyBodySignature(body, vp_signature, vp.public_key, VP_IDENTITY_FIELDS)) {
       throw { status: 403, error: "VP signature verification failed" };
     }
@@ -47,7 +51,11 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
-      data: { tip_id: tipId, region: region.toUpperCase(), public_key, vp_id, verification_tier, social_attested, founding, dedup_hash, zk_proof },
+      data: {
+        tip_id: tipId, region: region.toUpperCase(), public_key, vp_id,
+        verification_tier, social_attested, founding, dedup_hash, zk_proof,
+        ...(creator_name ? { creator_name } : {}),
+      },
     };
     const signedTx = withTxId(txBody);
 
@@ -60,13 +68,18 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     dag.saveIdentity({
       tip_id: tipId, region: region.toUpperCase(), public_key, vp_id,
       verification_tier, founding, status: "active", registered_at: registeredAt, tx_id: tx.tx_id,
+      creator_name: creator_name || null,
     });
     dag.addDedupHash(dedup_hash);
     dag.setScore(tipId, social_attested ? 550 : 500, 0);
 
     log.info(`Identity registered: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
 
-    return { tip_id: tipId, public_key, tx_id: tx.tx_id, score: social_attested ? 550 : 500, registered_at: registeredAt };
+    return {
+      tip_id: tipId, public_key, tx_id: tx.tx_id,
+      score: social_attested ? 550 : 500, registered_at: registeredAt,
+      creator_name: creator_name || null,
+    };
   }
 
   function resolve(tipId) {
@@ -86,6 +99,7 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
       status: revoked ? "revoked" : rec.status, score: scoreData.score,
       tier: scoreData.tier.name, tier_color: scoreData.tier.color,
       content_count: content.length, registered_at: rec.registered_at,
+      creator_name: rec.creator_name || null,
       verification: { tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid, on_dag: true },
     };
   }
@@ -102,7 +116,11 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     if (!valid) throw { status: 403, error: "Signature verification failed — you do not own this TIP-ID" };
 
     const scoreData = scoring.getScore(tip_id);
-    return { verified: true, tip_id, score: scoreData.score, tier: scoreData.tier.name, status: identity.status };
+    return {
+      verified: true, tip_id,
+      creator_name: identity.creator_name || null,
+      score: scoreData.score, tier: scoreData.tier.name, status: identity.status,
+    };
   }
 
   function getScore(tipId) {
@@ -116,6 +134,7 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
       tip_id: tipId, tier: tier.name, tier_label: tier.label, tier_color: tier.color,
       verified_since: rec.registered_at, content_count: dag.getContentByAuthor(tipId).length,
       status: dag.isRevoked(tipId) ? "revoked" : rec.status,
+      creator_name: rec.creator_name || null,
       ...(displayMode === "FULL_PUBLIC" ? { score, offense_count } : {}),
     };
   }
@@ -125,7 +144,10 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     if (!rec) throw { status: 404, error: "TIP-ID not found" };
 
     const { score, tier, offense_count, history } = scoring.computeScore(tipId);
-    return { tip_id: tipId, score, tier: tier.name, offense_count, history };
+    return {
+      tip_id: tipId, creator_name: rec.creator_name || null,
+      score, tier: tier.name, offense_count, history,
+    };
   }
 
   return { register, resolve, verifyOwnership, getScore, getHistory };

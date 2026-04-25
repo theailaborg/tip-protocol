@@ -19,6 +19,9 @@ genesis-data/founder-keys.json
 genesis-data/founding-vp-keys.json
 genesis-data/genesis-keys.json
 
+# Generated per-node keys + .env from scripts/register-peer-node.js
+generated-nodes/
+
 # Genesis public data — OK to commit
 !genesis-data/seed.db
 !genesis-data/seed-output.json
