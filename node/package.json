@@ -46,6 +46,9 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ],
+    "setupFiles": [
+      "<rootDir>/tests/jest-setup.js"
+    ],
     "coverageDirectory": "coverage",
     "collectCoverageFrom": [
       "src/**/*.js"

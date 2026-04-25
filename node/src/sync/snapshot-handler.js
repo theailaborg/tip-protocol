@@ -52,9 +52,9 @@ const { getLogger } = require("../logger");
 
 const log = getLogger("tip.snapshot");
 
-// Protocol constants live in genesis (shared/protocol-constants.js NETWORK).
-// Lazy-accessed via getters so the values are consistent across nodes and
-// a single genesis change rolls out everywhere. See also: HANDSHAKE_PROTOCOL.
+// Genesis-defined protocol id for the state-snapshot protocol.
+// Safe at module load: PC.init() runs before any application module
+// is required (see node/src/index.js boot order).
 const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
 
 /**
@@ -67,6 +67,7 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @returns {Object}
  */
 function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false }) {
+
 
   // ── Server: handle incoming snapshot request ────────────────────────────
   async function registerProtocol() {

@@ -54,10 +54,7 @@ const {
 } = require("../shared/crypto");
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
-const { getTier } = require("../shared/protocol-constants");
-const { initDAG } = require("../node/src/dag");
-const { initScoring } = require("../node/src/scoring");
-const { loadConfig } = require("../node/src/config");
+const PC = require("../shared/protocol-constants");
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
@@ -65,7 +62,15 @@ const {
   buildGenesisBlock,
   computeGenesisHash,
   GENESIS_PAYLOAD,
+  getGenesisPayload,
 } = require("../node/src/genesis");
+// Init protocol constants before any module that uses backward-compat
+// accessors (initDAG → scoring → ...) is required.
+PC.init(getGenesisPayload().protocol_constants);
+const { getTier } = PC;
+const { initDAG } = require("../node/src/dag");
+const { initScoring } = require("../node/src/scoring");
+const { loadConfig } = require("../node/src/config");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {

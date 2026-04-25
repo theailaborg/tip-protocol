@@ -17,6 +17,15 @@
 
 require("dotenv").config({ path: process.env.DOTENV_PATH || ".env" });
 
+// Init protocol constants BEFORE requiring any application module.
+// shared/protocol-constants.js no longer auto-loads on first getter
+// access — touching CONSENSUS/NETWORK/JURY/etc. before init() now throws.
+// Any subsequent require chain (api → routes → services → consensus → ...)
+// is free to reference constants lazily inside function bodies.
+const PC = require("../../shared/protocol-constants");
+const { getGenesisPayload } = require("./genesis");
+PC.init(getGenesisPayload().protocol_constants);
+
 const http = require("http");
 const { createApp } = require("./api");
 const { initDAG } = require("./dag");
@@ -26,7 +35,6 @@ const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
-const PC = require("../../shared/protocol-constants");
 
 async function main() {
   await initCrypto();
@@ -62,16 +70,6 @@ async function main() {
 
   const dag = initDAG(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
-
-  // Load protocol constants from genesis block
-  const { getGenesisPayload } = require("./genesis");
-  const genesisPayload = getGenesisPayload();
-  if (genesisPayload?.protocol_constants) {
-    PC.init(genesisPayload.protocol_constants);
-    log.info("Protocol constants loaded from genesis block");
-  } else {
-    log.warn("No protocol_constants in genesis — using hardcoded defaults");
-  }
 
   // Look up this node's registered ID from the node registry (by public key)
   if (config.nodePublicKey) {

@@ -23,40 +23,72 @@ let _instance = null;
 
 /**
  * Initialize protocol constants from genesis block.
- * Can only be called once — subsequent calls throw.
+ *
+ * Idempotent on identical payload: calling init twice with the same constants
+ * is a no-op so defensive callers (CLIs, scripts, tests) don't have to
+ * coordinate. Re-init with a *different* payload throws — that is the
+ * fork-risk failure mode (one path quietly switches the constants the other
+ * path computed against), so it must be loud.
+ *
+ * Each entry point owns one init call:
+ *   - node:   node/src/index.js
+ *   - cli:    cli/src/index.js
+ *   - seed:   scripts/seed.js
+ *   - tests:  node/tests/jest-setup.js (jest setupFiles)
  */
 function init(protocolConstants) {
-  if (_instance !== null) {
-    throw new Error("ProtocolConstants already initialized — cannot reinitialize");
-  }
   if (!protocolConstants || typeof protocolConstants !== "object") {
     throw new Error("ProtocolConstants: invalid genesis protocol_constants");
+  }
+  if (_instance !== null) {
+    if (_deepEqual(_instance, protocolConstants)) return _instance;
+    throw new Error(
+      "ProtocolConstants already initialized with a DIFFERENT payload — refusing to overwrite. " +
+      "Two code paths disagree on genesis; this would silently fork the network. " +
+      "Audit every PC.init() call site and ensure they all read from the same getGenesisPayload()."
+    );
   }
   _instance = deepFreeze(protocolConstants);
   return _instance;
 }
 
 /**
- * Get the initialized protocol constants.
- * If not yet initialized, auto-loads from genesis.
+ * Get the initialized protocol constants. Throws if init() hasn't run.
+ *
+ * No auto-fallback: the previous fallback created a hidden second init path
+ * that fired on first getter access during module-load (e.g. a top-level
+ * `const X = NETWORK.Y;`), and then collided with the explicit init call.
+ * Callers must guarantee init has run before any backward-compat accessor
+ * is touched. If you hit this from a new entry point, load genesis once at
+ * boot and call PC.init(payload.protocol_constants).
  */
 function get() {
   if (_instance === null) {
-    // Auto-initialize from genesis if available
-    try {
-      const { getGenesisPayload } = require("../node/src/genesis");
-      const payload = getGenesisPayload();
-      if (payload?.protocol_constants) {
-        init(payload.protocol_constants);
-      }
-    } catch {
-      // Genesis not available (e.g. in browser extension or SDK context)
-    }
-  }
-  if (_instance === null) {
-    throw new Error("ProtocolConstants not initialized — load genesis first");
+    throw new Error(
+      "ProtocolConstants not initialized — call PC.init(genesisPayload.protocol_constants) " +
+      "before any backward-compat accessor (CONSENSUS, NETWORK, JURY, etc.)."
+    );
   }
   return _instance;
+}
+
+/**
+ * Structural equality check. Used by init() to allow idempotent re-init on
+ * the same payload while rejecting divergent payloads.
+ */
+function _deepEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!_deepEqual(a[k], b[k])) return false;
+  }
+  return true;
 }
 
 /**
