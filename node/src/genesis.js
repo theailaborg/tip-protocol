@@ -216,6 +216,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       handshake_protocol: "/tip/handshake/1.0.0",
       snapshot_protocol: "/tip/state-snapshot/1.0.0",
       sync_status_protocol: "/tip/sync-status/1.0.0",
+      peer_announce_protocol: "/tip/peer-announce/1.0.0",
       snapshot_length_prefix_bytes: 4,
       snapshot_max_frame_bytes: 16777216,   // 16 MB per frame — hard cap against hostile peers
       merkle_publish_hours: 6,

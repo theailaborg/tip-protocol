@@ -46,6 +46,7 @@
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
+const { dialKnownPeers } = require("../network/peer-discovery");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.anti-entropy");
@@ -112,6 +113,20 @@ function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusSt
       }
 
       const state = getConsensusState ? getConsensusState() : {};
+
+      // #48 backstop: every status reply carries our current known-peers
+      // view. The caller dials any new entries — fixes missed pushes and
+      // rejoins after transient disconnects within ANTI_ENTROPY_INTERVAL_MS.
+      // Recipient is excluded so they don't get their own address back.
+      let knownPeers = [];
+      try {
+        if (network && typeof network.knownPeers === "function") {
+          knownPeers = (await network.knownPeers(remotePeerId)) || [];
+        }
+      } catch (err) {
+        _log.debug(`anti-entropy: knownPeers build failed: ${err.message}`);
+      }
+
       const response = encode("SyncStatusResponse", {
         nodeId: getSelfNodeId ? (getSelfNodeId() || "") : "",
         round: state.round || 0,
@@ -120,6 +135,10 @@ function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusSt
         stateMerkleRoot: hexToBytes(state.state_merkle_root || ""),
         txsMerkleRoot: hexToBytes(state.txs_merkle_root || ""),
         certMerkleRoot: hexToBytes(state.cert_merkle_root || ""),
+        knownPeers: knownPeers.map(kp => ({
+          nodeId: kp.node_id || "",
+          multiaddrs: Array.isArray(kp.multiaddrs) ? kp.multiaddrs : [],
+        })),
       });
 
       try { await stream.sink([response]); }
@@ -228,6 +247,26 @@ function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusSt
         _metrics.peer_identity_mismatch++;
         _log.warn(`sync-status identity mismatch from ${peerId.slice(0, 12)}: claimed=${claimedNodeId} expected=${expectedNodeId}`);
         return null;
+      }
+
+      // #48 backstop: dial any new peers the responder told us about.
+      // dialKnownPeers dedups against our current authorized set and
+      // skips self, so receiving a peer we already have is a no-op.
+      // Each newly-dialed peer still proves identity via TIP handshake.
+      const knownPeers = (msg.knownPeers || []).map(kp => ({
+        node_id: kp.nodeId || "",
+        multiaddrs: Array.isArray(kp.multiaddrs) ? kp.multiaddrs : [],
+      }));
+      if (knownPeers.length > 0 && network && network.node) {
+        const authorizedMap = (() => {
+          try {
+            const obj = network.authorizedPeers ? network.authorizedPeers() : {};
+            // dialKnownPeers wants a Map<peerId, tipNodeId>; convert.
+            return new Map(Object.entries(obj));
+          } catch { return new Map(); }
+        })();
+        const ownNodeId = getSelfNodeId ? (getSelfNodeId() || "") : "";
+        dialKnownPeers(network.node, knownPeers, authorizedMap, ownNodeId, _log);
       }
 
       return {

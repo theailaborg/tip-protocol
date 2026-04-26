@@ -134,7 +134,7 @@ async function handleIncoming({ stream, connection }, ctx) {
     // at this moment; stale entries are omitted (peers we've lost
     // connection to don't make useful bootstrap hints).
     const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
-    const knownPeers = buildKnownPeers(ctx.node, ctx.authorizedPeers, remotePeerId, ctx.peerIdFromString);
+    const knownPeers = await buildKnownPeers(ctx.node, ctx.authorizedPeers, remotePeerId, ctx.peerIdFromString);
     const ack = encode("HandshakeAck", {
       nodeId: hs.nodeId,
       latestRound: hs.round,

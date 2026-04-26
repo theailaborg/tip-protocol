@@ -54,6 +54,8 @@ async function loadTypes() {
     "tip.consensus.SnapshotHeader",
     "tip.consensus.SnapshotStateRow",
     "tip.consensus.SnapshotEnd",
+    // #48 forward-on-authorize push
+    "tip.consensus.PeerAnnounce",
   ];
 
   _types = {};

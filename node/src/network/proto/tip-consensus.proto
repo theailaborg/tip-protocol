@@ -234,6 +234,30 @@ message SyncStatusResponse {
   bytes txs_merkle_root = 6;         // ordered-tx root at last commit
   bytes cert_merkle_root = 7;        // cert-DAG merkle root (from sync-handler)
   string error = 8;                  // non-empty = peer rejected the probe
+  // #48 backstop for forward-on-authorize push: every status reply
+  // includes the responder's full known-peers view. The caller dials any
+  // entries it doesn't already have authorized. Catches missed pushes
+  // and resyncs after transient connectivity issues — convergence within
+  // ANTI_ENTROPY_INTERVAL_MS regardless of join order.
+  repeated KnownPeer known_peers = 9;
+}
+
+// ─── Peer Announce Protocol (#48 forward-on-authorize push) ──────────────────
+//
+// Protocol: /tip/peer-announce/1.0.0
+//
+// Triggered when a node authorizes a NEW peer. The new peer is announced
+// to all OTHER already-authorized peers via this lightweight protocol so
+// they can dial the new peer immediately — sub-second mesh convergence
+// instead of waiting on the anti-entropy backstop.
+//
+// Trust model: identical to handshake-time discovery. The recipient runs
+// the full TIP handshake against each announced peer; the announce list
+// is just a dial hint. A malicious announcer can cause failed dials but
+// can't get any peer authorized that doesn't pass handshake on its own.
+
+message PeerAnnounce {
+  repeated KnownPeer known_peers = 1;
 }
 
 // ─── State Snapshot Protocol (§14) ───────────────────────────────────────────

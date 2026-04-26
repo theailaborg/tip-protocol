@@ -27,6 +27,12 @@
 const path = require("path");
 const SRC = path.resolve(__dirname, "../../src");
 const { buildKnownPeers, dialKnownPeers } = require(path.join(SRC, "network", "peer-discovery"));
+const { toMultiaddr } = require(path.join(SRC, "network", "peer-utils"));
+
+// Pre-warm the cached @multiformats/multiaddr ESM import so dial paths
+// stay synchronous after the first await — keeps existing setImmediate
+// flushes sufficient for fire-and-forget dialKnownPeers tests.
+beforeAll(async () => { await toMultiaddr("/ip4/127.0.0.1/tcp/1/p2p/warmup"); });
 
 // ── Fake libp2p node ────────────────────────────────────────────────────
 
@@ -41,8 +47,13 @@ function fakeNode({ connections = {}, dialImpl } = {}) {
       return connections[key] || [];
     },
     dial: async (addr) => {
-      dialCalls.push(addr);
-      if (dialImpl) return dialImpl(addr);
+      // Production code passes Multiaddr instances now (libp2p@2.x requires
+      // them); the fake normalises to string so assertions can compare flat.
+      const s = (addr && typeof addr === "object" && typeof addr.toString === "function")
+        ? addr.toString()
+        : addr;
+      dialCalls.push(s);
+      if (dialImpl) return dialImpl(s);
       return undefined;
     },
     _dialCalls: dialCalls,
@@ -63,7 +74,7 @@ function mkAddr(str) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("buildKnownPeers", () => {
-  test("one entry per authorized peer with live multiaddrs", () => {
+  test("one entry per authorized peer with live multiaddrs", async () => {
     const node = fakeNode({
       connections: {
         "peer-a": [mkAddr("/ip4/10.0.0.2/tcp/4001/p2p/peer-a")],
@@ -74,7 +85,7 @@ describe("buildKnownPeers", () => {
       ["peer-a", "tip://node/a"],
       ["peer-b", "tip://node/b"],
     ]);
-    const result = buildKnownPeers(node, authorized, "someone-else", peerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "someone-else", peerIdFromString);
 
     expect(result).toHaveLength(2);
     expect(result.find(r => r.node_id === "tip://node/a")).toEqual({
@@ -87,7 +98,7 @@ describe("buildKnownPeers", () => {
     });
   });
 
-  test("excludes the peer we're responding to (the joiner)", () => {
+  test("excludes the peer we're responding to (the joiner)", async () => {
     const node = fakeNode({
       connections: {
         "joiner": [mkAddr("/ip4/10.0.0.99/tcp/4001/p2p/joiner")],
@@ -98,13 +109,13 @@ describe("buildKnownPeers", () => {
       ["joiner", "tip://node/joiner"],
       ["peer-a", "tip://node/a"],
     ]);
-    const result = buildKnownPeers(node, authorized, "joiner", peerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "joiner", peerIdFromString);
 
     expect(result).toHaveLength(1);
     expect(result[0].node_id).toBe("tip://node/a");
   });
 
-  test("skips peers with no live connections", () => {
+  test("skips peers with no live connections", async () => {
     const node = fakeNode({
       connections: {
         "peer-a": [mkAddr("/ip4/10.0.0.2/tcp/4001/p2p/peer-a")],
@@ -115,13 +126,13 @@ describe("buildKnownPeers", () => {
       ["peer-a", "tip://node/a"],
       ["peer-b", "tip://node/b"],
     ]);
-    const result = buildKnownPeers(node, authorized, "joiner", peerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "joiner", peerIdFromString);
 
     expect(result).toHaveLength(1);
     expect(result[0].node_id).toBe("tip://node/a");
   });
 
-  test("dedups multiaddrs across multiple connections to same peer", () => {
+  test("dedups multiaddrs across multiple connections to same peer", async () => {
     const node = fakeNode({
       connections: {
         "peer-a": [
@@ -132,7 +143,7 @@ describe("buildKnownPeers", () => {
       },
     });
     const authorized = new Map([["peer-a", "tip://node/a"]]);
-    const result = buildKnownPeers(node, authorized, "joiner", peerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "joiner", peerIdFromString);
 
     expect(result).toHaveLength(1);
     expect(result[0].multiaddrs).toEqual([
@@ -141,17 +152,17 @@ describe("buildKnownPeers", () => {
     ]);
   });
 
-  test("handles null/undefined node gracefully", () => {
-    expect(buildKnownPeers(null, new Map(), "x", peerIdFromString)).toEqual([]);
-    expect(buildKnownPeers(undefined, new Map(), "x", peerIdFromString)).toEqual([]);
+  test("handles null/undefined node gracefully", async () => {
+    expect(await buildKnownPeers(null, new Map(), "x", peerIdFromString)).toEqual([]);
+    expect(await buildKnownPeers(undefined, new Map(), "x", peerIdFromString)).toEqual([]);
   });
 
-  test("handles empty authorized map", () => {
+  test("handles empty authorized map", async () => {
     const node = fakeNode();
-    expect(buildKnownPeers(node, new Map(), "x", peerIdFromString)).toEqual([]);
+    expect(await buildKnownPeers(node, new Map(), "x", peerIdFromString)).toEqual([]);
   });
 
-  test("catches peerIdFromString throws and skips that peer", () => {
+  test("catches peerIdFromString throws and skips that peer", async () => {
     const node = fakeNode({
       connections: { "peer-a": [mkAddr("/ip4/10.0.0.2/tcp/4001/p2p/peer-a")] },
     });
@@ -164,12 +175,12 @@ describe("buildKnownPeers", () => {
       return s;
     };
 
-    const result = buildKnownPeers(node, authorized, "joiner", throwingPeerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "joiner", throwingPeerIdFromString);
     expect(result).toHaveLength(1);
     expect(result[0].node_id).toBe("tip://node/a");
   });
 
-  test("omits peers with empty/missing tip node_id", () => {
+  test("omits peers with empty/missing tip node_id", async () => {
     const node = fakeNode({
       connections: { "peer-a": [mkAddr("/ip4/10.0.0.2/tcp/4001/p2p/peer-a")] },
     });
@@ -177,7 +188,7 @@ describe("buildKnownPeers", () => {
       ["peer-a", ""],        // empty tip node_id
       ["peer-b", undefined], // missing
     ]);
-    const result = buildKnownPeers(node, authorized, "joiner", peerIdFromString);
+    const result = await buildKnownPeers(node, authorized, "joiner", peerIdFromString);
     expect(result).toEqual([]);
   });
 });
@@ -253,42 +264,42 @@ describe("dialKnownPeers", () => {
   test("skips self (by TIP node_id)", async () => {
     const node = fakeNode();
     dialKnownPeers(node, [
-      { node_id: "tip://node/self", multiaddrs: ["/ip4/1/tcp/1/p2p/self"] },
-      { node_id: "tip://node/other", multiaddrs: ["/ip4/2/tcp/2/p2p/other"] },
+      { node_id: "tip://node/self", multiaddrs: ["/ip4/127.0.0.1/tcp/1"] },
+      { node_id: "tip://node/other", multiaddrs: ["/ip4/127.0.0.1/tcp/2"] },
     ], new Map(), "tip://node/self", silentLog());
 
     await new Promise(r => setImmediate(r));
-    expect(node._dialCalls).toEqual(["/ip4/2/tcp/2/p2p/other"]);
+    expect(node._dialCalls).toEqual(["/ip4/127.0.0.1/tcp/2"]);
   });
 
   test("skips peers already in authorized map (by TIP node_id)", async () => {
     const node = fakeNode();
     const authorized = new Map([["some-peer", "tip://node/a"]]);
     dialKnownPeers(node, [
-      { node_id: "tip://node/a", multiaddrs: ["/addr/a"] },  // already have
-      { node_id: "tip://node/b", multiaddrs: ["/addr/b"] },
+      { node_id: "tip://node/a", multiaddrs: ["/ip4/127.0.0.1/tcp/3001"] },  // already have
+      { node_id: "tip://node/b", multiaddrs: ["/ip4/127.0.0.1/tcp/3002"] },
     ], authorized, "tip://node/self", silentLog());
 
     await new Promise(r => setImmediate(r));
-    expect(node._dialCalls).toEqual(["/addr/b"]);
+    expect(node._dialCalls).toEqual(["/ip4/127.0.0.1/tcp/3002"]);
   });
 
   test("falls through to next multiaddr if first fails", async () => {
     let attempt = 0;
     const node = fakeNode({
-      dialImpl: async (addr) => {
+      dialImpl: async () => {
         attempt++;
         if (attempt === 1) throw new Error("unreachable");
         return undefined;
       },
     });
     dialKnownPeers(node, [
-      { node_id: "tip://node/a", multiaddrs: ["/bad/1", "/good/2"] },
+      { node_id: "tip://node/a", multiaddrs: ["/ip4/127.0.0.1/tcp/4001", "/ip4/127.0.0.1/tcp/4002"] },
     ], new Map(), "tip://node/self", silentLog());
 
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));  // second round for promise chain
-    expect(node._dialCalls).toEqual(["/bad/1", "/good/2"]);
+    expect(node._dialCalls).toEqual(["/ip4/127.0.0.1/tcp/4001", "/ip4/127.0.0.1/tcp/4002"]);
   });
 
   test("all multiaddrs failing does not throw out of the caller", async () => {
@@ -297,7 +308,7 @@ describe("dialKnownPeers", () => {
     });
     // No throw from the outer call.
     expect(() => dialKnownPeers(node, [
-      { node_id: "tip://node/a", multiaddrs: ["/a", "/b"] },
+      { node_id: "tip://node/a", multiaddrs: ["/ip4/127.0.0.1/tcp/5001", "/ip4/127.0.0.1/tcp/5002"] },
     ], new Map(), "tip://node/self", silentLog())).not.toThrow();
 
     await new Promise(r => setImmediate(r));
@@ -322,15 +333,15 @@ describe("dialKnownPeers", () => {
   test("peer with missing node_id or empty multiaddrs is skipped", async () => {
     const node = fakeNode();
     dialKnownPeers(node, [
-      { node_id: "", multiaddrs: ["/a"] },
+      { node_id: "", multiaddrs: ["/ip4/127.0.0.1/tcp/6001"] },
       { node_id: "tip://node/b", multiaddrs: [] },
-      { multiaddrs: ["/c"] },  // missing node_id
+      { multiaddrs: ["/ip4/127.0.0.1/tcp/6002"] },  // missing node_id
       null,                      // undefined entry
-      { node_id: "tip://node/d", multiaddrs: ["/d"] },  // only this one valid
+      { node_id: "tip://node/d", multiaddrs: ["/ip4/127.0.0.1/tcp/6003"] },  // only this one valid
     ], new Map(), "tip://node/self", silentLog());
 
     await new Promise(r => setImmediate(r));
-    expect(node._dialCalls).toEqual(["/d"]);
+    expect(node._dialCalls).toEqual(["/ip4/127.0.0.1/tcp/6003"]);
   });
 
   test("logger is optional", async () => {

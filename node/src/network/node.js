@@ -25,6 +25,8 @@ const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
 const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
+const { buildKnownPeers, buildPeerEntry, broadcastAnnounce, registerAnnounceHandler } = require("./peer-discovery");
+const { createBootstrapReconnect } = require("./bootstrap-reconnect");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.network");
@@ -175,12 +177,44 @@ async function createNetworkNode(options = {}) {
     handshakeProtocol: NETWORK.HANDSHAKE_PROTOCOL,
     handshakeTimeoutMs: CONSENSUS.HANDSHAKE_TIMEOUT_MS,
     authorizedPeers: _authorizedPeers,
-    onPeerAuthorized: makeAuthorizationWrapper(directPeers, () => _onPeerAuthorized),
+    // Wrap the base authorization callback to ALSO push a #48
+    // forward-on-authorize announce to every other already-authorized
+    // peer, so they learn about the new peer immediately (no waiting on
+    // anti-entropy backstop). The new peer itself just received the full
+    // known_peers list via HandshakeAck and is excluded.
+    onPeerAuthorized: (() => {
+      const base = makeAuthorizationWrapper(directPeers, () => _onPeerAuthorized);
+      return async (newPeerId, newTipNodeId) => {
+        base(newPeerId, newTipNodeId);
+        // peerStore lookup is async; wait for the entry before broadcasting.
+        const entry = await buildPeerEntry(node, newPeerId, newTipNodeId, peerIdFromString);
+        if (entry) broadcastAnnounce(node, _authorizedPeers, newPeerId, peerIdFromString, [entry], log);
+      };
+    })(),
   };
 
   // Register handshake protocol handler
   await node.handle(ctx.handshakeProtocol, (args) => handleIncoming(args, ctx));
   log.info(`Registered protocol handler: ${ctx.handshakeProtocol}`);
+
+  // Bootstrap reconnect — event-driven retry chains. See ./bootstrap-reconnect.js.
+  const bootstrapReconnect = createBootstrapReconnect({
+    node, bootstrapPeers, authorizedPeers: _authorizedPeers, log,
+  });
+  bootstrapReconnect.start();
+
+  // #48: forward-on-authorize push handler. Existing peers tell us about
+  // newly-joined peers via /tip/peer-announce/1.0.0 — we authenticate the
+  // sender (must be in authorizedPeers) then run dialKnownPeers on the
+  // contents. Each newly-dialed peer still proves identity via TIP
+  // handshake, so a malicious announcer can only waste dials.
+  await registerAnnounceHandler({
+    node,
+    isAuthorizedPeer: (peerId) => _authorizedPeers.has(peerId),
+    authorizedPeers: _authorizedPeers,
+    ownNodeId: nodeId,
+    log,
+  });
 
   // ── Message handler — auth + rate limit + route to topic handlers
   const rateLimiter = createRateLimiter();
@@ -242,6 +276,9 @@ async function createNetworkNode(options = {}) {
     _authorizedPeers.delete(remotePeerId);
     directPeers.remove(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
+
+    // If this was a bootstrap peer, restart its retry chain.
+    bootstrapReconnect.onPeerDisconnect(remotePeerId);
   });
 
   // ── Public interface ───────────────────────────────────────────────────
@@ -275,6 +312,16 @@ async function createNetworkNode(options = {}) {
     directPeers: () => directPeers.list(),
 
     /**
+     * Build the `known_peers` list for sharing with another peer (#48).
+     * Used by anti-entropy to attach a fresh roster to its sync-status
+     * responses. Pass the recipient's libp2p peerId to exclude them from
+     * their own list.
+     * @param {string} excludePeerId  libp2p peerId to omit (typically the recipient)
+     * @returns {Array<{node_id, multiaddrs[]}>}
+     */
+    knownPeers: async (excludePeerId) => buildKnownPeers(node, _authorizedPeers, excludePeerId, peerIdFromString),
+
+    /**
      * Publish a message to a GossipSub topic.
      * @param {string} topic   One of TOPICS.*
      * @param {Buffer|Uint8Array} data  Protobuf-encoded message
@@ -306,6 +353,7 @@ async function createNetworkNode(options = {}) {
 
     async stop() {
       rateLimiter.stop();
+      bootstrapReconnect.stop();
       _authorizedPeers.clear();
       pubsub.unsubscribe(TOPICS.CERTIFICATES);
       pubsub.unsubscribe(TOPICS.MEMPOOL);
