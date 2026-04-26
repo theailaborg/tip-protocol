@@ -18,6 +18,8 @@ const fs = require("fs");
 const path = require("path");
 
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const COLORS = { error: "\x1b[31m", warn: "\x1b[33m", info: "\x1b[32m", debug: "\x1b[90m" };
+const RESET = "\x1b[0m";
 const LOG_DIR = process.env.TIP_LOG_DIR || path.resolve(__dirname, "../logs");
 
 let _maxLevel = LEVELS[process.env.TIP_LOG_LEVEL || "info"] ?? 2;
@@ -68,10 +70,8 @@ function _write(level, source, args) {
 
   const line = _format(level, source, args);
 
-  // Console output
-  if (level === "error") console.error(line);
-  else if (level === "warn") console.warn(line);
-  else console.log(line);
+  // Console output — all to stdout with level colors
+  process.stdout.write((COLORS[level] || "") + line + RESET + "\n");
 
   // File output — write to appropriate level files
   try {
