@@ -331,9 +331,8 @@ function initGossip(server, dag, config) {
         if (registeredNode && mldsaVerify(nonce, msg.signature, registeredNode.public_key)) {
           peers.set(msg.node_id, { ws, authenticated: true });
           log.info(`Gossip: node ${msg.node_id} authenticated (registered)`);
-          // Send sync request after auth
-          const lastSeen = dag.getAllTxs().reduce((max, tx) => tx.timestamp > max ? tx.timestamp : max, "1970-01-01T00:00:00.000Z");
-          send(ws, { type: MSG_TYPES.SYNC_REQUEST, since: lastSeen });
+          // Send sync request after auth — always full sync so no ancestor txs are missed
+          send(ws, { type: MSG_TYPES.SYNC_REQUEST, since: "1970-01-01T00:00:00.000Z" });
         } else {
           log.warn(`Gossip: node ${msg.node_id} rejected — not in registry or invalid signature`);
           ws.close(4001, "Node authentication failed");
