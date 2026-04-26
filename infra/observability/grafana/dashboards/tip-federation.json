@@ -60,7 +60,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_network_peers_authorized{node=~\"$node\"}",
+          "expr": "(tip_network_peers_authorized{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}",
           "instant": false
         }
@@ -121,7 +121,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_consensus_halted{node=~\"$node\"}",
+          "expr": "(tip_consensus_halted{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -245,7 +245,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_narwhal_active_participants{node=~\"$node\"}",
+          "expr": "(tip_narwhal_active_participants{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -304,7 +304,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_mempool_size{node=~\"$node\"}",
+          "expr": "(tip_mempool_size{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -339,7 +339,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_bullshark_last_committed_round{node=~\"$node\"}",
+          "expr": "(tip_bullshark_last_committed_round{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -374,7 +374,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_narwhal_current_round{node=~\"$node\"}",
+          "expr": "(tip_narwhal_current_round{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -419,7 +419,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m])",
+          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -466,7 +466,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_mempool_size{node=~\"$node\"}",
+          "expr": "(tip_mempool_size{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -512,7 +512,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "tip_bullshark_txs_committed_total{node=~\"$node\"}",
+          "expr": "(tip_bullshark_txs_committed_total{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}}"
         }
       ],
@@ -557,12 +557,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m])",
+          "expr": "(rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}} queried"
         },
         {
           "refId": "B",
-          "expr": "rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m])",
+          "expr": "(rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}} pulled"
         }
       ],
@@ -608,7 +608,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m])",
+          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{node}} runs"
         }
       ],
@@ -661,7 +661,7 @@
         },
         {
           "refId": "Online",
-          "expr": "group by (node) (tip_process_uptime_seconds)",
+          "expr": "(up{job=\"tip-federation\"} == 1) * on(instance) group_left(node) (group by (instance, node) (tip_process_uptime_seconds))",
           "format": "table",
           "instant": true
         },
@@ -972,7 +972,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(group by (node) (tip_process_uptime_seconds))"
+          "expr": "count(up{job=\"tip-federation\"} == 1)"
         }
       ],
       "options": {
@@ -1029,7 +1029,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(tip_narwhal_quorum)"
+          "expr": "max(tip_narwhal_quorum and on(instance) (up{job=\"tip-federation\"} == 1))"
         }
       ],
       "options": {
@@ -1078,7 +1078,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(tip_narwhal_active_participants)"
+          "expr": "max(tip_narwhal_active_participants and on(instance) (up{job=\"tip-federation\"} == 1))"
         }
       ],
       "options": {
