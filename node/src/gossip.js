@@ -370,7 +370,9 @@ function initGossip(server, dag, config) {
       case MSG_TYPES.SYNC_REQUEST:
         // Respond with all txs since requested timestamp
         const since = msg.since || "1970-01-01T00:00:00.000Z";
-        const allTxs = dag.getAllTxs().filter(tx => tx.timestamp > since);
+        const allTxs = dag.getAllTxs()
+          .filter(tx => tx.timestamp > since)
+          .sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
         send(ws, { type: MSG_TYPES.SYNC_RESPONSE, txs: allTxs, count: allTxs.length });
         break;
 
