@@ -46,6 +46,12 @@ const { mldsaVerify, canonicalJson } = require("../../../shared/crypto");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
+const {
+  createTxsFullRootBuilder,
+  createCommitsFullRootBuilder,
+  canonTx,
+  canonCommit,
+} = require("./snapshot-roots");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { frame: _frame, parseLengthPrefixedFrames: _parseLengthPrefixedFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
@@ -68,6 +74,42 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  */
 function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false }) {
 
+  // ── #49 full-history frame helpers ───────────────────────────────────────
+  // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
+  // The state phase has a different shape (each row carries `table`) and
+  // doesn't share these — see Phase A in both directions for that.
+
+  /**
+   * Sender helper: hash one canonical-JSON row into the full-root builder
+   * and return the wire-framed encoded body. Used inside the streaming
+   * generator for SnapshotTxRow and SnapshotCommitRow.
+   */
+  function _frameFullHistoryRow(frameType, canonical, rootBuilder) {
+    rootBuilder.addRow(canonical);
+    return _frame(encode(frameType, {
+      canonicalJson: Buffer.from(canonical, "utf8"),
+    }));
+  }
+
+  /**
+   * Receiver helper: decode each frame, verify the canonical bytes are
+   * present, hash into the full-root builder, JSON-parse for the install
+   * queue. Throws with a clear label if any frame is malformed.
+   */
+  function _decodeFullHistoryFrames(frames, frameType, rootBuilder, label) {
+    const queue = [];
+    for (const frame of frames) {
+      const row = decode(frameType, frame);
+      if (!row.canonicalJson) throw new Error(`malformed ${frameType}`);
+      const canonical = bytesToUtf8(row.canonicalJson);
+      rootBuilder.addRow(canonical);
+      let parsed;
+      try { parsed = JSON.parse(canonical); }
+      catch (err) { throw new Error(`${label} canonical_json parse failed: ${err.message}`); }
+      queue.push(parsed);
+    }
+    return queue;
+  }
 
   // ── Server: handle incoming snapshot request ────────────────────────────
   async function registerProtocol() {
@@ -145,22 +187,57 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       error: "",
     });
 
-    // Stream header + state rows + end marker in a single sink call, using
-    // an async generator so libp2p flushes frames as they're produced
-    // (no full-state materialisation in memory on the sender).
-    let rowsSent = 0;
+    // Stream header + state rows + tx rows + commit rows + end marker in a
+    // single sink call. Async generator yields frames as they're produced so
+    // libp2p flushes incrementally (no full-state materialisation on the
+    // sender). The two #49 full-history roots are stream-computed while
+    // emitting rows and shipped in SnapshotEnd — single pass over each table.
+    let stateRowsSent = 0;
+    let txRowsSent = 0;
+    let commitRowsSent = 0;
+    let txsFullRoot = "";
+    let commitsFullRoot = "";
     try {
       await stream.sink((async function* () {
         yield _frame(headerBuf);
+
+        // Phase A: derived state (existing — covered by state_merkle_root).
         for (const { table, row } of dag.iterateCanonicalState()) {
           const rowBuf = encode("SnapshotStateRow", {
             table,
             canonicalJson: Buffer.from(canonicalJson(row), "utf8"),
           });
           yield _frame(rowBuf);
-          rowsSent++;
+          stateRowsSent++;
         }
-        const endBuf = encode("SnapshotEnd", { rowCount: rowsSent });
+
+        // Phase B: full transactions table (#49). Source has every tx ever
+        // (no GC). canonicalJson(canonTx(tx)) is the byte form both sides
+        // hash and store in SnapshotTxRow.canonical_json.
+        const txRoot = createTxsFullRootBuilder();
+        for (const tx of dag.iterateAllTransactions()) {
+          yield _frameFullHistoryRow("SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
+          txRowsSent++;
+        }
+        txsFullRoot = txRoot.finalize();
+
+        // Phase C: commits history except latest (#49). Latest already
+        // rides in SnapshotHeader — including it twice would double-count
+        // in the receiver's commits table and break the install.
+        const commitRoot = createCommitsFullRootBuilder();
+        for (const c of dag.iterateAllCommitsExcept(latest.round)) {
+          yield _frameFullHistoryRow("SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
+          commitRowsSent++;
+        }
+        commitsFullRoot = commitRoot.finalize();
+
+        const endBuf = encode("SnapshotEnd", {
+          rowCount: stateRowsSent,
+          txRowCount: txRowsSent,
+          commitRowCount: commitRowsSent,
+          txsFullRoot: hexToBytes(txsFullRoot),
+          commitsFullRoot: hexToBytes(commitsFullRoot),
+        });
         yield _frame(endBuf);
       })());
     } catch (err) {
@@ -168,7 +245,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       return;
     }
 
-    log.info(`Snapshot: sent round ${latest.round} + ${rowsSent} state rows to ${remotePeer}`);
+    log.info(
+      `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
+      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent})`
+    );
   }
 
   // ── Client: request a snapshot from a peer and install it ────────────────
@@ -211,23 +291,37 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       const header = decode("SnapshotHeader", frames[0]);
       if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
 
-      // Middle frames are SnapshotStateRow; last frame is SnapshotEnd.
+      // Last frame is SnapshotEnd; middle frames are state rows then tx
+      // rows then commit rows in that order. SnapshotEnd carries per-
+      // stream counts AND the #49 stream-tampering integrity roots
+      // (txs_full_root, commits_full_root) computed by the sender.
       if (frames.length < 2) throw new Error("response missing SnapshotEnd terminator");
       const endFrame = frames[frames.length - 1];
       const rowFrames = frames.slice(1, -1);
 
       const end = decode("SnapshotEnd", endFrame);
-      const endCount = Number(end.rowCount || 0);
-      if (endCount !== rowFrames.length) {
-        throw new Error(`row count mismatch: header says ${endCount}, got ${rowFrames.length}`);
+      const stateRowCount = Number(end.rowCount || 0);
+      const txRowCount = Number(end.txRowCount || 0);
+      const commitRowCount = Number(end.commitRowCount || 0);
+      const expectedTotal = stateRowCount + txRowCount + commitRowCount;
+      if (expectedTotal !== rowFrames.length) {
+        throw new Error(
+          `row count mismatch: end says state=${stateRowCount} txs=${txRowCount} ` +
+          `commits=${commitRowCount} (total=${expectedTotal}), got ${rowFrames.length} frames`
+        );
       }
 
-      // Decode rows, rebuild state root incrementally, collect nodes so we
-      // can verify ack signatures once the public keys are all known.
+      const stateFrames = rowFrames.slice(0, stateRowCount);
+      const txFrames = rowFrames.slice(stateRowCount, stateRowCount + txRowCount);
+      const commitFrames = rowFrames.slice(stateRowCount + txRowCount);
+
+      // ── Phase A: derived state ───────────────────────────────────────
+      // Different shape from B/C (carries a `table` field) so doesn't use
+      // the shared helper. Collects node public keys for ack verification.
       const stateRoot = createStateRootBuilder();
       const nodePubKeys = new Map();           // node_id → public_key (hex)
-      const installQueue = [];                 // { table, row } for the final write
-      for (const frame of rowFrames) {
+      const stateInstallQueue = [];            // { table, row } for the install
+      for (const frame of stateFrames) {
         const row = decode("SnapshotStateRow", frame);
         const table = row.table;
         const canonicalBytes = row.canonicalJson;
@@ -242,14 +336,37 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
         if (table === "nodes" && parsed.node_id && parsed.public_key) {
           nodePubKeys.set(parsed.node_id, parsed.public_key);
         }
-        installQueue.push({ table, row: parsed });
+        stateInstallQueue.push({ table, row: parsed });
       }
 
-      // ── Root match ────────────────────────────────────────────────────
-      const derived = stateRoot.finalize();
-      const expected = bytesToHex(header.stateMerkleRoot);
-      if (derived !== expected) {
-        throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derived.slice(0, 16)}...`);
+      // ── Phase B / C: full tx + commit history (#49) ──────────────────
+      const txsRoot = createTxsFullRootBuilder();
+      const txInstallQueue = _decodeFullHistoryFrames(txFrames, "SnapshotTxRow", txsRoot, "tx");
+
+      const commitsRoot = createCommitsFullRootBuilder();
+      const commitInstallQueue = _decodeFullHistoryFrames(commitFrames, "SnapshotCommitRow", commitsRoot, "commit");
+
+      // ── Root matches ──────────────────────────────────────────────────
+      // state_merkle_root is consensus state — signed by 2f+1 acks below.
+      // txs_full_root / commits_full_root are wire-format integrity
+      // checks shipped in SnapshotEnd; mismatch means the stream was
+      // tampered with or truncated mid-row.
+      const derivedState = stateRoot.finalize();
+      const expectedState = bytesToHex(header.stateMerkleRoot);
+      if (derivedState !== expectedState) {
+        throw new Error(`state_merkle_root mismatch: expected ${expectedState?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
+      }
+
+      const derivedTxs = txsRoot.finalize();
+      const expectedTxs = bytesToHex(end.txsFullRoot);
+      if (derivedTxs !== expectedTxs) {
+        throw new Error(`txs_full_root mismatch: expected ${expectedTxs?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
+      }
+
+      const derivedCommits = commitsRoot.finalize();
+      const expectedCommits = bytesToHex(end.commitsFullRoot);
+      if (derivedCommits !== expectedCommits) {
+        throw new Error(`commits_full_root mismatch: expected ${expectedCommits?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
       }
 
       // ── Signature quorum ──────────────────────────────────────────────
@@ -286,37 +403,76 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       }
 
       // ── Install atomically ────────────────────────────────────────────
-      const installed = _installSnapshot(header, installQueue);
+      const installed = _installSnapshot(header, {
+        stateRows: stateInstallQueue,
+        txs: txInstallQueue,
+        commits: commitInstallQueue,
+      });
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
-        `rows=${installed} acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
+        `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ` +
+        `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
 
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
-        rows_installed: installed,
-        state_merkle_root: derived,
+        rows_installed: installed.state + installed.txs + installed.commits,
+        state_rows_installed: installed.state,
+        tx_rows_installed: installed.txs,
+        commit_rows_installed: installed.commits,
+        state_merkle_root: derivedState,
         txs_merkle_root: bytesToHex(header.txsMerkleRoot),
+        txs_full_root: derivedTxs,
+        commits_full_root: derivedCommits,
       };
     } finally {
       try { stream.close(); } catch { /* ignore */ }
     }
   }
 
-  function _installSnapshot(header, queue) {
-    // Atomic install — either every row + the commit row land, or nothing.
-    // Uses DAG's existing save* methods so the write paths are the same as
-    // normal consensus application (column defaults, integer coercion, etc.).
+  function _installSnapshot(header, queues) {
+    // Atomic install — every row, every tx, every commit, plus the
+    // header's commit row land together or nothing does. Uses DAG's
+    // public save* / addTx methods so write paths match normal
+    // consensus application (column defaults, integer coercion, etc.).
+    //
+    // Order:
+    //   1. Derived state rows (identities, content, nodes, etc.)
+    //   2. Pre-snapshot transactions (#49 — addTx preserves prev:[] for
+    //      genesis-style txs because its auto-fill is gated on tx_id
+    //      being absent. verifyTxId runs as defense-in-depth behind the
+    //      snapshot-layer txs_full_root. _updatePrev fires per-row;
+    //      installing in tx_id-ascending order leaves _prev pointing at
+    //      [highest, second-highest] — exactly the state a fresh
+    //      bootstrap would compute, so the joiner's next submission
+    //      chains off the installed history.)
+    //   3. Pre-snapshot commits (#49 — every commit row except the
+    //      latest, which is written from the header at the end)
+    //   4. Header's commit row — the freshly-attested checkpoint
     return dag.runInTransaction(() => {
-      let n = 0;
-      for (const { table, row } of queue) {
+      let stateN = 0;
+      for (const { table, row } of queues.stateRows) {
         _installOneRow(table, row);
-        n++;
+        stateN++;
       }
-      // Commit row: convert header fields back to the native shape
-      // dag.saveCommit expects.
+
+      let txN = 0;
+      for (const tx of queues.txs) {
+        dag.addTx(tx);
+        txN++;
+      }
+
+      let commitN = 0;
+      for (const c of queues.commits) {
+        dag.saveCommit(c);
+        commitN++;
+      }
+
+      // Header's commit row — the round whose state_merkle_root we just
+      // verified against 2f+1 acks. Convert header bytes-fields back to
+      // the hex/string shape dag.saveCommit expects.
       dag.saveCommit({
         round: Number(header.round),
         anchor_cert_hash: bytesToHex(header.anchorCertHash),
@@ -330,7 +486,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
         ack_signer_ids: header.ackSignerIds || [],
         ack_signatures: (header.ackSignatures || []).map(bytesToHex),
       });
-      return n;
+
+      return { state: stateN, txs: txN, commits: commitN };
     });
   }
 

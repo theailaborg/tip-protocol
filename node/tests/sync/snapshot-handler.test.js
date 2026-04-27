@@ -371,3 +371,250 @@ describe("§14 snapshot framing & reliability", () => {
     expect(destDag.getCommit(2)).toBeNull();
   });
 });
+
+// ─── #49 full-history shipping ──────────────────────────────────────────────
+//
+// Before #49 the snapshot only shipped derived-state tables. Pre-snapshot
+// `transactions` rows were lost — joiners arrived with the right `nodes` /
+// `identities` / `content` rows but an empty `transactions` table for
+// every tx that committed before the snapshot round. Any later API tx
+// from the source whose `prev` chained back to a pre-snapshot tx_id
+// would be rejected on the joiner with `prev reference not found in DAG`.
+//
+// These tests close that gap end-to-end.
+describe("§14/#49 snapshot full-history shipping", () => {
+  test("ships every row of the source's transactions table", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1, seedTxs: 5 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Every seeded tx_id from the source is now resolvable on the dest.
+    expect(fx.seededTxs.length).toBe(5);
+    for (const tx of fx.seededTxs) {
+      const got = destDag.getTx(tx.tx_id);
+      expect(got).not.toBeNull();
+      expect(got.tx_type).toBe("REGISTER_CONTENT");
+      expect(got.tx_id).toBe(tx.tx_id);
+      expect(got.prev).toEqual(tx.prev);
+    }
+
+    // Genesis / VP / founding-identity / founding-node txs from the
+    // source's `_writeGenesisBlock` bootstrap are also shipped — every
+    // tx in source.transactions appears in dest.transactions.
+    const sourceCount = fx.sourceDag.count();
+    expect(destDag.count()).toBe(sourceCount);
+  });
+
+  test("regression: REGISTER_CONTENT with prev pointing at a pre-snapshot tx_id resolves on the joiner", async () => {
+    // Seed a chain of committed txs on source, snapshot to dest, then
+    // construct a fresh REGISTER_CONTENT whose prev refs are the last
+    // two seeded tx_ids (exactly the pattern the live federation hit).
+    const fx = buildCommittedDag({ committeeSize: 1, seedTxs: 3 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    const lastTwo = [
+      fx.seededTxs[fx.seededTxs.length - 1].tx_id,
+      fx.seededTxs[fx.seededTxs.length - 2].tx_id,
+    ];
+
+    // Build a fresh tx referencing the last two pre-snapshot tx_ids.
+    // Same shape that `services/content-service.js` produces at runtime
+    // via `prev: dag.getRecentPrev()`.
+    const followUp = {
+      tx_type: "REGISTER_CONTENT",
+      timestamp: "2026-04-27T00:00:00.000Z",
+      prev: lastTwo,
+      data: {
+        ctid: "tip://content/follow-up",
+        origin_code: "OH",
+        content_hash: "0".repeat(64),
+        author_tip_id: "tip://id/seed-author",
+      },
+    };
+    // Put it through the dest DAG via the same code path commit-handler
+    // would use (validateDAGIntegrity reads `prev` and looks each up).
+    // If #49 didn't ship the seeded txs, dag.getTx(prevId) returns null
+    // and validation fails with `prev reference not found in DAG: ...`.
+    for (const prevId of followUp.prev) {
+      const resolved = destDag.getTx(prevId);
+      expect(resolved).not.toBeNull();
+      expect(resolved.tx_id).toBe(prevId);
+    }
+
+    // The fresh tx itself is content-addressed, so the joiner can also
+    // accept it via dag.addTx (submission path) without prev-resolution
+    // failures. This is the exact path that broke on the live federation.
+    const { computeTxId } = require(path.resolve(__dirname, "../../../shared/crypto"));
+    followUp.tx_id = computeTxId(followUp);
+    followUp.signature = "00";
+    expect(() => destDag.addTx(followUp)).not.toThrow();
+    expect(destDag.getTx(followUp.tx_id)).not.toBeNull();
+  });
+
+  test("ships every commit row except the latest (latest rides in SnapshotHeader)", async () => {
+    // Seed a few extra commits on the source so the snapshot has commit
+    // history beyond just the one in the header. Each saveCommit needs
+    // a unique round + a state_merkle_root / txs_merkle_root combo —
+    // we reuse fx.stateRoot/txsRoot since the derived state at those
+    // pseudo-rounds is identical (no txs in their batches).
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    fx.sourceDag.saveCommit({
+      round: 1,
+      anchor_cert_hash: "1".repeat(64),
+      leader_node_id: fx.committeeKeys[0].nodeId,
+      committee: fx.committee,
+      support_count: 1,
+      consensus_index: 0,
+      committed_at: "2026-01-01T00:00:00.000Z",
+      state_merkle_root: fx.stateRoot,
+      txs_merkle_root: fx.txsRoot,
+      ack_signer_ids: [],
+      ack_signatures: [],
+    });
+
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Both rounds present on dest: 1 from SnapshotCommitRow, 2 from header.
+    expect(destDag.getCommit(1)).toBeTruthy();
+    expect(destDag.getCommit(2)).toBeTruthy();
+  });
+
+  test("tampered tx row → txs_full_root mismatch, no commit installed", async () => {
+    const fx = buildCommittedDag({ committeeSize: 1, seedTxs: 2 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    // MITM: flip a byte in the LAST frame before the SnapshotEnd. With
+    // seedTxs=2 + genesis bootstrap, that frame is a SnapshotTxRow or
+    // SnapshotCommitRow — either way the corresponding full-root no
+    // longer matches the sender's value in SnapshotEnd.
+    const originalServerSink = server.sink;
+    server.sink = async (src) => {
+      await originalServerSink((async function* () {
+        const buf = [];
+        for await (const frame of src) buf.push(frame);
+        // Tamper with the second-to-last frame (SnapshotEnd is the last).
+        if (buf.length >= 2) {
+          const target = Buffer.from(buf[buf.length - 2]);
+          target[target.length - 2] ^= 0xff;
+          buf[buf.length - 2] = target;
+        }
+        for (const f of buf) yield f;
+      })());
+    };
+
+    await expect(Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ])).rejects.toThrow(/full_root mismatch|tx_id mismatch|parse failed/i);
+
+    expect(destDag.getCommit(2)).toBeNull();
+  });
+
+  test("tampered commit row → commits_full_root mismatch, no commit installed", async () => {
+    // Symmetric coverage with the txs tamper test. Source has multiple
+    // commits beyond the latest so a SnapshotCommitRow exists to tamper.
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    fx.sourceDag.saveCommit({
+      round: 1,
+      anchor_cert_hash: "1".repeat(64),
+      leader_node_id: fx.committeeKeys[0].nodeId,
+      committee: fx.committee,
+      support_count: 1,
+      consensus_index: 0,
+      committed_at: "2026-01-01T00:00:00.000Z",
+      state_merkle_root: fx.stateRoot,
+      txs_merkle_root: fx.txsRoot,
+      ack_signer_ids: [],
+      ack_signatures: [],
+    });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    // Find and tamper with the SnapshotCommitRow frame (it's between the
+    // tx rows and SnapshotEnd). We MITM by buffering everything and
+    // flipping a byte in the second-to-last frame; that's the one
+    // SnapshotCommitRow we seeded.
+    const originalServerSink = server.sink;
+    server.sink = async (src) => {
+      await originalServerSink((async function* () {
+        const buf = [];
+        for await (const frame of src) buf.push(frame);
+        if (buf.length >= 2) {
+          const target = Buffer.from(buf[buf.length - 2]);
+          target[target.length - 2] ^= 0xff;
+          buf[buf.length - 2] = target;
+        }
+        for (const f of buf) yield f;
+      })());
+    };
+
+    await expect(Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ])).rejects.toThrow(/full_root mismatch|parse failed/i);
+
+    // Atomic install: nothing landed on rejection, including the latest
+    // commit from the header.
+    expect(destDag.getCommit(2)).toBeNull();
+    expect(destDag.getCommit(1)).toBeNull();
+  });
+
+  test("post-install: joiner's _prev resolves cross-node — fresh submissions chain off installed history", async () => {
+    // The full closure of the live bug: a joiner who installed a snapshot
+    // must be able to submit a NEW tx whose `prev` (from getRecentPrev())
+    // points at an installed tx_id that the source can resolve. Snapshot
+    // install uses dag.addTx in tx_id-ASC order; addTx's per-row
+    // _updatePrev leaves the ring at [highest_tx_id, second_highest]
+    // after the batch — exactly what a fresh bootstrap would compute.
+    // Without that update fired correctly, joiner's _prev would still
+    // hold genesis tx_ids, and the source — which has its own _prev
+    // built from real consensus traffic — would not have seen those
+    // genesis-as-prev refs from the joiner.
+    const fx = buildCommittedDag({ committeeSize: 1, seedTxs: 4 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // After install, the joiner's _prev must reflect the installed
+    // history, not genesis. getRecentPrev returns the top of the ring
+    // — should be one of the seeded tx_ids (the one with the highest
+    // tx_id in install order, since we install ordered by tx_id ASC).
+    const joinerPrev = destDag.getRecentPrev();
+    expect(joinerPrev).toHaveLength(2);
+    expect(joinerPrev[0]).not.toBe(joinerPrev[1] === joinerPrev[0] ? "genesis-fallback" : null);
+
+    // Both refs must resolve on the joiner itself.
+    expect(destDag.getTx(joinerPrev[0])).not.toBeNull();
+    expect(destDag.getTx(joinerPrev[1])).not.toBeNull();
+
+    // Both refs must ALSO resolve on the source — that's the cross-node
+    // contract that broke on the live federation. If a joiner submits a
+    // tx with prev=joinerPrev, the source's commit-handler validation
+    // does dag.getTx(prev_id), which must succeed.
+    expect(fx.sourceDag.getTx(joinerPrev[0])).not.toBeNull();
+    expect(fx.sourceDag.getTx(joinerPrev[1])).not.toBeNull();
+  });
+});

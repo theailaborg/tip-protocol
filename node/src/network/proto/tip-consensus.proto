@@ -328,10 +328,52 @@ message SnapshotStateRow {
 }
 
 /**
- * Terminator. `row_count` is a sanity check — joiner verifies it matches
- * the number of SnapshotStateRow messages actually received (guards
- * against silent truncation on the wire).
+ * One row from the source's `transactions` table — verbatim copy. Joiner
+ * installs via `dag.saveTxRaw` (skips _applyDerivedState since the
+ * derived state already came in via SnapshotStateRow rows; skips
+ * _updatePrev since the joiner's _prev ring is re-primed from the last
+ * 2 tx_ids after install). Sent in `tx_id` order for determinism.
+ *
+ * `canonical_json` is the exact byte output of `canonicalJson(tx)` for
+ * the full tx record (tx_id, tx_type, data, timestamp, prev, signature)
+ * — same canonical form used for `txs_full_root` so both sides converge
+ * on the same hash row-by-row.
+ */
+message SnapshotTxRow {
+  bytes canonical_json = 1;
+}
+
+/**
+ * One row from the source's `commits` table — every commit row EXCEPT
+ * the latest (which already rides in SnapshotHeader). Joiner installs
+ * via the existing `dag.saveCommit`. Sent in `round` order.
+ *
+ * `canonical_json` is the exact byte output of `canonicalJson(commit)`
+ * for the full commit record (round through ack_signatures, plus the
+ * #34 chain-of-trust fields when present) — same canonical form used
+ * for `commits_full_root`.
+ */
+message SnapshotCommitRow {
+  bytes canonical_json = 1;
+}
+
+/**
+ * Terminator. Row counts are sanity checks — joiner verifies they match
+ * the number of rows of each type actually received (guards against
+ * silent truncation on the wire).
+ *
+ * #49: `txs_full_root` and `commits_full_root` are stream-computed
+ * integrity checks for the SnapshotTxRow and SnapshotCommitRow streams
+ * respectively. Both sides feed identical canonical-row sequences
+ * through the same builder → arrive at identical hex digests. Mismatch
+ * on either root rejects the snapshot install. They live in the footer
+ * (not the header) so the sender can compute them while streaming —
+ * one pass over each table.
  */
 message SnapshotEnd {
-  uint64 row_count = 1;
+  uint64 row_count = 1;             // SnapshotStateRow count (existing)
+  uint64 tx_row_count = 2;          // #49: SnapshotTxRow count
+  uint64 commit_row_count = 3;      // #49: SnapshotCommitRow count
+  bytes txs_full_root = 4;          // #49: integrity root over tx stream
+  bytes commits_full_root = 5;      // #49: integrity root over commit stream
 }

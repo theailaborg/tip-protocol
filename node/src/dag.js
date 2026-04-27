@@ -143,6 +143,15 @@ class MemoryStore {
   getAllTxs() { return [...this._txs.values()]; }
   count() { return this._txs.size; }
 
+  // §14/#49 snapshot full-history streaming. Ordered by tx_id so sender
+  // + receiver hash rows in the same order → same txs_full_root. Mirrors
+  // SQLiteStore.iterateAllTransactions for in-memory tests.
+  *iterateAllTransactions() {
+    for (const tx of [...this._txs.values()].sort((a, b) => a.tx_id.localeCompare(b.tx_id))) {
+      yield tx;
+    }
+  }
+
   getTxsByType(type) {
     return [...this._txs.values()].filter(t => t.tx_type === type);
   }
@@ -357,6 +366,14 @@ class MemoryStore {
     let max = 0;
     for (const c of this._commits.values()) { if (c.consensus_index > max) max = c.consensus_index; }
     return max;
+  }
+  // §14/#49 — see SQLiteStore.iterateAllCommitsExcept for the contract.
+  *iterateAllCommitsExcept(latestRound) {
+    const sorted = [...this._commits.values()].sort((a, b) => a.round - b.round);
+    for (const c of sorted) {
+      if (latestRound != null && latestRound > 0 && c.round === latestRound) continue;
+      yield { ...c, committee: [...(c.committee || [])] };
+    }
   }
 
   // ── Canonical derived state (§14 snapshot-sync) ─────────────────────────
@@ -812,6 +829,14 @@ class SQLiteStore {
   getTxsByType(type) { return this._stmts.txsByType.all(type).map(r => this._parseTx(r)); }
   getTxsByTypeAndCtid(type, ctid) { return this._stmts.txsByTypeAndCtid.all(type, ctid).map(r => this._parseTx(r)); }
   getTxsByTipId(tipId) { return this._stmts.txsByTipId.all(tipId, tipId).map(r => this._parseTx(r)); }
+  // §14/#49 snapshot full-history streaming. Ordered by tx_id (PK index)
+  // so sender + receiver hash rows in the same order → same txs_full_root.
+  // Uses better-sqlite3 .iterate() so memory stays bounded at one row.
+  *iterateAllTransactions() {
+    for (const row of this.db.prepare("SELECT * FROM transactions ORDER BY tx_id ASC").iterate()) {
+      yield this._parseTx(row);
+    }
+  }
 
   // ── Identities ────────────────────────────────────────────────────────────
   saveIdentity(rec) {
@@ -1029,6 +1054,20 @@ class SQLiteStore {
   getLatestConsensusIndex() {
     return this._stmts.getLatestConsensusIndex.get().idx || 0;
   }
+  // §14/#49 snapshot full-history streaming. Ordered by round (PK) so sender
+  // + receiver hash commits in the same order → same commits_full_root.
+  // Excludes the latest commit by design — that one already rides in
+  // SnapshotHeader (round, anchor, acks, roots all live there). The caller
+  // passes the latest round so we filter it out at the SQL level.
+  *iterateAllCommitsExcept(latestRound) {
+    const stmt = (latestRound != null && latestRound > 0)
+      ? this.db.prepare("SELECT * FROM commits WHERE round != ? ORDER BY round ASC")
+      : this.db.prepare("SELECT * FROM commits ORDER BY round ASC");
+    const iter = (latestRound != null && latestRound > 0) ? stmt.iterate(latestRound) : stmt.iterate();
+    for (const row of iter) {
+      yield this._parseCommit(row);
+    }
+  }
   _parseCommit(row) {
     if (!row) return null;
     return {
@@ -1171,9 +1210,18 @@ function initDAG(config) {
       // 1. timestamp first (part of canonical form)
       // 2. prev refs second (part of canonical form — must precede tx_id)
       // 3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
-      if (!tx.timestamp) tx.timestamp = new Date().toISOString();
-      if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
+      //
+      // Auto-fill only fires when tx_id is NOT already set. A caller
+      // that has committed to a tx_id has by construction committed to
+      // a specific canonical form (timestamp + prev) — defaulting either
+      // here would change the canonical bytes and break verifyTxId.
+      // Genesis ships with `prev: []` on purpose; snapshot install and
+      // committed-tx replay both pass tx_id and rely on this preservation.
       const hadTxId = !!tx.tx_id;
+      if (!hadTxId) {
+        if (!tx.timestamp) tx.timestamp = new Date().toISOString();
+        if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
+      }
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
 
       if (!tx.tx_id) tx.tx_id = computeTxId(tx);
@@ -1188,6 +1236,15 @@ function initDAG(config) {
     getTxsByTypeAndCtid: (type, ctid) => store.getTxsByTypeAndCtid(type, ctid),
     getTxsByTipId: (tipId) => store.getTxsByTipId(tipId),
     getRecentPrev: () => [..._prev],
+
+    // §14/#49 — streaming iterator over all rows in `transactions`,
+    // ordered by tx_id. Used by snapshot sender to ship the full pre-
+    // snapshot history. Receiver installs each row via addTx; addTx's
+    // tightened auto-fill (no fill when tx_id is set) preserves
+    // genesis-style `prev: []` correctly, and its per-row _updatePrev
+    // leaves the ring at [highest_tx_id, second_highest] after the
+    // batch — exactly what a fresh re-prime would compute.
+    iterateAllTransactions: () => store.iterateAllTransactions(),
 
     // ── Identity ──────────────────────────────────────────────────────────
     saveIdentity: (rec) => store.saveIdentity(rec),
@@ -1252,6 +1309,11 @@ function initDAG(config) {
     getLatestCommit: () => store.getLatestCommit(),
     getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),
     getLatestConsensusIndex: () => store.getLatestConsensusIndex(),
+    // §14/#49 streaming iterator over all rows in `commits` ordered by
+    // round, EXCLUDING the latest (which already rides in SnapshotHeader
+    // — round, anchor, acks, roots all live there). Used by snapshot
+    // sender to ship full commit history for chain-of-trust audits.
+    iterateAllCommitsExcept: (latestRound) => store.iterateAllCommitsExcept(latestRound),
 
     // ── Equivocation defense: votes_seen (§1) ────────────────────────────
     recordSeenVote: (round, author, batchHash) => store.recordSeenVote(round, author, batchHash),
