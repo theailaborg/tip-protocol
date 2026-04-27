@@ -31,6 +31,10 @@ const path = require("path");
 // visible even when running in quiet mode — startup, shutdown, consensus
 // state transitions. For file purposes notice is stored at info level.
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3, notice: 2 };
+// Per-level ANSI colors so a busy terminal scans at a glance. Bright cyan
+// for `notice` so the bypass tier visually pops above the regular flow.
+const COLORS = { error: "\x1b[31m", warn: "\x1b[33m", info: "\x1b[32m", debug: "\x1b[90m", notice: "\x1b[96m" };
+const RESET = "\x1b[0m";
 const LOG_DIR = process.env.TIP_LOG_DIR || path.resolve(__dirname, "../logs");
 
 const _fileMaxLevel = LEVELS[process.env.TIP_LOG_LEVEL || "info"] ?? LEVELS.info;
@@ -97,12 +101,15 @@ function _write(level, source, args) {
 
   // Console output — separate threshold from file. `notice` bypasses the
   // threshold so startup / state-transition events always surface on the
-  // terminal even when TIP_CONSOLE_LEVEL=warn.
+  // terminal even when TIP_CONSOLE_LEVEL=warn. Errors / warns route to
+  // stderr (Node convention — keeps clean stdout for piping); colored
+  // by level so operators can scan a busy terminal.
   const forceConsole = level === "notice";
   if (forceConsole || levelNum <= _consoleMaxLevel) {
-    if (level === "error") console.error(line);
-    else if (level === "warn") console.warn(line);
-    else console.log(line);
+    const colored = (COLORS[level] || "") + line + RESET;
+    if (level === "error") console.error(colored);
+    else if (level === "warn") console.warn(colored);
+    else console.log(colored);
   }
 
   if (_suppressFileLogging) return;

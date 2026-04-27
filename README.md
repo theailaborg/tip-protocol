@@ -102,6 +102,21 @@ Header set X-TIP-Content-Bind "[domain-bind-hash]"
 <meta property="tip:origin" content="OH" />
 ```
 
+### System Requirements
+
+A TIP node runs ML-DSA-65 signatures on every transaction and Groth16 ZK proofs on every identity registration. Both are CPU-bound, so single-core hosts are not sufficient even for a pilot.
+
+| Tier | vCPU | RAM | Storage | Throughput target |
+|------|------|-----|---------|-------------------|
+| **Minimum** | 2 | 2 GB | 20 GB SSD | < 1K registrations / day |
+| **Recommended** | 4 | 4 GB | 100 GB NVMe SSD | < 100K registrations / day |
+| **High-traffic** | 8 | 8 GB | 500 GB+ NVMe SSD | > 100K registrations / day |
+
+Notes:
+
+- Storage grows ~14 KB per DAG transaction (signature + canonical JSON). The DAG is append-only — there is no built-in pruning.
+- Node.js 18+ and 64-bit OS are required (`better-sqlite3` and the post-quantum crypto bindings ship as native modules).
+
 ### Run a Node (Node.js)
 
 ```bash
