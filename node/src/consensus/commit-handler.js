@@ -141,6 +141,10 @@ function createCommitHandler({ dag, scoring, config }) {
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
+            // #55: forward creator_name from tx.data so the VP-attested
+            // display name persists in the DAG row. Column already exists
+            // on `identities` (dag.js); this was the missing forward-through.
+            creator_name: d.creator_name || null,
           });
           // Initial score (scores table is a cache, see Consensus issue #31).
           if (d.tip_id) {
@@ -162,6 +166,10 @@ function createCommitHandler({ dag, scoring, config }) {
             status: d.prescan_flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
+            // #54: forward registered_url so the URL persists in the DAG row.
+            // The column already exists on `content` (dag.js); this was the
+            // missing forward-through from tx.data.
+            registered_url: d.registered_url || null,
           });
         }
         break;
@@ -289,14 +297,25 @@ function createCommitHandler({ dag, scoring, config }) {
       if (tt === TX_TYPES.REGISTER_CONTENT) {
         const identity = dag.getIdentity(d.author_tip_id);
         if (!identity || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, identity.public_key, ["author_tip_id", "origin_code", "content_hash"]);
+        // Mirror content-service.js — include registered_url in the
+        // signed-fields list when the client included it. Field list
+        // drift between API and commit-handler is the #56 systemic
+        // class; this case is #54.
+        const fields = d.registered_url
+          ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
+          : ["author_tip_id", "origin_code", "content_hash"];
+        return verifyBodySignature(d, d.signature, identity.public_key, fields);
       }
 
       if (tt === TX_TYPES.REGISTER_IDENTITY) {
         const vp = dag.getVP(d.vp_id);
         if (!vp || !d.vp_signature) return false;
-        return verifyBodySignature(d, d.vp_signature, vp.public_key,
-          ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"]);
+        // Mirror identity-service.js — include creator_name when the VP
+        // attested a display name. Same drift class as #54; tracked
+        // separately as #55.
+        const BASE_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+        const fields = d.creator_name ? [...BASE_FIELDS, "creator_name"] : BASE_FIELDS;
+        return verifyBodySignature(d, d.vp_signature, vp.public_key, fields);
       }
 
       if (tt === TX_TYPES.CONTENT_VERIFIED) {
