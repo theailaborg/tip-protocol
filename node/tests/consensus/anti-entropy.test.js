@@ -760,7 +760,7 @@ describe("start/stop", () => {
       "libp2p-fast-A": "tip://node/FAST-A",
       "libp2p-fast-B": "tip://node/FAST-B",
       "libp2p-fast-C": "tip://node/FAST-C",
-      "libp2p-slow":   "tip://node/SLOW",
+      "libp2p-slow": "tip://node/SLOW",
     };
 
     const openStreamImpl = async (peerId) => {
@@ -926,5 +926,174 @@ describe("start/stop", () => {
     await ae.start();  // second call must not re-register or re-schedule
     ae.stop();
     expect(handleCalls).toHaveLength(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #46 — snapshot fallback when syncFromPeer signals snapshot_required
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Recovery scenario: an authorized peer drifts past gc_depth rounds behind
+// without disconnecting (slow link, paused VM, transient network). On the
+// next anti-entropy cycle:
+//   1. syncFromPeer({ fromRound: self+1 }) → peer prunes that range, replies
+//      { snapshotRequired: true, earliestAvailableRound: N }
+//   2. AE invokes snapshotHandler.requestSnapshotFromPeer(peer, { minRound })
+//   3. Snapshot installs derived state + tx + commit history atomically
+//   4. AE marks the install round via narwhal.exitSyncMode so round
+//      production resumes at the right place
+//
+// Pre-#46 step 2 was missing — AE just retried cert sync forever.
+//
+// Required behavior of the fallback path:
+//   - Suspend round production via narwhal.enterSyncMode BEFORE the install
+//     starts (so consensus doesn't try to commit at the old round mid-install)
+//   - Exit sync mode AFTER install with target = snapshot.round (the round
+//     the install is anchored at). narwhal.exitSyncMode is round-monotonic
+//     and floors via dag.getLatestRound, so passing a stale value is safe.
+//   - On snapshot failure: leave node alone. Don't false-ready-claim, don't
+//     loop. Next AE cycle (4s later) retries.
+
+function fakeNarwhal() {
+  const calls = { enter: 0, exit: [] };
+  return {
+    enterSyncMode: () => { calls.enter++; },
+    exitSyncMode: (round) => { calls.exit.push(round); },
+    _calls: calls,
+  };
+}
+
+function fakeSnapshotHandler({ snapImpl } = {}) {
+  const calls = [];
+  return {
+    requestSnapshotFromPeer: async (peerId, opts) => {
+      calls.push({ peerId, opts });
+      if (snapImpl) return snapImpl(peerId, opts);
+      return { round: 5000, consensus_index: 42, rows_installed: 100, state_merkle_root: "deadbeef" };
+    },
+    _calls: calls,
+  };
+}
+
+describe("#46 anti-entropy snapshot fallback", () => {
+  test("snapshot_required → invokes requestSnapshotFromPeer with earliestAvailableRound", async () => {
+    const sync = fakeSyncHandler({
+      syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
+    });
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync, snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+
+    expect(result).toBe("snapshot_installed");
+    expect(snap._calls).toHaveLength(1);
+    expect(snap._calls[0].peerId).toBe("peer-id");
+    expect(snap._calls[0].opts.minRound).toBe(4500);
+  });
+
+  test("snapshot install enters sync mode BEFORE install and exits AFTER with snapshot's round", async () => {
+    // Track call order to verify enterSyncMode fires first, then install,
+    // then exitSyncMode. Required so consensus doesn't commit at stale
+    // rounds while the DAG is being atomically rewritten.
+    const order = [];
+    const sync = fakeSyncHandler({
+      syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
+    });
+    const snap = {
+      requestSnapshotFromPeer: async () => {
+        order.push("install");
+        return { round: 4900, consensus_index: 42, rows_installed: 100 };
+      },
+    };
+    const narwhal = {
+      enterSyncMode: () => order.push("enterSyncMode"),
+      exitSyncMode: (round) => order.push(`exitSyncMode(${round})`),
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync, snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+
+    expect(order).toEqual(["enterSyncMode", "install", "exitSyncMode(4900)"]);
+  });
+
+  test("snapshot install also fails → no false-ready, exits sync mode at self's pre-install round", async () => {
+    // Belt-and-braces for #45: if the snapshot fallback ALSO can't help
+    // (e.g. peer has no commit row, network failure mid-install), AE must
+    // NOT call exitSyncMode with a fake round. Either don't exit at all
+    // (next cycle retries) or exit at our own current round (stay put).
+    // What we MUST avoid: claiming to be "ready at round N" when we have
+    // no data backing N.
+    const sync = fakeSyncHandler({
+      syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
+    });
+    const snap = {
+      requestSnapshotFromPeer: async () => { throw new Error("peer has no commit"); },
+    };
+    const narwhal = fakeNarwhal();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync, snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5, round: 7 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5, round: 7 }));
+
+    expect(result).toBe("snapshot_failed");
+    expect(narwhal._calls.enter).toBe(1);
+    // exitSyncMode must NOT be called with peer's far-ahead round (5000).
+    // If called at all, it must be with our current round or lower so
+    // narwhal's monotonic guard keeps us where we were.
+    for (const round of narwhal._calls.exit) {
+      expect(round).toBeLessThanOrEqual(7);
+    }
+  });
+
+  test("snapshot success increments gaps_pulled metric (cumulative with cert-sync gap pulls)", async () => {
+    const sync = fakeSyncHandler({
+      syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
+    });
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync, snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+
+    expect(ae.stats().metrics.gaps_pulled).toBe(1);
+  });
+
+  test("backward-compat: AE created without snapshotHandler/narwhal still handles snapshot_required gracefully", async () => {
+    // Existing wiring (consensus/index.js pre-#46) doesn't pass
+    // snapshotHandler or narwhal. Don't crash if they're absent — fall
+    // through to the old behavior (return as if snapshot_required was a
+    // pull failure; next AE cycle retries; halt-gate eventually catches it).
+    const sync = fakeSyncHandler({
+      syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
+    });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync,    // no snapshotHandler, no narwhal
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
+    expect(["pull_failed", "snapshot_required_no_handler"]).toContain(result);
   });
 });

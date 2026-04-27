@@ -63,7 +63,7 @@ const log = getLogger("tip.anti-entropy");
  * @param {Object} [options.log]            Override logger (for tests)
  * @returns {Object} { start, stop, getStatus, queryPeer, checkAndReconcile, registerProtocol, _handleIncomingSyncStatus, _metrics }
  */
-function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusState, isAuthorizedPeer, log: customLog } = {}) {
+function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, getSelfNodeId, getConsensusState, isAuthorizedPeer, log: customLog } = {}) {
   const _log = customLog || log;
   const _isAuthorizedPeer = typeof isAuthorizedPeer === "function" ? isAuthorizedPeer : null;
   const _metrics = {
@@ -295,13 +295,65 @@ function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusSt
   }
 
   /**
+   * #46: peer's cert GC horizon is past our requested fromRound, so cert
+   * sync can't help. Request a §14 state snapshot instead.
+   *
+   * Suspends round production for the duration of the install (snapshot
+   * rewrites the local DAG atomically — committing at stale rounds mid-
+   * install would corrupt state). Resumes via narwhal.exitSyncMode at
+   * the snapshot's anchor round on success, or at our pre-install round
+   * on failure. narwhal is round-monotonic + DAG-floored, so neither
+   * path can move us backwards from where we already are.
+   *
+   * Without this fallback an authorized peer that drifts past gc_depth
+   * rounds behind (slow link, paused VM, transient outage) loops here
+   * forever — every AE cycle hits the same wall.
+   *
+   * @returns {"snapshot_installed"|"snapshot_failed"|"snapshot_required_no_handler"}
+   */
+  async function _runSnapshotFallback(peerId, syncResult, selfState) {
+    if (!snapshotHandler || typeof snapshotHandler.requestSnapshotFromPeer !== "function") {
+      // Backward-compat: AE wired without a snapshot handler. Fall back
+      // to old behavior — log and let the next AE cycle retry; halt-gate
+      // catches truly stuck nodes after 3× round timeout.
+      _log.warn(`anti-entropy: peer ${peerId.slice(0, 12)} signaled snapshot_required but no snapshot handler available — node will stay behind until peer's GC horizon allows cert sync (unlikely on idle federations)`);
+      return "snapshot_required_no_handler";
+    }
+
+    const minRound = Number(syncResult.earliestAvailableRound || 0);
+    _log.info(`anti-entropy: cert sync says snapshot_required (peer earliest=${minRound}); falling back to snapshot fast-sync`);
+
+    if (narwhal && typeof narwhal.enterSyncMode === "function") {
+      narwhal.enterSyncMode();
+    }
+
+    try {
+      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound });
+      const targetRound = Number(installed?.round || 0);
+      if (narwhal && typeof narwhal.exitSyncMode === "function") {
+        narwhal.exitSyncMode(targetRound);
+      }
+      _metrics.gaps_pulled++;
+      _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed?.rows_installed || 0})`);
+      return "snapshot_installed";
+    } catch (err) {
+      _log.warn(`anti-entropy: snapshot fallback from ${peerId.slice(0, 12)} failed: ${err.message}`);
+      if (narwhal && typeof narwhal.exitSyncMode === "function") {
+        const safeRound = Number(selfState.round || 0);
+        narwhal.exitSyncMode(safeRound);
+      }
+      return "snapshot_failed";
+    }
+  }
+
+  /**
    * Compare one peer's status against our own and take the appropriate action.
    * Pure function of inputs + side effects — no scheduling here.
    *
    * @param {string} peerId
    * @param {Object} peerStatus  from queryPeer
    * @param {Object} selfState   from getConsensusState
-   * @returns {"behind"|"ahead"|"equal"|"divergent"|"pull_failed"}
+   * @returns {"behind"|"ahead"|"equal"|"divergent"|"pull_failed"|"snapshot_installed"|"snapshot_failed"|"snapshot_required_no_handler"}
    */
   async function checkAndReconcile(peerId, peerStatus, selfState) {
     if (!peerStatus) return "ahead";  // conservative — no info, do nothing
@@ -316,16 +368,28 @@ function createAntiEntropy({ network, syncHandler, getSelfNodeId, getConsensusSt
       // We're behind. Pull the gap via existing sync protocol. fromRound
       // starts at our next-uncommitted round so we only fetch the delta.
       _log.info(`anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} by ${peerCommitted - selfCommitted} rounds — pulling gap`);
+
+      let syncResult = null;
       try {
         if (syncHandler && typeof syncHandler.syncFromPeer === "function") {
-          await syncHandler.syncFromPeer(peerId, { fromRound: selfCommitted + 1 });
-          _metrics.gaps_pulled++;
+          syncResult = await syncHandler.syncFromPeer(peerId, { fromRound: selfCommitted + 1 });
         }
-        return "behind";
       } catch (err) {
         _log.warn(`anti-entropy: gap pull from ${peerId.slice(0, 12)} failed: ${err.message}`);
         return "pull_failed";
       }
+
+      // #46: peer's GC horizon already pruned the cert range we need.
+      // Fall back to §14 state snapshot via the focused helper. Returning
+      // the Promise directly (rather than `return await`) is fine —
+      // checkAndReconcile is async and the caller awaits its result.
+      if (syncResult?.snapshotRequired) {
+        return _runSnapshotFallback(peerId, syncResult, selfState);
+      }
+
+      // Normal cert-sync gap pull succeeded (or no syncHandler wired).
+      _metrics.gaps_pulled++;
+      return "behind";
     }
 
     if (peerCommitted === selfCommitted && selfRoot && peerRoot && selfRoot !== peerRoot) {

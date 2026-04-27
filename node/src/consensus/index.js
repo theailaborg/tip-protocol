@@ -126,6 +126,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // via GossipSub retention alone.
   const antiEntropy = createAntiEntropy({
     network, syncHandler,
+    // #46: snapshot fallback when peer's GC horizon prunes the round we
+    // need. Without these the AE loop spins forever on lagging nodes
+    // that fell past gc_depth rounds behind.
+    snapshotHandler,
+    narwhal,
     isAuthorizedPeer,
     getSelfNodeId: () => nodeId,
     getConsensusState: () => ({
