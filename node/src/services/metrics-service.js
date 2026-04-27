@@ -92,7 +92,7 @@ function registrySection(dag) {
   return out.join("\n");
 }
 
-function networkSection(network) {
+function networkSection(network, dag) {
   const net = network?.current;
   if (!net) return "";
 
@@ -102,31 +102,48 @@ function networkSection(network) {
   ];
 
   const authorized = net.authorizedPeers ? net.authorizedPeers() : {};
-  const peerTipIds = Object.values(authorized).filter(Boolean).sort();
+  const peerTipIds = Object.values(authorized).filter(Boolean);
+
+  // Resolve TIP IDs → human-readable names via the local registry. Falls
+  // back to the short TIP ID for peers whose registry row hasn't replicated
+  // yet (boot ordering: the libp2p connection authorizes faster than the
+  // DAG row propagates on a cold join). The lookup is cheap — registry is
+  // an in-memory map keyed by TIP ID.
+  function resolveName(tipId) {
+    try {
+      const node = dag?.getNode?.(tipId);
+      if (node?.name) return node.name;
+    } catch { /* fall through */ }
+    return tipId.slice(0, 16);
+  }
+  const peerNames = peerTipIds.map(resolveName).sort();
 
   // Per-peer connectivity, two views of the same data:
   //
   // (1) tip_network_peer_connection — one line per (self, peer) directed
-  //     edge. Best for diagnosing asymmetric drops (A→B exists but B→A
-  //     doesn't). Use when you need the raw graph.
+  //     edge. The `peer` label is the canonical TIP ID — best for
+  //     diagnosing asymmetric drops (A→B exists but B→A doesn't) where
+  //     identity stability matters. Use when you need the raw graph.
   //
-  // (2) tip_network_peer_list — single line per emitter with all peers
-  //     pre-joined into a comma-separated label. Best for at-a-glance
-  //     dashboards: "node X is connected to: A, B, C" in one row.
-  //     Sorted so identical peer sets render identically across emitters.
+  // (2) tip_network_peer_list — single line per emitter with all peer
+  //     NAMES pre-joined into a comma-separated label, sorted alphabetically.
+  //     Best for at-a-glance dashboards: "node X is connected to: A, B, C"
+  //     in one row. Names are stable across reconnects (tied to registered
+  //     identity, not libp2p peer ID) so the label value churns less
+  //     than a TIP-ID-based encoding would.
   //
   // (1) is canonical (one time series per edge), (2) is a convenience
-  // view that loses some PromQL flexibility but reads instantly.
+  // view optimised for human readability.
   if (peerTipIds.length > 0) {
-    out.push(`# HELP tip_network_peer_connection Directed edge: emitter (node label) is currently connected to (peer label). Value is always 1; the labels carry the topology.`);
+    out.push(`# HELP tip_network_peer_connection Directed edge: emitter (node label) is currently connected to (peer label, canonical TIP ID). Value is always 1; the labels carry the topology.`);
     out.push(`# TYPE tip_network_peer_connection gauge`);
-    for (const tipPeerId of peerTipIds) {
+    for (const tipPeerId of peerTipIds.slice().sort()) {
       out.push(line("tip_network_peer_connection", 1, { peer: tipPeerId }));
     }
   }
-  out.push(`# HELP tip_network_peer_list Comma-separated list of peers this emitter is currently connected to (sorted for stable cardinality). Value is the peer count.`);
+  out.push(`# HELP tip_network_peer_list Comma-separated NAMES of peers this emitter is currently connected to (sorted alphabetically; falls back to short TIP ID for peers whose registry row hasn't replicated yet). Value is the peer count.`);
   out.push(`# TYPE tip_network_peer_list gauge`);
-  out.push(line("tip_network_peer_list", peerTipIds.length, { peers: peerTipIds.join(",") }));
+  out.push(line("tip_network_peer_list", peerTipIds.length, { peers: peerNames.join(",") }));
 
   return out.join("\n");
 }
@@ -303,7 +320,7 @@ function createMetricsService({ dag, config, consensus, network }) {
     sections.push(dagSection(dag));
     sections.push(registrySection(dag));
 
-    const networkBlock = networkSection(network);
+    const networkBlock = networkSection(network, dag);
     if (networkBlock) sections.push(networkBlock);
 
     const cons = consensus?.current;
