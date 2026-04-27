@@ -175,7 +175,17 @@ function bullsharkSection(s) {
 
 function mempoolSection(s) {
   const m = s.mempool || {};
-  const out = [gauge("tip_mempool_size", "Pending tx count in mempool", m.size)];
+  const c = m.counters || {};
+  const out = [
+    gauge("tip_mempool_size", "Pending tx count in mempool (gauge — may miss transients on busy networks; pair with tip_mempool_received_total)", m.size),
+    // Cumulative counters — never miss transient tx flow that gauges
+    // can sample-through. rate(tip_mempool_received_total[1m]) = submit
+    // rate; rate(tip_mempool_drained_total[1m]) = batched-into-cert rate.
+    counter("tip_mempool_received_total", "Cumulative txs accepted into the mempool since process start", c.received_total),
+    counter("tip_mempool_drained_total", "Cumulative txs drained from the mempool into Narwhal batches", c.drained_total),
+    counter("tip_mempool_evicted_total", "Cumulative txs evicted from the mempool for exceeding TTL", c.evicted_total),
+    counter("tip_mempool_rejected_total", "Cumulative submit attempts rejected (full / duplicate / malformed)", c.rejected_total),
+  ];
   if (m.capacity != null) out.push(gauge("tip_mempool_capacity", "Maximum mempool size", m.capacity));
   return out.join("\n");
 }

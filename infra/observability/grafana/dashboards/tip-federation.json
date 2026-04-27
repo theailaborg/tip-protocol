@@ -60,7 +60,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_network_peers_authorized{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_network_peers_authorized{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}",
           "instant": false
         }
@@ -122,7 +122,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_consensus_halted{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_consensus_halted{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -235,7 +235,7 @@
       "id": 14,
       "type": "stat",
       "title": "Consensus index (anchor commits since genesis)",
-      "description": "**Consensus index** \u2014 Persisted monotonic anchor commit counter (#44). Increments on every successful Bullshark anchor, recovered exactly across restarts via the `consensus_meta` kv table. Matches Mysten's `sub_dag_index`.\n\n**Healthy**: same value (or off-by-1) across all nodes; constantly increasing every ~2s.\n\n**Trouble**: drift between nodes (one node falling behind in consensus), or value frozen for > 3 minutes (consensus halted \u2014 pair with the advance-rate alert).",
+      "description": "**Consensus index (per-node)** \u2014 Each node's local count of anchor commits since its last restart, plus whatever historical floor it recovered from `consensus_meta`. Persisted via `consensus_meta` (#44) so the value survives restart on idle networks.\n\n**This is intentionally PER-NODE and will differ across nodes.** A node that started earlier (or has accumulated more historical commits) shows a higher absolute value. Don't compare absolute values between nodes \u2014 compare the **advance rate** (next panel) instead, which IS the same across all nodes when they're in sync.\n\n**Healthy**: monotonically increasing on each node; advance rate is identical across nodes. Drift in absolute value across nodes is expected and meaningless.\n\n**Trouble**: a node's value frozen for > 3 minutes = consensus halted on that node. Pair with the advance rate alert: `rate(tip_bullshark_consensus_index[5m]) == 0 for: 3m`.",
       "gridPos": {
         "x": 0,
         "y": 22,
@@ -249,7 +249,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_bullshark_consensus_index{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_bullshark_consensus_index{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -278,7 +278,7 @@
       "id": 15,
       "type": "stat",
       "title": "Consensus advance rate (anchors/min)",
-      "description": "**Consensus advance rate** \u2014 Rate of `consensus_index` advancement, anchors per minute, over a 5-minute window.\n\n**Healthy**: ~30 anchors/min (= 1 anchor per ~2s, the default Bullshark cadence). All nodes converge to the same rate.\n\n**Yellow / red (< 1/min for 3+ min)**: network has halted. Check halt-status panel + bring committee back to quorum. Pair this with an Alertmanager rule: `rate(tip_bullshark_consensus_index[5m]) == 0 for: 3m`.",
+      "description": "**Consensus advance rate (anchors/min)** \u2014 Rate of `consensus_index` advancement, anchors per minute, over a 5-minute window.\n\n**This SHOULD be the same across all nodes when they're in sync** (~30/min = 1 anchor per 2s, the Bullshark cadence). Unlike the absolute consensus_index value (which is per-node), the rate is a network-wide signal.\n\n**Healthy**: ~25-30 anchors/min on every node, all within ~1/min of each other.\n\n**Trouble**:\n- Any node < 1/min for 3+ min = consensus halted on that node\n- One node consistently lower than others = lagging, AE should auto-recover\n- All nodes drop together = federation-wide halt (check halt-status panel)\n\nAlertmanager: `rate(tip_bullshark_consensus_index[5m]) == 0 for: 3m`.",
       "gridPos": {
         "x": 12,
         "y": 22,
@@ -292,7 +292,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((rate(tip_bullshark_consensus_index{node=~\"$node\"}[5m]) * on(node) group_left(name) tip_node_registry_info) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((rate(tip_bullshark_consensus_index{node=~\"$node\"}[5m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -347,7 +347,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_narwhal_active_participants{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_narwhal_active_participants{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -407,7 +407,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -443,7 +443,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_bullshark_last_committed_round{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_bullshark_last_committed_round{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -479,7 +479,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((tip_narwhal_current_round{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "((tip_narwhal_current_round{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -525,7 +525,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -573,7 +573,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -620,7 +620,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_bullshark_txs_committed_total{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(tip_bullshark_txs_committed_total{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
@@ -666,12 +666,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}} queried"
         },
         {
           "refId": "B",
-          "expr": "(rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}} pulled"
         }
       ],
@@ -718,7 +718,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],

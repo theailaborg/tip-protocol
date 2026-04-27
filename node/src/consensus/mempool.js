@@ -40,6 +40,12 @@ function createMempool(dag, options = {}) {
   /** @type {Function|null} Callback when a tx is added (used by Narwhal to wake from idle) */
   let _onTxAdded = null;
 
+  // Cumulative counters for observability — gauges miss fast tx flow because
+  // a tx typically lives in the mempool for ~2-4s while Prometheus scrapes
+  // at ~5s intervals. Counters never miss; rate(received_total[1m]) gives
+  // submission rate, rate(drained_total[1m]) gives commit rate.
+  const _counters = { received_total: 0, drained_total: 0, evicted_total: 0, rejected_total: 0 };
+
   // ── Restore from disk on startup ────────────────────────────────────────
   if (dag && typeof dag.getMempoolTxs === "function") {
     try {
@@ -65,19 +71,23 @@ function createMempool(dag, options = {}) {
    */
   function add(tx) {
     if (!tx || !tx.tx_id) {
+      _counters.rejected_total++;
       return { added: false, reason: "tx missing tx_id" };
     }
 
     if (_pending.has(tx.tx_id)) {
+      _counters.rejected_total++;
       return { added: false, reason: "duplicate" };
     }
 
     if (_pending.size >= maxSize) {
+      _counters.rejected_total++;
       log.warn(`Mempool full (${maxSize}), rejecting tx ${tx.tx_id}`);
       return { added: false, reason: "mempool_full" };
     }
 
     _pending.set(tx.tx_id, { tx, receivedAt: Date.now() });
+    _counters.received_total++;
 
     // Persist to disk
     if (dag && typeof dag.saveMempoolTx === "function") {
@@ -111,6 +121,7 @@ function createMempool(dag, options = {}) {
 
     // Remove from memory
     for (const id of drainedIds) _pending.delete(id);
+    _counters.drained_total += drained.length;
 
     // Remove from disk
     if (drainedIds.length > 0 && dag && typeof dag.deleteMempoolTxs === "function") {
@@ -203,6 +214,7 @@ function createMempool(dag, options = {}) {
       }
     }
     if (evicted.length > 0) {
+      _counters.evicted_total += evicted.length;
       log.info(`Mempool evicted ${evicted.length} stale txs (older than ${maxTxAgeSec}s)`);
       if (dag && typeof dag.deleteMempoolTxs === "function") {
         try { dag.deleteMempoolTxs(evicted); } catch (err) {
@@ -226,6 +238,11 @@ function createMempool(dag, options = {}) {
       size: _pending.size,
       maxSize,
       oldestAgeSec: oldestAge ? Math.round(oldestAge) : null,
+      // Cumulative counters — never miss transient tx flow that the
+      // gauge sees-only-at-scrape-time. rate(received_total[1m]) =
+      // submission rate; rate(drained_total[1m]) = commit-into-batch
+      // rate; ratio of drained:received over a window ≈ throughput.
+      counters: { ..._counters },
     };
   }
 
