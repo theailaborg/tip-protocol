@@ -367,6 +367,15 @@ class MemoryStore {
     for (const c of this._commits.values()) { if (c.consensus_index > max) max = c.consensus_index; }
     return max;
   }
+  // #44 — consensus_meta singleton kv. Same contract as SQLiteStore.
+  setConsensusMeta(key, value) {
+    if (!this._consensusMeta) this._consensusMeta = new Map();
+    this._consensusMeta.set(key, String(value));
+  }
+  getConsensusMeta(key) {
+    if (!this._consensusMeta) return null;
+    return this._consensusMeta.has(key) ? this._consensusMeta.get(key) : null;
+  }
   // §14/#49 — see SQLiteStore.iterateAllCommitsExcept for the contract.
   *iterateAllCommitsExcept(latestRound) {
     const sorted = [...this._commits.values()].sort((a, b) => a.round - b.round);
@@ -656,6 +665,22 @@ class SQLiteStore {
         tx_data         TEXT NOT NULL,
         received_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
+
+      -- ── #44: Consensus singleton key-value store ───────────────────
+      -- Tiny kv table for consensus state that's a single value rather
+      -- than a per-event row. Currently used to persist the in-memory
+      -- consensus_index counter (anchor count) so it survives restarts
+      -- on idle federations — where commit rows are sparse and the
+      -- counter would otherwise be lost / under-recovered.
+      --
+      -- Constant footprint regardless of update frequency: every write
+      -- is INSERT OR REPLACE on the same primary key, so the table has
+      -- one row per distinct key forever. Designed for low-cardinality
+      -- singleton state; do NOT use for per-event data.
+      CREATE TABLE IF NOT EXISTS consensus_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
 
     // Backfill registered_url column for pre-existing content tables
@@ -807,6 +832,16 @@ class SQLiteStore {
       ),
       getLatestConsensusIndex: this.db.prepare(
         "SELECT MAX(consensus_index) AS idx FROM commits"
+      ),
+
+      // #44: consensus_meta singleton kv accessors. INSERT OR REPLACE
+      // because every write is a logical "set this key to this value"
+      // — never appends; row count stays constant.
+      setConsensusMeta: this.db.prepare(
+        "INSERT OR REPLACE INTO consensus_meta (key, value) VALUES (?, ?)"
+      ),
+      getConsensusMeta: this.db.prepare(
+        "SELECT value FROM consensus_meta WHERE key = ?"
       ),
 
       // §1 Equivocation defense — votes_seen
@@ -1079,6 +1114,15 @@ class SQLiteStore {
   getLatestConsensusIndex() {
     return this._stmts.getLatestConsensusIndex.get().idx || 0;
   }
+  // #44 — consensus_meta singleton kv (currently used to persist
+  // consensus_index across restarts on idle federations).
+  setConsensusMeta(key, value) {
+    this._stmts.setConsensusMeta.run(key, String(value));
+  }
+  getConsensusMeta(key) {
+    const row = this._stmts.getConsensusMeta.get(key);
+    return row ? row.value : null;
+  }
   // §14/#49 snapshot full-history streaming. Ordered by round (PK) so sender
   // + receiver hash commits in the same order → same commits_full_root.
   // Excludes the latest commit by design — that one already rides in
@@ -1335,6 +1379,12 @@ function initDAG(config) {
     getLatestCommit: () => store.getLatestCommit(),
     getCommitsFromRound: (fromRound) => store.getCommitsFromRound(fromRound),
     getLatestConsensusIndex: () => store.getLatestConsensusIndex(),
+    // #44 — consensus_meta singleton kv. setConsensusMeta replaces (not
+    // appends) the row for `key`. getConsensusMeta returns null when the
+    // key is missing — caller decides the fallback (e.g. bullshark falls
+    // back to getLatestConsensusIndex() for legacy DBs).
+    setConsensusMeta: (key, value) => store.setConsensusMeta(key, value),
+    getConsensusMeta: (key) => store.getConsensusMeta(key),
     // §14/#49 streaming iterator over all rows in `commits` ordered by
     // round, EXCLUDING the latest (which already rides in SnapshotHeader
     // — round, anchor, acks, roots all live there). Used by snapshot

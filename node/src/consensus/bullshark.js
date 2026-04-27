@@ -63,8 +63,21 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
   // commit, regardless of round. Restored from persisted commits on boot so
   // the index survives restarts. Exposed downstream via saveCommit so
   // indexers / audit tools can resume from "give me everything after N".
+  // #44: prefer the persisted consensus_meta value (anchor count, exact
+  // even on idle restarts). Fall back to max(commits.consensus_index)
+  // for legacy DBs that pre-date consensus_meta — that floor is at least
+  // as high as the last tx-bearing commit's index, so we don't go
+  // backwards. May temporarily under-report on idle until the next
+  // anchor commit re-anchors via setConsensusMeta.
   let _consensusIndex = 0;
-  try { _consensusIndex = dag.getLatestConsensusIndex ? dag.getLatestConsensusIndex() : 0; } catch { _consensusIndex = 0; }
+  try {
+    const meta = dag.getConsensusMeta ? dag.getConsensusMeta("last_consensus_index") : null;
+    if (meta != null) {
+      _consensusIndex = Number(meta) || 0;
+    } else if (dag.getLatestConsensusIndex) {
+      _consensusIndex = dag.getLatestConsensusIndex() || 0;
+    }
+  } catch { _consensusIndex = 0; }
 
   // Initialize from persisted state
   function _initFromDAG() {
@@ -178,17 +191,28 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     _metrics.anchors_committed++;
     log.debug(`Round ${voteRound}: anchor COMMITTED — leader ${leader}, support ${supportCount}/${nodeIds.length}`);
 
+    // #44: consensus_index ticks on EVERY successful anchor commit, not
+    // just tx-bearing ones. Matches Mysten's sub_dag_index semantics —
+    // a monotonic counter of consensus events that's meaningful for
+    // liveness ("network advancing?") regardless of activity level.
+    // Persisted via consensus_meta so the value survives restart on
+    // idle federations (where commit rows are sparse and the column-on-
+    // commits recovery path would under-report).
+    _consensusIndex += 1;
+    if (dag.setConsensusMeta) {
+      try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
+      catch (err) { log.warn(`Round ${voteRound}: consensus_meta write failed: ${err.message}`); }
+    }
+
     const orderedTxs = _collectOrderedTxs(leaderCert);
 
-    // Only persist a checkpoint when state actually changed. Empty
-    // anchors (no txs to commit) carry no new information — committee
-    // is unchanged, state is unchanged, there's nothing to record.
-    // Writing a row every round would make the commits table grow on
-    // wall-clock time rather than activity, exactly the pathology we're
-    // trying to avoid.
-    //
-    // consensus_index increments only on real commits — downstream
-    // consumers get a dense event counter, not a tick stream.
+    // Commit row writes are still gated on tx-bearing rounds. Empty
+    // anchors carry no new state — writing a row per anchor would make
+    // the commits table grow wall-clock-driven (~3 GB/year on 2s rounds)
+    // instead of activity-driven (~hundreds of MB/year). Each commit row
+    // still stamps the current `consensus_index` so commit-row indices
+    // are monotonic with GAPS for the empty rounds — the
+    // `idx_commits_index` UNIQUE constraint allows gaps.
     //
     // Under future GC (§2 in narwhal-parity-gap.md), empty-round certs
     // can be pruned freely because no commit row references them.
@@ -211,7 +235,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       // carries supermajority attestations over its batch hash — we
       // persist them so new joiners can verify the commit row without
       // replaying the DAG (§14 Byzantine-robust state sync).
-      _consensusIndex += 1;
       try {
         if (dag.saveCommit) {
           const stateRoot = computeStateMerkleRoot(dag);
