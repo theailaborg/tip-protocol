@@ -229,6 +229,105 @@
       }
     },
     {
+      "id": 14,
+      "type": "stat",
+      "title": "Consensus index (anchor commits since genesis)",
+      "description": "Persisted monotonic counter incremented on every Bullshark anchor commit (#44). Matches Mysten's sub_dag_index. Value is recovered exactly across restarts via consensus_meta. All nodes should report the same value when in sync; drift indicates a node falling behind.",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_bullshark_consensus_index{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Consensus advance rate (anchors/min)",
+      "description": "Rate of consensus_index advancement over 5 minutes. Healthy federation should always be >0. If this drops to 0 for 3 minutes the network has halted — pair with an Alertmanager rule.",
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_bullshark_consensus_index{node=~\"$node\"}[5m]) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": 10,
       "type": "stat",
       "title": "Active committee size (per node)",
@@ -363,7 +462,7 @@
       "title": "Narwhal current round",
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 26,
         "w": 12,
         "h": 8
       },
@@ -408,7 +507,7 @@
       "title": "Bullshark commits / 5s",
       "gridPos": {
         "x": 12,
-        "y": 22,
+        "y": 26,
         "w": 12,
         "h": 8
       },
@@ -455,7 +554,7 @@
       "title": "Mempool size over time",
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 34,
         "w": 12,
         "h": 8
       },
@@ -501,7 +600,7 @@
       "title": "Txs committed (cumulative)",
       "gridPos": {
         "x": 12,
-        "y": 30,
+        "y": 34,
         "w": 12,
         "h": 8
       },
@@ -546,7 +645,7 @@
       "title": "Anti-entropy: peers queried / gaps pulled",
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 42,
         "w": 12,
         "h": 8
       },
@@ -597,7 +696,7 @@
       "title": "Cert GC (rounds pruned)",
       "gridPos": {
         "x": 12,
-        "y": 38,
+        "y": 42,
         "w": 12,
         "h": 8
       },
