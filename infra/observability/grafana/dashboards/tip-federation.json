@@ -60,8 +60,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_network_peers_authorized{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}",
+          "expr": "((tip_network_peers_authorized{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}",
           "instant": false
         }
       ],
@@ -102,7 +102,8 @@
           },
           "min": 0
         }
-      }
+      },
+      "description": "**Peers connected** \u2014 Number of TIP-handshake-authorized peers this node currently sees.\n\n**Healthy**: equals committee_size \u2212 1 (this node sees all other committee members). For a 2-node federation, healthy = 1. For 3-node, healthy = 2.\n\n**Yellow (1)**: partial mesh \u2014 at least one peer reachable but not all.\n\n**Red (0)**: node is isolated. Submissions to this node won't propagate. Check: peer-discovery (#38), DirectPeers (#37), libp2p connectivity, firewall."
     },
     {
       "id": 2,
@@ -121,8 +122,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_consensus_halted{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((tip_consensus_halted{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -172,7 +173,8 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Halt status** \u2014 0 = consensus advancing normally; 1 = halted (no new commits for > 3\u00d7 round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational \u2014 bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
     },
     {
       "id": 3,
@@ -226,13 +228,14 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Consensus divergence** \u2014 Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event \u2014 page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
     },
     {
       "id": 14,
       "type": "stat",
       "title": "Consensus index (anchor commits since genesis)",
-      "description": "Persisted monotonic counter incremented on every Bullshark anchor commit (#44). Matches Mysten's sub_dag_index. Value is recovered exactly across restarts via consensus_meta. All nodes should report the same value when in sync; drift indicates a node falling behind.",
+      "description": "**Consensus index** \u2014 Persisted monotonic anchor commit counter (#44). Increments on every successful Bullshark anchor, recovered exactly across restarts via the `consensus_meta` kv table. Matches Mysten's `sub_dag_index`.\n\n**Healthy**: same value (or off-by-1) across all nodes; constantly increasing every ~2s.\n\n**Trouble**: drift between nodes (one node falling behind in consensus), or value frozen for > 3 minutes (consensus halted \u2014 pair with the advance-rate alert).",
       "gridPos": {
         "x": 0,
         "y": 22,
@@ -246,8 +249,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_bullshark_consensus_index{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((tip_bullshark_consensus_index{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -275,7 +278,7 @@
       "id": 15,
       "type": "stat",
       "title": "Consensus advance rate (anchors/min)",
-      "description": "Rate of consensus_index advancement over 5 minutes. Healthy federation should always be >0. If this drops to 0 for 3 minutes the network has halted — pair with an Alertmanager rule.",
+      "description": "**Consensus advance rate** \u2014 Rate of `consensus_index` advancement, anchors per minute, over a 5-minute window.\n\n**Healthy**: ~30 anchors/min (= 1 anchor per ~2s, the default Bullshark cadence). All nodes converge to the same rate.\n\n**Yellow / red (< 1/min for 3+ min)**: network has halted. Check halt-status panel + bring committee back to quorum. Pair this with an Alertmanager rule: `rate(tip_bullshark_consensus_index[5m]) == 0 for: 3m`.",
       "gridPos": {
         "x": 12,
         "y": 22,
@@ -289,8 +292,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_bullshark_consensus_index{node=~\"$node\"}[5m]) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((rate(tip_bullshark_consensus_index{node=~\"$node\"}[5m]) * on(node) group_left(name) tip_node_registry_info) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -344,8 +347,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_narwhal_active_participants{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((tip_narwhal_active_participants{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -384,7 +387,8 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Active committee size** \u2014 Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active \u2229 producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator \u2014 quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
     },
     {
       "id": 11,
@@ -403,8 +407,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_mempool_size{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -419,7 +423,8 @@
         "colorMode": "value",
         "graphMode": "area",
         "orientation": "horizontal"
-      }
+      },
+      "description": "**Mempool depth** \u2014 Number of pending transactions waiting to be committed via Bullshark.\n\n**Healthy on idle network**: 0 (no pending submissions).\n\n**Healthy on active network**: briefly > 0, drains within ~2s as anchors commit.\n\n**Trouble**: continuously growing \u2014 txs are being submitted faster than they're being committed. Could indicate a halt, slow-network committee, or a DOS pattern."
     },
     {
       "id": 12,
@@ -438,8 +443,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_bullshark_last_committed_round{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((tip_bullshark_last_committed_round{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "options": {
@@ -454,7 +459,8 @@
         "colorMode": "value",
         "graphMode": "area",
         "orientation": "horizontal"
-      }
+      },
+      "description": "**Last committed round** \u2014 The highest round at which Bullshark has finalized an anchor commit. Tracked in-memory by Bullshark, ticks every successful anchor (~2s on healthy network).\n\n**Healthy**: continuously increasing on all nodes, with at most 1-2 round drift between nodes (Bullshark requires the next wave's votes before finalizing the previous wave's leader).\n\n**Trouble**: stuck for > 6s on any node = halt; large drift between nodes = sync issue."
     },
     {
       "id": 20,
@@ -473,8 +479,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_narwhal_current_round{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "((tip_narwhal_current_round{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info)) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -499,7 +505,8 @@
             "lastNotNull"
           ]
         }
-      }
+      },
+      "description": "**Narwhal current round** \u2014 The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
     },
     {
       "id": 21,
@@ -518,8 +525,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -546,7 +553,8 @@
             "max"
           ]
         }
-      }
+      },
+      "description": "**Bullshark commits / 5s** \u2014 Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic \u2014 consensus is failing to make progress (check halt status + peer connectivity)."
     },
     {
       "id": 30,
@@ -565,8 +573,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_mempool_size{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -592,7 +600,8 @@
             "max"
           ]
         }
-      }
+      },
+      "description": "**Mempool size over time** \u2014 Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line \u2014 submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
     },
     {
       "id": 31,
@@ -611,8 +620,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_bullshark_txs_committed_total{node=~\"$node\"}) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}}"
+          "expr": "(tip_bullshark_txs_committed_total{node=~\"$node\"} * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -637,7 +646,8 @@
             "lastNotNull"
           ]
         }
-      }
+      },
+      "description": "**Txs committed (cumulative)** \u2014 Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network."
     },
     {
       "id": 40,
@@ -656,13 +666,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}} queried"
+          "expr": "(rate(tip_antientropy_peers_queried_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}} queried"
         },
         {
           "refId": "B",
-          "expr": "(rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}} pulled"
+          "expr": "(rate(tip_antientropy_gaps_pulled_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}} pulled"
         }
       ],
       "fieldConfig": {
@@ -688,7 +698,8 @@
             "mean"
           ]
         }
-      }
+      },
+      "description": "**Anti-entropy: peers queried / gaps pulled** \u2014 Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing certs (or via #46 falling back to snapshot if the gap exceeds gc_depth).\n\n**Healthy**: peers_queried ticks at the AE cadence; gaps_pulled stays at 0 (push path delivers everything live).\n\n**Trouble**: gaps_pulled > 0 sustained = push-path reliability issue (#26, #27); RPC failures = peer unreachable."
     },
     {
       "id": 41,
@@ -707,8 +718,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m])) and on(instance) (up{job=\"tip-federation\"} == 1)",
-          "legendFormat": "{{node}} runs"
+          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m]) * on(node) group_left(name) tip_node_registry_info) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -734,7 +745,8 @@
             "mean"
           ]
         }
-      }
+      },
+      "description": "**Cert GC (rounds pruned)** \u2014 Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period)."
     },
     {
       "id": 50,
@@ -1052,7 +1064,8 @@
             }
           ]
         }
-      }
+      },
+      "description": "**Registered nodes** \u2014 Total count of nodes registered in the DAG `nodes` table, regardless of their current online state.\n\n**Healthy**: matches the operator's expected federation size. Equals the sum of online + offline registered nodes (see Federation Status table below).\n\n**Trouble**: drift from expected count = unauthorized registration or missed deregistration."
     },
     {
       "id": 91,
@@ -1109,7 +1122,8 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Online (scrapeable)** \u2014 Count of nodes currently emitting metrics \u2014 `up{job=\"tip-federation\"} == 1`. Reflects whether Prometheus can reach each node's `/metrics` endpoint, NOT whether they're healthy at the consensus layer.\n\n**Healthy**: equals registered nodes (all online).\n\n**Trouble**: < registered means at least one node is unreachable. Cross-check with the Federation Status table to identify which."
     },
     {
       "id": 92,
@@ -1158,7 +1172,8 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Quorum threshold** \u2014 The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
     },
     {
       "id": 93,
@@ -1215,7 +1230,8 @@
             ]
           }
         }
-      }
+      },
+      "description": "**Active committee (max)** \u2014 Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG \u2192 split-brain on quorum denominator. Investigate immediately."
     }
   ]
 }
