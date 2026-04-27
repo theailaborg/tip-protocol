@@ -96,16 +96,25 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
       requesterNodeId: tipNodeId || "",
     });
     if (!snap || !snap.round) return 0;
-    // Tell Bullshark the anchor at snap.round is already committed so it
-    // doesn't try to re-order whatever catch-up certs arrive next. State
-    // has been written by the snapshot installer already.
-    if (bullshark?.markOrderedUpTo) bullshark.markOrderedUpTo(snap.round);
+    // Advance Bullshark's committed_round counter to peer's CURRENT
+    // committed_round (carried in SnapshotHeader.peer_committed_round),
+    // not just to the snapshot's anchor round. State at peer's current
+    // round is identical to state at snap.round when no commit rows
+    // exist between them — verified at install time by the bundle-vs-
+    // claim consistency check in snapshot-handler. Without this advance,
+    // on idle networks the joiner's counter sticks at snap.round (e.g.
+    // 1504) while peer's is much higher (e.g. 5650), and anti-entropy
+    // detects a fake "behind by N rounds" gap and loops trying to pull
+    // certs that have been GC'd.
+    const targetRound = Math.max(snap.peer_committed_round || 0, snap.round);
+    if (bullshark?.markOrderedUpTo) bullshark.markOrderedUpTo(targetRound);
     log.notice(
       `Snapshot fast-sync: installed round=${snap.round} ` +
+      `peer_committed_round=${snap.peer_committed_round || snap.round} ` +
       `consensus_index=${snap.consensus_index} rows=${snap.rows_installed} ` +
       `peer=${peerId.slice(0, 12)}`
     );
-    return snap.round;
+    return targetRound;
   } catch (err) {
     // Expected on peers that don't have a commit yet (fresh networks),
     // on peers that reject our minRound, or when verification fails.

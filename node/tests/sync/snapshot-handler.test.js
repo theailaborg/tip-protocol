@@ -47,12 +47,20 @@ beforeAll(async () => {
  * () => true` — authorization is tested separately and would otherwise add
  * noise here.
  */
-function makeHandlers({ sourceDag, destDag }) {
+function makeHandlers({ sourceDag, destDag, peerCommittedRound }) {
   const { client, server } = createStreamPair();
+  // Optional bullshark stub for tests that need to control
+  // peer_committed_round (the value the server side ships in
+  // SnapshotHeader). When omitted, defaults to the latest commit's
+  // round so old tests continue to behave as before.
+  const bullsharkStub = peerCommittedRound != null
+    ? { lastCommittedRound: () => peerCommittedRound }
+    : null;
   const sourceHandler = createSnapshotHandler({
     dag: sourceDag,
     network: { node: {}, handle: async () => { } },
     isAuthorizedPeer: () => true,
+    bullshark: bullsharkStub,
   });
   const destHandler = createSnapshotHandler({
     dag: destDag,
@@ -611,6 +619,55 @@ describe("§14/#49 snapshot full-history shipping", () => {
     expect(result.round).toBe(2);
     expect(result.state_merkle_root).toBe(fx.stateRoot);
     expect(destDag.getCommit(2)).toBeTruthy();
+  });
+
+  test("peer_committed_round: joiner advances bullshark counter to peer's value, not just snapshot round", async () => {
+    // Live-bug regression: when the peer is at a much higher round than
+    // its latest tx-bearing commit (idle network past gc_depth), the
+    // joiner's bullshark.lastCommittedRound was getting stuck at
+    // snapshot.round while peer's was much higher. Anti-entropy then
+    // detected a fake "behind by N rounds" gap and looped trying to pull
+    // certs that don't exist.
+    //
+    // Fix: SnapshotHeader carries peer_committed_round (peer's bullshark
+    // counter at serve time). Joiner advances its counter to that value
+    // after install. State is identical because no commits exist in the
+    // bundle between snapshot.round and peer_committed_round (verified
+    // by the install-time bundle check below).
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    // Simulate an idle peer: snapshot is at round 2, peer claims it's
+    // currently at round 5000 (no tx-bearing commits since round 2).
+    fx.peerCommittedRound = 5000;
+
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({
+      sourceDag: fx.sourceDag, destDag, peerCommittedRound: 5000,
+    });
+
+    const [, result] = await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Install descriptor exposes peer_committed_round so peer-sync.js
+    // can advance bullshark.markOrderedUpTo to it.
+    expect(result.peer_committed_round).toBe(5000);
+    expect(result.round).toBe(2);
+  });
+
+  test("peer_committed_round: rejects bundle where peer claims older round than snapshot itself", async () => {
+    // Sanity check: peer_committed_round < snapshot.round is internally
+    // contradictory (peer is supposedly behind its own latest commit).
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({
+      sourceDag: fx.sourceDag, destDag, peerCommittedRound: 1,
+    });
+
+    await expect(Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ])).rejects.toThrow(/peer_committed_round.*snapshot.*round/i);
   });
 
   test("post-install: joiner's _prev resolves cross-node — fresh submissions chain off installed history", async () => {

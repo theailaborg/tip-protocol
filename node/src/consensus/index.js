@@ -76,7 +76,10 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // sync-handler (which does cert replay) — a joiner typically tries
   // snapshot first and falls back to cert sync if no peer has a recent enough
   // commit. Fallback wiring lives in the join flow (not in this orchestrator).
-  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer });
+  // Construction is deferred to after bullshark is created so the snapshot
+  // server can ship peer's bullshark.lastCommittedRound to joiners (lets the
+  // joiner advance its own committed_round counter past the snapshot anchor
+  // when the network's been idle for many rounds).
 
   // Active committee is derived deterministically from DAG state: registered +
   // produced a cert in the last K rounds. Every node reading the same DAG
@@ -109,6 +112,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
   });
   narwhalRef.current = narwhal;
+
+  // §14 snapshot handler — created here (after bullshark) so it can ship
+  // peer's bullshark.lastCommittedRound in SnapshotHeader. The joiner
+  // uses this to advance its own committed_round counter past the
+  // snapshot anchor when the network's been idle, so anti-entropy
+  // doesn't false-positive a "behind" gap and loop.
+  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark });
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.

@@ -72,7 +72,7 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @param {Function} options.isAuthorizedPeer  (peerIdString) => boolean
  * @returns {Object}
  */
-function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false }) {
+function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null }) {
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
@@ -183,6 +183,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       }
     }
 
+    // Peer's bullshark.lastCommittedRound at serve time. Falls back to
+    // the latest commit's round when bullshark isn't wired (legacy
+    // tests / out-of-process callers). Joiner uses this to advance its
+    // OWN bullshark counter past the snapshot anchor when the network
+    // has been idle since the last tx-bearing commit.
+    const peerCommittedRound = (bullshark && typeof bullshark.lastCommittedRound === "function")
+      ? Number(bullshark.lastCommittedRound() || 0)
+      : Number(latest.round || 0);
+
     const headerBuf = encode("SnapshotHeader", {
       round: latest.round,
       anchorCertHash: hexToBytes(latest.anchor_cert_hash),
@@ -197,6 +206,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       ackSignatures: (latest.ack_signatures || []).map(hexToBytes),
       anchorBatchHash: hexToBytes(anchorBatchHash),
       error: "",
+      peerCommittedRound,
     });
 
     // Stream header + state rows + tx rows + commit rows + end marker in a
@@ -414,6 +424,32 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
         throw new Error(`insufficient ack quorum: ${validAcks}/${quorum} (committee=${committee.length})`);
       }
 
+      // ── peer_committed_round validation ──────────────────────────────
+      // peer_committed_round is peer's bullshark.lastCommittedRound at
+      // serve time. Joiner advances its own bullshark counter to this
+      // value after install — necessary because on idle networks the
+      // latest commit row drifts far behind the live round (sparse).
+      //
+      // Sanity check: peer_committed_round >= snapshot.round. Peer
+      // can't claim it's at a round older than its own latest commit.
+      // (No need to also check "no commit in bundle > peer_committed_round"
+      // — `dag.getLatestCommit()` is by construction the max-round row,
+      // so any commit > peer_committed_round would already make
+      // snapshot.round > peer_committed_round, tripping this same check.)
+      //
+      // State at peer_committed_round equals state at snapshot.round
+      // because no NEW commit rows exist between them — the bundle
+      // shipped every commit row up to and including the latest, the
+      // joiner's commits_full_root verifies the bundle's integrity, and
+      // 2f+1 acks attest the latest commit's state_merkle_root. Trust
+      // chain: 2f+1 → latest commit's state → no later commits → state
+      // unchanged through peer_committed_round.
+      const snapshotRound = Number(header.round);
+      const peerCommittedRound = Number(header.peerCommittedRound || 0);
+      if (peerCommittedRound > 0 && peerCommittedRound < snapshotRound) {
+        throw new Error(`peer_committed_round (${peerCommittedRound}) < snapshot round (${snapshotRound}) — peer is lying about its current state`);
+      }
+
       // ── Install atomically ────────────────────────────────────────────
       const installed = _installSnapshot(header, {
         stateRows: stateInstallQueue,
@@ -430,6 +466,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
+        // Peer's bullshark.lastCommittedRound at serve time — joiner's
+        // peer-sync layer reads this and calls bullshark.markOrderedUpTo
+        // so the joiner's committed_round counter aligns with peer's.
+        // Without this advance, anti-entropy would falsely detect a
+        // "behind by N rounds" gap on idle networks (latest commit row
+        // far behind live round) and loop trying to pull non-existent
+        // certs.
+        peer_committed_round: peerCommittedRound,
         rows_installed: installed.state + installed.txs + installed.commits,
         state_rows_installed: installed.state,
         tx_rows_installed: installed.txs,

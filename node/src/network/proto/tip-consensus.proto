@@ -313,6 +313,27 @@ message SnapshotHeader {
   bytes anchor_batch_hash = 12;
 
   string error = 13;                // peer rejected — no body follows
+
+  // Peer's bullshark.lastCommittedRound at serve time. Lets the joiner
+  // advance its OWN bullshark counter to peer's value after install,
+  // not just to the snapshot's commit round. Necessary because on idle
+  // networks the latest commit row drifts far behind peer's current
+  // round (commits are sparse — only tx-bearing rounds write rows). If
+  // the joiner only advances to snapshot.round, anti-entropy then
+  // detects a fake "behind by N rounds" gap and loops forever trying
+  // to pull certs that don't exist.
+  //
+  // Validation rules (joiner side):
+  //   - peer_committed_round >= round  (peer can't claim it's older
+  //     than its own latest commit)
+  //   - no commit row in the bundle has round > peer_committed_round
+  //     (bundle-vs-claim consistency)
+  //
+  // State at peer_committed_round equals state at round (the snapshot's
+  // anchor) because no commit rows exist between them — verified
+  // implicitly by the bundle containing every commit row up to and
+  // including snapshot.round and none beyond.
+  uint64 peer_committed_round = 14;
 }
 
 /**
