@@ -24,17 +24,6 @@ function nodeSignedAuto(txBody, config) {
 }
 
 /**
- * Broadcast tx via gossip if available.
- */
-function createBroadcast(gossipRef) {
-  return (tx) => {
-    if (!gossipRef || !gossipRef.current) return;
-    try { gossipRef.current.broadcast(tx); }
-    catch (err) { log.error(`Gossip broadcast failed for tx ${tx.tx_id}: ${err.message}`); }
-  };
-}
-
-/**
  * AI pre-scan for content origin mismatch detection.
  */
 function preScanContent(content, originCode, creatorHistory) {
@@ -64,17 +53,65 @@ function preScanContent(content, originCode, creatorHistory) {
 }
 
 /**
- * Compute Merkle root stub.
+ * Compute Merkle root stub (replaced by real Merkle tree in sync/merkle-tree.js).
  */
 function computeMerkleRoot(dag) {
   const count = dag.dedupCount();
   return shake256Multi(count.toString(), new Date().toISOString().slice(0, 10));
 }
 
+/**
+ * Create a tx submitter. Always routes through consensus mempool.
+ * Single code path — consensus runs even with 1 node (quorum=1, instant commit).
+ *
+ * @param {Object} consensusRef  { current: consensus }
+ * @returns {{ submitTx: Function, submitBatch: Function }}
+ */
+function createTxSubmitter(consensusRef) {
+  /**
+   * Submit a single tx to consensus mempool.
+   * @param {Object} tx  Validated tx with tx_id
+   * @returns {{ tx_id: string }}
+   */
+  function submitTx(tx) {
+    if (!consensusRef?.current) throw { status: 503, error: "Consensus not available" };
+    const result = consensusRef.current.addTx(tx);
+    if (!result.added) throw { status: 503, error: `Transaction not accepted: ${result.reason}` };
+    return { tx_id: tx.tx_id };
+  }
+
+  /**
+   * Submit multiple txs as an atomic batch to consensus mempool.
+   * All txs in the batch will be committed together or not at all.
+   * Used for dispute (9 txs), appeal (4 txs), revocation cascade (2+ txs).
+   * @param {Array<Object>} txs  Validated txs with tx_ids
+   * @returns {{ tx_ids: string[], batch_id: string }}
+   */
+  function submitBatch(txs) {
+    if (!consensusRef?.current) throw { status: 503, error: "Consensus not available" };
+    if (!txs || txs.length === 0) throw { status: 400, error: "Empty batch" };
+
+    const txIds = [];
+    for (const tx of txs) {
+      const result = consensusRef.current.addTx(tx);
+      if (!result.added) {
+        // Rollback: remove already-added txs from this batch
+        for (const addedId of txIds) consensusRef.current.mempool.remove([addedId]);
+        throw { status: 503, error: `Batch rejected: tx ${tx.tx_id?.slice(0, 16)} — ${result.reason}` };
+      }
+      txIds.push(tx.tx_id);
+    }
+
+    return { tx_ids: txIds, batch_id: txs[0].tx_id };
+  }
+
+  return { submitTx, submitBatch };
+}
+
 module.exports = {
   withTxId,
   nodeSignedAuto,
-  createBroadcast,
+  createTxSubmitter,
   preScanContent,
   computeMerkleRoot,
 };

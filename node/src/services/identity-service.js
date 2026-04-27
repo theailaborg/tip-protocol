@@ -10,7 +10,7 @@ const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createIdentityService({ dag, scoring, config, broadcast }) {
+function createIdentityService({ dag, scoring, config, submitTx }) {
 
   async function register(body) {
     validate(body, {
@@ -52,7 +52,7 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
       data: {
-        tip_id: tipId, region: region.toUpperCase(), public_key, vp_id,
+        tip_id: tipId, region: region.toUpperCase(), public_key, vp_id, vp_signature,
         verification_tier, social_attested, founding, dedup_hash, zk_proof,
         ...(creator_name ? { creator_name } : {}),
       },
@@ -62,23 +62,17 @@ function createIdentityService({ dag, scoring, config, broadcast }) {
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    const tx = dag.addTx(signedTx);
-    broadcast(tx);
+    submitTx(signedTx);
+    log.info(`Identity proposed: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
 
-    dag.saveIdentity({
-      tip_id: tipId, region: region.toUpperCase(), public_key, vp_id,
-      verification_tier, founding, status: "active", registered_at: registeredAt, tx_id: tx.tx_id,
-      creator_name: creator_name || null,
-    });
-    dag.addDedupHash(dedup_hash);
-    dag.setScore(tipId, social_attested ? 550 : 500, 0);
-
-    log.info(`Identity registered: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
-
+    // Note: direct dag.saveIdentity / addDedupHash / setScore happen in
+    // commit-handler when the tx commits via consensus. API returns 202-style
+    // "proposed" so client knows to expect async finalization.
     return {
-      tip_id: tipId, public_key, tx_id: tx.tx_id,
+      tip_id: tipId, public_key, tx_id: signedTx.tx_id,
       score: social_attested ? 550 : 500, registered_at: registeredAt,
-      creator_name: creator_name || null,
+      confirmation: "proposed",
+      ...(creator_name ? { creator_name } : {}),
     };
   }
 

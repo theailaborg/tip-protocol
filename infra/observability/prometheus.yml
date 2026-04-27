@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    federation: "tip-local"
+
+scrape_configs:
+  - job_name: "tip-federation"
+    metrics_path: /metrics
+    # honor_labels: true means the metric's own labels win when they conflict
+    # with target labels. The TIP node injects a `node` label derived from
+    # its actual TIP node id, so dashboards group by real identity instead
+    # of port-based synthetic labels.
+    honor_labels: true
+    static_configs:
+      # Static port list is just the scrape targets; the `node` label comes
+      # from each node's /metrics output, not from this file. See issue #43
+      # in my-notes/issues.md for the auto-discovery follow-up that drops
+      # this static list entirely.
+      - targets:
+          - "host.docker.internal:4000"
+          - "host.docker.internal:4100"
+          - "host.docker.internal:4200"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: [ "localhost:9090" ]

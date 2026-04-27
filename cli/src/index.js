@@ -38,7 +38,10 @@ const {
   shake256Multi,
 } = require("../../shared/crypto");
 const { ORIGIN, ORIGIN_LABELS } = require("../../shared/constants");
-const { getTier } = require("../../shared/protocol-constants");
+const PC = require("../../shared/protocol-constants");
+const { getGenesisPayload } = require("../../node/src/genesis");
+PC.init(getGenesisPayload().protocol_constants);
+const { getTier } = PC;
 
 // ── Simple config store (file-based) ─────────────────────────────────────────
 const CONFIG_PATH = path.join(require("os").homedir(), ".tip-cli.json");

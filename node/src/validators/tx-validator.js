@@ -215,8 +215,8 @@ function validateBusinessRules(tx) {
         errors.push(`Invalid jurisdiction_tier: "${d.jurisdiction_tier}". VPs in red-tier jurisdictions cannot be accredited.`);
       }
       // VP-ID format
-      if (d.vp_id && !d.vp_id.startsWith("tip://id/VP-")) {
-        errors.push(`VP ID must start with "tip://id/VP-"`);
+      if (d.vp_id && !d.vp_id.startsWith("tip://vp/")) {
+        errors.push(`VP ID must start with "tip://vp/"`);
       }
       break;
     }
@@ -248,7 +248,11 @@ function validateCryptography(tx, authorPublicKey) {
 }
 
 // ─── Layer 5: DAG integrity ───────────────────────────────────────────────────
-function validateDAGIntegrity(tx, dag) {
+// When skipPrevCheck is true, prev-reference existence is not required. Used
+// during sync replay: the tx's authenticity is already guaranteed by the BFT
+// cert wrapping it, and some non-consensus writers (scheduler, scoring, jury)
+// insert txs directly into the DAG without broadcasting them — see issue #13.
+function validateDAGIntegrity(tx, dag, skipPrevCheck = false) {
   const errors = [];
 
   // tx_id must match content — detects any field-level tampering
@@ -264,11 +268,13 @@ function validateDAGIntegrity(tx, dag) {
     return errors.length ? { valid: false, errors } : pass();
   }
 
-  // All prev references must exist in DAG
-  for (const prevId of tx.prev) {
-    if (!prevId) { errors.push("Empty prev reference"); continue; }
-    if (!dag.getTx(prevId)) {
-      errors.push(`prev reference not found in DAG: ${prevId}`);
+  // All prev references must exist in DAG (skipped during sync replay)
+  if (!skipPrevCheck) {
+    for (const prevId of tx.prev) {
+      if (!prevId) { errors.push("Empty prev reference"); continue; }
+      if (!dag.getTx(prevId)) {
+        errors.push(`prev reference not found in DAG: ${prevId}`);
+      }
     }
   }
 
@@ -363,10 +369,12 @@ function validateState(tx, dag) {
  * @param {string} [options.authorPublicKey]  For signature verification
  * @param {boolean} [options.skipCrypto]      Skip crypto layer (for internal/system txs)
  * @param {boolean} [options.skipState]       Skip state layer (for sync from peers)
+ * @param {boolean} [options.skipPrevCheck]   Skip prev-reference existence check (sync replay;
+ *                                            chain integrity guaranteed by the BFT cert instead)
  * @returns {{ valid: boolean, errors: string[], warnings: string[] }}
  */
 function validateTransaction(tx, dag, options = {}) {
-  const { authorPublicKey, skipCrypto = false, skipState = false } = options;
+  const { authorPublicKey, skipCrypto = false, skipState = false, skipPrevCheck = false } = options;
 
   // Layer 1: Structure
   const structResult = validateStructure(tx);
@@ -391,7 +399,7 @@ function validateTransaction(tx, dag, options = {}) {
   // Node auth is at the gossip transport layer (challenge-response).
 
   // Layer 5: DAG integrity
-  const dagResult = validateDAGIntegrity(tx, dag);
+  const dagResult = validateDAGIntegrity(tx, dag, skipPrevCheck);
   if (!dagResult.valid) {
     return { valid: false, errors: dagResult.errors, layer: "dag_integrity" };
   }

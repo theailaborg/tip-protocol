@@ -73,7 +73,7 @@ def _make_dag():
 
 def _vp_id(dag: DAG) -> str:
     vps = dag.get_all_vps()
-    return vps[0]["vp_id"] if vps else "tip://id/VP-US-theailab-genesis"
+    return vps[0]["vp_id"] if vps else "tip://vp/US-theailab-genesis"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,7 +160,7 @@ def test_genesis() -> None:
 
     # Founding VP
     vp = get_founding_vp()
-    check("Founding VP: vp_id present",        vp["vp_id"].startswith("tip://id/VP-"))
+    check("Founding VP: vp_id present",        vp["vp_id"].startswith("tip://vp/"))
     check("Founding VP: jurisdiction green",   vp["jurisdiction_tier"] == "green")
 
     # Validation
@@ -255,10 +255,10 @@ def test_dag() -> None:
     check("Tx timestamp auto-assigned",        bool(tx.get("timestamp")))
 
     # VP CRUD
-    dag.save_vp({"vp_id": "tip://id/VP-DE-test", "name": "German VP",
+    dag.save_vp({"vp_id": "tip://vp/DE-test", "name": "German VP",
                  "jurisdiction_tier": "green", "public_key": "aa",
                  "status": "active", "registered_at": "2026-03-15T00:00:00+00:00"})
-    check("VP save + retrieve",                dag.get_vp("tip://id/VP-DE-test") is not None)
+    check("VP save + retrieve",                dag.get_vp("tip://vp/DE-test") is not None)
     check("get_all_vps returns multiple VPs",  len(dag.get_all_vps()) >= 2)
 
 
@@ -537,7 +537,7 @@ def test_validator() -> None:
     r = validate_transaction(
         {"tx_id": rh(), "tx_type": TxType.VP_REGISTERED,
          "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
-         "data": {"vp_id": "tip://id/VP-CN-bad", "name": "Bad VP",
+         "data": {"vp_id": "tip://vp/CN-bad", "name": "Bad VP",
                   "jurisdiction_tier": "red", "public_key": "aabb"}},
         dag, skip_crypto=True,
     )
@@ -547,7 +547,7 @@ def test_validator() -> None:
     _green_vp_body = {
         "tx_type":   TxType.VP_REGISTERED,
         "timestamp": "2026-03-14T12:00:00+00:00", "prev": dag.get_recent_prev(),
-        "data":      {"vp_id": "tip://id/VP-FR-good", "name": "French VP",
+        "data":      {"vp_id": "tip://vp/FR-good", "name": "French VP",
                       "jurisdiction_tier": "green", "public_key": "aabb"},
     }
     r = validate_transaction(
@@ -908,7 +908,7 @@ def test_api_endpoints() -> None:
     })
     check("POST /v1/vp/register returns 201", st == 201)
     test_vp_id = body.get("vp_id", "")
-    check("VP register returns vp_id",        test_vp_id.startswith("tip://id/VP-"))
+    check("VP register returns vp_id",        test_vp_id.startswith("tip://vp/"))
 
     # 9.6 GET /v1/vp/:vpId
     st, body = _get(f"{base}/v1/vp/{quote(test_vp_id, safe='')}")

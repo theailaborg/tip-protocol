@@ -18,8 +18,14 @@ genesis_root_key.*
 genesis-data/founder-keys.json
 genesis-data/founding-vp-keys.json
 genesis-data/genesis-keys.json
+genesis-data/backups/
 
-# Generated per-node keys + .env from scripts/register-peer-node.js
+# Node registration output (private keys)
+node2/
+node3/
+
+# Generated per-node keys + .env from scripts/register-node.js
+generated_nodes/
 generated-nodes/
 
 # Genesis public data — OK to commit
@@ -73,7 +79,14 @@ htmlcov/
 *.sqlite3
 !genesis-data/seed.db
 data/
+data2/
+data3/
+data.bak/
 !data/.gitkeep
+
+# Multi-node env files
+node-2.env
+node-3.env
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 logs/

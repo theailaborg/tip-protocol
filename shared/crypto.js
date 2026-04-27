@@ -318,6 +318,29 @@ function generateTIPID(region, publicKeyHex) {
 }
 
 /**
+ * Generate a TIP-VP URI.
+ * Format: tip://vp/[REGION]-[PQ_PUBKEY_HASH16]
+ * @param {string} region         jurisdiction region code (e.g. "US", "DE")
+ * @param {string} publicKeyHex   hex-encoded ML-DSA-65 public key
+ * @returns {string}              tip://vp/... URI
+ */
+function generateVPId(region, publicKeyHex) {
+  const hash16 = shake256(publicKeyHex).slice(0, 16);
+  return `tip://vp/${region.toUpperCase()}-${hash16}`;
+}
+
+/**
+ * Generate a TIP-NODE URI.
+ * Format: tip://node/[PQ_PUBKEY_HASH16]
+ * @param {string} publicKeyHex  hex-encoded ML-DSA-65 public key
+ * @returns {string}             tip://node/... URI
+ */
+function generateNodeId(publicKeyHex) {
+  const hash16 = shake256(publicKeyHex).slice(0, 16);
+  return `tip://node/${hash16}`;
+}
+
+/**
  * Generate a TIP-CONTENT URI.
  * Format: tip://c/[ORIGIN]-[HASH14]-[ID_SHORT]
  * @param {string} originCode  OH | AA | AG | MX
@@ -491,6 +514,8 @@ module.exports = {
   perceptualHashText,
   computeDedupHash,
   generateTIPID,
+  generateVPId,
+  generateNodeId,
   generateCTID,
   signTransaction,
   verifyTransaction,

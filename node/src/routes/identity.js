@@ -8,7 +8,7 @@ function createRouter({ identityService }) {
 
   router.post("/identity/register", asyncHandler(async (req, res) => {
     const result = await identityService.register(req.body);
-    res.status(201).json(result);
+    res.status(202).json(result);
   }));
 
   router.get("/identity/:tipId", asyncHandler((req, res) => {

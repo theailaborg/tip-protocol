@@ -7,7 +7,7 @@ const { withTxId, nodeSignedAuto } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createRevocationService({ dag, scoring, config, broadcast }) {
+function createRevocationService({ dag, scoring, config, submitTx, submitBatch }) {
 
   function list(since) {
     const revocations = dag.getRevocations(since || undefined);
@@ -36,33 +36,35 @@ function createRevocationService({ dag, scoring, config, broadcast }) {
     const timestamp = new Date().toISOString();
     const revokeTx = withTxId({
       tx_type, timestamp, prev: dag.getRecentPrev(),
-      data: { tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
+      data: { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
     });
 
     const validation = validateTransaction(revokeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    const tx = dag.addTx(revokeTx);
-    broadcast(tx);
-    dag.addRevocation(tip_id, tx_type, timestamp, tx.tx_id);
+    // Collect batch: revocation + cascade txs (if VP revocation)
+    const batchTxs = [revokeTx];
 
-    // Cascade: flag recent content for adjudication (REVOKE_VP only)
     if (tx_type === TX_TYPES.REVOKE_VP) {
       const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       const recentContent = dag.getContentByAuthor(tip_id).filter(c => c.registered_at > cutoff);
-      recentContent.forEach(c => {
+      for (const c of recentContent) {
         const cascadeTx = nodeSignedAuto({
           tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
           data: { ctid: c.ctid, reason: "issuer_revocation_cascade", auto: true },
         }, config);
-        dag.addTx(cascadeTx);
-        broadcast(cascadeTx);
-      });
-      log.info(`Revocation cascade: ${recentContent.length} recent content records flagged for ${tip_id}`);
+        batchTxs.push(cascadeTx);
+      }
     }
 
-    log.info(`Revocation issued: ${tip_id} (type: ${tx_type}, by: ${issuing_vp_id})`);
-    return { tx_id: tx.tx_id, tip_id, tx_type, timestamp };
+    if (batchTxs.length > 1) {
+      submitBatch(batchTxs);
+    } else {
+      submitTx(revokeTx);
+    }
+
+    log.info(`Revocation proposed: ${tip_id} (type: ${tx_type}, by: ${issuing_vp_id}, ${batchTxs.length} txs)`);
+    return { tx_id: revokeTx.tx_id, tip_id, tx_type, timestamp, confirmation: "proposed" };
   }
 
   return { list, create };

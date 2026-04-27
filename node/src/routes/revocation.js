@@ -11,7 +11,7 @@ function createRouter({ revocationService }) {
   }));
 
   router.post("/revocations", asyncHandler((req, res) => {
-    res.status(201).json(revocationService.create(req.body));
+    res.status(202).json(revocationService.create(req.body));
   }));
 
   return router;

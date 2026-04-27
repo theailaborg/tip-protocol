@@ -19,7 +19,8 @@ const morgan = require("morgan");
 
 const { errorHandler } = require("./middleware/error-handler");
 const { requestId } = require("./middleware/request-id");
-const { createBroadcast } = require("./services/helpers");
+const { createConsensusGate } = require("./middleware/consensus-gate");
+const { createTxSubmitter } = require("./services/helpers");
 
 // Services
 const { createIdentityService } = require("./services/identity-service");
@@ -30,6 +31,8 @@ const { createGovernanceService } = require("./services/governance-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
+const statsRoutes = require("./routes/stats");
+const metricsRoutes = require("./routes/metrics");
 const identityRoutes = require("./routes/identity");
 const contentRoutes = require("./routes/content");
 const disputeRoutes = require("./routes/dispute");
@@ -37,9 +40,9 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 
-function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
-  const broadcast = createBroadcast(gossipRef);
-  const ctx = { dag, scoring, config, broadcast };
+function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
+  const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
+  const ctx = { dag, scoring, config, submitTx, submitBatch, consensus: consensusRef, network: networkRef };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
@@ -107,6 +110,22 @@ function createApp({ dag, scoring, config, gossip: gossipRef = null }) {
   const healthRouter = healthRoutes.createRouter(ctx);
   app.use(healthRouter);
   app.use(API_VERSION, healthRouter);
+
+  // Observability endpoints — detailed stats for dashboards (heavy-ish
+  // payload; not on the /health path so load-balancer probes stay fast).
+  app.use(API_VERSION, statsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+
+  // Prometheus /metrics — top-level (NOT under /v1) per Prometheus scraper
+  // convention. Mounted before the consensus gate so the endpoint is
+  // ALWAYS scrapable even while /v1/* writes are 503'd; halt itself is
+  // visible via the tip_consensus_halted gauge.
+  app.use(metricsRoutes.createRouter({ dag, config, consensus: consensusRef, network: networkRef }));
+
+  // Consensus-halt gate — 503s write requests (POST/PUT/PATCH/DELETE) when
+  // the network is sub-quorum. Reads stay open. Mounted AFTER health + stats
+  // so operators can still observe state during a halt; BEFORE business
+  // routes so the gate shows up on anything that would touch the mempool.
+  app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
   app.use(API_VERSION, identityRoutes.createRouter({ identityService }));

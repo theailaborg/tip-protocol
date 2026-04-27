@@ -15,7 +15,7 @@
 # Licensed under TIPCL-1.0
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /build
 
@@ -29,7 +29,7 @@ COPY node/package*.json ./node/
 RUN npm install --omit=dev
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"
@@ -59,11 +59,9 @@ COPY circuits/         ./circuits/
 COPY browser-extensio[n]/*.zip ./browser-extension/
 COPY package.json      ./package.json
 
-# Copy genesis data (seed.db for first boot auto-copy)
-COPY genesis-data/     ./genesis-data/
-
-# Copy scripts
-COPY scripts/seed.js   ./scripts/seed.js
+# Genesis state is bootstrapped from genesis.js constants by initDAG — no seed.db needed.
+# genesis.json is copied for hash verification / metadata only.
+COPY genesis-data/genesis.json ./genesis-data/genesis.json
 
 # Copy license/notice if they exist
 COPY NOTICE.tx[t]      ./
@@ -75,8 +73,10 @@ RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
 # Switch to non-root user
 USER tipnode
 
-# REST API + WebSocket gossip on same port
+# REST API
 EXPOSE 4000
+# libp2p P2P consensus
+EXPOSE 4001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

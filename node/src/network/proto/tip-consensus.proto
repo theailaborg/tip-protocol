@@ -1,0 +1,414 @@
+/**
+ * TIP Protocol — Consensus Layer Message Definitions
+ *
+ * Used by Narwhal (data availability) + Bullshark (ordering) consensus.
+ * All node-to-node communication uses these Protobuf messages via libp2p.
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+syntax = "proto3";
+
+package tip.consensus;
+
+// ─── Core Data Types ─────────────────────────────────────────────────────────
+
+/**
+ * A single DAG transaction.
+ * Identical structure to the JSON tx format used in the REST API.
+ */
+message Transaction {
+  string tx_id = 1;
+  string tx_type = 2;
+  string timestamp = 3;
+  repeated string prev = 4;
+  bytes data = 5;               // JSON-encoded tx.data as bytes
+  bytes signature = 6;          // ML-DSA-65 signature over canonical tx
+}
+
+/**
+ * A batch of transactions proposed by a single node in one round.
+ * Narwhal Phase 1: each node creates a batch from its mempool and broadcasts.
+ */
+message Batch {
+  uint64 round = 1;
+  string author_node_id = 2;
+  repeated Transaction txs = 3;
+  bytes signature = 4;          // author's ML-DSA-65 signature over (round + txs)
+  bytes hash = 5;               // SHAKE-256 hash of this batch
+}
+
+/**
+ * Acknowledgment that a node has received a batch for the current round.
+ * Collected by the batch author to form a certificate.
+ */
+message BatchAck {
+  bytes batch_hash = 1;         // hash of the batch being acknowledged
+  string acker_node_id = 2;     // node that received the batch
+  bytes signature = 3;          // acker's ML-DSA-65 signature over batch_hash
+}
+
+/**
+ * A certificate proves that 2/3+ nodes received a batch.
+ * Narwhal Phase 2: a node collects BatchAcks and creates a certificate.
+ * Certificates form a DAG via parent_hashes.
+ */
+message Certificate {
+  uint64 round = 1;
+  string author_node_id = 2;
+  Batch batch = 3;                      // the original batch
+  repeated BatchAck acknowledgments = 4; // 2/3+ acks from other nodes
+  repeated bytes parent_hashes = 5;     // hashes of parent certificates (round - 1)
+  bytes signature = 6;                  // author's ML-DSA-65 signature over certificate
+  bytes hash = 7;                       // SHAKE-256 hash of this certificate
+}
+
+// ─── Sync Protocol ───────────────────────────────────────────────────────────
+
+/**
+ * Request to sync certificates from a peer.
+ * Used by new nodes joining or nodes catching up after downtime.
+ */
+message SyncRequest {
+  uint64 from_round = 1;       // start syncing from this round
+  uint64 to_round = 2;         // sync up to this round (0 = latest)
+  bytes merkle_root = 3;       // requester's current Merkle root (for diff)
+  uint32 batch_size = 4;       // max certificates per response
+}
+
+/**
+ * DEPRECATED — replaced by SyncResponseHeader + streamed Certificate
+ * frames + SyncResponseFooter. Left in the schema as a forward-compat
+ * placeholder for older nodes / external inspectors that may still
+ * decode the field numbers. Do not emit from new code.
+ */
+message SyncResponse {
+  repeated Certificate certificates = 1;
+  uint64 from_round = 2;
+  uint64 to_round = 3;
+  uint64 latest_round = 4;
+  bytes merkle_root = 5;
+  bool has_more = 6;
+  bool snapshot_required = 7;
+  uint64 earliest_available_round = 8;
+}
+
+/**
+ * §19 Framed sync — first frame on the /tip/sync/1.0.0 response stream.
+ *
+ * Wire layout (length-prefixed frames, same framing as /tip/state-snapshot/1.0.0):
+ *   [SyncResponseHeader][Certificate][Certificate]...[SyncResponseFooter]
+ *
+ * Sender writes header first, streams per-cert frames as it reads the DAG
+ * (no full-batch materialisation), closes with a footer carrying
+ * `cert_count` so the receiver can sanity-check frame count.
+ *
+ * If `error` is non-empty OR `snapshot_required` is true, no Certificate
+ * frames follow — the footer is the next and last frame.
+ */
+message SyncResponseHeader {
+  uint64 from_round = 1;             // first cert round the server will send (0 if none)
+  uint64 to_round = 2;               // last cert round the server will send (0 if none)
+  uint64 latest_round = 3;           // server's current latest round
+  bytes merkle_root = 4;             // server's current cert-DAG merkle root
+  // §2 cert GC signal: server sets this when the requested from_round falls
+  // below its GC horizon. Joiner aborts cert replay and falls back to §14
+  // snapshot sync via /tip/state-snapshot/1.0.0.
+  bool snapshot_required = 5;
+  uint64 earliest_available_round = 6;   // lowest round the server still has certs for
+  string error = 7;                   // non-empty = server rejected the request (no frames will follow)
+}
+
+/**
+ * §19 Framed sync — terminator frame. `cert_count` is a sanity check;
+ * joiner verifies it matches the number of Certificate frames actually
+ * received between header and footer (guards against silent truncation).
+ */
+message SyncResponseFooter {
+  uint64 cert_count = 1;              // number of Certificate frames between header and this footer
+  bytes merkle_root = 2;              // redundant snapshot of the server's merkle_root at end-of-send (for op-level drift detection)
+}
+
+// ─── Consensus Messages ──────────────────────────────────────────────────────
+
+/**
+ * Round advancement signal.
+ * Broadcast when a node has collected 2/3 certificates and advances to the next round.
+ */
+message RoundAdvance {
+  uint64 round = 1;            // the round the node has advanced TO
+  string node_id = 2;
+  repeated bytes certificate_hashes = 3;  // the 2/3+ cert hashes that triggered advance
+  bytes signature = 4;
+}
+
+// ─── Mempool ─────────────────────────────────────────────────────────────────
+
+/**
+ * A pending transaction shared between nodes before certificate creation.
+ * Nodes share mempool txs so the next certificate includes txs from all nodes.
+ */
+message MempoolTx {
+  Transaction tx = 1;
+  string origin_node_id = 2;   // which node received this tx via API
+  string received_at = 3;      // ISO timestamp
+}
+
+// ─── Node Identity ───────────────────────────────────────────────────────────
+
+/**
+ * Handshake message for initial peer connection.
+ * Includes the node's identity for verification against the node registry.
+ */
+message Handshake {
+  string node_id = 1;
+  bytes public_key = 2;        // ML-DSA-65 public key
+  uint64 latest_round = 3;     // node's current consensus round
+  bytes merkle_root = 4;       // node's current Merkle root
+  string protocol_version = 5; // e.g. "2.0.0"
+  string chain_id = 6;         // human-readable label (e.g. "tip-mainnet-v2")
+  bytes signature = 7;         // signature over (node_id + latest_round + chain_id + genesis_hash)
+  bytes genesis_hash = 8;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
+}
+
+/**
+ * One peer the responder already considers authorized, offered to the
+ * joiner as a discovery hint. Shipped in HandshakeAck.known_peers so a
+ * joiner that dialed a single bootstrap learns about the rest of the
+ * federation in one round-trip (#38 libp2p-native peer discovery).
+ * The joiner will dial each multiaddr and run the TIP handshake
+ * normally — trust comes from the registry + signature, not from the
+ * hint. Responder populates this list from its current authorized
+ * peer set + libp2p peerStore multiaddrs.
+ */
+message KnownPeer {
+  string node_id = 1;
+  repeated string multiaddrs = 2;
+}
+
+/**
+ * Handshake response. A non-empty `error` means rejection; all other fields
+ * may be empty in that case. Success path: `error` is empty, all other fields
+ * populated, initiator verifies signature + genesis_hash.
+ */
+message HandshakeAck {
+  string node_id = 1;
+  uint64 latest_round = 2;
+  bytes merkle_root = 3;
+  bool sync_needed = 4;        // true if rounds diverge
+  bytes signature = 5;
+  bytes genesis_hash = 6;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
+  string error = 7;            // non-empty = responder rejected our handshake (e.g. "Genesis hash mismatch")
+  // #38: other authorized peers the responder knows about. Joiner auto-
+  // dials each and runs TIP handshake against them — no env-var list
+  // to maintain. Excludes the joiner itself and the responder.
+  repeated KnownPeer known_peers = 8;
+}
+
+// ─── Sync-status Protocol (§28 anti-entropy) ─────────────────────────────────
+//
+// Protocol: /tip/sync-status/1.0.0
+//
+// Lightweight request/response RPC (NOT gossipsub). Each authorized peer
+// periodically asks every other authorized peer for its current consensus
+// state. On divergence:
+//   - self behind (peer.round > self.round)   → pull gap via /tip/sync/1.0.0
+//   - self ahead or equal (matching roots)     → no-op
+//   - equal round, different roots             → REAL FORK; log + metric
+//
+// The protocol itself is stateless. Each call carries the whole response
+// in a single libp2p message, so no length-prefixed framing is needed.
+
+message SyncStatusRequest {
+  // No fields — stateless probe. Kept as a message so we can version-extend
+  // later (e.g. request-specific filters) without breaking the wire.
+}
+
+message SyncStatusResponse {
+  string node_id = 1;               // peer's TIP node_id
+  uint64 round = 2;                  // peer's latest cert round (narwhal current - 1)
+  uint64 committed_round = 3;        // peer's last Bullshark-committed round
+  uint64 consensus_index = 4;        // peer's monotonic commit counter (§15)
+  bytes state_merkle_root = 5;       // derived-state root at last commit
+  bytes txs_merkle_root = 6;         // ordered-tx root at last commit
+  bytes cert_merkle_root = 7;        // cert-DAG merkle root (from sync-handler)
+  string error = 8;                  // non-empty = peer rejected the probe
+  // #48 backstop for forward-on-authorize push: every status reply
+  // includes the responder's full known-peers view. The caller dials any
+  // entries it doesn't already have authorized. Catches missed pushes
+  // and resyncs after transient connectivity issues — convergence within
+  // ANTI_ENTROPY_INTERVAL_MS regardless of join order.
+  repeated KnownPeer known_peers = 9;
+}
+
+// ─── Peer Announce Protocol (#48 forward-on-authorize push) ──────────────────
+//
+// Protocol: /tip/peer-announce/1.0.0
+//
+// Triggered when a node authorizes a NEW peer. The new peer is announced
+// to all OTHER already-authorized peers via this lightweight protocol so
+// they can dial the new peer immediately — sub-second mesh convergence
+// instead of waiting on the anti-entropy backstop.
+//
+// Trust model: identical to handshake-time discovery. The recipient runs
+// the full TIP handshake against each announced peer; the announce list
+// is just a dial hint. A malicious announcer can cause failed dials but
+// can't get any peer authorized that doesn't pass handshake on its own.
+
+message PeerAnnounce {
+  repeated KnownPeer known_peers = 1;
+}
+
+// ─── State Snapshot Protocol (§14) ───────────────────────────────────────────
+//
+// Protocol: /tip/state-snapshot/1.0.0
+//
+// Purpose: let new joiners fast-sync the full derived-state at a recent
+// Bullshark commit without replaying the entire certificate DAG. Every
+// commit row carries a state_merkle_root, a txs_merkle_root, and 2f+1
+// committee ack signatures (see Part 1, `dag.js` commits table). The
+// joiner pulls the post-state at round R + the commit header; rehashes
+// the state → must match state_merkle_root; verifies 2f+1 acks over the
+// anchor cert batch hash → then installs state and resumes live consensus.
+//
+// Stream framing: a single libp2p stream carries length-prefixed messages
+// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow, then
+// SnapshotEnd. Sender writes 4-byte big-endian length prefix before each
+// message; receiver parses one message per length prefix.
+
+/**
+ * Joiner's request. Asks for the peer's latest committed state at or
+ * after `min_round`; peer may decline if its latest commit is older.
+ */
+message SnapshotRequest {
+  uint64 min_round = 1;             // 0 = give me latest
+  string requester_node_id = 2;     // for logging / authz
+}
+
+/**
+ * First message in the response stream — everything the joiner needs to
+ * verify the snapshot that follows. Mirrors the `commits` table row plus
+ * the anchor cert's batch_hash (which the joiner needs to reconstruct
+ * the payload each ack signature signed).
+ *
+ * If `error` is non-empty, no SnapshotStateRow / SnapshotEnd follow.
+ */
+message SnapshotHeader {
+  uint64 round = 1;
+  bytes anchor_cert_hash = 2;
+  string leader_node_id = 3;
+  repeated string committee = 4;    // sorted node_ids at commit time
+  uint32 support_count = 5;
+  uint64 consensus_index = 6;
+  string committed_at = 7;
+  bytes state_merkle_root = 8;
+  bytes txs_merkle_root = 9;
+  repeated string ack_signer_ids = 10;
+  repeated bytes ack_signatures = 11;
+
+  // The anchor cert's batch hash. Joiner reconstructs each ack's signed
+  // payload as `"ack:${batch_hash}:${acker_node_id}"` and verifies with
+  // the acker's public key (from the nodes table in the snapshot itself).
+  bytes anchor_batch_hash = 12;
+
+  string error = 13;                // peer rejected — no body follows
+
+  // Peer's bullshark.lastCommittedRound at serve time. Lets the joiner
+  // advance its OWN bullshark counter to peer's value after install,
+  // not just to the snapshot's commit round. Necessary because on idle
+  // networks the latest commit row drifts far behind peer's current
+  // round (commits are sparse — only tx-bearing rounds write rows). If
+  // the joiner only advances to snapshot.round, anti-entropy then
+  // detects a fake "behind by N rounds" gap and loops forever trying
+  // to pull certs that don't exist.
+  //
+  // Validation rules (joiner side):
+  //   - peer_committed_round >= round  (peer can't claim it's older
+  //     than its own latest commit)
+  //   - no commit row in the bundle has round > peer_committed_round
+  //     (bundle-vs-claim consistency)
+  //
+  // State at peer_committed_round equals state at round (the snapshot's
+  // anchor) because no commit rows exist between them — verified
+  // implicitly by the bundle containing every commit row up to and
+  // including snapshot.round and none beyond.
+  uint64 peer_committed_round = 14;
+
+  // Peer's bullshark.stats().consensusIndex at serve time. Lets the
+  // joiner adopt peer's anchor counter so all nodes converge on the
+  // same network-wide value (Cosmos/Sui/Aptos pattern). Without this,
+  // the joiner's counter starts from its local snapshot baseline and
+  // stays N rounds behind peer's forever, producing per-node drift on
+  // dashboards even though consensus is in lockstep.
+  //
+  // Same trust model as peer_committed_round: a malicious peer could
+  // claim an inflated value, but the worst-case outcome is just a wrong
+  // dashboard display on one joiner — anti-entropy catches state
+  // divergence within ~4s if peer is actually byzantine. See issue #58
+  // for full trust analysis.
+  uint64 peer_consensus_index = 15;
+}
+
+/**
+ * One row from the canonical derived-state. Sent in the exact order
+ * `dag.iterateCanonicalState()` yields — table order fixed, rows sorted
+ * by primary key within each table. `canonical_json` is the exact byte
+ * output of `canonicalJson(row)` — joiner feeds it into a SHAKE-256
+ * hasher mirroring `computeStateMerkleRoot` to derive the root.
+ */
+message SnapshotStateRow {
+  string table = 1;
+  bytes canonical_json = 2;
+}
+
+/**
+ * One row from the source's `transactions` table — verbatim copy. Joiner
+ * installs via `dag.saveTxRaw` (skips _applyDerivedState since the
+ * derived state already came in via SnapshotStateRow rows; skips
+ * _updatePrev since the joiner's _prev ring is re-primed from the last
+ * 2 tx_ids after install). Sent in `tx_id` order for determinism.
+ *
+ * `canonical_json` is the exact byte output of `canonicalJson(tx)` for
+ * the full tx record (tx_id, tx_type, data, timestamp, prev, signature)
+ * — same canonical form used for `txs_full_root` so both sides converge
+ * on the same hash row-by-row.
+ */
+message SnapshotTxRow {
+  bytes canonical_json = 1;
+}
+
+/**
+ * One row from the source's `commits` table — every commit row EXCEPT
+ * the latest (which already rides in SnapshotHeader). Joiner installs
+ * via the existing `dag.saveCommit`. Sent in `round` order.
+ *
+ * `canonical_json` is the exact byte output of `canonicalJson(commit)`
+ * for the full commit record (round through ack_signatures, plus the
+ * #34 chain-of-trust fields when present) — same canonical form used
+ * for `commits_full_root`.
+ */
+message SnapshotCommitRow {
+  bytes canonical_json = 1;
+}
+
+/**
+ * Terminator. Row counts are sanity checks — joiner verifies they match
+ * the number of rows of each type actually received (guards against
+ * silent truncation on the wire).
+ *
+ * #49: `txs_full_root` and `commits_full_root` are stream-computed
+ * integrity checks for the SnapshotTxRow and SnapshotCommitRow streams
+ * respectively. Both sides feed identical canonical-row sequences
+ * through the same builder → arrive at identical hex digests. Mismatch
+ * on either root rejects the snapshot install. They live in the footer
+ * (not the header) so the sender can compute them while streaming —
+ * one pass over each table.
+ */
+message SnapshotEnd {
+  uint64 row_count = 1;             // SnapshotStateRow count (existing)
+  uint64 tx_row_count = 2;          // #49: SnapshotTxRow count
+  uint64 commit_row_count = 3;      // #49: SnapshotCommitRow count
+  bytes txs_full_root = 4;          // #49: integrity root over tx stream
+  bytes commits_full_root = 5;      // #49: integrity root over commit stream
+}

@@ -8,7 +8,7 @@ function createRouter({ contentService }) {
 
   router.post("/content/register", asyncHandler((req, res) => {
     const result = contentService.register(req.body);
-    res.status(201).json(result);
+    res.status(202).json(result);
   }));
 
   router.get("/content/:ctid", asyncHandler((req, res) => {
@@ -16,15 +16,15 @@ function createRouter({ contentService }) {
   }));
 
   router.post("/content/:ctid/verify", asyncHandler((req, res) => {
-    res.json(contentService.verify(req.params.ctid, req.body));
+    res.status(202).json(contentService.verify(req.params.ctid, req.body));
   }));
 
   router.post("/content/:ctid/update-origin", asyncHandler((req, res) => {
-    res.json(contentService.updateOrigin(req.params.ctid, req.body));
+    res.status(202).json(contentService.updateOrigin(req.params.ctid, req.body));
   }));
 
   router.post("/content/:ctid/retract", asyncHandler((req, res) => {
-    res.json(contentService.retract(req.params.ctid, req.body));
+    res.status(202).json(contentService.retract(req.params.ctid, req.body));
   }));
 
   return router;

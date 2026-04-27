@@ -3,6 +3,7 @@
 # Quick start:
 #   npm run seed          # run once before first launch
 #   docker compose up
+# Genesis state is bootstrapped automatically from genesis.js on first boot.
 #
 # View logs:
 #   docker compose logs -f tip-node
@@ -22,8 +23,12 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-4000}:4000"
+      - "${TIP_P2P_PORT:-4001}:4001"
     volumes:
       - ./data:/app/data
+      # Expose per-date log files on the host so operators can tail
+      # debug.log / info.log without exec'ing into the container.
+      - ./node/logs:/app/node/logs
     environment:
       NODE_ENV:              ${NODE_ENV:-production}
       PORT:                  4000
@@ -36,6 +41,11 @@ services:
       TIP_PEERS:             ${TIP_PEERS:-}
       TIP_CORS_ORIGINS:      ${TIP_CORS_ORIGINS:-*}
       TIP_LOG_LEVEL:         ${TIP_LOG_LEVEL:-info}
+      TIP_CONSOLE_LEVEL:     ${TIP_CONSOLE_LEVEL:-warn}
+      TIP_P2P_PORT:          4001
+      TIP_BOOTSTRAP_PEERS:   ${TIP_BOOTSTRAP_PEERS:-}
+      TIP_ENABLE_MDNS:       ${TIP_ENABLE_MDNS:-true}
+      TIP_PUBLIC_IP:         ${TIP_PUBLIC_IP:-}
       TIP_DB_PATH:           /app/data/tip.db
       TIP_DATA_DIR:          /app/data
     healthcheck:

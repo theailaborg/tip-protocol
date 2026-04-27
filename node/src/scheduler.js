@@ -32,7 +32,7 @@ const log = getLogger("tip.scheduler");
 /**
  * Create a scheduler with named tasks, overlap protection, and stop().
  */
-function createScheduler(dag, scoring, gossip, config) {
+function createScheduler(dag, scoring, network, config) {
   const _tasks = new Map();
 
   /**
@@ -157,7 +157,7 @@ function createScheduler(dag, scoring, gossip, config) {
 
   // 5. Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
-    const pc = gossip.peerCount();
+    const pc = network ? network.peerCount() : 0;
     if (pc === 0 && config.peers.length > 0) {
       log.warn(`No active peers (${config.peers.length} configured). DAG sync paused.`);
     }

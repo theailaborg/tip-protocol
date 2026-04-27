@@ -15,18 +15,26 @@
 
 "use strict";
 
-require("dotenv").config();
+require("dotenv").config({ path: process.env.DOTENV_PATH || ".env" });
+
+// Init protocol constants BEFORE requiring any application module.
+// shared/protocol-constants.js no longer auto-loads on first getter
+// access — touching CONSENSUS/NETWORK/JURY/etc. before init() now throws.
+// Any subsequent require chain (api → routes → services → consensus → ...)
+// is free to reference constants lazily inside function bodies.
+const PC = require("../../shared/protocol-constants");
+const { getGenesisPayload } = require("./genesis");
+PC.init(getGenesisPayload().protocol_constants);
 
 const http = require("http");
 const { createApp } = require("./api");
 const { initDAG } = require("./dag");
 const { initScoring } = require("./scoring");
-const { initGossip } = require("./gossip");
 const { createScheduler } = require("./scheduler");
+const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
-const PC = require("../../shared/protocol-constants");
 
 async function main() {
   await initCrypto();
@@ -42,37 +50,26 @@ async function main() {
     log.warn("No TIP_NODE_PRIVATE_KEY set — generated ephemeral keypair. Tx signatures will not survive restart.");
   }
 
-  log.info(`=== TIP Protocol Node v${config.nodeVersion} ===`);
-  log.info(`Node ID     : ${config.nodeId}`);
-  log.info(`Region      : ${config.region}`);
-  log.info(`Port        : ${config.port}`);
-  log.info(`Data dir    : ${config.dataDir}`);
-  log.info(`Node type   : ${config.nodeType}`);
-  log.info("================================");
+  // Startup banner: notice-level so it always shows regardless of TIP_CONSOLE_LEVEL
+  log.notice(`=== TIP Protocol Node v${config.nodeVersion} ===`);
+  log.notice(`Node ID     : ${config.nodeId}`);
+  log.notice(`Region      : ${config.region}`);
+  log.notice(`Port        : ${config.port}`);
+  log.notice(`Data dir    : ${config.dataDir}`);
+  log.notice(`Node type   : ${config.nodeType}`);
+  log.notice("================================");
 
   // 1. Initialise DAG store
-  // On first boot: if seed.db exists, copy it so founding data is available immediately
+  // initDAG creates genesis block + VP + founding identities from genesis.js
+  // if the DB doesn't exist yet — no seed.db copy needed.
   const fs = require("fs");
   const path = require("path");
-  const seedDb = path.resolve(__dirname, "../../genesis-data/seed.db");
-  if (!fs.existsSync(config.dbPath) && fs.existsSync(seedDb)) {
+  if (!fs.existsSync(config.dbPath)) {
     fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
-    fs.copyFileSync(seedDb, config.dbPath);
-    log.info(`Copied seed DB to ${config.dbPath} (first boot with seeded data)`);
   }
 
   const dag = initDAG(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
-
-  // Load protocol constants from genesis block
-  const { getGenesisPayload } = require("./genesis");
-  const genesisPayload = getGenesisPayload();
-  if (genesisPayload?.protocol_constants) {
-    PC.init(genesisPayload.protocol_constants);
-    log.info("Protocol constants loaded from genesis block");
-  } else {
-    log.warn("No protocol_constants in genesis — using hardcoded defaults");
-  }
 
   // Look up this node's registered ID from the node registry (by public key)
   if (config.nodePublicKey) {
@@ -81,8 +78,12 @@ async function main() {
     if (myNode) {
       config.nodeRegisteredId = myNode.node_id;
       log.info(`Node registered as: ${myNode.node_id}`);
+    } else if (config.nodeId.startsWith("tip://node/")) {
+      // Node registered on another node but not yet synced locally — use TIP_NODE_ID from .env
+      config.nodeRegisteredId = config.nodeId;
+      log.info(`Node ID from env (pending sync): ${config.nodeId}`);
     } else {
-      log.warn("This node is not in the node registry — gossip auth will be unverified");
+      log.error("This node's public key is not in the node registry. Certificates will use an unregistered ID. Re-run seed or register this node.");
     }
   }
 
@@ -90,39 +91,41 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 3. Build Express app (gossip ref injected after init — circular dep: gossip needs server needs app)
-  const gossipRef = { current: null };
-  const app = createApp({ dag, scoring, config, gossip: gossipRef });
+  // 3. Build Express app
+  const consensusRef = { current: null };
+  const networkRef = { current: null };
+  const app = createApp({ dag, scoring, config, consensus: consensusRef, network: networkRef });
 
   // 4. HTTP server
   const server = http.createServer(app);
 
-  // 5. WebSocket gossip layer
-  const gossip = initGossip(server, dag, config);
-  gossipRef.current = gossip;
-  log.info(`Gossip server ready (WebSocket)`);
+  // 5. P2P network + Narwhal/Bullshark consensus (returns nulls on failure)
+  const { network, consensus } = await initNetworkAndConsensus({ dag, scoring, config });
+  networkRef.current = network;
+  consensusRef.current = consensus;
 
-  // 6. Scheduled tasks (Merkle root publish, score recomputation, etc.)
-  const scheduler = createScheduler(dag, scoring, gossip, config);
+  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
+  const scheduler = createScheduler(dag, scoring, network, config);
 
-  // 7. Start listening
+  // 9. Start listening
   server.listen(config.port, () => {
-    log.info(`Node listening on http://0.0.0.0:${config.port}`);
+    log.notice(`Node listening on http://0.0.0.0:${config.port}`);
     log.info(`REST API   : http://0.0.0.0:${config.port}/v1/`);
     log.info(`Health     : http://0.0.0.0:${config.port}/health`);
+    if (network) log.info(`P2P        : ${network.multiaddrs().join(", ")}`);
   });
 
   // Graceful shutdown
   function shutdown(signal) {
     log.info(`${signal} received — shutting down gracefully`);
-    server.close(() => {
+    server.close(async () => {
       try { scheduler.stop(); } catch { }
-      try { gossip.close?.(); } catch { }
+      try { if (consensus) consensus.stop(); } catch { }
+      try { if (network) await network.stop(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
       process.exit(0);
     });
-    // Force exit if graceful shutdown takes too long
     setTimeout(() => {
       log.error("Graceful shutdown timed out — forcing exit");
       process.exit(1);

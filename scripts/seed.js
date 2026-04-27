@@ -42,6 +42,8 @@ const {
   shake256,
   shake256Multi,
   generateTIPID,
+  generateVPId,
+  generateNodeId,
   generateCTID,
   hashContent,
   perceptualHashText,
@@ -52,19 +54,23 @@ const {
 } = require("../shared/crypto");
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
-const { getTier } = require("../shared/protocol-constants");
-const { initDAG } = require("../node/src/dag");
-const { initScoring } = require("../node/src/scoring");
-const { loadConfig } = require("../node/src/config");
+const PC = require("../shared/protocol-constants");
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
   GENESIS_CHAIN_ID,
   buildGenesisBlock,
-  getFoundingVP,
   computeGenesisHash,
   GENESIS_PAYLOAD,
+  getGenesisPayload,
 } = require("../node/src/genesis");
+// Init protocol constants before any module that uses backward-compat
+// accessors (initDAG → scoring → ...) is required.
+PC.init(getGenesisPayload().protocol_constants);
+const { getTier } = PC;
+const { initDAG } = require("../node/src/dag");
+const { initScoring } = require("../node/src/scoring");
+const { loadConfig } = require("../node/src/config");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -190,6 +196,19 @@ async function embedFoundingVPKey() {
     }
   }
 
+  // Compute and embed founding VP ID from public key
+  const vpId = generateVPId("US", vpKeypair.publicKey);
+  for (const file of [genesisJsFile, genesisPyFile]) {
+    let src = fs.readFileSync(file, "utf8");
+    // Replace any existing vp_id value (hardcoded or previously generated)
+    src = src.replace(
+      /(vp_id['":\s]+)["'][^"']+["']/,
+      `$1"${vpId}"`
+    );
+    fs.writeFileSync(file, src);
+  }
+  ok(`Embedded VP ID: ${vpId}`);
+
   // Generate founding member keypairs and compute TIP-IDs for genesis_ring
   info("Generating founding member keypairs...");
   _foundingKeypairs = FOUNDING_MEMBERS.map(member => {
@@ -212,6 +231,22 @@ async function embedFoundingVPKey() {
   fs.writeFileSync(genesisPyFile, pySrc);
   ok("Embedded genesis_ring (founding TIP-IDs) in genesis source files");
 
+  // Embed genesis_ring_keys (public keys + dedup hashes + VP signatures for initDAG)
+  const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
+    const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
+    const idFields = {
+      region: member.region, dedup_hash: dedupHash,
+      zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+      verification_tier: "T1", vp_id: vpId, social_attested: true,
+    };
+    const vpSignature = signBody(idFields, vpKeypair.privateKey);
+    return { tip_id: tipId, region: member.region.toUpperCase(), public_key: keypair.publicKey, dedup_hash: dedupHash, vp_signature: vpSignature };
+  });
+  jsSrc = fs.readFileSync(genesisJsFile, "utf8");
+  jsSrc = jsSrc.replace(/genesis_ring_keys:\s*\[.*?\]/s, `genesis_ring_keys: ${JSON.stringify(ringKeys)}`);
+  fs.writeFileSync(genesisJsFile, jsSrc);
+  ok("Embedded genesis_ring_keys (public keys + VP signatures) in genesis.js");
+
   // Clear Node.js require cache so genesis.js is re-read with updated key + ring
   const genesisModule = require.resolve("../node/src/genesis");
   delete require.cache[genesisModule];
@@ -233,6 +268,7 @@ async function embedFoundingVPKey() {
     data: {
       vp_id: freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
       name: freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
+      jurisdiction: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction,
       jurisdiction_tier: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction_tier,
       public_key: vpKeypair.publicKey,
     },
@@ -347,7 +383,9 @@ function _withTxId(txBody) {
 async function registerFoundingVP(genesisBlock, vpKeypair) {
   head("STEP 3: Register The AI Lab Verification Provider");
 
-  const foundingVP = getFoundingVP();
+  // Re-read genesis (top-level getFoundingVP import has stale GENESIS_PAYLOAD)
+  const freshGenesis = require("../node/src/genesis");
+  const foundingVP = freshGenesis.getFoundingVP();
 
   info(`Registering VP: ${foundingVP.name}`);
   label("Jurisdiction tier", foundingVP.jurisdiction_tier);
@@ -393,10 +431,13 @@ async function registerSeedNode(vpKeypair) {
     return null;
   }
 
-  const nodeId = generateTIPID("NODE", _nodeKp.publicKey);
+  const nodeId = generateNodeId(_nodeKp.publicKey);
   const registeredAt = new Date().toISOString();
+  const nodeName = "The AI Lab TIP Node";
 
-  const nodeFields = { name: "Seed Node", public_key: _nodeKp.publicKey, approving_vp_id: getFoundingVP().vp_id };
+  const freshGenesis = require("../node/src/genesis");
+  const vpId = freshGenesis.getFoundingVP().vp_id;
+  const nodeFields = { name: nodeName, public_key: _nodeKp.publicKey, approving_vp_id: vpId };
   const councilSig = signBody(nodeFields, vpKeypair.privateKey);
 
   const nodeTxBody = {
@@ -405,17 +446,17 @@ async function registerSeedNode(vpKeypair) {
     prev: _dag.getRecentPrev(),
     data: {
       node_id: nodeId,
-      name: "Seed Node",
+      name: nodeName,
       public_key: _nodeKp.publicKey,
       council_signature: councilSig,
-      approving_vp_id: getFoundingVP().vp_id,
+      approving_vp_id: vpId,
     },
   };
   const signedTx = _withTxId(nodeTxBody);
   _dag.addTx(signedTx);
   _dag.saveNode({
     node_id: nodeId,
-    name: "Seed Node",
+    name: nodeName,
     public_key: _nodeKp.publicKey,
     status: "active",
     registered_at: registeredAt,
@@ -431,9 +472,17 @@ async function registerSeedNode(vpKeypair) {
     ok("Node keys written to .env");
   }
 
+  // Embed founding node in genesis.js so initDAG can bootstrap it on any node
+  const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
+  const foundingNodeData = { node_id: nodeId, name: nodeName, public_key: _nodeKp.publicKey, council_signature: councilSig, approving_vp_id: vpId };
+  let gSrc = fs.readFileSync(genesisJsFile, "utf8");
+  gSrc = gSrc.replace(/founding_node:\s*(?:null|{[^}]*})/s, `founding_node: ${JSON.stringify(foundingNodeData)}`);
+  fs.writeFileSync(genesisJsFile, gSrc);
+  ok("Embedded founding node in genesis.js");
+
   ok(`Seed node registered: ${nodeId}`);
   label("Node ID", nodeId);
-  return { nodeId, publicKey: _nodeKp.publicKey };
+  return { nodeId, name: nodeName, publicKey: _nodeKp.publicKey };
 }
 
 // ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
@@ -812,7 +861,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
 }
 
 // ─── Step 8: Write seed output ────────────────────────────────────────────────
-async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content) {
+async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content, seedNode) {
   head("STEP 7: Writing Seed Output");
 
   const output = {
@@ -873,7 +922,64 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
   };
   fs.writeFileSync(keysOutputFile, JSON.stringify(keysOutput, null, 2), { mode: 0o600 });
   ok(`Founder keys written to: ${keysOutputFile} (chmod 600)`);
-  warn("SECURITY: Add genesis-data/founder-keys.json and genesis-data/genesis-keys.json to .gitignore");
+
+  // Write .tip.json backup files (same format as VP app's download)
+  const backupDir = path.join(DATA_DIR, "backups");
+  if (fs.existsSync(backupDir)) {
+    for (const f of fs.readdirSync(backupDir)) {
+      if (f.endsWith(".tip.json")) fs.unlinkSync(path.join(backupDir, f));
+    }
+  }
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  const toFileName = (id) => id.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
+
+  // Founding identity backups
+  for (const identity of identities) {
+    const tipJson = JSON.stringify({
+      v: 1,
+      type: "identity",
+      name: identity.name,
+      tip_id: identity.tip_id,
+      public_key: identity.public_key,
+      private_key: identity.private_key,
+      created: identity.registered_at || new Date().toISOString(),
+    }, null, 2);
+    const filePath = path.join(backupDir, toFileName(identity.tip_id));
+    fs.writeFileSync(filePath, tipJson, { mode: 0o600 });
+    ok(`  Backup: ${toFileName(identity.tip_id)} — ${identity.name}`);
+  }
+
+  // VP backup
+  const vpBackup = JSON.stringify({
+    v: 1,
+    type: "vp",
+    name: vpRecord.name,
+    vp_id: vpRecord.vp_id,
+    public_key: vpKeypair.publicKey,
+    private_key: vpKeypair.privateKey,
+    created: new Date().toISOString(),
+  }, null, 2);
+  fs.writeFileSync(path.join(backupDir, toFileName(vpRecord.vp_id)), vpBackup, { mode: 0o600 });
+  ok(`  Backup: ${toFileName(vpRecord.vp_id)} — ${vpRecord.name} (VP)`);
+
+  // Node backup
+  if (_nodeKp && seedNode) {
+    const nodeBackup = JSON.stringify({
+      v: 1,
+      type: "node",
+      name: seedNode.name,
+      node_id: seedNode.nodeId,
+      public_key: _nodeKp.publicKey,
+      private_key: _nodeKp.privateKey,
+      created: new Date().toISOString(),
+    }, null, 2);
+    fs.writeFileSync(path.join(backupDir, toFileName(seedNode.nodeId)), nodeBackup, { mode: 0o600 });
+    ok(`  Backup: ${toFileName(seedNode.nodeId)} — ${seedNode.name} (Node)`);
+  }
+
+  ok(`Backup .tip.json files written to: ${backupDir}`);
+  warn("SECURITY: genesis-data/backups/ contains private keys. Never commit to git.");
 
   return output;
 }
@@ -918,7 +1024,7 @@ async function main() {
     const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
 
     // Step 7: Write output
-    const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content);
+    const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content, seedNode);
 
     // ── Final summary ────────────────────────────────────────────────────────
     head("SEED COMPLETE");

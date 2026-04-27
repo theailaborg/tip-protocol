@@ -13,7 +13,7 @@ const log = getLogger("tip.dispute");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
-function createDisputeService({ dag, scoring, config, broadcast }) {
+function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
 
   function fileDispute(ctid, body) {
     const rec = dag.getContent(ctid);
@@ -42,64 +42,55 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
       tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
       data: {
         ctid, disputer_tip_id, reason, claimed_origin: claimed_origin || null,
-        declared_origin: rec.origin_code, evidence_hash, author_tip_id: rec.author_tip_id,
+        declared_origin: rec.origin_code, evidence_hash, signature, author_tip_id: rec.author_tip_id,
         pre_dispute_status: rec.status, stake: DISPUTE.DISPUTER_STAKE,
       },
     });
     const validation = validateTransaction(disputeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
-    dag.addTx(disputeTx);
-    broadcast(disputeTx);
-    dag.updateContentStatus(ctid, CONTENT_STATUS.DISPUTED);
+    // Collect all txs for atomic batch: dispute + AI classifier + jury summons
+    const batchTxs = [disputeTx];
 
     // Stage 1: AI Classifier (always escalates for now)
-    let stage1Result;
-    try {
-      const aiResult = preScanContent(rec.content_hash || "", rec.origin_code, {});
-      const confidence = aiResult.probability || 0;
-      const routing = confidence >= AI_CLASSIFIER.HIGH_CONFIDENCE ? "escalate_high" : "escalate";
+    const aiResult = preScanContent(rec.content_hash || "", rec.origin_code, {});
+    const confidence = aiResult.probability || 0;
+    const routing = confidence >= AI_CLASSIFIER.HIGH_CONFIDENCE ? "escalate_high" : "escalate";
 
-      const classifierTx = nodeSignedAuto({
-        tx_type: TX_TYPES.AI_CLASSIFIER_RESULT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-        data: { ctid, dispute_tx_id: disputeTx.tx_id, confidence, routing },
-      }, config);
-      dag.addTx(classifierTx);
-      broadcast(classifierTx);
-
-      stage1Result = { routing, confidence, message: routing === "escalate_high" ? "High-confidence mismatch. Escalated to Stage 2 with flag." : "Escalated to Stage 2 for human review." };
-      log.info(`Stage 1 AI: ${ctid} confidence=${confidence} routing=${routing}`);
-    } catch (e) {
-      log.error(`Stage 1 AI failed for ${ctid}:`, e.message);
-      stage1Result = { routing: "escalate", confidence: 0, message: "AI classifier unavailable — escalated to Stage 2." };
-    }
+    const classifierTx = nodeSignedAuto({
+      tx_type: TX_TYPES.AI_CLASSIFIER_RESULT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
+      data: { ctid, dispute_tx_id: disputeTx.tx_id, confidence, routing },
+    }, config);
+    batchTxs.push(classifierTx);
 
     // Stage 2: Jury Selection
-    let juryResult = null;
-    try {
-      const jury = selectJury(dag, scoring, disputeTx.tx_id, rec.author_tip_id, disputer_tip_id);
-      if (jury.insufficient) log.warn(`Jury selection: insufficient jurors for ${ctid} (${jury.jurors.length}/${JURY.SIZE})`);
+    const jury = selectJury(dag, scoring, disputeTx.tx_id, rec.author_tip_id, disputer_tip_id);
+    if (jury.insufficient) log.warn(`Jury selection: insufficient jurors for ${ctid} (${jury.jurors.length}/${JURY.SIZE})`);
 
-      const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
-      const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+    const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
+    const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
 
-      for (const jurorTipId of jury.jurors) {
-        const summonsTx = nodeSignedAuto({
-          tx_type: TX_TYPES.JURY_SUMMONS, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
-          data: { ctid, dispute_tx_id: disputeTx.tx_id, juror_tip_id: jurorTipId, stake: JURY.JUROR_STAKE, seed: jury.seed, identity_count: jury.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
-        }, config);
-        dag.addTx(summonsTx);
-        broadcast(summonsTx);
-      }
-
-      juryResult = { jurors: jury.jurors, count: jury.jurors.length, insufficient: jury.insufficient, seed: jury.seed, identity_count: jury.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline };
-      log.info(`Jury selected for ${ctid}: ${jury.jurors.length} jurors`);
-    } catch (e) {
-      log.error(`Jury selection failed for ${ctid}:`, e.message);
-      juryResult = { error: "Jury selection failed", message: e.message };
+    for (const jurorTipId of jury.jurors) {
+      const summonsTx = nodeSignedAuto({
+        tx_type: TX_TYPES.JURY_SUMMONS, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
+        data: { ctid, dispute_tx_id: disputeTx.tx_id, juror_tip_id: jurorTipId, stake: JURY.JUROR_STAKE, seed: jury.seed, identity_count: jury.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+      }, config);
+      batchTxs.push(summonsTx);
     }
 
-    return { success: true, message: "Dispute filed.", dispute_tx_id: disputeTx.tx_id, stake_at_risk: DISPUTE.DISPUTER_STAKE, stage1: stage1Result, stage2: juryResult };
+    // Submit entire dispute as atomic batch
+    submitBatch(batchTxs);
+
+    log.info(`Dispute proposed: ${ctid} (${batchTxs.length} txs in batch, ${jury.jurors.length} jurors)`);
+
+    return {
+      success: true, message: "Dispute filed.",
+      dispute_tx_id: disputeTx.tx_id,
+      stake_at_risk: DISPUTE.DISPUTER_STAKE,
+      stage1: { routing, confidence },
+      stage2: { jurors: jury.jurors, count: jury.jurors.length, insufficient: jury.insufficient, commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+      confirmation: "proposed",
+    };
   }
 
   function juryCommit(ctid, body) {
@@ -120,10 +111,9 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
     if (existing) throw { status: 409, error: "You have already submitted a vote commitment" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment } });
-    dag.addTx(commitTx);
-    broadcast(commitTx);
-    return { success: true, tx_id: commitTx.tx_id };
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature } });
+    submitTx(commitTx);
+    return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
 
   function juryReveal(ctid, body) {
@@ -153,18 +143,11 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
     if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null } });
-    dag.addTx(revealTx);
-    broadcast(revealTx);
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature } });
+    submitTx(revealTx);
 
-    // Check if all jurors revealed → trigger verdict
-    const allReveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).filter(t => !t.data?.is_appeal);
-    const allSummons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => !t.data?.is_appeal);
-    let verdict = null;
-    if (allReveals.length >= allSummons.length) {
-      verdict = tallyVerdictAndApply(ctid, allReveals, allSummons, dag, scoring, config);
-    }
-    return { success: true, tx_id: revealTx.tx_id, verdict };
+    // Verdict triggered by scheduler verdict-check when all reveals are committed
+    return { success: true, tx_id: revealTx.tx_id, confirmation: "proposed" };
   }
 
   function getDisputeCase(ctid) {
@@ -222,9 +205,10 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     if (dag.isRevoked(appellant_tip_id)) throw { status: 403, error: "Appellant TIP-ID is revoked" };
     if (!verifyBodySignature(body, signature, appellant.public_key, ["appellant_tip_id"])) throw { status: 403, error: "Appellant signature verification failed" };
 
-    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE } });
-    dag.addTx(appealTx);
-    broadcast(appealTx);
+    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, signature, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE } });
+
+    // Collect batch: appeal + expert summons
+    const batchTxs = [appealTx];
 
     const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId);
     const commitDeadline = new Date(Date.now() + APPEAL.COMMIT_WINDOW_HOURS * 3600000).toISOString();
@@ -232,13 +216,17 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
 
     for (const expertTipId of experts.experts) {
       const summonsTx = nodeSignedAuto({ tx_type: TX_TYPES.JURY_SUMMONS, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, dispute_tx_id: appealTx.tx_id, juror_tip_id: expertTipId, stake: JURY.JUROR_STAKE, seed: experts.seed, identity_count: experts.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline, is_appeal: true } }, config);
-      dag.addTx(summonsTx);
-      broadcast(summonsTx);
+      batchTxs.push(summonsTx);
     }
 
-    dag.updateContentStatus(ctid, CONTENT_STATUS.DISPUTED);
-    log.info(`Appeal filed for ${ctid} by ${appellant_tip_id}`);
-    return { success: true, appeal_tx_id: appealTx.tx_id, stake_at_risk: APPEAL.APPELLANT_STAKE, experts: { selected: experts.experts, count: experts.experts.length, insufficient: experts.insufficient, commit_deadline: commitDeadline, reveal_deadline: revealDeadline } };
+    submitBatch(batchTxs);
+
+    log.info(`Appeal proposed: ${ctid} by ${appellant_tip_id} (${batchTxs.length} txs)`);
+    return {
+      success: true, appeal_tx_id: appealTx.tx_id, stake_at_risk: APPEAL.APPELLANT_STAKE,
+      experts: { selected: experts.experts, count: experts.experts.length, insufficient: experts.insufficient, commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
+      confirmation: "proposed",
+    };
   }
 
   function appealCommit(ctid, body) {
@@ -257,10 +245,9 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
     if (existing) throw { status: 409, error: "You have already submitted a vote commitment" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, is_appeal: true } });
-    dag.addTx(commitTx);
-    broadcast(commitTx);
-    return { success: true, tx_id: commitTx.tx_id };
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature, is_appeal: true } });
+    submitTx(commitTx);
+    return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
 
   function appealReveal(ctid, body) {
@@ -293,17 +280,11 @@ function createDisputeService({ dag, scoring, config, broadcast }) {
     const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
     if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true } });
-    dag.addTx(revealTx);
-    broadcast(revealTx);
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature, is_appeal: true } });
+    submitTx(revealTx);
 
-    const allReveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).filter(t => t.data?.is_appeal === true);
-    const allSummons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => t.data?.is_appeal === true);
-    let appealVerdict = null;
-    if (allReveals.length >= allSummons.length) {
-      appealVerdict = applyAppealVerdict(ctid, allReveals, allSummons, dag, scoring, config);
-    }
-    return { success: true, tx_id: revealTx.tx_id, verdict: appealVerdict };
+    // Appeal verdict triggered by scheduler verdict-check when all reveals are committed
+    return { success: true, tx_id: revealTx.tx_id, confirmation: "proposed" };
   }
 
   return { fileDispute, juryCommit, juryReveal, getDisputeCase, fileAppeal, appealCommit, appealReveal };

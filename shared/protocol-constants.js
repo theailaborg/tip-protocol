@@ -23,40 +23,72 @@ let _instance = null;
 
 /**
  * Initialize protocol constants from genesis block.
- * Can only be called once — subsequent calls throw.
+ *
+ * Idempotent on identical payload: calling init twice with the same constants
+ * is a no-op so defensive callers (CLIs, scripts, tests) don't have to
+ * coordinate. Re-init with a *different* payload throws — that is the
+ * fork-risk failure mode (one path quietly switches the constants the other
+ * path computed against), so it must be loud.
+ *
+ * Each entry point owns one init call:
+ *   - node:   node/src/index.js
+ *   - cli:    cli/src/index.js
+ *   - seed:   scripts/seed.js
+ *   - tests:  node/tests/jest-setup.js (jest setupFiles)
  */
 function init(protocolConstants) {
-  if (_instance !== null) {
-    throw new Error("ProtocolConstants already initialized — cannot reinitialize");
-  }
   if (!protocolConstants || typeof protocolConstants !== "object") {
     throw new Error("ProtocolConstants: invalid genesis protocol_constants");
+  }
+  if (_instance !== null) {
+    if (_deepEqual(_instance, protocolConstants)) return _instance;
+    throw new Error(
+      "ProtocolConstants already initialized with a DIFFERENT payload — refusing to overwrite. " +
+      "Two code paths disagree on genesis; this would silently fork the network. " +
+      "Audit every PC.init() call site and ensure they all read from the same getGenesisPayload()."
+    );
   }
   _instance = deepFreeze(protocolConstants);
   return _instance;
 }
 
 /**
- * Get the initialized protocol constants.
- * If not yet initialized, auto-loads from genesis.
+ * Get the initialized protocol constants. Throws if init() hasn't run.
+ *
+ * No auto-fallback: the previous fallback created a hidden second init path
+ * that fired on first getter access during module-load (e.g. a top-level
+ * `const X = NETWORK.Y;`), and then collided with the explicit init call.
+ * Callers must guarantee init has run before any backward-compat accessor
+ * is touched. If you hit this from a new entry point, load genesis once at
+ * boot and call PC.init(payload.protocol_constants).
  */
 function get() {
   if (_instance === null) {
-    // Auto-initialize from genesis if available
-    try {
-      const { getGenesisPayload } = require("../node/src/genesis");
-      const payload = getGenesisPayload();
-      if (payload?.protocol_constants) {
-        init(payload.protocol_constants);
-      }
-    } catch {
-      // Genesis not available (e.g. in browser extension or SDK context)
-    }
-  }
-  if (_instance === null) {
-    throw new Error("ProtocolConstants not initialized — load genesis first");
+    throw new Error(
+      "ProtocolConstants not initialized — call PC.init(genesisPayload.protocol_constants) " +
+      "before any backward-compat accessor (CONSENSUS, NETWORK, JURY, etc.)."
+    );
   }
   return _instance;
+}
+
+/**
+ * Structural equality check. Used by init() to allow idempotent re-init on
+ * the same payload while rejecting divergent payloads.
+ */
+function _deepEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!_deepEqual(a[k], b[k])) return false;
+  }
+  return true;
 }
 
 /**
@@ -166,11 +198,43 @@ const PRESCAN_THRESHOLDS = {
   get ceiling() { return _ps().ceiling; },
 };
 
+const _c = () => get().consensus;
 const _n = () => get().network;
 const _r = () => get().reputation;
 
+const CONSENSUS = {
+  get ROUND_TIMEOUT_MS() { return _c().round_timeout_ms; },
+  get BATCH_WAIT_MS() { return _c().batch_wait_ms; },
+  get CONSENSUS_SUMMARY_INTERVAL_MS() { return _c().consensus_summary_interval_ms ?? 60000; },
+  get VOTES_RETENTION_ROUNDS() { return _c().votes_retention_rounds ?? 5; },
+  get MAX_TXS_PER_CERTIFICATE() { return _c().max_txs_per_certificate; },
+  get MEMPOOL_MAX_SIZE() { return _c().mempool_max_size; },
+  get MEMPOOL_TX_TTL_SECONDS() { return _c().mempool_tx_ttl_seconds; },
+  get CERTIFICATE_MAX_BYTES() { return _c().certificate_max_bytes; },
+  get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
+  get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
+  get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
+  get SYNC_MAX_RETRIES() { return _c().sync_max_retries; },
+  get SYNC_RETRY_BASE_MS() { return _c().sync_retry_base_ms; },
+  get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
+  get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
+  get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
+  get GC_DEPTH() { return _c().gc_depth ?? 500; },
+  get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
+  get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
+  get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
+  get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
+  get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
+};
+
 const NETWORK = {
+  get HANDSHAKE_PROTOCOL() { return _n().handshake_protocol; },
+  get SNAPSHOT_PROTOCOL() { return _n().snapshot_protocol; },
+  get SNAPSHOT_LENGTH_PREFIX_BYTES() { return _n().snapshot_length_prefix_bytes; },
+  get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
   get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
+  get SYNC_STATUS_PROTOCOL() { return _n().sync_status_protocol ?? "/tip/sync-status/1.0.0"; },
+  get PEER_ANNOUNCE_PROTOCOL() { return _n().peer_announce_protocol ?? "/tip/peer-announce/1.0.0"; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
   get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },
 };
@@ -194,5 +258,5 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, NETWORK, REPUTATION, getTier,
+  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, getTier,
 };
