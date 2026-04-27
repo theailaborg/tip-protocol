@@ -192,6 +192,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number(bullshark.lastCommittedRound() || 0)
       : Number(latest.round || 0);
 
+    // Peer's bullshark consensusIndex at serve time. Joiner adopts this
+    // so all in-sync nodes show the same network-wide anchor count
+    // (Cosmos/Sui/Aptos pattern), instead of each node tracking its own
+    // local-since-restart counter. Falls back to the latest commit
+    // row's consensus_index for legacy tests without a wired bullshark.
+    const peerConsensusIndex = (bullshark && typeof bullshark.stats === "function")
+      ? Number((bullshark.stats() || {}).consensusIndex || 0)
+      : Number(latest.consensus_index || 0);
+
     const headerBuf = encode("SnapshotHeader", {
       round: latest.round,
       anchorCertHash: hexToBytes(latest.anchor_cert_hash),
@@ -207,6 +216,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       anchorBatchHash: hexToBytes(anchorBatchHash),
       error: "",
       peerCommittedRound,
+      peerConsensusIndex,
     });
 
     // Stream header + state rows + tx rows + commit rows + end marker in a
@@ -450,6 +460,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_committed_round (${peerCommittedRound}) < snapshot round (${snapshotRound}) — peer is lying about its current state`);
       }
 
+      // peer_consensus_index sanity: peer can't claim a smaller anchor
+      // count than the snapshot's commit row already proves.
+      const snapshotConsensusIndex = Number(header.consensusIndex || 0);
+      const peerConsensusIndex = Number(header.peerConsensusIndex || 0);
+      if (peerConsensusIndex > 0 && peerConsensusIndex < snapshotConsensusIndex) {
+        throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
+      }
+
       // ── Install atomically ────────────────────────────────────────────
       const installed = _installSnapshot(header, {
         stateRows: stateInstallQueue,
@@ -474,6 +492,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // far behind live round) and loop trying to pull non-existent
         // certs.
         peer_committed_round: peerCommittedRound,
+        // Peer's bullshark counter at serve time — joiner's peer-sync
+        // layer adopts this so all in-sync nodes share the same
+        // network-wide anchor count. Without this, each node's
+        // consensus_index drifts based on local restart history.
+        peer_consensus_index: peerConsensusIndex,
         rows_installed: installed.state + installed.txs + installed.commits,
         state_rows_installed: installed.state,
         tx_rows_installed: installed.txs,

@@ -334,6 +334,20 @@ message SnapshotHeader {
   // implicitly by the bundle containing every commit row up to and
   // including snapshot.round and none beyond.
   uint64 peer_committed_round = 14;
+
+  // Peer's bullshark.stats().consensusIndex at serve time. Lets the
+  // joiner adopt peer's anchor counter so all nodes converge on the
+  // same network-wide value (Cosmos/Sui/Aptos pattern). Without this,
+  // the joiner's counter starts from its local snapshot baseline and
+  // stays N rounds behind peer's forever, producing per-node drift on
+  // dashboards even though consensus is in lockstep.
+  //
+  // Same trust model as peer_committed_round: a malicious peer could
+  // claim an inflated value, but the worst-case outcome is just a wrong
+  // dashboard display on one joiner — anti-entropy catches state
+  // divergence within ~4s if peer is actually byzantine. See issue #58
+  // for full trust analysis.
+  uint64 peer_consensus_index = 15;
 }
 
 /**

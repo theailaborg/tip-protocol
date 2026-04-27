@@ -108,9 +108,16 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
     // certs that have been GC'd.
     const targetRound = Math.max(snap.peer_committed_round || 0, snap.round);
     if (bullshark?.markOrderedUpTo) bullshark.markOrderedUpTo(targetRound);
+    // Adopt peer's network-wide consensus_index so dashboards converge
+    // across all nodes (Cosmos/Sui/Aptos pattern). Monotonic — won't go
+    // backwards if our local value happens to be higher (mid-run
+    // restart with more history). See SnapshotHeader.peer_consensus_index.
+    const targetConsensusIndex = Math.max(snap.peer_consensus_index || 0, snap.consensus_index || 0);
+    if (bullshark?.setConsensusIndex) bullshark.setConsensusIndex(targetConsensusIndex);
     log.notice(
       `Snapshot fast-sync: installed round=${snap.round} ` +
       `peer_committed_round=${snap.peer_committed_round || snap.round} ` +
+      `peer_consensus_index=${targetConsensusIndex} ` +
       `consensus_index=${snap.consensus_index} rows=${snap.rows_installed} ` +
       `peer=${peerId.slice(0, 12)}`
     );

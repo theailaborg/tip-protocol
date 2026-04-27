@@ -497,6 +497,28 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       log.info(`Bullshark: marked certificates as ordered up to round ${round}`);
     },
 
+    /**
+     * Adopt peer's bullshark consensus_index after a snapshot install.
+     * Monotonic — only advances forward. Persisted via consensus_meta
+     * so subsequent restarts pick up the inherited value.
+     *
+     * Called by peer-sync.js tryFastSyncSnapshot after the snapshot's
+     * verified to install peer's anchor counter, putting the joiner
+     * on the same network-wide counter as peer (Cosmos/Sui/Aptos
+     * pattern) instead of each node tracking its own local value.
+     */
+    setConsensusIndex(value) {
+      const n = Number(value) || 0;
+      if (n <= _consensusIndex) return _consensusIndex;
+      _consensusIndex = n;
+      if (dag.setConsensusMeta) {
+        try { dag.setConsensusMeta("last_consensus_index", _consensusIndex); }
+        catch (err) { log.warn(`setConsensusIndex: consensus_meta write failed: ${err.message}`); }
+      }
+      log.info(`Bullshark: consensus_index advanced to ${_consensusIndex} (from snapshot peer)`);
+      return _consensusIndex;
+    },
+
     /** Stats for monitoring */
     stats: () => ({
       lastCommittedRound: _lastCommittedRound,
