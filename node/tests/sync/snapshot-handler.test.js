@@ -578,6 +578,41 @@ describe("§14/#49 snapshot full-history shipping", () => {
     expect(destDag.getCommit(1)).toBeNull();
   });
 
+  test("snapshot serves correctly after cert GC has pruned the anchor cert (#50)", async () => {
+    // The structural gap that allowed #50 to ship undetected: the test
+    // fixture builds source DAG with cert + commit row both present, but
+    // production reality is that cert GC prunes certs older than gc_depth
+    // rounds while commit rows survive forever. If the snapshot serving
+    // path depends on dag.getCertificate(latest.anchor_cert_hash) to
+    // recover anchor_batch_hash, that lookup fails after GC and the
+    // joiner can't verify ack signatures.
+    //
+    // This test wipes the anchor cert AFTER fixture build (mimics what
+    // bullshark._maybeRunCertGC does in production once enough rounds
+    // elapse) and asserts the snapshot still installs cleanly.
+    const fx = buildCommittedDag({ committeeSize: 1, seedTxs: 2 });
+
+    // Wipe ALL certs from the source — equivalent to cert GC having
+    // moved past the latest commit's round. Commit row stays.
+    fx.sourceDag.pruneCertificatesBefore(Number.MAX_SAFE_INTEGER);
+    expect(fx.sourceDag.getCertificate(fx.anchorCertHash)).toBeNull();
+    expect(fx.sourceDag.getLatestCommit()).toBeTruthy();    // commit row survived
+
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    const [, result] = await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Snapshot installs successfully — anchor_batch_hash came from the
+    // commit row directly (post-#50), not from the missing cert.
+    expect(result.round).toBe(2);
+    expect(result.state_merkle_root).toBe(fx.stateRoot);
+    expect(destDag.getCommit(2)).toBeTruthy();
+  });
+
   test("post-install: joiner's _prev resolves cross-node — fresh submissions chain off installed history", async () => {
     // The full closure of the live bug: a joiner who installed a snapshot
     // must be able to submit a NEW tx whose `prev` (from getRecentPrev())

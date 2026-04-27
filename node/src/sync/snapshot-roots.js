@@ -117,6 +117,13 @@ function canonCommit(c) {
   return {
     round: c.round,
     anchor_cert_hash: c.anchor_cert_hash,
+    // #50: included so post-#50 commit rows carry their self-contained
+    // batch_hash through the wire and into the receiver's commits table.
+    // null for pre-#50 rows — they ship as null, joiner stores null,
+    // and snapshot-handler falls back to cert lookup if such a row is
+    // ever served as the latest (only possible for old DBs that
+    // existed before this column was migrated in).
+    anchor_batch_hash: c.anchor_batch_hash || null,
     leader_node_id: c.leader_node_id,
     committee: c.committee || [],
     support_count: c.support_count,

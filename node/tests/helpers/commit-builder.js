@@ -129,6 +129,10 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
   sourceDag.saveCommit({
     round,
     anchor_cert_hash: anchorCertHash,
+    // #50: persist anchor_batch_hash directly so snapshot serving works
+    // even after cert GC has pruned the cert. Mirrors what bullshark.js
+    // writes in production.
+    anchor_batch_hash: anchorBatchHash,
     leader_node_id: leaderNodeId,
     committee,
     support_count: committeeSize,

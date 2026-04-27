@@ -160,15 +160,27 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false })
     }
 
     // Need the anchor cert's batch_hash so the joiner can reconstruct the
-    // payload each ack signed. Fetch from DAG; falls back to zero-bytes if
-    // the cert is missing (ack verification will fail on the joiner side,
-    // which is the correct behaviour — no silent bypass).
-    let anchorBatchHash = "";
-    try {
-      const anchorCert = dag.getCertificate(latest.anchor_cert_hash);
-      anchorBatchHash = anchorCert?.batch?.hash || "";
-    } catch (err) {
-      log.warn(`Snapshot: failed to read anchor cert ${latest.anchor_cert_hash.slice(0, 16)}: ${err.message}`);
+    // payload each ack signed: "ack:${batch_hash}:${signer}".
+    //
+    // #50: prefer the value stored directly on the commit row (every
+    // commit written by post-#50 nodes has it). This makes serving
+    // independent of cert GC — idle federations whose latest commit
+    // drifts past gc_depth rounds can still serve snapshots because
+    // the value is in the row, not behind a cert lookup.
+    //
+    // Fallback to cert lookup for rows written by pre-#50 nodes whose
+    // anchor_batch_hash column is null. Those rows still work as long
+    // as cert GC hasn't run yet (typical for fresh federations); once
+    // GC runs, the lookup returns null and serving will fail with the
+    // correct error rather than silently bypass the verification step.
+    let anchorBatchHash = latest.anchor_batch_hash || "";
+    if (!anchorBatchHash) {
+      try {
+        const anchorCert = dag.getCertificate(latest.anchor_cert_hash);
+        anchorBatchHash = anchorCert?.batch?.hash || "";
+      } catch (err) {
+        log.warn(`Snapshot: failed to read anchor cert ${latest.anchor_cert_hash.slice(0, 16)}: ${err.message}`);
+      }
     }
 
     const headerBuf = encode("SnapshotHeader", {

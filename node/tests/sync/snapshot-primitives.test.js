@@ -409,9 +409,12 @@ describe("snapshot-roots canonical projections", () => {
       committed_at: "ts", state_merkle_root: "s", txs_merkle_root: "t",
       ack_signer_ids: ["x"], ack_signatures: ["sig"],
     };
+    // anchor_batch_hash is intentionally omitted from `base` to verify
+    // the projection defaults it to null for pre-#50 rows.
     expect(canonCommit(base)).toEqual({
       round: 5,
       anchor_cert_hash: "a",
+      anchor_batch_hash: null,
       leader_node_id: "n",
       committee: ["x"],
       support_count: 1,
@@ -422,5 +425,16 @@ describe("snapshot-roots canonical projections", () => {
       ack_signer_ids: ["x"],
       ack_signatures: ["sig"],
     });
+  });
+
+  test("canonCommit preserves anchor_batch_hash when present (#50 self-contained rows)", () => {
+    const c = {
+      round: 5, anchor_cert_hash: "a", anchor_batch_hash: "deadbeef",
+      leader_node_id: "n", committee: ["x"], support_count: 1,
+      consensus_index: 7, committed_at: "ts",
+      state_merkle_root: "s", txs_merkle_root: "t",
+      ack_signer_ids: ["x"], ack_signatures: ["sig"],
+    };
+    expect(canonCommit(c).anchor_batch_hash).toBe("deadbeef");
   });
 });

@@ -480,6 +480,12 @@ class SQLiteStore {
   }
 
   _migrate() {
+    // GOTCHA: this SQL is a JS template literal, so any `${...}` in SQL
+    // strings or comments evaluates as JS at runtime. If you reference an
+    // undefined identifier in a comment (e.g. example placeholders), the
+    // whole _migrate() throws and `initDAG`'s catch silently falls back
+    // to MemoryStore — losing on-disk data on restart. Use angle brackets
+    // <like_this> or backslash-escape `\${...}` for placeholder examples.
     this.db.exec(`
       -- ── Transactions ─────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS transactions (
@@ -611,6 +617,14 @@ class SQLiteStore {
         txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
         ack_signer_ids    TEXT NOT NULL,   -- JSON array of node_ids that ack'd the anchor cert
         ack_signatures    TEXT NOT NULL,   -- JSON array of hex signatures, same order as ack_signer_ids
+        -- #50: explicit copy of the anchor cert's batch_hash so this row
+        -- stays self-contained for snapshot verification once cert GC has
+        -- pruned the underlying cert. Without this, snapshot serving
+        -- needs dag.getCertificate(anchor_cert_hash).batch.hash, which
+        -- fails on idle federations whose latest commit drifts past
+        -- gc_depth rounds. Joiner uses this to reconstruct the
+        -- ack-signature payload (ack:<batch_hash>:<signer>) each ack signed.
+        anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
@@ -653,6 +667,16 @@ class SQLiteStore {
     const idCols = this.db.prepare("PRAGMA table_info(identities)").all().map(c => c.name);
     if (!idCols.includes("creator_name")) {
       this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
+    }
+    // #50: backfill anchor_batch_hash column for pre-existing commits tables.
+    // Older rows (written before #50) have NULL — snapshot serving still
+    // tries the cert lookup as a fallback for them, which fails if the
+    // cert was GC'd (same pre-fix behaviour for old rows). Every new
+    // commit written after this migration includes the column directly,
+    // so going forward each commit row is self-contained.
+    const commitCols = this.db.prepare("PRAGMA table_info(commits)").all().map(c => c.name);
+    if (!commitCols.includes("anchor_batch_hash")) {
+      this.db.exec("ALTER TABLE commits ADD COLUMN anchor_batch_hash TEXT");
     }
   }
 
@@ -764,15 +788,15 @@ class SQLiteStore {
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
-      // Commit checkpoints (§15 base + §14 snapshot-sync fields).
-      // 11 columns: round, anchor_cert_hash, leader_node_id, committee,
+      // Commit checkpoints (§15 base + §14 snapshot-sync fields + #50).
+      // 12 columns: round, anchor_cert_hash, leader_node_id, committee,
       // support_count, consensus_index, committed_at, state_merkle_root,
-      // txs_merkle_root, ack_signer_ids, ack_signatures.
+      // txs_merkle_root, ack_signer_ids, ack_signatures, anchor_batch_hash.
       saveCommit: this.db.prepare(
         `INSERT OR IGNORE INTO commits
            (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at,
-            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures,anchor_batch_hash)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getCommit: this.db.prepare("SELECT * FROM commits WHERE round=?"),
       getCommitsFromRound: this.db.prepare(
@@ -1038,6 +1062,7 @@ class SQLiteStore {
       rec.txs_merkle_root,
       JSON.stringify(rec.ack_signer_ids || []),
       JSON.stringify(rec.ack_signatures || []),
+      rec.anchor_batch_hash || null,        // #50: nullable — null on pre-fix rows or when the caller didn't pass it
     );
   }
   getCommit(round) {
@@ -1082,6 +1107,7 @@ class SQLiteStore {
       txs_merkle_root: row.txs_merkle_root,
       ack_signer_ids: JSON.parse(row.ack_signer_ids),
       ack_signatures: JSON.parse(row.ack_signatures),
+      anchor_batch_hash: row.anchor_batch_hash || null,    // #50: null for pre-fix rows
     };
   }
 

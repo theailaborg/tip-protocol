@@ -223,6 +223,13 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
           dag.saveCommit({
             round: voteRound,
             anchor_cert_hash: leaderCert.hash,
+            // #50: persist the anchor cert's batch_hash directly so the
+            // commit row stays self-contained for snapshot verification
+            // even after cert GC prunes leaderCert. Without this, idle
+            // federations whose latest commit drifts past gc_depth rounds
+            // become un-snapshotable (server can't reconstruct the
+            // payload each ack signed: "ack:${batch_hash}:${signer}").
+            anchor_batch_hash: leaderCert.batch?.hash || null,
             leader_node_id: leader,
             committee: [...nodeIds].sort(),
             support_count: supportCount,
