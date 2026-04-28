@@ -407,7 +407,7 @@ describe("Trust Scoring Engine", () => {
       prev: [],
       signature: "test_sig",
     });
-    dag.setScore(TIP_ID_SCORE_TEST, 500, 0);
+    dag.setScore(TIP_ID_SCORE_TEST, 500, 0, "2026-01-01T00:00:00.000Z");
   });
 
   test("4.1 Initial score is 500 without attestation", () => {
@@ -428,7 +428,7 @@ describe("Trust Scoring Engine", () => {
       prev: [],
       signature: "test_sig",
     });
-    dag.setScore(TIP_ID_SCORE_TEST, 400, 1);
+    dag.setScore(TIP_ID_SCORE_TEST, 400, 1, "2026-01-01T00:00:00.000Z");
     const result = scoring.computeScore(TIP_ID_SCORE_TEST);
     expect(result.score).toBeLessThan(500);
   });
@@ -451,7 +451,7 @@ describe("Trust Scoring Engine", () => {
 
   test("4.5 Score does not exceed 1000 regardless of bonuses", () => {
     const richId = generateTIPID("CA", generateMLDSAKeypair().publicKey);
-    dag.setScore(richId, 990, 0);
+    dag.setScore(richId, 990, 0, "2026-01-01T00:00:00.000Z");
     // Apply multiple bonuses
     for (let i = 0; i < 20; i++) {
       dag.addTx({
@@ -462,14 +462,14 @@ describe("Trust Scoring Engine", () => {
         signature: "sig",
       });
     }
-    dag.setScore(richId, 1000, 0);
+    dag.setScore(richId, 1000, 0, "2026-01-01T00:00:00.000Z");
     const s = scoring.getScore(richId);
     expect(s.score).toBeLessThanOrEqual(1000);
   });
 
   test("4.6 Score does not go below 0", () => {
     const poorId = generateTIPID("NG", generateMLDSAKeypair().publicKey);
-    dag.setScore(poorId, 10, 5);
+    dag.setScore(poorId, 10, 5, "2026-01-01T00:00:00.000Z");
     dag.addTx({
       tx_type: TX_TYPES.SCORE_UPDATE,
       timestamp: new Date().toISOString(),
@@ -477,7 +477,7 @@ describe("Trust Scoring Engine", () => {
       prev: [],
       signature: "sig",
     });
-    dag.setScore(poorId, 0, 6);
+    dag.setScore(poorId, 0, 6, "2026-01-01T00:00:00.000Z");
     const s = scoring.getScore(poorId);
     expect(s.score).toBeGreaterThanOrEqual(0);
   });
@@ -689,7 +689,7 @@ describe("REST API", () => {
       status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
-    dag.setScore(tipId, 500, 0);
+    dag.setScore(tipId, 500, 0, "2026-01-01T00:00:00.000Z");
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}`);
     expect(res.status).toBe(200);
@@ -706,7 +706,7 @@ describe("REST API", () => {
       verified_at: new Date().toISOString(),
       score_display_mode: "FULL_PUBLIC",
     });
-    dag.setScore(tipId, 750, 0);
+    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}/score`);
     expect(res.status).toBe(200);
@@ -757,7 +757,7 @@ describe("REST API", () => {
       status: "active", vp_id: testVpId,
       verified_at: new Date().toISOString(),
     });
-    dag.setScore(authorId, 500, 0);
+    dag.setScore(authorId, 500, 0, "2026-01-01T00:00:00.000Z");
     const content = "This is a test article written by a human author with enough words to pass.";
     const sigFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const body = { author_tip_id: authorId, origin_code: ORIGIN.OH, content, title: "Test Article", signature: signBody(sigFields, authorKp.privateKey) };
@@ -1149,7 +1149,7 @@ describe("Semantic Dedup", () => {
       .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
     sdTipId = idRes.body.data.tip_id;
     sdAuthorPriv = sdKp.privateKey;
-    sdDag.setScore(sdTipId, 800, 0);
+    sdDag.setScore(sdTipId, 800, 0, "2026-01-01T00:00:00.000Z");
 
     // Register a separate verifier identity
     const vKp = generateMLDSAKeypair();
@@ -1164,7 +1164,7 @@ describe("Semantic Dedup", () => {
       .send({ ...vFields, vp_signature: signBody(vFields, sdVpKp.privateKey) });
     sdVerifierId = vRes.body.data.tip_id;
     sdVerifierPriv = vKp.privateKey;
-    sdDag.setScore(sdVerifierId, 800, 0);
+    sdDag.setScore(sdVerifierId, 800, 0, "2026-01-01T00:00:00.000Z");
 
     // Register content
     const sdContent = "Semantic dedup test content.";
@@ -1225,7 +1225,7 @@ describe("Semantic Dedup", () => {
       const idRes = await request(sdApp)
         .post("/v1/identity/register")
         .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
-      sdDag.setScore(idRes.body.data.tip_id, 800, 0); // high-trust for +3 each
+      sdDag.setScore(idRes.body.data.tip_id, 800, 0, "2026-01-01T00:00:00.000Z"); // high-trust for +3 each
       verifiers.push({ tipId: idRes.body.data.tip_id, priv: kp.privateKey });
     }
 

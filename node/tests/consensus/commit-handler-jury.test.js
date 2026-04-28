@@ -80,7 +80,7 @@ function _setupDisputeFixture(opts = {}) {
       verification_tier: "T1", founding: false, status: "active",
       registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0);
+    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
   }
 
   // Content + dispute
@@ -196,14 +196,14 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
 
   test("clamps to [0, 1000] regardless of delta magnitude", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 990, 0);
+    fx.dag.setScore(fx.jurorTipIds[0], 990, 0, "2026-01-01T00:00:00.000Z");
     const tx = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: 100, reason: "test-overflow", ctid: null,
     });
     fx.handler.commitOrderedTxs([tx], 100);
     expect(fx.dag.getScore(fx.jurorTipIds[0]).score).toBe(1000);
 
-    fx.dag.setScore(fx.jurorTipIds[0], 5, 0);
+    fx.dag.setScore(fx.jurorTipIds[0], 5, 0, "2026-01-01T00:00:00.000Z");
     const tx2 = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: -100, reason: "test-underflow", ctid: null,
     });
@@ -218,7 +218,7 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
 describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
   test("two SCORE_UPDATEs with identical (tip_id, ctid, reason) — only first applies", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0);
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
 
     const reason = `Jury majority vote on ${fx.ctid}`;
     // Two competing nodes submit the SAME logical SCORE_UPDATE — different
@@ -237,7 +237,7 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
 
   test("same tip_id + ctid + DIFFERENT reason → both apply (legitimately distinct events)", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0);
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
 
     const tx1 = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS,
@@ -255,7 +255,7 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
 
   test("dedup applies across rounds — same SCORE_UPDATE arriving in round R+1 is dropped", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0);
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
 
     const reason = `Jury majority vote on ${fx.ctid}`;
     const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });

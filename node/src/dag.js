@@ -75,10 +75,9 @@ function _canonContent(r) {
     tx_id: r.tx_id || null,
   };
 }
-// Staged for §14.5 — unused today (scores excluded from state root per
-// issues.md Consensus #31). Kept here so re-enabling is a one-line iterator
-// change once applyScoreEvent / scheduler route through consensus.
-// eslint-disable-next-line no-unused-vars
+// Canonical projection for the `scores` table — included in
+// `state_merkle_root` since `last_updated` is now sourced from
+// `tx.timestamp` (deterministic across nodes; see #31).
 function _canonScore(tip_id, v) {
   return {
     tip_id,
@@ -221,17 +220,19 @@ class MemoryStore {
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
-  // The scores table is a CACHE derived from replaying the tx log via
-  // scoring.computeScore(). `last_updated` is a local-clock stamp, not
-  // consensus state — so this table is NOT hashed into state_merkle_root
-  // today (see issues.md Consensus #31). When applyScoreEvent/scheduler
-  // are routed through consensus, `last_updated` will come from tx.timestamp
-  // and the table can be added back to iterateCanonicalState.
-  setScore(tipId, score, offenseCount = 0) {
+  // Cache derived from replaying the tx log. With Commits 2+3 every score
+  // mutation flows through commit-handler with a consensus-ordered tx in
+  // hand — callers pass `tx.timestamp` as `lastUpdatedISO` so the column
+  // is deterministic across nodes and the table is part of state_merkle_root
+  // (issues.md Consensus #31).
+  setScore(tipId, score, offenseCount = 0, lastUpdatedISO = null) {
+    if (lastUpdatedISO == null) {
+      throw new Error("setScore: lastUpdatedISO (from tx.timestamp) is required for deterministic state");
+    }
     this._scores.set(tipId, {
       score: Math.max(0, Math.min(1000, score)),
       offense_count: offenseCount || 0,
-      last_updated: new Date().toISOString(),
+      last_updated: lastUpdatedISO,
     });
   }
   getScore(tipId) { return this._scores.get(tipId) || null; }
@@ -408,9 +409,10 @@ class MemoryStore {
       .sort((a, b) => a.ctid.localeCompare(b.ctid))) {
       yield { table: "content", row: _canonContent(r) };
     }
-    // TODO §14.5 — re-include `scores` here once applyScoreEvent / scheduler
-    // route through consensus and last_updated comes from tx.timestamp
-    // (issues.md Consensus #31). _canonScore helper is already written.
+    for (const [tip_id, v] of [...this._scores.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))) {
+      yield { table: "scores", row: _canonScore(tip_id, v) };
+    }
     for (const h of [...this._dedup].sort()) {
       const createdAt = this._dedupCreated ? this._dedupCreated.get(h) : null;
       yield { table: "dedup_registry", row: _canonDedup(h, createdAt) };
@@ -986,14 +988,20 @@ class SQLiteStore {
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
-  // See MemoryStore.setScore — cache, not consensus state. Currently excluded
-  // from state_merkle_root (issues.md Consensus #31).
-  setScore(tipId, score, offenseCount = 0) {
+  // The scores table is a CACHE derived from replaying the tx log, but with
+  // Commits 2+3 every score-mutating tx is consensus-ordered, so each commit
+  // call on every node sees the same `tx.timestamp`. Pass it through as
+  // `lastUpdatedISO` and the column becomes deterministic across nodes,
+  // letting the table back into `state_merkle_root` (issues.md Consensus #31).
+  setScore(tipId, score, offenseCount = 0, lastUpdatedISO = null) {
+    if (lastUpdatedISO == null) {
+      throw new Error("setScore: lastUpdatedISO (from tx.timestamp) is required for deterministic state");
+    }
     this._stmts.setScore.run(
       tipId,
       Math.max(0, Math.min(1000, score)),
       offenseCount || 0,
-      new Date().toISOString()
+      lastUpdatedISO
     );
   }
   getScore(tipId) { return this._stmts.getScore.get(tipId) || null; }
@@ -1198,8 +1206,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
       yield { table: "content", row: _canonContent({ ...r, prescan_flagged: r.prescan_flagged === 1 }) };
     }
-    // TODO §14.5 — see MemoryStore.iterateCanonicalState for the exclusion
-    // rationale (issues.md Consensus #31).
+    for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
+      yield { table: "scores", row: _canonScore(r.tip_id, r) };
+    }
     for (const r of db.prepare("SELECT dedup_hash, created_at FROM dedup_registry ORDER BY dedup_hash").iterate()) {
       yield { table: "dedup_registry", row: _canonDedup(r.dedup_hash, r.created_at) };
     }
@@ -1363,7 +1372,7 @@ function initDAG(config) {
     hasDispute: (ctid, tipId) => store.hasDispute(ctid, tipId),
 
     // ── Scores ────────────────────────────────────────────────────────────
-    setScore: (id, s, o) => store.setScore(id, s, o),
+    setScore: (id, s, o, lastUpdatedISO) => store.setScore(id, s, o, lastUpdatedISO),
     getScore: (id) => store.getScore(id),
 
     // ── Dedup registry ────────────────────────────────────────────────────
@@ -1528,7 +1537,9 @@ function _writeGenesisBlock(store, config) {
       // (same on every node that ships the same genesis). Deterministic.
       store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
     }
-    store.setScore(member.tip_id, 550, 0);
+    // Genesis seed score — last_updated sourced from GENESIS_TIMESTAMP so
+    // every node bootstraps with an identical scores row (issue #31).
+    store.setScore(member.tip_id, 550, 0, GENESIS_TIMESTAMP);
     lastTxId = idTxId;
 
     log.info(`Founding identity registered: ${member.tip_id}`);

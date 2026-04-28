@@ -80,7 +80,7 @@ function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false,
       vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
       registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0);
+    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
   }
 
   dag.saveContent({

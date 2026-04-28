@@ -298,10 +298,12 @@ function createCommitHandler({ dag, verdictTrigger }) {
             // on `identities` (dag.js); this was the missing forward-through.
             creator_name: d.creator_name || null,
           });
-          // Initial score (scores table is a cache, see Consensus issue #31).
+          // Initial score. last_updated is sourced from tx.timestamp so
+          // every node writes the same row and the scores table is part
+          // of state_merkle_root (issues.md Consensus #31).
           if (d.tip_id) {
             const initial = d.social_attested || d.attested ? 550 : 500;
-            dag.setScore(d.tip_id, initial, 0);
+            dag.setScore(d.tip_id, initial, 0, tx.timestamp);
           }
         }
         break;
@@ -346,7 +348,7 @@ function createCommitHandler({ dag, verdictTrigger }) {
             // the path that forced the `fromSync=true` prev-skip workaround.
             const cur = dag.getScore(d.author_tip_id) || { score: 500, offense_count: 0 };
             const next = Math.max(0, Math.min(1000, cur.score + SCORE_EVENTS.CONTENT_RETRACTION.delta));
-            dag.setScore(d.author_tip_id, next, cur.offense_count);
+            dag.setScore(d.author_tip_id, next, cur.offense_count, tx.timestamp);
           }
         }
         break;
@@ -463,7 +465,9 @@ function createCommitHandler({ dag, verdictTrigger }) {
         if (d.tip_id && Number.isFinite(d.delta)) {
           const cur = dag.getScore(d.tip_id) || { score: 500, offense_count: 0 };
           const nextScore = Math.max(0, Math.min(1000, cur.score + d.delta));
-          dag.setScore(d.tip_id, nextScore, cur.offense_count);
+          // last_updated from tx.timestamp — see issue #31. Same value
+          // on every node so the scores row stays in state_merkle_root.
+          dag.setScore(d.tip_id, nextScore, cur.offense_count, tx.timestamp);
         }
         break;
 

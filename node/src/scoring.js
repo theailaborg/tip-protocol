@@ -159,8 +159,14 @@ function initScoring(dag, config) {
     // Only persist to the scores table when there's real tx history. An
     // unknown tipId with no txs isn't a registered identity — writing a row
     // would invent state no other node would derive.
+    //
+    // `last_updated` is the timestamp of the latest score-affecting tx in
+    // the walk — deterministic across nodes (every node walking the same
+    // tx log picks the same final timestamp). Keeps the scores table in
+    // state_merkle_root (issue #31).
     if (txs.length > 0) {
-      dag.setScore(tipId, score, offenseCount);
+      const lastUpdated = txs[txs.length - 1].timestamp;
+      dag.setScore(tipId, score, offenseCount, lastUpdated);
     }
 
     return { score, tier, offense_count: offenseCount, history };
