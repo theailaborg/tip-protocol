@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  signTransaction, computeTxId, shake256Multi,
+  signTransaction, computeTxId,
 } = require("../../../shared/crypto");
 const { ORIGIN, PRESCAN_THRESHOLDS } = require("../../../shared/protocol-constants");
 const { log } = require("../logger");
@@ -50,14 +50,6 @@ function preScanContent(content, originCode, creatorHistory) {
       : PRESCAN_THRESHOLDS.default;
 
   return { flagged: prob > threshold, probability: prob, threshold };
-}
-
-/**
- * Compute Merkle root stub (replaced by real Merkle tree in sync/merkle-tree.js).
- */
-function computeMerkleRoot(dag) {
-  const count = dag.dedupCount();
-  return shake256Multi(count.toString(), new Date().toISOString().slice(0, 10));
 }
 
 /**
@@ -113,5 +105,4 @@ module.exports = {
   nodeSignedAuto,
   createTxSubmitter,
   preScanContent,
-  computeMerkleRoot,
 };

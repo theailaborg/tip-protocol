@@ -35,7 +35,6 @@ const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
-const { createTxSubmitter } = require("./services/helpers");
 
 async function main() {
   await initCrypto();
@@ -105,13 +104,12 @@ async function main() {
   networkRef.current = network;
   consensusRef.current = consensus;
 
-  // 8. Scheduled tasks (Merkle root publish, score recomputation, peer
-  // health). Verdict-check and clean-record migrated to commit-handler
-  // post-round triggers — see consensus/verdict-trigger.js and
-  // consensus/clean-record-trigger.js. The remaining merkle-root tx
-  // flows through consensus mempool.
-  const { submitTx } = createTxSubmitter(consensusRef);
-  const scheduler = createScheduler(dag, scoring, network, config, { submitTx });
+  // 8. Scheduled tasks (score recomputation, peer health). Verdict-check
+  // and clean-record migrated to commit-handler post-round triggers —
+  // see consensus/verdict-trigger.js and consensus/clean-record-trigger.js.
+  // State-root attestation is `commits.state_merkle_root` (2f+1 signed
+  // every anchor commit), exposed at GET /v1/state-root.
+  const scheduler = createScheduler(dag, scoring, network, config);
 
   // 9. Start listening
   server.listen(config.port, () => {

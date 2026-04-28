@@ -221,7 +221,6 @@ const GENESIS_PAYLOAD = Object.freeze({
       peer_announce_protocol: "/tip/peer-announce/1.0.0",
       snapshot_length_prefix_bytes: 4,
       snapshot_max_frame_bytes: 16777216,   // 16 MB per frame — hard cap against hostile peers
-      merkle_publish_hours: 6,
       score_cache_ttl_seconds: 21600,
       revocation_cascade_days: 90,
       warrant_canary_max_days: 90,

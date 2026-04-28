@@ -81,10 +81,6 @@ const SCHEMA = {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
     types:    { vp_id: "string", name: "string" },
   },
-  [TX_TYPES.MERKLE_ROOT_PUBLISHED]: {
-    required: ["merkle_root", "dedup_count", "identity_count", "node_id"],
-    types:    { merkle_root: "string", dedup_count: "number" },
-  },
 };
 
 // ─── Layer 1: Base structure ──────────────────────────────────────────────────
@@ -249,7 +245,6 @@ function validateCryptography(tx, authorPublicKey) {
   // For SCORE_UPDATE and system transactions, skip sig check
   const skipSigTypes = new Set([
     TX_TYPES.SCORE_UPDATE,
-    TX_TYPES.MERKLE_ROOT_PUBLISHED,
     TX_TYPES.CONTENT_DISPUTED,
     "GENESIS",
   ]);

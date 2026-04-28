@@ -6,23 +6,23 @@
  *   - Named task registry with configurable intervals
  *   - Overlap guard (skips if previous run still in progress)
  *   - stop() for graceful shutdown (clears all intervals)
- *   - Protocol-level intervals from genesis, node-level from config
+ *   - Node-level intervals from config
  *
  * Tasks:
- *   1. Merkle root publication     (genesis: merkle_publish_hours)
- *   2. Score recomputation sweep   (config: scoreRecomputeInterval)
- *   3. Peer health ping            (config: peerHealthInterval)
+ *   1. Score recomputation sweep   (config: scoreRecomputeInterval)
+ *   2. Peer health ping            (config: peerHealthInterval)
  *
- * NOTE: Both `verdict-check` and `clean-record` are NO LONGER scheduler-
- * driven. They moved to `consensus/verdict-trigger.js` and
- * `consensus/clean-record-trigger.js`, which commit-handler invokes per
+ * NOTE: `verdict-check` and `clean-record` are NOT scheduler-driven.
+ * They live in `consensus/verdict-trigger.js` and
+ * `consensus/clean-record-trigger.js`, invoked by commit-handler per
  * Bullshark round commit using `cert.timestamp` as the deterministic
- * clock. Reactive (no polling), deterministic (cert.ts is the BFT
+ * clock — reactive (no polling), deterministic (cert.ts is the BFT
  * median), leader-gated (round-modulo for verdicts, day-modulo for
  * clean-record) so only one node fires per round/day.
  *
- * The remaining merkle-root task routes through `submitTx` so every node
- * sees the same MERKLE_ROOT_PUBLISHED via consensus.
+ * The historical 6-hour `merkle-root` task is gone — `commits.state_merkle_root`
+ * (written by bullshark on every anchor commit, 2f+1 signed) is the
+ * cryptographically sound replacement; expose via `/v1/state-root/latest`.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
@@ -30,10 +30,6 @@
 
 "use strict";
 
-const { TX_TYPES } = require("../../shared/constants");
-const { shake256Multi } = require("../../shared/crypto");
-const { NETWORK } = require("../../shared/protocol-constants");
-const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
 
 const log = getLogger("tip.scheduler");
@@ -49,11 +45,7 @@ const log = getLogger("tip.scheduler");
  *                                     Routes scheduler-produced txs through
  *                                     consensus mempool. See `services/helpers.js`.
  */
-function createScheduler(dag, scoring, network, config, { submitTx } = {}) {
-  if (typeof submitTx !== "function") {
-    throw new Error("createScheduler: requires { submitTx } — see services/helpers.createTxSubmitter");
-  }
-
+function createScheduler(dag, scoring, network, config) {
   const _tasks = new Map();
 
   /**
@@ -85,41 +77,14 @@ function createScheduler(dag, scoring, network, config, { submitTx } = {}) {
 
   // ── Task definitions ─────────────────────────────────────────────────────
 
-  // 1. Merkle root publication (genesis: merkle_publish_hours)
-  // Routed through `submitTx` so every node sees the same MERKLE_ROOT_PUBLISHED
-  // tx via consensus instead of writing local-only rows.
-  register("merkle-root", NETWORK.MERKLE_PUBLISH_HOURS * 3600000, () => {
-    const count = dag.dedupCount();
-    const idCount = dag.getTxsByType(TX_TYPES.REGISTER_IDENTITY).length;
-    const root = shake256Multi(count.toString(), idCount.toString(), new Date().toISOString().slice(0, 13));
-
-    const tx = nodeSignedAuto({
-      tx_type: TX_TYPES.MERKLE_ROOT_PUBLISHED,
-      timestamp: new Date().toISOString(),
-      prev: dag.getRecentPrev(),
-      data: {
-        merkle_root: root,
-        dedup_count: count,
-        identity_count: idCount,
-      },
-    }, config);
-
-    try {
-      submitTx(tx);
-      log.info(`Merkle root proposed: ${root.slice(0, 16)}... (dedup: ${count}, identities: ${idCount})`);
-    } catch (err) {
-      log.debug(`[merkle-root] submission deferred: ${err?.error || err?.message || err}`);
-    }
-  });
-
-  // 2. Score recomputation sweep (node config)
+  // 1. Score recomputation sweep (node config)
   register("score-recompute", config.scoreRecomputeInterval, async () => {
     log.info("Starting score recomputation sweep...");
     await scoring.recomputeAll();
     log.info("Score recomputation complete");
   });
 
-  // 3. Peer health ping (node config)
+  // 2. Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
     const pc = network ? network.peerCount() : 0;
     if (pc === 0 && config.peers.length > 0) {

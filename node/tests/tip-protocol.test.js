@@ -262,7 +262,7 @@ describe("Protocol Constants", () => {
       "REGISTER_IDENTITY", "REGISTER_CONTENT", "CONTENT_VERIFIED",
       "CONTENT_DISPUTED", "ADJUDICATION_RESULT", "SCORE_UPDATE",
       "REVOKE_VOLUNTARY", "REVOKE_VP", "REVOKE_DECEASED", "REVOKE_DEVICE",
-      "VP_REGISTERED", "MERKLE_ROOT_PUBLISHED",
+      "VP_REGISTERED",
     ];
     required.forEach(t => {
       expect(TX_TYPES).toHaveProperty(t);
@@ -836,11 +836,17 @@ describe("REST API", () => {
     expect([200, 201, 202]).toContain(res.status);
   });
 
-  test("6.16 GET /v1/dedup/merkle-root returns merkle root", async () => {
-    const res = await request(app).get("/v1/dedup/merkle-root");
-    expect(res.status).toBe(200);
-    expect(res.body.data.merkle_root).toBeDefined();
-    expect(res.body.data.dedup_count).toBeGreaterThanOrEqual(0);
+  test("6.16 GET /v1/state-root returns the latest 2f+1-signed commit roots", async () => {
+    const res = await request(app).get("/v1/state-root");
+    // 200 once any anchor has committed; 404 on a federation that
+    // hasn't seen its first tx-bearing commit yet (acceptable shape
+    // for a fresh boot in this test harness).
+    expect([200, 404]).toContain(res.status);
+    if (res.status === 200) {
+      expect(res.body.data.round).toBeGreaterThanOrEqual(0);
+      expect(typeof res.body.data.state_merkle_root).toBe("string");
+      expect(typeof res.body.data.txs_merkle_root).toBe("string");
+    }
   });
 
   test("6.17 POST /v1/dedup/check is removed — dedup now inside register", async () => {

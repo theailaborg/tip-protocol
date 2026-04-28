@@ -83,7 +83,6 @@ const TX_TYPES = Object.freeze({
   VP_REGISTERED: "VP_REGISTERED",
   VP_SUSPENDED: "VP_SUSPENDED",
   NODE_REGISTERED: "NODE_REGISTERED",
-  MERKLE_ROOT_PUBLISHED: "MERKLE_ROOT_PUBLISHED",
 });
 
 
@@ -143,7 +142,8 @@ const API_PATHS = Object.freeze({
   VP_RESOLVE: "/v1/vp/:vpId",
   // Dedup (ZK proof — never returns hash)
   DEDUP_CHECK: "/v1/dedup/check",
-  MERKLE_ROOT: "/v1/dedup/merkle-root",
+  // State attestation (2f+1-signed root from latest commit)
+  STATE_ROOT: "/v1/state-root",
   // Node
   NODE_INFO: "/v1/node/info",
   NODE_PEERS: "/v1/node/peers",

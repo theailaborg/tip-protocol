@@ -487,7 +487,6 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
       case TX_TYPES.JURY_VOTE_REVEAL:
       case TX_TYPES.AI_CLASSIFIER_RESULT:
       case TX_TYPES.APPEAL_FILED:
-      case TX_TYPES.MERKLE_ROOT_PUBLISHED:
         break;
 
       default:
@@ -620,7 +619,7 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
       }
 
       const NODE_SIGNED = [TX_TYPES.SCORE_UPDATE, TX_TYPES.ADJUDICATION_RESULT, TX_TYPES.APPEAL_RESULT,
-      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT, TX_TYPES.MERKLE_ROOT_PUBLISHED];
+      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT];
       if (NODE_SIGNED.includes(tt)) {
         const node = dag.getNode(d.node_id);
         if (!node || !tx.signature) return false;
