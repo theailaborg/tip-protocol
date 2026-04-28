@@ -188,6 +188,11 @@ class MemoryStore {
       .filter(id => {
         const tipId = id.tip_id;
         if (id.status !== "active") return false;
+        // Clean-record bonus is awarded for SUSTAINED clean behavior over
+        // the full CLEAN_PERIOD_DAYS window. An identity registered after
+        // `cutoff` (i.e. less than CLEAN_PERIOD_DAYS ago) hasn't been
+        // around long enough to have a 90-day clean record yet.
+        if (!id.registered_at || id.registered_at > cutoff) return false;
         const userTxs = txs.filter(t => t.data?.tip_id === tipId || t.data?.author_tip_id === tipId);
         const hasActivity = userTxs.some(t => t.timestamp >= cutoff);
         if (!hasActivity) return false;
@@ -960,9 +965,14 @@ class SQLiteStore {
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
   getCleanRecordEligible(cutoff) {
+    // Clean-record bonus eligibility: identity must be active, registered
+    // for at least CLEAN_PERIOD_DAYS (`registered_at <= cutoff`), have had
+    // some on-network activity inside the window, no UPHELD adjudication
+    // inside the window, and no prior bonus inside the window.
     return this.db.prepare(`
       SELECT DISTINCT i.tip_id FROM identities i
       WHERE i.status = 'active'
+        AND i.registered_at <= ?
         AND EXISTS (
           SELECT 1 FROM transactions t
           WHERE (json_extract(t.data,'$.tip_id') = i.tip_id
@@ -984,7 +994,7 @@ class SQLiteStore {
             AND json_extract(t.data,'$.reason') = 'clean_record_bonus'
             AND t.timestamp >= ?
         )
-    `).all(cutoff, cutoff, cutoff).map(r => r.tip_id);
+    `).all(cutoff, cutoff, cutoff, cutoff).map(r => r.tip_id);
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
