@@ -77,24 +77,43 @@ function verifyBatch(batch, publicKey) {
 // ─── BatchAck ────────────────────────────────────────────────────────────────
 
 /**
+ * Build the canonical payload an acker signs.
+ * `signed_at` is part of the signed scope so no relayer (including the cert
+ * author) can alter the timestamp without invalidating the signature. This
+ * is the BFT-Time pattern (Tendermint, Sui, Aptos).
+ *
+ * @param {string} batchHash
+ * @param {string} ackerNodeId
+ * @param {number} signedAt    Integer epoch ms (Date.now())
+ * @returns {string}
+ */
+function _ackSignPayload(batchHash, ackerNodeId, signedAt) {
+  return `ack:${batchHash}:${ackerNodeId}:${signedAt}`;
+}
+
+/**
  * Create an acknowledgment for a received batch.
  * @param {string} batchHash      Hash of the batch being acknowledged
  * @param {string} ackerNodeId    This node's registered ID
+ * @param {number} signedAt       Acker's wall-clock at sign time (epoch ms)
  * @param {string} privateKey     This node's ML-DSA-65 private key (hex)
- * @returns {{ batch_hash, acker_node_id, signature }}
+ * @returns {{ batch_hash, acker_node_id, signed_at, signature }}
  */
-function createBatchAck(batchHash, ackerNodeId, privateKey) {
-  const payload = `ack:${batchHash}:${ackerNodeId}`;
+function createBatchAck(batchHash, ackerNodeId, signedAt, privateKey) {
+  if (!Number.isInteger(signedAt) || signedAt <= 0) {
+    throw new Error(`createBatchAck: signed_at must be a positive integer ms, got ${signedAt}`);
+  }
   return {
     batch_hash: batchHash,
     acker_node_id: ackerNodeId,
-    signature: mldsaSign(payload, privateKey),
+    signed_at: signedAt,
+    signature: mldsaSign(_ackSignPayload(batchHash, ackerNodeId, signedAt), privateKey),
   };
 }
 
 /**
  * Verify a batch acknowledgment.
- * @param {Object} ack         The acknowledgment
+ * @param {Object} ack         The acknowledgment ({batch_hash, acker_node_id, signed_at, signature})
  * @param {string} publicKey   Acker node's public key from registry
  * @returns {{ valid: boolean, error?: string }}
  */
@@ -102,11 +121,44 @@ function verifyBatchAck(ack, publicKey) {
   if (!ack || !ack.batch_hash || !ack.signature) {
     return { valid: false, error: "Ack missing batch_hash or signature" };
   }
-  const payload = `ack:${ack.batch_hash}:${ack.acker_node_id}`;
+  if (!Number.isInteger(ack.signed_at) || ack.signed_at <= 0) {
+    return { valid: false, error: `Ack signed_at must be a positive integer ms, got ${ack.signed_at}` };
+  }
+  const payload = _ackSignPayload(ack.batch_hash, ack.acker_node_id, ack.signed_at);
   if (!mldsaVerify(payload, ack.signature, publicKey)) {
     return { valid: false, error: `Ack signature invalid from ${ack.acker_node_id}` };
   }
   return { valid: true };
+}
+
+// ─── BFT Time helpers ────────────────────────────────────────────────────────
+
+/**
+ * Median of a list of integers. Used to derive `cert.timestamp` from
+ * `acks.signed_at`. Tolerates up to f outliers in 2f+1 inputs — a single
+ * byzantine acker cannot move the median.
+ *
+ * Even-count case uses floor((mid_low + mid_high) / 2) so every node
+ * computes the identical integer (no floating-point determinism risk).
+ *
+ * @param {number[]} values
+ * @returns {number}
+ */
+function computeMedianTimestamp(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error("computeMedianTimestamp: values must be a non-empty array");
+  }
+  for (const v of values) {
+    if (!Number.isInteger(v) || v <= 0) {
+      throw new Error(`computeMedianTimestamp: every value must be a positive integer ms, got ${v}`);
+    }
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  if (sorted.length % 2 === 0) {
+    return Math.floor((sorted[mid - 1] + sorted[mid]) / 2);
+  }
+  return sorted[mid];
 }
 
 // ─── Certificate ─────────────────────────────────────────────────────────────
@@ -122,20 +174,29 @@ function verifyBatchAck(ack, publicKey) {
  * @returns {Object} Certificate
  */
 function createCertificate(round, authorNodeId, batch, acknowledgments, parentHashes, privateKey) {
+  // BFT Time — `cert.timestamp` is the median of acker wall-clocks at sign
+  // time. Pure deterministic compute from the acks themselves, so any
+  // receiver can recompute and verify it. No bump for monotonicity here —
+  // cross-round monotonicity is enforced at Bullshark anchor commit, where
+  // prev_anchor.timestamp is available from the never-GC'd `commits` table.
+  const timestamp = computeMedianTimestamp(acknowledgments.map(a => a.signed_at));
+
   const cert = {
     round,
     author_node_id: authorNodeId,
     batch,
     acknowledgments,
     parent_hashes: parentHashes,
+    timestamp,
     hash: null,
     signature: null,
   };
 
-  // Hash: SHAKE-256(round + author + batch_hash + sorted parent hashes + sorted acker ids)
+  // Hash input includes `timestamp` so any tampering invalidates cert.hash
+  // and is caught by every receiver before they trust the timestamp.
   const sortedParents = [...parentHashes].sort().join(",");
   const sortedAckers = acknowledgments.map(a => a.acker_node_id).sort().join(",");
-  cert.hash = shake256(`cert:${round}:${authorNodeId}:${batch.hash}:${sortedParents}:${sortedAckers}`);
+  cert.hash = shake256(`cert:${round}:${authorNodeId}:${batch.hash}:${sortedParents}:${sortedAckers}:${timestamp}`);
 
   // Sign the certificate hash
   cert.signature = mldsaSign(cert.hash, privateKey);
@@ -154,16 +215,21 @@ function verifyCertificate(cert, getNodeKey, quorum) {
   if (!cert || !cert.hash || !cert.signature || !cert.batch) {
     return { valid: false, error: "Certificate missing required fields" };
   }
+  if (!Number.isInteger(cert.timestamp) || cert.timestamp <= 0) {
+    return { valid: false, error: `Certificate timestamp must be a positive integer ms, got ${cert.timestamp}` };
+  }
 
-  // Verify certificate hash
+  // Verify certificate hash (includes timestamp — tampering with the
+  // timestamp invalidates the hash and gets caught here before any
+  // downstream code trusts it).
   const sortedParents = [...(cert.parent_hashes || [])].sort().join(",");
   const sortedAckers = (cert.acknowledgments || []).map(a => a.acker_node_id).sort().join(",");
   const expectedHash = shake256(
-    `cert:${cert.round}:${cert.author_node_id}:${cert.batch.hash}:${sortedParents}:${sortedAckers}`
+    `cert:${cert.round}:${cert.author_node_id}:${cert.batch.hash}:${sortedParents}:${sortedAckers}:${cert.timestamp}`
   );
   if (expectedHash !== cert.hash) {
     log.warn(`Cert hash mismatch debug — expected: ${expectedHash.slice(0, 16)}, got: ${cert.hash.slice(0, 16)}`);
-    log.warn(`  input: "cert:${cert.round}:${cert.author_node_id}:${cert.batch?.hash}:${sortedParents}:${sortedAckers}"`);
+    log.warn(`  input: "cert:${cert.round}:${cert.author_node_id}:${cert.batch?.hash}:${sortedParents}:${sortedAckers}:${cert.timestamp}"`);
     return { valid: false, error: "Certificate hash mismatch" };
   }
 
@@ -208,6 +274,20 @@ function verifyCertificate(cert, getNodeKey, quorum) {
     }
   }
 
+  // BFT Time — recompute median(acks.signed_at) and require equality with
+  // cert.timestamp. The cert author cannot fabricate a timestamp; it must
+  // be the deterministic median of the signed_at values that are
+  // cryptographically bound to each acker's signature (via the ack hash
+  // payload). One byzantine acker is tolerated (median rejects outliers);
+  // f byzantine ackers cannot move the median past the honest middle.
+  const expectedTimestamp = computeMedianTimestamp(acks.map(a => a.signed_at));
+  if (cert.timestamp !== expectedTimestamp) {
+    return {
+      valid: false,
+      error: `Certificate timestamp mismatch — expected median ${expectedTimestamp}, got ${cert.timestamp}`,
+    };
+  }
+
   return { valid: true };
 }
 
@@ -226,6 +306,7 @@ module.exports = {
   verifyBatch,
   createBatchAck,
   verifyBatchAck,
+  computeMedianTimestamp,
   createCertificate,
   verifyCertificate,
   computeQuorum,

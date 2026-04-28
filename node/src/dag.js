@@ -75,10 +75,9 @@ function _canonContent(r) {
     tx_id: r.tx_id || null,
   };
 }
-// Staged for §14.5 — unused today (scores excluded from state root per
-// issues.md Consensus #31). Kept here so re-enabling is a one-line iterator
-// change once applyScoreEvent / scheduler route through consensus.
-// eslint-disable-next-line no-unused-vars
+// Canonical projection for the `scores` table — included in
+// `state_merkle_root` since `last_updated` is now sourced from
+// `tx.timestamp` (deterministic across nodes; see #31).
 function _canonScore(tip_id, v) {
   return {
     tip_id,
@@ -189,6 +188,11 @@ class MemoryStore {
       .filter(id => {
         const tipId = id.tip_id;
         if (id.status !== "active") return false;
+        // Clean-record bonus is awarded for SUSTAINED clean behavior over
+        // the full CLEAN_PERIOD_DAYS window. An identity registered after
+        // `cutoff` (i.e. less than CLEAN_PERIOD_DAYS ago) hasn't been
+        // around long enough to have a 90-day clean record yet.
+        if (!id.registered_at || id.registered_at > cutoff) return false;
         const userTxs = txs.filter(t => t.data?.tip_id === tipId || t.data?.author_tip_id === tipId);
         const hasActivity = userTxs.some(t => t.timestamp >= cutoff);
         if (!hasActivity) return false;
@@ -221,17 +225,19 @@ class MemoryStore {
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
-  // The scores table is a CACHE derived from replaying the tx log via
-  // scoring.computeScore(). `last_updated` is a local-clock stamp, not
-  // consensus state — so this table is NOT hashed into state_merkle_root
-  // today (see issues.md Consensus #31). When applyScoreEvent/scheduler
-  // are routed through consensus, `last_updated` will come from tx.timestamp
-  // and the table can be added back to iterateCanonicalState.
-  setScore(tipId, score, offenseCount = 0) {
+  // Cache derived from replaying the tx log. With Commits 2+3 every score
+  // mutation flows through commit-handler with a consensus-ordered tx in
+  // hand — callers pass `tx.timestamp` as `lastUpdatedISO` so the column
+  // is deterministic across nodes and the table is part of state_merkle_root
+  // (issues.md Consensus #31).
+  setScore(tipId, score, offenseCount = 0, lastUpdatedISO = null) {
+    if (lastUpdatedISO == null) {
+      throw new Error("setScore: lastUpdatedISO (from tx.timestamp) is required for deterministic state");
+    }
     this._scores.set(tipId, {
       score: Math.max(0, Math.min(1000, score)),
       offense_count: offenseCount || 0,
-      last_updated: new Date().toISOString(),
+      last_updated: lastUpdatedISO,
     });
   }
   getScore(tipId) { return this._scores.get(tipId) || null; }
@@ -408,9 +414,10 @@ class MemoryStore {
       .sort((a, b) => a.ctid.localeCompare(b.ctid))) {
       yield { table: "content", row: _canonContent(r) };
     }
-    // TODO §14.5 — re-include `scores` here once applyScoreEvent / scheduler
-    // route through consensus and last_updated comes from tx.timestamp
-    // (issues.md Consensus #31). _canonScore helper is already written.
+    for (const [tip_id, v] of [...this._scores.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))) {
+      yield { table: "scores", row: _canonScore(tip_id, v) };
+    }
     for (const h of [...this._dedup].sort()) {
       const createdAt = this._dedupCreated ? this._dedupCreated.get(h) : null;
       yield { table: "dedup_registry", row: _canonDedup(h, createdAt) };
@@ -601,6 +608,12 @@ class SQLiteStore {
         acknowledgments TEXT NOT NULL,
         parent_hashes   TEXT NOT NULL,
         signature       TEXT NOT NULL,
+        -- BFT-Time: median(acks.signed_at) at cert creation, integer epoch ms.
+        -- Default 0 keeps pre-BFT-Time DBs valid for inspection but Bullshark's
+        -- monotonicity gate rejects anchors with timestamp <= floor, so a real
+        -- network with 0-timestamp certs would halt at the next anchor (correct
+        -- behavior — flags an upgrade boundary instead of silently mis-ordering).
+        timestamp       INTEGER NOT NULL DEFAULT 0,
         created_at      INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
@@ -626,13 +639,26 @@ class SQLiteStore {
         txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
         ack_signer_ids    TEXT NOT NULL,   -- JSON array of node_ids that ack'd the anchor cert
         ack_signatures    TEXT NOT NULL,   -- JSON array of hex signatures, same order as ack_signer_ids
+        -- BFT-Time: each ack's signed_at (epoch ms), parallel array to
+        -- ack_signatures/ack_signer_ids. The ack signature scope covers
+        -- signed_at, so a snapshot joiner reconstructs the payload as
+        -- "ack:<batch_hash>:<signer>:<signed_at>" to verify each signature.
+        -- Without this, joiners cannot verify ack signatures on commits
+        -- after the sender's certs have been GC'd.
+        ack_signed_ats    TEXT NOT NULL DEFAULT '[]',  -- JSON array of integer epoch ms
+        -- BFT-Time: cert.timestamp = median(acks.signed_at) at anchor commit.
+        -- Canonical "consensus wall clock" for this round, deterministic
+        -- across all nodes. Used by post-round logic (verdict triggers,
+        -- audit logs) and by Bullshark's anchor-monotonicity gate on
+        -- restart (read latest, set as floor for next anchor).
+        cert_timestamp    INTEGER NOT NULL DEFAULT 0,
         -- #50: explicit copy of the anchor cert's batch_hash so this row
         -- stays self-contained for snapshot verification once cert GC has
         -- pruned the underlying cert. Without this, snapshot serving
         -- needs dag.getCertificate(anchor_cert_hash).batch.hash, which
         -- fails on idle federations whose latest commit drifts past
         -- gc_depth rounds. Joiner uses this to reconstruct the
-        -- ack-signature payload (ack:<batch_hash>:<signer>) each ack signed.
+        -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
         anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
@@ -798,11 +824,12 @@ class SQLiteStore {
       getNode: this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
       getAllNodes: this.db.prepare("SELECT * FROM nodes"),
 
-      // Certificates
+      // Certificates — 8 columns including BFT-Time `timestamp`
+      // (median of acks.signed_at at cert creation, integer epoch ms).
       saveCert: this.db.prepare(
         `INSERT OR IGNORE INTO certificates
-           (hash,round,author_node_id,batch_data,acknowledgments,parent_hashes,signature)
-         VALUES (?,?,?,?,?,?,?)`
+           (hash,round,author_node_id,batch_data,acknowledgments,parent_hashes,signature,timestamp)
+         VALUES (?,?,?,?,?,?,?,?)`
       ),
       getCert: this.db.prepare("SELECT * FROM certificates WHERE hash=?"),
       getCertsByRound: this.db.prepare("SELECT * FROM certificates WHERE round=? ORDER BY author_node_id"),
@@ -813,15 +840,17 @@ class SQLiteStore {
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
-      // Commit checkpoints (§15 base + §14 snapshot-sync fields + #50).
-      // 12 columns: round, anchor_cert_hash, leader_node_id, committee,
+      // Commit checkpoints (§15 base + §14 snapshot-sync fields + #50 + BFT-Time).
+      // 14 columns: round, anchor_cert_hash, leader_node_id, committee,
       // support_count, consensus_index, committed_at, state_merkle_root,
-      // txs_merkle_root, ack_signer_ids, ack_signatures, anchor_batch_hash.
+      // txs_merkle_root, ack_signer_ids, ack_signatures, anchor_batch_hash,
+      // ack_signed_ats, cert_timestamp.
       saveCommit: this.db.prepare(
         `INSERT OR IGNORE INTO commits
            (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at,
-            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures,anchor_batch_hash)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures,anchor_batch_hash,
+            ack_signed_ats,cert_timestamp)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getCommit: this.db.prepare("SELECT * FROM commits WHERE round=?"),
       getCommitsFromRound: this.db.prepare(
@@ -936,9 +965,14 @@ class SQLiteStore {
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
   getCleanRecordEligible(cutoff) {
+    // Clean-record bonus eligibility: identity must be active, registered
+    // for at least CLEAN_PERIOD_DAYS (`registered_at <= cutoff`), have had
+    // some on-network activity inside the window, no UPHELD adjudication
+    // inside the window, and no prior bonus inside the window.
     return this.db.prepare(`
       SELECT DISTINCT i.tip_id FROM identities i
       WHERE i.status = 'active'
+        AND i.registered_at <= ?
         AND EXISTS (
           SELECT 1 FROM transactions t
           WHERE (json_extract(t.data,'$.tip_id') = i.tip_id
@@ -960,18 +994,24 @@ class SQLiteStore {
             AND json_extract(t.data,'$.reason') = 'clean_record_bonus'
             AND t.timestamp >= ?
         )
-    `).all(cutoff, cutoff, cutoff).map(r => r.tip_id);
+    `).all(cutoff, cutoff, cutoff, cutoff).map(r => r.tip_id);
   }
 
   // ── Scores ────────────────────────────────────────────────────────────────
-  // See MemoryStore.setScore — cache, not consensus state. Currently excluded
-  // from state_merkle_root (issues.md Consensus #31).
-  setScore(tipId, score, offenseCount = 0) {
+  // The scores table is a CACHE derived from replaying the tx log, but with
+  // Commits 2+3 every score-mutating tx is consensus-ordered, so each commit
+  // call on every node sees the same `tx.timestamp`. Pass it through as
+  // `lastUpdatedISO` and the column becomes deterministic across nodes,
+  // letting the table back into `state_merkle_root` (issues.md Consensus #31).
+  setScore(tipId, score, offenseCount = 0, lastUpdatedISO = null) {
+    if (lastUpdatedISO == null) {
+      throw new Error("setScore: lastUpdatedISO (from tx.timestamp) is required for deterministic state");
+    }
     this._stmts.setScore.run(
       tipId,
       Math.max(0, Math.min(1000, score)),
       offenseCount || 0,
-      new Date().toISOString()
+      lastUpdatedISO
     );
   }
   getScore(tipId) { return this._stmts.getScore.get(tipId) || null; }
@@ -1034,7 +1074,8 @@ class SQLiteStore {
       JSON.stringify(cert.batch),
       JSON.stringify(cert.acknowledgments),
       JSON.stringify(cert.parent_hashes || []),
-      cert.signature
+      cert.signature,
+      Number(cert.timestamp || 0)
     );
   }
   getCertificate(hash) {
@@ -1098,6 +1139,8 @@ class SQLiteStore {
       JSON.stringify(rec.ack_signer_ids || []),
       JSON.stringify(rec.ack_signatures || []),
       rec.anchor_batch_hash || null,        // #50: nullable — null on pre-fix rows or when the caller didn't pass it
+      JSON.stringify(rec.ack_signed_ats || []),  // BFT-Time: parallel to ack_signatures
+      Number(rec.cert_timestamp || 0),           // BFT-Time: median of acks.signed_at on the anchor cert
     );
   }
   getCommit(round) {
@@ -1151,6 +1194,11 @@ class SQLiteStore {
       txs_merkle_root: row.txs_merkle_root,
       ack_signer_ids: JSON.parse(row.ack_signer_ids),
       ack_signatures: JSON.parse(row.ack_signatures),
+      // BFT-Time: parse JSON array; defaults to [] for any pre-BFT-Time
+      // rows. cert_timestamp returns 0 for pre-BFT-Time rows (column has
+      // a SQLite default of 0).
+      ack_signed_ats: row.ack_signed_ats ? JSON.parse(row.ack_signed_ats) : [],
+      cert_timestamp: row.cert_timestamp || 0,
       anchor_batch_hash: row.anchor_batch_hash || null,    // #50: null for pre-fix rows
     };
   }
@@ -1168,8 +1216,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
       yield { table: "content", row: _canonContent({ ...r, prescan_flagged: r.prescan_flagged === 1 }) };
     }
-    // TODO §14.5 — see MemoryStore.iterateCanonicalState for the exclusion
-    // rationale (issues.md Consensus #31).
+    for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
+      yield { table: "scores", row: _canonScore(r.tip_id, r) };
+    }
     for (const r of db.prepare("SELECT dedup_hash, created_at FROM dedup_registry ORDER BY dedup_hash").iterate()) {
       yield { table: "dedup_registry", row: _canonDedup(r.dedup_hash, r.created_at) };
     }
@@ -1333,7 +1382,7 @@ function initDAG(config) {
     hasDispute: (ctid, tipId) => store.hasDispute(ctid, tipId),
 
     // ── Scores ────────────────────────────────────────────────────────────
-    setScore: (id, s, o) => store.setScore(id, s, o),
+    setScore: (id, s, o, lastUpdatedISO) => store.setScore(id, s, o, lastUpdatedISO),
     getScore: (id) => store.getScore(id),
 
     // ── Dedup registry ────────────────────────────────────────────────────
@@ -1498,7 +1547,9 @@ function _writeGenesisBlock(store, config) {
       // (same on every node that ships the same genesis). Deterministic.
       store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
     }
-    store.setScore(member.tip_id, 550, 0);
+    // Genesis seed score — last_updated sourced from GENESIS_TIMESTAMP so
+    // every node bootstraps with an identical scores row (issue #31).
+    store.setScore(member.tip_id, 550, 0, GENESIS_TIMESTAMP);
     lastTxId = idTxId;
 
     log.info(`Founding identity registered: ${member.tip_id}`);

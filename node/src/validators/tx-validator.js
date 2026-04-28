@@ -45,11 +45,20 @@ const SCHEMA = {
     types:    { ctid: "string" },
   },
   [TX_TYPES.ADJUDICATION_RESULT]: {
-    required: ["ctid", "declared_origin", "confirmed_origin", "verdict"],
+    // confirmed_origin is only present for UPHELD verdicts (it's the
+    // jury's confirmed actual origin); DISMISSED / CONSERVATIVE_LABEL /
+    // NO_QUORUM all leave it null. Don't require it across all verdicts.
+    required: ["ctid", "declared_origin", "verdict"],
     types:    { ctid: "string", verdict: "string" },
   },
   [TX_TYPES.SCORE_UPDATE]: {
-    required: ["tip_id", "delta", "score_after", "reason"],
+    // `score_after` is no longer required at build-time. With #15, the
+    // delta is applied by commit-handler against current cache state at
+    // commit time — the producer doesn't (and shouldn't) know what the
+    // post-state will be. The cache mutation lives in the SCORE_UPDATE
+    // case of `_applyDerivedState`. If `score_after` is present we still
+    // sanity-check its range (back-compat with legacy in-line writes).
+    required: ["tip_id", "delta", "reason"],
     types:    { tip_id: "string", delta: "number", score_after: "number" },
   },
   [TX_TYPES.REVOKE_VOLUNTARY]: {
@@ -71,10 +80,6 @@ const SCHEMA = {
   [TX_TYPES.VP_REGISTERED]: {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
     types:    { vp_id: "string", name: "string" },
-  },
-  [TX_TYPES.MERKLE_ROOT_PUBLISHED]: {
-    required: ["merkle_root", "dedup_count", "identity_count", "node_id"],
-    types:    { merkle_root: "string", dedup_count: "number" },
   },
 };
 
@@ -202,7 +207,14 @@ function validateBusinessRules(tx) {
     }
 
     case TX_TYPES.ADJUDICATION_RESULT: {
-      const validVerdicts = ["CLEARED", "DISMISSED", "OH_CONFIRMED_AG", "OH_CONFIRMED_AA", "AA_CONFIRMED_AG", "CONSERVATIVE_LABEL", "FACTUAL_FALSEHOOD"];
+      // VERDICT names per shared/constants.js — UPHELD / DISMISSED /
+      // CONSERVATIVE_LABEL / NO_QUORUM. The legacy v1 list (CLEARED,
+      // OH_CONFIRMED_AG, ...) was inherited from before VERDICT was
+      // centralised in shared/constants.js — this validator never fired
+      // in production because ADJUDICATION_RESULT was written directly
+      // by jury.js without going through commit-handler validation. Now
+      // that #13 routes it through consensus, the list must match.
+      const validVerdicts = ["UPHELD", "DISMISSED", "CONSERVATIVE_LABEL", "NO_QUORUM", "FACTUAL_FALSEHOOD"];
       if (d.verdict && !validVerdicts.includes(d.verdict)) {
         errors.push(`Invalid verdict: "${d.verdict}". Valid verdicts: ${validVerdicts.join(", ")}`);
       }
@@ -233,7 +245,6 @@ function validateCryptography(tx, authorPublicKey) {
   // For SCORE_UPDATE and system transactions, skip sig check
   const skipSigTypes = new Set([
     TX_TYPES.SCORE_UPDATE,
-    TX_TYPES.MERKLE_ROOT_PUBLISHED,
     TX_TYPES.CONTENT_DISPUTED,
     "GENESIS",
   ]);

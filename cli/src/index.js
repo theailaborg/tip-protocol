@@ -455,17 +455,20 @@ trustCmd
   });
 
 trustCmd
-  .command("merkle-root")
-  .description("Get the dedup Merkle root for audit")
+  .command("state-root")
+  .description("Get the latest 2f+1-signed state attestation (replaces dedup merkle-root)")
   .action(async () => {
     const client = getClient();
     try {
-      const res = await client.trust.getMerkleRoot();
-      console.log(`\n${C.bold}Dedup Merkle Root${C.reset}`);
-      label("Merkle root", res.merkle_root);
-      label("Dedup count", res.dedup_count);
-      label("Identity count", res.identity_count);
-      label("Generated", res.generated);
+      const res = await client.trust.getStateRoot();
+      console.log(`\n${C.bold}Latest State Attestation${C.reset}`);
+      label("Round", res.round);
+      label("state_merkle_root", res.state_merkle_root);
+      label("txs_merkle_root", res.txs_merkle_root);
+      label("cert_timestamp", res.cert_timestamp);
+      label("committed_at", res.committed_at);
+      label("anchor_batch_hash", res.anchor_batch_hash);
+      label("support_count", res.support_count);
       console.log();
     } catch (e) {
       err(e.message); process.exit(1);

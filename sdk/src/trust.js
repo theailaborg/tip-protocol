@@ -158,11 +158,15 @@ class TIPTrustClient {
   }
 
   /**
-   * Get the Merkle root for dedup audit.
-   * @returns {Promise<{ merkle_root, dedup_count, identity_count, generated }>}
+   * Get the latest 2f+1-signed state attestation. Returns the
+   * `state_merkle_root` (over canonical derived state) and
+   * `txs_merkle_root` (light-client inclusion proofs) from the most
+   * recent committed round, plus its `cert_timestamp` and supporting
+   * ack count.
+   * @returns {Promise<{ round, state_merkle_root, txs_merkle_root, cert_timestamp, committed_at, anchor_batch_hash, support_count }>}
    */
-  async getMerkleRoot() {
-    return this._fetch("/v1/dedup/merkle-root");
+  async getStateRoot() {
+    return this._fetch("/v1/state-root");
   }
 }
 

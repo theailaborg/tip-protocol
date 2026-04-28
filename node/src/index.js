@@ -104,7 +104,11 @@ async function main() {
   networkRef.current = network;
   consensusRef.current = consensus;
 
-  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
+  // 8. Scheduled tasks (score recomputation, peer health). Verdict-check
+  // and clean-record migrated to commit-handler post-round triggers —
+  // see consensus/verdict-trigger.js and consensus/clean-record-trigger.js.
+  // State-root attestation is `commits.state_merkle_root` (2f+1 signed
+  // every anchor commit), exposed at GET /v1/state-root.
   const scheduler = createScheduler(dag, scoring, network, config);
 
   // 9. Start listening

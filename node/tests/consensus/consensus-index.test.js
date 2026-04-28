@@ -53,6 +53,14 @@ function registerNode(dag) {
   });
 }
 
+// BFT-Time monotonic floor for synthetic certs. Each call advances by 1ms
+// so anchors land in strictly-increasing order, satisfying bullshark's
+// monotonicity gate without coupling to wall-clock.
+const BFT_T0 = new Date("2026-03-15T00:00:01.000Z").getTime(); // 1ms past genesis floor
+function _certTsForRound(round) {
+  return BFT_T0 + round; // 1ms per round — strictly increasing
+}
+
 function makeCert(round, txs = [], parentHashes = []) {
   const hash = shake256(`cert:${round}:${NODE_ID}:${txs.length}`);
   return {
@@ -63,6 +71,7 @@ function makeCert(round, txs = [], parentHashes = []) {
     acknowledgments: [],
     parent_hashes: parentHashes,
     signature: "00",
+    timestamp: _certTsForRound(round),
   };
 }
 

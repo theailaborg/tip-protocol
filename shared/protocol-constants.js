@@ -225,6 +225,9 @@ const CONSENSUS = {
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
   get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
   get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
+  // BFT Time — cert.timestamp validation bounds. See genesis.js consensus block.
+  get MAX_ROUND_DURATION_MS() { return _c().max_round_duration_ms ?? 300000; },
+  get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
 };
 
 const NETWORK = {
@@ -232,7 +235,6 @@ const NETWORK = {
   get SNAPSHOT_PROTOCOL() { return _n().snapshot_protocol; },
   get SNAPSHOT_LENGTH_PREFIX_BYTES() { return _n().snapshot_length_prefix_bytes; },
   get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
-  get MERKLE_PUBLISH_HOURS() { return _n().merkle_publish_hours; },
   get SYNC_STATUS_PROTOCOL() { return _n().sync_status_protocol ?? "/tip/sync-status/1.0.0"; },
   get PEER_ANNOUNCE_PROTOCOL() { return _n().peer_announce_protocol ?? "/tip/peer-announce/1.0.0"; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },

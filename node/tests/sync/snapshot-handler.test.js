@@ -115,6 +115,67 @@ describe("§14 snapshot round-trip", () => {
       expect(n.node_id).toBe(nodeId);
     }
   });
+
+  test("drift guard: every canonical row roundtrips through snapshot install", async () => {
+    // Structural assertion — iterates the FULL canonical state on both
+    // sender and receiver and asserts exact row-by-row equality.
+    //
+    // This is the test that catches the class of bug where a sender
+    // table is added to `iterateCanonicalState` but the receiver's
+    // `_installOneRow` switch isn't updated: the streamed bytes hash
+    // identically (state_merkle_root verification passes), but the
+    // receiver silently skips installing the rows, leaving the joiner
+    // with incomplete derived state.
+    //
+    // Subtle point: BOTH source and dest run their own genesis bootstrap
+    // (founding identities + their genesis-default scores), so a vanilla
+    // fixture would have identical pre-snapshot state on both sides —
+    // the drift bug wouldn't surface even if the install path skipped
+    // the row entirely. To make the test actually exercise the install
+    // codepath, we mutate ONE row away from its genesis default before
+    // computing state_merkle_root on the source. The receiver's genesis
+    // value differs from the source's mutated value; only a successful
+    // snapshot install reconciles them. With the install case missing,
+    // the receiver keeps its genesis value → row mismatch → test fails.
+    const fx = buildCommittedDag({
+      committeeSize: 2,
+      preCommitMutate: (dag) => {
+        // Find a genesis-seeded score and mutate it to a value the
+        // receiver's genesis bootstrap will NOT produce on its own.
+        for (const { table, row } of dag.iterateCanonicalState()) {
+          if (table !== "scores") continue;
+          dag.setScore(row.tip_id, 999, 7, "2026-04-01T00:00:00.000Z");
+          return;
+        }
+      },
+    });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    const sourceRows = [...fx.sourceDag.iterateCanonicalState()];
+    const destRows = [...destDag.iterateCanonicalState()];
+
+    // Per-table count match — anything skipped on install fails here
+    // first, with a clearer diagnostic than a row-by-row equality miss.
+    const countByTable = (rows) => rows.reduce((acc, { table }) => {
+      acc[table] = (acc[table] || 0) + 1;
+      return acc;
+    }, {});
+    expect(countByTable(destRows)).toEqual(countByTable(sourceRows));
+
+    // Exact row-by-row equality. iterateCanonicalState yields in
+    // deterministic table-major + primary-key-sorted order on both
+    // sides, so index-by-index comparison is valid.
+    expect(destRows.length).toBe(sourceRows.length);
+    for (let i = 0; i < sourceRows.length; i++) {
+      expect(destRows[i]).toEqual(sourceRows[i]);
+    }
+  });
 });
 
 describe("§14 snapshot rejection paths", () => {
@@ -619,6 +680,36 @@ describe("§14/#49 snapshot full-history shipping", () => {
     expect(result.round).toBe(2);
     expect(result.state_merkle_root).toBe(fx.stateRoot);
     expect(destDag.getCommit(2)).toBeTruthy();
+  });
+
+  test("drift guard: header commit row round-trips every canonical field from sender to joiner", async () => {
+    // Live-bug regression + structural drift guard for the header →
+    // saveCommit hop. The original symptom was specifically that
+    // `anchor_batch_hash` was dropped on the joiner — sender persisted it,
+    // wire carried it, but `dag.saveCommit({...})` in the install path
+    // didn't pass it through, so the joiner's latest commit row had null.
+    //
+    // Asserting just one field would let the next schema addition slip
+    // through the same gap (any new commit-row column the install
+    // forgets to map). So instead, compare the FULL canonical commit
+    // row between source and dest — every column the sender persists
+    // must land identically on the joiner. Phase C commits already
+    // round-trip correctly via `canonCommit`; this guards the latest
+    // (header-derived) row.
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    const { canonCommit } = require(path.join(SRC, "sync", "snapshot-roots"));
+    const sourceCommit = fx.sourceDag.getCommit(2);
+    const destCommit = destDag.getCommit(2);
+    expect(destCommit).toBeTruthy();
+    expect(canonCommit(destCommit)).toEqual(canonCommit(sourceCommit));
   });
 
   test("peer_committed_round: joiner advances bullshark counter to peer's value, not just snapshot round", async () => {

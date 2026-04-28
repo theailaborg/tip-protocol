@@ -42,11 +42,21 @@ message Batch {
 /**
  * Acknowledgment that a node has received a batch for the current round.
  * Collected by the batch author to form a certificate.
+ *
+ * `signed_at` is the acker's wall-clock at the moment of signing, expressed
+ * as integer epoch milliseconds (`Date.now()`). The signature scope COVERS
+ * `signed_at`, so the timestamp is cryptographically bound to the acker —
+ * no relayer (including the cert author) can alter it without invalidating
+ * the signature. The cert author aggregates 2f+1 acks and computes
+ * `cert.timestamp = median(acks.signed_at)` with monotonicity + bounds
+ * (see Certificate). This is the canonical "BFT Time" pattern (Tendermint /
+ * CometBFT, Sui Mysticeti, Aptos Quorum Store, DiemBFT).
  */
 message BatchAck {
   bytes batch_hash = 1;         // hash of the batch being acknowledged
   string acker_node_id = 2;     // node that received the batch
-  bytes signature = 3;          // acker's ML-DSA-65 signature over batch_hash
+  bytes signature = 3;          // acker's ML-DSA-65 signature over `ack:${batch_hash}:${acker_node_id}:${signed_at}`
+  int64 signed_at = 4;          // acker's wall-clock at sign time (epoch ms, Date.now())
 }
 
 /**
@@ -62,6 +72,14 @@ message Certificate {
   repeated bytes parent_hashes = 5;     // hashes of parent certificates (round - 1)
   bytes signature = 6;                  // author's ML-DSA-65 signature over certificate
   bytes hash = 7;                       // SHAKE-256 hash of this certificate
+  // BFT Time — canonical wall-clock for this round.
+  // Computed by the cert author at assembly time:
+  //   timestamp = max(median(acks.signed_at), prev_cert.timestamp + 1)
+  // and validated by every receiver as:
+  //   timestamp ∈ [prev_cert.timestamp + 1, prev_cert.timestamp + max_round_duration_ms]
+  // Round 1 floors against `bft_time_genesis_ms` instead of prev_cert.
+  // The hash input includes `timestamp`, so tampering invalidates cert.hash.
+  int64 timestamp = 8;
 }
 
 // ─── Sync Protocol ───────────────────────────────────────────────────────────
@@ -308,8 +326,9 @@ message SnapshotHeader {
   repeated bytes ack_signatures = 11;
 
   // The anchor cert's batch hash. Joiner reconstructs each ack's signed
-  // payload as `"ack:${batch_hash}:${acker_node_id}"` and verifies with
-  // the acker's public key (from the nodes table in the snapshot itself).
+  // payload as `"ack:${batch_hash}:${acker_node_id}:${signed_at}"` and
+  // verifies with the acker's public key (from the nodes table in the
+  // snapshot itself).
   bytes anchor_batch_hash = 12;
 
   string error = 13;                // peer rejected — no body follows
@@ -348,6 +367,23 @@ message SnapshotHeader {
   // divergence within ~4s if peer is actually byzantine. See issue #58
   // for full trust analysis.
   uint64 peer_consensus_index = 15;
+
+  // BFT-Time snapshot fields — required so joiners can verify each ack's
+  // signature on this commit. The signature scope was expanded to include
+  // `signed_at` (see BatchAck), so without these the joiner can't
+  // reconstruct the signed payload.
+  //
+  // Parallel arrays — `ack_signed_ats[i]` corresponds to `ack_signer_ids[i]`
+  // and `ack_signatures[i]`, so the order must be preserved. Each entry is
+  // the integer epoch ms the acker signed at (bound to that signature).
+  repeated int64 ack_signed_ats = 16;
+
+  // The anchor cert's `timestamp` (median of ack signed_at, with bounds).
+  // Lets the joiner persist this commit's canonical wall-clock without
+  // reconstructing it from the acks. Future post-round logic (verdict
+  // triggers, audit) reads this field directly. Frozen on the cert hash
+  // so tampering is detectable via cert verification.
+  int64 cert_timestamp = 17;
 }
 
 /**

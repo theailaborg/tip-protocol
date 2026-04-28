@@ -133,6 +133,13 @@ function canonCommit(c) {
     txs_merkle_root: c.txs_merkle_root,
     ack_signer_ids: c.ack_signer_ids || [],
     ack_signatures: c.ack_signatures || [],
+    // BFT-Time: included so commits_full_root binds the timestamp +
+    // signed_at array on every commit. Default fallbacks ([] and 0) keep
+    // pre-BFT-Time rows hashable consistently across nodes during the
+    // upgrade boundary, but post-upgrade these fields are always populated
+    // on real commits.
+    ack_signed_ats: c.ack_signed_ats || [],
+    cert_timestamp: c.cert_timestamp || 0,
   };
 }
 

@@ -28,6 +28,10 @@ const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
 const { createAntiEntropy } = require("./anti-entropy");
+const { createVerdictTrigger } = require("./verdict-trigger");
+const { createCleanRecordTrigger } = require("./clean-record-trigger");
+const { createTxSubmitter } = require("../services/helpers");
+const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
@@ -64,8 +68,54 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const mempool = createMempool(dag);
   log.info(`Mempool initialized (${mempool.size()} pending txs restored)`);
 
+  // Active committee is derived deterministically from DAG state: registered +
+  // produced a cert in the last K rounds. Every node reading the same DAG
+  // computes the same committee, so leader rotation and quorum match.
+  // `narwhalRef.current` is populated below; this closure is called from
+  // Bullshark / Narwhal after both are wired, AND from the post-round
+  // triggers' leader-gate logic (`committee[round % N]` for verdicts,
+  // `committee[day % N]` for clean-record).
+  const narwhalRef = { current: null };
+  const getCommittee = (round) => {
+    const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
+    return getActiveCommittee(dag, r);
+  };
+
+  // ── Post-round triggers (Commit 3 of #13/#15) ─────────────────────────
+  // Both run inside commit-handler's post-round phase, build batches via
+  // the same jury / scoring builders, submit through consensus mempool.
+  // Leader-gated to keep mempool flood bounded:
+  //   - verdict-trigger: round-modulo (one node per round fires)
+  //   - clean-record-trigger: day-modulo (one node per UTC day fires)
+  // Failover is automatic via natural rotation — if today's leader is
+  // offline, next round/day's leader picks up the slack.
+  //
+  // Submitter targets the same consensus instance we're constructing
+  // below — the `consensusForTrigger` ref is populated at the end of
+  // initConsensus so the closure resolves at call time.
+  const consensusForTrigger = { current: null };
+  const triggerSubmitter = createTxSubmitter(consensusForTrigger);
+  const verdictTrigger = createVerdictTrigger({
+    dag, jury, scoring, config,
+    submitBatch: triggerSubmitter.submitBatch,
+    getCommittee,
+  });
+  // Rehydrate the heap from any committed-but-unresolved disputes so we
+  // pick up where we left off across restart. Boot-time scan is bounded
+  // by `pending disputes`, not chain length — `getTxsByType` is indexed.
+  verdictTrigger.rehydrate();
+
+  const cleanRecordTrigger = createCleanRecordTrigger({
+    dag, scoring, config,
+    submitBatch: triggerSubmitter.submitBatch,
+    getCommittee,
+  });
+
   // ── Create commit handler ─────────────────────────────────────────────────
-  const commitHandler = createCommitHandler({ dag, scoring, config });
+  const commitHandler = createCommitHandler({
+    dag, scoring, config,
+    verdictTrigger, cleanRecordTrigger,
+  });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
   const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
@@ -81,22 +131,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // joiner advance its own committed_round counter past the snapshot anchor
   // when the network's been idle for many rounds).
 
-  // Active committee is derived deterministically from DAG state: registered +
-  // produced a cert in the last K rounds. Every node reading the same DAG
-  // computes the same committee, so leader rotation and quorum match.
-  // `narwhalRef.current` is populated below; this closure is called from
-  // Bullshark / Narwhal after both are wired.
-  const narwhalRef = { current: null };
-  const getCommittee = (round) => {
-    const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
-    return getActiveCommittee(dag, r);
-  };
-
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
-    onOrderedTxs: (orderedTxs, round) => {
-      const result = commitHandler.commitOrderedTxs(orderedTxs, round);
+    // BFT-Time — bullshark passes the anchor cert's timestamp (median of
+    // acks.signed_at, deterministic across nodes) so commit-handler can
+    // use it as the canonical wall-clock for derived state, audit logs,
+    // and post-round verdict triggers (Commit 3). Threaded through `opts`
+    // so additional flags can be added without breaking call sites.
+    onOrderedTxs: (orderedTxs, round, certTimestamp) => {
+      const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
     },
   });
@@ -176,7 +220,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
   // ── Public interface ───────────────────────────────────────────────────
 
-  return {
+  const consensus = {
     /**
      * Add a validated transaction to the mempool.
      * Called by API services after validation.
@@ -263,9 +307,17 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
+        verdictTrigger: { pending: verdictTrigger.size() },
       };
     },
   };
+
+  // Late-bind the ref the verdict-trigger's submitter closes over.
+  // Trigger is constructed before the public consensus object exists;
+  // we wire it up here so post-round verdict batches can hit `addTx`.
+  consensusForTrigger.current = consensus;
+
+  return consensus;
 }
 
 module.exports = { initConsensus };

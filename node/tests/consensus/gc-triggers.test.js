@@ -51,6 +51,10 @@ function registerNode(dag) {
   });
 }
 
+// BFT-Time monotonic floor for synthetic certs (1ms per round, strictly
+// increasing, anchored 1ms past the genesis floor).
+const BFT_T0 = new Date("2026-03-15T00:00:01.000Z").getTime();
+
 function makeCert(round, parentHashes = []) {
   const hash = shake256(`cert:${round}:${NODE_ID}`);
   return {
@@ -61,6 +65,7 @@ function makeCert(round, parentHashes = []) {
     acknowledgments: [],
     parent_hashes: parentHashes,
     signature: "00",
+    timestamp: BFT_T0 + round,
   };
 }
 
