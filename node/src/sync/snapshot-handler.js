@@ -580,9 +580,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const headerAckSignedAts = (header.ackSignedAts || []).map(_toInt);
       const headerCertTimestamp = _toInt(header.certTimestamp);
 
+      // #50: persist the header's anchor_batch_hash on the joiner so the
+      // latest commit row stays self-contained for any future snapshot
+      // serve. Without this, once the underlying anchor cert is GC'd the
+      // serve-time fallback at `_buildHeader` returns null and snapshot
+      // serving from this node fails. Phase C commits already carry the
+      // field via canonCommit; this closes the gap for the header row.
+      const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
+        ? bytesToHex(header.anchorBatchHash)
+        : null;
+
       dag.saveCommit({
         round: Number(header.round),
         anchor_cert_hash: bytesToHex(header.anchorCertHash),
+        anchor_batch_hash: headerAnchorBatchHash,
         leader_node_id: header.leaderNodeId,
         committee: header.committee || [],
         support_count: Number(header.supportCount || 0),

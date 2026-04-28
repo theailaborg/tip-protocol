@@ -682,6 +682,36 @@ describe("§14/#49 snapshot full-history shipping", () => {
     expect(destDag.getCommit(2)).toBeTruthy();
   });
 
+  test("drift guard: header commit row round-trips every canonical field from sender to joiner", async () => {
+    // Live-bug regression + structural drift guard for the header →
+    // saveCommit hop. The original symptom was specifically that
+    // `anchor_batch_hash` was dropped on the joiner — sender persisted it,
+    // wire carried it, but `dag.saveCommit({...})` in the install path
+    // didn't pass it through, so the joiner's latest commit row had null.
+    //
+    // Asserting just one field would let the next schema addition slip
+    // through the same gap (any new commit-row column the install
+    // forgets to map). So instead, compare the FULL canonical commit
+    // row between source and dest — every column the sender persists
+    // must land identically on the joiner. Phase C commits already
+    // round-trip correctly via `canonCommit`; this guards the latest
+    // (header-derived) row.
+    const fx = buildCommittedDag({ committeeSize: 1 });
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    const { canonCommit } = require(path.join(SRC, "sync", "snapshot-roots"));
+    const sourceCommit = fx.sourceDag.getCommit(2);
+    const destCommit = destDag.getCommit(2);
+    expect(destCommit).toBeTruthy();
+    expect(canonCommit(destCommit)).toEqual(canonCommit(sourceCommit));
+  });
+
   test("peer_committed_round: joiner advances bullshark counter to peer's value, not just snapshot round", async () => {
     // Live-bug regression: when the peer is at a much higher round than
     // its latest tx-bearing commit (idle network past gc_depth), the
