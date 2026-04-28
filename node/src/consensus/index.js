@@ -99,7 +99,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // acks.signed_at, deterministic across nodes) so commit-handler can
     // use it as the canonical wall-clock for derived state, audit logs,
     // and post-round verdict triggers (Commit 3). Threaded through `opts`
-    // so the existing { fromSync } API stays stable.
+    // so additional flags can be added without breaking call sites.
     onOrderedTxs: (orderedTxs, round, certTimestamp) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);

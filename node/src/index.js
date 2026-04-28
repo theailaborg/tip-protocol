@@ -35,6 +35,7 @@ const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
+const { createTxSubmitter } = require("./services/helpers");
 
 async function main() {
   await initCrypto();
@@ -104,8 +105,11 @@ async function main() {
   networkRef.current = network;
   consensusRef.current = consensus;
 
-  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.)
-  const scheduler = createScheduler(dag, scoring, network, config);
+  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.).
+  // Scheduler-produced txs (verdict, clean-record bonus, merkle root) flow
+  // through consensus mempool — see issue #13 for the bypass-bug history.
+  const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
+  const scheduler = createScheduler(dag, scoring, network, config, { submitTx, submitBatch });
 
   // 9. Start listening
   server.listen(config.port, () => {

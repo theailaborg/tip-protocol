@@ -61,12 +61,12 @@ function replaySyncedTxs(dag, commitHandler, fromRound, toRound) {
       for (const cert of certs) {
         const txs = cert.batch?.txs || [];
         if (txs.length > 0) {
-          // fromSync=true relaxes the prev-reference existence check —
-          // internal-only txs (scheduler merkle publish, scoring, jury; #13)
-          // aren't broadcast via consensus, so their tx_ids can be referenced
-          // as prev by synced txs but won't exist on this node. The cert's
-          // BFT signatures already prove integrity.
-          const res = commitHandler.commitOrderedTxs(txs, r, { fromSync: true });
+          // Replay synced txs through commit-handler. As of Commit 2 (#13),
+          // every tx that touches the `_prev` ring flows through consensus,
+          // so prev references are always resolvable in canonical-order
+          // replay (Bullshark's total order guarantees the prev tx is
+          // already committed by the time we process its referrer).
+          const res = commitHandler.commitOrderedTxs(txs, r);
           committed += res.committed;
         }
       }

@@ -18,7 +18,7 @@
 
 "use strict";
 
-const { TX_TYPES, CONTENT_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT } = require("../../../shared/constants");
 const { SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const { verifyBodySignature, mldsaVerify, canonicalTx } = require("../../../shared/crypto");
@@ -29,13 +29,19 @@ const log = getLogger("tip.commit");
 /**
  * Create a commit handler.
  *
+ * Note: as of Commit 2 (#13/#15), commit-handler no longer needs the
+ * `scoring` engine OR the node `config` — score effects are applied via
+ * the `SCORE_UPDATE` handler reading `tx.data.delta` directly, the
+ * CONTENT_RETRACTED penalty inlines the cache mutation, and there's no
+ * tx-signing or node-identity work left here. Existing callers can still
+ * pass `{ dag, scoring, config }` — the extra props are harmlessly
+ * ignored by destructure.
+ *
  * @param {Object} options
  * @param {Object} options.dag      DAG store
- * @param {Object} options.scoring  Scoring engine
- * @param {Object} options.config   Node config
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, scoring, config }) {
+function createCommitHandler({ dag }) {
 
   /**
    * Process an ordered batch of txs from Bullshark.
@@ -44,13 +50,6 @@ function createCommitHandler({ dag, scoring, config }) {
    * @param {Array<Object>} orderedTxs   Deterministically ordered txs from Bullshark
    * @param {number} round               The round number that committed these txs
    * @param {Object} [opts]
-   * @param {boolean} [opts.fromSync]    True when replaying txs freshly imported from a peer.
-   *                                     Skips prev-reference existence check because some
-   *                                     internal writers (scheduler, scoring, jury — see
-   *                                     issue #13) insert txs directly into the DAG without
-   *                                     broadcasting, so their tx_ids won't exist on this
-   *                                     node. The BFT cert wrapping the tx provides the
-   *                                     integrity guarantee that the prev-check normally would.
    * @param {number}  [opts.certTimestamp] BFT-Time canonical wall-clock for this round
    *                                     (median of anchor cert's acks.signed_at, integer epoch
    *                                     ms). Deterministic across nodes. Currently flowed
@@ -60,11 +59,17 @@ function createCommitHandler({ dag, scoring, config }) {
    * @returns {{ committed: number, dropped: number }}
    */
   function commitOrderedTxs(orderedTxs, round, opts = {}) {
-    const { fromSync = false, certTimestamp = 0 } = opts;
+    const { certTimestamp = 0 } = opts;
     // Reserved-but-unused for now. Lint suppression to make intent explicit
     // until Commit 3 wires it into derived-state/verdict logic.
     void certTimestamp;
-    // Phase 1: Validate all txs BEFORE writing anything
+    // Phase 1: Validate all txs BEFORE writing anything.
+    //
+    // `validated` is also passed to the business-rule guard so first-wins
+    // dedup catches duplicates inside this same round (e.g. two competing
+    // schedulers' ADJUDICATION_RESULTs for the same ctid both ordered into
+    // the same anchor commit — only the first one in the canonical order
+    // is admitted).
     const validated = [];
     let dropped = 0;
 
@@ -77,8 +82,11 @@ function createCommitHandler({ dag, scoring, config }) {
       // Skip if already in DAG
       if (dag.getTx(tx.tx_id)) continue;
 
-      // Validate structure
-      const validation = validateTransaction(tx, dag, { skipState: true, skipPrevCheck: fromSync });
+      // Validate structure. prev-existence check is enforced — every tx
+      // that touches the `_prev` ring now flows through consensus (#13),
+      // so by the time a replaying node processes tx N, all txs N's prev
+      // references point at have already been committed in earlier rounds.
+      const validation = validateTransaction(tx, dag, { skipState: true });
       if (!validation.valid) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${validation.errors.join("; ")}`);
         dropped++;
@@ -88,6 +96,19 @@ function createCommitHandler({ dag, scoring, config }) {
       // Verify signature
       if (!_verifyTxSignature(tx)) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature failed`);
+        dropped++;
+        continue;
+      }
+
+      // Business-rule guard — first-wins dedup for verdict txs and
+      // reveal-window enforcement for jury reveals. Closes #15 (and the
+      // multi-submitter race in #13: when N nodes' schedulers each
+      // produce a verdict batch for the same dispute, only the first
+      // ordered ADJUDICATION_RESULT/APPEAL_RESULT lands per ctid; later
+      // duplicates and their score-update effects are dropped silently).
+      const business = _validateBusinessRules(tx, validated);
+      if (!business.valid) {
+        log.debug(`Round ${round}: dropped duplicate ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
         dropped++;
         continue;
       }
@@ -121,6 +142,107 @@ function createCommitHandler({ dag, scoring, config }) {
     }
 
     return { committed, dropped };
+  }
+
+  // ─── Business-rule guards (#13 + #15) ──────────────────────────────────
+
+  /**
+   * Apply tx-type-specific business rules at commit time. First-wins dedup
+   * across `dag` (already-committed txs) and `validated` (txs in this same
+   * round that have already passed all checks above). Returns `{valid: true}`
+   * for accepted txs, `{valid: false, error: "..."}` for rejected ones.
+   */
+  function _validateBusinessRules(tx, validated) {
+    const d = tx.data || {};
+    switch (tx.tx_type) {
+
+      case TX_TYPES.ADJUDICATION_RESULT: {
+        if (!d.ctid) return { valid: false, error: "missing ctid" };
+        const existing = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, d.ctid);
+        if (existing.length > 0) {
+          return { valid: false, error: `ADJUDICATION_RESULT already exists for ${d.ctid}` };
+        }
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.ADJUDICATION_RESULT && t.data?.ctid === d.ctid
+        );
+        if (inBatch) return { valid: false, error: `ADJUDICATION_RESULT already in this batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.APPEAL_RESULT: {
+        if (!d.ctid) return { valid: false, error: "missing ctid" };
+        const existing = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, d.ctid);
+        if (existing.length > 0) {
+          return { valid: false, error: `APPEAL_RESULT already exists for ${d.ctid}` };
+        }
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.APPEAL_RESULT && t.data?.ctid === d.ctid
+        );
+        if (inBatch) return { valid: false, error: `APPEAL_RESULT already in this batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.APPEAL_FILED: {
+        // Only the FIRST APPEAL_FILED per ctid is canonical. Auto-escalation
+        // (Stage 2 NO_QUORUM) and user-filed appeals both go through this
+        // gate; whichever lands first wins.
+        if (!d.ctid) return { valid: true };
+        const existing = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, d.ctid);
+        if (existing.length > 0) return { valid: false, error: `APPEAL_FILED already exists for ${d.ctid}` };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.APPEAL_FILED && t.data?.ctid === d.ctid
+        );
+        if (inBatch) return { valid: false, error: `APPEAL_FILED already in this batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.SCORE_UPDATE: {
+        // Dedup by (tip_id, ctid, reason). When N nodes' schedulers each
+        // submit a verdict batch, the per-juror SCORE_UPDATEs all share
+        // the same (tip_id, ctid, reason) tuple — only the first lands.
+        // For non-jury SCORE_UPDATEs (clean-record bonus, content-retracted)
+        // the same dedup key catches accidental duplicates without affecting
+        // legitimate single-submitter calls.
+        if (!d.tip_id || !d.reason) return { valid: true };
+        const tipMatch = (t) => t.data?.tip_id === d.tip_id
+          && (t.data?.ctid || null) === (d.ctid || null)
+          && t.data?.reason === d.reason;
+        const existing = dag.getTxsByType(TX_TYPES.SCORE_UPDATE).find(tipMatch);
+        if (existing) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already applied` };
+        const inBatch = validated.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE && tipMatch(t));
+        if (inBatch) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already in this batch` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.JURY_VOTE_REVEAL: {
+        // Reveal-window enforcement — every honest node sees the same
+        // tx.timestamp and the same JURY_SUMMONS.reveal_deadline (both
+        // frozen consensus state), so the accept/reject decision is
+        // deterministic. This is the third guard from issue #13's design:
+        // verdict batches built later read only in-window reveals, so
+        // every node ends up with the same reveal set even when reveals
+        // arrive at different wall-clock instants.
+        if (!d.ctid || !d.juror_tip_id) return { valid: true };
+        // Coerce both `is_appeal` values to booleans — `undefined` and
+        // `false` are semantically equivalent here but strict `===` would
+        // treat them as different, causing the matching summons to be
+        // missed (and the guard to silently no-op).
+        const isAppealReveal = !!d.is_appeal;
+        const summons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, d.ctid)
+          .find(s => s.data?.juror_tip_id === d.juror_tip_id
+            && (!!s.data?.is_appeal) === isAppealReveal);
+        if (!summons) return { valid: true };  // no summons → schema layer rejects elsewhere
+        const deadlineMs = new Date(summons.data.reveal_deadline).getTime();
+        const txMs = new Date(tx.timestamp).getTime();
+        if (Number.isFinite(deadlineMs) && Number.isFinite(txMs) && txMs > deadlineMs) {
+          return { valid: false, error: `reveal arrived after deadline (${tx.timestamp} > ${summons.data.reveal_deadline})` };
+        }
+        return { valid: true };
+      }
+
+      default:
+        return { valid: true };
+    }
   }
 
   /**
@@ -192,8 +314,18 @@ function createCommitHandler({ dag, scoring, config }) {
       case TX_TYPES.CONTENT_RETRACTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.RETRACTED);
-          if (d.author_tip_id && scoring) {
-            scoring.applyScoreEvent(d.author_tip_id, SCORE_EVENTS.CONTENT_RETRACTION.delta, `Content retracted: ${d.ctid}`);
+          if (d.author_tip_id) {
+            // Apply the retraction penalty directly to the score cache —
+            // every node runs this on the same committed CONTENT_RETRACTED
+            // tx, so the cache mutation is deterministic. computeScore()
+            // replays the same delta from CONTENT_RETRACTED on a from-
+            // scratch recompute. Used to call `scoring.applyScoreEvent`,
+            // which wrote a synthetic SCORE_UPDATE tx with a non-
+            // deterministic timestamp from inside commit-handler — that's
+            // the path that forced the `fromSync=true` prev-skip workaround.
+            const cur = dag.getScore(d.author_tip_id) || { score: 500, offense_count: 0 };
+            const next = Math.max(0, Math.min(1000, cur.score + SCORE_EVENTS.CONTENT_RETRACTION.delta));
+            dag.setScore(d.author_tip_id, next, cur.offense_count);
           }
         }
         break;
@@ -220,23 +352,47 @@ function createCommitHandler({ dag, scoring, config }) {
       // ── Adjudication ──────────────────────────────────────────────────
       case TX_TYPES.ADJUDICATION_RESULT:
         if (d.ctid) {
-          if (d.verdict === "DISMISSED" || d.verdict === "CONSERVATIVE_LABEL") {
+          if (d.verdict === VERDICT.DISMISSED || d.verdict === VERDICT.CONSERVATIVE_LABEL) {
             dag.updateContentStatus(d.ctid, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
-          } else if (d.verdict === "UPHELD" && d.confirmed_origin) {
+          } else if (d.verdict === VERDICT.UPHELD && d.confirmed_origin) {
             dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
           }
         }
+        // Author-penalty side-effects (juror bonuses, no-show penalties,
+        // disputer outcome) ride on the SCORE_UPDATE txs in the same batch
+        // produced by `jury.buildAdjudicationBatch`. Author penalty itself
+        // is applied via computeScore replay reading author_score_delta.
         break;
 
       case TX_TYPES.APPEAL_RESULT:
-        if (d.ctid && d.overturned) {
-          if (d.stage2_verdict === "UPHELD" && d.declared_origin) {
-            // Restore original origin + pre-dispute status
-            dag.updateContentOrigin(d.ctid, d.declared_origin, CONTENT_STATUS.REGISTERED);
-          } else if (d.confirmed_origin) {
-            dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
+        if (d.ctid) {
+          // #15 — appeal content-state effects extracted from jury.js
+          // (which used to mutate dag directly). Carries enough state in
+          // tx.data to be deterministic across all nodes.
+          if (d.overturned) {
+            if (d.stage2_verdict === VERDICT.UPHELD && d.declared_origin) {
+              // Stage 2 said UPHELD; experts say DISMISSED → restore original
+              // origin + pre-dispute status.
+              dag.updateContentOrigin(d.ctid, d.declared_origin, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
+            } else if (d.stage2_verdict === VERDICT.DISMISSED && d.confirmed_origin) {
+              // Stage 2 said DISMISSED; experts say UPHELD → set verified
+              // with the experts' confirmed origin.
+              dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
+            }
+          } else {
+            // Appeal confirmed Stage 2.
+            if (d.verdict === VERDICT.UPHELD && d.confirmed_origin) {
+              dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
+            } else if (d.verdict === VERDICT.DISMISSED) {
+              dag.updateContentStatus(d.ctid, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
+            }
           }
         }
+        // Score-effects for appellant/disputer/experts/author-reversal are
+        // emitted as SCORE_UPDATE txs in the same batch by
+        // `jury.buildAppealBatch`, and applied by the SCORE_UPDATE case
+        // below. Stage-2 adjudication offense reversal (offense_count--)
+        // is handled by computeScore on replay (reads `overturned` flag).
         break;
 
       // ── Revocations ───────────────────────────────────────────────────
@@ -276,9 +432,22 @@ function createCommitHandler({ dag, scoring, config }) {
         }
         break;
 
-      // ── Score updates, jury summons, votes — no derived state needed ──
-      // These are recorded in the DAG; scoring.computeScore() replays them.
+      // ── Score update — applies cache mutation deterministically (#15) ──
+      // Replaces the in-line scoring.applyScoreEvent calls that
+      // jury.tallyVerdictAndApply / applyAppealVerdict used to make.
+      // First-wins dedup happens upstream in `_validateBusinessRules`
+      // (by tip_id + ctid + reason), so reaching this case means this is
+      // the authoritative SCORE_UPDATE for that (tip_id, ctid, reason).
       case TX_TYPES.SCORE_UPDATE:
+        if (d.tip_id && Number.isFinite(d.delta)) {
+          const cur = dag.getScore(d.tip_id) || { score: 500, offense_count: 0 };
+          const nextScore = Math.max(0, Math.min(1000, cur.score + d.delta));
+          dag.setScore(d.tip_id, nextScore, cur.offense_count);
+        }
+        break;
+
+      // ── No additional derived state needed ──
+      // computeScore() replays these from the DAG history when needed.
       case TX_TYPES.JURY_SUMMONS:
       case TX_TYPES.JURY_VOTE_COMMIT:
       case TX_TYPES.JURY_VOTE_REVEAL:

@@ -22,6 +22,7 @@
 
 const { TX_TYPES, ORIGIN, VERDICT } = require("../../shared/constants");
 const { SCORE_EVENTS, getTier } = require("../../shared/protocol-constants");
+const { signTransaction, computeTxId } = require("../../shared/crypto");
 const { log } = require("./logger");
 
 function initScoring(dag, config) {
@@ -97,6 +98,14 @@ function initScoring(dag, config) {
         case TX_TYPES.SCORE_UPDATE:
           delta = tx.data.delta || 0;
           reason = tx.data.reason || "Score update";
+          break;
+
+        case TX_TYPES.CONTENT_RETRACTED:
+          // Author penalty for retraction. Commit-handler applies the
+          // same delta to the score cache deterministically; this case
+          // is for from-scratch replay (full computeScore on this tipId).
+          delta = SCORE_EVENTS.CONTENT_RETRACTION.delta;
+          reason = `Content retracted: ${tx.data.ctid || "unknown"}`;
           break;
 
         case TX_TYPES.REVOKE_DEVICE:
@@ -199,22 +208,44 @@ function initScoring(dag, config) {
   }
 
   /**
-   * Apply a score event and persist a SCORE_UPDATE transaction.
-   * @param {string} tipId
-   * @param {number} delta
-   * @param {string} reason
-   * @param {string} relatedTxId
+   * Build a signed SCORE_UPDATE tx WITHOUT writing to DAG and WITHOUT mutating
+   * the score cache. The tx is meant to be submitted through `submitBatch`
+   * so it flows through consensus mempool → Bullshark → commit-handler, where
+   * `commit-handler.js`'s SCORE_UPDATE case applies the cache mutation
+   * deterministically on every node (with first-wins dedup by
+   * `(tip_id, ctid, reason)` to prevent multiple-submitter double-counting).
+   *
+   * `getRecentPrev` is a function (not the result) so each call captures the
+   * caller's view of the prev-ring at build time — matches the
+   * `dispute-service.js` pattern.
+   *
+   * @param {Object} args
+   * @param {string} args.tipId         The TIP-ID this score event applies to
+   * @param {number} args.delta         Score delta (positive or negative)
+   * @param {string} args.reason        Human-readable reason — included in dedup key
+   * @param {string|null} args.ctid     Related content-id, if any (dedup key)
+   * @param {string|null} args.relatedTxId  ADJUDICATION_RESULT / APPEAL_RESULT tx_id
+   * @param {string} args.timestamp     ISO timestamp for the tx
+   * @param {Function} args.getRecentPrev  () => string[]  prev-ring snapshot
+   * @param {Object} args.config        Node config (provides node_id + private key)
+   * @returns {Object} signed tx with tx_id
    */
-  function applyScoreEvent(tipId, delta, reason, relatedTxId) {
-    const current = dag.getScore(tipId) || { score: 500, offense_count: 0 };
-    const newScore = Math.max(0, Math.min(1000, current.score + delta));
-    dag.setScore(tipId, newScore, current.offense_count);
-    dag.addTx({
+  function buildScoreUpdateTx({ tipId, delta, reason, ctid = null, relatedTxId = null, timestamp, getRecentPrev, config }) {
+    const txBody = {
       tx_type: TX_TYPES.SCORE_UPDATE,
-      data: { tip_id: tipId, delta, score_after: newScore, reason, related_tx_id: relatedTxId || null },
-      timestamp: new Date().toISOString(),
-    });
-    return newScore;
+      timestamp,
+      prev: typeof getRecentPrev === "function" ? getRecentPrev() : [],
+      data: {
+        tip_id: tipId,
+        delta,
+        reason,
+        ctid,
+        related_tx_id: relatedTxId,
+        node_id: config.nodeRegisteredId || config.nodeId,
+      },
+    };
+    txBody.tx_id = computeTxId(txBody);
+    return signTransaction(txBody, config.nodePrivateKey);
   }
 
   /**
@@ -265,7 +296,7 @@ function initScoring(dag, config) {
 
   return {
     computeScore,
-    applyScoreEvent,
+    buildScoreUpdateTx,
     getScore,
     recomputeAll,
     isJuryEligible,
