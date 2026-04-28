@@ -410,7 +410,9 @@ describe("snapshot-roots canonical projections", () => {
       ack_signer_ids: ["x"], ack_signatures: ["sig"],
     };
     // anchor_batch_hash is intentionally omitted from `base` to verify
-    // the projection defaults it to null for pre-#50 rows.
+    // the projection defaults it to null for pre-#50 rows. Same for
+    // BFT-Time fields (`ack_signed_ats`, `cert_timestamp`) which default
+    // to [] / 0 for pre-BFT-Time rows.
     expect(canonCommit(base)).toEqual({
       round: 5,
       anchor_cert_hash: "a",
@@ -424,6 +426,8 @@ describe("snapshot-roots canonical projections", () => {
       txs_merkle_root: "t",
       ack_signer_ids: ["x"],
       ack_signatures: ["sig"],
+      ack_signed_ats: [],
+      cert_timestamp: 0,
     });
   });
 

@@ -601,6 +601,12 @@ class SQLiteStore {
         acknowledgments TEXT NOT NULL,
         parent_hashes   TEXT NOT NULL,
         signature       TEXT NOT NULL,
+        -- BFT-Time: median(acks.signed_at) at cert creation, integer epoch ms.
+        -- Default 0 keeps pre-BFT-Time DBs valid for inspection but Bullshark's
+        -- monotonicity gate rejects anchors with timestamp <= floor, so a real
+        -- network with 0-timestamp certs would halt at the next anchor (correct
+        -- behavior — flags an upgrade boundary instead of silently mis-ordering).
+        timestamp       INTEGER NOT NULL DEFAULT 0,
         created_at      INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
@@ -626,13 +632,26 @@ class SQLiteStore {
         txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
         ack_signer_ids    TEXT NOT NULL,   -- JSON array of node_ids that ack'd the anchor cert
         ack_signatures    TEXT NOT NULL,   -- JSON array of hex signatures, same order as ack_signer_ids
+        -- BFT-Time: each ack's signed_at (epoch ms), parallel array to
+        -- ack_signatures/ack_signer_ids. The ack signature scope covers
+        -- signed_at, so a snapshot joiner reconstructs the payload as
+        -- "ack:<batch_hash>:<signer>:<signed_at>" to verify each signature.
+        -- Without this, joiners cannot verify ack signatures on commits
+        -- after the sender's certs have been GC'd.
+        ack_signed_ats    TEXT NOT NULL DEFAULT '[]',  -- JSON array of integer epoch ms
+        -- BFT-Time: cert.timestamp = median(acks.signed_at) at anchor commit.
+        -- Canonical "consensus wall clock" for this round, deterministic
+        -- across all nodes. Used by post-round logic (verdict triggers,
+        -- audit logs) and by Bullshark's anchor-monotonicity gate on
+        -- restart (read latest, set as floor for next anchor).
+        cert_timestamp    INTEGER NOT NULL DEFAULT 0,
         -- #50: explicit copy of the anchor cert's batch_hash so this row
         -- stays self-contained for snapshot verification once cert GC has
         -- pruned the underlying cert. Without this, snapshot serving
         -- needs dag.getCertificate(anchor_cert_hash).batch.hash, which
         -- fails on idle federations whose latest commit drifts past
         -- gc_depth rounds. Joiner uses this to reconstruct the
-        -- ack-signature payload (ack:<batch_hash>:<signer>) each ack signed.
+        -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
         anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
@@ -798,11 +817,12 @@ class SQLiteStore {
       getNode: this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
       getAllNodes: this.db.prepare("SELECT * FROM nodes"),
 
-      // Certificates
+      // Certificates — 8 columns including BFT-Time `timestamp`
+      // (median of acks.signed_at at cert creation, integer epoch ms).
       saveCert: this.db.prepare(
         `INSERT OR IGNORE INTO certificates
-           (hash,round,author_node_id,batch_data,acknowledgments,parent_hashes,signature)
-         VALUES (?,?,?,?,?,?,?)`
+           (hash,round,author_node_id,batch_data,acknowledgments,parent_hashes,signature,timestamp)
+         VALUES (?,?,?,?,?,?,?,?)`
       ),
       getCert: this.db.prepare("SELECT * FROM certificates WHERE hash=?"),
       getCertsByRound: this.db.prepare("SELECT * FROM certificates WHERE round=? ORDER BY author_node_id"),
@@ -813,15 +833,17 @@ class SQLiteStore {
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
-      // Commit checkpoints (§15 base + §14 snapshot-sync fields + #50).
-      // 12 columns: round, anchor_cert_hash, leader_node_id, committee,
+      // Commit checkpoints (§15 base + §14 snapshot-sync fields + #50 + BFT-Time).
+      // 14 columns: round, anchor_cert_hash, leader_node_id, committee,
       // support_count, consensus_index, committed_at, state_merkle_root,
-      // txs_merkle_root, ack_signer_ids, ack_signatures, anchor_batch_hash.
+      // txs_merkle_root, ack_signer_ids, ack_signatures, anchor_batch_hash,
+      // ack_signed_ats, cert_timestamp.
       saveCommit: this.db.prepare(
         `INSERT OR IGNORE INTO commits
            (round,anchor_cert_hash,leader_node_id,committee,support_count,consensus_index,committed_at,
-            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures,anchor_batch_hash)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+            state_merkle_root,txs_merkle_root,ack_signer_ids,ack_signatures,anchor_batch_hash,
+            ack_signed_ats,cert_timestamp)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getCommit: this.db.prepare("SELECT * FROM commits WHERE round=?"),
       getCommitsFromRound: this.db.prepare(
@@ -1034,7 +1056,8 @@ class SQLiteStore {
       JSON.stringify(cert.batch),
       JSON.stringify(cert.acknowledgments),
       JSON.stringify(cert.parent_hashes || []),
-      cert.signature
+      cert.signature,
+      Number(cert.timestamp || 0)
     );
   }
   getCertificate(hash) {
@@ -1098,6 +1121,8 @@ class SQLiteStore {
       JSON.stringify(rec.ack_signer_ids || []),
       JSON.stringify(rec.ack_signatures || []),
       rec.anchor_batch_hash || null,        // #50: nullable — null on pre-fix rows or when the caller didn't pass it
+      JSON.stringify(rec.ack_signed_ats || []),  // BFT-Time: parallel to ack_signatures
+      Number(rec.cert_timestamp || 0),           // BFT-Time: median of acks.signed_at on the anchor cert
     );
   }
   getCommit(round) {
@@ -1151,6 +1176,11 @@ class SQLiteStore {
       txs_merkle_root: row.txs_merkle_root,
       ack_signer_ids: JSON.parse(row.ack_signer_ids),
       ack_signatures: JSON.parse(row.ack_signatures),
+      // BFT-Time: parse JSON array; defaults to [] for any pre-BFT-Time
+      // rows. cert_timestamp returns 0 for pre-BFT-Time rows (column has
+      // a SQLite default of 0).
+      ack_signed_ats: row.ack_signed_ats ? JSON.parse(row.ack_signed_ats) : [],
+      cert_timestamp: row.cert_timestamp || 0,
       anchor_batch_hash: row.anchor_batch_hash || null,    // #50: null for pre-fix rows
     };
   }

@@ -78,26 +78,60 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
   const anchorCertHash = shake256(`test-anchor-cert-${anchorBatchHash}`);
   const leaderNodeId = committeeKeys[0].nodeId;
 
-  // Sign acks (omit trailing N for quorum-shortfall tests).
+  // Sign acks (omit trailing N for quorum-shortfall tests). Each ack carries
+  // a `signed_at` integer epoch ms — a deterministic per-ack offset (1ms
+  // apart) anchored 1ms past BFT_TIME_GENESIS_MS. Cert.timestamp = median
+  // of these values, also deterministic and comfortably above the floor.
+  const _bftT0 = new Date("2026-03-15T00:00:01.000Z").getTime();
   let ackSignerIds = [];
   let ackSignatures = [];
+  let ackSignedAts = [];
   for (let i = 0; i < committeeKeys.length - dropSigs; i++) {
     const { nodeId, privateKey } = committeeKeys[i];
-    const payload = `ack:${anchorBatchHash}:${nodeId}`;
+    const signedAt = _bftT0 + i; // 1ms apart per acker — strictly increasing
+    const payload = `ack:${anchorBatchHash}:${nodeId}:${signedAt}`;
     ackSignerIds.push(nodeId);
     ackSignatures.push(mldsaSign(payload, privateKey));
+    ackSignedAts.push(signedAt);
   }
 
   // Let callers craft malformed ack arrays (security tests: non-committee
   // signer, duplicates, corrupted sig bytes, etc.) after the default
   // signatures are produced.
+  //
+  // Pre-BFT-Time test transformers only mutate `signerIds` / `signatures`.
+  // We auto-pad `signedAts` to match `signerIds.length` so the snapshot
+  // verifier doesn't trip on the parallel-array length check before reaching
+  // the actual security assertion (e.g. "non-committee signer rejected").
+  // Padding uses the bft_t0 baseline — values that lie above the genesis
+  // floor and below any real production timestamp.
   if (typeof ackTransform === "function") {
-    const acks = { signerIds: ackSignerIds, signatures: ackSignatures };
+    const acks = { signerIds: ackSignerIds, signatures: ackSignatures, signedAts: ackSignedAts };
     const fx = { committeeKeys, committee, anchorBatchHash };
     const transformed = ackTransform(acks, fx) || acks;
     ackSignerIds = transformed.signerIds;
     ackSignatures = transformed.signatures;
+    ackSignedAts = transformed.signedAts || ackSignedAts;
+    // Pad / truncate to match signerIds length.
+    if (ackSignedAts.length < ackSignerIds.length) {
+      const start = ackSignedAts.length;
+      for (let i = start; i < ackSignerIds.length; i++) {
+        ackSignedAts.push(_bftT0 + i);
+      }
+    } else if (ackSignedAts.length > ackSignerIds.length) {
+      ackSignedAts = ackSignedAts.slice(0, ackSignerIds.length);
+    }
   }
+
+  // cert.timestamp = median of acks.signed_at — same algorithm as
+  // certificate.js computeMedianTimestamp. Deterministic across nodes.
+  const _sortedTs = [...ackSignedAts].sort((a, b) => a - b);
+  const _mid = _sortedTs.length >> 1;
+  const certTimestamp = _sortedTs.length === 0
+    ? _bftT0  // empty (drop-all-sigs tests) — fallback to floor+1 (still > genesis)
+    : _sortedTs.length % 2 === 0
+      ? Math.floor((_sortedTs[_mid - 1] + _sortedTs[_mid]) / 2)
+      : _sortedTs[_mid];
 
   // Persist the anchor certificate. saveCertificate is used straight —
   // no signature check, we just need getCertificate(hash) to return the
@@ -114,10 +148,14 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
       signature: "00",
     },
     acknowledgments: ackSignerIds.map((id, i) => ({
-      batch_hash: anchorBatchHash, acker_node_id: id, signature: ackSignatures[i],
+      batch_hash: anchorBatchHash,
+      acker_node_id: id,
+      signature: ackSignatures[i],
+      signed_at: ackSignedAts[i],
     })),
     parent_hashes: [],
     signature: "00",
+    timestamp: certTimestamp,
   });
 
   // Compute roots over current state (commits table is NOT in canonical
@@ -142,6 +180,12 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
     txs_merkle_root: txsRoot,
     ack_signer_ids: ackSignerIds,
     ack_signatures: ackSignatures,
+    // BFT-Time fields — joiner reconstructs ack payloads as
+    // `ack:${anchor_batch_hash}:${signer}:${signed_at}` for verification,
+    // and reads cert_timestamp as the canonical consensus wall-clock for
+    // this anchor.
+    ack_signed_ats: ackSignedAts,
+    cert_timestamp: certTimestamp,
   });
 
   // §14/#49 — optional synthetic tx history. Seeded BEFORE the state-root
@@ -185,6 +229,8 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
     anchorCertHash, anchorBatchHash,
     stateRoot, txsRoot, consensusIndex,
     seededTxs,
+    // BFT-Time fields surfaced for tests that need to assert on them.
+    ackSignedAts, certTimestamp,
   };
 }
 

@@ -217,6 +217,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       error: "",
       peerCommittedRound,
       peerConsensusIndex,
+      // BFT-Time fields — joiner needs `ack_signed_ats` to reconstruct each
+      // ack's signed payload (`ack:${batch_hash}:${signer}:${signed_at}`).
+      // `cert_timestamp` is the canonical consensus wall-clock for this
+      // anchor (median of acks.signed_at).
+      ackSignedAts: latest.ack_signed_ats || [],
+      certTimestamp: latest.cert_timestamp || 0,
     });
 
     // Stream header + state rows + tx rows + commit rows + end marker in a
@@ -411,8 +417,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       const signerIds = header.ackSignerIds || [];
       const signatures = (header.ackSignatures || []).map(bytesToHex);
+      // BFT-Time: each ack's signed_at is bound into the signature scope.
+      // Parallel array — `signedAts[i]` corresponds to `signerIds[i]` and
+      // `signatures[i]`. Coerce protobuf int64 (Long) → plain Number for
+      // payload reconstruction.
+      const signedAtsRaw = header.ackSignedAts || [];
+      const signedAts = signedAtsRaw.map(v =>
+        (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0)
+      );
       if (signerIds.length !== signatures.length) {
         throw new Error(`ack length mismatch: ${signerIds.length} signers vs ${signatures.length} sigs`);
+      }
+      if (signedAts.length !== signerIds.length) {
+        throw new Error(`ack length mismatch: ${signerIds.length} signers vs ${signedAts.length} signed_ats — peer may be running pre-BFT-Time code`);
       }
 
       let validAcks = 0;
@@ -423,7 +440,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         if (!committeeSet.has(signer)) continue; // non-committee sig doesn't count toward quorum
         const pubKey = nodePubKeys.get(signer);
         if (!pubKey) continue;                   // no public key available — can't verify
-        const payload = `ack:${anchorBatchHashHex}:${signer}`;
+        // Reconstructed payload mirrors `_ackSignPayload` in certificate.js.
+        // Without `signed_at` the signature wouldn't verify (signature scope
+        // covers the timestamp).
+        const payload = `ack:${anchorBatchHashHex}:${signer}:${signedAts[i]}`;
         if (mldsaVerify(payload, signatures[i], pubKey)) {
           seen.add(signer);
           validAcks++;
@@ -552,6 +572,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // Header's commit row — the round whose state_merkle_root we just
       // verified against 2f+1 acks. Convert header bytes-fields back to
       // the hex/string shape dag.saveCommit expects.
+      // BFT-Time fields — coerce protobuf int64 (Long) → plain Number for
+      // each ack's signed_at and the cert.timestamp. Already validated
+      // upstream via the ack signature quorum check (we wouldn't be here
+      // otherwise).
+      const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
+      const headerAckSignedAts = (header.ackSignedAts || []).map(_toInt);
+      const headerCertTimestamp = _toInt(header.certTimestamp);
+
       dag.saveCommit({
         round: Number(header.round),
         anchor_cert_hash: bytesToHex(header.anchorCertHash),
@@ -564,6 +592,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         txs_merkle_root: bytesToHex(header.txsMerkleRoot),
         ack_signer_ids: header.ackSignerIds || [],
         ack_signatures: (header.ackSignatures || []).map(bytesToHex),
+        ack_signed_ats: headerAckSignedAts,
+        cert_timestamp: headerCertTimestamp,
       });
 
       return { state: stateN, txs: txN, commits: commitN };

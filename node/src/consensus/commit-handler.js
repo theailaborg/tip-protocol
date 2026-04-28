@@ -41,20 +41,29 @@ function createCommitHandler({ dag, scoring, config }) {
    * Process an ordered batch of txs from Bullshark.
    * Each tx is validated against current state, written to DAG, and derived state updated.
    *
-   * @param {Array<Object>} orderedTxs  Deterministically ordered txs from Bullshark
-   * @param {number} round              The round number that committed these txs
+   * @param {Array<Object>} orderedTxs   Deterministically ordered txs from Bullshark
+   * @param {number} round               The round number that committed these txs
    * @param {Object} [opts]
-   * @param {boolean} [opts.fromSync]   True when replaying txs freshly imported from a peer.
-   *                                    Skips prev-reference existence check because some
-   *                                    internal writers (scheduler, scoring, jury — see
-   *                                    issue #13) insert txs directly into the DAG without
-   *                                    broadcasting, so their tx_ids won't exist on this
-   *                                    node. The BFT cert wrapping the tx provides the
-   *                                    integrity guarantee that the prev-check normally would.
+   * @param {boolean} [opts.fromSync]    True when replaying txs freshly imported from a peer.
+   *                                     Skips prev-reference existence check because some
+   *                                     internal writers (scheduler, scoring, jury — see
+   *                                     issue #13) insert txs directly into the DAG without
+   *                                     broadcasting, so their tx_ids won't exist on this
+   *                                     node. The BFT cert wrapping the tx provides the
+   *                                     integrity guarantee that the prev-check normally would.
+   * @param {number}  [opts.certTimestamp] BFT-Time canonical wall-clock for this round
+   *                                     (median of anchor cert's acks.signed_at, integer epoch
+   *                                     ms). Deterministic across nodes. Currently flowed
+   *                                     through unused — Commit 3 will use it as the trigger
+   *                                     clock for post-round verdict logic and clean-record
+   *                                     bonus eligibility, replacing scheduler-driven Date.now().
    * @returns {{ committed: number, dropped: number }}
    */
   function commitOrderedTxs(orderedTxs, round, opts = {}) {
-    const { fromSync = false } = opts;
+    const { fromSync = false, certTimestamp = 0 } = opts;
+    // Reserved-but-unused for now. Lint suppression to make intent explicit
+    // until Commit 3 wires it into derived-state/verdict logic.
+    void certTimestamp;
     // Phase 1: Validate all txs BEFORE writing anything
     const validated = [];
     let dropped = 0;

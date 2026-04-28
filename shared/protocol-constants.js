@@ -225,6 +225,9 @@ const CONSENSUS = {
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
   get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
   get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
+  // BFT Time — cert.timestamp validation bounds. See genesis.js consensus block.
+  get MAX_ROUND_DURATION_MS() { return _c().max_round_duration_ms ?? 300000; },
+  get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
 };
 
 const NETWORK = {

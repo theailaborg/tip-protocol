@@ -33,7 +33,11 @@ const {
   createCertificate, verifyCertificate,
   computeQuorum,
 } = require("./certificate");
-const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
+const {
+  serializeBatch, deserializeBatch,
+  serializeCertificate, deserializeCertificate,
+} = require("./certificate-codec");
+const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
@@ -183,7 +187,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Broadcast batch on MEMPOOL topic (separate from certificates)
     try {
-      const batchBuf = encode("Batch", _serializeBatch(_myBatch));
+      const batchBuf = encode("Batch", serializeBatch(_myBatch));
       network.publish(network.TOPICS.MEMPOOL, batchBuf);
     } catch (err) {
       log.error(`Round ${_currentRound}: failed to broadcast batch: ${err.message}`);
@@ -197,8 +201,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
     _metrics.batches_created++;
 
-    // Self-ack our own batch
-    _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, privateKey));
+    // Self-ack our own batch. signed_at is bound into the ack signature
+    // (BFT Time) — every ack from every node carries the acker's wall-clock
+    // at sign time. The cert author later derives cert.timestamp as the
+    // median of all 2f+1 signed_at values.
+    _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, Date.now(), privateKey));
 
     // Try certificate immediately (works in single-node mode where quorum=1)
     // In single-node, this will create cert + advance round synchronously.
@@ -258,7 +265,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _rebroadcastOwnBatch() {
     if (!_myBatch) return;
     try {
-      const buf = encode("Batch", _serializeBatch(_myBatch));
+      const buf = encode("Batch", serializeBatch(_myBatch));
       network.publish(network.TOPICS.MEMPOOL, buf);
       log.debug(`Round ${_currentRound}: re-broadcast own batch`);
     } catch (err) {
@@ -271,7 +278,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const cert = _roundCertificates.get(nodeId);
     if (!cert) return;
     try {
-      const buf = encode("Certificate", _serializeCertificate(cert));
+      const buf = encode("Certificate", serializeCertificate(cert));
       if (buf.length <= CONSENSUS.CERTIFICATE_MAX_BYTES) {
         network.publish(network.TOPICS.CERTIFICATES, buf);
         log.debug(`Round ${_currentRound}: re-broadcast own certificate`);
@@ -306,7 +313,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     let batch;
     try {
-      batch = _deserializeBatch(decode("Batch", data));
+      batch = deserializeBatch(decode("Batch", data));
     } catch (err) {
       log.warn(`Failed to decode incoming batch: ${err.message}`);
       return;
@@ -409,8 +416,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       // Proceed anyway — in-memory dedup is fallback for this message.
     }
 
-    // Send ack
-    const ack = createBatchAck(batch.hash, nodeId, privateKey);
+    // Send ack — signed_at carries this node's wall-clock at sign time and
+    // is bound into the signature scope (BFT Time).
+    const ack = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
     _recordAck(batch.hash, ack);
 
     // Broadcast ack on CONSENSUS topic
@@ -419,6 +427,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         batchHash: hexToBytes(batch.hash),
         ackerNodeId: nodeId,
         signature: hexToBytes(ack.signature),
+        signedAt: ack.signed_at,
       });
       network.publish(network.TOPICS.CONSENSUS, ackBuf);
     } catch (err) {
@@ -439,10 +448,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     let ack;
     try {
       const ackMsg = decode("BatchAck", data);
+      // protobuf encodes int64 as Long when > 2^32; coerce to plain Number.
+      // Safe up to 2^53 (year ~285K) — way past any realistic timestamp.
+      const signedAtRaw = ackMsg.signedAt;
+      const signedAt = typeof signedAtRaw === "object" && signedAtRaw !== null
+        ? Number(signedAtRaw.toString())
+        : Number(signedAtRaw || 0);
       ack = {
         batch_hash: bytesToHex(ackMsg.batchHash) || "",
         acker_node_id: ackMsg.ackerNodeId || "",
         signature: bytesToHex(ackMsg.signature) || "",
+        signed_at: signedAt,
       };
     } catch (err) {
       log.warn(`Failed to decode incoming ack: ${err.message}`);
@@ -451,6 +467,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     if (!ack.batch_hash || !ack.acker_node_id || !ack.signature) {
       log.warn("Rejected ack with missing fields");
+      return;
+    }
+    if (!Number.isInteger(ack.signed_at) || ack.signed_at <= 0) {
+      log.warn(`Rejected ack from ${ack.acker_node_id} — invalid signed_at: ${ack.signed_at}`);
       return;
     }
 
@@ -510,7 +530,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _myCertificateCreated = true;
       // Re-broadcast in case peers missed it
       try {
-        const certBuf = encode("Certificate", _serializeCertificate(existingOwn));
+        const certBuf = encode("Certificate", serializeCertificate(existingOwn));
         if (certBuf.length <= CONSENSUS.CERTIFICATE_MAX_BYTES) {
           network.publish(network.TOPICS.CERTIFICATES, certBuf);
         }
@@ -537,7 +557,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Broadcast on CERTIFICATES topic (enforce size limit)
     try {
-      const certBuf = encode("Certificate", _serializeCertificate(cert));
+      const certBuf = encode("Certificate", serializeCertificate(cert));
       if (certBuf.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
         log.error(`Round ${_currentRound}: certificate too large (${certBuf.length} bytes, max ${CONSENSUS.CERTIFICATE_MAX_BYTES}) — not broadcast`);
       } else {
@@ -572,7 +592,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     let cert;
     try {
-      cert = _deserializeCertificate(decode("Certificate", data));
+      cert = deserializeCertificate(decode("Certificate", data));
     } catch (err) {
       log.warn(`Failed to decode incoming certificate: ${err.message}`);
       return;
@@ -775,73 +795,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     return computeQuorum(_getCommittee().length);
   }
 
-  function _serializeBatch(batch) {
-    return {
-      round: batch.round,
-      authorNodeId: batch.author_node_id,
-      txs: (batch.txs || []).map(tx => ({
-        txId: tx.tx_id || "",
-        txType: tx.tx_type || "",
-        timestamp: tx.timestamp || "",
-        prev: tx.prev || [],
-        data: Buffer.from(JSON.stringify(tx.data || {})),
-        signature: hexToBytes(tx.signature),
-      })),
-      signature: hexToBytes(batch.signature),
-      hash: hexToBytes(batch.hash),
-    };
-  }
-
-  function _deserializeBatch(msg) {
-    if (!msg) return { round: 0, author_node_id: "", txs: [], signature: null, hash: null };
-    return {
-      round: msg.round || 0,
-      author_node_id: msg.authorNodeId || "",
-      txs: (msg.txs || []).map(tx => ({
-        tx_id: tx.txId || "",
-        tx_type: tx.txType || "",
-        timestamp: tx.timestamp || "",
-        prev: tx.prev || [],
-        data: tx.data?.length ? (() => { try { return JSON.parse(bytesToUtf8(tx.data)); } catch { return {}; } })() : {},
-        signature: bytesToHex(tx.signature),
-      })),
-      signature: bytesToHex(msg.signature),
-      hash: bytesToHex(msg.hash),
-    };
-  }
-
-  function _serializeCertificate(cert) {
-    return {
-      round: cert.round,
-      authorNodeId: cert.author_node_id,
-      batch: _serializeBatch(cert.batch),
-      acknowledgments: (cert.acknowledgments || []).map(a => ({
-        batchHash: hexToBytes(a.batch_hash),
-        ackerNodeId: a.acker_node_id || "",
-        signature: hexToBytes(a.signature),
-      })),
-      parentHashes: (cert.parent_hashes || []).map(h => hexToBytes(h)),
-      signature: hexToBytes(cert.signature),
-      hash: hexToBytes(cert.hash),
-    };
-  }
-
-  function _deserializeCertificate(msg) {
-    if (!msg) return { round: 0, author_node_id: "", batch: _deserializeBatch(null), acknowledgments: [], parent_hashes: [], signature: null, hash: null };
-    return {
-      round: msg.round || 0,
-      author_node_id: msg.authorNodeId || "",
-      batch: _deserializeBatch(msg.batch),
-      acknowledgments: (msg.acknowledgments || []).map(a => ({
-        batch_hash: bytesToHex(a.batchHash) || "",
-        acker_node_id: a.ackerNodeId || "",
-        signature: bytesToHex(a.signature) || "",
-      })),
-      parent_hashes: (msg.parentHashes || []).map(h => bytesToHex(h)).filter(Boolean),
-      signature: bytesToHex(msg.signature),
-      hash: bytesToHex(msg.hash),
-    };
-  }
+  // Wire format ser/de for Batch/BatchAck/Certificate lives in
+  // ./certificate-codec — single source of truth for both gossipsub
+  // broadcast (this file) and framed sync (sync-handler.js).
 
   return {
     start,

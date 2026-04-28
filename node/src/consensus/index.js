@@ -95,8 +95,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
-    onOrderedTxs: (orderedTxs, round) => {
-      const result = commitHandler.commitOrderedTxs(orderedTxs, round);
+    // BFT-Time — bullshark passes the anchor cert's timestamp (median of
+    // acks.signed_at, deterministic across nodes) so commit-handler can
+    // use it as the canonical wall-clock for derived state, audit logs,
+    // and post-round verdict triggers (Commit 3). Threaded through `opts`
+    // so the existing { fromSync } API stays stable.
+    onOrderedTxs: (orderedTxs, round, certTimestamp) => {
+      const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
     },
   });

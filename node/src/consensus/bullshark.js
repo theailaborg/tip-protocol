@@ -79,6 +79,22 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     }
   } catch { _consensusIndex = 0; }
 
+  // BFT Time — last successfully-committed anchor cert timestamp. Used to
+  // enforce strict monotonicity across anchors: every new anchor's
+  // `cert.timestamp` must be greater than this value or it is rejected
+  // (deterministic across nodes since they all see the same cert).
+  // Initialised from the latest persisted commit row so the bound survives
+  // restart. On a fresh chain (no prior commit), the floor is
+  // BFT_TIME_GENESIS_MS — every node parses the genesis ISO string into
+  // the same integer ms anchor.
+  let _lastAnchorTimestamp = 0;
+  try {
+    const latestCommit = dag.getLatestCommit ? dag.getLatestCommit() : null;
+    if (latestCommit && latestCommit.cert_timestamp) {
+      _lastAnchorTimestamp = Number(latestCommit.cert_timestamp) || 0;
+    }
+  } catch { _lastAnchorTimestamp = 0; }
+
   // Initialize from persisted state
   function _initFromDAG() {
     try {
@@ -187,6 +203,39 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       return;
     }
 
+    // BFT-Time monotonicity gate — enforced HERE (after support check, before
+    // any state mutation) so a bad-timestamp anchor is rejected without
+    // touching `_consensusIndex`, `_metrics`, or commit row state. The
+    // anchor's `cert.timestamp` was already verified at cert level
+    // (median of acks.signed_at, signature-bound). Cross-anchor monotonicity
+    // is the one invariant cert verification can't see — needs the global
+    // commit history. The `commits` table is never GC'd, so prev anchor's
+    // timestamp is always available.
+    //
+    // On floor failure (round 1, no prior anchor): use BFT_TIME_GENESIS_MS.
+    // This blocks pre-launch anchors and guards against `cert.timestamp = 0`
+    // regressions. After the first anchor lands, _lastAnchorTimestamp moves
+    // forward and the genesis floor never matters again.
+    //
+    // On rejection: log loudly, return early. The anchor is not committed,
+    // _lastCommittedRound does not advance — Bullshark will pick this up
+    // again next vote round and either still reject (operator must
+    // investigate / halt-gate trips) or accept if the next anchor's
+    // timestamp is healthier. This is deterministic across nodes — every
+    // node sees the same cert with the same timestamp and makes the same
+    // decision.
+    const certTs = leaderCert.timestamp;
+    const floor = _lastAnchorTimestamp || CONSENSUS.BFT_TIME_GENESIS_MS;
+    if (!Number.isInteger(certTs) || certTs <= floor) {
+      _metrics.bft_time_violations = (_metrics.bft_time_violations || 0) + 1;
+      log.error(
+        `BFT-Time monotonicity violation at round ${voteRound}: ` +
+        `anchor cert.timestamp=${certTs} (leader=${leader}), floor=${floor} ` +
+        `(${_lastAnchorTimestamp ? "prev anchor" : "genesis"}). Skipping anchor commit.`
+      );
+      return;
+    }
+
     // ANCHOR COMMITTED
     _metrics.anchors_committed++;
     log.debug(`Round ${voteRound}: anchor COMMITTED — leader ${leader}, support ${supportCount}/${nodeIds.length}`);
@@ -219,9 +268,11 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     if (orderedTxs.length > 0) {
       _metrics.txs_committed += orderedTxs.length;
       log.info(`Round ${voteRound}: committing ${orderedTxs.length} ordered txs`);
-      // Only advance committed round AFTER successful processing
-      // If onOrderedTxs throws, we don't advance — will retry next round
-      if (onOrderedTxs) onOrderedTxs(orderedTxs, voteRound);
+      // Only advance committed round AFTER successful processing.
+      // If onOrderedTxs throws, we don't advance — will retry next round.
+      // Pass cert.timestamp so commit-handler / downstream derived-state
+      // logic uses the BFT consensus clock, not local Date.now().
+      if (onOrderedTxs) onOrderedTxs(orderedTxs, voteRound, certTs);
 
       // §15 + §14 commit checkpoint.
       //
@@ -242,6 +293,13 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
           const acks = leaderCert.acknowledgments || [];
           const ackSignerIds = acks.map(a => a.acker_node_id);
           const ackSignatures = acks.map(a => a.signature);
+          // BFT-Time: persist each ack's `signed_at` alongside the
+          // signature in the SAME order as ack_signer_ids/ack_signatures.
+          // Snapshot replay reconstructs the payload as
+          // `ack:${batch_hash}:${signer}:${signed_at}` and verifies
+          // against the signer's pubkey — without this, joiners can't
+          // verify any commit's acks once the source cert is GC'd.
+          const ackSignedAts = acks.map(a => a.signed_at);
 
           dag.saveCommit({
             round: voteRound,
@@ -251,7 +309,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
             // even after cert GC prunes leaderCert. Without this, idle
             // federations whose latest commit drifts past gc_depth rounds
             // become un-snapshotable (server can't reconstruct the
-            // payload each ack signed: "ack:${batch_hash}:${signer}").
+            // payload each ack signed: "ack:${batch_hash}:${signer}:${signed_at}").
             anchor_batch_hash: leaderCert.batch?.hash || null,
             leader_node_id: leader,
             committee: [...nodeIds].sort(),
@@ -262,6 +320,8 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
             txs_merkle_root: txsRoot,
             ack_signer_ids: ackSignerIds,
             ack_signatures: ackSignatures,
+            ack_signed_ats: ackSignedAts,
+            cert_timestamp: certTs,
           });
         }
       } catch (err) {
@@ -271,6 +331,11 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
       }
     }
 
+    // BFT-Time: advance the monotonicity floor only AFTER successful commit
+    // (saveCommit may have failed silently above, but the anchor was still
+    // accepted by consensus — the floor advances on consensus success, not
+    // on persistence success). Future rounds' anchors must beat this value.
+    _lastAnchorTimestamp = certTs;
     _lastCommittedRound = voteRound;
     _pruneOrderedCache();
     _maybeRunCertGC();

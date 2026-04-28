@@ -26,7 +26,8 @@
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { createMerkleTree } = require("./merkle-tree");
-const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
+const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
+const { serializeCertificate, deserializeCertificate } = require("../consensus/certificate-codec");
 const { frame, parseLengthPrefixedFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
 
@@ -241,7 +242,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
 
         if (typeof certsGenerator === "function") {
           for (const cert of certsGenerator()) {
-            yield frame(encode("Certificate", _serializeCertForSync(cert)));
+            yield frame(encode("Certificate", serializeCertificate(cert)));
           }
         }
 
@@ -415,7 +416,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       for (const certFrame of certFrames) {
         try {
           const msg = decode("Certificate", certFrame);
-          const cert = _deserializeCertFromSync(msg);
+          const cert = deserializeCertificate(msg);
           if (!cert || !cert.hash) continue;
           if (!dag.getCertificate(cert.hash)) {
             dag.saveCertificate(cert);
@@ -439,66 +440,8 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
     }
   }
 
-  // ── Serialization helpers ────────────────────────────────────────────────
-
-  function _serializeCertForSync(cert) {
-    return {
-      round: cert.round,
-      authorNodeId: cert.author_node_id,
-      batch: {
-        round: cert.batch?.round || cert.round,
-        authorNodeId: cert.batch?.author_node_id || cert.author_node_id,
-        txs: (cert.batch?.txs || []).map(tx => ({
-          txId: tx.tx_id || "",
-          txType: tx.tx_type || "",
-          timestamp: tx.timestamp || "",
-          prev: tx.prev || [],
-          data: Buffer.from(JSON.stringify(tx.data || {})),
-          signature: hexToBytes(tx.signature),
-        })),
-        signature: hexToBytes(cert.batch?.signature),
-        hash: hexToBytes(cert.batch?.hash),
-      },
-      acknowledgments: (cert.acknowledgments || []).map(a => ({
-        batchHash: hexToBytes(a.batch_hash),
-        ackerNodeId: a.acker_node_id || "",
-        signature: hexToBytes(a.signature),
-      })),
-      parentHashes: (cert.parent_hashes || []).map(h => hexToBytes(h)),
-      signature: hexToBytes(cert.signature),
-      hash: hexToBytes(cert.hash),
-    };
-  }
-
-  function _deserializeCertFromSync(msg) {
-    if (!msg) return null;
-    return {
-      round: msg.round || 0,
-      author_node_id: msg.authorNodeId || "",
-      batch: {
-        round: msg.batch?.round || 0,
-        author_node_id: msg.batch?.authorNodeId || "",
-        txs: (msg.batch?.txs || []).map(tx => ({
-          tx_id: tx.txId || "",
-          tx_type: tx.txType || "",
-          timestamp: tx.timestamp || "",
-          prev: tx.prev || [],
-          data: tx.data?.length ? (() => { try { return JSON.parse(bytesToUtf8(tx.data)); } catch { return {}; } })() : {},
-          signature: bytesToHex(tx.signature),
-        })),
-        signature: bytesToHex(msg.batch?.signature),
-        hash: bytesToHex(msg.batch?.hash),
-      },
-      acknowledgments: (msg.acknowledgments || []).map(a => ({
-        batch_hash: bytesToHex(a.batchHash) || "",
-        acker_node_id: a.ackerNodeId || "",
-        signature: bytesToHex(a.signature) || "",
-      })),
-      parent_hashes: (msg.parentHashes || []).map(h => bytesToHex(h)).filter(Boolean),
-      signature: bytesToHex(msg.signature),
-      hash: bytesToHex(msg.hash),
-    };
-  }
+  // Cert wire-format ser/de imported from ../consensus/certificate-codec
+  // (single source of truth, shared with narwhal.js).
 
   return {
     registerProtocol,
