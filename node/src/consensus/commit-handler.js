@@ -21,7 +21,8 @@
 const { TX_TYPES, CONTENT_STATUS, VERDICT } = require("../../../shared/constants");
 const { SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
-const { verifyBodySignature, mldsaVerify, canonicalTx } = require("../../../shared/crypto");
+const rules = require("../validators/business-rules");
+const { verifyBodySignature, mldsaVerify, canonicalTx, shake256 } = require("../../../shared/crypto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.commit");
@@ -53,7 +54,7 @@ const log = getLogger("tip.commit");
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger }) {
 
   /**
    * Process an ordered batch of txs from Bullshark.
@@ -115,9 +116,9 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
       // produce a verdict batch for the same dispute, only the first
       // ordered ADJUDICATION_RESULT/APPEAL_RESULT lands per ctid; later
       // duplicates and their score-update effects are dropped silently).
-      const business = _validateBusinessRules(tx, validated);
+      const business = _validateBusinessRules(tx, validated, certTimestamp);
       if (!business.valid) {
-        log.debug(`Round ${round}: dropped duplicate ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
+        log.debug(`Round ${round}: dropped ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
         dropped++;
         continue;
       }
@@ -182,16 +183,33 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
    * round that have already passed all checks above). Returns `{valid: true}`
    * for accepted txs, `{valid: false, error: "..."}` for rejected ones.
    */
-  function _validateBusinessRules(tx, validated) {
+  function _validateBusinessRules(tx, validated, certTimestamp) {
+    const d = tx.data || {};
+
+    // Phase A — first-wins dedup against committed history + same-batch siblings.
+    const dedup = _dedupCheck(tx, validated);
+    if (!dedup.valid) return dedup;
+
+    // Phase B — stateful pre-conditions (same predicate as the API service).
+    // Time-window rules use `tx.timestamp` (user submit time, frozen in the
+    // signed payload) so the accept/reject decision is identical on every
+    // node. `certTimestamp` is plumbed through for rules that need the
+    // round's BFT clock instead — none today, but keep the wire so future
+    // rules can opt in without changing the signature.
+    void certTimestamp;
+    const txMs = new Date(tx.timestamp).getTime();
+    return _statefulCheck(tx, txMs);
+  }
+
+  /** First-wins dedup over verdict / appeal / score / appeal-filed records. */
+  function _dedupCheck(tx, validated) {
     const d = tx.data || {};
     switch (tx.tx_type) {
 
       case TX_TYPES.ADJUDICATION_RESULT: {
         if (!d.ctid) return { valid: false, error: "missing ctid" };
         const existing = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, d.ctid);
-        if (existing.length > 0) {
-          return { valid: false, error: `ADJUDICATION_RESULT already exists for ${d.ctid}` };
-        }
+        if (existing.length > 0) return { valid: false, error: `ADJUDICATION_RESULT already exists for ${d.ctid}` };
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.ADJUDICATION_RESULT && t.data?.ctid === d.ctid
         );
@@ -202,9 +220,7 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
       case TX_TYPES.APPEAL_RESULT: {
         if (!d.ctid) return { valid: false, error: "missing ctid" };
         const existing = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, d.ctid);
-        if (existing.length > 0) {
-          return { valid: false, error: `APPEAL_RESULT already exists for ${d.ctid}` };
-        }
+        if (existing.length > 0) return { valid: false, error: `APPEAL_RESULT already exists for ${d.ctid}` };
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.APPEAL_RESULT && t.data?.ctid === d.ctid
         );
@@ -244,28 +260,96 @@ function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
         return { valid: true };
       }
 
+      default:
+        return { valid: true };
+    }
+  }
+
+  /**
+   * State-dependent + time-window pre-condition re-check using the same
+   * `validators/business-rules` predicates the API service called.
+   *
+   * Identical predicate at both call sites is the whole point: API rejects
+   * fast at submission; commit-handler drops silently if state changed
+   * between submit and commit (e.g. content disputed or author revoked
+   * mid-flight). Closes the silent-divergence gap multi-node #14.
+   */
+  function _statefulCheck(tx, now) {
+    const d = tx.data || {};
+    switch (tx.tx_type) {
+
+      case TX_TYPES.REGISTER_IDENTITY: {
+        const r = rules.canRegisterIdentity(dag, { dedup_hash: d.dedup_hash, vp_id: d.vp_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.REGISTER_CONTENT: {
+        const r = rules.canRegisterContent(dag, {
+          author_tip_id: d.author_tip_id, ctid: d.ctid, origin_code: d.origin_code,
+        });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.CONTENT_VERIFIED: {
+        const r = rules.canVerify(dag, { ctid: d.ctid, verifier_tip_id: d.verifier_tip_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.UPDATE_ORIGIN: {
+        const r = rules.canUpdateOrigin(dag, {
+          ctid: d.ctid, author_tip_id: d.author_tip_id, new_origin_code: d.new_origin_code,
+        }, { now });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.CONTENT_RETRACTED: {
+        const r = rules.canRetract(dag, { ctid: d.ctid, author_tip_id: d.author_tip_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.CONTENT_DISPUTED: {
+        // Cascade-issued disputes (auto: true, e.g. REVOKE_VP cascade) bypass
+        // the disputer-score / state predicates because the issuer is the node
+        // itself, not a TIP-ID with a score. They still pass through dedup.
+        if (d.auto) return { valid: true };
+        const r = rules.canDispute(dag, scoring, { ctid: d.ctid, disputer_tip_id: d.disputer_tip_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.JURY_VOTE_COMMIT: {
+        const r = rules.canCommitVote(dag, {
+          ctid: d.ctid, juror_tip_id: d.juror_tip_id, is_appeal: !!d.is_appeal,
+        }, { now });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
       case TX_TYPES.JURY_VOTE_REVEAL: {
-        // Reveal-window enforcement — every honest node sees the same
-        // tx.timestamp and the same JURY_SUMMONS.reveal_deadline (both
-        // frozen consensus state), so the accept/reject decision is
-        // deterministic. This is the third guard from issue #13's design:
-        // verdict batches built later read only in-window reveals, so
-        // every node ends up with the same reveal set even when reveals
-        // arrive at different wall-clock instants.
-        if (!d.ctid || !d.juror_tip_id) return { valid: true };
-        // Coerce both `is_appeal` values to booleans — `undefined` and
-        // `false` are semantically equivalent here but strict `===` would
-        // treat them as different, causing the matching summons to be
-        // missed (and the guard to silently no-op).
-        const isAppealReveal = !!d.is_appeal;
-        const summons = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, d.ctid)
-          .find(s => s.data?.juror_tip_id === d.juror_tip_id
-            && (!!s.data?.is_appeal) === isAppealReveal);
-        if (!summons) return { valid: true };  // no summons → schema layer rejects elsewhere
-        const deadlineMs = new Date(summons.data.reveal_deadline).getTime();
-        const txMs = new Date(tx.timestamp).getTime();
-        if (Number.isFinite(deadlineMs) && Number.isFinite(txMs) && txMs > deadlineMs) {
-          return { valid: false, error: `reveal arrived after deadline (${tx.timestamp} > ${summons.data.reveal_deadline})` };
+        const r = rules.canRevealVote(dag, {
+          ctid: d.ctid, juror_tip_id: d.juror_tip_id, is_appeal: !!d.is_appeal,
+          vote: d.vote, salt: d.salt,
+        }, { now, shake256 });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.APPEAL_FILED: {
+        if (d.appellant_tip_id) {
+          const r = rules.canFileAppeal(dag, {
+            ctid: d.ctid, appellant_tip_id: d.appellant_tip_id,
+          }, { now });
+          if (!r.valid) return { valid: false, error: r.error.message };
+        }
+        return { valid: true };
+      }
+
+      case TX_TYPES.REVOKE_VOLUNTARY:
+      case TX_TYPES.REVOKE_VP:
+      case TX_TYPES.REVOKE_DECEASED:
+      case TX_TYPES.REVOKE_DEVICE: {
+        if (d.issuing_vp_id) {
+          const r = rules.canRevoke(dag, {
+            tx_type: tx.tx_type, tip_id: d.tip_id, issuing_vp_id: d.issuing_vp_id,
+          });
+          if (!r.valid) return { valid: false, error: r.error.message };
         }
         return { valid: true };
       }

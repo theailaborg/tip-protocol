@@ -6,6 +6,7 @@ const {
 const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
+const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
@@ -27,8 +28,15 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       creator_name,
     } = body;
 
+    {
+      const r = rules.canRegisterIdentity(dag, { dedup_hash, vp_id });
+      if (!r.valid) {
+        const err = { status: r.error.status, error: r.error.message };
+        if (r.error.message.startsWith("Identity already")) err.code = "DUPLICATE_IDENTITY";
+        throw err;
+      }
+    }
     const vp = dag.getVP(vp_id);
-    if (!vp || vp.status !== "active") throw { status: 403, error: "Verification provider not found or suspended" };
 
     // VP signs all required fields; creator_name is included in the signed
     // payload only when the VP attested a name for the identity.
@@ -40,10 +48,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     const proofValid = await verifyDedupProof(dedup_hash, zk_proof);
     if (!proofValid) throw { status: 400, error: "ZK proof verification failed" };
-
-    if (dag.hasDedupHash(dedup_hash)) {
-      throw { status: 409, error: "Identity already registered. Each human may hold exactly one TIP-ID.", code: "DUPLICATE_IDENTITY" };
-    }
 
     const tipId = generateTIPID(region, public_key);
     const registeredAt = new Date().toISOString();

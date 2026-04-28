@@ -4,6 +4,7 @@ const { shake256, verifyBodySignature } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS } = require("../../../shared/constants");
 const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
+const rules = require("../validators/business-rules");
 const { selectJury, selectExperts } = require("../jury");
 const { withTxId, nodeSignedAuto, preScanContent } = require("./helpers");
 const { validate } = require("../middleware/validate");
@@ -16,27 +17,20 @@ const ORIGIN_CODES = Object.keys(ORIGIN);
 function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
 
   function fileDispute(ctid, body) {
-    const rec = dag.getContent(ctid);
-    if (!rec) throw { status: 404, error: "Content record not found" };
-    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted — dispute not allowed" };
-    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Content is already under dispute — wait for adjudication result" };
-    if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — wait for 24-hour grace period" };
-
     validate(body, { disputer_tip_id: { required: true }, signature: { required: true }, reason: { required: true } });
     const { disputer_tip_id, reason, claimed_origin, evidence_hash, signature } = body;
     if (reason === "origin_mismatch" && !claimed_origin) throw { status: 400, error: "claimed_origin required for origin_mismatch disputes" };
     if (claimed_origin && !ORIGIN_CODES.includes(claimed_origin)) throw { status: 400, error: `Invalid claimed_origin. Must be one of: ${ORIGIN_CODES.join(", ")}` };
 
+    {
+      const r = rules.canDispute(dag, scoring, { ctid, disputer_tip_id });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
+    const rec = dag.getContent(ctid);
     const disputer = dag.getIdentity(disputer_tip_id);
-    if (!disputer) throw { status: 404, error: "Disputer TIP-ID not found" };
-    if (dag.isRevoked(disputer_tip_id)) throw { status: 403, error: "Disputer TIP-ID is revoked" };
-
-    const disputerScore = scoring.getScore(disputer_tip_id).score;
-    if (disputerScore < DISPUTE.MIN_SCORE_TO_DISPUTE) throw { status: 403, error: `Score must be >= ${DISPUTE.MIN_SCORE_TO_DISPUTE} to dispute (current: ${disputerScore})` };
 
     const DISPUTE_FIELDS = claimed_origin ? ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"] : ["disputer_tip_id", "reason", "evidence_hash"];
     if (!verifyBodySignature(body, signature, disputer.public_key, DISPUTE_FIELDS)) throw { status: 403, error: "Disputer signature verification failed" };
-    if (dag.hasDispute(ctid, disputer_tip_id)) throw { status: 409, error: "You have already disputed this content" };
 
     const disputeTx = withTxId({
       tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
@@ -97,19 +91,13 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
     const { juror_tip_id, commitment, signature } = body;
     validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
+    {
+      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: false }, { now: Date.now() });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const juror = dag.getIdentity(juror_tip_id);
-    if (!juror) throw { status: 404, error: "Juror TIP-ID not found" };
-    if (dag.isRevoked(juror_tip_id)) throw { status: 403, error: "Juror TIP-ID is revoked" };
 
     if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Juror signature verification failed" };
-
-    const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
-    if (!summonsTxs.length) throw { status: 403, error: "You were not summoned as a juror for this dispute" };
-
-    if (Date.now() > new Date(summonsTxs[0].data.commit_deadline).getTime()) throw { status: 403, error: "Commit window has closed" };
-
-    const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
-    if (existing) throw { status: 409, error: "You have already submitted a vote commitment" };
 
     const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature } });
     submitTx(commitTx);
@@ -122,31 +110,19 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
     if (vote === VOTE.MISMATCH && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
     if (confirmed_origin && !ORIGIN_CODES.includes(confirmed_origin)) throw { status: 400, error: "Invalid confirmed_origin" };
 
+    {
+      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: false, vote, salt }, { now: Date.now(), shake256 });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const juror = dag.getIdentity(juror_tip_id);
-    if (!juror) throw { status: 404, error: "Juror TIP-ID not found" };
 
     const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
     if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Juror signature verification failed" };
 
-    const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
-    if (!summonsTxs.length) throw { status: 403, error: "You were not summoned as a juror" };
-
-    const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
-    const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
-    if (Date.now() < commitDeadline) throw { status: 403, error: "Reveal window has not opened yet" };
-    if (Date.now() > revealDeadline) throw { status: 403, error: "Reveal window has closed" };
-
-    const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
-    if (!commitTx) throw { status: 404, error: "No vote commitment found" };
-    if (shake256(`${vote}:${salt}`) !== commitTx.data.commitment) throw { status: 403, error: "Vote does not match commitment" };
-
-    const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && !t.data?.is_appeal);
-    if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
-
     const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature } });
     submitTx(revealTx);
 
-    // Verdict triggered by scheduler verdict-check when all reveals are committed
+    // Verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.
     return { success: true, tx_id: revealTx.tx_id, confirmation: "proposed" };
   }
 
@@ -185,24 +161,17 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
     validate(body, { appellant_tip_id: { required: true }, signature: { required: true } });
     const { appellant_tip_id, signature } = body;
 
+    {
+      const r = rules.canFileAppeal(dag, { ctid, appellant_tip_id }, { now: Date.now() });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid);
-    if (!adjTxs.length) throw { status: 404, error: "No Stage 2 verdict found for this content" };
-
-    const existingAppeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, ctid);
-    if (existingAppeal.length) throw { status: 409, error: "Appeal already filed for this content" };
-
-    const verdictTime = new Date(adjTxs[0].timestamp).getTime();
-    if (Date.now() - verdictTime > APPEAL.FILING_WINDOW_HOURS * 3600000) throw { status: 403, error: "48-hour appeal window has expired" };
-
     const rec = dag.getContent(ctid);
     const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid);
     const disputerTipId = disputeTxs[0]?.data?.disputer_tip_id;
     const authorTipId = rec?.author_tip_id;
-    if (appellant_tip_id !== authorTipId && appellant_tip_id !== disputerTipId) throw { status: 403, error: "Only the content author or the original disputer can file an appeal" };
 
     const appellant = dag.getIdentity(appellant_tip_id);
-    if (!appellant) throw { status: 404, error: "Appellant TIP-ID not found" };
-    if (dag.isRevoked(appellant_tip_id)) throw { status: 403, error: "Appellant TIP-ID is revoked" };
     if (!verifyBodySignature(body, signature, appellant.public_key, ["appellant_tip_id"])) throw { status: 403, error: "Appellant signature verification failed" };
 
     const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, signature, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE } });
@@ -233,17 +202,12 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
     const { juror_tip_id, commitment, signature } = body;
     validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
+    {
+      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: true }, { now: Date.now() });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const juror = dag.getIdentity(juror_tip_id);
-    if (!juror) throw { status: 404, error: "Expert TIP-ID not found" };
-    if (dag.isRevoked(juror_tip_id)) throw { status: 403, error: "Expert TIP-ID is revoked" };
     if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Expert signature verification failed" };
-
-    const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
-    if (!summonsTxs.length) throw { status: 403, error: "You were not summoned as an expert for this appeal" };
-    if (Date.now() > new Date(summonsTxs[0].data.commit_deadline).getTime()) throw { status: 403, error: "Commit window has closed" };
-
-    const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
-    if (existing) throw { status: 409, error: "You have already submitted a vote commitment" };
 
     const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature, is_appeal: true } });
     submitTx(commitTx);
@@ -260,30 +224,18 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch }) {
     if (vote === VOTE.MISMATCH && !confirmed_origin) throw { status: 400, error: "confirmed_origin required when voting MISMATCH" };
     if (confirmed_origin && !ORIGIN[confirmed_origin]) throw { status: 400, error: "Invalid confirmed_origin" };
 
+    {
+      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: true, vote, salt }, { now: Date.now(), shake256 });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const juror = dag.getIdentity(juror_tip_id);
-    if (!juror) throw { status: 404, error: "Expert TIP-ID not found" };
     const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
     if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Expert signature verification failed" };
-
-    const summonsTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid).filter(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
-    if (!summonsTxs.length) throw { status: 403, error: "You were not summoned as an expert" };
-
-    const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
-    const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
-    if (Date.now() < commitDeadline) throw { status: 403, error: "Reveal window has not opened yet" };
-    if (Date.now() > revealDeadline) throw { status: 403, error: "Reveal window has closed" };
-
-    const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
-    if (!commitTx) throw { status: 404, error: "No vote commitment found" };
-    if (shake256(`${vote}:${salt}`) !== commitTx.data.commitment) throw { status: 403, error: "Vote does not match commitment" };
-
-    const existingReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid).find(t => t.data?.juror_tip_id === juror_tip_id && t.data?.is_appeal === true);
-    if (existingReveal) throw { status: 409, error: "You have already revealed your vote" };
 
     const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature, is_appeal: true } });
     submitTx(revealTx);
 
-    // Appeal verdict triggered by scheduler verdict-check when all reveals are committed
+    // Appeal verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.
     return { success: true, tx_id: revealTx.tx_id, confirmation: "proposed" };
   }
 

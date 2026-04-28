@@ -408,6 +408,24 @@ describe("commit-handler APPEAL_RESULT: content-state effects", () => {
 // 5. JURY_VOTE_REVEAL window enforcement (#13 third guard)
 // ═══════════════════════════════════════════════════════════════════════════
 describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
+  // Save a matching JURY_VOTE_COMMIT for the juror so the reveal's
+  // commitment-match check (canRevealVote) passes — these tests target
+  // the window guard, not the commitment guard.
+  function _saveMatchingCommit(fx, jurorTipId) {
+    const commitBody = {
+      tx_type: TX_TYPES.JURY_VOTE_COMMIT,
+      timestamp: "2026-01-02T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid: fx.ctid, juror_tip_id: jurorTipId,
+        commitment: shake256(`${VOTE.MISMATCH}:abc`),
+        signature: "00",
+      },
+    };
+    commitBody.tx_id = computeTxId(commitBody);
+    fx.dag.addTx(commitBody);
+  }
+
   // Properly signs the reveal body with the juror's keypair so signature
   // verification passes — this isolates the window-guard test from the
   // signature-gate behavior. We use the canonical body fields the
@@ -440,6 +458,7 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
 
   test("reveal arriving BEFORE deadline is accepted by guard (committed)", () => {
     const fx = _setupDisputeFixture({ revealDeadline: HIST_DEADLINE });
+    _saveMatchingCommit(fx, fx.jurorTipIds[0]);
     const tx = _revealTx(fx, fx.jurorTipIds[0], "2026-04-10T00:00:00.000Z");
 
     const result = fx.handler.commitOrderedTxs([tx], 300);
@@ -450,6 +469,7 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
   test("reveal arriving AFTER deadline is rejected by guard (dropped)", () => {
     // deadline before the reveal's tx.timestamp — guard fires.
     const fx = _setupDisputeFixture({ revealDeadline: "2026-04-01T00:00:00.000Z" });
+    _saveMatchingCommit(fx, fx.jurorTipIds[0]);
     const tx = _revealTx(fx, fx.jurorTipIds[0], "2026-04-15T00:00:00.000Z");
 
     const result = fx.handler.commitOrderedTxs([tx], 300);
@@ -459,6 +479,7 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
 
   test("reveal AT EXACTLY the deadline is accepted (boundary <=)", () => {
     const fx = _setupDisputeFixture({ revealDeadline: HIST_DEADLINE });
+    _saveMatchingCommit(fx, fx.jurorTipIds[0]);
     const tx = _revealTx(fx, fx.jurorTipIds[0], HIST_DEADLINE);
 
     const result = fx.handler.commitOrderedTxs([tx], 300);

@@ -7,6 +7,7 @@ const {
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
+const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { preScanContent } = require("./helpers");
 const { validate, validateContentSize } = require("../middleware/validate");
@@ -32,7 +33,6 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     const identity = dag.getIdentity(author_tip_id);
     if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
-    if (dag.isRevoked(author_tip_id)) throw { status: 403, error: "Author TIP-ID is revoked" };
 
     // CNA-MIX-1: when media hash is present, combine media + text hashes.
     // The client signs the combined hash, so the node must reproduce it.
@@ -65,8 +65,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const registeredAt = new Date().toISOString();
     const ctid = generateCTID(origin_code, contentHashShort, author_tip_id);
 
-    const existing = dag.getContent(ctid);
-    if (existing) throw { status: 409, error: `Content already registered with this origin code (CTID: ${ctid})`, ctid };
+    // Stateful pre-conditions (author not revoked, ctid free, valid origin) —
+    // re-checked at commit time against `cert.timestamp` to keep API and
+    // commit-handler in lockstep.
+    {
+      const r = rules.canRegisterContent(dag, { author_tip_id, ctid, origin_code });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message, ctid };
+    }
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: dag.getRecentPrev(),
@@ -143,28 +148,21 @@ function createContentService({ dag, scoring, config, submitTx }) {
   }
 
   function verify(ctid, body) {
-    const rec = dag.getContent(ctid);
-    if (!rec) throw { status: 404, error: "Content record not found" };
-
     validate(body, { verifier_tip_id: { required: true }, signature: { required: true } });
     const { verifier_tip_id, verdict, signature } = body;
 
+    // Stateful pre-conditions — same predicate as commit-handler.
+    {
+      const r = rules.canVerify(dag, { ctid, verifier_tip_id });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
+    const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
-    if (!verifier) throw { status: 404, error: "Verifier TIP-ID not found" };
-    if (dag.isRevoked(verifier_tip_id)) throw { status: 403, error: "Verifier TIP-ID is revoked" };
-    if (verifier_tip_id === rec.author_tip_id) throw { status: 403, error: "Cannot verify your own content" };
-
-    if (dag.isRevoked(rec.author_tip_id)) throw { status: 403, error: "Content author has been revoked — verification not allowed" };
-    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 403, error: "Content has been retracted by the author — verification not allowed" };
-    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Content is under dispute — verification blocked until resolved" };
-    if (rec.status === CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: "Content is pending review — verification blocked until 24-hour grace period ends" };
 
     const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
     if (!verifyBodySignature(body, signature, verifier.public_key, VERIFY_FIELDS)) {
       throw { status: 403, error: "Verifier signature verification failed" };
     }
-
-    if (dag.hasVerification(ctid, verifier_tip_id)) throw { status: 409, error: "You have already verified this content" };
 
     // Caps
     const allVerifyTxs = dag.getTxsByType(TX_TYPES.CONTENT_VERIFIED);
@@ -206,25 +204,17 @@ function createContentService({ dag, scoring, config, submitTx }) {
   }
 
   function updateOrigin(ctid, body) {
-    const rec = dag.getContent(ctid);
-    if (!rec) throw { status: 404, error: "Content record not found" };
-
     validate(body, { author_tip_id: { required: true }, new_origin_code: { required: true }, signature: { required: true } });
     const { author_tip_id, new_origin_code, signature } = body;
 
-    if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can update the origin code" };
-    if (rec.status !== CONTENT_STATUS.REGISTERED && rec.status !== CONTENT_STATUS.PENDING_REVIEW) throw { status: 403, error: `Cannot update origin — content status is '${rec.status}'` };
-
-    // Only one origin update allowed
-    const existingUpdates = dag.getTxsByTypeAndCtid(TX_TYPES.UPDATE_ORIGIN, ctid);
-    if (existingUpdates.length > 0) throw { status: 409, error: "Origin has already been updated once — no further changes allowed" };
-
-    const registeredAt = new Date(rec.registered_at).getTime();
-    if (Date.now() - registeredAt > 24 * 60 * 60 * 1000) throw { status: 403, error: "24-hour grace period has expired." };
-    if (!ORIGIN[new_origin_code]) throw { status: 400, error: `Invalid origin_code. Must be one of: ${Object.keys(ORIGIN).join(", ")}` };
-
+    // Stateful + time-window pre-conditions. Time-window uses Date.now()
+    // at API call; commit-handler re-checks with cert.timestamp.
+    {
+      const r = rules.canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now: Date.now() });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
+    const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
-    if (!author) throw { status: 404, error: "Author identity not found" };
 
     const UPDATE_FIELDS = ["author_tip_id", "new_origin_code"];
     if (!verifyBodySignature(body, signature, author.public_key, UPDATE_FIELDS)) {
@@ -242,19 +232,15 @@ function createContentService({ dag, scoring, config, submitTx }) {
   }
 
   function retract(ctid, body) {
-    const rec = dag.getContent(ctid);
-    if (!rec) throw { status: 404, error: "Content record not found" };
-
     validate(body, { author_tip_id: { required: true }, signature: { required: true } });
     const { author_tip_id, signature } = body;
 
-    if (author_tip_id !== rec.author_tip_id) throw { status: 403, error: "Only the content author can retract" };
-    if (rec.status === CONTENT_STATUS.RETRACTED) throw { status: 409, error: "Content is already retracted" };
-    if (rec.status === CONTENT_STATUS.DISPUTED) throw { status: 403, error: "Cannot retract content that is under dispute" };
-
+    {
+      const r = rules.canRetract(dag, { ctid, author_tip_id });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
+    const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
-    if (!author) throw { status: 404, error: "Author identity not found" };
-    if (dag.isRevoked(author_tip_id)) throw { status: 403, error: "Author TIP-ID is revoked" };
 
     if (!verifyBodySignature(body, signature, author.public_key, ["author_tip_id"])) {
       throw { status: 403, error: "Author signature verification failed" };

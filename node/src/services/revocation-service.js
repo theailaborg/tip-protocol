@@ -3,6 +3,7 @@
 const { verifyBodySignature } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
+const rules = require("../validators/business-rules");
 const { withTxId, nodeSignedAuto } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
@@ -18,20 +19,16 @@ function createRevocationService({ dag, scoring, config, submitTx, submitBatch }
     validate(body, { tip_id: { required: true }, tx_type: { required: true }, issuing_vp_id: { required: true }, signature: { required: true } });
     const { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id, signature } = body;
 
-    const validTypes = [TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP, TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE];
-    if (!validTypes.includes(tx_type)) throw { status: 400, error: `Invalid tx_type. Must be one of: ${validTypes.join(", ")}` };
-
+    {
+      const r = rules.canRevoke(dag, { tx_type, tip_id, issuing_vp_id });
+      if (!r.valid) throw { status: r.error.status, error: r.error.message };
+    }
     const issuingVp = dag.getVP(issuing_vp_id);
-    if (!issuingVp) throw { status: 403, error: `Issuing VP not found: ${issuing_vp_id}` };
-    if (issuingVp.status !== "active") throw { status: 403, error: `Issuing VP is not active: ${issuing_vp_id}` };
 
     const REVOCATION_FIELDS = ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"];
     if (!verifyBodySignature(body, signature, issuingVp.public_key, REVOCATION_FIELDS)) {
       throw { status: 403, error: "VP signature verification failed" };
     }
-
-    const identity = dag.getIdentity(tip_id);
-    if (!identity) throw { status: 404, error: "TIP-ID not found" };
 
     const timestamp = new Date().toISOString();
     const revokeTx = withTxId({
