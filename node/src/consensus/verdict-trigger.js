@@ -63,14 +63,22 @@ function _parseDeadline(iso) {
 
 /**
  * @param {Object} deps
- * @param {Object} deps.dag
- * @param {Object} deps.jury           { buildAdjudicationBatch, buildAppealBatch }
- * @param {Object} deps.scoring        Scoring engine — passed through to jury builders
- * @param {Object} deps.config         Node config — passed through to jury builders
- * @param {Function} deps.submitBatch  (txs) => void  Consensus batch submitter
+ * @param {Object}   deps.dag
+ * @param {Object}   deps.jury          { buildAdjudicationBatch, buildAppealBatch }
+ * @param {Object}   deps.scoring       Scoring engine — passed through to jury builders
+ * @param {Object}   deps.config        Node config — passed through to jury builders
+ * @param {Function} deps.submitBatch   (txs) => void  Consensus batch submitter
+ * @param {Function} [deps.getCommittee] (round) => string[]  Sorted active node_ids.
+ *   Used for round-modulo leader gating: only the round's leader emits the
+ *   verdict batch, cutting per-verdict mempool flood from N-fold (every node
+ *   submits) to K-fold (one batch per round until the verdict commits, where
+ *   K = rounds until commit, typically 2-3). Without this dep, every node
+ *   fires (legacy behaviour, fine at small federation scale).
  */
-function createVerdictTrigger({ dag, jury, scoring, config, submitBatch }) {
+function createVerdictTrigger({ dag, jury, scoring, config, submitBatch, getCommittee }) {
   if (!dag) throw new Error("verdict-trigger: dag required");
+
+  const _myNodeId = config?.nodeRegisteredId || config?.nodeId;
 
   const _heap = createPendingDeadlines();
 
@@ -195,9 +203,31 @@ function createVerdictTrigger({ dag, jury, scoring, config, submitBatch }) {
    * tight — most rounds don't enter it (peek().deadline > cert.ts), and
    * when they do, only ripe entries get popped.
    */
-  function checkPending(certTimestamp) {
+  /**
+   * Round-modulo leader gate. Returns true if this node is the
+   * deterministic leader for the given round (so we should fire the
+   * verdict batch). When `getCommittee` isn't wired (legacy callers),
+   * defaults to true so every node fires — that's the original
+   * pre-leader-gate behaviour and still correct via first-wins dedup.
+   */
+  function _isMyRoundLeader(round) {
+    if (typeof getCommittee !== "function") return true;
+    const committee = getCommittee(round);
+    if (!Array.isArray(committee) || committee.length === 0) return true;
+    const sorted = [...committee].sort();
+    const idx = Math.abs(Math.trunc(round)) % sorted.length;
+    return sorted[idx] === _myNodeId;
+  }
+
+  function checkPending(certTimestamp, round) {
     if (!Number.isFinite(certTimestamp) || certTimestamp <= 0) return;
     if (!jury || !scoring || !config || typeof submitBatch !== "function") return;
+
+    // Leader gate — skip if I'm not this round's deterministic leader.
+    // Bullshark commits anchors every wave (~2 rounds), so even with the
+    // gate, K leaders may fire the same verdict before commit-handler's
+    // first-wins dedup catches it; K is bounded by rounds-until-commit.
+    if (Number.isFinite(round) && !_isMyRoundLeader(round)) return;
 
     let fired = 0;
     while (true) {

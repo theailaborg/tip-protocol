@@ -105,11 +105,13 @@ async function main() {
   networkRef.current = network;
   consensusRef.current = consensus;
 
-  // 8. Scheduled tasks (Merkle root publish, score recomputation, etc.).
-  // Scheduler-produced txs (verdict, clean-record bonus, merkle root) flow
-  // through consensus mempool — see issue #13 for the bypass-bug history.
-  const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
-  const scheduler = createScheduler(dag, scoring, network, config, { submitTx, submitBatch });
+  // 8. Scheduled tasks (Merkle root publish, score recomputation, peer
+  // health). Verdict-check and clean-record migrated to commit-handler
+  // post-round triggers — see consensus/verdict-trigger.js and
+  // consensus/clean-record-trigger.js. The remaining merkle-root tx
+  // flows through consensus mempool.
+  const { submitTx } = createTxSubmitter(consensusRef);
+  const scheduler = createScheduler(dag, scoring, network, config, { submitTx });
 
   // 9. Start listening
   server.listen(config.port, () => {

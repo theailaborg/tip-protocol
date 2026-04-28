@@ -11,22 +11,18 @@
  * Tasks:
  *   1. Merkle root publication     (genesis: merkle_publish_hours)
  *   2. Score recomputation sweep   (config: scoreRecomputeInterval)
- *   3. Clean-record bonus          (genesis: clean_period_days — runs daily)
- *   4. Peer health ping            (config: peerHealthInterval)
+ *   3. Peer health ping            (config: peerHealthInterval)
  *
- * NOTE: As of Commit 3 (#13/#15), verdict auto-trigger is NO LONGER
- * scheduler-driven. It moved to `consensus/verdict-trigger.js` which
- * commit-handler invokes per Bullshark round commit using the round's
- * `cert.timestamp` as the deterministic clock. Reactive (no polling),
- * deterministic (cert.ts is the BFT median), and integrates cleanly
- * with the first-wins guards in commit-handler.
+ * NOTE: Both `verdict-check` and `clean-record` are NO LONGER scheduler-
+ * driven. They moved to `consensus/verdict-trigger.js` and
+ * `consensus/clean-record-trigger.js`, which commit-handler invokes per
+ * Bullshark round commit using `cert.timestamp` as the deterministic
+ * clock. Reactive (no polling), deterministic (cert.ts is the BFT
+ * median), leader-gated (round-modulo for verdicts, day-modulo for
+ * clean-record) so only one node fires per round/day.
  *
- * Remaining tasks all route their writes through `submitTx` / `submitBatch`
- * (consensus mempool → Bullshark → commit-handler). On multi-node, each
- * node's scheduler may produce overlapping clean-record / merkle batches;
- * commit-handler's first-wins guards drop duplicates. Wasted bandwidth
- * (N submissions, mostly dropped at commit) is acceptable at federation
- * scale.
+ * The remaining merkle-root task routes through `submitTx` so every node
+ * sees the same MERKLE_ROOT_PUBLISHED via consensus.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
@@ -36,7 +32,7 @@
 
 const { TX_TYPES } = require("../../shared/constants");
 const { shake256Multi } = require("../../shared/crypto");
-const { NETWORK, REPUTATION } = require("../../shared/protocol-constants");
+const { NETWORK } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
 
@@ -53,9 +49,9 @@ const log = getLogger("tip.scheduler");
  *                                     Routes scheduler-produced txs through
  *                                     consensus mempool. See `services/helpers.js`.
  */
-function createScheduler(dag, scoring, network, config, { submitTx, submitBatch } = {}) {
-  if (typeof submitTx !== "function" || typeof submitBatch !== "function") {
-    throw new Error("createScheduler: requires { submitTx, submitBatch } — see services/helpers.createTxSubmitter");
+function createScheduler(dag, scoring, network, config, { submitTx } = {}) {
+  if (typeof submitTx !== "function") {
+    throw new Error("createScheduler: requires { submitTx } — see services/helpers.createTxSubmitter");
   }
 
   const _tasks = new Map();
@@ -85,24 +81,6 @@ function createScheduler(dag, scoring, network, config, { submitTx, submitBatch 
 
     _tasks.set(name, handle);
     log.info(`Task registered: ${name} (every ${formatInterval(intervalMs)})`);
-  }
-
-  /**
-   * Best-effort batch submission with consensus error tolerance.
-   * Mempool may reject txs that already exist (idempotent dedup at the
-   * consensus layer); we log and move on rather than throw.
-   */
-  function _submitBatchSafe(txs, tag) {
-    if (!txs || txs.length === 0) return;
-    try {
-      submitBatch(txs);
-      log.debug(`[${tag}] submitted batch of ${txs.length} txs to consensus`);
-    } catch (err) {
-      // Treat mempool-rejection as expected on multi-node (peer beat us to it).
-      // Real consensus failures (consensus halted, etc.) surface as 503 — log
-      // and let next tick retry.
-      log.debug(`[${tag}] batch submission deferred: ${err?.error || err?.message || err}`);
-    }
   }
 
   // ── Task definitions ─────────────────────────────────────────────────────
@@ -141,36 +119,7 @@ function createScheduler(dag, scoring, network, config, { submitTx, submitBatch 
     log.info("Score recomputation complete");
   });
 
-  // 3. Clean-record bonus (genesis: clean_period_days — check runs daily)
-  // Routed through `submitBatch` so every clean-record SCORE_UPDATE tx flows
-  // through consensus. commit-handler dedups by (tip_id, ctid, reason) — the
-  // reason is "clean_record_bonus" with no ctid, so the dedup key collapses
-  // to (tip_id, "clean_record_bonus") which is correctly idempotent across
-  // all federation nodes' submissions in the same window.
-  register("clean-record", config.cleanRecordInterval, () => {
-    const cutoff = new Date(Date.now() - REPUTATION.CLEAN_PERIOD_DAYS * 24 * 3600000).toISOString();
-    const eligible = dag.getCleanRecordEligible(cutoff)
-      .filter(tipId => !dag.isRevoked(tipId));
-    if (eligible.length === 0) return;
-
-    const timestamp = new Date().toISOString();
-    const getRecentPrev = () => dag.getRecentPrev();
-    const txs = eligible.map(tipId => scoring.buildScoreUpdateTx({
-      tipId,
-      delta: REPUTATION.CLEAN_PERIOD_BONUS,
-      reason: "clean_record_bonus",
-      ctid: null,
-      relatedTxId: null,
-      timestamp,
-      getRecentPrev,
-      config,
-    }));
-
-    _submitBatchSafe(txs, "clean-record");
-    log.info(`Clean record bonus: ${eligible.length} identities proposed +${REPUTATION.CLEAN_PERIOD_BONUS}`);
-  });
-
-  // 4. Peer health ping (node config)
+  // 3. Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
     const pc = network ? network.peerCount() : 0;
     if (pc === 0 && config.peers.length > 0) {

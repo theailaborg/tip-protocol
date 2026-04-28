@@ -37,20 +37,23 @@ const log = getLogger("tip.commit");
  * pass `{ dag, scoring, config }` — the extra props are harmlessly
  * ignored by destructure.
  *
- * Commit 3 adds the optional `verdictTrigger` dependency, which owns the
- * pending-deadline heap and post-round verdict scheduling. commit-handler
- * delegates to it in two places: per applied tx in `_applyDerivedState`
- * (for verdict-relevant tx types) and once at the end of `commitOrderedTxs`
- * (post-round). When `verdictTrigger` is omitted (unit tests, replay-only
- * paths) the delegation is silently skipped — useful for exercising
- * commit semantics without wiring the full consensus stack.
+ * Commit 3 adds optional `verdictTrigger` and `cleanRecordTrigger`
+ * dependencies. They own their own state (heap / day-counter) and are
+ * delegated to in two places:
+ *   - per applied tx in `_applyDerivedState` (verdict-trigger only —
+ *     cleans up its heap on verdict-relevant tx types)
+ *   - once at the end of `commitOrderedTxs` (both triggers)
+ * When omitted (unit tests, replay-only paths) the delegation is silently
+ * skipped — useful for exercising commit semantics without wiring the
+ * full consensus stack.
  *
  * @param {Object} options
- * @param {Object} options.dag             DAG store
- * @param {Object} [options.verdictTrigger] Post-round verdict scheduler (Commit 3)
+ * @param {Object} options.dag                   DAG store
+ * @param {Object} [options.verdictTrigger]      Post-round verdict scheduler (Commit 3)
+ * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, verdictTrigger }) {
+function createCommitHandler({ dag, verdictTrigger, cleanRecordTrigger }) {
 
   /**
    * Process an ordered batch of txs from Bullshark.
@@ -143,18 +146,24 @@ function createCommitHandler({ dag, verdictTrigger }) {
       }
     }
 
-    // Phase 3 (Commit 3): post-round verdict trigger. Runs once per
-    // round, OUTSIDE the SQLite transaction above — verdict batches
-    // submit to mempool and land in a future round, not this one.
-    // Delegated entirely to verdict-trigger.js so commit-handler stays
-    // focused on tx application.
+    // Phase 3 (Commit 3): post-round triggers. Run once per round,
+    // OUTSIDE the SQLite transaction above — both triggers submit
+    // batches to mempool that land in a future round. Delegated to
+    // dedicated modules so commit-handler stays focused on tx
+    // application. Each trigger's failures are non-fatal — they don't
+    // invalidate the round's tx commits; next round retries.
     if (verdictTrigger && certTimestamp > 0) {
       try {
-        verdictTrigger.checkPending(certTimestamp);
+        verdictTrigger.checkPending(certTimestamp, round);
       } catch (err) {
-        // Trigger failures are non-fatal — they don't invalidate the
-        // round's tx commits. Log loudly; next round retries.
         log.warn(`Round ${round}: post-round verdict trigger failed: ${err.message}`);
+      }
+    }
+    if (cleanRecordTrigger && certTimestamp > 0) {
+      try {
+        cleanRecordTrigger.checkPending(certTimestamp);
+      } catch (err) {
+        log.warn(`Round ${round}: post-round clean-record trigger failed: ${err.message}`);
       }
     }
 

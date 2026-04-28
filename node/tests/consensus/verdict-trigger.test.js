@@ -444,3 +444,79 @@ describe("verdict-trigger: defensive input handling", () => {
     expect(() => createVerdictTrigger({})).toThrow(/dag required/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. Leader gating (round-modulo) — only the round's leader emits
+// ═══════════════════════════════════════════════════════════════════════════
+describe("verdict-trigger: round-modulo leader gating", () => {
+  function _setupWithGate({ committeeNodes, withReveals = true }) {
+    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals });
+    // Re-create trigger with a getCommittee callback returning the
+    // committee we want to test against. Sort order is internal.
+    const submitted = [];
+    const submitBatch = (txs) => { submitted.push(txs); };
+    const trigger = createVerdictTrigger({
+      dag: fx.dag, jury, scoring: fx.scoring, config: fx.config,
+      submitBatch,
+      getCommittee: () => committeeNodes,
+    });
+    trigger.rehydrate();
+    return { fx, trigger, submitted };
+  }
+
+  test("fires when this node IS the round's deterministic leader", () => {
+    // sorted committee: [tip://node/n1, tip://node/n2, tip://node/n3]
+    // round 0 → leader[0 % 3] = n1 (the fixture's node).
+    const { trigger, submitted } = _setupWithGate({
+      committeeNodes: ["tip://node/n3", "tip://node/n1", "tip://node/n2"],
+    });
+    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 0);
+    expect(submitted.length).toBe(1);
+  });
+
+  test("skips when this node is NOT the round's leader", () => {
+    // sorted committee: [n1, n2, n3]. round 1 → leader = n2 (not n1).
+    const { trigger, submitted } = _setupWithGate({
+      committeeNodes: ["tip://node/n1", "tip://node/n2", "tip://node/n3"],
+    });
+    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 1);
+    expect(submitted.length).toBe(0);
+    // Heap entry stays — next round's leader will pick it up.
+    expect(trigger.size()).toBe(1);
+  });
+
+  test("rotation across rounds — different round, different leader", () => {
+    const committee = ["tip://node/n1", "tip://node/n2", "tip://node/n3"];
+    // round 0 → n1 (us, fires)
+    const { trigger: t0, submitted: s0 } = _setupWithGate({ committeeNodes: committee });
+    t0.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 0);
+    expect(s0.length).toBe(1);
+
+    // round 3 → n1 again (3 % 3 == 0 → sorted[0] = n1, fires)
+    const { trigger: t3, submitted: s3 } = _setupWithGate({ committeeNodes: committee });
+    t3.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 3);
+    expect(s3.length).toBe(1);
+
+    // round 5 → sorted[5 % 3] = sorted[2] = n3 (not us, no fire)
+    const { trigger: t5, submitted: s5 } = _setupWithGate({ committeeNodes: committee });
+    t5.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 5);
+    expect(s5.length).toBe(0);
+  });
+
+  test("no getCommittee → fires as legacy (every node)", () => {
+    // No leader gate → trigger fires regardless.
+    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals: true });
+    fx.trigger.rehydrate();
+    fx.trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 99);
+    expect(fx.submitted.length).toBe(1);
+  });
+
+  test("round not passed → leader gate skipped (legacy behaviour)", () => {
+    const { trigger, submitted } = _setupWithGate({
+      // n2 is leader for round 0, but we don't pass round → gate skipped.
+      committeeNodes: ["tip://node/n2", "tip://node/n3", "tip://node/n4"],
+    });
+    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime());
+    expect(submitted.length).toBe(1);
+  });
+});
