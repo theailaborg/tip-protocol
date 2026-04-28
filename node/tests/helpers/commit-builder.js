@@ -50,7 +50,19 @@ const { computeStateMerkleRoot, computeTxsMerkleRoot } = require(path.join(SRC, 
  *   stateRoot, txsRoot, consensusIndex, seededTxs,
  * }}
  */
-function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs = 0, ackTransform } = {}) {
+function buildCommittedDag({
+  committeeSize = 1,
+  dropSigs = 0,
+  round = 2,
+  seedTxs = 0,
+  ackTransform,
+  // Optional callback invoked BEFORE `state_merkle_root` is computed.
+  // Use this to mutate any canonical-state row whose stable form must be
+  // captured by the commit's state_merkle_root (e.g. modifying a score
+  // away from its genesis default for snapshot drift-guard tests).
+  // Receives the source DAG; return value ignored.
+  preCommitMutate = null,
+} = {}) {
   const sourceDag = initDAG({ dbPath: ":memory:" });
 
   // Register committee nodes. Public key in the nodes table must match the
@@ -157,6 +169,13 @@ function buildCommittedDag({ committeeSize = 1, dropSigs = 0, round = 2, seedTxs
     signature: "00",
     timestamp: certTimestamp,
   });
+
+  // Optional caller-supplied mutation hook — runs BEFORE state_merkle_root
+  // is computed so any state mutations are captured by the commit row's
+  // root and round-trip through the snapshot stream correctly.
+  if (typeof preCommitMutate === "function") {
+    preCommitMutate(sourceDag);
+  }
 
   // Compute roots over current state (commits table is NOT in canonical
   // state, so saveCommit afterwards doesn't change the root).

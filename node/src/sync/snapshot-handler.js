@@ -608,6 +608,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       case "content":
         dag.saveContent(row);
         break;
+      case "scores":
+        // Row shape mirrors `_canonScore`: { tip_id, score, offense_count,
+        // last_updated }. last_updated is sourced from `tx.timestamp` on
+        // the sender so it's deterministic across nodes (#31).
+        dag.setScore(row.tip_id, row.score, row.offense_count, row.last_updated);
+        break;
       case "dedup_registry":
         dag.addDedupHash(row.dedup_hash, row.created_at);
         break;

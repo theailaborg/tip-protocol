@@ -115,6 +115,67 @@ describe("§14 snapshot round-trip", () => {
       expect(n.node_id).toBe(nodeId);
     }
   });
+
+  test("drift guard: every canonical row roundtrips through snapshot install", async () => {
+    // Structural assertion — iterates the FULL canonical state on both
+    // sender and receiver and asserts exact row-by-row equality.
+    //
+    // This is the test that catches the class of bug where a sender
+    // table is added to `iterateCanonicalState` but the receiver's
+    // `_installOneRow` switch isn't updated: the streamed bytes hash
+    // identically (state_merkle_root verification passes), but the
+    // receiver silently skips installing the rows, leaving the joiner
+    // with incomplete derived state.
+    //
+    // Subtle point: BOTH source and dest run their own genesis bootstrap
+    // (founding identities + their genesis-default scores), so a vanilla
+    // fixture would have identical pre-snapshot state on both sides —
+    // the drift bug wouldn't surface even if the install path skipped
+    // the row entirely. To make the test actually exercise the install
+    // codepath, we mutate ONE row away from its genesis default before
+    // computing state_merkle_root on the source. The receiver's genesis
+    // value differs from the source's mutated value; only a successful
+    // snapshot install reconciles them. With the install case missing,
+    // the receiver keeps its genesis value → row mismatch → test fails.
+    const fx = buildCommittedDag({
+      committeeSize: 2,
+      preCommitMutate: (dag) => {
+        // Find a genesis-seeded score and mutate it to a value the
+        // receiver's genesis bootstrap will NOT produce on its own.
+        for (const { table, row } of dag.iterateCanonicalState()) {
+          if (table !== "scores") continue;
+          dag.setScore(row.tip_id, 999, 7, "2026-04-01T00:00:00.000Z");
+          return;
+        }
+      },
+    });
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    const sourceRows = [...fx.sourceDag.iterateCanonicalState()];
+    const destRows = [...destDag.iterateCanonicalState()];
+
+    // Per-table count match — anything skipped on install fails here
+    // first, with a clearer diagnostic than a row-by-row equality miss.
+    const countByTable = (rows) => rows.reduce((acc, { table }) => {
+      acc[table] = (acc[table] || 0) + 1;
+      return acc;
+    }, {});
+    expect(countByTable(destRows)).toEqual(countByTable(sourceRows));
+
+    // Exact row-by-row equality. iterateCanonicalState yields in
+    // deterministic table-major + primary-key-sorted order on both
+    // sides, so index-by-index comparison is valid.
+    expect(destRows.length).toBe(sourceRows.length);
+    for (let i = 0; i < sourceRows.length; i++) {
+      expect(destRows[i]).toEqual(sourceRows[i]);
+    }
+  });
 });
 
 describe("§14 snapshot rejection paths", () => {
