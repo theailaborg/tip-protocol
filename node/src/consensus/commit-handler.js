@@ -30,18 +30,27 @@ const log = getLogger("tip.commit");
  * Create a commit handler.
  *
  * Note: as of Commit 2 (#13/#15), commit-handler no longer needs the
- * `scoring` engine OR the node `config` — score effects are applied via
+ * `scoring` engine or the node `config` — score effects are applied via
  * the `SCORE_UPDATE` handler reading `tx.data.delta` directly, the
  * CONTENT_RETRACTED penalty inlines the cache mutation, and there's no
  * tx-signing or node-identity work left here. Existing callers can still
  * pass `{ dag, scoring, config }` — the extra props are harmlessly
  * ignored by destructure.
  *
+ * Commit 3 adds the optional `verdictTrigger` dependency, which owns the
+ * pending-deadline heap and post-round verdict scheduling. commit-handler
+ * delegates to it in two places: per applied tx in `_applyDerivedState`
+ * (for verdict-relevant tx types) and once at the end of `commitOrderedTxs`
+ * (post-round). When `verdictTrigger` is omitted (unit tests, replay-only
+ * paths) the delegation is silently skipped — useful for exercising
+ * commit semantics without wiring the full consensus stack.
+ *
  * @param {Object} options
- * @param {Object} options.dag      DAG store
+ * @param {Object} options.dag             DAG store
+ * @param {Object} [options.verdictTrigger] Post-round verdict scheduler (Commit 3)
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag }) {
+function createCommitHandler({ dag, verdictTrigger }) {
 
   /**
    * Process an ordered batch of txs from Bullshark.
@@ -60,9 +69,6 @@ function createCommitHandler({ dag }) {
    */
   function commitOrderedTxs(orderedTxs, round, opts = {}) {
     const { certTimestamp = 0 } = opts;
-    // Reserved-but-unused for now. Lint suppression to make intent explicit
-    // until Commit 3 wires it into derived-state/verdict logic.
-    void certTimestamp;
     // Phase 1: Validate all txs BEFORE writing anything.
     //
     // `validated` is also passed to the business-rule guard so first-wins
@@ -134,6 +140,21 @@ function createCommitHandler({ dag }) {
         log.error(`Round ${round}: transaction commit failed — rolled back ${validated.length} txs: ${err.message}`);
         committed = 0;
         dropped += validated.length;
+      }
+    }
+
+    // Phase 3 (Commit 3): post-round verdict trigger. Runs once per
+    // round, OUTSIDE the SQLite transaction above — verdict batches
+    // submit to mempool and land in a future round, not this one.
+    // Delegated entirely to verdict-trigger.js so commit-handler stays
+    // focused on tx application.
+    if (verdictTrigger && certTimestamp > 0) {
+      try {
+        verdictTrigger.checkPending(certTimestamp);
+      } catch (err) {
+        // Trigger failures are non-fatal — they don't invalidate the
+        // round's tx commits. Log loudly; next round retries.
+        log.warn(`Round ${round}: post-round verdict trigger failed: ${err.message}`);
       }
     }
 
@@ -459,6 +480,23 @@ function createCommitHandler({ dag }) {
       default:
         log.debug(`No derived state handler for tx type: ${tx.tx_type}`);
         break;
+    }
+
+    // Commit 3 — notify the verdict-trigger of any verdict-relevant
+    // tx commit so it can update its pending-deadline heap. Delegation
+    // only; commit-handler holds no heap state of its own.
+    if (verdictTrigger
+      && (tx.tx_type === TX_TYPES.JURY_SUMMONS
+        || tx.tx_type === TX_TYPES.ADJUDICATION_RESULT
+        || tx.tx_type === TX_TYPES.APPEAL_RESULT
+        || tx.tx_type === TX_TYPES.APPEAL_FILED)) {
+      try {
+        verdictTrigger.onTxCommitted(tx);
+      } catch (err) {
+        // Heap-state update failure is non-fatal — the next checkPending
+        // will rescan as needed. Log so we notice persistent issues.
+        log.warn(`verdict-trigger.onTxCommitted(${tx.tx_type}) failed: ${err.message}`);
+      }
     }
   }
 

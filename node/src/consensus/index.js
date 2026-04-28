@@ -28,6 +28,9 @@ const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
 const { createAntiEntropy } = require("./anti-entropy");
+const { createVerdictTrigger } = require("./verdict-trigger");
+const { createTxSubmitter } = require("../services/helpers");
+const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 
@@ -64,8 +67,31 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const mempool = createMempool(dag);
   log.info(`Mempool initialized (${mempool.size()} pending txs restored)`);
 
+  // ── Post-round verdict trigger (Commit 3 of #13/#15) ──────────────────
+  // Owns the pending-deadline heap. commit-handler delegates to it on
+  // verdict-relevant tx commits and once per round (post-Phase 2). The
+  // trigger builds verdict batches via the jury builders and submits
+  // them through consensus mempool — same path as scheduler used to
+  // take in Commit 2, just driven by `cert.timestamp` instead of a
+  // wall-clock interval.
+  //
+  // We need a tx submitter that points at the same consensus instance
+  // we're constructing. The `consensusForTrigger` ref is populated below
+  // once `consensus` exists; the closure captures the ref so the trigger
+  // can reach `addTx` after construction completes.
+  const consensusForTrigger = { current: null };
+  const triggerSubmitter = createTxSubmitter(consensusForTrigger);
+  const verdictTrigger = createVerdictTrigger({
+    dag, jury, scoring, config,
+    submitBatch: triggerSubmitter.submitBatch,
+  });
+  // Rehydrate the heap from any committed-but-unresolved disputes so we
+  // pick up where we left off across restart. Boot-time scan is bounded
+  // by `pending disputes`, not chain length — `getTxsByType` is indexed.
+  verdictTrigger.rehydrate();
+
   // ── Create commit handler ─────────────────────────────────────────────────
-  const commitHandler = createCommitHandler({ dag, scoring, config });
+  const commitHandler = createCommitHandler({ dag, scoring, config, verdictTrigger });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
   const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
@@ -181,7 +207,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
   // ── Public interface ───────────────────────────────────────────────────
 
-  return {
+  const consensus = {
     /**
      * Add a validated transaction to the mempool.
      * Called by API services after validation.
@@ -268,9 +294,17 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
+        verdictTrigger: { pending: verdictTrigger.size() },
       };
     },
   };
+
+  // Late-bind the ref the verdict-trigger's submitter closes over.
+  // Trigger is constructed before the public consensus object exists;
+  // we wire it up here so post-round verdict batches can hit `addTx`.
+  consensusForTrigger.current = consensus;
+
+  return consensus;
 }
 
 module.exports = { initConsensus };
