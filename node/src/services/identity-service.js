@@ -5,6 +5,7 @@ const {
 } = require("../../../shared/crypto");
 const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES } = require("../../../shared/constants");
+const { SCORE } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -74,7 +75,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     // "proposed" so client knows to expect async finalization.
     return {
       tip_id: tipId, public_key, tx_id: signedTx.tx_id,
-      score: social_attested ? 550 : 500, registered_at: registeredAt,
+      score: SCORE.INITIAL_IDENTITY, registered_at: registeredAt,
       confirmation: "proposed",
       ...(creator_name ? { creator_name } : {}),
     };

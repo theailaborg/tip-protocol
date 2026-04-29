@@ -109,7 +109,7 @@ async function main() {
   // see consensus/verdict-trigger.js and consensus/clean-record-trigger.js.
   // State-root attestation is `commits.state_merkle_root` (2f+1 signed
   // every anchor commit), exposed at GET /v1/state-root.
-  const scheduler = createScheduler(dag, scoring, network, config);
+  const scheduler = createScheduler(network, config);
 
   // 9. Start listening
   server.listen(config.port, () => {

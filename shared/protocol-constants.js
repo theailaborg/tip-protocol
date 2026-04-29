@@ -201,6 +201,7 @@ const PRESCAN_THRESHOLDS = {
 const _c = () => get().consensus;
 const _n = () => get().network;
 const _r = () => get().reputation;
+const _sc = () => get().score;
 
 const CONSENSUS = {
   get ROUND_TIMEOUT_MS() { return _c().round_timeout_ms; },
@@ -244,6 +245,26 @@ const NETWORK = {
 const REPUTATION = {
   get CLEAN_PERIOD_DAYS() { return _r().clean_period_days; },
   get CLEAN_PERIOD_BONUS() { return _r().clean_period_bonus; },
+  get DISPUTE_CLEARED_BONUS() { return _r().dispute_cleared_bonus; },
+};
+
+const SCORE = {
+  get MAX_TOTAL() { return _sc().max_total; },
+  get MAX_IDENTITY() { return _sc().max_identity; },
+  get MAX_CONTENT() { return _sc().max_content; },
+  get MAX_REPUTATION() { return _sc().max_reputation; },
+  get MAX_LONGEVITY() { return _sc().max_longevity; },
+  get INITIAL_IDENTITY() { return _sc().initial_identity; },
+};
+
+// Identity-score sub-block — per-account social linking lives here.
+// Per spec (TIP_Scoring_v2): each linked social adds +5 up to a +30 cap;
+// the bonus arrives as discrete SCORE_UPDATE txs (issues.md Scoring #11),
+// not as a boolean flag on REGISTER_IDENTITY.
+const IDENTITY = {
+  get SOCIAL_LINK_BONUS() { return get().identity.social_link_bonus; },
+  get MAX_SOCIAL_ACCOUNTS() { return get().identity.max_social_accounts; },
+  get MAX_SOCIAL_BONUS() { return get().identity.max_social_bonus; },
 };
 
 function getTier(score) {
@@ -260,5 +281,5 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, getTier,
+  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
 };

@@ -24,8 +24,9 @@
 
 const path = require("path");
 const fs = require("fs");
-const { shake256, computeTxId, verifyTxId } = require("../../shared/crypto");
+const { computeTxId, verifyTxId } = require("../../shared/crypto");
 const { TX_TYPES } = require("../../shared/constants");
+const { SCORE } = require("../../shared/protocol-constants");
 const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
@@ -1547,9 +1548,14 @@ function _writeGenesisBlock(store, config) {
       // (same on every node that ships the same genesis). Deterministic.
       store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
     }
-    // Genesis seed score — last_updated sourced from GENESIS_TIMESTAMP so
-    // every node bootstraps with an identical scores row (issue #31).
-    store.setScore(member.tip_id, 550, 0, GENESIS_TIMESTAMP);
+    // Genesis seed score — `score.initial_identity` from genesis (per
+    // spec, all identities start at the same baseline; founding members
+    // gain trust through subsequent score events, not via a special
+    // initial value). last_updated sourced from GENESIS_TIMESTAMP so
+    // every node bootstraps with an identical scores row (#31), and the
+    // value matches what commit-handler writes for the same
+    // REGISTER_IDENTITY tx replay (#38).
+    store.setScore(member.tip_id, SCORE.INITIAL_IDENTITY, 0, GENESIS_TIMESTAMP);
     lastTxId = idTxId;
 
     log.info(`Founding identity registered: ${member.tip_id}`);

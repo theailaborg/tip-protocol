@@ -9,8 +9,7 @@
  *   - Node-level intervals from config
  *
  * Tasks:
- *   1. Score recomputation sweep   (config: scoreRecomputeInterval)
- *   2. Peer health ping            (config: peerHealthInterval)
+ *   1. Peer health ping            (config: peerHealthInterval)
  *
  * NOTE: `verdict-check` and `clean-record` are NOT scheduler-driven.
  * They live in `consensus/verdict-trigger.js` and
@@ -23,6 +22,13 @@
  * The historical 6-hour `merkle-root` task is gone — `commits.state_merkle_root`
  * (written by bullshark on every anchor commit, 2f+1 signed) is the
  * cryptographically sound replacement; expose via `/v1/state-root/latest`.
+ *
+ * The historical `score-recompute` task is also gone — commit-handler
+ * is the sole writer to the scores table per #38. The recompute task
+ * was a footgun that would overwrite consensus-correct scores with
+ * replay-derived values that didn't match commit-handler's math; it
+ * forked a live federation when its 12h timer fired on some nodes
+ * before others.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * @author    Dinesh Mendhe <chairman@theailab.org>
@@ -45,7 +51,7 @@ const log = getLogger("tip.scheduler");
  *                                     Routes scheduler-produced txs through
  *                                     consensus mempool. See `services/helpers.js`.
  */
-function createScheduler(dag, scoring, network, config) {
+function createScheduler(network, config) {
   const _tasks = new Map();
 
   /**
@@ -77,14 +83,7 @@ function createScheduler(dag, scoring, network, config) {
 
   // ── Task definitions ─────────────────────────────────────────────────────
 
-  // 1. Score recomputation sweep (node config)
-  register("score-recompute", config.scoreRecomputeInterval, async () => {
-    log.info("Starting score recomputation sweep...");
-    await scoring.recomputeAll();
-    log.info("Score recomputation complete");
-  });
-
-  // 2. Peer health ping (node config)
+  // Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
     const pc = network ? network.peerCount() : 0;
     if (pc === 0 && config.peers.length > 0) {

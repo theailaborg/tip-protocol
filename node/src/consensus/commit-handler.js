@@ -19,9 +19,9 @@
 "use strict";
 
 const { TX_TYPES, CONTENT_STATUS, VERDICT } = require("../../../shared/constants");
-const { SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, shake256 } = require("../../../shared/crypto");
 const { getLogger } = require("../logger");
 
@@ -391,14 +391,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
             // on `identities` (dag.js); this was the missing forward-through.
             creator_name: d.creator_name || null,
           });
-          // Initial score. last_updated is sourced from tx.timestamp so
-          // every node writes the same row and the scores table is part
-          // of state_merkle_root (issues.md Consensus #31).
-          if (d.tip_id) {
-            const initial = d.social_attested || d.attested ? 550 : 500;
-            dag.setScore(d.tip_id, initial, 0, tx.timestamp);
-          }
         }
+        // Score effect (initial score for new identity) is applied in
+        // the unified `_applyScoreEffect(tx)` pass below — single source
+        // of truth shared with computeScore replay (#38).
         break;
 
       // ── Content ───────────────────────────────────────────────────────
@@ -430,20 +426,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
       case TX_TYPES.CONTENT_RETRACTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.RETRACTED);
-          if (d.author_tip_id) {
-            // Apply the retraction penalty directly to the score cache —
-            // every node runs this on the same committed CONTENT_RETRACTED
-            // tx, so the cache mutation is deterministic. computeScore()
-            // replays the same delta from CONTENT_RETRACTED on a from-
-            // scratch recompute. Used to call `scoring.applyScoreEvent`,
-            // which wrote a synthetic SCORE_UPDATE tx with a non-
-            // deterministic timestamp from inside commit-handler — that's
-            // the path that forced the `fromSync=true` prev-skip workaround.
-            const cur = dag.getScore(d.author_tip_id) || { score: 500, offense_count: 0 };
-            const next = Math.max(0, Math.min(1000, cur.score + SCORE_EVENTS.CONTENT_RETRACTION.delta));
-            dag.setScore(d.author_tip_id, next, cur.offense_count, tx.timestamp);
-          }
         }
+        // Author retraction penalty is applied via the unified
+        // `_applyScoreEffect(tx)` pass below.
         break;
 
       // ── Verification ──────────────────────────────────────────────────
@@ -548,24 +533,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
         }
         break;
 
-      // ── Score update — applies cache mutation deterministically (#15) ──
-      // Replaces the in-line scoring.applyScoreEvent calls that
-      // jury.tallyVerdictAndApply / applyAppealVerdict used to make.
-      // First-wins dedup happens upstream in `_validateBusinessRules`
-      // (by tip_id + ctid + reason), so reaching this case means this is
-      // the authoritative SCORE_UPDATE for that (tip_id, ctid, reason).
+      // SCORE_UPDATE has no derived state beyond the score itself; the
+      // row write lands via the unified `_applyScoreEffect(tx)` pass
+      // below. First-wins dedup (tip_id + ctid + reason) gates upstream
+      // in `_validateBusinessRules`.
       case TX_TYPES.SCORE_UPDATE:
-        if (d.tip_id && Number.isFinite(d.delta)) {
-          const cur = dag.getScore(d.tip_id) || { score: 500, offense_count: 0 };
-          const nextScore = Math.max(0, Math.min(1000, cur.score + d.delta));
-          // last_updated from tx.timestamp — see issue #31. Same value
-          // on every node so the scores row stays in state_merkle_root.
-          dag.setScore(d.tip_id, nextScore, cur.offense_count, tx.timestamp);
-        }
         break;
 
       // ── No additional derived state needed ──
-      // computeScore() replays these from the DAG history when needed.
       case TX_TYPES.JURY_SUMMONS:
       case TX_TYPES.JURY_VOTE_COMMIT:
       case TX_TYPES.JURY_VOTE_REVEAL:
@@ -577,6 +552,43 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
         log.debug(`No derived state handler for tx type: ${tx.tx_type}`);
         break;
     }
+
+    // Unified score effect — single source of truth shared with
+    // scoring.computeScore replay (#38). For tx types that don't
+    // affect a score, scoreTargetTipId(tx) returns null and this is a
+    // no-op. The scores table is part of state_merkle_root, so this
+    // write must be deterministic across every node — hence it goes
+    // through the same pure function as the read-only replay.
+    _applyScoreEffect(tx);
+  }
+
+  /**
+   * Apply the tx's score effect to the scores table. Sole writer for
+   * scores rows in commit-handler — closes the dual-writer divergence
+   * documented in issues.md Node #38.
+   */
+  function _applyScoreEffect(tx) {
+    const target = scoreTargetTipId(tx);
+    if (!target) return;
+
+    const row = dag.getScore(target);
+    const cur = row
+      ? { score: row.score, offense_count: row.offense_count, frozen: false }
+      : initialState();
+
+    const next = applyScoreEffect(tx, cur);
+
+    // Skip a write only when (a) the row already exists AND (b) nothing
+    // changed. REGISTER_IDENTITY for a brand-new identity leaves the
+    // score at score.initial_identity unchanged from cur.score, but the
+    // row still has to be written so the scores table contains every
+    // registered tip_id (state_merkle_root determinism, #31).
+    if (row && next.score === cur.score && next.offense_count === cur.offense_count) {
+      return;
+    }
+    // last_updated from tx.timestamp — same value on every node so the
+    // scores row stays in state_merkle_root (issues.md Consensus #31).
+    dag.setScore(target, next.score, next.offense_count, tx.timestamp);
 
     // Commit 3 — notify the verdict-trigger of any verdict-relevant
     // tx commit so it can update its pending-deadline heap. Delegation
