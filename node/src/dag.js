@@ -27,6 +27,7 @@ const fs = require("fs");
 const { computeTxId, verifyTxId } = require("../../shared/crypto");
 const { TX_TYPES } = require("../../shared/constants");
 const { SCORE } = require("../../shared/protocol-constants");
+const { subjectTipId } = require("./tx-attribution");
 const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
@@ -139,7 +140,11 @@ class MemoryStore {
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
-  saveTx(tx) { this._txs.set(tx.tx_id, { ...tx }); }
+  // Stamp `subject_tip_id` on the row so MemoryStore.getTxsByTipId can
+  // mirror SQLite's indexed-column lookup. The activity-feed broadening
+  // (jurors, verifiers, etc.) is implemented in subjectTipId — this
+  // keeps both stores in lockstep with one helper.
+  saveTx(tx) { this._txs.set(tx.tx_id, { ...tx, subject_tip_id: subjectTipId(tx) }); }
   getTx(id) { return this._txs.get(id) || null; }
   getAllTxs() { return [...this._txs.values()]; }
   count() { return this._txs.size; }
@@ -159,10 +164,16 @@ class MemoryStore {
   getTxsByTypeAndCtid(type, ctid) {
     return [...this._txs.values()].filter(t => t.tx_type === type && t.data?.ctid === ctid);
   }
+  // Narrow OR-pattern lookup (scoring scope).
   getTxsByTipId(tipId) {
     return [...this._txs.values()].filter(t =>
       t.data?.tip_id === tipId || t.data?.author_tip_id === tipId
     );
+  }
+  // Broad role-aware lookup via the denormalised subject_tip_id column.
+  // Mirrors SQLiteStore.getTxsBySubject — used by the activity feed.
+  getTxsBySubject(tipId) {
+    return [...this._txs.values()].filter(t => t.subject_tip_id === tipId);
   }
 
   // ── Identities ────────────────────────────────────────────────────────────
@@ -442,9 +453,21 @@ class MemoryStore {
   runInTransaction(fn) { return fn(); } // no-op wrapper for in-memory store
 
   // ── Persistent Mempool ────────────────────────────────────────────────
-  saveMempoolTx(tx) { this._mempool.set(tx.tx_id, tx); }
-  getMempoolTx(txId) { return this._mempool.get(txId) || null; }
-  getMempoolTxs() { return [...this._mempool.values()]; }
+  // Stamp subject_tip_id on the entry alongside the tx so getMempoolTxsByTipId
+  // can do the same indexed-column lookup as SQLiteStore.
+  saveMempoolTx(tx) {
+    this._mempool.set(tx.tx_id, { tx, subject_tip_id: subjectTipId(tx) });
+  }
+  getMempoolTx(txId) {
+    const e = this._mempool.get(txId);
+    return e ? e.tx : null;
+  }
+  getMempoolTxs() { return [...this._mempool.values()].map(e => e.tx); }
+  getMempoolTxsByTipId(tipId) {
+    return [...this._mempool.values()]
+      .filter(e => e.subject_tip_id === tipId)
+      .map(e => e.tx);
+  }
   deleteMempoolTx(txId) { this._mempool.delete(txId); }
   deleteMempoolTxs(txIds) { for (const id of txIds) this._mempool.delete(id); }
   clearStaleMempoolTxs() { /* no-op for in-memory tests */ }
@@ -464,6 +487,11 @@ class MemoryStore {
     const txData = rec.tx_data == null
       ? null
       : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
+    // subject_tip_id from the tx body (when given), so getTxRejectionsByTipId
+    // can mirror SQLiteStore's indexed-column lookup.
+    const subj = rec.tx_data && typeof rec.tx_data === "object"
+      ? subjectTipId(rec.tx_data)
+      : null;
     this._txRejections.set(rec.tx_id, {
       tx_id:             rec.tx_id,
       reason:            rec.reason,
@@ -474,6 +502,7 @@ class MemoryStore {
       tx_type:           rec.tx_type || null,
       origin_node_id:    rec.origin_node_id || null,
       tx_data:           txData,
+      subject_tip_id:    subj,
     });
     return true;
   }
@@ -496,7 +525,21 @@ class MemoryStore {
     rows.sort((a, b) => b.rejected_at_ms - a.rejected_at_ms);
     return rows.slice(0, limit).map(r => this._parseRejectionRow(r));
   }
+  getTxRejectionsByTipId(tipId) {
+    const rows = [];
+    for (const r of this._txRejections.values()) {
+      if (r.subject_tip_id === tipId) rows.push(r);
+    }
+    rows.sort((a, b) => b.rejected_at_ms - a.rejected_at_ms);
+    return rows.map(r => this._parseRejectionRow(r));
+  }
   countTxRejections() { return this._txRejections.size; }
+
+  // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
+  // writes always populate the column at save time; nothing to retrofit.
+  backfillSubjectTipId(_subjectTipId) {
+    return { transactions: 0, mempool: 0, tx_rejections: 0 };
+  }
 
   close() { /* no-op for in-memory */ }
 }
@@ -555,6 +598,13 @@ class SQLiteStore {
     // <like_this> or backslash-escape `\${...}` for placeholder examples.
     this.db.exec(`
       -- ── Transactions ─────────────────────────────────────────────────
+      -- subject_tip_id is a denormalised index column populated at write
+      -- time from tx-attribution.subjectTipId(tx). The canonical value
+      -- still lives inside the data JSON column; this column exists only
+      -- to give getTxsByTipId / activity-feed queries an indexed lookup
+      -- path. Nullable: org/system-level txs (VP_REGISTERED,
+      -- NODE_REGISTERED, AI_CLASSIFIER_RESULT, APPEAL_RESULT) have no
+      -- individual subject and never appear in any user's feed.
       CREATE TABLE IF NOT EXISTS transactions (
         tx_id          TEXT PRIMARY KEY,
         tx_type        TEXT NOT NULL,
@@ -562,11 +612,13 @@ class SQLiteStore {
         timestamp      TEXT NOT NULL,
         prev           TEXT NOT NULL DEFAULT '[]',
         signature      TEXT,
+        subject_tip_id TEXT,
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
       CREATE INDEX IF NOT EXISTS idx_txs_ts         ON transactions(timestamp);
       CREATE INDEX IF NOT EXISTS idx_txs_created_at ON transactions(created_at);
+      CREATE INDEX IF NOT EXISTS idx_txs_subject    ON transactions(subject_tip_id);
 
       -- ── Identities ───────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS identities (
@@ -737,11 +789,16 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
 
       -- ── Consensus: Persistent Mempool ──────────────────────────────
+      -- subject_tip_id mirrors transactions.subject_tip_id so the
+      -- activity feed can show a user's still-pending txs alongside
+      -- their committed ones in a single merged response.
       CREATE TABLE IF NOT EXISTS mempool (
         tx_id           TEXT PRIMARY KEY,
         tx_data         TEXT NOT NULL,
+        subject_tip_id  TEXT,
         received_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
+      CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id);
 
       -- ── Tx Rejections (#64 follow-up — no-loss invariant) ─────────
       -- Records every tx that was admitted past the API layer but did
@@ -773,11 +830,16 @@ class SQLiteStore {
         -- for forensics — uniform schema beats branching logic, and
         -- rejections are sparse relative to commits so storage cost
         -- is bounded.
-        tx_data            TEXT
+        tx_data            TEXT,
+        -- Mirrors transactions.subject_tip_id. Lets the activity feed
+        -- merge a user's rejected txs with their committed + pending
+        -- via one indexed query per source.
+        subject_tip_id     TEXT
       );
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_reason ON tx_rejections(reason);
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_at     ON tx_rejections(rejected_at_ms);
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_origin ON tx_rejections(origin_node_id);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_reason  ON tx_rejections(reason);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_at      ON tx_rejections(rejected_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_origin  ON tx_rejections(origin_node_id);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id);
 
       -- ── #44: Consensus singleton key-value store ───────────────────
       -- Tiny kv table for consensus state that's a single value rather
@@ -816,6 +878,110 @@ class SQLiteStore {
     if (!commitCols.includes("anchor_batch_hash")) {
       this.db.exec("ALTER TABLE commits ADD COLUMN anchor_batch_hash TEXT");
     }
+
+    // Activity-feed denormalisation: backfill `subject_tip_id` on the
+    // three tables that participate in the activity merge (committed +
+    // pending + rejected). Live nodes upgrading from older schemas hit
+    // the ALTER paths; fresh nodes never enter them. Backfill values
+    // for existing rows is deferred to `_backfillSubjectTipId()` —
+    // separated so it can short-circuit when there's nothing to do.
+    const txCols = this.db.prepare("PRAGMA table_info(transactions)").all().map(c => c.name);
+    if (!txCols.includes("subject_tip_id")) {
+      this.db.exec("ALTER TABLE transactions ADD COLUMN subject_tip_id TEXT");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_txs_subject ON transactions(subject_tip_id)");
+    }
+    const mempoolCols = this.db.prepare("PRAGMA table_info(mempool)").all().map(c => c.name);
+    if (!mempoolCols.includes("subject_tip_id")) {
+      this.db.exec("ALTER TABLE mempool ADD COLUMN subject_tip_id TEXT");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id)");
+    }
+    const rejCols = this.db.prepare("PRAGMA table_info(tx_rejections)").all().map(c => c.name);
+    if (!rejCols.includes("subject_tip_id")) {
+      this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
+    }
+  }
+
+  /**
+   * Populate `subject_tip_id` on existing rows that pre-date the column.
+   * Idempotent: WHERE subject_tip_id IS NULL skips already-backfilled
+   * rows, so calling this on every startup costs ~O(remaining unbackfilled)
+   * not O(total). Once the table is fully backfilled the WHERE clause
+   * matches zero rows and the function returns immediately.
+   *
+   * Called from initDAG after the store is constructed so the helper
+   * (`subjectTipId`) and store are both ready.
+   *
+   * @param {Function} subjectTipId  (tx) => tip_id|null
+   * @returns {{ transactions: number, mempool: number, tx_rejections: number }}
+   */
+  backfillSubjectTipId(subjectTipId) {
+    const result = { transactions: 0, mempool: 0, tx_rejections: 0 };
+
+    // ── transactions ────────────────────────────────────────────────────
+    // Iterate only rows whose column is still NULL (cheap after first run).
+    // Rebuild the tx shape from the row's stored columns + parsed data
+    // since subjectTipId reads tx.tx_type and tx.data.
+    const txRows = this.db.prepare(
+      "SELECT tx_id, tx_type, data FROM transactions WHERE subject_tip_id IS NULL"
+    ).all();
+    if (txRows.length > 0) {
+      const update = this.db.prepare("UPDATE transactions SET subject_tip_id=? WHERE tx_id=?");
+      const txn = this.db.transaction((rows) => {
+        for (const r of rows) {
+          let parsed;
+          try { parsed = JSON.parse(r.data); } catch { continue; }
+          const subj = subjectTipId({ tx_type: r.tx_type, data: parsed });
+          if (subj) {
+            update.run(subj, r.tx_id);
+            result.transactions++;
+          }
+        }
+      });
+      txn(txRows);
+    }
+
+    // ── mempool ─────────────────────────────────────────────────────────
+    const mempoolRows = this.db.prepare(
+      "SELECT tx_id, tx_data FROM mempool WHERE subject_tip_id IS NULL"
+    ).all();
+    if (mempoolRows.length > 0) {
+      const update = this.db.prepare("UPDATE mempool SET subject_tip_id=? WHERE tx_id=?");
+      const txn = this.db.transaction((rows) => {
+        for (const r of rows) {
+          let tx;
+          try { tx = JSON.parse(r.tx_data); } catch { continue; }
+          const subj = subjectTipId(tx);
+          if (subj) {
+            update.run(subj, r.tx_id);
+            result.mempool++;
+          }
+        }
+      });
+      txn(mempoolRows);
+    }
+
+    // ── tx_rejections ───────────────────────────────────────────────────
+    const rejRows = this.db.prepare(
+      "SELECT tx_id, tx_data FROM tx_rejections WHERE subject_tip_id IS NULL AND tx_data IS NOT NULL"
+    ).all();
+    if (rejRows.length > 0) {
+      const update = this.db.prepare("UPDATE tx_rejections SET subject_tip_id=? WHERE tx_id=?");
+      const txn = this.db.transaction((rows) => {
+        for (const r of rows) {
+          let tx;
+          try { tx = JSON.parse(r.tx_data); } catch { continue; }
+          const subj = subjectTipId(tx);
+          if (subj) {
+            update.run(subj, r.tx_id);
+            result.tx_rejections++;
+          }
+        }
+      });
+      txn(rejRows);
+    }
+
+    return result;
   }
 
   _prepare() {
@@ -823,8 +989,8 @@ class SQLiteStore {
     this._stmts = {
       saveTx: this.db.prepare(
         `INSERT OR IGNORE INTO transactions
-           (tx_id,tx_type,data,timestamp,prev,signature)
-         VALUES (?,?,?,?,?,?)`
+           (tx_id,tx_type,data,timestamp,prev,signature,subject_tip_id)
+         VALUES (?,?,?,?,?,?,?)`
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
       getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY created_at ASC"),
@@ -835,10 +1001,26 @@ class SQLiteStore {
          WHERE tx_type=? AND json_extract(data,'$.ctid')=?
          ORDER BY created_at ASC`
       ),
+      // OR-on-(tip_id, author_tip_id) — used by scoring.computeScore
+      // which expects all txs whose score effect can land on tipId.
+      // Score-affecting txs always reference the target via tip_id or
+      // author_tip_id, so this scope is correct for scoring. The new
+      // broad-role activity-feed lookup goes through `txsBySubject`
+      // (separate column, indexed) — see getTxsBySubject below.
       txsByTipId: this.db.prepare(
         `SELECT * FROM transactions
          WHERE json_extract(data,'$.tip_id')=?
             OR json_extract(data,'$.author_tip_id')=?
+         ORDER BY created_at ASC`
+      ),
+      // Indexed lookup via the denormalised subject_tip_id column.
+      // Broader scope: a juror's vote, a verifier's verification, a
+      // disputer's dispute all attribute to that user even though
+      // they don't appear under tip_id/author_tip_id. Powers the
+      // activity feed (see identity-service.getActivity).
+      txsBySubject: this.db.prepare(
+        `SELECT * FROM transactions
+         WHERE subject_tip_id=?
          ORDER BY created_at ASC`
       ),
 
@@ -974,9 +1156,15 @@ class SQLiteStore {
       ),
 
       // Persistent mempool
-      saveMempoolTx: this.db.prepare("INSERT OR IGNORE INTO mempool (tx_id,tx_data) VALUES (?,?)"),
+      saveMempoolTx: this.db.prepare("INSERT OR IGNORE INTO mempool (tx_id,tx_data,subject_tip_id) VALUES (?,?,?)"),
       getMempoolTx: this.db.prepare("SELECT * FROM mempool WHERE tx_id=?"),
       getMempoolTxs: this.db.prepare("SELECT * FROM mempool ORDER BY received_at ASC"),
+      // Indexed lookup for activity-feed merge of pending txs.
+      // received_at ASC keeps oldest-first ordering, which the activity
+      // API can either honor (queue order) or re-sort by tx.timestamp.
+      getMempoolTxsByTipId: this.db.prepare(
+        "SELECT * FROM mempool WHERE subject_tip_id=? ORDER BY received_at ASC"
+      ),
       deleteMempoolTx: this.db.prepare("DELETE FROM mempool WHERE tx_id=?"),
       clearMempoolBefore: this.db.prepare("DELETE FROM mempool WHERE received_at < ?"),
       countMempool: this.db.prepare("SELECT COUNT(*) AS n FROM mempool"),
@@ -986,8 +1174,8 @@ class SQLiteStore {
       // silent no-op; the original (most-informative) reason wins.
       saveTxRejection: this.db.prepare(
         `INSERT OR IGNORE INTO tx_rejections
-           (tx_id,reason,reason_detail,rejected_at_ms,rejected_at_round,dropper_node_id,tx_type,origin_node_id,tx_data)
-         VALUES (?,?,?,?,?,?,?,?,?)`
+           (tx_id,reason,reason_detail,rejected_at_ms,rejected_at_round,dropper_node_id,tx_type,origin_node_id,tx_data,subject_tip_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
       ),
       getTxRejection: this.db.prepare("SELECT * FROM tx_rejections WHERE tx_id=?"),
       // Reverse-chronological so dashboards / outcome endpoint see most
@@ -997,6 +1185,14 @@ class SQLiteStore {
          WHERE reason=? AND rejected_at_ms >= ?
          ORDER BY rejected_at_ms DESC
          LIMIT ?`
+      ),
+      // Indexed lookup for activity-feed merge of rejected txs.
+      // DESC by rejected_at_ms so the most-recent failure shows first
+      // (matches what a user looking at "what went wrong" expects).
+      getTxRejectionsByTipId: this.db.prepare(
+        `SELECT * FROM tx_rejections
+         WHERE subject_tip_id=?
+         ORDER BY rejected_at_ms DESC`
       ),
       countTxRejections: this.db.prepare("SELECT COUNT(*) AS n FROM tx_rejections"),
     };
@@ -1015,7 +1211,8 @@ class SQLiteStore {
       JSON.stringify(tx.data),
       tx.timestamp,
       JSON.stringify(tx.prev || []),
-      tx.signature || null
+      tx.signature || null,
+      subjectTipId(tx)
     );
   }
   getTx(id) { return this._parseTx(this._stmts.getTx.get(id)); }
@@ -1023,7 +1220,13 @@ class SQLiteStore {
   count() { return this._stmts.countTxs.get().n; }
   getTxsByType(type) { return this._stmts.txsByType.all(type).map(r => this._parseTx(r)); }
   getTxsByTypeAndCtid(type, ctid) { return this._stmts.txsByTypeAndCtid.all(type, ctid).map(r => this._parseTx(r)); }
+  // Narrow OR-pattern lookup — scope matches scoring.computeScore's
+  // requirements (tip_id || author_tip_id covers every score-affecting role).
   getTxsByTipId(tipId) { return this._stmts.txsByTipId.all(tipId, tipId).map(r => this._parseTx(r)); }
+  // Broad lookup via the denormalised subject_tip_id column. Includes
+  // jurors, verifiers, disputers, and appellants. Powers the activity
+  // feed; scoring still uses getTxsByTipId.
+  getTxsBySubject(tipId) { return this._stmts.txsBySubject.all(tipId).map(r => this._parseTx(r)); }
   // §14/#49 snapshot full-history streaming. Ordered by tx_id (PK index)
   // so sender + receiver hash rows in the same order → same txs_full_root.
   // Uses better-sqlite3 .iterate() so memory stays bounded at one row.
@@ -1357,7 +1560,7 @@ class SQLiteStore {
 
   // ── Persistent Mempool ────────────────────────────────────────────────────
   saveMempoolTx(tx) {
-    this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx));
+    this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx), subjectTipId(tx));
   }
   getMempoolTx(txId) {
     const row = this._stmts.getMempoolTx.get(txId);
@@ -1365,6 +1568,9 @@ class SQLiteStore {
   }
   getMempoolTxs() {
     return this._stmts.getMempoolTxs.all().map(r => JSON.parse(r.tx_data));
+  }
+  getMempoolTxsByTipId(tipId) {
+    return this._stmts.getMempoolTxsByTipId.all(tipId).map(r => JSON.parse(r.tx_data));
   }
   deleteMempoolTx(txId) {
     this._stmts.deleteMempoolTx.run(txId);
@@ -1393,6 +1599,12 @@ class SQLiteStore {
     const txData = rec.tx_data == null
       ? null
       : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
+    // subject_tip_id derived from the tx body (when available) so the
+    // activity feed can merge a user's rejected txs into their feed
+    // without re-parsing JSON per row at read time.
+    const subj = rec.tx_data && typeof rec.tx_data === "object"
+      ? subjectTipId(rec.tx_data)
+      : null;
     const res = this._stmts.saveTxRejection.run(
       rec.tx_id,
       rec.reason,
@@ -1402,7 +1614,8 @@ class SQLiteStore {
       rec.dropper_node_id,
       rec.tx_type || null,
       rec.origin_node_id || null,
-      txData
+      txData,
+      subj
     );
     return res.changes > 0;
   }
@@ -1421,6 +1634,11 @@ class SQLiteStore {
     const limit = opts.limit != null && Number.isFinite(opts.limit) ? opts.limit : -1;
     return this._stmts.getTxRejectionsByReason
       .all(reason, since, limit)
+      .map(r => this._parseRejectionRow(r));
+  }
+  getTxRejectionsByTipId(tipId) {
+    return this._stmts.getTxRejectionsByTipId
+      .all(tipId)
       .map(r => this._parseRejectionRow(r));
   }
   countTxRejections() { return this._stmts.countTxRejections.get().n; }
@@ -1466,6 +1684,16 @@ function initDAG(config) {
     _writeGenesisBlock(store, config);
   }
 
+  // Activity-feed denormalisation: populate `subject_tip_id` for rows
+  // that pre-date the column. Idempotent — second startup matches
+  // zero rows and exits immediately. Without this, existing committed
+  // txs on live nodes wouldn't surface in the activity feed.
+  const filled = store.backfillSubjectTipId(subjectTipId);
+  const totalFilled = filled.transactions + filled.mempool + filled.tx_rejections;
+  if (totalFilled > 0) {
+    log.info(`DAG: backfilled subject_tip_id on ${filled.transactions} txs, ${filled.mempool} mempool, ${filled.tx_rejections} rejections`);
+  }
+
   // ── Recent tx ring buffer (last 2 tx IDs for prev[] on new txs) ───────────
   // Initialize from the two most recent txs in the DAG
   const allTxIds = store.getAllTxs().map(t => t.tx_id);
@@ -1509,6 +1737,7 @@ function initDAG(config) {
     getTxsByType: (type) => store.getTxsByType(type),
     getTxsByTypeAndCtid: (type, ctid) => store.getTxsByTypeAndCtid(type, ctid),
     getTxsByTipId: (tipId) => store.getTxsByTipId(tipId),
+    getTxsBySubject: (tipId) => store.getTxsBySubject(tipId),
     getRecentPrev: () => [..._prev],
 
     // §14/#49 — streaming iterator over all rows in `transactions`,
@@ -1604,6 +1833,7 @@ function initDAG(config) {
     saveMempoolTx: (tx) => store.saveMempoolTx(tx),
     getMempoolTx: (txId) => store.getMempoolTx(txId),
     getMempoolTxs: () => store.getMempoolTxs(),
+    getMempoolTxsByTipId: (tipId) => store.getMempoolTxsByTipId(tipId),
     deleteMempoolTx: (txId) => store.deleteMempoolTx(txId),
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
@@ -1618,6 +1848,7 @@ function initDAG(config) {
     saveTxRejection: (rec) => store.saveTxRejection(rec),
     getTxRejection: (txId) => store.getTxRejection(txId),
     getTxRejectionsByReason: (reason, opts) => store.getTxRejectionsByReason(reason, opts),
+    getTxRejectionsByTipId: (tipId) => store.getTxRejectionsByTipId(tipId),
     countTxRejections: () => store.countTxRejections(),
 
     // ── DB Transactions ──────────────────────────────────────────────────

@@ -15,6 +15,10 @@ const { log } = require("../logger");
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
 
+// Statuses the activity feed can include. Default is "committed" only —
+// preserves back-compat for clients that pre-date the no-loss work.
+const ACTIVITY_STATUSES = Object.freeze(["committed", "pending", "rejected"]);
+
 function parseActivityQuery(query) {
   let limit = ACTIVITY_DEFAULT_LIMIT;
   if (query.limit !== undefined) {
@@ -40,7 +44,18 @@ function parseActivityQuery(query) {
     if (list.length) types = new Set(list);
   }
 
-  return { limit, before, types };
+  // ?include=committed,pending,rejected — opt-in to merge pending +
+  // rejected streams into the feed. Default = committed only so
+  // existing clients see no behavior change.
+  let include = new Set(["committed"]);
+  if (query.include) {
+    const list = String(query.include).split(",").map(s => s.trim()).filter(Boolean);
+    const invalid = list.filter(s => !ACTIVITY_STATUSES.includes(s));
+    if (invalid.length) throw { status: 400, error: `Unknown status(es): ${invalid.join(", ")}. Allowed: ${ACTIVITY_STATUSES.join(", ")}` };
+    include = new Set(list);
+  }
+
+  return { limit, before, types, include };
 }
 
 // Project a raw tx into a UI-shaped activity item: trims tx-internal fields
@@ -48,23 +63,37 @@ function parseActivityQuery(query) {
 // need, surfaces the role this tip_id played in the tx, and keeps ctid +
 // origin_code / status / delta / reason where present so the UI can render
 // "Registered content X", "Verified Y", "Score +5 for Z" without a second call.
-function projectActivityItem(tx, tipId) {
+//
+// `status` here is the lifecycle status (committed | pending | rejected),
+// distinct from the `data.status` field on some tx types — the UI needs
+// both so it can render "Pending: Verify content X" or
+// "Rejected: Identity already registered".
+function projectActivityItem(tx, tipId, status, extra = {}) {
   const d = tx.data || {};
-  const role = d.tip_id === tipId
-    ? "subject"
-    : (d.author_tip_id === tipId ? "author" : "other");
+  // Broader role set now that activity includes verifier/juror/etc. We
+  // surface the single most-specific role for display; the UI can
+  // ignore it but the field name lets a feed renderer template differently.
+  let role = "other";
+  if (d.tip_id === tipId) role = "subject";
+  else if (d.author_tip_id === tipId) role = "author";
+  else if (d.verifier_tip_id === tipId) role = "verifier";
+  else if (d.disputer_tip_id === tipId) role = "disputer";
+  else if (d.juror_tip_id === tipId) role = "juror";
+  else if (d.appellant_tip_id === tipId) role = "appellant";
 
   return {
     tx_id: tx.tx_id,
     tx_type: tx.tx_type,
     timestamp: tx.timestamp,
+    status,                                            // committed | pending | rejected
     role,
     ctid: d.ctid || null,
     origin_code: d.origin_code || null,
-    status: d.status || null,
+    data_status: d.status || null,                     // tx.data.status (verified/disputed/etc.)
     delta: typeof d.delta === "number" ? d.delta : null,
     reason: d.reason || null,
     related_tx_id: d.related_tx_id || null,
+    ...extra,                                          // rejection-only fields injected by caller
   };
 }
 
@@ -205,33 +234,72 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  // Full per-identity activity feed: every tx where this tip_id appears as
-  // either `data.tip_id` or `data.author_tip_id`. Distinct from getHistory()
-  // which returns only score-affecting txs filtered through `scoreTargetTipId`.
-  // Designed for UI activity timelines (registrations, content, verifications,
-  // disputes, revocations, etc.) with pagination + tx_type filtering.
+  // Full per-identity activity feed: every tx where tipId played any
+  // role (subject, author, verifier, disputer, juror, appellant) as
+  // attributed by tx-attribution.subjectTipId. Distinct from getHistory()
+  // which returns only score-affecting txs filtered through
+  // `scoreTargetTipId` (narrower — only tip_id || author_tip_id).
+  //
+  // ?include=committed,pending,rejected merges in still-pending and
+  // dropped txs from the mempool + tx_rejections tables so the UI can
+  // show one consolidated "what happened to my submissions" view.
+  // Default = committed only for back-compat.
   function getActivity(tipId, query = {}) {
     const rec = dag.getIdentity(tipId);
     if (!rec) throw { status: 404, error: "TIP-ID not found" };
 
-    const { limit, before, types } = parseActivityQuery(query);
+    const { limit, before, types, include } = parseActivityQuery(query);
+    const beforeMs = before ? new Date(before).getTime() : null;
+    const inWindow = (ts) => beforeMs == null || new Date(ts).getTime() < beforeMs;
+    const typeAllowed = (t) => !types || types.has(t);
 
-    let txs = dag.getTxsByTipId(tipId);
-    if (types) txs = txs.filter(t => types.has(t.tx_type));
+    // Collect items from each requested stream. Each item carries its
+    // lifecycle status so the UI can render appropriately.
+    const items = [];
 
-    txs.sort((a, b) => {
+    if (include.has("committed")) {
+      for (const tx of dag.getTxsBySubject(tipId)) {
+        if (!typeAllowed(tx.tx_type)) continue;
+        if (!inWindow(tx.timestamp)) continue;
+        items.push(projectActivityItem(tx, tipId, "committed"));
+      }
+    }
+
+    if (include.has("pending") && typeof dag.getMempoolTxsByTipId === "function") {
+      for (const tx of dag.getMempoolTxsByTipId(tipId)) {
+        if (!typeAllowed(tx.tx_type)) continue;
+        if (!inWindow(tx.timestamp)) continue;
+        items.push(projectActivityItem(tx, tipId, "pending"));
+      }
+    }
+
+    if (include.has("rejected") && typeof dag.getTxRejectionsByTipId === "function") {
+      for (const row of dag.getTxRejectionsByTipId(tipId)) {
+        if (!typeAllowed(row.tx_type)) continue;
+        // Rejected rows carry their own timestamp surrogate
+        // (rejected_at_ms). Use the original tx timestamp when the
+        // body is preserved (typical case); fall back to rejection
+        // wall-clock so the entry still slots into the timeline.
+        const tx = row.tx_data || { tx_id: row.tx_id, tx_type: row.tx_type, timestamp: new Date(row.rejected_at_ms).toISOString(), data: {} };
+        if (!inWindow(tx.timestamp)) continue;
+        items.push(projectActivityItem(tx, tipId, "rejected", {
+          reason: row.reason,
+          reason_detail: row.reason_detail,
+          rejected_at: row.rejected_at_ms,
+          rejected_at_round: row.rejected_at_round,
+        }));
+      }
+    }
+
+    // Sort merged stream by timestamp DESC; tx_id as a deterministic
+    // tie-breaker so order is stable across calls when timestamps tie.
+    items.sort((a, b) => {
       const d = new Date(b.timestamp) - new Date(a.timestamp);
       return d !== 0 ? d : (a.tx_id < b.tx_id ? 1 : -1);
     });
 
-    if (before) {
-      const cutoff = new Date(before).getTime();
-      txs = txs.filter(t => new Date(t.timestamp).getTime() < cutoff);
-    }
-
-    const total = txs.length;
-    const page = txs.slice(0, limit);
-    const items = page.map(tx => projectActivityItem(tx, tipId));
+    const total = items.length;
+    const page = items.slice(0, limit);
     const nextCursor = page.length === limit && total > limit
       ? page[page.length - 1].timestamp
       : null;
@@ -240,9 +308,9 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tip_id: tipId,
       creator_name: rec.creator_name || null,
       total,
-      count: items.length,
+      count: page.length,
       next_cursor: nextCursor,
-      items,
+      items: page,
     };
   }
 
