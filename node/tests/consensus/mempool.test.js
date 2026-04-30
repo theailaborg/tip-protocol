@@ -367,6 +367,60 @@ describe("mempool — tx_rejections wiring on mempool_full", () => {
   });
 });
 
+describe("mempool — tx_rejections wiring on TTL eviction", () => {
+  test("_evictStale (via drain) records mempool_ttl_expired with full body for each evicted tx", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    // 1s TTL — short window so the test can plant pre-aged entries via
+    // addFront's caller-supplied receivedAt without sleeping.
+    const mempool = createMempool(dag, { maxTxAgeSec: 1, nodeId: "tip://node/test" });
+
+    const stale1 = makeTx("STALE-1", { tx_type: "REGISTER_IDENTITY" });
+    const stale2 = makeTx("STALE-2", { tx_type: "REGISTER_CONTENT" });
+    const fresh  = makeTx("FRESH",   { tx_type: "REGISTER_IDENTITY" });
+
+    // Both planted with receivedAt 5s in the past — well past 1s TTL.
+    mempool.addFront(stale1, Date.now() - 5000);
+    mempool.addFront(stale2, Date.now() - 5000);
+    mempool.add(fresh);
+
+    // drain() runs _evictStale on entry. Stale entries are removed and
+    // a tx_rejection row is written for each. Fresh tx survives.
+    expect(ids(mempool.drain(10))).toEqual(["FRESH"]);
+    expect(mempool.stats().counters.evicted_total).toBe(2);
+
+    // Each evicted tx has a rejection row stamped with our nodeId, the
+    // canonical TTL reason, the configured TTL in detail, and the full
+    // tx body (so a future replay path can re-validate + re-submit).
+    for (const stale of [stale1, stale2]) {
+      const row = dag.getTxRejection(stale.tx_id);
+      expect(row).not.toBeNull();
+      expect(row.reason).toBe(TX_REJECTION_REASON.MEMPOOL_TTL_EXPIRED);
+      expect(row.dropper_node_id).toBe("tip://node/test");
+      expect(row.tx_type).toBe(stale.tx_type);
+      expect(row.reason_detail).toContain("ttl=1s");
+      expect(row.tx_data).toEqual(stale);
+    }
+    // Fresh (drained) tx must NOT appear in rejections.
+    expect(dag.getTxRejection("FRESH")).toBeNull();
+    expect(dag.countTxRejections()).toBe(2);
+  });
+
+  test("getAll() also triggers eviction wiring (mempool gossip path)", () => {
+    // _evictStale is called from both drain() and getAll(); the gossip
+    // path uses getAll, so a tx that ages out without ever being drained
+    // must still leave a rejection row. Catches a future refactor that
+    // moves the wiring into drain() only.
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { maxTxAgeSec: 1, nodeId: "tip://node/test" });
+
+    const stale = makeTx("AGED");
+    mempool.addFront(stale, Date.now() - 5000);
+
+    expect(mempool.getAll()).toEqual([]);  // evicted out from under getAll
+    expect(dag.getTxRejection("AGED").reason).toBe(TX_REJECTION_REASON.MEMPOOL_TTL_EXPIRED);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 7. Module surface — export shape
 // ═══════════════════════════════════════════════════════════════════════════

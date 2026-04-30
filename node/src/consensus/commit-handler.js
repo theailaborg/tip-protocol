@@ -18,14 +18,38 @@
 
 "use strict";
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, shake256 } = require("../../../shared/crypto");
+const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.commit");
+
+/**
+ * Map a business-rule failure message to the most specific reason code.
+ *
+ * Coarse mapping by intent — the full message lives in `reason_detail`,
+ * so callers/dashboards always have the precise text. Reason codes here
+ * exist to give programmatic discriminability for the common cases users
+ * are most likely to ask about.
+ *
+ * Lives in commit-handler (not the sink) because the input format —
+ * stringified error messages from `validators/business-rules.js` — is
+ * specific to this caller. A future drop site outside commit-handler
+ * would have different inputs and need a different mapper.
+ *
+ * Add a new specific code only when (a) the failure is common AND
+ * (b) the remediation differs meaningfully from the generic case.
+ */
+function _mapBusinessRuleReason(error) {
+  if (!error) return TX_REJECTION_REASON.REVALIDATION_FAILED;
+  if (error.includes("Identity already registered")) return TX_REJECTION_REASON.IDENTITY_ALREADY_REGISTERED;
+  if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
+  return TX_REJECTION_REASON.REVALIDATION_FAILED;
+}
 
 /**
  * Create a commit handler.
@@ -54,7 +78,16 @@ const log = getLogger("tip.commit");
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, config, nodeId }) {
+  // tx_rejections sink (#64) — every drop site below records to the
+  // shared sink so commit-handler rejections share the same row shape
+  // as mempool rejections. nodeId precedence: explicit option →
+  // config.nodeRegisteredId → config.nodeId → "unknown" sentinel.
+  const droppingNodeId = nodeId
+    || (config && (config.nodeRegisteredId || config.nodeId))
+    || "unknown";
+  const _persistRejection = createRejectionSink({ dag, nodeId: droppingNodeId });
+
 
   /**
    * Process an ordered batch of txs from Bullshark.
@@ -98,7 +131,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
       // references point at have already been committed in earlier rounds.
       const validation = validateTransaction(tx, dag, { skipState: true });
       if (!validation.valid) {
-        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${validation.errors.join("; ")}`);
+        const detail = validation.errors.join("; ");
+        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${detail}`);
+        _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, detail, { round });
         dropped++;
         continue;
       }
@@ -106,6 +141,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
       // Verify signature
       if (!_verifyTxSignature(tx)) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature failed`);
+        _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, "signature failed", { round });
         dropped++;
         continue;
       }
@@ -119,6 +155,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
       const business = _validateBusinessRules(tx, validated, certTimestamp);
       if (!business.valid) {
         log.debug(`Round ${round}: dropped ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
+        _persistRejection(tx, _mapBusinessRuleReason(business.error), business.error, { round });
         dropped++;
         continue;
       }
@@ -142,6 +179,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger 
         });
       } catch (err) {
         log.error(`Round ${round}: transaction commit failed — rolled back ${validated.length} txs: ${err.message}`);
+        // Every rolled-back tx is silently lost: it passed phase-1
+        // validation, never reached dag.txs, and the user has the
+        // tip_id. Record each one so the outcome endpoint can answer.
+        // Detail carries the underlying error for ops triage.
+        const detail = `transaction rollback: ${err.message}`;
+        for (const tx of validated) {
+          _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, detail, { round });
+        }
         committed = 0;
         dropped += validated.length;
       }

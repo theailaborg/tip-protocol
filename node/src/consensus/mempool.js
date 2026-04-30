@@ -21,6 +21,7 @@
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { TX_REJECTION_REASON } = require("../../../shared/constants");
+const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.mempool");
@@ -38,29 +39,10 @@ const log = getLogger("tip.mempool");
 function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
-  const nodeId = options.nodeId || "unknown";
 
-  // ── tx_rejections sink (#64 follow-up — no-loss invariant) ────────────
-  // Single helper used by every mempool drop site so the rejection-row
-  // shape is uniform. Skipped when dag.saveTxRejection is missing
-  // (in-memory test stubs) and when tx has no tx_id (can't index the
-  // PK; that case is a caller bug, not user-visible loss).
-  function _persistRejection(tx, reason, detail) {
-    if (!tx || !tx.tx_id) return;
-    if (!dag || typeof dag.saveTxRejection !== "function") return;
-    try {
-      dag.saveTxRejection({
-        tx_id:           tx.tx_id,
-        reason,
-        reason_detail:   detail || null,
-        dropper_node_id: nodeId,
-        tx_type:         tx.tx_type || null,
-        tx_data:         tx,  // full body for replay / forensics
-      });
-    } catch (err) {
-      log.warn(`tx_rejection persist failed for ${tx.tx_id}: ${err.message}`);
-    }
-  }
+  // tx_rejections sink (#64) — shared with commit-handler so every
+  // drop site in the codebase produces identically-shaped rows.
+  const _persistRejection = createRejectionSink({ dag, nodeId: options.nodeId });
 
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
@@ -235,18 +217,29 @@ function createMempool(dag, options = {}) {
    */
   function _evictStale() {
     const cutoff = Date.now() - (maxTxAgeSec * 1000);
-    const evicted = [];
+    const evicted = [];  // [{ txId, tx }] — keep the body for tx_rejections
     for (const [txId, entry] of _pending) {
       if (entry.receivedAt < cutoff) {
         _pending.delete(txId);
-        evicted.push(txId);
+        evicted.push({ txId, tx: entry.tx });
       }
     }
     if (evicted.length > 0) {
       _counters.evicted_total += evicted.length;
       log.info(`Mempool evicted ${evicted.length} stale txs (older than ${maxTxAgeSec}s)`);
+
+      // Each TTL eviction is a canonical silent-loss event: the API
+      // returned tip_id to a client, the tx aged out before being
+      // batched, the client would otherwise GET 404 forever. Record
+      // each so the outcome endpoint can answer "what happened".
+      const detail = `ttl=${maxTxAgeSec}s`;
+      for (const e of evicted) {
+        _persistRejection(e.tx, TX_REJECTION_REASON.MEMPOOL_TTL_EXPIRED, detail);
+      }
+
+      const evictedIds = evicted.map(e => e.txId);
       if (dag && typeof dag.deleteMempoolTxs === "function") {
-        try { dag.deleteMempoolTxs(evicted); } catch (err) {
+        try { dag.deleteMempoolTxs(evictedIds); } catch (err) {
           log.warn(`Mempool disk eviction failed: ${err.message}`);
         }
       }
