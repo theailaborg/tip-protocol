@@ -49,6 +49,10 @@
     "setupFiles": [
       "<rootDir>/tests/jest-setup.js"
     ],
+    "reporters": [
+      "default",
+      "<rootDir>/tests/_failures-summary-reporter.js"
+    ],
     "coverageDirectory": "coverage",
     "collectCoverageFrom": [
       "src/**/*.js"
