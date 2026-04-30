@@ -100,6 +100,25 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     fast_forwards: 0,
     retries: 0,
     equivocation_refused: 0,  // §1: count of refused double-attestations
+    // #64: late-batch handling. Counts batches arriving after our round
+    // has advanced past their batch.round but still within the bounded
+    // look-back window (VOTES_RETENTION_ROUNDS). Pre-fix these were
+    // silently dropped — losing peer txs whenever local round outran
+    // gossip delivery by ≥1 round. Post-fix they're ack'd normally.
+    batches_acked_late: 0,
+    // #64: batches arriving from beyond the look-back horizon. These
+    // ARE refused — equivocation defense table is pruned beyond the
+    // horizon, so we can't safely ack. Sustained ticks mean either a
+    // misbehaving peer is replaying very old batches or the horizon
+    // is undersized for the deployment's jitter profile.
+    batches_rejected_too_old: 0,
+    // #64: count of rounds where _myBatch was discarded uncertified at
+    // round advance. The txs are requeued to mempool by _resetRoundState
+    // and re-attempted at the next round, so this is delay-not-loss —
+    // but a sustained tick means this node is consistently failing to
+    // get quorum on its own batches (lagging, partitioned, or under-
+    // weighted in committee).
+    my_batches_orphaned: 0,
   };
 
   // Wall-clock timestamp of the last successful round advance. Used by
@@ -289,6 +308,37 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   function _resetRoundState() {
+    // #64: if our own batch never formed a cert at this round, return
+    // its txs to the FRONT of the mempool so they get re-batched at
+    // the next round, drained ahead of newer arrivals (the orphaned
+    // txs were submitted earlier and deserve their original FIFO
+    // position). Without this, txs we drained at T+0 but never got
+    // 2f+1 acks for are silently lost when the round advances.
+    //
+    // The fast-forward path at handleIncomingBatch already requeues;
+    // duplicating the logic here so it ALSO fires on natural advance
+    // (via _tryAdvanceRound seeing 2f+1 certs from peers, even when
+    // those certs don't include our own batch).
+    if (_myBatch && !_myCertificateCreated) {
+      const orphanedTxs = _myBatch.txs || [];
+      if (orphanedTxs.length > 0) {
+        let requeued = 0;
+        // Re-insert in REVERSE order so the first tx of the original
+        // batch ends up at the front of the queue (each addFront
+        // prepends — last addFront becomes the new head).
+        for (let i = orphanedTxs.length - 1; i >= 0; i--) {
+          const r = mempool.addFront(orphanedTxs[i], Date.now());
+          if (r && r.added) requeued++;
+        }
+        _metrics.my_batches_orphaned++;
+        log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
+      }
+      // Empty batches at vote rounds advancing without cert is normal
+      // (peer certs arrive faster than ack quorum on our self-emitted
+      // empty batch). Don't bump my_batches_orphaned for them — would
+      // drown the signal we actually care about (orphaned tx-bearing
+      // batches).
+    }
     _myBatch = null;
     _peerBatches.clear();
     _batchAcks.clear();
@@ -344,25 +394,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // window). Fast-forward to catch up — abandon any in-flight round state,
     // join the peer's round, and immediately begin our own round so we can
     // contribute a batch + ack this peer's batch too.
+    //
+    // #64: orphan-tx requeue is centralised in `_resetRoundState` (which
+    // we call below). When _myBatch was uncertified, _resetRoundState
+    // front-loads its txs back into the mempool so they drain ahead of
+    // newer arrivals at the next round. Don't duplicate the requeue
+    // here.
     if (batch.round > _currentRound) {
       _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
-      // Before discarding _myBatch, return its txs to the mempool so they're
-      // drained again in the next _beginRound. Without this, txs we drained
-      // but never got a cert for would be silently lost. Only needed when we
-      // haven't already wrapped the batch in a cert — if _myCertificateCreated
-      // is true, those txs live in the DAG permanently via our cert.
-      if (_myBatch && !_myCertificateCreated) {
-        const txs = _myBatch.txs || [];
-        if (txs.length > 0) {
-          let requeued = 0;
-          for (const tx of txs) {
-            const r = mempool.add(tx);
-            if (r && r.added) requeued++;
-          }
-          log.info(`Fast-forward: returned ${requeued}/${txs.length} uncommitted txs to mempool`);
-        }
-      }
       _currentRound = batch.round;
       _resetRoundState();
       if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
@@ -372,11 +412,38 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _beginRound();
     }
 
-    // Drop stale batches for older rounds (peer is behind; they'll catch up
-    // via their own handleIncomingBatch when one of our batches reaches them).
-    if (batch.round < _currentRound) {
-      log.debug(`Round ${_currentRound}: ignoring stale batch for round ${batch.round} from ${batch.author_node_id}`);
+    // Late-batch handling (#64). Two thresholds:
+    //
+    //   1. Beyond horizon (`< _currentRound - VOTES_RETENTION_ROUNDS`):
+    //      refuse. The equivocation defense table (`votes_seen`) is
+    //      pruned at exactly this window, so we don't have the prior-
+    //      vote record to enforce "I've already attested to this
+    //      (round, author)". Ack'ing here would risk double-signing
+    //      under peer equivocation.
+    //
+    //   2. Within horizon (between `_currentRound - HORIZON` and
+    //      `_currentRound`): ack normally. Reference Narwhal does this
+    //      so a peer whose batch arrived a few hundred ms after we
+    //      advanced doesn't have its txs orphaned. The cert can form
+    //      retroactively; future Bullshark anchor walks pick it up via
+    //      parent links. Sync-mode joiners are gated separately at
+    //      line "_joinState === 'syncing'" above.
+    //
+    // Pre-fix: any `batch.round < _currentRound` was dropped silently.
+    // Live impact: 2026-04-29 round 10244 — node 1's REGISTER_IDENTITY
+    // batch arrived ~270ms late (one round boundary), got dropped on
+    // both peers, never formed a cert, tx orphaned. User got 200 +
+    // tip_id from API but GET 404'd forever.
+    const horizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
+    if (batch.round < _currentRound - horizon) {
+      log.debug(`Round ${_currentRound}: rejected batch from round ${batch.round} (beyond stale horizon ${horizon} rounds) author=${batch.author_node_id}`);
+      _metrics.batches_rejected_too_old++;
       return;
+    }
+    if (batch.round < _currentRound) {
+      log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id}`);
+      _metrics.batches_acked_late++;
+      // fall through to equivocation guard + ack
     }
 
     // §1 Equivocation defense: refuse to sign a second attestation for the

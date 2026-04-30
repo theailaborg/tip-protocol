@@ -237,7 +237,10 @@ function createMempool(dag, options = {}) {
     return {
       size: _pending.size,
       maxSize,
-      oldestAgeSec: oldestAge ? Math.round(oldestAge) : null,
+      // null only when mempool is empty. A just-added entry has age ~0;
+      // truthy-checking `oldestAge` would round 0 to null and conflate
+      // "no entries" with "entries present but fresh".
+      oldestAgeSec: oldestAge === null ? null : Math.round(oldestAge),
       // Cumulative counters — never miss transient tx flow that the
       // gauge sees-only-at-scrape-time. rate(received_total[1m]) =
       // submission rate; rate(drained_total[1m]) = commit-into-batch
@@ -252,7 +255,62 @@ function createMempool(dag, options = {}) {
    */
   function onTxAdded(fn) { _onTxAdded = fn; }
 
-  return { add, drain, remove, has, getAll, size, clear, stats, onTxAdded };
+  /**
+   * Re-insert an orphaned tx at the FRONT of the drain order — used by
+   * narwhal._resetRoundState when our own batch advances uncertified
+   * (#64). The tx was originally submitted earlier than every current
+   * mempool entry; appending it would put it behind newer arrivals and
+   * starve it indefinitely under load. Prepending preserves the
+   * "older = drained first" semantics. The receivedAt is preserved
+   * from the caller (the original submit time, not "now") so age-based
+   * eviction also behaves correctly.
+   *
+   * Cost: O(n) Map rebuild. Only fires on natural orphan events, which
+   * are rare in healthy operation; under load each occurrence
+   * represents one tx-bearing round that didn't certify, not a
+   * per-tx hot path.
+   *
+   * @param {Object} tx           A validated transaction (must have tx_id)
+   * @param {number} receivedAt   Original submit timestamp (epoch ms)
+   * @returns {{ added: boolean, reason?: string }}
+   */
+  function addFront(tx, receivedAt) {
+    if (!tx || !tx.tx_id) {
+      _counters.rejected_total++;
+      return { added: false, reason: "tx missing tx_id" };
+    }
+    if (_pending.has(tx.tx_id)) {
+      // Already in mempool — common after partial requeue or double-submit.
+      // Not an error; just leave the existing entry in place.
+      return { added: false, reason: "duplicate" };
+    }
+    if (_pending.size >= maxSize) {
+      _counters.rejected_total++;
+      log.warn(`Mempool full (${maxSize}), rejecting front-load tx ${tx.tx_id}`);
+      return { added: false, reason: "mempool_full" };
+    }
+
+    // Rebuild the Map with this entry first to preserve insertion-order
+    // semantics for `drain()`. JS Maps don't expose a prepend; pivoting
+    // through a fresh Map is the standard pattern.
+    const restored = new Map();
+    restored.set(tx.tx_id, { tx, receivedAt: receivedAt || Date.now() });
+    for (const [k, v] of _pending) restored.set(k, v);
+    _pending.clear();
+    for (const [k, v] of restored) _pending.set(k, v);
+
+    _counters.received_total++;
+
+    if (dag && typeof dag.saveMempoolTx === "function") {
+      try { dag.saveMempoolTx(tx); } catch (err) {
+        log.warn(`Mempool persist failed for ${tx.tx_id}: ${err.message}`);
+      }
+    }
+    if (_onTxAdded) _onTxAdded(tx);
+    return { added: true };
+  }
+
+  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded };
 }
 
 module.exports = { createMempool };
