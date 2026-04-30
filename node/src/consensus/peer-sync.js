@@ -170,7 +170,44 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     // for a fresh DAG, or latest+1 for a resuming node). syncFromPeer reads
     // dag.getLatestRound() when fromRound is undefined.
     const fromRound = snapRound > 0 ? snapRound + 1 : undefined;
-    const result = await syncWithRetry(peerId, syncHandler, { fromRound });
+    let result = await syncWithRetry(peerId, syncHandler, { fromRound });
+    let effectiveSnapRound = snapRound;
+
+    // #45: peer GC'd past our requested round → cert sync returned an
+    // empty payload with snapshotRequired=true. Without this branch the
+    // bootstrap path would silently fall through to exitSyncMode at
+    // peerLatestRound with no certs in the local DAG, leaving the joiner
+    // unable to walk parent refs at the new round — a recipe for halt
+    // or fork. Fires when Phase 1 (snapshot) was skipped (no
+    // snapshotHandler / no qualifying commit) or when the peer GC'd
+    // between Phase 1 and Phase 2.
+    //
+    // Mirrors the consumer at anti-entropy.js — a single shared signal
+    // for "give up on cert sync from this peer, fall back to snapshot."
+    if (result.snapshotRequired) {
+      log.warn(
+        `Sync: peer ${peerId.slice(0, 12)} signals snapshot_required ` +
+        `(earliest=${result.earliestAvailableRound || "?"}); retrying snapshot fast-sync`
+      );
+      const retrySnapRound = await tryFastSyncSnapshot(peerId, nodeId, { snapshotHandler, bullshark });
+      if (retrySnapRound > 0) {
+        effectiveSnapRound = retrySnapRound;
+        result = await syncWithRetry(peerId, syncHandler, { fromRound: retrySnapRound + 1 });
+        // If the retry ALSO comes back snapshot_required, the peer is
+        // GC-ing faster than we can sync. Don't recurse; let
+        // anti-entropy or another peer's onPeerAuthorized try later.
+        if (result.snapshotRequired) {
+          log.warn(`Sync: snapshot retry still GC'd by peer ${peerId.slice(0, 12)} — staying in sync mode`);
+          return;
+        }
+      } else {
+        // Snapshot fallback also failed — give up on this peer rather
+        // than exit sync mode with empty state. Anti-entropy or another
+        // peer's onPeerAuthorized retries.
+        log.warn(`Sync: snapshot fallback failed for peer ${peerId.slice(0, 12)} — staying in sync mode`);
+        return;
+      }
+    }
 
     if (result.imported > 0) {
       log.info(`Synced ${result.imported} certificates from peer (rounds ${result.fromRound}-${result.toRound})`);
@@ -187,7 +224,7 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     // so we start producing at the same round the cluster is on (or one after).
     // Falls back to DAG-derived round if peer didn't report one; falls back
     // further to the snapshot's round if even that's 0.
-    const targetRound = result.peerLatestRound || snapRound || 0;
+    const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
     narwhal.exitSyncMode(targetRound);
 
     // Committee is derived from DAG state — peer's certs (and any nodes

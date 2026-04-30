@@ -192,6 +192,153 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
   });
 
+  test("#45: cert-sync returns snapshotRequired → bootstrap retries snapshot, then re-syncs from new anchor", async () => {
+    // Live-observed gap: peer's cert GC horizon is past the joiner's
+    // requested round → sync-handler returns { imported: 0,
+    // snapshotRequired: true, earliestAvailableRound: N }. Pre-fix the
+    // bootstrap path ignored snapshotRequired (only branched on
+    // imported > 0), called exitSyncMode at peerLatestRound with an
+    // empty cert chain, and the joiner tried to participate at a
+    // round it had zero parent context for. Post-fix the path retries
+    // the snapshot once and only exits sync mode after the retry
+    // produces a usable anchor.
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    // First cert-sync call: peer-GC'd past our request → snapshotRequired.
+    // Second call (after the fix's retry-snapshot path): success at
+    // peerLatestRound with no remaining gap.
+    const syncCalls = [];
+    const syncHandler = {
+      calls: syncCalls,
+      syncFromPeer: async (peerId, opts) => {
+        syncCalls.push({ peerId, opts });
+        if (syncCalls.length === 1) {
+          return {
+            imported: 0,
+            fromRound: opts?.fromRound || 1,
+            toRound: opts?.fromRound || 1,
+            peerLatestRound: 45520,
+            snapshotRequired: true,
+            earliestAvailableRound: 45000,
+          };
+        }
+        return { imported: 0, fromRound: opts?.fromRound, toRound: opts?.fromRound, peerLatestRound: 45520 };
+      },
+    };
+
+    // Stub snapshotHandler with two scripted responses: first call
+    // (Phase 1) → no qualifying commit; second call (the #45 fallback) →
+    // a snapshot at round 45000. The two-call requirement IS the
+    // signal that the fix wired up the retry path.
+    const snapshotCalls = [];
+    const snapshotHandler = {
+      requestSnapshotFromPeer: async (peerId, opts) => {
+        snapshotCalls.push({ peerId, opts });
+        if (snapshotCalls.length === 1) return null;  // Phase 1 declined
+        return {
+          round: 45000,
+          peer_committed_round: 45520,
+          peer_consensus_index: 17000,
+          consensus_index: 16000,
+          rows_installed: 76,
+        };
+      },
+    };
+
+    const narwhal = stubNarwhal();
+    const marked = [];
+    const consensusIndexes = [];
+    const bullshark = {
+      markOrderedUpTo: (r) => marked.push(r),
+      setConsensusIndex: (i) => consensusIndexes.push(i),
+    };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+
+    await onPeerAuthorized("peer-gc-pruned", "TIP_NODE_A", {
+      syncHandler, snapshotHandler,
+      commitHandler, dag: destDag, narwhal, bullshark,
+      nodeId: "OUR_NODE",
+    });
+
+    // Two cert-sync calls: first hit snapshotRequired, second ran from
+    // tryFastSyncSnapshot's returned anchor + 1. The helper returns
+    // max(peer_committed_round, snap.round) so cert sync resumes
+    // exactly where snapshot install ended (45520 + 1 = 45521).
+    expect(syncCalls.length).toBe(2);
+    expect(syncCalls[1].opts.fromRound).toBe(45521);
+    // Two snapshot attempts: Phase 1 declined, fallback installed.
+    expect(snapshotCalls.length).toBe(2);
+    // Bullshark advanced from the fallback snapshot's
+    // peer_committed_round, not just the anchor.
+    expect(marked).toContain(45520);
+    // Sync mode entered + exited; exit round reflects the peer's
+    // latest, NOT the original (broken) high round with no state.
+    expect(narwhal.events[0]).toBe("enter");
+    const exitEvent = narwhal.events.find(e => Array.isArray(e) && e[0] === "exit");
+    expect(exitEvent).toBeTruthy();
+    expect(exitEvent[1]).toBe(45520);
+  });
+
+  test("#45: cert-sync says snapshotRequired AND snapshot fallback fails → bootstrap stays in sync mode", async () => {
+    // The "stay in sync mode" branch — pre-fix the bootstrap would
+    // exitSyncMode at peerLatestRound regardless of having no state.
+    // Post-fix: when both phases fail, return early so anti-entropy or
+    // another peer's onPeerAuthorized retries with a different peer.
+    // Without this guard the joiner ends up at a high round with an
+    // empty DAG and breaks parent-walk on the next round.
+    const destDag = initDAG({ dbPath: ":memory:" });
+
+    const syncCalls = [];
+    const syncHandler = {
+      calls: syncCalls,
+      syncFromPeer: async (peerId, opts) => {
+        syncCalls.push({ peerId, opts });
+        return {
+          imported: 0,
+          fromRound: opts?.fromRound || 1,
+          toRound: opts?.fromRound || 1,
+          peerLatestRound: 45520,
+          snapshotRequired: true,
+          earliestAvailableRound: 45000,
+        };
+      },
+    };
+
+    // Both snapshot calls return null — Phase 1 declined AND fallback
+    // declined. The fix must short-circuit on the second null.
+    const snapshotCalls = [];
+    const snapshotHandler = {
+      requestSnapshotFromPeer: async () => {
+        snapshotCalls.push(true);
+        return null;
+      },
+    };
+
+    const narwhal = stubNarwhal();
+    const bullshark = { markOrderedUpTo: jest.fn(), setConsensusIndex: jest.fn() };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+
+    await onPeerAuthorized("peer-no-snap", "TIP_NODE_A", {
+      syncHandler, snapshotHandler,
+      commitHandler, dag: destDag, narwhal, bullshark,
+      nodeId: "OUR_NODE",
+    });
+
+    // Exactly ONE cert-sync call — the second-attempt path is gated
+    // on a successful snapshot retry, which didn't happen.
+    expect(syncCalls.length).toBe(1);
+    // Two snapshot attempts: Phase 1 + fallback. Both failed.
+    expect(snapshotCalls.length).toBe(2);
+    // Narwhal entered sync mode but DID NOT exit — this is the safety
+    // property the fix preserves. Pre-fix exitSyncMode would have been
+    // called with peerLatestRound (45520) and an empty DAG.
+    expect(narwhal.events[0]).toBe("enter");
+    const exitEvent = narwhal.events.find(e => Array.isArray(e) && e[0] === "exit");
+    expect(exitEvent).toBeUndefined();
+    // Bullshark unchanged — neither phase advanced state.
+    expect(bullshark.markOrderedUpTo).not.toHaveBeenCalled();
+  });
+
   test("no snapshot available → cert-sync starts from default (fromRound undefined), flow still completes", async () => {
     const emptySource = initDAG({ dbPath: ":memory:" });
     const destDag = initDAG({ dbPath: ":memory:" });
