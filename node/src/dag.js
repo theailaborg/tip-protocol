@@ -443,6 +443,7 @@ class MemoryStore {
 
   // ── Persistent Mempool ────────────────────────────────────────────────
   saveMempoolTx(tx) { this._mempool.set(tx.tx_id, tx); }
+  getMempoolTx(txId) { return this._mempool.get(txId) || null; }
   getMempoolTxs() { return [...this._mempool.values()]; }
   deleteMempoolTx(txId) { this._mempool.delete(txId); }
   deleteMempoolTxs(txIds) { for (const id of txIds) this._mempool.delete(id); }
@@ -974,6 +975,7 @@ class SQLiteStore {
 
       // Persistent mempool
       saveMempoolTx: this.db.prepare("INSERT OR IGNORE INTO mempool (tx_id,tx_data) VALUES (?,?)"),
+      getMempoolTx: this.db.prepare("SELECT * FROM mempool WHERE tx_id=?"),
       getMempoolTxs: this.db.prepare("SELECT * FROM mempool ORDER BY received_at ASC"),
       deleteMempoolTx: this.db.prepare("DELETE FROM mempool WHERE tx_id=?"),
       clearMempoolBefore: this.db.prepare("DELETE FROM mempool WHERE received_at < ?"),
@@ -1357,6 +1359,10 @@ class SQLiteStore {
   saveMempoolTx(tx) {
     this._stmts.saveMempoolTx.run(tx.tx_id, JSON.stringify(tx));
   }
+  getMempoolTx(txId) {
+    const row = this._stmts.getMempoolTx.get(txId);
+    return row ? JSON.parse(row.tx_data) : null;
+  }
   getMempoolTxs() {
     return this._stmts.getMempoolTxs.all().map(r => JSON.parse(r.tx_data));
   }
@@ -1596,6 +1602,7 @@ function initDAG(config) {
 
     // ── Persistent Mempool ────────────────────────────────────────────────
     saveMempoolTx: (tx) => store.saveMempoolTx(tx),
+    getMempoolTx: (txId) => store.getMempoolTx(txId),
     getMempoolTxs: () => store.getMempoolTxs(),
     deleteMempoolTx: (txId) => store.deleteMempoolTx(txId),
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),

@@ -171,6 +171,7 @@ const API_PATHS = Object.freeze({
   // DAG
   DAG_TX: "/v1/dag/tx",
   DAG_TX_BY_ID: "/v1/dag/tx/:txId",
+  DAG_TX_OUTCOME: "/v1/dag/tx/:txId/outcome",
   // Revocations
   REVOCATIONS: "/v1/revocations",
   // VP
