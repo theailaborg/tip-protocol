@@ -618,7 +618,9 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
       CREATE INDEX IF NOT EXISTS idx_txs_ts         ON transactions(timestamp);
       CREATE INDEX IF NOT EXISTS idx_txs_created_at ON transactions(created_at);
-      CREATE INDEX IF NOT EXISTS idx_txs_subject    ON transactions(subject_tip_id);
+      -- idx_txs_subject is created unconditionally below the ALTER block
+      -- so existing DBs (which need ALTER TABLE first) don't fail here on
+      -- a column that hasn't been added yet.
 
       -- ── Identities ───────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS identities (
@@ -798,7 +800,7 @@ class SQLiteStore {
         subject_tip_id  TEXT,
         received_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
-      CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id);
+      -- idx_mempool_subject created unconditionally below the ALTER block.
 
       -- ── Tx Rejections (#64 follow-up — no-loss invariant) ─────────
       -- Records every tx that was admitted past the API layer but did
@@ -839,7 +841,7 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_tx_rej_reason  ON tx_rejections(reason);
       CREATE INDEX IF NOT EXISTS idx_tx_rej_at      ON tx_rejections(rejected_at_ms);
       CREATE INDEX IF NOT EXISTS idx_tx_rej_origin  ON tx_rejections(origin_node_id);
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id);
+      -- idx_tx_rej_subject created unconditionally below the ALTER block.
 
       -- ── #44: Consensus singleton key-value store ───────────────────
       -- Tiny kv table for consensus state that's a single value rather
@@ -881,25 +883,36 @@ class SQLiteStore {
 
     // Activity-feed denormalisation: backfill `subject_tip_id` on the
     // three tables that participate in the activity merge (committed +
-    // pending + rejected). Live nodes upgrading from older schemas hit
-    // the ALTER paths; fresh nodes never enter them. Backfill values
-    // for existing rows is deferred to `_backfillSubjectTipId()` —
-    // separated so it can short-circuit when there's nothing to do.
+    // pending + rejected). Two-phase migration:
+    //   1. ALTER TABLE adds the column to existing schemas (no-op when
+    //      the column already exists, e.g. fresh DBs whose CREATE TABLE
+    //      defined it directly).
+    //   2. CREATE INDEX runs unconditionally afterwards. Idempotent via
+    //      IF NOT EXISTS, and deliberately not in the main exec block —
+    //      placing it there fails on existing DBs because the column
+    //      doesn't exist yet at CREATE TABLE IF NOT EXISTS time, which
+    //      throws and cascades to the in-memory fallback (live-observed:
+    //      node 2 lost its persisted state on first restart with this
+    //      migration). Backfill values is deferred to
+    //      `backfillSubjectTipId()` so it short-circuits when nothing
+    //      needs filling.
     const txCols = this.db.prepare("PRAGMA table_info(transactions)").all().map(c => c.name);
     if (!txCols.includes("subject_tip_id")) {
       this.db.exec("ALTER TABLE transactions ADD COLUMN subject_tip_id TEXT");
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_txs_subject ON transactions(subject_tip_id)");
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_txs_subject ON transactions(subject_tip_id)");
+
     const mempoolCols = this.db.prepare("PRAGMA table_info(mempool)").all().map(c => c.name);
     if (!mempoolCols.includes("subject_tip_id")) {
       this.db.exec("ALTER TABLE mempool ADD COLUMN subject_tip_id TEXT");
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id)");
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id)");
+
     const rejCols = this.db.prepare("PRAGMA table_info(tx_rejections)").all().map(c => c.name);
     if (!rejCols.includes("subject_tip_id")) {
       this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
   }
 
   /**
