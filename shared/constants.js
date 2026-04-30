@@ -85,6 +85,11 @@ const TX_TYPES = Object.freeze({
   NODE_REGISTERED: "NODE_REGISTERED",
 });
 
+// Frozen lookup set built once from TX_TYPES values. Used by validators and
+// services that need O(1) "is this a known tx type?" checks (tx-validator,
+// activity feed type filter, etc.) without each caller rebuilding the set.
+const TX_TYPE_SET = Object.freeze(new Set(Object.values(TX_TYPES)));
+
 
 // ─── Media size limits (defaults — node config can override via env) ─────────
 const MEDIA_LIMITS = Object.freeze({
@@ -169,6 +174,7 @@ module.exports = {
   VERDICT,
   CONTENT_STATUS,
   TX_TYPES,
+  TX_TYPE_SET,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,

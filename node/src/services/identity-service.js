@@ -4,7 +4,7 @@ const {
   shake256, generateTIPID, verifyBodySignature, verifyTxId, mldsaVerify,
 } = require("../../../shared/crypto");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
 const { SCORE } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -14,7 +14,6 @@ const { log } = require("../logger");
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
-const VALID_TX_TYPES = new Set(Object.values(TX_TYPES));
 
 function parseActivityQuery(query) {
   let limit = ACTIVITY_DEFAULT_LIMIT;
@@ -36,7 +35,7 @@ function parseActivityQuery(query) {
   let types = null;
   if (query.types) {
     const list = String(query.types).split(",").map(s => s.trim()).filter(Boolean);
-    const invalid = list.filter(t => !VALID_TX_TYPES.has(t));
+    const invalid = list.filter(t => !TX_TYPE_SET.has(t));
     if (invalid.length) throw { status: 400, error: `Unknown tx_type(s): ${invalid.join(", ")}` };
     if (list.length) types = new Set(list);
   }

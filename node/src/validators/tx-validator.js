@@ -19,7 +19,12 @@
 "use strict";
 
 const { verifyTransaction, mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET, ORIGIN } = require("../../../shared/constants");
+
+// Validator accepts every tx type from the shared frozen set plus the
+// "GENESIS" pseudo-type used only for the genesis bootstrap row, which
+// isn't a regular tx and therefore isn't in TX_TYPES.
+const KNOWN_TX_TYPES = new Set([...TX_TYPE_SET, "GENESIS"]);
 
 // ─── Validation result helper ─────────────────────────────────────────────────
 function pass()             { return { valid: true, errors: [] }; }
@@ -114,10 +119,8 @@ function validateStructure(tx) {
   }
 
   // tx_type must be a known type
-  const known = new Set(Object.values(TX_TYPES));
-  known.add("GENESIS"); // Allow genesis
-  if (!known.has(tx.tx_type)) {
-    errors.push(`Unknown tx_type: "${tx.tx_type}". Known types: ${[...known].join(", ")}`);
+  if (!KNOWN_TX_TYPES.has(tx.tx_type)) {
+    errors.push(`Unknown tx_type: "${tx.tx_type}". Known types: ${[...KNOWN_TX_TYPES].join(", ")}`);
   }
 
   return errors.length ? fail(...errors) : pass();
