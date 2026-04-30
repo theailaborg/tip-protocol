@@ -65,7 +65,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const nodeId = config.nodeRegisteredId || config.nodeId;
 
   // ── Create mempool (persistent) ───────────────────────────────────────────
-  const mempool = createMempool(dag);
+  // Pass nodeId so mempool drop sites stamp tx_rejection rows with the
+  // observing node — needed for multi-node forensics / replay tooling.
+  const mempool = createMempool(dag, { nodeId });
   log.info(`Mempool initialized (${mempool.size()} pending txs restored)`);
 
   // Active committee is derived deterministically from DAG state: registered +

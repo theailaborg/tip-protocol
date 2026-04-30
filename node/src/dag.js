@@ -135,6 +135,7 @@ class MemoryStore {
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._mempool = new Map();  // tx_id -> tx
+    this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -448,6 +449,54 @@ class MemoryStore {
   clearStaleMempoolTxs() { /* no-op for in-memory tests */ }
   mempoolCount() { return this._mempool.size; }
 
+  // ── Tx Rejections (#64 follow-up: no-loss invariant) ──────────────────
+  // Per-node observation log for txs that were admitted past the API but
+  // never made it into dag.txs. First observation wins (idempotent on
+  // tx_id) — peer re-broadcast of an already-rejected tx is a no-op.
+  // NOT consensus state: each node's drop sites observe their own POV,
+  // so this table intentionally diverges across nodes. Excluded from
+  // iterateCanonicalState / state_merkle_root.
+  saveTxRejection(rec) {
+    if (this._txRejections.has(rec.tx_id)) return false;
+    // tx_data is held as a JSON string, mirroring SQLite's TEXT column.
+    // Reads parse it back on the way out — same pipeline both stores.
+    const txData = rec.tx_data == null
+      ? null
+      : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
+    this._txRejections.set(rec.tx_id, {
+      tx_id:             rec.tx_id,
+      reason:            rec.reason,
+      reason_detail:     rec.reason_detail || null,
+      rejected_at_ms:    rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now(),
+      rejected_at_round: rec.rejected_at_round != null ? rec.rejected_at_round : null,
+      dropper_node_id:   rec.dropper_node_id,
+      tx_type:           rec.tx_type || null,
+      origin_node_id:    rec.origin_node_id || null,
+      tx_data:           txData,
+    });
+    return true;
+  }
+  _parseRejectionRow(row) {
+    if (!row) return null;
+    return { ...row, tx_data: row.tx_data ? JSON.parse(row.tx_data) : null };
+  }
+  getTxRejection(txId) {
+    return this._parseRejectionRow(this._txRejections.get(txId));
+  }
+  getTxRejectionsByReason(reason, opts = {}) {
+    const since = opts.since != null ? opts.since : 0;
+    const limit = opts.limit != null ? opts.limit : Infinity;
+    const rows = [];
+    for (const r of this._txRejections.values()) {
+      if (r.reason !== reason) continue;
+      if (r.rejected_at_ms < since) continue;
+      rows.push(r);
+    }
+    rows.sort((a, b) => b.rejected_at_ms - a.rejected_at_ms);
+    return rows.slice(0, limit).map(r => this._parseRejectionRow(r));
+  }
+  countTxRejections() { return this._txRejections.size; }
+
   close() { /* no-op for in-memory */ }
 }
 
@@ -693,6 +742,42 @@ class SQLiteStore {
         received_at     INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
+      -- ── Tx Rejections (#64 follow-up — no-loss invariant) ─────────
+      -- Records every tx that was admitted past the API layer but did
+      -- not end up in transactions. Combined with the dag, this seals
+      -- the invariant: every tx_id the API returned is either in the
+      -- transactions table (committed) or here (dropped, with reason)
+      -- — never both, never neither.
+      --
+      -- Per-node observation log, NOT consensus state. Each node's drop
+      -- sites observe their own POV; rows intentionally diverge across
+      -- nodes. Not included in state_merkle_root.
+      --
+      -- INSERT OR IGNORE on tx_id PK: first observation wins. Peer
+      -- re-broadcast of an already-rejected tx is a silent no-op so
+      -- the original (most-informative) reason is preserved.
+      CREATE TABLE IF NOT EXISTS tx_rejections (
+        tx_id              TEXT PRIMARY KEY,
+        reason             TEXT NOT NULL,
+        reason_detail      TEXT,
+        rejected_at_ms     INTEGER NOT NULL,
+        rejected_at_round  INTEGER,
+        dropper_node_id    TEXT NOT NULL,
+        tx_type            TEXT,
+        origin_node_id     TEXT,
+        -- Full tx body as JSON (signature, data, prev, timestamp).
+        -- Populated by every drop site so a future operator-initiated
+        -- replay path can re-validate and re-submit. Even terminal
+        -- reasons (already_registered, equivocation) keep the body
+        -- for forensics — uniform schema beats branching logic, and
+        -- rejections are sparse relative to commits so storage cost
+        -- is bounded.
+        tx_data            TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_reason ON tx_rejections(reason);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_at     ON tx_rejections(rejected_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_tx_rej_origin ON tx_rejections(origin_node_id);
+
       -- ── #44: Consensus singleton key-value store ───────────────────
       -- Tiny kv table for consensus state that's a single value rather
       -- than a per-event row. Currently used to persist the in-memory
@@ -893,6 +978,25 @@ class SQLiteStore {
       deleteMempoolTx: this.db.prepare("DELETE FROM mempool WHERE tx_id=?"),
       clearMempoolBefore: this.db.prepare("DELETE FROM mempool WHERE received_at < ?"),
       countMempool: this.db.prepare("SELECT COUNT(*) AS n FROM mempool"),
+
+      // Tx rejections — #64 follow-up no-loss invariant. INSERT OR IGNORE
+      // on tx_id PK so peer re-broadcast of an already-rejected tx is a
+      // silent no-op; the original (most-informative) reason wins.
+      saveTxRejection: this.db.prepare(
+        `INSERT OR IGNORE INTO tx_rejections
+           (tx_id,reason,reason_detail,rejected_at_ms,rejected_at_round,dropper_node_id,tx_type,origin_node_id,tx_data)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ),
+      getTxRejection: this.db.prepare("SELECT * FROM tx_rejections WHERE tx_id=?"),
+      // Reverse-chronological so dashboards / outcome endpoint see most
+      // recent first. Cap with LIMIT at the call site.
+      getTxRejectionsByReason: this.db.prepare(
+        `SELECT * FROM tx_rejections
+         WHERE reason=? AND rejected_at_ms >= ?
+         ORDER BY rejected_at_ms DESC
+         LIMIT ?`
+      ),
+      countTxRejections: this.db.prepare("SELECT COUNT(*) AS n FROM tx_rejections"),
     };
   }
 
@@ -1271,6 +1375,50 @@ class SQLiteStore {
     return this._stmts.countMempool.get().n;
   }
 
+  // ── Tx Rejections (#64 follow-up — no-loss invariant) ─────────────────────
+  // Mirrors MemoryStore.saveTxRejection — INSERT OR IGNORE so the first
+  // observation wins. Returns true if a new row was inserted, false if
+  // a row for this tx_id already existed.
+  saveTxRejection(rec) {
+    const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now();
+    // tx_data is stored as JSON text. Callers usually pass the tx
+    // object; tolerate a pre-stringified value too so a future drop
+    // site that already has bytes in hand can pass them through.
+    const txData = rec.tx_data == null
+      ? null
+      : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
+    const res = this._stmts.saveTxRejection.run(
+      rec.tx_id,
+      rec.reason,
+      rec.reason_detail || null,
+      at,
+      rec.rejected_at_round != null ? rec.rejected_at_round : null,
+      rec.dropper_node_id,
+      rec.tx_type || null,
+      rec.origin_node_id || null,
+      txData
+    );
+    return res.changes > 0;
+  }
+  // Parse tx_data back to an object on read so consumers (outcome
+  // endpoint, replay tooling) get a uniform shape across both stores.
+  _parseRejectionRow(row) {
+    if (!row) return null;
+    return { ...row, tx_data: row.tx_data ? JSON.parse(row.tx_data) : null };
+  }
+  getTxRejection(txId) {
+    return this._parseRejectionRow(this._stmts.getTxRejection.get(txId));
+  }
+  getTxRejectionsByReason(reason, opts = {}) {
+    const since = opts.since != null ? opts.since : 0;
+    // SQLite has no Infinity; pass -1 to mean "no limit" (LIMIT -1 returns all rows).
+    const limit = opts.limit != null && Number.isFinite(opts.limit) ? opts.limit : -1;
+    return this._stmts.getTxRejectionsByReason
+      .all(reason, since, limit)
+      .map(r => this._parseRejectionRow(r));
+  }
+  countTxRejections() { return this._stmts.countTxRejections.get().n; }
+
   /**
    * Run a function inside a SQLite transaction (BEGIN → fn() → COMMIT).
    * If fn throws, the transaction is rolled back. Crash-safe.
@@ -1453,6 +1601,17 @@ function initDAG(config) {
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
     mempoolCount: () => store.mempoolCount(),
+
+    // ── Tx Rejections (#64 follow-up — no-loss invariant) ───────────────
+    // Per-node observation log: every tx admitted past the API but
+    // dropped before commit. Combined with `transactions` it seals the
+    // invariant — any tx_id the API handed back is in exactly one of
+    // the two tables. Drop sites call saveTxRejection; the outcome
+    // endpoint reads getTxRejection.
+    saveTxRejection: (rec) => store.saveTxRejection(rec),
+    getTxRejection: (txId) => store.getTxRejection(txId),
+    getTxRejectionsByReason: (reason, opts) => store.getTxRejectionsByReason(reason, opts),
+    countTxRejections: () => store.countTxRejections(),
 
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),

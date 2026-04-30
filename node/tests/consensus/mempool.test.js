@@ -38,8 +38,10 @@
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
+const SHARED = path.resolve(__dirname, "../../../shared");
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+const { TX_REJECTION_REASON } = require(path.join(SHARED, "constants"));
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -291,7 +293,82 @@ describe("mempool.addFront — side effects (callback, persistence)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. Module surface — export shape
+// 6. tx_rejections wiring — mempool_full drops are recorded for replay
+//    Seals the no-loss invariant at the mempool admit boundary: a tx
+//    that the API admitted but the mempool refused must leave a row in
+//    `tx_rejections` so the outcome endpoint can answer "what happened".
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("mempool — tx_rejections wiring on mempool_full", () => {
+  test("add() at capacity records a mempool_full rejection with full tx body", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { maxSize: 1, nodeId: "tip://node/test" });
+
+    mempool.add(makeTx("FIRST"));
+    const rejected = makeTx("REJECTED", { tx_type: "REGISTER_IDENTITY" });
+    const r = mempool.add(rejected);
+    expect(r).toEqual({ added: false, reason: "mempool_full" });
+
+    const row = dag.getTxRejection("REJECTED");
+    expect(row).not.toBeNull();
+    expect(row.reason).toBe(TX_REJECTION_REASON.MEMPOOL_FULL);
+    expect(row.dropper_node_id).toBe("tip://node/test");
+    expect(row.tx_type).toBe("REGISTER_IDENTITY");
+    // Full tx body preserved for operator-initiated replay.
+    expect(row.tx_data).toEqual(rejected);
+    // Detail captures the cap that was breached (operators can correlate
+    // mempool_full bursts with the configured limit at the time).
+    expect(row.reason_detail).toContain("cap=1");
+  });
+
+  test("addFront() at capacity records a mempool_full rejection (front-load tag in detail)", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { maxSize: 1, nodeId: "tip://node/test" });
+    mempool.add(makeTx("FIRST"));
+
+    const r = mempool.addFront(makeTx("ORPHAN"), Date.now() - 5000);
+    expect(r).toEqual({ added: false, reason: "mempool_full" });
+
+    const row = dag.getTxRejection("ORPHAN");
+    expect(row.reason).toBe(TX_REJECTION_REASON.MEMPOOL_FULL);
+    expect(row.reason_detail).toContain("front-load");
+  });
+
+  test("duplicate add does NOT create a tx_rejection row (tx is still alive)", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { nodeId: "tip://node/test" });
+
+    mempool.add(makeTx("DUP"));
+    const r = mempool.add(makeTx("DUP"));
+    expect(r).toEqual({ added: false, reason: "duplicate" });
+
+    // The original tx is still pending; no loss to record. Recording one
+    // here would leave a misleading "this tx was rejected" row alongside
+    // a still-live mempool entry, breaking the outcome endpoint contract.
+    expect(dag.getTxRejection("DUP")).toBeNull();
+    expect(dag.countTxRejections()).toBe(0);
+  });
+
+  test("missing tx_id is logged but not persisted (no PK to index)", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { nodeId: "tip://node/test" });
+
+    const r = mempool.add({ tx_type: "INVALID" });
+    expect(r).toEqual({ added: false, reason: "tx missing tx_id" });
+    expect(dag.countTxRejections()).toBe(0);
+  });
+
+  test("nodeId defaults to 'unknown' when not configured (test fixtures stay simple)", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag, { maxSize: 1 });  // no nodeId
+    mempool.add(makeTx("FIRST"));
+    mempool.add(makeTx("REJ"));
+    expect(dag.getTxRejection("REJ").dropper_node_id).toBe("unknown");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. Module surface — export shape
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("mempool — exported surface", () => {

@@ -20,6 +20,7 @@
 "use strict";
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { TX_REJECTION_REASON } = require("../../../shared/constants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.mempool");
@@ -29,10 +30,37 @@ const log = getLogger("tip.mempool");
  * @param {Object}  [options]         Override genesis defaults (mainly for testing)
  * @param {number}  [options.maxSize]
  * @param {number}  [options.maxTxAgeSec]
+ * @param {string}  [options.nodeId]  Stamped onto tx_rejection rows as
+ *                                    `dropper_node_id`. Falls back to
+ *                                    "unknown" for tests that don't
+ *                                    care about attribution.
  */
 function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
+  const nodeId = options.nodeId || "unknown";
+
+  // ── tx_rejections sink (#64 follow-up — no-loss invariant) ────────────
+  // Single helper used by every mempool drop site so the rejection-row
+  // shape is uniform. Skipped when dag.saveTxRejection is missing
+  // (in-memory test stubs) and when tx has no tx_id (can't index the
+  // PK; that case is a caller bug, not user-visible loss).
+  function _persistRejection(tx, reason, detail) {
+    if (!tx || !tx.tx_id) return;
+    if (!dag || typeof dag.saveTxRejection !== "function") return;
+    try {
+      dag.saveTxRejection({
+        tx_id:           tx.tx_id,
+        reason,
+        reason_detail:   detail || null,
+        dropper_node_id: nodeId,
+        tx_type:         tx.tx_type || null,
+        tx_data:         tx,  // full body for replay / forensics
+      });
+    } catch (err) {
+      log.warn(`tx_rejection persist failed for ${tx.tx_id}: ${err.message}`);
+    }
+  }
 
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
@@ -82,6 +110,7 @@ function createMempool(dag, options = {}) {
 
     if (_pending.size >= maxSize) {
       _counters.rejected_total++;
+      _persistRejection(tx, TX_REJECTION_REASON.MEMPOOL_FULL, `cap=${maxSize}`);
       log.warn(`Mempool full (${maxSize}), rejecting tx ${tx.tx_id}`);
       return { added: false, reason: "mempool_full" };
     }
@@ -286,6 +315,7 @@ function createMempool(dag, options = {}) {
     }
     if (_pending.size >= maxSize) {
       _counters.rejected_total++;
+      _persistRejection(tx, TX_REJECTION_REASON.MEMPOOL_FULL, `cap=${maxSize} (front-load)`);
       log.warn(`Mempool full (${maxSize}), rejecting front-load tx ${tx.tx_id}`);
       return { added: false, reason: "mempool_full" };
     }

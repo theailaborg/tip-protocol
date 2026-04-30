@@ -91,6 +91,37 @@ const TX_TYPES = Object.freeze({
 const TX_TYPE_SET = Object.freeze(new Set(Object.values(TX_TYPES)));
 
 
+// ─── Tx-rejection reason codes (#64 follow-up: no-loss invariant) ───────────
+// Stable wire-format identifiers for why a tx that was admitted past the
+// API layer didn't make it into dag.txs. Persisted into the
+// `tx_rejections` table by every drop site between mempool admission and
+// commit, surfaced via `GET /v1/dag/tx/:txId/outcome`. See dag.js
+// `saveTxRejection`.
+//
+// Adding a new reason: keep the value snake_case and stable forever — old
+// rows will outlive any rename. Removing one is a wire-compat break.
+const TX_REJECTION_REASON = Object.freeze({
+  // Site 1 — mempool admission (post-API, pre-batch)
+  MEMPOOL_FULL:                    "mempool_full",
+  MEMPOOL_MISSING_TX_ID:           "missing_tx_id",
+  // Site 2 — mempool TTL eviction
+  MEMPOOL_TTL_EXPIRED:             "mempool_ttl_expired",
+  // Site 3 — consensus-layer drops (narwhal handleIncomingBatch)
+  BATCH_BEYOND_HORIZON:            "batch_beyond_horizon",
+  BATCH_SIG_INVALID:               "batch_sig_invalid",
+  BATCH_AUTHOR_UNREGISTERED:       "batch_author_unregistered",
+  BATCH_EQUIVOCATION:              "batch_equivocation",
+  BATCH_DECODE_FAILED:             "batch_decode_failed",
+  // Site 4 — commit-handler revalidation (business-rules check at commit time)
+  IDENTITY_ALREADY_REGISTERED:     "identity_already_registered",
+  CONTENT_ALREADY_REGISTERED:      "content_already_registered",
+  VERIFIER_NOT_AUTHORIZED:         "verifier_not_authorized",
+  CLEAN_RECORD_VIOLATION:          "clean_record_violation",
+  REVALIDATION_FAILED:             "revalidation_failed",
+  // Site 5 — generic fallback for unexpected drops; always logs detail.
+  TX_DECODE_FAILED:                "tx_decode_failed",
+});
+
 // ─── Media size limits (defaults — node config can override via env) ─────────
 const MEDIA_LIMITS = Object.freeze({
   max_video_bytes:  5 * 1024 * 1024 * 1024,   // 5 GB
@@ -175,6 +206,7 @@ module.exports = {
   CONTENT_STATUS,
   TX_TYPES,
   TX_TYPE_SET,
+  TX_REJECTION_REASON,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,
