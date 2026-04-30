@@ -27,6 +27,10 @@ function createRouter({ identityService }) {
     res.json(identityService.getHistory(req.params.tipId));
   }));
 
+  router.get("/identity/:tipId/activity", asyncHandler((req, res) => {
+    res.json(identityService.getActivity(req.params.tipId, req.query));
+  }));
+
   return router;
 }
 

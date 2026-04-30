@@ -12,6 +12,63 @@ const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
+const ACTIVITY_DEFAULT_LIMIT = 50;
+const ACTIVITY_MAX_LIMIT = 200;
+const VALID_TX_TYPES = new Set(Object.values(TX_TYPES));
+
+function parseActivityQuery(query) {
+  let limit = ACTIVITY_DEFAULT_LIMIT;
+  if (query.limit !== undefined) {
+    const n = Number(query.limit);
+    if (!Number.isInteger(n) || n < 1 || n > ACTIVITY_MAX_LIMIT) {
+      throw { status: 400, error: `limit must be an integer between 1 and ${ACTIVITY_MAX_LIMIT}` };
+    }
+    limit = n;
+  }
+
+  let before = null;
+  if (query.before) {
+    const t = Date.parse(query.before);
+    if (Number.isNaN(t)) throw { status: 400, error: "before must be a valid ISO 8601 timestamp" };
+    before = new Date(t).toISOString();
+  }
+
+  let types = null;
+  if (query.types) {
+    const list = String(query.types).split(",").map(s => s.trim()).filter(Boolean);
+    const invalid = list.filter(t => !VALID_TX_TYPES.has(t));
+    if (invalid.length) throw { status: 400, error: `Unknown tx_type(s): ${invalid.join(", ")}` };
+    if (list.length) types = new Set(list);
+  }
+
+  return { limit, before, types };
+}
+
+// Project a raw tx into a UI-shaped activity item: trims tx-internal fields
+// (signatures, prev refs, dedup_hash, zk_proof) that the timeline doesn't
+// need, surfaces the role this tip_id played in the tx, and keeps ctid +
+// origin_code / status / delta / reason where present so the UI can render
+// "Registered content X", "Verified Y", "Score +5 for Z" without a second call.
+function projectActivityItem(tx, tipId) {
+  const d = tx.data || {};
+  const role = d.tip_id === tipId
+    ? "subject"
+    : (d.author_tip_id === tipId ? "author" : "other");
+
+  return {
+    tx_id: tx.tx_id,
+    tx_type: tx.tx_type,
+    timestamp: tx.timestamp,
+    role,
+    ctid: d.ctid || null,
+    origin_code: d.origin_code || null,
+    status: d.status || null,
+    delta: typeof d.delta === "number" ? d.delta : null,
+    reason: d.reason || null,
+    related_tx_id: d.related_tx_id || null,
+  };
+}
+
 function createIdentityService({ dag, scoring, config, submitTx }) {
 
   async function register(body) {
@@ -149,7 +206,48 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory };
+  // Full per-identity activity feed: every tx where this tip_id appears as
+  // either `data.tip_id` or `data.author_tip_id`. Distinct from getHistory()
+  // which returns only score-affecting txs filtered through `scoreTargetTipId`.
+  // Designed for UI activity timelines (registrations, content, verifications,
+  // disputes, revocations, etc.) with pagination + tx_type filtering.
+  function getActivity(tipId, query = {}) {
+    const rec = dag.getIdentity(tipId);
+    if (!rec) throw { status: 404, error: "TIP-ID not found" };
+
+    const { limit, before, types } = parseActivityQuery(query);
+
+    let txs = dag.getTxsByTipId(tipId);
+    if (types) txs = txs.filter(t => types.has(t.tx_type));
+
+    txs.sort((a, b) => {
+      const d = new Date(b.timestamp) - new Date(a.timestamp);
+      return d !== 0 ? d : (a.tx_id < b.tx_id ? 1 : -1);
+    });
+
+    if (before) {
+      const cutoff = new Date(before).getTime();
+      txs = txs.filter(t => new Date(t.timestamp).getTime() < cutoff);
+    }
+
+    const total = txs.length;
+    const page = txs.slice(0, limit);
+    const items = page.map(tx => projectActivityItem(tx, tipId));
+    const nextCursor = page.length === limit && total > limit
+      ? page[page.length - 1].timestamp
+      : null;
+
+    return {
+      tip_id: tipId,
+      creator_name: rec.creator_name || null,
+      total,
+      count: items.length,
+      next_cursor: nextCursor,
+      items,
+    };
+  }
+
+  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity };
 }
 
 module.exports = { createIdentityService };
