@@ -37,6 +37,7 @@ const { shake256, canonicalJson } = require("../../../shared/crypto");
 
 const EMPTY_TXS_FULL_ROOT = shake256("tip:txs-full-root:empty");
 const EMPTY_COMMITS_FULL_ROOT = shake256("tip:commits-full-root:empty");
+const EMPTY_ROTATIONS_FULL_ROOT = shake256("tip:rotations-full-root:empty");
 
 /**
  * Flat sequential SHAKE-256 builder.
@@ -89,6 +90,10 @@ function createTxsFullRootBuilder() {
 
 function createCommitsFullRootBuilder() {
   return _createFullRootBuilder("tip:commits-full-root:v1", EMPTY_COMMITS_FULL_ROOT);
+}
+
+function createRotationsFullRootBuilder() {
+  return _createFullRootBuilder("tip:rotations-full-root:v1", EMPTY_ROTATIONS_FULL_ROOT);
 }
 
 /**
@@ -144,6 +149,51 @@ function canonCommit(c) {
 }
 
 /**
+ * Canonical projection of a committee_history row for snapshot hashing
+ * + wire form. SnapshotCommitteeRotationRow.canonical_json on the wire
+ * MUST equal canonicalJson(canonRotation(r)) on both sides.
+ *
+ * Determinism contract: committee and signer_node_ids must be sorted
+ * by caller before save (commit-handler enforces this for new rotations
+ * via canCommitteeRotation; bootstrap rotation 0 sorts founding_node
+ * trivially as a single-element array). signatures is parallel to
+ * signer_node_ids.
+ *
+ * `committed_at` is DELIBERATELY EXCLUDED — it's wall-clock informational
+ * and would diverge across nodes that wrote the row at slightly different
+ * local times. Excluding it keeps the rotations_full_root deterministic
+ * across nodes. Chain-of-trust walker reads everything it needs from
+ * the canonical fields here; committed_at is informational only.
+ */
+function canonRotation(r) {
+  return {
+    rotation_number: r.rotation_number,
+    effective_round: r.effective_round,
+    committee: r.committee || [],
+    prev_rotation: r.prev_rotation == null ? null : r.prev_rotation,
+    signer_node_ids: r.signer_node_ids || [],
+    signatures: r.signatures || [],
+    payload_hash: r.payload_hash || null,
+  };
+}
+
+/**
+ * Compute rotations_full_root by streaming `dag.getRotationsFromGenesis()`.
+ * Memory bounded at one row. Same wire-integrity role as txs_full_root /
+ * commits_full_root — guards against truncation or tampering of the
+ * rotation stream. The cryptographic chain-of-trust verification (sigs
+ * from previous committee, anchored at LOCAL genesis) runs separately
+ * AFTER the root match passes.
+ */
+function computeRotationsFullRoot(dag) {
+  const b = createRotationsFullRootBuilder();
+  for (const r of dag.getRotationsFromGenesis()) {
+    b.addRowObject(canonRotation(r));
+  }
+  return b.finalize();
+}
+
+/**
  * Compute txs_full_root by streaming `dag.iterateAllTransactions()`.
  * Memory bounded at one row.
  */
@@ -171,10 +221,14 @@ function computeCommitsFullRoot(dag, latestRound) {
 module.exports = {
   computeTxsFullRoot,
   computeCommitsFullRoot,
+  computeRotationsFullRoot,
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
+  createRotationsFullRootBuilder,
   canonTx,
   canonCommit,
+  canonRotation,
   EMPTY_TXS_FULL_ROOT,
   EMPTY_COMMITS_FULL_ROOT,
+  EMPTY_ROTATIONS_FULL_ROOT,
 };

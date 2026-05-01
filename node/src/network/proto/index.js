@@ -55,6 +55,7 @@ async function loadTypes() {
     "tip.consensus.SnapshotStateRow",
     "tip.consensus.SnapshotTxRow",
     "tip.consensus.SnapshotCommitRow",
+    "tip.consensus.SnapshotCommitteeRotationRow",   // §4 + #34 chain-of-trust
     "tip.consensus.SnapshotEnd",
     // #48 forward-on-authorize push
     "tip.consensus.PeerAnnounce",
