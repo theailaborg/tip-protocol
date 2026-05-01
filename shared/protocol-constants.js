@@ -229,6 +229,9 @@ const CONSENSUS = {
   // BFT Time — cert.timestamp validation bounds. See genesis.js consensus block.
   get MAX_ROUND_DURATION_MS() { return _c().max_round_duration_ms ?? 300000; },
   get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
+  // §4 + #34: committee rotation chain-of-trust. See genesis.js consensus block.
+  get COMMITTEE_ROTATION_INTERVAL_ROUNDS() { return _c().committee_rotation_interval_rounds ?? 302400; },
+  get COMMITTEE_ROTATION_HYSTERESIS_ROUNDS() { return _c().committee_rotation_hysteresis_rounds ?? 300; },
 };
 
 const NETWORK = {
