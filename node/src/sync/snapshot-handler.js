@@ -76,6 +76,15 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @returns {Object}
  */
 function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null }) {
+  // §4 + #34: counters surfaced via stats() for /metrics.
+  // chain_walk_failures increments every time _verifyRotationChain throws —
+  // either rotations_full_root mismatch or any of the chain-of-trust
+  // rejection paths (genesis mismatch, broken sigs, gap, etc.).
+  // Operators rate(...[5m]) this metric to detect a peer serving forged
+  // snapshots, or a peer running an incompatible chain.
+  const _metrics = {
+    chain_walk_failures: 0,
+  };
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
@@ -466,7 +475,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // check below can look up signer pubkeys from the chain-anchored
       // committee (NOT the peer-provided nodes table) — closes the last
       // chicken-and-egg corner of fresh-joiner verification.
-      const verifiedRotations = _verifyRotationChain(rotationInstallQueue);
+      let verifiedRotations;
+      try {
+        verifiedRotations = _verifyRotationChain(rotationInstallQueue);
+      } catch (err) {
+        // §4 + #34: count failures so /metrics surfaces "this joiner
+        // rejected N snapshots due to chain-of-trust break" — sustained
+        // increments across multiple peers indicates either a malicious
+        // peer or a config drift between this node and the rest.
+        _metrics.chain_walk_failures++;
+        throw err;
+      }
       const chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
 
       // ── Signature quorum ──────────────────────────────────────────────
@@ -770,7 +789,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           throw new Error(`genesis rotation: prev_rotation must be null, got ${rot.prev_rotation}`);
         }
         if ((rot.signer_node_ids || []).length !== 0
-            || (rot.signatures || []).length !== 0) {
+          || (rot.signatures || []).length !== 0) {
           throw new Error("genesis rotation: must have no signers or signatures");
         }
         if (!Array.isArray(rot.committee) || rot.committee.length !== 1) {
@@ -919,6 +938,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     registerProtocol,
     requestSnapshotFromPeer,
     SNAPSHOT_PROTOCOL,
+    /** Cumulative counters for /metrics. */
+    stats: () => ({ metrics: { ..._metrics } }),
     // Exposed for unit tests
     _handleIncomingSnapshot,
     _verifyRotationChain,

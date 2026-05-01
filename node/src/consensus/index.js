@@ -326,6 +326,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
         verdictTrigger: { pending: verdictTrigger.size() },
+        // §4 + #34: chain-walk failure counter for /metrics. Empty
+        // object on legacy snapshot-handler implementations that
+        // don't expose stats.
+        snapshotHandler: typeof snapshotHandler.stats === "function"
+          ? snapshotHandler.stats() : { metrics: {} },
       };
     },
   };

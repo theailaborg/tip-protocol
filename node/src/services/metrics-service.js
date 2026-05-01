@@ -207,6 +207,66 @@ function mempoolSection(s) {
   return out.join("\n");
 }
 
+/**
+ * §4 + #34 — chain-of-trust committee rotation metrics.
+ *
+ * Five metrics surfacing rotation health:
+ *   - current_rotation_number: which rotation are we in (gauge from DAG)
+ *   - rotation_proposals_total: leader has tried to propose (bullshark counter)
+ *   - rotation_committed_total: rotation tx committed (derived from
+ *     committee_history row count, excluding genesis bootstrap)
+ *   - rotation_failures_total: rotation tx rejected at commit time
+ *     (derived from tx_rejections rows where tx_type='COMMITTEE_ROTATION')
+ *   - chain_walk_failures_total: snapshot import rejected for chain-of-trust
+ *     break (snapshot-handler counter)
+ */
+function committeeSection(s, dag) {
+  let currentRotation = 0;
+  let totalRotations = 0;
+  let committedTotal = 0;
+  let failuresTotal = 0;
+
+  try {
+    const latest = dag.getLatestRotation && dag.getLatestRotation();
+    currentRotation = latest ? latest.rotation_number : 0;
+  } catch { /* ignore */ }
+
+  try {
+    if (typeof dag.getRotationsFromGenesis === "function") {
+      // Cheap on a tiny table (~50 rows over years).
+      let n = 0;
+      for (const _ of dag.getRotationsFromGenesis()) n++;
+      totalRotations = n;
+      // Genesis (rotation 0) is bootstrap, not a "committed rotation".
+      committedTotal = Math.max(0, n - 1);
+    }
+  } catch { /* ignore */ }
+
+  try {
+    if (typeof dag.getTxRejectionsByReason === "function") {
+      // tx_rejections doesn't directly index by tx_type, but
+      // REVALIDATION_FAILED is the only reason that hits a
+      // COMMITTEE_ROTATION tx (signature/quorum check). Count rows
+      // where reason_detail mentions rotation + tx_type column matches.
+      // Using the existing accessor avoids adding a new index.
+      const rows = dag.getTxRejectionsByReason("revalidation_failed", { limit: 10000 }) || [];
+      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION").length;
+    }
+  } catch { /* ignore */ }
+
+  const proposals = (s.bullshark?.metrics?.committee_rotation_proposals) || 0;
+  const chainWalkFailures = (s.snapshotHandler?.metrics?.chain_walk_failures) || 0;
+
+  return [
+    gauge("tip_committee_current_rotation_number", "Latest rotation_number in committee_history (0 = genesis bootstrap, no rotation has fired yet)", currentRotation),
+    gauge("tip_committee_history_size", "Total rows in committee_history (includes rotation 0 bootstrap)", totalRotations),
+    counter("tip_committee_rotation_proposals_total", "Total COMMITTEE_ROTATION txs the bullshark proposer has attempted to submit (regardless of downstream success)", proposals),
+    counter("tip_committee_rotation_committed_total", "Total rotation events that landed in committee_history (excludes the genesis bootstrap row)", committedTotal),
+    counter("tip_committee_rotation_failures_total", "COMMITTEE_ROTATION txs rejected at commit-handler (insufficient sigs, gap, payload mismatch, etc.)", failuresTotal),
+    counter("tip_snapshot_chain_walk_failures_total", "Snapshot imports rejected because the rotation chain failed cryptographic verification (synthetic-snapshot attack class)", chainWalkFailures),
+  ].join("\n");
+}
+
 function antiEntropySection(s) {
   const ae = s.antiEntropy || {};
   const aem = ae.metrics || {};
@@ -330,6 +390,7 @@ function createMetricsService({ dag, config, consensus, network }) {
       sections.push(bullsharkSection(stats));
       sections.push(mempoolSection(stats));
       sections.push(antiEntropySection(stats));
+      sections.push(committeeSection(stats, dag));   // §4 + #34
       const merkleBlock = merkleRootSection(stats);
       if (merkleBlock) sections.push(merkleBlock);
     }
