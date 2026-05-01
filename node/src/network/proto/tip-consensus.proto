@@ -429,6 +429,22 @@ message SnapshotCommitRow {
 }
 
 /**
+ * One row from the source's `committee_history` table — every rotation
+ * since genesis (rotation 0) up through the latest. Joiner walks these
+ * forward verifying each transition's sigs against the previously-
+ * trusted committee (chain-of-trust, §4 + #34). Sent in `rotation_number`
+ * order.
+ *
+ * `canonical_json` is the byte form of `canonicalJson(canonRotation(r))`.
+ * Same canonical form used for `rotations_full_root`. Joiner installs
+ * via `dag.saveCommitteeRotation` AFTER verifying the chain walk
+ * succeeds — broken chain rejects the entire snapshot atomically.
+ */
+message SnapshotCommitteeRotationRow {
+  bytes canonical_json = 1;
+}
+
+/**
  * Terminator. Row counts are sanity checks — joiner verifies they match
  * the number of rows of each type actually received (guards against
  * silent truncation on the wire).
@@ -440,6 +456,12 @@ message SnapshotCommitRow {
  * on either root rejects the snapshot install. They live in the footer
  * (not the header) so the sender can compute them while streaming —
  * one pass over each table.
+ *
+ * §4 + #34: `rotations_full_root` is the same shape — flat hash over
+ * canonical rows of `committee_history`. Wire-format integrity for the
+ * rotation chain. The CHAIN-OF-TRUST verification (sigs from previous
+ * committee, anchored at LOCAL genesis founding_node) runs separately
+ * AFTER the root match passes; mismatch on either step rejects.
  */
 message SnapshotEnd {
   uint64 row_count = 1;             // SnapshotStateRow count (existing)
@@ -447,4 +469,6 @@ message SnapshotEnd {
   uint64 commit_row_count = 3;      // #49: SnapshotCommitRow count
   bytes txs_full_root = 4;          // #49: integrity root over tx stream
   bytes commits_full_root = 5;      // #49: integrity root over commit stream
+  uint64 rotation_row_count = 6;    // §4 + #34: SnapshotCommitteeRotationRow count
+  bytes rotations_full_root = 7;    // §4 + #34: integrity root over rotation stream
 }
