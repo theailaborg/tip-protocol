@@ -28,6 +28,9 @@
 const { computeQuorum } = require("./certificate");
 const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { TX_TYPES } = require("../../../shared/constants");
+const { shake256, canonicalJson, mldsaSign, computeTxId } = require("../../../shared/crypto");
+const { deriveLiveCommittee } = require("./participants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.bullshark");
@@ -39,9 +42,25 @@ const log = getLogger("tip.bullshark");
  * @param {Object}   options.dag            DAG store (read certificates)
  * @param {Function} options.getNodeIds     () => sorted array of registered node IDs
  * @param {Function} options.onOrderedTxs   (txs, round) => called with deterministically ordered txs
+ * @param {Object}   [options.proposer]     Optional rotation proposer config. When
+ *                                          present, bullshark fires committee rotations
+ *                                          per §4 + #34 (event-driven + 7d backstop).
+ *                                          Required fields:
+ *                                            - nodeId: own TIP node_id
+ *                                            - nodePrivateKey: ML-DSA-65 sk for signing
+ *                                            - nodePublicKey: ML-DSA-65 pk (to include in
+ *                                              new_committee — own pubkey for the rotation)
+ *                                            - submitTx: (tx) => Promise — pushes the
+ *                                              built rotation tx into the mempool/consensus
+ *                                              so it goes through the normal Bullshark path
+ *                                          Optional:
+ *                                            - getNodePublicKey(nodeId) => string|null —
+ *                                              looks up other committee members' pubkeys
+ *                                              for the new_committee field. Defaults to
+ *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -339,6 +358,135 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs }) {
     _lastCommittedRound = voteRound;
     _pruneOrderedCache();
     _maybeRunCertGC();
+
+    // §4 + #34: rotation proposer. Runs after successful anchor commit so
+    // we know consensus is healthy (quorum reached) before adding more
+    // load. Only the anchor-commit leader fires — natural round-robin via
+    // wave leader rotation, no extra coordination needed.
+    if (proposer && proposer.nodeId === leader) {
+      try {
+        _maybeProposeCommitteeRotation(voteRound);
+      } catch (err) {
+        log.warn(`Round ${voteRound}: rotation proposer threw — ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * §4 + #34 — Option B trigger (event-driven + 7d periodic backstop).
+   *
+   * Compares the would-be committee (current producing set) against the
+   * latest rotation in committee_history. If they differ — or if the
+   * 7-day re-attestation window has elapsed since the last rotation —
+   * builds and submits a COMMITTEE_ROTATION tx.
+   *
+   * Fires on every anchor commit where THIS node is the leader. Other
+   * nodes skip; we don't want N concurrent proposals racing on every
+   * wave. The leader-of-wave naturally rotates round-robin so any
+   * committee member's perspective gets considered over time.
+   *
+   * Sig collection limitation: this MVP signs only with our own key
+   * (1 sig). Works for genesis bootstrap (rotation 0 → 1, where prev
+   * committee = [founding_node], quorum = 1). Subsequent rotations
+   * (committee size > 1, quorum ≥ 2) need multi-sig coordination —
+   * tracked as a follow-up to this PR. For now, post-bootstrap
+   * rotations propose but fail commit-handler quorum check;
+   * federation continues running with the rotation 1 committee.
+   */
+  function _maybeProposeCommitteeRotation(currentRound) {
+    if (!dag.getLatestRotation || !dag.getCommitteeRotation) return;  // chain-of-trust not wired
+
+    const latest = dag.getLatestRotation();
+    if (!latest) return;  // initDAG bootstrap should've written rotation 0; defensive
+
+    const wouldBe = deriveLiveCommittee(dag, currentRound, CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS);
+    const currentNodeIds = latest.committee.map(m => m.node_id).sort();
+
+    const setsEqual = wouldBe.length === currentNodeIds.length
+      && wouldBe.every((id, i) => id === currentNodeIds[i]);
+
+    // Time-since-last guard: 7-day periodic re-attestation. Uses round
+    // count rather than wall-clock for determinism — every node sees the
+    // same elapsed-round count.
+    const roundsSinceLast = Math.max(0, currentRound - (latest.effective_round || 0));
+    const periodicElapsed = roundsSinceLast >= CONSENSUS.COMMITTEE_ROTATION_INTERVAL_ROUNDS;
+
+    if (setsEqual && !periodicElapsed) return;  // no rotation needed
+
+    // Build new_committee with pubkeys. Pubkeys come from the nodes table
+    // — at this point we trust our local nodes table because the rotation
+    // tx will go through commit-handler which validates that the pubkeys
+    // signed off on subsequent rotations transitively. (For the chain-of-
+    // trust walker on a fresh joiner's snapshot, what matters is that
+    // each rotation's pubkeys come from the previous rotation's chain
+    // entry — which they do because `_verifyTxSignature` looks up sigs
+    // against `dag.getCommitteeRotation(rn-1).committee`, NOT the nodes
+    // table.)
+    const lookupPubkey = proposer.getNodePublicKey || ((id) => dag.getNode(id)?.public_key);
+    const newCommittee = wouldBe.map(node_id => ({
+      node_id,
+      public_key: lookupPubkey(node_id) || "",
+    })).filter(m => m.public_key);
+    if (newCommittee.length === 0) {
+      log.warn(`Rotation ${latest.rotation_number + 1}: cannot propose — no pubkeys for would-be committee`);
+      return;
+    }
+
+    // Sort committee canonically by node_id (matches commit-handler's
+    // canonical-hash expectations and the schema contract).
+    newCommittee.sort((a, b) => a.node_id.localeCompare(b.node_id));
+
+    const rotation_number = latest.rotation_number + 1;
+    const effective_round = currentRound + 1;  // takes effect from the next round forward
+    const payload_hash = shake256(canonicalJson({
+      rotation_number, effective_round, committee: newCommittee,
+    }));
+
+    // MVP: sign only with our own key. The commit-handler accepts the tx
+    // if previous-committee quorum is met by the sigs included; for the
+    // bootstrap case (prev committee = single founding_node), our 1 sig
+    // is the full quorum.
+    const message = `rotation:${payload_hash}:${proposer.nodeId}`;
+    const signature = mldsaSign(message, proposer.nodePrivateKey);
+
+    const txData = {
+      rotation_number,
+      effective_round,
+      new_committee: newCommittee,
+      payload_hash,
+      signer_node_ids: [proposer.nodeId],
+      signatures: [signature],
+    };
+
+    const tx = {
+      tx_type: TX_TYPES.COMMITTEE_ROTATION,
+      timestamp: new Date().toISOString(),
+      // Genesis-bridged prev so validateTransaction's "non-genesis must
+      // have prev refs" rule passes. The rotation tx is structurally
+      // metadata-only — no semantic dependency on a specific prior tx,
+      // so any committed tx is a fine prev (we use whatever the dag
+      // proposes via its recent-tx ring; if dag exposes it).
+      prev: dag.getRecentPrev ? dag.getRecentPrev() : [],
+      data: txData,
+    };
+    tx.tx_id = computeTxId(tx);
+
+    try {
+      const r = proposer.submitTx(tx);
+      // submitTx may be async — fire-and-forget; failures land in the
+      // mempool reject path or commit-handler drop path with their own
+      // logging, no need to await.
+      if (r && typeof r.catch === "function") {
+        r.catch(err => log.warn(`Rotation ${rotation_number} submitTx rejected: ${err.message}`));
+      }
+      log.info(
+        `Rotation ${rotation_number} proposed at round ${currentRound}: ` +
+        `committee size ${currentNodeIds.length} → ${newCommittee.length}, ` +
+        `${periodicElapsed && setsEqual ? "periodic re-attest" : "membership change"}`
+      );
+    } catch (err) {
+      log.warn(`Rotation ${rotation_number} submit failed synchronously: ${err.message}`);
+    }
   }
 
   /**

@@ -145,6 +145,22 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
     },
+    // §4 + #34: rotation proposer. Wired only when the node has a
+    // signing identity (config.nodePrivateKey present). The submitTx
+    // closure routes the rotation tx through consensus.addTx — same
+    // path user-submitted txs and verdict-trigger / clean-record-trigger
+    // batches take (mempool → narwhal batch → bullshark order →
+    // commit-handler). Reuses the shared `triggerSubmitter` helper so
+    // the rotation flow has a SINGLE code path through consensus —
+    // never writes to dag.transactions directly. Closes the same
+    // architectural class issues.md Consensus #13 closes for
+    // schedulers ("scheduler writes bypass consensus").
+    proposer: (config.nodeId && config.nodePrivateKey) ? {
+      nodeId: config.nodeRegisteredId || config.nodeId,
+      nodePrivateKey: config.nodePrivateKey,
+      nodePublicKey: config.nodePublicKey,
+      submitTx: (tx) => triggerSubmitter.submitTx(tx),
+    } : null,
   });
 
   const narwhal = createNarwhal({
