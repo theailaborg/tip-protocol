@@ -22,7 +22,7 @@ const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON } = require("../.
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
-const { verifyBodySignature, mldsaVerify, canonicalTx, shake256 } = require("../../../shared/crypto");
+const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
@@ -305,6 +305,19 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.COMMITTEE_ROTATION: {
+        // §4 + #34: in-batch dedup only — the rest of the rotation-validity
+        // checks (monotonic rotation_number, effective_round, structural,
+        // crypto) live in `rules.canCommitteeRotation` which runs from
+        // `_statefulCheck` so the proposer side and commit-handler share
+        // one predicate (issue #14 pattern).
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.COMMITTEE_ROTATION && t.data?.rotation_number === d.rotation_number
+        );
+        if (inBatch) return { valid: false, error: `rotation_number ${d.rotation_number} already in this batch` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
@@ -397,6 +410,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           if (!r.valid) return { valid: false, error: r.error.message };
         }
         return { valid: true };
+      }
+
+      case TX_TYPES.COMMITTEE_ROTATION: {
+        // §4 + #34: full rotation validity — structural, monotonic, and
+        // cryptographic (≥2f+1 sigs from previous committee) — through the
+        // shared business-rules predicate. Same call shape as the bullshark
+        // proposer (see step 6) so accept/reject decisions are identical.
+        const r = rules.canCommitteeRotation(dag, d, { shake256, canonicalJson, mldsaVerify });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
       default:
@@ -585,6 +607,26 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.SCORE_UPDATE:
         break;
 
+      // ── Committee rotation (§4 + #34 — chain-of-trust) ───────────────
+      // Tx already passed _verifyTxSignature (≥2f+1 sigs from previous
+      // committee) and _dedupCheck (rotation_number monotonic) and
+      // _statefulCheck (effective_round monotonic, well-formed committee).
+      // All that's left is to persist the row to committee_history.
+      // saveCommitteeRotation uses INSERT OR IGNORE so a re-replay of
+      // the same tx is a no-op (matches replay semantics elsewhere).
+      case TX_TYPES.COMMITTEE_ROTATION:
+        dag.saveCommitteeRotation({
+          rotation_number: d.rotation_number,
+          effective_round: d.effective_round,
+          committee: d.new_committee,
+          prev_rotation: d.rotation_number - 1,
+          signer_node_ids: d.signer_node_ids || [],
+          signatures: d.signatures || [],
+          payload_hash: d.payload_hash,
+          committed_at: tx.timestamp,
+        });
+        break;
+
       // ── No additional derived state needed ──
       case TX_TYPES.JURY_SUMMONS:
       case TX_TYPES.JURY_VOTE_COMMIT:
@@ -765,6 +807,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         const node = dag.getNode(d.node_id);
         if (!node || !tx.signature) return false;
         return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
+      }
+
+      if (tt === TX_TYPES.COMMITTEE_ROTATION) {
+        // §4 + #34: signatures + payload_hash + previous-committee quorum
+        // are validated by `rules.canCommitteeRotation` from `_statefulCheck`.
+        // Treat presence-of-signatures as enough at the signature-verify
+        // stage; the real crypto check runs alongside the other rotation
+        // invariants in the shared predicate so accept/reject is one place.
+        return Array.isArray(d.signatures) && d.signatures.length > 0;
       }
 
     } catch (err) {

@@ -83,6 +83,12 @@ const TX_TYPES = Object.freeze({
   VP_REGISTERED: "VP_REGISTERED",
   VP_SUSPENDED: "VP_SUSPENDED",
   NODE_REGISTERED: "NODE_REGISTERED",
+  // Consensus committee rotation (§4 + #34 chain-of-trust). Carries the
+  // new committee's [{node_id, public_key}] records along with ≥2f+1
+  // signatures from the PREVIOUS committee endorsing the transition.
+  // Pubkeys travel inline so a snapshot-importing joiner can verify the
+  // chain without trusting the peer-provided nodes table.
+  COMMITTEE_ROTATION: "COMMITTEE_ROTATION",
 });
 
 // Frozen lookup set built once from TX_TYPES values. Used by validators and

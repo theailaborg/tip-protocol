@@ -86,6 +86,14 @@ const SCHEMA = {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
     types:    { vp_id: "string", name: "string" },
   },
+  [TX_TYPES.COMMITTEE_ROTATION]: {
+    // §4 + #34: chain-of-trust rotation event. Deeper validation
+    // (rotation_number monotonic, sigs from previous committee, ≥2f+1
+    // quorum) lives in commit-handler — those checks need DAG state
+    // and can't run in the structure-only layer here.
+    required: ["rotation_number", "effective_round", "new_committee", "payload_hash", "signer_node_ids", "signatures"],
+    types:    { rotation_number: "number", effective_round: "number", payload_hash: "string" },
+  },
 };
 
 // ─── Layer 1: Base structure ──────────────────────────────────────────────────
