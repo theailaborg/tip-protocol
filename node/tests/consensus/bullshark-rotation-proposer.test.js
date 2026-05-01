@@ -267,6 +267,95 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
     expect(ids).toEqual([FOUNDING.node_id]);
   });
 
+  test("filters nodes with no public_key in the nodes table from new_committee", () => {
+    const fx = _setup();
+    // Register a node WITHOUT a public_key, plus one WITH. Both produce
+    // certs in the K window. Filter must drop the no-pubkey one so the
+    // resulting rotation has only verifiable members.
+    fx.dag.saveNode({
+      node_id: "tip://node/no-key", name: "no-key",
+      public_key: "",   // empty pubkey
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+    fx.dag.saveNode({
+      node_id: "tip://node/with-key", name: "with-key",
+      public_key: "real-pubkey-hex",
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+    _seedCertsByRound(fx.dag, {
+      1: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
+      2: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
+    });
+
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
+    });
+
+    expect(fx.submittedTxs).toHaveLength(1);
+    const ids = fx.submittedTxs[0].data.new_committee.map(m => m.node_id);
+    // founding + with-key included; no-key filtered out
+    expect(ids).toContain(FOUNDING.node_id);
+    expect(ids).toContain("tip://node/with-key");
+    expect(ids).not.toContain("tip://node/no-key");
+  });
+
+  test("submitTx throws synchronously → bullshark catches, anchor commit unaffected", () => {
+    // Wire a proposer whose submitTx throws (simulates triggerSubmitter
+    // raising 503 when consensus isn't fully wired). Bullshark must
+    // catch + log + continue — never propagate up to the anchor commit
+    // path.
+    const dag = initDAG({ inMemory: true });
+    if (!dag.getNode(FOUNDING.node_id)) {
+      dag.saveNode({
+        node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
+        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      });
+    }
+    dag.saveNode({
+      node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+
+    let submitCalls = 0;
+    const proposer = {
+      nodeId: FOUNDING.node_id,
+      nodePrivateKey: generateMLDSAKeypair().privateKey,
+      nodePublicKey: FOUNDING.public_key,
+      submitTx: () => {
+        submitCalls++;
+        throw new Error("consensus not wired");
+      },
+    };
+    const bullshark = createBullshark({
+      dag,
+      getNodeIds: () => [FOUNDING.node_id],
+      onOrderedTxs: () => {},
+      proposer,
+    });
+
+    _seedCertsByRound(dag, {
+      1: [FOUNDING.node_id, "tip://node/peer"],
+      2: [FOUNDING.node_id, "tip://node/peer"],
+    });
+
+    // Should NOT throw — bullshark's _checkAnchorCommit catches the
+    // proposer's synchronous throw and logs it.
+    expect(() => _driveAnchorCommit(dag, bullshark, {
+      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
+    })).not.toThrow();
+
+    expect(submitCalls).toBe(1);  // proposer attempted to submit
+
+    // Anchor commit still landed despite proposer failure
+    expect(bullshark.lastCommittedRound()).toBe(2);
+
+    // Proposal counter incremented even on submit failure (operators
+    // care about "leader tried" regardless of downstream success).
+    expect(bullshark.stats().metrics.committee_rotation_proposals).toBe(1);
+  });
+
   test("payload_hash matches canonical claim shake256(rotation_number, effective_round, new_committee)", () => {
     const fx = _setup();
     fx.dag.saveNode({

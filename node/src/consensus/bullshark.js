@@ -76,6 +76,11 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     gc_runs: 0,
     gc_failures: 0,
     gc_skipped_disabled: 0,
+    // §4 + #34: rotation proposer fired (regardless of whether the
+    // tx eventually commits). Increments each time _maybeProposeCommitteeRotation
+    // builds + submits a COMMITTEE_ROTATION tx. Pairs with the dag-level
+    // committee_history row count to compute success rate.
+    committee_rotation_proposals: 0,
   };
 
   // Monotonic commit sequence number (§15). One per successful anchor
@@ -471,13 +476,20 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     };
     tx.tx_id = computeTxId(tx);
 
+    // Counter increments BEFORE submitTx so the metric reflects every
+    // proposal attempt — including ones that throw synchronously
+    // (consensus not yet wired) or get rejected at mempool admission.
+    // Operators care about "did the leader try to propose?" regardless
+    // of downstream outcome.
+    _metrics.committee_rotation_proposals++;
+
     try {
       const r = proposer.submitTx(tx);
       // submitTx may be async — fire-and-forget; failures land in the
       // mempool reject path or commit-handler drop path with their own
       // logging, no need to await.
       if (r && typeof r.catch === "function") {
-        r.catch(err => log.warn(`Rotation ${rotation_number} submitTx rejected: ${err.message}`));
+        r.catch(err => log.warn(`Rotation ${rotation_number} submitTx rejected: ${(err && err.message) || err}`));
       }
       log.info(
         `Rotation ${rotation_number} proposed at round ${currentRound}: ` +
@@ -485,7 +497,11 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
         `${periodicElapsed && setsEqual ? "periodic re-attest" : "membership change"}`
       );
     } catch (err) {
-      log.warn(`Rotation ${rotation_number} submit failed synchronously: ${err.message}`);
+      // submitTx throws on consensus-not-wired (503 from triggerSubmitter),
+      // mempool full, or other downstream rejection. Log + swallow —
+      // the counter is already incremented; future waves' leaders will
+      // try again. Never propagate up to the anchor commit path.
+      log.warn(`Rotation ${rotation_number} submit failed synchronously: ${(err && err.message) || err}`);
     }
   }
 
