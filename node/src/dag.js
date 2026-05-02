@@ -365,6 +365,18 @@ class MemoryStore {
     }
     return min;
   }
+  // §4 + #34 proven-node check: earliest round at which `authorId` produced
+  // a cert in our local DAG. 0 if no certs from this author. Used by the
+  // committee rotation proposer to require K rounds of cert history before
+  // admitting a node — symmetric to the K=300 offline-detection standard.
+  getEarliestCertRoundForAuthor(authorId) {
+    let min = 0;
+    for (const c of this._certs.values()) {
+      if (c.author_node_id !== authorId) continue;
+      if (min === 0 || c.round < min) min = c.round;
+    }
+    return min;
+  }
   getCertificatesFromRound(fromRound) {
     return [...this._certs.values()]
       .filter(c => c.round >= fromRound)
@@ -1250,6 +1262,7 @@ class SQLiteStore {
       getCertsByAuthorRound: this.db.prepare("SELECT * FROM certificates WHERE author_node_id=? AND round=?"),
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
       getEarliestCertRound: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates"),
+      getEarliestCertRoundForAuthor: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates WHERE author_node_id=?"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
@@ -1578,6 +1591,10 @@ class SQLiteStore {
   // below-GC-horizon joiner requests without loading the full cert table.
   getEarliestCertRound() {
     return this._stmts.getEarliestCertRound.get().earliest || 0;
+  }
+  // §4 + #34 proven-node check — see MemoryStore version for the contract.
+  getEarliestCertRoundForAuthor(authorId) {
+    return this._stmts.getEarliestCertRoundForAuthor.get(authorId).earliest || 0;
   }
   getCertificatesFromRound(fromRound) {
     return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
@@ -2032,6 +2049,11 @@ function initDAG(config) {
     getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
     getLatestRound: () => store.getLatestRound(),
     getEarliestCertRound: () => store.getEarliestCertRound(),
+    // §4 + #34 proven-node filter: returns earliest round at which a given
+    // author produced a cert in this DAG, or 0 if none. Used by
+    // participants.deriveLiveCommittee to require K rounds of cert
+    // history before admitting a node to the would-be committee.
+    getEarliestCertRoundForAuthor: (authorId) => store.getEarliestCertRoundForAuthor(authorId),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
     pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),

@@ -635,7 +635,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     _metrics.certs_created++;
-    log.debug(`Round ${_currentRound}: certificate created (${acks.length} acks, ${(cert.batch.txs || []).length} txs)`);
+    // INFO-level so this surfaces in info.log too — diff author's view
+    // against the receiver's "Rejected certificate ... my committee at R"
+    // line to spot gossip-lag asymmetry at sealing time.
+    const committeeShort = _getCommittee(_currentRound).map(id => id.slice(-8)).join(",");
+    const ackerShort = acks.map(a => (a.acker_node_id || "").slice(-8)).join(",");
+    log.info(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
 
     _tryAdvanceRound();
   }
@@ -673,10 +678,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Committee is wave-stable, so cert.round maps to the cert's wave's
     // committee. Every node computes the same value from the same DAG, so
     // ack-count validation matches what the author used when signing.
-    const quorum = computeQuorum(_getCommittee(cert.round).length);
+    const committeeAtCertRound = _getCommittee(cert.round);
+    const quorum = computeQuorum(committeeAtCertRound.length);
     const result = verifyCertificate(cert, getNodeKey, quorum);
     if (!result.valid) {
-      log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: ${result.error}`);
+      // Extra context on rejection — surfaces gossip-lag asymmetry where
+      // author and validator computed different committees from different
+      // local DAG states at cert.round. Diff this line on author vs.
+      // validator side to see exactly where they disagreed.
+      const ackerIds = (cert.acknowledgments || []).map(a => (a.acker_node_id || "").slice(-8)).join(",");
+      const committeeShort = committeeAtCertRound.map(id => id.slice(-8)).join(",");
+      log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: ${result.error} | my committee at R=${cert.round}: [${committeeShort}] (size=${committeeAtCertRound.length}, quorum=${quorum}) | cert ackers: [${ackerIds}]`);
       return;
     }
 
