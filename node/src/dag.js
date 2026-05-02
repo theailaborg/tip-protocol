@@ -382,6 +382,18 @@ class MemoryStore {
       .filter(c => c.round >= fromRound)
       .sort((a, b) => a.round !== b.round ? a.round - b.round : a.author_node_id.localeCompare(b.author_node_id));
   }
+  // §69 — bounded iterator over certs in [fromRound, toRound] inclusive.
+  // Yields in canonical (round, author_node_id) order — same as
+  // SQLiteStore. Used by snapshot-handler to ship the K-round cert window
+  // a joiner needs for runtime committee derivation.
+  *iterateCertsByRoundRange(fromRound, toRound) {
+    const sorted = [...this._certs.values()]
+      .filter(c => c.round >= fromRound && c.round <= toRound)
+      .sort((a, b) => a.round !== b.round
+        ? a.round - b.round
+        : a.author_node_id.localeCompare(b.author_node_id));
+    for (const c of sorted) yield c;
+  }
   certificateCount() { return this._certs.size; }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
   // of rows deleted. Callers must ensure the cutoff leaves enough history
@@ -1264,6 +1276,7 @@ class SQLiteStore {
       getEarliestCertRound: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates"),
       getEarliestCertRoundForAuthor: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates WHERE author_node_id=?"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
+      getCertsByRoundRange: this.db.prepare("SELECT * FROM certificates WHERE round>=? AND round<=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
@@ -1598,6 +1611,13 @@ class SQLiteStore {
   }
   getCertificatesFromRound(fromRound) {
     return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
+  }
+  // §69 — bounded iterator over certs in [fromRound, toRound] inclusive.
+  // See MemoryStore version for the contract.
+  *iterateCertsByRoundRange(fromRound, toRound) {
+    for (const row of this._stmts.getCertsByRoundRange.iterate(fromRound, toRound)) {
+      yield this._parseCert(row);
+    }
   }
   certificateCount() {
     return this._stmts.countCerts.get().n;
@@ -2076,6 +2096,14 @@ function initDAG(config) {
     // — round, anchor, acks, roots all live there). Used by snapshot
     // sender to ship full commit history for chain-of-trust audits.
     iterateAllCommitsExcept: (latestRound) => store.iterateAllCommitsExcept(latestRound),
+
+    // §69 — bounded iterator over `certificates` in [fromRound, toRound]
+    // inclusive, in canonical (round, author_node_id) order. Used by
+    // snapshot sender to ship the K-round window of recent certs that a
+    // joiner needs for runtime committee derivation. Without these certs,
+    // the joiner's getActiveCommittee derives a different K-window than
+    // full-history nodes for the K rounds after snapshot install.
+    iterateCertsByRoundRange: (fromRound, toRound) => store.iterateCertsByRoundRange(fromRound, toRound),
 
     // ── Committee history (§4 + #34 — chain-of-trust) ───────────────────
     // saveCommitteeRotation: write a rotation row (idempotent on rotation_number).

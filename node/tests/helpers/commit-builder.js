@@ -39,6 +39,12 @@ const { computeStateMerkleRoot, computeTxsMerkleRoot } = require(path.join(SRC, 
  *   chained to the previous tx_id, simulating the post-genesis history
  *   that snapshot Phase 1 must ship for joiners to resolve later
  *   `prev` references. Returned in `seededTxs`.
+ * @param {number}   [opts.seedCertsFromRound] §69: if provided, seed
+ *   committee-author certs from this round through `round - 1` so the
+ *   snapshot's Phase E can ship them. Each round populates one cert per
+ *   committeeKeys entry. The anchor cert at `round` is seeded by the
+ *   default flow above (regardless of this option). Returned in
+ *   `seededCerts`.
  * @param {Function} [opts.ackTransform]     Optional `(acks, fx) => acks` hook.
  *   `acks` is `{ signerIds: string[], signatures: string[] }`; `fx` exposes
  *   `committeeKeys`, `committee`, `anchorBatchHash` so tests can craft
@@ -55,6 +61,7 @@ function buildCommittedDag({
   dropSigs = 0,
   round = 2,
   seedTxs = 0,
+  seedCertsFromRound = null,
   ackTransform,
   // Optional callback invoked BEFORE `state_merkle_root` is computed.
   // Use this to mutate any canonical-state row whose stable form must be
@@ -243,11 +250,48 @@ function buildCommittedDag({
     }
   }
 
+  // §69 — optional synthetic cert history for snapshot Phase E. Seeds one
+  // cert per committee node per round in [seedCertsFromRound, round - 1].
+  // Lets snapshot-handler tests verify recent certs are streamed and
+  // installed end-to-end. Each cert is structurally valid (hash, sig,
+  // ack stubs) but not consensus-relevant — the snapshot's Phase E
+  // ships them based on rounds in the certificates table, not on what
+  // produced them. Hash collisions across rounds would prevent install,
+  // so we vary by (round, author) like a real cert would.
+  const seededCerts = [];
+  if (seedCertsFromRound != null && seedCertsFromRound < round) {
+    for (let r = seedCertsFromRound; r < round; r++) {
+      for (const { nodeId, privateKey } of committeeKeys) {
+        const certBatchHash = shake256(`seed-cert-batch-${r}-${nodeId}`);
+        const ackSignedAt = _bftT0 + (r - seedCertsFromRound) * 1000;
+        const ackPayload = `ack:${certBatchHash}:${nodeId}:${ackSignedAt}`;
+        const certHash = shake256(`seed-cert-${r}-${nodeId}`);
+        const cert = {
+          hash: certHash,
+          round: r,
+          author_node_id: nodeId,
+          batch: { round: r, author_node_id: nodeId, txs: [], hash: certBatchHash, signature: "00" },
+          acknowledgments: [{
+            batch_hash: certBatchHash,
+            acker_node_id: nodeId,
+            signature: mldsaSign(ackPayload, privateKey),
+            signed_at: ackSignedAt,
+          }],
+          parent_hashes: [],
+          signature: "00",
+          timestamp: ackSignedAt,
+        };
+        sourceDag.saveCertificate(cert);
+        seededCerts.push(cert);
+      }
+    }
+  }
+
   return {
     sourceDag, committee, committeeKeys,
     anchorCertHash, anchorBatchHash,
     stateRoot, txsRoot, consensusIndex,
-    seededTxs,
+    seededTxs, seededCerts,
     // BFT-Time fields surfaced for tests that need to assert on them.
     ackSignedAts, certTimestamp,
   };

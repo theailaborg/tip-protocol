@@ -50,10 +50,13 @@ const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
   createRotationsFullRootBuilder,
+  createCertsFullRootBuilder,
   canonTx,
   canonCommit,
   canonRotation,
+  canonCert,
 } = require("./snapshot-roots");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getGenesisPayload } = require("../genesis");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { frame: _frame, parseLengthPrefixedFrames: _parseLengthPrefixedFrames } = require("../network/framing");
@@ -246,9 +249,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let txRowsSent = 0;
     let commitRowsSent = 0;
     let rotationRowsSent = 0;
+    let certRowsSent = 0;
     let txsFullRoot = "";
     let commitsFullRoot = "";
     let rotationsFullRoot = "";
+    let certsFullRoot = "";
+
+    // §69: cert range to ship — enough rounds back from peer_committed
+    // that the joiner's K-window is fully covered for any round it'll
+    // produce at next. K + VOTES_RETENTION_ROUNDS gives K-rounds-of-history
+    // plus a horizon buffer for late-batch tolerance.
+    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS;
+    const certWindowHorizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
+    const certFromRound = Math.max(1, peerCommittedRound - certWindowK - certWindowHorizon);
+    const certToRound = peerCommittedRound;
     try {
       await stream.sink((async function* () {
         yield _frame(headerBuf);
@@ -298,6 +312,24 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
         rotationsFullRoot = rotationRoot.finalize();
 
+        // Phase E: recent certificates (§69). Bounded range
+        // [peer_committed - K - horizon, peer_committed] so the joiner's
+        // K-window for any round it produces at next is fully populated.
+        // Without this, joiner's getActiveCommittee derives a smaller
+        // producer set than full-history nodes for the K rounds after
+        // snapshot install → quorum-asymmetry halt (live fingerprint
+        // 2026-05-02 — see peer-sync.js fix that addressed the related
+        // sync-from-snap_round+1 gap).
+        const certRoot = createCertsFullRootBuilder();
+        if (typeof dag.iterateCertsByRoundRange === "function") {
+          for (const cert of dag.iterateCertsByRoundRange(certFromRound, certToRound)) {
+            yield _frameFullHistoryRow("SnapshotCertRow",
+              canonicalJson(canonCert(cert)), certRoot);
+            certRowsSent++;
+          }
+        }
+        certsFullRoot = certRoot.finalize();
+
         const endBuf = encode("SnapshotEnd", {
           rowCount: stateRowsSent,
           txRowCount: txRowsSent,
@@ -306,6 +338,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           commitsFullRoot: hexToBytes(commitsFullRoot),
           rotationRowCount: rotationRowsSent,
           rotationsFullRoot: hexToBytes(rotationsFullRoot),
+          certRowCount: certRowsSent,
+          certsFullRoot: hexToBytes(certsFullRoot),
         });
         yield _frame(endBuf);
       })());
@@ -316,7 +350,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     log.info(
       `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
-      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} rotations=${rotationRowsSent})`
+      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
+      `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}])`
     );
   }
 
@@ -373,12 +408,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const txRowCount = Number(end.txRowCount || 0);
       const commitRowCount = Number(end.commitRowCount || 0);
       const rotationRowCount = Number(end.rotationRowCount || 0);
-      const expectedTotal = stateRowCount + txRowCount + commitRowCount + rotationRowCount;
+      const certRowCount = Number(end.certRowCount || 0);
+      const expectedTotal = stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount;
       if (expectedTotal !== rowFrames.length) {
         throw new Error(
           `row count mismatch: end says state=${stateRowCount} txs=${txRowCount} ` +
-          `commits=${commitRowCount} rotations=${rotationRowCount} (total=${expectedTotal}), ` +
-          `got ${rowFrames.length} frames`
+          `commits=${commitRowCount} rotations=${rotationRowCount} certs=${certRowCount} ` +
+          `(total=${expectedTotal}), got ${rowFrames.length} frames`
         );
       }
 
@@ -386,7 +422,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const txFrames = rowFrames.slice(stateRowCount, stateRowCount + txRowCount);
       const commitFrames = rowFrames.slice(stateRowCount + txRowCount,
         stateRowCount + txRowCount + commitRowCount);
-      const rotationFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount);
+      const rotationFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount,
+        stateRowCount + txRowCount + commitRowCount + rotationRowCount);
+      const certFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount);
 
       // ── Phase A: derived state ───────────────────────────────────────
       // Different shape from B/C (carries a `table` field) so doesn't use
@@ -488,6 +526,31 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
       const chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
 
+      // ── Phase E: recent certificates (§69) ──────────────────────────
+      // Wire-integrity check via certs_full_root. The certs themselves
+      // don't need cryptographic chain-of-trust verification at this
+      // layer — each cert's hash is content-addressable (covers round +
+      // author + batch.hash + acks + timestamp), and consensus already
+      // accepted them at production time via the normal Narwhal cert-
+      // validation path. We're shipping pre-verified history; the
+      // joiner just needs the bits to populate its K-window.
+      //
+      // Certs are install-ordered (round, author) and persisted via
+      // the standard `dag.saveCertificate` path — same as receiving via
+      // gossip, but bulk-loaded inside the snapshot's atomic txn.
+      const certsRoot = createCertsFullRootBuilder();
+      const certInstallQueue = _decodeFullHistoryFrames(
+        certFrames, "SnapshotCertRow", certsRoot, "cert"
+      );
+      const derivedCerts = certsRoot.finalize();
+      const expectedCerts = bytesToHex(end.certsFullRoot);
+      if (derivedCerts !== expectedCerts) {
+        throw new Error(
+          `certs_full_root mismatch: expected ${expectedCerts?.slice(0, 16) || "<empty>"}..., ` +
+          `derived ${derivedCerts.slice(0, 16)}...`
+        );
+      }
+
       // ── Signature quorum ──────────────────────────────────────────────
       const anchorBatchHashHex = bytesToHex(header.anchorBatchHash);
       if (!anchorBatchHashHex) throw new Error("header missing anchor_batch_hash");
@@ -581,11 +644,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         txs: txInstallQueue,
         commits: commitInstallQueue,
         rotations: rotationInstallQueue,
+        certs: certInstallQueue,
       });
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
-        `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ${installed.rotations}/rotations ` +
+        `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ` +
+        `${installed.rotations}/rotations ${installed.certs}/certs ` +
         `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
 
@@ -605,16 +670,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // network-wide anchor count. Without this, each node's
         // consensus_index drifts based on local restart history.
         peer_consensus_index: peerConsensusIndex,
-        rows_installed: installed.state + installed.txs + installed.commits + installed.rotations,
+        rows_installed: installed.state + installed.txs + installed.commits + installed.rotations + installed.certs,
         state_rows_installed: installed.state,
         tx_rows_installed: installed.txs,
         commit_rows_installed: installed.commits,
         rotation_rows_installed: installed.rotations,
+        cert_rows_installed: installed.certs,
         state_merkle_root: derivedState,
         txs_merkle_root: bytesToHex(header.txsMerkleRoot),
         txs_full_root: derivedTxs,
         commits_full_root: derivedCommits,
         rotations_full_root: derivedRotations,
+        certs_full_root: derivedCerts,
       };
     } finally {
       try { stream.close(); } catch { /* ignore */ }
@@ -681,6 +748,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         rotationN++;
       }
 
+      // §69: install recent certs. Already verified upstream via
+      // certs_full_root match. saveCertificate is INSERT OR IGNORE on
+      // (hash) so a cert that arrives twice (e.g., rebroadcast post-
+      // install) is a no-op. Order doesn't matter for storage but
+      // sender ships in (round, author) order, which we preserve.
+      let certN = 0;
+      const certs = queues.certs || [];
+      for (const c of certs) {
+        dag.saveCertificate(c);
+        certN++;
+      }
+
       // Header's commit row — the round whose state_merkle_root we just
       // verified against 2f+1 acks. Convert header bytes-fields back to
       // the hex/string shape dag.saveCommit expects.
@@ -719,7 +798,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         cert_timestamp: headerCertTimestamp,
       });
 
-      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN };
+      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN };
     });
   }
 
