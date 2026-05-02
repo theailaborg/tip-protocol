@@ -291,9 +291,11 @@ message PeerAnnounce {
 // anchor cert batch hash → then installs state and resumes live consensus.
 //
 // Stream framing: a single libp2p stream carries length-prefixed messages
-// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow, then
-// SnapshotEnd. Sender writes 4-byte big-endian length prefix before each
-// message; receiver parses one message per length prefix.
+// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow,
+// SnapshotTxRow, SnapshotCommitRow, SnapshotCommitteeRotationRow,
+// SnapshotCertRow, then SnapshotEnd. Sender writes 4-byte big-endian
+// length prefix before each message; receiver parses one message per
+// length prefix.
 
 /**
  * Joiner's request. Asks for the peer's latest committed state at or
@@ -445,6 +447,36 @@ message SnapshotCommitteeRotationRow {
 }
 
 /**
+ * §69: One row from the source's `certificates` table — every cert in
+ * the range `[max(1, peer_committed - K - VOTES_RETENTION_ROUNDS),
+ * peer_committed]`. Joiner installs via `dag.saveCertificate` AFTER
+ * verifying the wire-integrity root match.
+ *
+ * Why we ship recent certs (and not just the snapshot's anchor cert):
+ * the post-§4 runtime committee is derived from `getActiveCommittee()`,
+ * which reads the K-round window of cert history before the queried
+ * round. Without these certs, a fresh joiner's K-window for any round
+ * `R ≤ peer_committed + K` is missing the `[R-K, snap.round]` slice
+ * → its `getActiveCommittee` differs from full-history nodes →
+ * mid-flight quorum-asymmetry halt (live fingerprint 2026-05-02).
+ *
+ * The range covers at least K+horizon rounds so the joiner's K-window
+ * for ANY query round it'll ever produce at is fully populated:
+ *   joiner produces first cert at round = peer_committed + 1
+ *   K-window for that round = [peer_committed + 1 - K, peer_committed]
+ *   → bundle MUST include certs from peer_committed - K backwards
+ *   → +VOTES_RETENTION_ROUNDS for late-batch tolerance.
+ *
+ * Sent in `(round, author_node_id)` order — same canonical ordering
+ * as `dag.iterateCertsByRoundRange` yields. `canonical_json` is the
+ * byte form of `canonicalJson(canonCert(cert))` — receiver feeds
+ * into the same `certs_full_root` builder for verification.
+ */
+message SnapshotCertRow {
+  bytes canonical_json = 1;
+}
+
+/**
  * Terminator. Row counts are sanity checks — joiner verifies they match
  * the number of rows of each type actually received (guards against
  * silent truncation on the wire).
@@ -471,4 +503,6 @@ message SnapshotEnd {
   bytes commits_full_root = 5;      // #49: integrity root over commit stream
   uint64 rotation_row_count = 6;    // §4 + #34: SnapshotCommitteeRotationRow count
   bytes rotations_full_root = 7;    // §4 + #34: integrity root over rotation stream
+  uint64 cert_row_count = 8;        // #69: SnapshotCertRow count
+  bytes certs_full_root = 9;        // #69: integrity root over cert stream
 }

@@ -38,6 +38,7 @@ const { shake256, canonicalJson } = require("../../../shared/crypto");
 const EMPTY_TXS_FULL_ROOT = shake256("tip:txs-full-root:empty");
 const EMPTY_COMMITS_FULL_ROOT = shake256("tip:commits-full-root:empty");
 const EMPTY_ROTATIONS_FULL_ROOT = shake256("tip:rotations-full-root:empty");
+const EMPTY_CERTS_FULL_ROOT = shake256("tip:certs-full-root:empty");
 
 /**
  * Flat sequential SHAKE-256 builder.
@@ -94,6 +95,10 @@ function createCommitsFullRootBuilder() {
 
 function createRotationsFullRootBuilder() {
   return _createFullRootBuilder("tip:rotations-full-root:v1", EMPTY_ROTATIONS_FULL_ROOT);
+}
+
+function createCertsFullRootBuilder() {
+  return _createFullRootBuilder("tip:certs-full-root:v1", EMPTY_CERTS_FULL_ROOT);
 }
 
 /**
@@ -178,6 +183,41 @@ function canonRotation(r) {
 }
 
 /**
+ * §69: Canonical projection of a certificates row for snapshot hashing
+ * + wire form. SnapshotCertRow.canonical_json on the wire MUST equal
+ * canonicalJson(canonCert(cert)) on both sides.
+ *
+ * Determinism contract: cert.hash is itself a content-binding hash over
+ * (round, author, batch.hash, sortedParents, sortedAckers, timestamp),
+ * so all the verification-critical fields are already pinned by the
+ * hash. We include them in the canonical projection regardless so the
+ * raw-data row hashes match deterministically across nodes — both sides
+ * iterate through `dag.iterateCertsByRoundRange` and hash the same
+ * sequence.
+ *
+ * Field order matches the certificates table schema. `acknowledgments`
+ * is sorted by acker_node_id at canonicalization time so we don't depend
+ * on insertion order from each side's local DB. `parent_hashes` is
+ * sorted to match the cert-hash construction (which sorts before
+ * folding into the hash input).
+ */
+function canonCert(cert) {
+  const acks = (cert.acknowledgments || []).slice().sort((a, b) =>
+    (a.acker_node_id || "").localeCompare(b.acker_node_id || "")
+  );
+  return {
+    hash: cert.hash,
+    round: cert.round,
+    author_node_id: cert.author_node_id,
+    batch: cert.batch,
+    acknowledgments: acks,
+    parent_hashes: [...(cert.parent_hashes || [])].sort(),
+    signature: cert.signature,
+    timestamp: cert.timestamp || 0,
+  };
+}
+
+/**
  * Compute rotations_full_root by streaming `dag.getRotationsFromGenesis()`.
  * Memory bounded at one row. Same wire-integrity role as txs_full_root /
  * commits_full_root — guards against truncation or tampering of the
@@ -218,17 +258,40 @@ function computeCommitsFullRoot(dag, latestRound) {
   return b.finalize();
 }
 
+/**
+ * §69: Compute certs_full_root by streaming a bounded round range.
+ * Range is `[max(1, peerCommittedRound - K - VOTES_RETENTION_ROUNDS),
+ * peerCommittedRound]` so the joiner's K-round window for any future
+ * round it produces at is fully covered by the shipped certs.
+ *
+ * Both sender and receiver pass the same range so the iteration is
+ * identical. Memory bounded at one cert.
+ */
+function computeCertsFullRoot(dag, fromRound, toRound) {
+  const b = createCertsFullRootBuilder();
+  if (typeof dag.iterateCertsByRoundRange === "function") {
+    for (const cert of dag.iterateCertsByRoundRange(fromRound, toRound)) {
+      b.addRowObject(canonCert(cert));
+    }
+  }
+  return b.finalize();
+}
+
 module.exports = {
   computeTxsFullRoot,
   computeCommitsFullRoot,
   computeRotationsFullRoot,
+  computeCertsFullRoot,
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
   createRotationsFullRootBuilder,
+  createCertsFullRootBuilder,
   canonTx,
   canonCommit,
   canonRotation,
+  canonCert,
   EMPTY_TXS_FULL_ROOT,
   EMPTY_COMMITS_FULL_ROOT,
   EMPTY_ROTATIONS_FULL_ROOT,
+  EMPTY_CERTS_FULL_ROOT,
 };
