@@ -121,7 +121,33 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
       `consensus_index=${snap.consensus_index} rows=${snap.rows_installed} ` +
       `peer=${peerId.slice(0, 12)}`
     );
-    return targetRound;
+    // Return snap.round (NOT targetRound). The caller uses this as the
+    // cert-sync start point: `fromRound = snapRound + 1`. Cert-sync must
+    // pull every cert from snap.round+1 onwards — INCLUDING the
+    // [snap.round+1, peer_committed_round] window — because the snapshot
+    // ships derived state + commits but NOT certificates. Without these
+    // certs, the joiner's local DAG has no way to populate the K-round
+    // window used by participants.getActiveCommittee for runtime committee
+    // derivation.
+    //
+    // Live fingerprint (2026-05-02): node 2 installed snap at round=98
+    // with peer_committed_round=146; this code previously returned 146,
+    // sync started at 147, all peer certs after 147 referenced parents in
+    // the [99, 146] gap that node 2 didn't have, every cert was parked,
+    // node 2's K-window saw only its own certs, derived quorum=1, shipped
+    // 1-ack certs, node 1 (full DAG) rejected them with quorum=2 → halt.
+    //
+    // Bullshark counter (markOrderedUpTo above) still advances to
+    // peer_committed_round — that's correct for the "peer is at this
+    // height" operational signal — but cert-sync needs the underlying
+    // cert data, hence snap.round here. Pre-§4 didn't hit this because
+    // K was 4 rounds (the K-window happened to be entirely after
+    // peer_committed_round); §4 raised K to 300 rounds, exposing the gap.
+    //
+    // See follow-up issue: ship recent certs in the snapshot itself so
+    // joiners arriving after peer cert-GC (>500 rounds idle) can still
+    // reconstruct their K-window.
+    return snap.round;
   } catch (err) {
     // Expected on peers that don't have a commit yet (fresh networks),
     // on peers that reject our minRound, or when verification fails.

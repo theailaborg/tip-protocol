@@ -404,6 +404,29 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     const latest = dag.getLatestRotation();
     if (!latest) return;  // initDAG bootstrap should've written rotation 0; defensive
 
+    // Cert-history guard: refuse to propose unless we have at least
+    // COMMITTEE_ROTATION_HYSTERESIS_ROUNDS rounds of cert history in our
+    // local DAG. After a snapshot install, certs from before snapshot.round
+    // are structurally absent (snapshot ships state + commits + rotations,
+    // NOT raw certs — see issues.md Consensus #18). A fresh joiner's
+    // deriveLiveCommittee would see ONLY post-join producers and disagree
+    // with peers who have full history — proposing rotations that drop
+    // legitimately-active peers from the committee → flap storm.
+    //
+    // The guard waits until the joiner has accumulated K rounds of certs
+    // (~10 min at K=300) before allowing it to propose. Existing nodes
+    // (running since round 1, or with GC depth > K) always pass.
+    // Joiners can still BE in the committee, ack things, and serve
+    // snapshots — they just can't fire rotation proposals during their
+    // catch-up window.
+    if (typeof dag.getEarliestCertRound === "function") {
+      const earliest = dag.getEarliestCertRound() || 0;
+      const historyRounds = earliest > 0 ? currentRound - earliest : currentRound;
+      if (historyRounds < CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS) {
+        return;
+      }
+    }
+
     const wouldBe = deriveLiveCommittee(dag, currentRound, CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS);
     const currentNodeIds = latest.committee.map(m => m.node_id).sort();
 

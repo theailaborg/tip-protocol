@@ -262,10 +262,14 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
 
     // Two cert-sync calls: first hit snapshotRequired, second ran from
     // tryFastSyncSnapshot's returned anchor + 1. The helper returns
-    // max(peer_committed_round, snap.round) so cert sync resumes
-    // exactly where snapshot install ended (45520 + 1 = 45521).
+    // snap.round (the actual snapshot round, NOT peer_committed_round)
+    // so cert-sync pulls the [snap.round+1, peer_committed_round] gap —
+    // those certs are needed for participants.getActiveCommittee to
+    // populate the K-window. (See peer-sync.js:124 comment for the live
+    // 2026-05-02 halt fingerprint that surfaced this fix.) snap.round =
+    // 45000 → fromRound = 45001.
     expect(syncCalls.length).toBe(2);
-    expect(syncCalls[1].opts.fromRound).toBe(45521);
+    expect(syncCalls[1].opts.fromRound).toBe(45001);
     // Two snapshot attempts: Phase 1 declined, fallback installed.
     expect(snapshotCalls.length).toBe(2);
     // Bullshark advanced from the fallback snapshot's

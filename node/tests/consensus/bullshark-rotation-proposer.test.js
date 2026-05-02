@@ -104,6 +104,17 @@ function _seedCertsByRound(dag, byRound) {
   }
 }
 
+// Seed a CONTIGUOUS range of certs so proposer's cert-history guard
+// passes. Required for tests that want the proposer to fire — the
+// guard refuses to propose unless history >= COMMITTEE_ROTATION_HYSTERESIS_ROUNDS
+// (default K=300). Pass `authors` as the producers in every round of
+// the range.
+function _seedCertRange(dag, fromRound, toRound, authors) {
+  const byRound = {};
+  for (let r = fromRound; r <= toRound; r++) byRound[r] = authors;
+  _seedCertsByRound(dag, byRound);
+}
+
 // Drive an anchor commit by seeding propose+vote certs and calling
 // onRoundComplete with the vote round's certs. Returns success bool.
 function _driveAnchorCommit(dag, bullshark, { proposeRound, voteRound, leader, voteAuthors }) {
@@ -151,13 +162,12 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
       status: "active", registered_at: "2026-01-01T00:00:00.000Z",
     });
-    _seedCertsByRound(fx.dag, {
-      1: [FOUNDING.node_id, "tip://node/peer"],
-      2: [FOUNDING.node_id, "tip://node/peer"],
-    });
+    // Seed enough cert history to pass the K=300 cert-history guard.
+    // Both founding and peer produce in every round of the range.
+    _seedCertRange(fx.dag, 1, 400, [FOUNDING.node_id, "tip://node/peer"]);
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      proposeRound: 401, voteRound: 402, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
     });
 
@@ -245,10 +255,9 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
     const proposeRound = 302401;
     const voteRound = 302402;
 
-    _seedCertsByRound(fx.dag, {
-      [proposeRound]: [FOUNDING.node_id],
-      [voteRound]: [FOUNDING.node_id],
-    });
+    // Seed continuous cert range from round 1 so the cert-history guard
+    // passes (history = currentRound - 1 >> K=300).
+    _seedCertRange(fx.dag, 1, voteRound, [FOUNDING.node_id]);
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
       proposeRound, voteRound, leader: FOUNDING.node_id,
@@ -267,6 +276,73 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
     expect(ids).toEqual([FOUNDING.node_id]);
   });
 
+  test("does NOT fire when local cert history is shorter than K (post-snapshot joiner)", () => {
+    // Simulates a fresh joiner that snapshot-installed at round N. Its
+    // certificates table only has certs from N+1 onwards (snapshot
+    // doesn't ship raw certs; cert sync only goes forward). When this
+    // node tries to propose a rotation at round N+50, its K=300 window
+    // [N+50-300, N+50-1] is mostly EMPTY for it but full for peers who
+    // have been running since round 1 — they'd disagree → flap.
+    //
+    // The cert-history guard refuses to propose until the node has
+    // accumulated COMMITTEE_ROTATION_HYSTERESIS_ROUNDS of cert history,
+    // by which point its view matches peers'.
+    const fx = _setup();
+    fx.dag.saveNode({
+      node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Simulate post-snapshot state: certs only exist from round 100000 onward
+    // (joiner snapshot-installed at round 99999, started producing at 100000).
+    // K=300 hysteresis. waveStartRound = 100049 → window = [99749, 100048].
+    // earliest_cert = 100000. history = 100049 - 100000 = 49 rounds — much
+    // less than K=300 → proposer must skip.
+    _seedCertsByRound(fx.dag, {
+      100000: [FOUNDING.node_id],
+      100001: [FOUNDING.node_id, "tip://node/peer"],
+      // ... etc — only post-join certs
+    });
+
+    // Drive an anchor commit at round 100050. waveStartRound = 100049,
+    // founding leads (only single committee member). Without the guard,
+    // founding would see "peer never produced before round 100001"
+    // and propose dropping peer.
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 100049, voteRound: 100050, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
+    });
+
+    expect(fx.submittedTxs).toHaveLength(0);  // skipped due to insufficient history
+  });
+
+  test("fires once cert history covers full K-window", () => {
+    const fx = _setup();
+    fx.dag.saveNode({
+      node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Seed certs from round 1 onwards so the cert-history check passes
+    // (history = currentRound - 1 >> K=300). Both nodes have been
+    // producing the entire time → wouldBe correctly includes peer.
+    const certs = {};
+    for (let r = 1; r <= 400; r++) {
+      certs[r] = [FOUNDING.node_id, "tip://node/peer"];
+    }
+    _seedCertsByRound(fx.dag, certs);
+
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 401, voteRound: 402, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
+    });
+
+    // Has full history, sees peer producing → proposes adding peer to committee
+    expect(fx.submittedTxs).toHaveLength(1);
+    const ids = fx.submittedTxs[0].data.new_committee.map(m => m.node_id);
+    expect(ids).toContain("tip://node/peer");
+  });
+
   test("filters nodes with no public_key in the nodes table from new_committee", () => {
     const fx = _setup();
     // Register a node WITHOUT a public_key, plus one WITH. Both produce
@@ -282,13 +358,11 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
       public_key: "real-pubkey-hex",
       status: "active", registered_at: "2026-01-01T00:00:00.000Z",
     });
-    _seedCertsByRound(fx.dag, {
-      1: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
-      2: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
-    });
+    // Seed enough cert history to pass the K=300 cert-history guard.
+    _seedCertRange(fx.dag, 1, 400, [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"]);
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      proposeRound: 401, voteRound: 402, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id, "tip://node/no-key", "tip://node/with-key"],
     });
 
@@ -334,22 +408,25 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
       proposer,
     });
 
-    _seedCertsByRound(dag, {
-      1: [FOUNDING.node_id, "tip://node/peer"],
-      2: [FOUNDING.node_id, "tip://node/peer"],
-    });
+    // Seed K rounds of cert history so the cert-history guard passes
+    // and the proposer actually attempts to submit (so we can test
+    // submitTx-throws path).
+    for (let r = 1; r <= 400; r++) {
+      dag.saveCertificate(_buildCert({ round: r, author: FOUNDING.node_id }));
+      dag.saveCertificate(_buildCert({ round: r, author: "tip://node/peer", hash: shake256(`peer-${r}`) }));
+    }
 
     // Should NOT throw — bullshark's _checkAnchorCommit catches the
     // proposer's synchronous throw and logs it.
     expect(() => _driveAnchorCommit(dag, bullshark, {
-      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      proposeRound: 401, voteRound: 402, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
     })).not.toThrow();
 
     expect(submitCalls).toBe(1);  // proposer attempted to submit
 
     // Anchor commit still landed despite proposer failure
-    expect(bullshark.lastCommittedRound()).toBe(2);
+    expect(bullshark.lastCommittedRound()).toBe(402);
 
     // Proposal counter incremented even on submit failure (operators
     // care about "leader tried" regardless of downstream success).
@@ -362,13 +439,11 @@ describe("bullshark — rotation proposer (§4 + #34 step 6)", () => {
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
       status: "active", registered_at: "2026-01-01T00:00:00.000Z",
     });
-    _seedCertsByRound(fx.dag, {
-      1: [FOUNDING.node_id, "tip://node/peer"],
-      2: [FOUNDING.node_id, "tip://node/peer"],
-    });
+    // Seed enough cert history to pass the K=300 cert-history guard.
+    _seedCertRange(fx.dag, 1, 400, [FOUNDING.node_id, "tip://node/peer"]);
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      proposeRound: 401, voteRound: 402, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id, "tip://node/peer"],
     });
 
