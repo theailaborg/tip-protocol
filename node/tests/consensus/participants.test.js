@@ -109,13 +109,20 @@ describe("getActiveCommittee — cert-history-based derivation", () => {
     expect(c101).toEqual(c102);
   });
 
-  test("cold-start fallback: no proven producers → returns registered set", () => {
+  test("empty-window fallback returns genesis ∩ registered (not the full registry)", () => {
+    // Genesis-anchored: when nobody has produced in the K-window we fall
+    // back to the genesis committee intersected with the active registry.
+    // Late-joiner registry rows are NOT admitted via the fallback — only
+    // genesis members are. This is the structural fix that subsumes #72:
+    // the registry as-a-whole is never returned, so dead-peer rows can't
+    // inflate quorum during sync windows or historical-round queries.
     const dag = _setup();
     _seedNodes(dag, ["tip://node/a", "tip://node/b"]);
 
     const got = getActiveCommittee(dag, 101, 10);
-    // Includes genesis founding_node (always in nodes table after initDAG)
-    expect(got.sort()).toEqual([FOUNDING_NODE_ID, "tip://node/a", "tip://node/b"].sort());
+    expect(got).toEqual([FOUNDING_NODE_ID]);
+    expect(got).not.toContain("tip://node/a");
+    expect(got).not.toContain("tip://node/b");
   });
 
   test("excludes nodes with status != active", () => {
@@ -139,51 +146,54 @@ describe("getActiveCommittee — cert-history-based derivation", () => {
     _seedNodes(dag, ["tip://node/a"]);
     // Cert way outside default K=300 window
     _seedCertsByRound(dag, { 1: ["tip://node/a"] });
-    // Round 500 with default K → window is [200, 499]; round 1 is OUT
+    // Round 500 with default K=300 → window is [200, 499]; round 1 is OUT.
+    // No producers in window → empty-window fallback fires and returns
+    // genesis ∩ registered. `a` is a late joiner (not in genesis), so
+    // even though it has a cert at round 1, the fallback excludes it.
+    // Only FOUNDING_NODE_ID survives.
     const got = getActiveCommittee(dag, 500);
-    // No producers in window → cold-start fallback to registered set
-    expect(got.sort()).toEqual([FOUNDING_NODE_ID, "tip://node/a"].sort());
+    expect(got).toEqual([FOUNDING_NODE_ID]);
   });
 });
 
 describe("getActiveCommittee — registered-but-not-running nodes do NOT inflate quorum", () => {
   test("registering a node before it produces does NOT add it to the committee (no halt)", () => {
-    // Bug fingerprint: pre-fix, the cold-start fallback returned the full
-    // registered set when no producer was proven yet. If a node was
-    // REGISTER_NODE-committed but hadn't started running, it'd get pulled
-    // into the committee, push quorum to 2, become unmeetable (since the
-    // not-running node can't ack), and halt founding. This test pins the
-    // post-fix behavior: cold-start fallback returns registered ∩ producers,
-    // which excludes registered-but-silent nodes.
+    // Genesis-anchored bug-protection: a REGISTER_NODE-committed node
+    // that hasn't started producing must NOT be pulled into the committee.
+    // (Pre-old-fix this would have inflated quorum and halted; under the
+    // new rule it's structurally impossible because admission requires
+    // producing-in-window AND (genesis OR span≥K) — registered alone
+    // doesn't admit anyone.)
     const dag = _setup();
-    _seedNodes(dag, ["tip://node/founding", "tip://node/registered_but_silent"]);
+    _seedNodes(dag, ["tip://node/registered_but_silent"]);
 
-    // Founding is producing but hasn't yet hit the K-round proven mark.
-    // Registered-but-silent has produced ZERO certs.
+    // Genesis founding_node is producing but hasn't yet hit the K-round
+    // proven mark. registered_but_silent has produced ZERO certs.
     _seedCertsByRound(dag, {
-      1: ["tip://node/founding"],
-      50: ["tip://node/founding"],
+      1: [FOUNDING_NODE_ID],
+      50: [FOUNDING_NODE_ID],
     });
 
-    // K=300, currentRound=51. Founding's earliest=1, waveStart-earliest=50 < 300
-    // → not proven yet → cold-start path.
+    // K=300, currentRound=51. Founding is in genesis_committee → admitted
+    // on first cert. registered_but_silent has no certs → not admitted.
     const got = getActiveCommittee(dag, 51, 300);
 
-    // Must NOT include registered_but_silent — they have no certs.
     expect(got).not.toContain("tip://node/registered_but_silent");
-    expect(got).toContain("tip://node/founding");
+    expect(got).toContain(FOUNDING_NODE_ID);
   });
 
-  test("absolute genesis (no certs anywhere yet) falls back to registered set", () => {
-    // True last-resort fallback: producers is empty, so registered ∩
-    // producers is also empty. Returns registered so the very first
-    // round can bootstrap (founding hasn't produced its first cert yet
-    // at this exact moment).
+  test("absolute genesis (no certs anywhere yet) falls back to genesis_committee", () => {
+    // True last-resort: producers is empty (chain has zero certs). The
+    // empty-window fallback returns genesis ∩ registered so the very
+    // first round can bootstrap. Random registered-but-not-genesis nodes
+    // are NOT included even at this earliest moment.
     const dag = _setup();
-    _seedNodes(dag, ["tip://node/founding"]);
+    _seedNodes(dag, ["tip://node/late-arrival"]);
     // No certs at all
+
     const got = getActiveCommittee(dag, 1, 300);
-    expect(got).toContain("tip://node/founding");
+    expect(got).toEqual([FOUNDING_NODE_ID]);
+    expect(got).not.toContain("tip://node/late-arrival");
   });
 });
 
@@ -259,22 +269,25 @@ describe("getActiveCommittee — proven-node filter", () => {
     expect(got).not.toContain("tip://node/peer352");
   });
 
-  test("cold-start fallback returns registered ∩ producers (not full registered set)", () => {
+  test("late joiners with span < K are NOT admitted, even if they're producing recently", () => {
+    // Genesis-anchored: late joiners (anyone NOT in genesis) must serve
+    // K rounds of proven span before being admitted. Just-produced-once
+    // is not enough. This is the property that prevents node 2 from
+    // entering committee on its very first cert and instantly inflating
+    // quorum 1→2 (the eager-promotion bug we replaced level-2 to fix).
     const dag = _setup();
     _seedNodes(dag, ["tip://node/a", "tip://node/b"]);
     _seedCertsByRound(dag, {
       105: ["tip://node/a"],
       106: ["tip://node/b"],
     });
-    // Neither proven for K=10 → cold-start fallback fires. Returns
-    // registered ∩ producers — which excludes FOUNDING_NODE_ID because
-    // it has no certs in this test setup. This is the post-fix behavior:
-    // registered-but-not-running nodes are NOT included in the cold-start
-    // committee, preventing the "register node 2 but it's not running →
-    // halt" failure mode.
+    // K=10, round=110. waveStart=109, window=[99, 108].
+    // a span = 105-105 = 0; b span = 106-106 = 0; neither in genesis.
+    // Both excluded → committee=[], empty-window fallback → [FOUNDING].
     const got = getActiveCommittee(dag, 110, 10);
-    expect(got.sort()).toEqual(["tip://node/a", "tip://node/b"]);
-    expect(got).not.toContain(FOUNDING_NODE_ID);
+    expect(got).toEqual([FOUNDING_NODE_ID]);
+    expect(got).not.toContain("tip://node/a");
+    expect(got).not.toContain("tip://node/b");
   });
 });
 
@@ -330,5 +343,155 @@ describe("getNodeCount", () => {
     });
     // a, b, plus genesis founding_node from initDAG = 3
     expect(getNodeCount(dag)).toBe(3);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #72 regression — last-resort fallback misfires for syncing nodes
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Live-fingerprint (2026-05-02 federation, node 2 post-snapshot restart):
+//   Node 2 fast-sync installs a snapshot at peer_committed_round=606 with
+//   certs covering rounds [301, 606] (#69 K-window). narwhal stays in
+//   joinState=syncing with _currentRound=1 while it backfills the gap.
+//   getCommittee(_currentRound=1) — window [1, 0] empty, producers={} —
+//   pre-fix dropped through to "return all registered" which silently
+//   admitted dead-node-3 (a stopped peer whose row was still in `nodes`).
+//
+// Under the genesis-anchored derivation this entire class of bug is
+// structurally impossible: the function never returns the registry. The
+// empty-window fallback returns `genesis_committee ∩ registered`, which
+// is fixed at genesis and excludes any registered-but-not-genesis row by
+// construction. The tests below pin that property.
+describe("getActiveCommittee — #72: empty-window fallback excludes non-genesis peers", () => {
+  test("syncing node (round=1) ignores non-genesis cert authors AND non-genesis registry rows", () => {
+    const dag = _setup();
+    const A = "tip://node/alive-a";
+    const B = "tip://node/alive-b";
+    const STALE = "tip://node/stale-c";   // registered, never produced any cert
+    _seedNodes(dag, [A, B, STALE]);
+
+    // Mirror the live snapshot's cert range: A and B produced every round
+    // in [301, 606] (so they're "alive" in DAG terms). STALE has zero
+    // certs. Genesis is just the founding_node from initDAG.
+    const byRound = {};
+    for (let r = 301; r <= 606; r++) byRound[r] = [A, B];
+    _seedCertsByRound(dag, byRound);
+
+    // Syncing node calls with stale `_currentRound=1`. window [1, 0]
+    // is empty → fallback returns genesis ∩ registered.
+    const committee = getActiveCommittee(dag, 1, 300);
+
+    // STALE excluded ✓ (the original #72 bug).
+    expect(committee).not.toContain(STALE);
+    // A and B excluded too — they're late joiners, not in genesis. The
+    // syncing node correctly says "I don't yet know enough to admit them
+    // — they may or may not be in committee at the head; until I exit
+    // sync mode I can only trust genesis."
+    expect(committee).not.toContain(A);
+    expect(committee).not.toContain(B);
+    expect(committee).toEqual([FOUNDING_NODE_ID]);
+  });
+
+  test("absolute genesis (DAG empty, registry has only genesis) — bootstrap committee = [founding]", () => {
+    const dag = _setup();
+    // No additional registered nodes, no certs.
+
+    const committee = getActiveCommittee(dag, 1, 300);
+    expect(committee).toEqual([FOUNDING_NODE_ID]);
+  });
+
+  test("registered-but-non-genesis nodes never enter the empty-window fallback", () => {
+    // Even with several non-genesis rows in the registry, the fallback
+    // must return only genesis ∩ registered. This is the structural
+    // property that makes #72 unreachable: the registry-as-a-whole is
+    // never returned.
+    const dag = _setup();
+    _seedNodes(dag, ["tip://node/x", "tip://node/y", "tip://node/z"]);
+
+    const committee = getActiveCommittee(dag, 1, 300);
+    expect(committee).toEqual([FOUNDING_NODE_ID]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Genesis-anchored admission — positive tests for the new rule
+// ═══════════════════════════════════════════════════════════════════════════
+describe("getActiveCommittee — genesis-anchored admission rule", () => {
+  test("genesis member admitted on first cert (no K-wait)", () => {
+    // The whole point of the genesis branch: founding_node enters the
+    // committee on its very first cert, no need to wait K rounds.
+    const dag = _setup();
+    _seedCertsByRound(dag, {
+      1: [FOUNDING_NODE_ID],
+    });
+
+    const got = getActiveCommittee(dag, 2, 300);
+    expect(got).toEqual([FOUNDING_NODE_ID]);
+  });
+
+  test("late joiner NOT admitted on first cert — must serve K rounds", () => {
+    // Symmetric to the above: a non-genesis node producing its first
+    // cert is not yet in committee. This protects against eager
+    // promotion (the level-2 problem we removed).
+    const dag = _setup();
+    const LATE = "tip://node/late-joiner";
+    _seedNodes(dag, [LATE]);
+
+    // Genesis producing throughout for span; late joiner just produced
+    // one cert at round 100.
+    _seedCertsByRound(dag, {
+      1: [FOUNDING_NODE_ID],
+      99: [FOUNDING_NODE_ID],
+      100: [LATE, FOUNDING_NODE_ID],
+    });
+
+    const got = getActiveCommittee(dag, 101, 10);
+    // K=10. Genesis: span=99-1=98 ≥ 10 even without the genesis pass; in
+    // committee. LATE: span=100-100=0 < 10 → NOT in committee.
+    expect(got).toEqual([FOUNDING_NODE_ID]);
+    expect(got).not.toContain(LATE);
+  });
+
+  test("late joiner admitted once span ≥ K", () => {
+    const dag = _setup();
+    const LATE = "tip://node/late-joiner";
+    _seedNodes(dag, [LATE]);
+
+    // Genesis producing throughout. LATE produced from round 100 to 110
+    // (span = 10, exactly K).
+    _seedCertsByRound(dag, {
+      1: [FOUNDING_NODE_ID],
+      100: [LATE],
+      110: [LATE, FOUNDING_NODE_ID],
+    });
+
+    // K=10, query at round 112 (waveStart=111, window=[101, 110]).
+    // LATE: earliest=100, lastInWindow=110, span=10 ≥ K → admit.
+    // Genesis: earliest=1, span=109 ≥ K → admit (also via genesis pass).
+    const got = getActiveCommittee(dag, 112, 10);
+    expect(new Set(got)).toEqual(new Set([FOUNDING_NODE_ID, LATE]));
+  });
+
+  test("genesis member that goes silent for K+ rounds drops out (peer-352 protection applies to genesis too)", () => {
+    // Critical safety: the "currently producing in window" check applies
+    // to every member, including genesis. A genesis member that goes
+    // offline for K rounds drops out of the committee — quorum doesn't
+    // get stuck on a dead seed node.
+    const dag = _setup();
+
+    // Genesis produced rounds 1..100, then stopped.
+    _seedCertsByRound(dag, {
+      1: [FOUNDING_NODE_ID],
+      100: [FOUNDING_NODE_ID],
+    });
+
+    // Query at round 500. K=300. window=[200, 499]. Genesis hasn't
+    // produced in window. producers={} → empty-window fallback → returns
+    // genesis ∩ registered = [FOUNDING] — but operationally consensus
+    // halts because nothing in committee is producing. This is the
+    // correct degraded-mode behavior (halt-honestly).
+    const got = getActiveCommittee(dag, 500, 300);
+    expect(got).toEqual([FOUNDING_NODE_ID]);
   });
 });
