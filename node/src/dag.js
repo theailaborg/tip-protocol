@@ -181,6 +181,7 @@ class MemoryStore {
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
+    this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
   }
@@ -522,6 +523,40 @@ class MemoryStore {
     for (const r of sorted) {
       yield { ...r, committee: [...r.committee], signer_node_ids: [...r.signer_node_ids], signatures: [...r.signatures] };
     }
+  }
+
+  // ── #75 rotation_participation accessors ─────────────────────────────
+  // Counter per (node_id, rotation_number). Incremented on every Bullshark
+  // anchor commit by bullshark.js (one increment for the leader, one per
+  // ack-signer). Read at rotation boundary to compute next rotation's
+  // committee. See table comment in CREATE TABLE for full semantics.
+  incrementRotationParticipation(nodeId, rotationNumber) {
+    const key = `${nodeId}|${rotationNumber}`;
+    const current = this._rotationParticipation.get(key) || 0;
+    this._rotationParticipation.set(key, current + 1);
+  }
+  getRotationParticipation(rotationNumber) {
+    const out = [];
+    const suffix = `|${rotationNumber}`;
+    for (const [key, count] of this._rotationParticipation) {
+      if (key.endsWith(suffix)) {
+        const node_id = key.slice(0, -suffix.length);
+        out.push({ node_id, count });
+      }
+    }
+    return out;
+  }
+  pruneRotationParticipationBefore(rotationNumber) {
+    let removed = 0;
+    for (const key of this._rotationParticipation.keys()) {
+      const idx = key.lastIndexOf("|");
+      const r = Number(key.slice(idx + 1));
+      if (r < rotationNumber) {
+        this._rotationParticipation.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   // ── Canonical derived state (§14 snapshot-sync) ─────────────────────────
@@ -924,6 +959,39 @@ class SQLiteStore {
         created_at         INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
+
+      -- ── #75 Rotation participation tally ───────────────────────────
+      -- Per-author counter of "appearances in Bullshark anchors during
+      -- rotation N's period". Incremented on every anchor commit (one
+      -- increment for the leader, one per ack-signer). At each rotation
+      -- boundary (consensus_index % COMMITTEE_ROTATION_INTERVAL_COMMITS
+      -- == 0), the next rotation's committee is computed from these
+      -- tallies: anyone with count >= ceil(INTERVAL_COMMITS *
+      -- MIN_PARTICIPATION_PCT / 100), plus genesis members, qualifies.
+      --
+      -- The table is bit-identical across all nodes by Bullshark's BFT
+      -- consensus property: every node sees the same anchor cert at
+      -- consensus_index N (same leader, same ack_signer_ids), so every
+      -- node's increments are identical, so the counters end up
+      -- bit-identical, so the "qualified for next rotation?" boolean
+      -- returns the same answer everywhere. This is what eliminates the
+      -- §4 / #74 divergence at the source — committee derivation is
+      -- now a deterministic function of BFT-attested state, not local
+      -- cert-history.
+      --
+      -- Storage: at most active_committee_size × kept_rotations rows.
+      -- For testnet (3-10 nodes, keep last 3 rotations) ~30 rows. Pruned
+      -- via pruneRotationParticipationBefore. Never grows with chain
+      -- length — distinct from the per-anchor logging approach we
+      -- explicitly avoided (would have been ~1 GB/year).
+      CREATE TABLE IF NOT EXISTS rotation_participation (
+        node_id          TEXT NOT NULL,
+        rotation_number  INTEGER NOT NULL,
+        count            INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (node_id, rotation_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rotation_participation_rotation
+        ON rotation_participation(rotation_number);
 
       -- ── Consensus: Equivocation defense (§1) ──────────────────────
       -- Durable record of "what I've already attested to at (round, author)".
@@ -1329,6 +1397,21 @@ class SQLiteStore {
         "SELECT * FROM committee_history ORDER BY rotation_number ASC"
       ),
 
+      // #75 rotation_participation. UPSERT pattern (INSERT … ON CONFLICT)
+      // increments the counter atomically — first sighting in a rotation
+      // creates the row at count=1, subsequent sightings just bump count.
+      incrementRotationParticipation: this.db.prepare(
+        `INSERT INTO rotation_participation (node_id, rotation_number, count)
+         VALUES (?, ?, 1)
+         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = count + 1`
+      ),
+      getRotationParticipation: this.db.prepare(
+        "SELECT node_id, count FROM rotation_participation WHERE rotation_number = ?"
+      ),
+      pruneRotationParticipationBefore: this.db.prepare(
+        "DELETE FROM rotation_participation WHERE rotation_number < ?"
+      ),
+
       // #44: consensus_meta singleton kv accessors. INSERT OR REPLACE
       // because every write is a logical "set this key to this value"
       // — never appends; row count stays constant.
@@ -1708,6 +1791,16 @@ class SQLiteStore {
     for (const row of this._stmts.getRotationsFromGenesis.iterate()) {
       yield this._parseRotation(row);
     }
+  }
+  // #75 rotation_participation — see MemoryStore version for the contract.
+  incrementRotationParticipation(nodeId, rotationNumber) {
+    this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
+  }
+  getRotationParticipation(rotationNumber) {
+    return this._stmts.getRotationParticipation.all(rotationNumber);
+  }
+  pruneRotationParticipationBefore(rotationNumber) {
+    return this._stmts.pruneRotationParticipationBefore.run(rotationNumber).changes;
   }
   _parseRotation(row) {
     if (!row) return null;
@@ -2106,6 +2199,11 @@ function _buildDagHandle(store, config) {
     getLatestRotation: () => store.getLatestRotation(),
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
     getRotationsFromGenesis: () => store.getRotationsFromGenesis(),
+
+    // #75 rotation participation tally
+    incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),
+    getRotationParticipation: (rotationNumber) => store.getRotationParticipation(rotationNumber),
+    pruneRotationParticipationBefore: (rotationNumber) => store.pruneRotationParticipationBefore(rotationNumber),
 
     // ── Equivocation defense: votes_seen (§1) ────────────────────────────
     recordSeenVote: (round, author, batchHash) => store.recordSeenVote(round, author, batchHash),
