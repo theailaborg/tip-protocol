@@ -42,6 +42,12 @@ const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
 
+// #64: rate-limit the late-batch ack WARN. ~60 rounds ≈ 1 minute at the
+// default 1s round budget — short enough that a sustained pathology
+// (mis-sized horizon, persistently lagging peer) is still visible
+// within a few minutes, long enough that warm-up doesn't flood.
+const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
+
 /**
  * Create the Narwhal data availability layer.
  *
@@ -84,6 +90,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // no peer cert is silently dropped for arriving before its parents.
   const _pendingCerts = new Map();                  // certHash → { cert, missing: Set<parentHash> }
   const _pendingByParent = new Map();               // parentHash → Set<certHash>
+
+  // #64: per-peer rate limiter for the late-batch ack WARN log. During
+  // warm-up (quorum=1, no peers) every round advances faster than gossip
+  // RTT, so every batch arrives "late" and the WARN floods one-per-round
+  // per peer. We keep the metric per-batch but log only at first sighting
+  // and every LATE_BATCH_LOG_INTERVAL_ROUNDS rounds thereafter, with a
+  // running count of suppressed warns.
+  const _lateBatchAckTracker = new Map();           // authorId → { count, lastLoggedRound }
 
   // Consensus counters — read by stats() for /v1/stats and periodic summary.
   // These are cumulative for the lifetime of the process; a supervisor can
@@ -441,8 +455,24 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
     if (batch.round < _currentRound) {
-      log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id}`);
       _metrics.batches_acked_late++;
+      // #64: rate-limit the WARN. First sighting from a peer logs immediately;
+      // subsequent ones are summarised every LATE_BATCH_LOG_INTERVAL_ROUNDS
+      // rounds with a running count. Otherwise warm-up (quorum=1, no peers)
+      // floods the log one-per-round per peer because each round advances
+      // before gossip RTT completes.
+      const tracker = _lateBatchAckTracker.get(batch.author_node_id);
+      if (!tracker) {
+        log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id}`);
+        _lateBatchAckTracker.set(batch.author_node_id, { count: 1, lastLoggedRound: _currentRound });
+      } else {
+        tracker.count++;
+        if (_currentRound - tracker.lastLoggedRound >= LATE_BATCH_LOG_INTERVAL_ROUNDS) {
+          log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id} — ${tracker.count} late batches from this peer since last log`);
+          tracker.count = 0;
+          tracker.lastLoggedRound = _currentRound;
+        }
+      }
       // fall through to equivocation guard + ack
     }
 
