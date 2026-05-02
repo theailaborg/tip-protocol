@@ -212,8 +212,18 @@ const GENESIS_PAYLOAD = Object.freeze({
       sync_max_response_bytes: 1073741824, // §19: cumulative byte cap on a single sync response (1 GB). Per-frame cap (snapshot_max_frame_bytes=16MB) bounds individual frames; this one bounds total stream size against a peer that drip-feeds infinite small frames. Aborts the read loop.
       max_round_duration_ms: 300000,     // BFT-time bound: cert.timestamp must lie in [prev_cert.timestamp + 1, prev_cert.timestamp + max_round_duration_ms]. Caps how far time can advance per round so a colluding majority can't jump the clock to expire pending deadlines. 5 min is generous (2-3 orders of magnitude above legitimate per-round drift) and tight enough to defend against meaningful skew. Reference: Tendermint Block.Time validation uses a similar deviation bound.
       bft_time_genesis_ms: new Date(GENESIS_TIMESTAMP).getTime(), // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. Derived deterministically from GENESIS_TIMESTAMP so there is one source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
-      committee_rotation_interval_rounds: 302400,    // §4 + #34: periodic rotation cadence. If no event-driven rotation has fired within this window, leader proposes a re-attestation rotation so the chain has a fresh signed checkpoint of "who's currently in committee". At 2s rounds = ~7 days. Hybrid trigger: rotation fires on (event_diff || rounds_since_last >= this).
-      committee_rotation_hysteresis_rounds: 300,     // §4 + #34: silence window before treating a node as departed. Node must be silent for this many rounds before falling out of producers_in_last_K_rounds — so brief restarts/deploys don't trigger rotation. At 2s rounds = ~10 min. Replaces the legacy participant_inactive_rounds=4 for committee-derivation purposes after participants.js rewrite.
+      // ─── #75 Rotation-period model ──────────────────────────────────────
+      // Committee changes only at rotation boundaries — every node hits the
+      // boundary at the same `consensus_index` (Bullshark anchor count),
+      // which is bit-identical across all nodes. At each boundary, every
+      // node deterministically computes the next rotation's committee from
+      // the `rotation_participation` counter table (incremented on every
+      // anchor commit). Within a rotation period, getActiveCommittee is a
+      // pure lookup against committee_history — no per-round divergent
+      // computation. Replaces the pre-#75 cert-history span check, which
+      // could not stay deterministic under per-node cert GC timing (#74).
+      committee_rotation_interval_commits: 100,        // rotation period length in anchor commits (consensus_index). Testnet: 100 anchors ≈ 200 rounds ≈ 3 min at 2s rounds. Production override: 43200 ≈ 24h. Deterministic boundary at consensus_index % this == 0. Smaller = faster admission, more rotation churn; larger = longer admission delay, less churn.
+      committee_rotation_min_participation_pct: 70,    // an author must have appeared (as leader OR ack-signer) in ≥ this% of the rotation period's anchors to qualify for the next rotation's committee. 70% balances flap protection (transient outages don't drop you) with peer-352 protection (sustained absence does). Genesis members are exempt — always in committee while registered+active.
     },
     network: {
       chain_id: "tip-mainnet-v2",
