@@ -393,6 +393,31 @@ function getInitialParams() {
   return Object.freeze({ ...GENESIS_PAYLOAD.initial_params });
 }
 
+/**
+ * Genesis-anchored committee — the founding-node IDs that are admitted
+ * into the runtime committee from round 1, with no K-round proven wait.
+ * Late joiners (any node whose id is NOT in this set) must produce for
+ * `K = COMMITTEE_ROTATION_HYSTERESIS_ROUNDS` rounds before being admitted.
+ *
+ * Source of truth: `GENESIS_PAYLOAD.founding_node`. If genesis later grows
+ * a `founding_committee: [...]` array (multi-founder chain), surface that
+ * here without changing call sites.
+ *
+ * @returns {Set<string>} node IDs that are genesis members
+ */
+function getGenesisCommittee() {
+  const ids = new Set();
+  if (GENESIS_PAYLOAD.founding_node && GENESIS_PAYLOAD.founding_node.node_id) {
+    ids.add(GENESIS_PAYLOAD.founding_node.node_id);
+  }
+  if (Array.isArray(GENESIS_PAYLOAD.founding_committee)) {
+    for (const m of GENESIS_PAYLOAD.founding_committee) {
+      if (m && m.node_id) ids.add(m.node_id);
+    }
+  }
+  return ids;
+}
+
 module.exports = {
   GENESIS_TX_ID,
   GENESIS_TX,
@@ -409,5 +434,6 @@ module.exports = {
   getGenesisPayload,
   getFoundingVP,
   getInitialParams,
+  getGenesisCommittee,
   computeGenesisHash,
 };

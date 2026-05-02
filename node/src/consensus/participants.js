@@ -7,17 +7,27 @@
  * This is what makes leader rotation, quorum thresholds, and round advance
  * agree across nodes without needing an extra consensus pass.
  *
- * Membership rule:
- *   committee(R) = registered_active ∩ proven_producers_in_K_rounds_before(R)
+ * Membership rule (genesis-anchored):
+ *   admit(id) := registered ∧ producing-in-K-window ∧ (
+ *                  id ∈ genesis_committee     OR     span(id) ≥ K
+ *                )
  *
- * Where "proven" means SPAN-based: (last_cert_in_window - earliest_cert)
- * ≥ K. The node must have been producing certs across at least K rounds
- * — not merely "have an earliest cert that's K-old." A node that produced
- * briefly and stopped has span < K and is excluded even if its earliest
- * cert is now > K rounds old (live fingerprint: peer 352 case). A fresh
- * joiner that just produced its first cert has span=0, also excluded
- * until it has K rounds of continuous production. Same K is used for
- * offline detection (dropped after K rounds of silence) — symmetric.
+ * Two classes of members:
+ *   - GENESIS members (from `genesis.js`): admitted on their first cert,
+ *     no K-wait. This solves the chicken-and-egg of needing a committee
+ *     at round 1 before anyone has produced K rounds.
+ *   - LATE joiners (anyone NOT in genesis): must produce for K rounds
+ *     before being admitted. Span = lastInWindow − earliest_cert_anywhere.
+ *     Robust under GC because lastInWindow keeps moving with the head.
+ *
+ * peer-352 protection (offline genesis members): the producers map only
+ * tracks authors that produced IN the K-window, so a genesis member that
+ * goes silent for K rounds drops out automatically — quorum doesn't
+ * inflate around a non-producing seed.
+ *
+ * Empty-window fallback (no producers in K-window): return
+ * `genesis_committee ∩ registered`. Covers true chain-genesis, sync
+ * windows, ancient-round queries, and chain-halt recovery.
  *
  * Why cert-history (not committee_history) at runtime:
  *   committee_history is committed via Bullshark and has commit lag —
@@ -53,22 +63,23 @@
 "use strict";
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { getGenesisCommittee } = require("../genesis");
 
 /**
- * Active committee at the given round.
+ * Active committee at the given round (genesis-anchored derivation).
  *
- *   committee(round) = registered_active ∩ proven_producers_in_K_rounds
+ *   admit(id) := registered ∧ producing-in-K-window ∧ (
+ *                  id ∈ genesis_committee   OR   span(id) ≥ K
+ *                )
  *
- * "Proven" = span-based: `last_cert_in_window - earliest_cert ≥ K`.
- * Node must have been producing certs for at least K rounds. A fresh
- * joiner that just produced its first cert (span=0) is excluded; a
- * briefly-active joiner that produced for X rounds and stopped (span=X
- * for X < K) is excluded; a node continuously producing for ≥ K rounds
- * is admitted.
+ * Genesis members are admitted on first cert. Late joiners must produce
+ * for K rounds before joining (span = lastInWindow − earliest_in_dag).
+ * Both classes are gated on producing-in-window (peer-352 protection).
  *
  * Anchored to the wave's first round so propose + vote rounds of the
  * same wave see the same committee. Both nodes derive identically from
- * the same gossip-replicated DAG, so they agree at every wave boundary.
+ * the same gossip-replicated DAG + same genesis, so they agree at every
+ * wave boundary.
  *
  * @param {Object} dag    DAG facade
  * @param {number} round  Any round within the target wave
@@ -86,6 +97,7 @@ function getActiveCommittee(dag, round, K) {
   const wave = Math.floor((round - 1) / 2);
   const waveStartRound = wave * 2 + 1;
 
+  // Registered set — active + non-revoked nodes from the registry.
   const registered = new Set();
   for (const n of dag.getAllNodes()) {
     if (n.status === "active" && !dag.isRevoked(n.node_id)) {
@@ -93,13 +105,19 @@ function getActiveCommittee(dag, round, K) {
     }
   }
 
+  // Genesis-anchored seed members. These are the only nodes admitted into
+  // the committee during the first K rounds of the chain — late joiners
+  // (anyone NOT in this set) must serve a K-round proven span before
+  // joining. The set is fixed at genesis so every node computes the same
+  // answer from the same `genesis.js`. Dead-peer registry rows are
+  // excluded by construction (they're not in genesis and aren't producing
+  // certs in the window).
+  const genesis = getGenesisCommittee();
+
   // Producers in the K-round window — track the LATEST round each author
-  // produced in (within the window). Used for the span-based proven check
-  // below: a node is proven only when (last_cert - earliest_cert) >= K,
-  // i.e. it has actually put in K rounds of work, not just "been around
-  // for K rounds." A node that produced briefly and then stopped fails
-  // this check even when its earliest cert is K-old, because its span
-  // of activity is shorter than K.
+  // produced a cert in. Used by both the genesis-membership branch (admit
+  // if id ∈ genesis) and the span-based proven branch (admit late joiners
+  // once they've produced for K rounds).
   const producers = new Map();  // authorId → lastRoundSeenInWindow
   const fromRound = Math.max(1, waveStartRound - windowRounds);
   const toRound = waveStartRound - 1;
@@ -113,30 +131,35 @@ function getActiveCommittee(dag, round, K) {
     } catch { /* ignore */ }
   }
 
-  // Proven-node filter — span-based:
+  // Admission rule (single-pass over producers in window):
   //
-  //   proven = (last_cert_in_window - earliest_cert) >= K
+  //   admit(id) := registered(id) ∧ producing-in-window(id) ∧ (
+  //                  id ∈ genesis_committee   OR   span(id) ≥ K
+  //                )
   //
-  // The node must have been producing certs for AT LEAST K rounds
-  // (continuous span). A node that produced for 100 rounds and stopped
-  // has span=100, fails for K=300 — even if its earliest cert is now
-  // 300+ rounds old, because the SPAN of its activity hasn't reached K.
+  // - producing-in-window: implicit — only iterate the producers map. A
+  //   registered node that hasn't produced in the K-window isn't in the
+  //   committee. This is the peer-352 protection: silent-fail genesis
+  //   members drop out automatically once their last cert ages out.
   //
-  // Live-fingerprint of why this matters (2026-05-02 federation halt):
-  //   peer 352 produced certs at rounds 848..950 (span=102), then went
-  //   offline. At round 1149, waveStart - earliest = 301 ≥ K=300 (the
-  //   old check passed), so peer 352 was promoted into the committee.
-  //   Quorum jumped from 1 to 2, peer 352 was offline, halt. With the
-  //   span check: 950 - 848 = 102 < 300 → peer 352 stays out, no halt.
+  // - id ∈ genesis: founding-node IDs are seeded into the committee from
+  //   round 1, no K-wait. Required for bootstrap (chicken-and-egg: at
+  //   round 1 nobody has K rounds of span yet).
   //
-  // Same property symmetrically: a fresh joiner producing only its
-  // first cert has span=0, fails until it has continuously produced
-  // for K rounds. The old "earliest cert is K-old" check satisfied
-  // the same property for honest nodes that keep producing — but it
-  // mis-fired on briefly-active joiners that died before reaching K.
-  const proven = [];
+  // - span ≥ K: late joiners (anyone NOT in genesis) are admitted only
+  //   after producing for K rounds. earliest = first cert anywhere in
+  //   the DAG; lastInWindow = latest cert in the K-window. Robust under
+  //   GC: a continuously-producing late joiner's lastInWindow keeps
+  //   moving forward at the same rate the GC cutoff does, so span ≥ K
+  //   stays satisfied even after older certs are pruned.
+  const committee = [];
   for (const [id, lastInWindow] of producers) {
     if (!registered.has(id)) continue;
+    if (genesis.has(id)) {
+      committee.push(id);
+      continue;
+    }
+    // Late joiner — must have span ≥ K.
     let earliest;
     if (typeof dag.getEarliestCertRoundForAuthor === "function") {
       earliest = dag.getEarliestCertRoundForAuthor(id);
@@ -144,32 +167,25 @@ function getActiveCommittee(dag, round, K) {
       earliest = lastInWindow;  // legacy fallback — degrade to in-window-only
     }
     if (earliest > 0 && (lastInWindow - earliest) >= windowRounds) {
-      proven.push(id);
+      committee.push(id);
     }
   }
 
-  if (proven.length > 0) return proven.sort();
+  if (committee.length > 0) return committee.sort();
 
-  // First fallback (early-deployment): no node has demonstrated K rounds
-  // yet, but some producers exist. Return registered ∩ producers — excludes
-  // registered-but-not-running nodes that would inflate quorum and halt
-  // consensus. This is the case during the first K rounds of a fresh
-  // deployment, OR after a registration commit but before the new node
-  // starts producing (registered without running).
+  // Empty-window fallback. Reached when `producers` is empty:
+  //   - true chain genesis (round 1, DAG has no certs at all)
+  //   - sync window (narwhal._currentRound stuck at 1 mid-sync)
+  //   - historical/old-round query (round predates earliest cert in DAG)
+  //   - catastrophic chain halt (entire committee offline > K rounds)
   //
-  // Without this filter: registering node 2 while founding is still in
-  // its first K rounds would push committee to {founding, node2}, quorum=2,
-  // unmeetable (node 2 not running) → halt. With the filter, node 2 is
-  // excluded until it actually produces certs, and quorum stays at 1.
-  const liveProducers = [...producers.keys()].filter(id => registered.has(id));
-  if (liveProducers.length > 0) return liveProducers.sort();
-
-  // Last-resort fallback: no certs exist anywhere yet (absolute genesis,
-  // round 1 before founding's first cert lands). Return registered so
-  // consensus can bootstrap. Only fires for the first round or two of
-  // a fresh chain — once founding produces its first cert, the previous
-  // branch takes over.
-  return [...registered].sort();
+  // In each case, returning genesis ∩ registered is the safe deterministic
+  // answer: every node reads the same genesis.js, long-dead registry rows
+  // are excluded by construction, and the response is consensus-safe (sync
+  // mode doesn't ack/produce; historical queries are debug-only; the
+  // chain-of-trust walker reads committee_history directly, not this
+  // function). At true chain genesis this is exactly the bootstrap set.
+  return [...genesis].filter(id => registered.has(id)).sort();
 }
 
 /**
