@@ -411,15 +411,30 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     // Under future GC (§2 in narwhal-parity-gap.md), empty-round certs
     // can be pruned freely because no commit row references them.
     if (orderedTxs.length > 0) {
-      _metrics.txs_committed += orderedTxs.length;
       log.info(`Round ${voteRound}: committing ${orderedTxs.length} ordered txs`);
       // Only advance committed round AFTER successful processing.
       // If onOrderedTxs throws, we don't advance — will retry next round.
       // Pass cert.timestamp so commit-handler / downstream derived-state
       // logic uses the BFT consensus clock, not local Date.now().
-      if (onOrderedTxs) onOrderedTxs(orderedTxs, voteRound, certTs);
+      // Return value: { committed, dropped } — see #73 below.
+      const applyResult = onOrderedTxs
+        ? onOrderedTxs(orderedTxs, voteRound, certTs)
+        : { committed: orderedTxs.length, dropped: 0 };
+      const acceptedCount = (applyResult && Number.isFinite(applyResult.committed))
+        ? applyResult.committed
+        : orderedTxs.length;
+      _metrics.txs_committed += acceptedCount;
 
-      // §15 + §14 commit checkpoint.
+      // §15 + §14 commit checkpoint — gated on ACCEPTED-tx count, not
+      // ordered-tx count (#73). A rotation cycle that emits N tx
+      // proposals where commit-handler accepts 0 (e.g., duplicate
+      // rotation_number) must NOT inflate the commits table with a
+      // no-state-change row whose state_merkle_root equals the previous
+      // commit's. Without this gate, snapshot bundles bloat with rejected-
+      // only commit rows and operators see "1 user action → N commits"
+      // confusion. consensus_index still ticked above (every successful
+      // anchor commit), so monotonicity holds with gaps — `idx_commits_index`
+      // UNIQUE allows that.
       //
       // Roots are computed AFTER onOrderedTxs so derived state reflects
       // this round's applied txs (state_merkle_root commits to the post-
@@ -432,7 +447,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
       // persist them so new joiners can verify the commit row without
       // replaying the DAG (§14 Byzantine-robust state sync).
       try {
-        if (dag.saveCommit) {
+        if (acceptedCount > 0 && dag.saveCommit) {
           const stateRoot = computeStateMerkleRoot(dag);
           const txsRoot = computeTxsMerkleRoot(orderedTxs);
           const acks = leaderCert.acknowledgments || [];
@@ -801,7 +816,8 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
    *
    * Returns certs sorted deterministically (round ASC, author ASC).
    * Used by:
-   *   - _collectOrderedTxs: extracts txs in commit order
+   *   - _checkAnchorCommit: extracts txs from collected certs directly
+   *     for ordering (inline — see #75 walk path).
    *   - #75 participation increment: each anchored cert's author +
    *     ack-signers contribute to rotation_participation. Walking the
    *     DAG (not just leaderCert.acknowledgments) closes the small-
@@ -842,22 +858,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     });
 
     return collectedCerts;
-  }
-
-  /**
-   * Collect all txs from uncommitted certificates reachable from the anchor.
-   * Thin wrapper around `_walkAnchoredCertChain` — walk the DAG, extract
-   * txs in the deterministic order the walker returns.
-   */
-  function _collectOrderedTxs(anchorCert) {
-    const collectedCerts = _walkAnchoredCertChain(anchorCert);
-    const orderedTxs = [];
-    for (const cert of collectedCerts) {
-      for (const tx of (cert.batch?.txs || [])) {
-        if (tx && tx.tx_id) orderedTxs.push(tx);
-      }
-    }
-    return orderedTxs;
   }
 
   /**
