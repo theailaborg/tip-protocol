@@ -223,7 +223,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       // computation. Replaces the pre-#75 cert-history span check, which
       // could not stay deterministic under per-node cert GC timing (#74).
       committee_rotation_interval_commits: 100,        // rotation period length in anchor commits (consensus_index). Testnet: 100 anchors ≈ 200 rounds ≈ 3 min at 2s rounds. Production override: 43200 ≈ 24h. Deterministic boundary at consensus_index % this == 0. Smaller = faster admission, more rotation churn; larger = longer admission delay, less churn.
-      committee_rotation_min_participation_pct: 70,    // an author must have appeared (as leader OR ack-signer) in ≥ this% of the rotation period's anchors to qualify for the next rotation's committee. 70% balances flap protection (transient outages don't drop you) with peer-352 protection (sustained absence does). Genesis members are exempt — always in committee while registered+active.
+      committee_rotation_participation_pct_of_interval: 70,  // committee admission threshold for next rotation: a node qualifies when its rotation_participation count (raw anchor-walk credits — NOT a fraction of total participation) reaches `ceil(INTERVAL * pct/100)`. With INTERVAL=100 and pct=70 the threshold is `>= 70 credits`, easy to clear since each anchor walk yields several credits per active node. Genesis members are exempt — always in committee while registered+active. Old key `committee_rotation_min_participation_pct` is still read for backward compat.
     },
     network: {
       chain_id: "tip-mainnet-v2",

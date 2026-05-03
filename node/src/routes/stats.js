@@ -97,10 +97,16 @@ function createRouter({ dag, config, consensus, network }) {
       throw { status: 400, error: "Query parameter 'round' must be a positive integer" };
     }
 
+    // #75: under the rotation-period model, committee derivation is a
+    // pure lookup against committee_history (no per-round span check).
+    // This endpoint exposes (a) the committee in effect at the queried
+    // round, (b) the rotation that put it there, (c) the participation
+    // tally for the latest rotation in progress — useful for ops to
+    // diff across nodes and verify deterministic agreement.
     const { CONSENSUS } = require("../../../shared/protocol-constants");
-    const K = Number(req.query.K) || CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS;
-    const wave = Math.floor((round - 1) / 2);
-    const waveStartRound = wave * 2 + 1;
+    const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+    const minPct = CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL;
+    const threshold = Math.ceil((intervalCommits * minPct) / 100);
 
     const registered = [];
     for (const n of dag.getAllNodes()) {
@@ -109,61 +115,45 @@ function createRouter({ dag, config, consensus, network }) {
       }
     }
 
-    const fromRound = Math.max(1, waveStartRound - K);
-    const toRound = waveStartRound - 1;
-    // authorId → { earliest, lastInWindow, certCountInWindow }
-    const producers = {};
-    for (let r = fromRound; r <= toRound; r++) {
-      try {
-        const certs = dag.getCertificatesByRound(r);
-        for (const cert of certs) {
-          const id = cert.author_node_id;
-          if (!producers[id]) {
-            const earliest = typeof dag.getEarliestCertRoundForAuthor === "function"
-              ? dag.getEarliestCertRoundForAuthor(id) : 0;
-            producers[id] = { earliest, lastInWindow: r, certCountInWindow: 0 };
-          }
-          producers[id].lastInWindow = r;
-          producers[id].certCountInWindow++;
-        }
-      } catch { /* ignore */ }
-    }
+    const rotationAtRound = (typeof dag.getCommitteeAtRound === "function")
+      ? dag.getCommitteeAtRound(round) : null;
+    const latestRotation = (typeof dag.getLatestRotation === "function")
+      ? dag.getLatestRotation() : null;
 
-    const proven = [];
-    const notProven = [];
-    for (const [id, info] of Object.entries(producers)) {
-      if (!registered.includes(id)) continue;
-      const span = info.lastInWindow - info.earliest;
-      if (info.earliest > 0 && span >= K) {
-        proven.push({ id, span, ...info });
-      } else {
-        notProven.push({ id, span, reason: span < K ? `span ${span} < K=${K}` : "earliest=0", ...info });
-      }
-    }
+    // Latest rotation's in-progress participation tally — what the next
+    // boundary will use to compute the next committee.
+    const latestRotationNumber = latestRotation ? latestRotation.rotation_number : -1;
+    const inProgressRotation = latestRotationNumber + 1;
+    const participation = (typeof dag.getRotationParticipation === "function")
+      ? dag.getRotationParticipation(inProgressRotation) : [];
 
-    const liveProducers = Object.keys(producers).filter(id => registered.includes(id));
-
-    let activeCommittee;
-    let fallbackPath;
-    if (proven.length > 0) {
-      activeCommittee = proven.map(p => p.id).sort();
-      fallbackPath = "proven";
-    } else if (liveProducers.length > 0) {
-      activeCommittee = [...liveProducers].sort();
-      fallbackPath = "cold-start_liveProducers";
-    } else {
-      activeCommittee = [...registered].sort();
-      fallbackPath = "cold-start_registered";
-    }
+    const activeCommittee = rotationAtRound
+      ? rotationAtRound.committee.map(m => m.node_id).filter(id => registered.includes(id)).sort()
+      : registered.sort();
 
     res.json({
       node_id: config.nodeRegisteredId || config.nodeId,
-      query: { round, K, waveStartRound, kWindow: [fromRound, toRound] },
+      query: { round },
+      rotation_model: {
+        interval_commits: intervalCommits,
+        min_participation_pct: minPct,
+        threshold,
+      },
+      active_at_round: rotationAtRound ? {
+        rotation_number: rotationAtRound.rotation_number,
+        effective_round: rotationAtRound.effective_round,
+        committee: rotationAtRound.committee.map(m => m.node_id).sort(),
+      } : null,
+      latest_rotation: latestRotation ? {
+        rotation_number: latestRotation.rotation_number,
+        effective_round: latestRotation.effective_round,
+        committee: latestRotation.committee.map(m => m.node_id).sort(),
+      } : null,
+      in_progress_rotation: {
+        rotation_number: inProgressRotation,
+        participation: participation.sort((a, b) => a.node_id.localeCompare(b.node_id)),
+      },
       registered: registered.sort(),
-      producers,
-      proven,
-      notProven,
-      fallback_path: fallbackPath,
       active_committee: activeCommittee,
       active_committee_size: activeCommittee.length,
       quorum: Math.ceil((2 * activeCommittee.length) / 3),

@@ -250,16 +250,23 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let commitRowsSent = 0;
     let rotationRowsSent = 0;
     let certRowsSent = 0;
+    let rpRowsSent = 0;
     let txsFullRoot = "";
     let commitsFullRoot = "";
     let rotationsFullRoot = "";
     let certsFullRoot = "";
 
-    // §69: cert range to ship — enough rounds back from peer_committed
-    // that the joiner's K-window is fully covered for any round it'll
-    // produce at next. K + VOTES_RETENTION_ROUNDS gives K-rounds-of-history
-    // plus a horizon buffer for late-batch tolerance.
-    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS;
+    // §69 + #75: cert range to ship — enough recent certs that the joiner
+    // can resume Bullshark anchor processing without waiting for cert
+    // sync. Under the rotation-period model, runtime committee comes
+    // from committee_history (also shipped by snapshot), so the cert
+    // window doesn't need to span a full K-round proven check anymore.
+    // We ship ~1 rotation period of recent rounds (INTERVAL_COMMITS
+    // anchors × 2 rounds/anchor at our wave cadence) plus VOTES_RETENTION
+    // for late-batch tolerance. For testnet INTERVAL_COMMITS=100 that's
+    // 200 rounds + ~5 horizon — generous for active-round catch-up.
+    const ROUNDS_PER_ANCHOR_APPROX = 2;
+    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * ROUNDS_PER_ANCHOR_APPROX;
     const certWindowHorizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
     const certFromRound = Math.max(1, peerCommittedRound - certWindowK - certWindowHorizon);
     const certToRound = peerCommittedRound;
@@ -330,6 +337,28 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
         certsFullRoot = certRoot.finalize();
 
+        // Phase F: rotation_participation (#75). Streamed as SnapshotStateRow
+        // with `table="rotation_participation"` so the existing wire format
+        // is reused — but these rows are intentionally NOT included in
+        // state_merkle_root (RP is real-time counter state that flickers
+        // between commits; including it would cause spurious divergence
+        // warnings between honest peers). They install via the same
+        // `setRotationParticipation` setter the source uses for snapshot
+        // recovery. Source's RP for the rotations it still has (after
+        // bullshark's pruneRotationParticipationBefore at boundary) is
+        // shipped wholesale; joiner wipes its local rows for those
+        // rotations first, then installs.
+        if (typeof dag.iterateRotationParticipationForSnapshot === "function") {
+          for (const r of dag.iterateRotationParticipationForSnapshot()) {
+            const rowBuf = encode("SnapshotStateRow", {
+              table: "rotation_participation",
+              canonicalJson: Buffer.from(canonicalJson(r), "utf8"),
+            });
+            yield _frame(rowBuf);
+            rpRowsSent++;
+          }
+        }
+
         const endBuf = encode("SnapshotEnd", {
           rowCount: stateRowsSent,
           txRowCount: txRowsSent,
@@ -340,6 +369,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rotationsFullRoot: hexToBytes(rotationsFullRoot),
           certRowCount: certRowsSent,
           certsFullRoot: hexToBytes(certsFullRoot),
+          rpRowCount: rpRowsSent,
         });
         yield _frame(endBuf);
       })());
@@ -351,7 +381,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     log.info(
       `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
       `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
-      `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}])`
+      `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}] ` +
+      `rp=${rpRowsSent})`
     );
   }
 
@@ -409,12 +440,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const commitRowCount = Number(end.commitRowCount || 0);
       const rotationRowCount = Number(end.rotationRowCount || 0);
       const certRowCount = Number(end.certRowCount || 0);
-      const expectedTotal = stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount;
+      const rpRowCount = Number(end.rpRowCount || 0);
+      const expectedTotal = stateRowCount + txRowCount + commitRowCount
+        + rotationRowCount + certRowCount + rpRowCount;
       if (expectedTotal !== rowFrames.length) {
         throw new Error(
           `row count mismatch: end says state=${stateRowCount} txs=${txRowCount} ` +
           `commits=${commitRowCount} rotations=${rotationRowCount} certs=${certRowCount} ` +
-          `(total=${expectedTotal}), got ${rowFrames.length} frames`
+          `rp=${rpRowCount} (total=${expectedTotal}), got ${rowFrames.length} frames`
         );
       }
 
@@ -424,7 +457,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         stateRowCount + txRowCount + commitRowCount);
       const rotationFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount,
         stateRowCount + txRowCount + commitRowCount + rotationRowCount);
-      const certFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount);
+      const certFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount,
+        stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
+      const rpFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
 
       // ── Phase A: derived state ───────────────────────────────────────
       // Different shape from B/C (carries a `table` field) so doesn't use
@@ -551,6 +586,27 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         );
       }
 
+      // ── Phase F: rotation_participation (#75) ─────────────────────────
+      // RP rows ship as SnapshotStateRow with table="rotation_participation"
+      // but DELIBERATELY OUTSIDE state_merkle_root — RP is real-time counter
+      // state that flickers between commits, so including it in the merkle
+      // root would cause spurious divergence between honest peers. Source's
+      // pre-snapshot anchor walks have populated whatever rotations haven't
+      // been pruned (last 3 rotations under bullshark's pruning policy),
+      // and the joiner inherits those counts wholesale.
+      const rpInstallQueue = [];
+      for (const frame of rpFrames) {
+        const row = decode("SnapshotStateRow", frame);
+        if (row.table !== "rotation_participation") {
+          throw new Error(`Phase F: expected table=rotation_participation, got "${row.table}"`);
+        }
+        const canonical = bytesToUtf8(row.canonicalJson);
+        let parsed;
+        try { parsed = JSON.parse(canonical); }
+        catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
+        rpInstallQueue.push(parsed);
+      }
+
       // ── Signature quorum ──────────────────────────────────────────────
       const anchorBatchHashHex = bytesToHex(header.anchorBatchHash);
       if (!anchorBatchHashHex) throw new Error("header missing anchor_batch_hash");
@@ -645,12 +701,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         commits: commitInstallQueue,
         rotations: rotationInstallQueue,
         certs: certInstallQueue,
+        rp: rpInstallQueue,
       });
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
         `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ` +
-        `${installed.rotations}/rotations ${installed.certs}/certs ` +
+        `${installed.rotations}/rotations ${installed.certs}/certs ${installed.rp}/rp ` +
         `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
 
@@ -670,12 +727,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // network-wide anchor count. Without this, each node's
         // consensus_index drifts based on local restart history.
         peer_consensus_index: peerConsensusIndex,
-        rows_installed: installed.state + installed.txs + installed.commits + installed.rotations + installed.certs,
+        rows_installed: installed.state + installed.txs + installed.commits + installed.rotations + installed.certs + installed.rp,
         state_rows_installed: installed.state,
         tx_rows_installed: installed.txs,
         commit_rows_installed: installed.commits,
         rotation_rows_installed: installed.rotations,
         cert_rows_installed: installed.certs,
+        rp_rows_installed: installed.rp,
         state_merkle_root: derivedState,
         txs_merkle_root: bytesToHex(header.txsMerkleRoot),
         txs_full_root: derivedTxs,
@@ -760,6 +818,29 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         certN++;
       }
 
+      // #75 RP install — Phase F. For every rotation_number that the snapshot
+      // ships, wipe the joiner's local rows for that rotation FIRST so any
+      // (node_id, rotation) keys absent in the snapshot become absent locally
+      // too (otherwise stale rows leak). Then write the snapshot's rows.
+      let rpN = 0;
+      const rpRows = queues.rp || [];
+      if (rpRows.length > 0
+          && typeof dag.deleteRotationParticipationByRotation === "function"
+          && typeof dag.setRotationParticipation === "function") {
+        const rotationsInSnapshot = new Set();
+        for (const r of rpRows) {
+          if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);
+        }
+        for (const rotation of rotationsInSnapshot) {
+          dag.deleteRotationParticipationByRotation(rotation);
+        }
+        for (const r of rpRows) {
+          if (!r || r.node_id == null || r.rotation_number == null) continue;
+          dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.count) || 0);
+          rpN++;
+        }
+      }
+
       // Header's commit row — the round whose state_merkle_root we just
       // verified against 2f+1 acks. Convert header bytes-fields back to
       // the hex/string shape dag.saveCommit expects.
@@ -798,7 +879,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         cert_timestamp: headerCertTimestamp,
       });
 
-      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN };
+      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
     });
   }
 

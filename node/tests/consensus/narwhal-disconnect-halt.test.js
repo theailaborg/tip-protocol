@@ -77,15 +77,29 @@ function buildNarwhal({ currentRound = 100 } = {}) {
     status: "active", registered_at: "2026-01-01T00:00:00.000Z",
   });
 
-  // Seed both as proven: certs from round 1 to currentRound-1.
-  // K = COMMITTEE_ROTATION_HYSTERESIS_ROUNDS (default 300). For the proven
-  // filter to pass at currentRound, earliest cert must be ≥ K rounds before
-  // waveStart(currentRound). We seed from round 1, so any currentRound > K
-  // works. Use currentRound = 1000 (well past K).
-  const seedFromRound = 1;
-  const seedToRound = currentRound - 1;
-  _seedProvenCertHistory(dag, SELF_ID, seedFromRound, seedToRound);
-  _seedProvenCertHistory(dag, PEER_ID, seedFromRound, seedToRound);
+  // #75 atomic boundary: under the rotation-period model, every epoch must
+  // have its own rotation with effective_round = N * EPOCH_LENGTH_ROUNDS.
+  // The producer-pause check requires `dag.getCommitteeRotation(epochOf(round))`
+  // to exist. Seed rotations covering the test's currentRound range.
+  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+  const epochLength = intervalCommits * 2;
+  const maxEpoch = Math.floor(currentRound / epochLength);
+  const committee2 = [
+    { node_id: SELF_ID, public_key: selfKp.publicKey },
+    { node_id: PEER_ID, public_key: peerKp.publicKey },
+  ];
+  for (let n = 1; n <= maxEpoch; n++) {
+    dag.saveCommitteeRotation({
+      rotation_number: n,
+      effective_round: n * epochLength,
+      committee: committee2,
+      prev_rotation: n - 1,
+      signer_node_ids: [],
+      signatures: [],
+      payload_hash: `test-rotation-${n}`,
+      committed_at: "2026-01-01T00:00:00.000Z",
+    });
+  }
 
   const mempool = createMempool({ dag });
 

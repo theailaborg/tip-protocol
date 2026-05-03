@@ -38,6 +38,7 @@ const {
   serializeCertificate, deserializeCertificate,
 } = require("./certificate-codec");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
+const { epochOf } = require("./participants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
@@ -209,6 +210,24 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   function _beginRound() {
     if (!_running || _joinState !== "ready") return;
+
+    // #75 atomic boundary — producer-pause. Don't seal a cert at round R
+    // until we have the rotation that R's epoch needs in our local
+    // committee_history. Without this gate, a node whose commit-handler
+    // hasn't yet applied the latest rotation tx would produce certs under
+    // stale committee assumptions, causing peer-validation halts (the
+    // 2026-05-03 round-202 halt). The rotation tx is being applied to
+    // committee_history right now (or imminently); reschedule shortly.
+    const targetRotation = epochOf(_currentRound);
+    if (targetRotation > 0 && typeof dag.getCommitteeRotation === "function"
+        && !dag.getCommitteeRotation(targetRotation)) {
+      log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
+      // Brief reschedule. Commit-handler should apply rotation within
+      // the next anchor commit (a few seconds at most). Round-timer
+      // covers the case where rotation never lands (severe partition).
+      _scheduleNextRound(50);
+      return;
+    }
 
     _resetRoundState();
 

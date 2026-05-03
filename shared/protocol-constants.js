@@ -231,7 +231,39 @@ const CONSENSUS = {
   get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
   // §4 + #34 + #75: rotation-period committee model. See genesis.js consensus block.
   get COMMITTEE_ROTATION_INTERVAL_COMMITS() { return _c().committee_rotation_interval_commits ?? 100; },
-  get COMMITTEE_ROTATION_MIN_PARTICIPATION_PCT() { return _c().committee_rotation_min_participation_pct ?? 70; },
+  // Committee admission threshold for next rotation. The qualifying check is
+  // `participation_count >= ceil(INTERVAL_COMMITS * pct / 100)`, where the
+  // count is RAW anchor-walk credits (not a fraction of total participation).
+  // So with INTERVAL=100 and pct=70 the threshold is `>= 70 credits` — easy
+  // to clear since one anchor walk yields several credits per active node.
+  // Genesis JSON key kept as committee_rotation_min_participation_pct for
+  // backward compat with existing chain configs.
+  get COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL() {
+    return _c().committee_rotation_participation_pct_of_interval
+      ?? _c().committee_rotation_min_participation_pct
+      ?? 70;
+  },
+  // #75 atomic boundary — rotation N's effective_round is deterministically
+  // N * EPOCH_LENGTH_ROUNDS, where each Bullshark wave is 2 rounds (propose +
+  // vote). Every node maps round → rotation_number identically via
+  // epochOf(round) = floor(round / EPOCH_LENGTH_ROUNDS). Producer-pause and
+  // validator-park use this to ensure both sides of cert validation agree on
+  // which committee applies to a given round.
+  get EPOCH_LENGTH_ROUNDS() { return this.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2; },
+  // Submit the rotation tx LEAD anchors BEFORE its boundary so it has time
+  // to be anchored + commit-handler-applied by the time effective_round
+  // arrives. Without lead-time, all nodes pause production at the boundary
+  // (no rotation in CH yet) → no certs produced → rotation tx never anchored
+  // → permanent halt.
+  //
+  // Auto-scaling default: 1% of INTERVAL_COMMITS with a floor of 10 anchors.
+  //   Testnet (INTERVAL=100):    max(10, 1)   = 10  (~20 sec)
+  //   Production (INTERVAL=43200): max(10, 432) = 432 (~14 min, Sui-style)
+  // Operators can override via genesis param for unusually-slow networks.
+  get COMMITTEE_ROTATION_SUBMIT_LEAD_ANCHORS() {
+    return _c().committee_rotation_submit_lead_anchors
+      ?? Math.max(10, Math.floor(this.COMMITTEE_ROTATION_INTERVAL_COMMITS / 100));
+  },
 };
 
 const NETWORK = {
