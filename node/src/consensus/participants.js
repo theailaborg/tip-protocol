@@ -1,60 +1,39 @@
 /**
  * @file @tip-protocol/node/src/consensus/participants.js
- * @description Active committee derivation from gossip-replicated DAG state.
+ * @description Active committee derivation under the #75 rotation-period model.
  *
- * The active committee at round R is a deterministic function of the DAG's
- * cert history: every node reading the same DAG computes the same committee.
- * This is what makes leader rotation, quorum thresholds, and round advance
- * agree across nodes without needing an extra consensus pass.
+ * Core property: committee membership is FIXED within a rotation period
+ * and changes only at deterministic boundaries. Both `getActiveCommittee`
+ * and the next-rotation computation read from BFT-attested state
+ * (committee_history + rotation_participation), not from local
+ * cert-history. This eliminates §4 / #72 / #74 divergence at the source.
  *
- * Membership rule (genesis-anchored):
- *   admit(id) := registered ∧ producing-in-K-window ∧ (
- *                  id ∈ genesis_committee     OR     span(id) ≥ K
- *                )
+ * Two functions:
+ *   - getActiveCommittee(round): pure lookup against committee_history.
+ *     Returns the committee in effect at round R (= the latest rotation
+ *     whose effective_round ≤ R). Bit-identical answer on every node.
  *
- * Two classes of members:
- *   - GENESIS members (from `genesis.js`): admitted on their first cert,
- *     no K-wait. This solves the chicken-and-egg of needing a committee
- *     at round 1 before anyone has produced K rounds.
- *   - LATE joiners (anyone NOT in genesis): must produce for K rounds
- *     before being admitted. Span = lastInWindow − earliest_cert_anywhere.
- *     Robust under GC because lastInWindow keeps moving with the head.
+ *   - computeNextRotationCommittee(rotationNumber): called by bullshark at
+ *     a rotation boundary. Reads rotation_participation tally for the
+ *     just-finished rotation, applies threshold, returns the committee
+ *     for the next rotation. Genesis members exempt from threshold.
  *
- * peer-352 protection (offline genesis members): the producers map only
- * tracks authors that produced IN the K-window, so a genesis member that
- * goes silent for K rounds drops out automatically — quorum doesn't
- * inflate around a non-producing seed.
+ * Determinism guarantees:
+ *   - committee_history is BFT-committed via COMMITTEE_ROTATION tx
+ *   - rotation_participation is incremented on every anchor commit, with
+ *     bit-identical values across all nodes (because every node sees the
+ *     same anchor cert at consensus_index N — same leader, same acks)
+ *   - genesis_committee is fixed at genesis, identical on every node
+ *   - threshold = ceil(INTERVAL_COMMITS * MIN_PARTICIPATION_PCT/100) is
+ *     the same number on every node
+ *   - Therefore: same input → same output, no flap, no divergence.
  *
- * Empty-window fallback (no producers in K-window): return
- * `genesis_committee ∩ registered`. Covers true chain-genesis, sync
- * windows, ancient-round queries, and chain-halt recovery.
- *
- * Why cert-history (not committee_history) at runtime:
- *   committee_history is committed via Bullshark and has commit lag —
- *   different nodes commit the same rotation tx at different wall-clock
- *   times. Reading runtime committee from committee_history caused the
- *   §4 deadlock: founding's view jumped to quorum=2 before node 2's view
- *   did, founding rejected node 2's in-flight 1-ack certs, halt.
- *
- *   Gossip-replicated cert history has lag too, but at the millisecond
- *   scale (not Bullshark-round scale). Both nodes converge in well under
- *   one round period, so the K-window inclusion/exclusion fires on the
- *   same wave boundary on every node — no view divergence.
- *
- * Round-advance gates committee shrinking:
- *   The K-window is anchored to currentRound. currentRound only advances
- *   when current quorum is met (Narwhal). So a partition or disconnect
- *   that drops live producers below quorum cannot advance rounds, which
- *   cannot slide the K-window, which cannot drop offline members from
- *   the committee. Net effect: partition halts both sides; no split-brain.
- *
- * Wave stability: both rounds of a wave (propose + vote) see the same
- * committee. Anchored to the wave's first round, so a producer-set change
- * mid-wave doesn't change the committee for that wave's vote round.
- *
- * Chain-of-trust (committee_history): retained as a snapshot/audit
- * security overlay only. Snapshot syncers walk the chain back to genesis
- * to verify committee legitimacy. Not consulted at consensus tick time.
+ * What changed vs. pre-#75:
+ *   - No more cert-history span check (was source of #74 GC-driven flap)
+ *   - No more registered-set fallback (was source of #72 dead-peer ghost)
+ *   - No more per-round derivation (was source of §4 mid-round quorum jump)
+ *   - Committee_history is now the authoritative source — and it is
+ *     populated deterministically by bullshark at rotation boundaries.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -66,126 +45,112 @@ const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getGenesisCommittee } = require("../genesis");
 
 /**
- * Active committee at the given round (genesis-anchored derivation).
+ * Active committee at the given round.
  *
- *   admit(id) := registered ∧ producing-in-K-window ∧ (
- *                  id ∈ genesis_committee   OR   span(id) ≥ K
- *                )
+ * Pure lookup: returns the `committee` field of the latest rotation in
+ * `committee_history` whose `effective_round ≤ round`. Genesis seeds
+ * rotation 0 with `effective_round = 0`, so any `round ≥ 0` resolves
+ * to at least the genesis committee.
  *
- * Genesis members are admitted on first cert. Late joiners must produce
- * for K rounds before joining (span = lastInWindow − earliest_in_dag).
- * Both classes are gated on producing-in-window (peer-352 protection).
+ * Falls back to `genesis_committee ∩ registered_active` if no rotation
+ * exists for the requested round (e.g. very early bootstrap before
+ * initDAG has written rotation 0, or in unit tests with no DAG).
  *
- * Anchored to the wave's first round so propose + vote rounds of the
- * same wave see the same committee. Both nodes derive identically from
- * the same gossip-replicated DAG + same genesis, so they agree at every
- * wave boundary.
- *
- * @param {Object} dag    DAG facade
- * @param {number} round  Any round within the target wave
- * @param {number} [K]    K-window in rounds. Defaults to
- *                        CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS.
- *                        Same K applies to inclusion (span ≥ K) and
- *                        exclusion (dropped after K rounds of silence).
- * @returns {string[]}    Sorted node_ids of the active committee.
+ * @param {Object} dag    DAG facade with getCommitteeAtRound + getAllNodes + isRevoked
+ * @param {number} round  Round to query
+ * @param {number} [_K]   Unused (kept for API compatibility with pre-#75 callers)
+ * @returns {string[]}    Sorted node_ids of the active committee
  */
-function getActiveCommittee(dag, round, K) {
-  const windowRounds = K != null ? K : CONSENSUS.COMMITTEE_ROTATION_HYSTERESIS_ROUNDS;
-
-  // Anchor the window to the wave's first round so both rounds of a wave
-  // (propose + vote) see the same committee.
-  const wave = Math.floor((round - 1) / 2);
-  const waveStartRound = wave * 2 + 1;
-
-  // Registered set — active + non-revoked nodes from the registry.
-  const registered = new Set();
-  for (const n of dag.getAllNodes()) {
-    if (n.status === "active" && !dag.isRevoked(n.node_id)) {
-      registered.add(n.node_id);
+function getActiveCommittee(dag, round, _K) {
+  // Read the active rotation directly from committee_history. This is the
+  // BFT-committed authoritative source — same answer on every node.
+  let rotationCommittee = null;
+  if (typeof dag.getCommitteeAtRound === "function") {
+    const rec = dag.getCommitteeAtRound(round);
+    if (rec && Array.isArray(rec.committee)) {
+      rotationCommittee = rec.committee.map(m => m.node_id);
     }
   }
 
-  // Genesis-anchored seed members. These are the only nodes admitted into
-  // the committee during the first K rounds of the chain — late joiners
-  // (anyone NOT in this set) must serve a K-round proven span before
-  // joining. The set is fixed at genesis so every node computes the same
-  // answer from the same `genesis.js`. Dead-peer registry rows are
-  // excluded by construction (they're not in genesis and aren't producing
-  // certs in the window).
+  if (rotationCommittee && rotationCommittee.length > 0) {
+    // Filter against current registry: a rotation might list a node that
+    // has subsequently been suspended/revoked. The chain-of-trust walker
+    // verifies the rotation chain cryptographically; runtime quorum
+    // additionally gates on current operational status.
+    const registered = _registeredActiveSet(dag);
+    return rotationCommittee.filter(id => registered.has(id)).sort();
+  }
+
+  // Fallback: chain hasn't bootstrapped rotation 0 yet, or unit-test
+  // harness with no DAG. Use genesis ∩ registered_active.
+  const genesis = getGenesisCommittee();
+  const registered = _registeredActiveSet(dag);
+  return [...genesis].filter(id => registered.has(id)).sort();
+}
+
+/**
+ * Compute the committee for the next rotation, called by bullshark at
+ * a rotation boundary.
+ *
+ * Reads `rotation_participation` for `finishingRotation` (the rotation
+ * that just ended). For each author, the count is "how many of that
+ * rotation's anchors had me as leader OR ack-signer." Authors meeting
+ * the threshold OR in genesis_committee qualify, subject to current
+ * registered+active status.
+ *
+ *   threshold = ceil(INTERVAL_COMMITS * MIN_PARTICIPATION_PCT / 100)
+ *
+ * @param {Object} dag                DAG facade
+ * @param {number} finishingRotation  The rotation_number that just finished
+ * @returns {Array<{node_id, public_key}>}  Sorted committee for the next rotation
+ */
+function computeNextRotationCommittee(dag, finishingRotation) {
+  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+  const pct = CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL;
+  const threshold = Math.ceil((intervalCommits * pct) / 100);
+
+  const tallies = (typeof dag.getRotationParticipation === "function")
+    ? dag.getRotationParticipation(finishingRotation)
+    : [];
+
+  const registered = _registeredActiveSet(dag);
   const genesis = getGenesisCommittee();
 
-  // Producers in the K-round window — track the LATEST round each author
-  // produced a cert in. Used by both the genesis-membership branch (admit
-  // if id ∈ genesis) and the span-based proven branch (admit late joiners
-  // once they've produced for K rounds).
-  const producers = new Map();  // authorId → lastRoundSeenInWindow
-  const fromRound = Math.max(1, waveStartRound - windowRounds);
-  const toRound = waveStartRound - 1;
-  for (let r = fromRound; r <= toRound; r++) {
-    try {
-      const certs = dag.getCertificatesByRound(r);
-      for (const cert of certs) {
-        const prev = producers.get(cert.author_node_id) || 0;
-        if (r > prev) producers.set(cert.author_node_id, r);
-      }
-    } catch { /* ignore */ }
+  // Genesis members get a free pass (always in committee while
+  // registered+active), matching the bootstrap chicken-and-egg argument:
+  // someone has to be in the committee at chain start before anyone has
+  // accumulated participation.
+  const next = new Set();
+  for (const id of genesis) {
+    if (registered.has(id)) next.add(id);
   }
 
-  // Admission rule (single-pass over producers in window):
-  //
-  //   admit(id) := registered(id) ∧ producing-in-window(id) ∧ (
-  //                  id ∈ genesis_committee   OR   span(id) ≥ K
-  //                )
-  //
-  // - producing-in-window: implicit — only iterate the producers map. A
-  //   registered node that hasn't produced in the K-window isn't in the
-  //   committee. This is the peer-352 protection: silent-fail genesis
-  //   members drop out automatically once their last cert ages out.
-  //
-  // - id ∈ genesis: founding-node IDs are seeded into the committee from
-  //   round 1, no K-wait. Required for bootstrap (chicken-and-egg: at
-  //   round 1 nobody has K rounds of span yet).
-  //
-  // - span ≥ K: late joiners (anyone NOT in genesis) are admitted only
-  //   after producing for K rounds. earliest = first cert anywhere in
-  //   the DAG; lastInWindow = latest cert in the K-window. Robust under
-  //   GC: a continuously-producing late joiner's lastInWindow keeps
-  //   moving forward at the same rate the GC cutoff does, so span ≥ K
-  //   stays satisfied even after older certs are pruned.
-  const committee = [];
-  for (const [id, lastInWindow] of producers) {
-    if (!registered.has(id)) continue;
-    if (genesis.has(id)) {
-      committee.push(id);
-      continue;
-    }
-    // Late joiner — must have span ≥ K.
-    let earliest;
-    if (typeof dag.getEarliestCertRoundForAuthor === "function") {
-      earliest = dag.getEarliestCertRoundForAuthor(id);
-    } else {
-      earliest = lastInWindow;  // legacy fallback — degrade to in-window-only
-    }
-    if (earliest > 0 && (lastInWindow - earliest) >= windowRounds) {
-      committee.push(id);
+  // Late joiners admitted by participation threshold.
+  for (const { node_id, count } of tallies) {
+    if (count >= threshold && registered.has(node_id)) {
+      next.add(node_id);
     }
   }
 
-  if (committee.length > 0) return committee.sort();
+  // Resolve pubkeys from current nodes table for committee_history record.
+  const out = [];
+  for (const node_id of [...next].sort()) {
+    const node = (typeof dag.getNode === "function") ? dag.getNode(node_id) : null;
+    if (!node || !node.public_key) continue;  // can't include without pubkey
+    out.push({ node_id, public_key: node.public_key });
+  }
+  return out;
+}
 
-  // Empty-window fallback. Reached when `producers` is empty:
-  //   - true chain genesis (round 1, DAG has no certs at all)
-  //   - sync window (narwhal._currentRound stuck at 1 mid-sync)
-  //   - historical/old-round query (round predates earliest cert in DAG)
-  //   - catastrophic chain halt (entire committee offline > K rounds)
-  //
-  // In each case, returning genesis ∩ registered is the safe deterministic
-  // answer: every node reads the same genesis.js, long-dead registry rows
-  // are excluded by construction, and the response is consensus-safe (sync
-  // mode doesn't ack/produce; historical queries are debug-only; the
-  // chain-of-trust walker reads committee_history directly, not this
-  // function). At true chain genesis this is exactly the bootstrap set.
-  return [...genesis].filter(id => registered.has(id)).sort();
+function _registeredActiveSet(dag) {
+  const out = new Set();
+  if (typeof dag.getAllNodes !== "function") return out;
+  for (const n of dag.getAllNodes()) {
+    if (n.status === "active" && (typeof dag.isRevoked !== "function" || !dag.isRevoked(n.node_id))) {
+      out.add(n.node_id);
+    }
+  }
+  return out;
 }
 
 /**
@@ -194,18 +159,33 @@ function getActiveCommittee(dag, round, K) {
  * @returns {number}
  */
 function getNodeCount(dag) {
-  let count = 0;
-  for (const n of dag.getAllNodes()) {
-    if (n.status === "active" && !dag.isRevoked(n.node_id)) count++;
-  }
-  return count;
+  return _registeredActiveSet(dag).size;
 }
 
-// Legacy alias — `deriveLiveCommittee` was the proposer-side derivation
-// when `getActiveCommittee` was reading from committee_history. They've
-// been merged: cert-history is now the single source of truth for both
-// runtime quorum and proposer detection. Same function, exported under
-// both names for callsite intent clarity.
-const deriveLiveCommittee = getActiveCommittee;
+/**
+ * #75 atomic boundary — map a round number to its rotation_number.
+ *
+ *   epochOf(R) = floor(R / EPOCH_LENGTH_ROUNDS)
+ *
+ * Every node computes the same answer from `R` and the genesis-fixed
+ * EPOCH_LENGTH_ROUNDS — no local-state ambiguity. Used by:
+ *   - narwhal producer-pause (don't seal a cert until rotation for
+ *     epochOf(round) is in local committee_history)
+ *   - narwhal validator-park (park incoming certs whose epoch's rotation
+ *     hasn't been applied locally yet)
+ *   - bullshark proposer (effective_round = rotation_number * EPOCH_LENGTH_ROUNDS)
+ *
+ * @param {number} round
+ * @returns {number} rotation_number that should be in effect at this round
+ */
+function epochOf(round) {
+  if (typeof round !== "number" || !Number.isFinite(round) || round < 0) return 0;
+  return Math.floor(round / CONSENSUS.EPOCH_LENGTH_ROUNDS);
+}
 
-module.exports = { getActiveCommittee, deriveLiveCommittee, getNodeCount };
+module.exports = {
+  getActiveCommittee,
+  computeNextRotationCommittee,
+  getNodeCount,
+  epochOf,
+};

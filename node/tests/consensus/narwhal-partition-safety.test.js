@@ -42,6 +42,7 @@ const { createBatch, createBatchAck } = require(path.join(SRC, "consensus", "cer
 const { serializeBatch, serializeBatchAck } = require(path.join(SRC, "consensus", "certificate-codec"));
 const { loadTypes, encode } = require(path.join(SRC, "network", "proto"));
 const { getActiveCommittee } = require(path.join(SRC, "consensus", "participants"));
+const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
 
 beforeAll(async () => {
   await initCrypto();
@@ -81,7 +82,25 @@ function build4NodeNarwhal({ currentRound = 1000 } = {}) {
       node_id: id, name: id, public_key: kp.publicKey,
       status: "active", registered_at: "2026-01-01T00:00:00.000Z",
     });
-    _seedProvenCertHistory(dag, id, 1, currentRound - 1);
+  }
+  // #75 atomic boundary: seed rotations with effective_round = N * EPOCH_LENGTH_ROUNDS
+  // so producer-pause's `getCommitteeRotation(epochOf(round))` check passes for
+  // every round up to the test's currentRound.
+  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+  const epochLength = intervalCommits * 2;
+  const maxEpoch = Math.floor(currentRound / epochLength);
+  const fourCommittee = peers.map(([id, kp]) => ({ node_id: id, public_key: kp.publicKey }));
+  for (let n = 1; n <= maxEpoch; n++) {
+    dag.saveCommitteeRotation({
+      rotation_number: n,
+      effective_round: n * epochLength,
+      committee: fourCommittee,
+      prev_rotation: n - 1,
+      signer_node_ids: [],
+      signatures: [],
+      payload_hash: `test-partition-rotation-${n}`,
+      committed_at: "2026-01-01T00:00:00.000Z",
+    });
   }
 
   const mempool = createMempool({ dag });

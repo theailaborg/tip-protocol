@@ -91,6 +91,13 @@ function _canonScore(tip_id, v) {
 function _canonDedup(hash, createdAt) {
   return { dedup_hash: hash, created_at: createdAt };
 }
+function _canonRotationParticipation(r) {
+  return {
+    node_id: r.node_id,
+    rotation_number: r.rotation_number,
+    count: r.count,
+  };
+}
 function _canonRevocation(r) {
   return {
     tip_id: r.tip_id,
@@ -366,18 +373,6 @@ class MemoryStore {
     }
     return min;
   }
-  // §4 + #34 proven-node check: earliest round at which `authorId` produced
-  // a cert in our local DAG. 0 if no certs from this author. Used by the
-  // committee rotation proposer to require K rounds of cert history before
-  // admitting a node — symmetric to the K=300 offline-detection standard.
-  getEarliestCertRoundForAuthor(authorId) {
-    let min = 0;
-    for (const c of this._certs.values()) {
-      if (c.author_node_id !== authorId) continue;
-      if (min === 0 || c.round < min) min = c.round;
-    }
-    return min;
-  }
   getCertificatesFromRound(fromRound) {
     return [...this._certs.values()]
       .filter(c => c.round >= fromRound)
@@ -558,6 +553,30 @@ class MemoryStore {
     }
     return removed;
   }
+  // Idempotent absolute-set (NOT increment) — used by snapshot install to
+  // overwrite the local count with the snapshot's authoritative value.
+  // Re-running with the same args is a no-op; calling with a different count
+  // replaces. Required because snapshot ships RP rows directly (not deltas).
+  setRotationParticipation(nodeId, rotationNumber, count) {
+    const key = `${nodeId}|${rotationNumber}`;
+    this._rotationParticipation.set(key, count);
+  }
+  // Wipe all rows for a single rotation. Used by snapshot install BEFORE
+  // applying the snapshot's RP rows for that rotation, so absent rows in
+  // the snapshot become absent locally too. Without this, a stale local row
+  // for (node_id, rotation) where the snapshot has no entry for that key
+  // would leak past install and produce wrong tallies on the joiner.
+  deleteRotationParticipationByRotation(rotationNumber) {
+    let removed = 0;
+    const suffix = `|${rotationNumber}`;
+    for (const key of [...this._rotationParticipation.keys()]) {
+      if (key.endsWith(suffix)) {
+        this._rotationParticipation.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
 
   // ── Canonical derived state (§14 snapshot-sync) ─────────────────────────
   // Streaming iterator yielding { table, row } in a deterministic order
@@ -601,6 +620,36 @@ class MemoryStore {
     for (const r of [...this._nodes.values()]
       .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
+    // RP is real-time counter state that flickers as anchor walks process certs;
+    // two nodes can have slightly different RP at the moment of commit (one
+    // imported a cert the other hasn't yet). Including RP here would cause
+    // state_merkle_root divergence between honest peers that converge later.
+    // RP is shipped in its own snapshot stream (same pattern as committee_history
+    // rotations) — see iterateRotationParticipationForSnapshot below.
+  }
+
+  // RP-snapshot iterator — separate from iterateCanonicalState because RP is
+  // operational metadata that converges asynchronously, not consensus-stable
+  // state. Sorted by (rotation_number, node_id) so the order matches the
+  // SQLite iteration via PK index. Consumed by snapshot-handler Phase F.
+  *iterateRotationParticipationForSnapshot() {
+    const rpRows = [];
+    for (const [key, count] of this._rotationParticipation) {
+      const idx = key.lastIndexOf("|");
+      rpRows.push({
+        node_id: key.slice(0, idx),
+        rotation_number: Number(key.slice(idx + 1)),
+        count,
+      });
+    }
+    rpRows.sort((a, b) => {
+      if (a.rotation_number !== b.rotation_number) return a.rotation_number - b.rotation_number;
+      return a.node_id.localeCompare(b.node_id);
+    });
+    for (const r of rpRows) {
+      yield _canonRotationParticipation(r);
     }
   }
 
@@ -1342,7 +1391,6 @@ class SQLiteStore {
       getCertsByAuthorRound: this.db.prepare("SELECT * FROM certificates WHERE author_node_id=? AND round=?"),
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
       getEarliestCertRound: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates"),
-      getEarliestCertRoundForAuthor: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates WHERE author_node_id=?"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
       getCertsByRoundRange: this.db.prepare("SELECT * FROM certificates WHERE round>=? AND round<=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
@@ -1410,6 +1458,21 @@ class SQLiteStore {
       ),
       pruneRotationParticipationBefore: this.db.prepare(
         "DELETE FROM rotation_participation WHERE rotation_number < ?"
+      ),
+      // Absolute-set for snapshot install (REPLACE not increment).
+      setRotationParticipation: this.db.prepare(
+        `INSERT INTO rotation_participation (node_id, rotation_number, count)
+         VALUES (?, ?, ?)
+         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = excluded.count`
+      ),
+      // Wipe one rotation's rows — snapshot install pre-pass so absent rows
+      // in the snapshot become absent locally too (see MemoryStore comment).
+      deleteRotationParticipationByRotation: this.db.prepare(
+        "DELETE FROM rotation_participation WHERE rotation_number = ?"
+      ),
+      // Streaming iterator for snapshot/state-root (PK-ordered).
+      iterateRotationParticipation: this.db.prepare(
+        "SELECT node_id, rotation_number, count FROM rotation_participation ORDER BY rotation_number, node_id"
       ),
 
       // #44: consensus_meta singleton kv accessors. INSERT OR REPLACE
@@ -1688,10 +1751,6 @@ class SQLiteStore {
   getEarliestCertRound() {
     return this._stmts.getEarliestCertRound.get().earliest || 0;
   }
-  // §4 + #34 proven-node check — see MemoryStore version for the contract.
-  getEarliestCertRoundForAuthor(authorId) {
-    return this._stmts.getEarliestCertRoundForAuthor.get(authorId).earliest || 0;
-  }
   getCertificatesFromRound(fromRound) {
     return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
   }
@@ -1802,6 +1861,12 @@ class SQLiteStore {
   pruneRotationParticipationBefore(rotationNumber) {
     return this._stmts.pruneRotationParticipationBefore.run(rotationNumber).changes;
   }
+  setRotationParticipation(nodeId, rotationNumber, count) {
+    this._stmts.setRotationParticipation.run(nodeId, rotationNumber, count);
+  }
+  deleteRotationParticipationByRotation(rotationNumber) {
+    return this._stmts.deleteRotationParticipationByRotation.run(rotationNumber).changes;
+  }
   _parseRotation(row) {
     if (!row) return null;
     return {
@@ -1889,6 +1954,15 @@ class SQLiteStore {
     }
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
+    // version for rationale. RP ships in its own snapshot stream below.
+  }
+
+  // RP-snapshot iterator — see MemoryStore.iterateRotationParticipationForSnapshot.
+  *iterateRotationParticipationForSnapshot() {
+    for (const r of this._stmts.iterateRotationParticipation.iterate()) {
+      yield _canonRotationParticipation(r);
     }
   }
 
@@ -2149,11 +2223,6 @@ function _buildDagHandle(store, config) {
     getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
     getLatestRound: () => store.getLatestRound(),
     getEarliestCertRound: () => store.getEarliestCertRound(),
-    // §4 + #34 proven-node filter: returns earliest round at which a given
-    // author produced a cert in this DAG, or 0 if none. Used by
-    // participants.deriveLiveCommittee to require K rounds of cert
-    // history before admitting a node to the would-be committee.
-    getEarliestCertRoundForAuthor: (authorId) => store.getEarliestCertRoundForAuthor(authorId),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
     pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),
@@ -2204,6 +2273,9 @@ function _buildDagHandle(store, config) {
     incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),
     getRotationParticipation: (rotationNumber) => store.getRotationParticipation(rotationNumber),
     pruneRotationParticipationBefore: (rotationNumber) => store.pruneRotationParticipationBefore(rotationNumber),
+    setRotationParticipation: (nodeId, rotationNumber, count) => store.setRotationParticipation(nodeId, rotationNumber, count),
+    deleteRotationParticipationByRotation: (rotationNumber) => store.deleteRotationParticipationByRotation(rotationNumber),
+    iterateRotationParticipationForSnapshot: () => store.iterateRotationParticipationForSnapshot(),
 
     // ── Equivocation defense: votes_seen (§1) ────────────────────────────
     recordSeenVote: (round, author, batchHash) => store.recordSeenVote(round, author, batchHash),

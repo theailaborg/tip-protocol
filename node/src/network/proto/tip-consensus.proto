@@ -505,4 +505,8 @@ message SnapshotEnd {
   bytes rotations_full_root = 7;    // §4 + #34: integrity root over rotation stream
   uint64 cert_row_count = 8;        // #69: SnapshotCertRow count
   bytes certs_full_root = 9;        // #69: integrity root over cert stream
+  uint64 rp_row_count = 10;         // #75: SnapshotStateRow rotation_participation count
+                                    // (carried in SnapshotStateRow with table=rotation_participation;
+                                    // intentionally NOT in state_merkle_root because RP is real-time
+                                    // counter state that flickers between commits)
 }
