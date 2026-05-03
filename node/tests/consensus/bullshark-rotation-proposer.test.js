@@ -490,3 +490,82 @@ describe("bullshark — RP attribution by cert.round (Fix A)", () => {
     expect(rot3.count).toBeGreaterThan(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #73 — `commits` row written ONLY when commit-handler accepts ≥1 tx.
+// Anchor commits that order N txs but have all N rejected at commit-handler
+// (e.g., duplicate rotation_number under a multi-proposer cycle) must NOT
+// inflate the commits table with no-state-change rows. Anchor still ticks
+// _consensusIndex (consensus-success counter) — only the commits-row write
+// is gated. We drive a tx through onRoundComplete with an onOrderedTxs that
+// reports all-dropped and assert no commit row is saved; with at-least-one-
+// committed we assert the row IS saved.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
+  function _setupWithApplier({ applyResult }) {
+    const dag = initDAG({ inMemory: true });
+    if (!dag.getNode(FOUNDING.node_id)) {
+      dag.saveNode({
+        node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
+        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      });
+    }
+    const savedCommits = [];
+    // Wrap dag.saveCommit to spy on calls without changing storage semantics.
+    const realSaveCommit = dag.saveCommit;
+    dag.saveCommit = (row) => { savedCommits.push(row); return realSaveCommit ? realSaveCommit(row) : undefined; };
+
+    const bullshark = createBullshark({
+      dag,
+      getNodeIds: () => [FOUNDING.node_id],
+      onOrderedTxs: () => applyResult,
+      proposer: null,
+    });
+    return { dag, bullshark, savedCommits };
+  }
+
+  function _driveOneTx(dag, bullshark) {
+    // Drive an anchor commit that has 1 tx in the leader's batch. Round
+    // chosen far from any boundary so no rotation-submission noise.
+    const proposeRound = 51;
+    const voteRound = 52;
+    const proposeCert = _buildCert({ round: proposeRound, author: FOUNDING.node_id });
+    proposeCert.batch.txs = [{ tx_id: "fake-tx-1", tx_type: "REGISTER_IDENTITY", data: {}, prev: [], timestamp: "2026-04-01T00:00:00.000Z" }];
+    dag.saveCertificate(proposeCert);
+
+    const voteCert = _buildCert({
+      round: voteRound, author: FOUNDING.node_id,
+      hash: shake256(`vc73-${voteRound}`),
+    });
+    voteCert.parent_hashes = [proposeCert.hash];
+    dag.saveCertificate(voteCert);
+    bullshark.onRoundComplete([voteCert], voteRound);
+  }
+
+  test("all-dropped: orderedTxs > 0 but committed=0 → NO commit row written", () => {
+    const fx = _setupWithApplier({ applyResult: { committed: 0, dropped: 1 } });
+    _driveOneTx(fx.dag, fx.bullshark);
+
+    expect(fx.savedCommits).toHaveLength(0);
+    // Anchor still counted as a consensus event (cs_idx ticked).
+    expect(fx.bullshark.stats().consensusIndex).toBeGreaterThan(0);
+  });
+
+  test("any-committed: committed=1 dropped=0 → commit row IS written", () => {
+    const fx = _setupWithApplier({ applyResult: { committed: 1, dropped: 0 } });
+    _driveOneTx(fx.dag, fx.bullshark);
+
+    expect(fx.savedCommits).toHaveLength(1);
+    expect(fx.savedCommits[0].round).toBe(52);
+  });
+
+  test("missing applyResult (legacy onOrderedTxs): falls back to ordered count → commit row IS written", () => {
+    // Older callers may not return { committed, dropped }. Bullshark falls
+    // back to assuming all ordered txs were committed (preserves pre-#73
+    // behavior for callers that haven't been updated).
+    const fx = _setupWithApplier({ applyResult: undefined });
+    _driveOneTx(fx.dag, fx.bullshark);
+
+    expect(fx.savedCommits).toHaveLength(1);
+  });
+});

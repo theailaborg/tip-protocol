@@ -144,6 +144,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     onOrderedTxs: (orderedTxs, round, certTimestamp) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
+      // #73: surface accept/drop counts so bullshark can gate `saveCommit`
+      // on actual state-change presence — a rotation-only round where the
+      // tx was rejected at commit-handler must NOT inflate the commits
+      // table with a no-state-change row.
+      return result;
     },
     // §4 + #34: rotation proposer. Wired only when the node has a
     // signing identity (config.nodePrivateKey present). The submitTx
