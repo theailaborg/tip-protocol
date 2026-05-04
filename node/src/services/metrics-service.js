@@ -154,6 +154,11 @@ function narwhalSection(s) {
   return [
     gauge("tip_narwhal_current_round", "Current consensus round Narwhal is working on", n.round),
     gauge("tip_narwhal_syncing", "1 if Narwhal is in sync mode (round production suppressed while catching up); 0 if ready", n.joinState === "syncing" ? 1 : 0),
+    // #78: dedicated sync-duration signal so dashboards can flag nodes
+    // pinned in syncing state (#66 fingerprint) without grepping logs.
+    // 0 when ready; positive seconds since enterSyncMode while syncing.
+    gauge("tip_narwhal_sync_duration_seconds", "Seconds since the node entered sync mode; 0 when ready. >180s usually means the sync is stuck (see #66/#78)",
+      n.joinState === "syncing" && n.syncEnteredAt ? Math.floor((Date.now() - n.syncEnteredAt) / 1000) : 0),
     gauge("tip_narwhal_certificates_this_round", "Certificates collected for current round", n.certificatesThisRound),
     gauge("tip_narwhal_batches_this_round", "Batches received for current round (incl. self)", n.batchesThisRound),
     gauge("tip_narwhal_pending_certs", "Cert waiters parked because parents missing from DAG", n.pendingCerts),

@@ -163,16 +163,53 @@ describe("computeHaltStatus transitions", () => {
     expect(r.staleMs).toBe(0);
   });
 
-  test("joining node (syncing) is never halted regardless of elapsed time", () => {
+  test("joining node (syncing) within threshold is not halted", () => {
+    const clock = mkClock(1_000_000);
+    // syncEnteredAt = "now" — within threshold, expected boot state.
+    const stats = {
+      running: true, joinState: "syncing", lastRoundAdvanceAt: 0,
+      syncEnteredAt: clock.now(),
+    };
+
+    // Advance just below the threshold (3× round timeout).
+    clock.advance(ROUND_TIMEOUT_MS * 3 - 1);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(false);
+    expect(r.reason).toBe("join_state_syncing");
+  });
+
+  // #78: a node pinned in `_joinState=syncing` due to repeated sync
+  // failures (#66 fingerprint) was previously hidden from the halt
+  // detector. Now flagged as `stuck_syncing` so Grafana points operators
+  // at the right node — the one ignoring all peer batches and causing the
+  // federation halt — instead of the honest-but-blocked nodes.
+  test("#78: joining node stuck > threshold → halted (stuck_syncing)", () => {
+    const t0 = 1_000_000;
+    const clock = mkClock(t0);
+    const stats = {
+      running: true, joinState: "syncing", lastRoundAdvanceAt: 0,
+      syncEnteredAt: t0,
+    };
+
+    // Advance past the threshold (3× round timeout).
+    clock.advance(ROUND_TIMEOUT_MS * 3 + 1);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(true);
+    expect(r.reason).toBe("stuck_syncing");
+    expect(r.staleMs).toBeGreaterThan(ROUND_TIMEOUT_MS * 3);
+    expect(r.message).toMatch(/Stuck in sync mode/);
+  });
+
+  test("#78: legacy stats without syncEnteredAt → not flagged (backward compat)", () => {
+    // Older builds didn't surface syncEnteredAt — keep their behavior
+    // (joining is never halted) so a partial deploy doesn't false-flag
+    // healthy nodes whose stats schema lags this change.
     const clock = mkClock(1_000_000);
     const stats = { running: true, joinState: "syncing", lastRoundAdvanceAt: 0 };
-
-    for (const ms of [0, 1000, 60_000, 10 * 60 * 1000]) {
-      clock.advance(ms);
-      const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
-      expect(r.halted).toBe(false);
-      expect(r.reason).toBe("join_state_syncing");
-    }
+    clock.advance(ROUND_TIMEOUT_MS * 100);  // way past threshold
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(false);
+    expect(r.reason).toBe("join_state_syncing");
   });
 });
 
