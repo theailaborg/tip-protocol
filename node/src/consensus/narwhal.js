@@ -62,9 +62,15 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
+  const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
+  // Rate-limit the producer-pause notify. _beginRound retries every 50ms
+  // while paused; the upstream consumer (bullshark rotation proposer)
+  // doesn't need that frequency. 1.5s matches the rotation-coord
+  // re-broadcast cadence so each cycle gets one fresh proposal attempt.
+  let _lastProducerPausedAt = 0;
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -233,21 +239,59 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // stale committee assumptions, causing peer-validation halts (the
     // 2026-05-03 round-202 halt). The rotation tx is being applied to
     // committee_history right now (or imminently); reschedule shortly.
+    //
+    // If the rotation isn't being produced (deadlock: no anchor commits
+    // → bullshark never retries proposeRotation), the rate-limited
+    // onProducerPaused callback nudges bullshark to attempt a proposal.
+    // Three layers prevent over-firing: rate-limit here, DAG re-check on
+    // bullshark's side, and rotation-coordinator's per-rotation inflight
+    // dedup. Without the nudge the federation sits halted indefinitely.
     const targetRotation = epochOf(_currentRound);
+    let _carveOutRotationTx = null;
     if (targetRotation > 0 && typeof dag.getCommitteeRotation === "function"
       && !dag.getCommitteeRotation(targetRotation)) {
-      log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
-      // Brief reschedule. Commit-handler should apply rotation within
-      // the next anchor commit (a few seconds at most). Round-timer
-      // covers the case where rotation never lands (severe partition).
-      _scheduleNextRound(50);
-      return;
+      // Carve-out: if the missing rotation's tx is sitting in our local
+      // mempool, drain ONLY that tx and produce a rotation-only batch.
+      // Cert validation by peers at this boundary still uses the previous
+      // committee (rotation N takes effect FOR FUTURE rounds; the cert at
+      // round R = N×epoch_length is signed/ack'd by N-1's committee).
+      // Acking peers don't need to leave producer-pause — only ONE node
+      // needs to drain the rotation tx for the cert to form. Without this
+      // carve-out the federation deadlocks when the rotation tx lands in
+      // mempool but no node can drain it (everyone paused).
+      _carveOutRotationTx = typeof mempool.peekRotationTx === "function"
+        ? mempool.peekRotationTx(targetRotation) : null;
+      if (!_carveOutRotationTx) {
+        log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
+        if (_onProducerPaused) {
+          const now = Date.now();
+          if (now - _lastProducerPausedAt > 1500) {
+            _lastProducerPausedAt = now;
+            try { _onProducerPaused(_currentRound, targetRotation); }
+            catch (err) { log.warn(`onProducerPaused threw: ${err.message}`); }
+          }
+        }
+        // Brief reschedule. The onProducerPaused callback nudges
+        // bullshark to attempt a rotation proposal; once that lands a
+        // tx in mempool, the carve-out above will fire on the next
+        // _beginRound and unblock the federation.
+        _scheduleNextRound(50);
+        return;
+      }
+      log.notice(`Round ${_currentRound}: producer-pause carve-out — producing rotation-only batch for rotation ${targetRotation}`);
     }
 
     _resetRoundState();
 
-    // Phase 1: Create batch from mempool and broadcast
-    const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+    // Phase 1: Create batch from mempool and broadcast.
+    // Carve-out path: only the rotation tx; normal path: drain everything.
+    let txs;
+    if (_carveOutRotationTx) {
+      mempool.remove([_carveOutRotationTx.tx_id]);
+      txs = [_carveOutRotationTx];
+    } else {
+      txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+    }
 
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);

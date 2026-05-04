@@ -41,6 +41,7 @@
 
 const { mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { hexToBytes, bytesToHex } = require("../network/proto");
 const { computeQuorum } = require("./certificate");
 const { getLogger } = require("../logger");
@@ -137,18 +138,30 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
    * @returns {boolean} true if the proposal was broadcast, false if a duplicate or rejected
    */
   function proposeRotation({ rotation_number, effective_round, new_committee, payload_hash, prevCommitteeNodeIds, prevPubkeys }) {
-    if (_inFlight.has(rotation_number) && _inFlight.get(rotation_number).submittedAt != null) {
-      // Already submitted — proposer hop reattempt is a no-op.
-      return false;
+    const existing = _inFlight.get(rotation_number);
+    if (existing && existing.submittedAt != null) return false;
+
+    if (existing) {
+      // Retry path — preserve accumulated sigs across bullshark's
+      // per-anchor proposeRotation calls. Resetting inflight here would
+      // throw away peer sigs that arrived between retries; on a 4-node
+      // federation under cold-mesh that means quorum is never reached.
+      const buf = _encodeProposal(existing.proposal);
+      network.publish(_topic(), buf);
+      log.debug(`Rotation ${rotation_number}: re-broadcast proposal (sigs ${existing.sigs.size}/${existing.prevCommittee.size})`);
+      _maybeSubmit(rotation_number);
+      return true;
     }
+
     const message = `rotation:${payload_hash}:${identity.nodeId}`;
     const proposerSig = mldsaSign(message, identity.privateKey);
 
     const sigs = new Map();
     sigs.set(identity.nodeId, proposerSig);
 
+    const proposal = { rotation_number, effective_round, new_committee, payload_hash, proposer_node_id: identity.nodeId, proposer_signature: proposerSig };
     _inFlight.set(rotation_number, {
-      proposal: { rotation_number, effective_round, new_committee, payload_hash, proposer_node_id: identity.nodeId, proposer_signature: proposerSig },
+      proposal,
       sigs,
       prevCommittee: new Set(prevCommitteeNodeIds),
       prevPubkeys: new Map(Object.entries(prevPubkeys || {})),
@@ -156,22 +169,32 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
       deadline: Date.now() + deadlineMs,
     });
 
-    const buf = proto.encode("RotationProposal", {
-      rotationNumber: rotation_number,
-      effectiveRound: effective_round,
-      newCommittee: new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
-      payloadHash: payload_hash,
-      proposerNodeId: identity.nodeId,
-      proposerSignature: hexToBytes(proposerSig),
-    });
-    network.publish(_topic(), buf);
+    network.publish(_topic(), _encodeProposal(proposal));
     log.info(`Rotation ${rotation_number} proposal broadcast (proposer=${identity.nodeId.slice(-12)}, prevCommitteeSize=${prevCommitteeNodeIds.length}, quorum=${computeQuorum(prevCommitteeNodeIds.length)})`);
 
-    // Self-aggregate immediately — solo committees (n=1) reach quorum from
-    // the proposer's own signature without any peer round-trip. Otherwise
-    // this is a no-op until peer signatures arrive.
+    _startRebroadcast();
     _maybeSubmit(rotation_number);
     return true;
+  }
+
+  function _encodeProposal(p) {
+    return proto.encode("RotationProposal", {
+      rotationNumber: p.rotation_number,
+      effectiveRound: p.effective_round,
+      newCommittee: p.new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
+      payloadHash: p.payload_hash,
+      proposerNodeId: p.proposer_node_id,
+      proposerSignature: hexToBytes(p.proposer_signature),
+    });
+  }
+
+  function _encodeSignature(rotation_number, payload_hash, signer_node_id, signature) {
+    return proto.encode("RotationSignature", {
+      rotationNumber: rotation_number,
+      payloadHash: payload_hash,
+      signerNodeId: signer_node_id,
+      signature: hexToBytes(signature),
+    });
   }
 
   // ── Receiver side ──────────────────────────────────────────────────────────
@@ -261,15 +284,10 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     const ourSig = mldsaSign(ourMsg, identity.privateKey);
     _inFlight.get(rotation_number).sigs.set(identity.nodeId, ourSig);
 
-    const sigBuf = proto.encode("RotationSignature", {
-      rotationNumber: rotation_number,
-      payloadHash: payload_hash,
-      signerNodeId: identity.nodeId,
-      signature: hexToBytes(ourSig),
-    });
-    network.publish(_topic(), sigBuf);
+    network.publish(_topic(), _encodeSignature(rotation_number, payload_hash, identity.nodeId, ourSig));
     log.debug(`Rotation ${rotation_number}: signed proposal as ${identity.nodeId.slice(-12)}`);
 
+    _startRebroadcast();
     _maybeSubmit(rotation_number);
   }
 
@@ -327,10 +345,13 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     const required = computeQuorum(inflight.prevCommittee.size);
     if (inflight.sigs.size < required) return;
 
-    // Only the proposer aggregates+submits. Other prev-committee members
-    // store sigs locally for fallback (if proposer goes offline, deadline
-    // expiry triggers retry from a different node on next anchor).
-    if (inflight.proposal.proposer_node_id !== identity.nodeId) return;
+    // Multi-aggregator: any prev-committee member that reaches quorum
+    // submits. Removes the dependency on the original proposer also being
+    // the one whose inflight reaches quorum first — under uneven sig
+    // propagation (bursty rotation-coord topic, cold mesh) the proposer
+    // may end up below quorum while a peer's inflight has enough sigs.
+    // Duplicate submissions are deduped at the commit-handler layer:
+    // committee_history.rotation_number is unique, second-arriver rejected.
 
     // Deterministic order: signer_node_ids sorted ASC, signatures parallel.
     const signer_node_ids = [...inflight.sigs.keys()].sort();
@@ -354,6 +375,11 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     } catch (err) {
       log.warn(`Rotation ${rotation_number} submitTx threw: ${(err && err.message) || err}`);
     }
+    // Submission landed — if this was the last open inflight, stop the
+    // re-broadcast timer immediately. Otherwise the timer self-stops on
+    // its next tick (≤ REBROADCAST_INTERVAL_MS later); both are correct,
+    // immediate stop is just cleaner for short-lived test fixtures.
+    if (!_hasOpenInFlight()) _stopRebroadcast();
   }
 
   // ── Housekeeping ───────────────────────────────────────────────────────────
@@ -372,14 +398,82 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
         _inFlight.delete(rotation);
       }
     }
+    if (_hasOpenInFlight() === false) _stopRebroadcast();
+  }
+
+  // Periodic re-broadcast of open inflights. Defends against gossipsub mesh
+  // dropping bursty rotation-coord traffic — proposals + accumulated sigs
+  // are re-sent every REBROADCAST_INTERVAL_MS until the rotation submits or
+  // its deadline expires. Mirrors the per-batch retry loop in narwhal.
+  let _rebroadcastTimer = null;
+
+  function _hasOpenInFlight() {
+    for (const inflight of _inFlight.values()) {
+      if (inflight.submittedAt == null) return true;
+    }
+    return false;
+  }
+
+  function _startRebroadcast() {
+    if (_rebroadcastTimer) return;
+    _rebroadcastTimer = setInterval(_rebroadcastTick, CONSENSUS.ROTATION_COORD_REBROADCAST_INTERVAL_MS);
+  }
+
+  function _stopRebroadcast() {
+    if (_rebroadcastTimer) { clearInterval(_rebroadcastTimer); _rebroadcastTimer = null; }
+  }
+
+  function _rebroadcastTick() {
+    const now = Date.now();
+    let anyOpen = false;
+    for (const [rotation, inflight] of _inFlight) {
+      if (inflight.submittedAt != null) continue;
+      if (now > inflight.deadline) continue; // pruneExpired will drop
+      anyOpen = true;
+      try {
+        network.publish(_topic(), _encodeProposal(inflight.proposal));
+        for (const [signer_node_id, sig] of inflight.sigs) {
+          if (signer_node_id === inflight.proposal.proposer_node_id) continue;
+          network.publish(_topic(), _encodeSignature(rotation, inflight.proposal.payload_hash, signer_node_id, sig));
+        }
+      } catch (err) {
+        log.debug(`Rotation ${rotation}: re-broadcast publish failed — ${(err && err.message) || err}`);
+      }
+    }
+    if (!anyOpen) _stopRebroadcast();
+  }
+
+  function stop() {
+    _stopRebroadcast();
+  }
+
+  /**
+   * Public dedup signal for upstream callers (bullshark.tryRotationProposal).
+   * Returns true if a proposal for `rotation_number` is currently being
+   * aggregated OR has been submitted recently (within deadlineMs). In
+   * those cases the upstream caller should NOT force a fresh proposal
+   * — the existing one is in flight.
+   *
+   * Returns false if there's no inflight at all OR if the existing
+   * inflight is older than deadlineMs (likely stale/lost — re-proposal
+   * is justified).
+   */
+  function hasOpenInflight(rotation_number) {
+    const inflight = _inFlight.get(rotation_number);
+    if (!inflight) return false;
+    if (inflight.submittedAt == null) return true;          // still aggregating
+    return Date.now() - inflight.submittedAt < deadlineMs;  // submitted, awaiting commit
   }
 
   return {
     proposeRotation,
     handleIncoming,
     pruneExpired,
+    hasOpenInflight,
+    stop,
     // Test-only introspection.
     _state: () => _inFlight,
+    _rebroadcastTick: () => _rebroadcastTick(),
   };
 }
 

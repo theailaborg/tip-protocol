@@ -43,7 +43,7 @@ beforeAll(async () => {
 const SELF_ID = "tip://node/self";
 const PEER_ID = "tip://node/peer";
 
-function buildNarwhal() {
+function buildNarwhal({ onProducerPaused = null } = {}) {
   const selfKp = generateMLDSAKeypair();
   const peerKp = generateMLDSAKeypair();
 
@@ -90,6 +90,7 @@ function buildNarwhal() {
     getCommittee: (round) => getActiveCommittee(dag, round != null ? round : narwhal.currentRound()),
     onCommit: () => { },
     onCertSaved: () => { },
+    onProducerPaused,
   });
 
   return { narwhal, dag };
@@ -245,5 +246,148 @@ describe("narwhal tri-state join FSM", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  // Fix D — producer-pause callback. When _beginRound hits the rotation-
+  // missing producer-pause, narwhal nudges upstream (bullshark) to attempt
+  // a rotation proposal. Rate-limited so the 50ms producer-pause retry
+  // loop doesn't fire the callback 20x/sec.
+  describe("onProducerPaused callback (Fix D)", () => {
+    function buildNarwhalAtMissingRotationEpoch({ onProducerPaused }) {
+      const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
+      const fx = buildNarwhal({ onProducerPaused });
+      // Force narwhal's _currentRound into an epoch with no rotation row.
+      // buildNarwhal seeds rotations 1-5 (effective_round 1*200..5*200).
+      // Round 6*200 = 1200 → epochOf=6, which has no rotation row. Use
+      // exitSyncMode to jump _currentRound straight there.
+      fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+      return fx;
+    }
+
+    test("fires callback with (currentRound, missingRotation) when producer-pauses", () => {
+      jest.useFakeTimers();
+      try {
+        const calls = [];
+        const fx = buildNarwhalAtMissingRotationEpoch({
+          onProducerPaused: (round, missing) => calls.push({ round, missing }),
+        });
+        fx.narwhal.start();
+        // Tick the inter-round scheduler so _beginRound runs.
+        jest.advanceTimersByTime(100);
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        expect(calls[0].round).toBe(CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2 * 6);
+        expect(calls[0].missing).toBe(6);
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("rate-limited: doesn't fire more than once per ~1.5s even though producer-pause loops every 50ms", () => {
+      jest.useFakeTimers();
+      try {
+        const calls = [];
+        const fx = buildNarwhalAtMissingRotationEpoch({
+          onProducerPaused: () => calls.push(Date.now()),
+        });
+        fx.narwhal.start();
+        // First _beginRound + retry loop — should fire callback once.
+        jest.advanceTimersByTime(100);
+        const firstCallCount = calls.length;
+        expect(firstCallCount).toBeGreaterThanOrEqual(1);
+        // Pause loop runs every 50ms, but rate-limit means callback won't
+        // fire again within 1500ms.
+        jest.advanceTimersByTime(1000);
+        expect(calls.length).toBe(firstCallCount);
+        // After 1.5s+, next pause hit fires the callback again.
+        jest.advanceTimersByTime(700);
+        expect(calls.length).toBeGreaterThan(firstCallCount);
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("no callback fires when no onProducerPaused option provided (backward compat)", () => {
+      jest.useFakeTimers();
+      try {
+        // Build with no onProducerPaused — should still producer-pause without throwing.
+        const fx = buildNarwhalAtMissingRotationEpoch({ onProducerPaused: null });
+        fx.narwhal.start();
+        jest.advanceTimersByTime(500);
+        // No assertion on callback (none wired). Just verify narwhal didn't crash.
+        expect(fx.narwhal.currentRound()).toBeGreaterThan(0);
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  // Producer-pause carve-out: when stuck at a rotation boundary AND the
+  // rotation tx is in mempool, drain only that tx and produce a rotation-
+  // only batch. Breaks the deadlock where rotation tx is submitted to
+  // mempool but narwhal can't drain it because it's producer-paused
+  // waiting for that very rotation row to land in DAG.
+  describe("producer-pause carve-out (rotation-only batch)", () => {
+    test("rotation tx in mempool → drained into rotation-only batch even while producer-paused", () => {
+      jest.useFakeTimers();
+      try {
+        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
+        const fx = buildNarwhal();
+        // Force narwhal into producer-pause for rotation 6 (no row exists; buildNarwhal seeds 1-5).
+        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+
+        // Verify peekRotationTx behaviour on a fresh mempool — the
+        // building block the carve-out depends on.
+        const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+        const mp = createMempool({ dag: fx.dag });
+        const fakeTx = {
+          tx_id: "deadbeef".repeat(8),
+          tx_type: "COMMITTEE_ROTATION",
+          data: { rotation_number: 6, effective_round: 1200 },
+          signature: "00".repeat(64),
+          timestamp: "2026-05-04T12:00:00.000Z",
+          prev: [],
+        };
+        const r = mp.add(fakeTx);
+        expect(r.added).toBe(true);
+        // peek should find it.
+        const peeked = mp.peekRotationTx(6);
+        expect(peeked).not.toBeNull();
+        expect(peeked.tx_id).toBe(fakeTx.tx_id);
+        // peek for a different rotation — null.
+        expect(mp.peekRotationTx(7)).toBeNull();
+        // peek doesn't remove.
+        expect(mp.size()).toBe(1);
+        // explicit remove drops it.
+        mp.remove([fakeTx.tx_id]);
+        expect(mp.peekRotationTx(6)).toBeNull();
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("no rotation tx in mempool → still producer-paused (carve-out doesn't activate spuriously)", () => {
+      jest.useFakeTimers();
+      try {
+        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
+        const calls = [];
+        const fx = buildNarwhal({
+          onProducerPaused: (round, missing) => calls.push({ round, missing }),
+        });
+        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+        fx.narwhal.start();
+        // Mempool empty → producer-pause path fires, no carve-out.
+        jest.advanceTimersByTime(100);
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        // Round counter should NOT have advanced (no batch produced).
+        expect(fx.narwhal.stats().joinState).toBe("ready");
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

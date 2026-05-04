@@ -333,7 +333,25 @@ function createMempool(dag, options = {}) {
     return { added: true };
   }
 
-  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded };
+  /**
+   * Find (without removing) a pending COMMITTEE_ROTATION tx whose
+   * payload targets `rotation_number`. Used by narwhal's producer-pause
+   * carve-out: when stuck at a rotation boundary, drain only that tx
+   * and produce a rotation-only batch so the rotation can land via
+   * normal cert flow even though general production is paused.
+   * Returns null if not found.
+   */
+  function peekRotationTx(rotation_number) {
+    for (const entry of _pending.values()) {
+      const tx = entry.tx;
+      if (tx?.tx_type !== "COMMITTEE_ROTATION") continue;
+      const rn = tx?.data?.rotation_number;
+      if (rn === rotation_number) return tx;
+    }
+    return null;
+  }
+
+  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded, peekRotationTx };
 }
 
 module.exports = { createMempool };
