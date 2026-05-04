@@ -1675,23 +1675,10 @@ class SQLiteStore {
 // DAG FACADE  —  single interface over either store
 // ══════════════════════════════════════════════════════════════════════════════
 
-function initDAG(config) {
-  // ── Choose store ──────────────────────────────────────────────────────────
-  let store;
-  if (Database && config.dbPath !== ":memory:" && config.dbPath !== ":memory-test:") {
-    try {
-      store = new SQLiteStore(config.dbPath);
-      log.info(`DAG store: SQLite @ ${config.dbPath}`);
-    } catch (err) {
-      log.warn(`SQLite init failed (${err.message}) — using in-memory store`);
-      store = new MemoryStore();
-    }
-  } else {
-    const reason = !Database ? "better-sqlite3 not installed" : "in-memory mode requested";
-    log.warn(`DAG store: in-memory (${reason})`);
-    store = new MemoryStore();
-  }
-
+// ─── Shared post-store-selection init (sync) ─────────────────────────────────
+// Called by both initDAG (SQLite/Memory) and initDAGAsync (Knex).
+// Returns the public dag API object.
+function _buildDagHandle(store, config) {
   // ── Bootstrap: genesis block + founding VP ────────────────────────────────
   if (store.count() === 0) {
     _writeGenesisBlock(store, config);
@@ -1873,6 +1860,61 @@ function initDAG(config) {
   return dag;
 }
 
+// ─── Sync entry point (SQLite / MemoryStore) ─────────────────────────────────
+// Used by all tests and non-Knex production paths. Never await this.
+function initDAG(config) {
+  let store;
+  if (Database && config.dbPath !== ":memory:" && config.dbPath !== ":memory-test:") {
+    try {
+      store = new SQLiteStore(config.dbPath);
+      log.info(`DAG store: SQLite @ ${config.dbPath}`);
+    } catch (err) {
+      log.warn(`SQLite init failed (${err.message}) — using in-memory store`);
+      store = new MemoryStore();
+    }
+  } else {
+    const reason = !Database ? "better-sqlite3 not installed" : "in-memory mode requested";
+    log.warn(`DAG store: in-memory (${reason})`);
+    store = new MemoryStore();
+  }
+  return _buildDagHandle(store, config);
+}
+
+// ─── Async entry point (Knex / SQLite / MemoryStore) ─────────────────────────
+// Used by node/src/index.js. Awaits KnexAdapter.migrate() for server-side DBs;
+// falls back to initDAG() for SQLite and memory paths (resolves synchronously).
+async function initDAGAsync(config) {
+  const { createStore } = require("./db/index");
+  const store = createStore(config, log);
+  if (!store) {
+    // SQLite or memory — use the sync path (already wrapped in Promise by async)
+    return initDAG(config);
+  }
+
+  // Retry up to 5 times so the node tolerates the DB container starting after
+  // the node container (profiles-based compose or slow DB init).
+  const MAX_ATTEMPTS = 5;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await store.migrate();
+      log.info(`DAG store: Knex (${config.dbDriver || process.env.DB_DRIVER}) @ ${config.dbName || process.env.DB_NAME || "tip_protocol"}`);
+      return _buildDagHandle(store, config);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS) {
+        const delaySec = attempt * 2;
+        log.warn(`Knex init attempt ${attempt}/${MAX_ATTEMPTS} failed: ${err.message} — retrying in ${delaySec}s`);
+        await new Promise(r => setTimeout(r, delaySec * 1000));
+      }
+    }
+  }
+
+  log.warn(`Knex init failed after ${MAX_ATTEMPTS} attempts (${lastErr.message}) — falling back to SQLite/memory`);
+  try { store.close(); } catch { /* ignore */ }
+  return initDAG(config);
+}
+
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
 function _writeGenesisBlock(store, config) {
   const {
@@ -2002,4 +2044,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG };
+module.exports = { initDAG, initDAGAsync, MemoryStore };

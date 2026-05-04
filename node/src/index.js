@@ -28,7 +28,7 @@ PC.init(getGenesisPayload().protocol_constants);
 
 const http = require("http");
 const { createApp } = require("./api");
-const { initDAG } = require("./dag");
+const { initDAGAsync } = require("./dag");
 const { initScoring } = require("./scoring");
 const { createScheduler } = require("./scheduler");
 const { initNetworkAndConsensus } = require("./init-network");
@@ -68,7 +68,7 @@ async function main() {
     fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
   }
 
-  const dag = initDAG(config);
+  const dag = await initDAGAsync(config);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
 
   // Look up this node's registered ID from the node registry (by public key)

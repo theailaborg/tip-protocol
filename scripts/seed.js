@@ -540,7 +540,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         tx_id: tx.tx_id,
       });
       _dag.addDedupHash(mockDedupHash, Math.floor(new Date(registeredAt).getTime() / 1000));
-      _dag.setScore(tipId, 550, 0);
+      _dag.setScore(tipId, 550, 0, registeredAt);
 
       regResult = {
         tip_id: tipId,

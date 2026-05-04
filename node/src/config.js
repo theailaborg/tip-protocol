@@ -41,6 +41,21 @@ function loadConfig() {
     dataDir:     process.env.TIP_DATA_DIR     || path.resolve(process.cwd(), "data"),
     dbPath:      process.env.TIP_DB_PATH      || path.resolve(process.cwd(), "data", "tip.db"),
 
+    // ── Database (Knex adapter) ───────────────────────────────────────────────
+    // dbDriver=sqlite → built-in SQLiteStore (default for dev/test)
+    // dbDriver=postgres|mariadb|mysql|mssql|oracle → KnexAdapter
+    dbDriver:   process.env.DB_DRIVER   || null,
+    dbUrl:      process.env.DATABASE_URL || null,
+    dbHost:     process.env.DB_HOST     || "localhost",
+    dbPort:     process.env.DB_PORT     ? parseInt(process.env.DB_PORT, 10) : null,
+    dbName:     process.env.DB_NAME     || "tip_protocol",
+    dbUser:     process.env.DB_USER     || "tip",
+    dbPassword: process.env.DB_PASSWORD || "",
+    dbSsl:      process.env.DB_SSL === "true",
+    dbSslRejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
+    dbPoolMin:  parseInt(process.env.DB_POOL_MIN || "2", 10),
+    dbPoolMax:  parseInt(process.env.DB_POOL_MAX || "10", 10),
+
     // ── Security ──────────────────────────────────────────────────────────────
     nodePrivateKey:  process.env.TIP_NODE_PRIVATE_KEY || null,
     nodePublicKey:   process.env.TIP_NODE_PUBLIC_KEY  || null,
