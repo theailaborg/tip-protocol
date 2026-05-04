@@ -253,6 +253,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     network.onPeerAuthorized(async (peerId, tipNodeId) => {
       await onPeerAuthorized(peerId, tipNodeId, {
         syncHandler, snapshotHandler, commitHandler, dag, narwhal, bullshark, nodeId,
+        queryPeerStatus: antiEntropy.queryPeer,
       });
     });
 

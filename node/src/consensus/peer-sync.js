@@ -180,8 +180,39 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
  * @param {Object} deps          { syncHandler, snapshotHandler, commitHandler,
  *                                 dag, narwhal, bullshark, nodeId }
  */
+/**
+ * Decide whether sync is needed by comparing self vs peer's committed_round
+ * via the /tip/sync-status/1.0.0 RPC. Returns false (skip sync) only when
+ * we have a confirmed peer status AND we're at or beyond peer's head.
+ * All failure paths (no RPC wired, peer no-response, RPC throws) return
+ * true — entering sync mode unnecessarily is recoverable; skipping a
+ * needed sync is not.
+ */
+async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus }) {
+  if (typeof queryPeerStatus !== "function") return true;
+  try {
+    const peerStatus = await queryPeerStatus(peerId);
+    if (!peerStatus) return true;
+    const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
+      ? Number(bullshark.lastCommittedRound() || 0) : 0;
+    const peerCommitted = Number(peerStatus.committed_round || 0);
+    if (selfCommitted >= peerCommitted) {
+      log.info(`Peer ${tipNodeId} caught up (self=${selfCommitted}, peer=${peerCommitted}) — skipping sync`);
+      return false;
+    }
+    log.info(`Peer ${tipNodeId} ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
+    return true;
+  } catch (err) {
+    log.debug(`Peer ${tipNodeId} sync-status query failed (${err.message}) — proceeding with sync`);
+    return true;
+  }
+}
+
 async function onPeerAuthorized(peerId, tipNodeId, deps) {
   const { syncHandler, snapshotHandler, commitHandler, dag, narwhal, bullshark, nodeId } = deps;
+
+  if (!(await shouldSyncFromPeer(peerId, tipNodeId, deps))) return;
+
   log.notice(`Peer authorized: ${tipNodeId} — bootstrapping from ${peerId.slice(0, 12)}...`);
 
   // Enter sync mode — suppress all round production until sync + first peer batch
@@ -265,4 +296,4 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
   }
 }
 
-module.exports = { syncWithRetry, replaySyncedTxs, tryFastSyncSnapshot, onPeerAuthorized };
+module.exports = { syncWithRetry, replaySyncedTxs, tryFastSyncSnapshot, shouldSyncFromPeer, onPeerAuthorized };

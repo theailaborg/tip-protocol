@@ -31,7 +31,7 @@ const SRC = path.resolve(__dirname, "../../src");
 const { initCrypto } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createSnapshotHandler } = require(path.join(SRC, "sync", "snapshot-handler"));
-const { tryFastSyncSnapshot, onPeerAuthorized } = require(path.join(SRC, "consensus", "peer-sync"));
+const { tryFastSyncSnapshot, onPeerAuthorized, shouldSyncFromPeer } = require(path.join(SRC, "consensus", "peer-sync"));
 const { computeStateMerkleRoot } = require(path.join(SRC, "consensus", "state-root"));
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
 
@@ -394,5 +394,195 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // Narwhal still completes sync-mode cycle cleanly.
     expect(narwhal.events[0]).toBe("enter");
     expect(narwhal.events.some(e => Array.isArray(e) && e[0] === "exit")).toBe(true);
+  });
+});
+
+describe("shouldSyncFromPeer (asymmetric pre-flight)", () => {
+  test("self caught up (committed_round equal) → returns false, no sync needed", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 100 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("self ahead of peer → returns false, no sync needed", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 50 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("self behind peer → returns true, sync needed", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 200 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("queryPeerStatus returns null (peer no-response) → true (conservative)", async () => {
+    const queryPeerStatus = async () => null;
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("queryPeerStatus throws → true (conservative, falls through to sync)", async () => {
+    const queryPeerStatus = async () => { throw new Error("rpc timeout"); };
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("no queryPeerStatus dep wired → true (backward compat)", async () => {
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark });
+    expect(result).toBe(true);
+  });
+
+  test("bullshark.lastCommittedRound missing → treats self as 0; any peer ahead triggers sync", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 1 });
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark: {}, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("fresh joiner (self=0) + peer with state → returns true, canonical join case", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 5000 });
+    const bullshark = { lastCommittedRound: () => 0 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("both at round 0 (cold genesis bootstrap) → returns false, neither needs sync", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 0 });
+    const bullshark = { lastCommittedRound: () => 0 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("boundary: self == peer exactly → returns false (no sync)", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 12345 });
+    const bullshark = { lastCommittedRound: () => 12345 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("boundary: self = peer + 1 (ahead by one) → returns false", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 100 });
+    const bullshark = { lastCommittedRound: () => 101 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("boundary: self = peer - 1 (behind by one) → returns true", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 101 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("malformed peer status (committed_round missing) → defaults to 0; self ahead skips sync", async () => {
+    const queryPeerStatus = async () => ({ /* no committed_round */ });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("string-typed committed_round (proto int64 quirk) → coerced via Number()", async () => {
+    const queryPeerStatus = async () => ({ committed_round: "200" });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(true);
+  });
+
+  test("queryPeerStatus passes the correct peerId to the RPC", async () => {
+    let capturedPeerId = null;
+    const queryPeerStatus = async (peerId) => { capturedPeerId = peerId; return { committed_round: 100 }; };
+    const bullshark = { lastCommittedRound: () => 100 };
+    await shouldSyncFromPeer("12D3KooWXYZ", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(capturedPeerId).toBe("12D3KooWXYZ");
+  });
+});
+
+describe("onPeerAuthorized — pre-flight skip", () => {
+  function buildSyncStub() {
+    const calls = [];
+    return {
+      calls,
+      syncFromPeer: async (peerId, opts) => {
+        calls.push({ peerId, opts });
+        return { imported: 0, fromRound: opts?.fromRound || 1, toRound: opts?.fromRound || 1, peerLatestRound: 0 };
+      },
+    };
+  }
+  function buildNarwhalStub() {
+    const events = [];
+    let _state = "ready";
+    return {
+      events,
+      enterSyncMode: () => { events.push("enter"); _state = "syncing"; },
+      exitSyncMode: (r) => { events.push(["exit", r]); _state = "ready"; },
+      markSnapshotInstalled: (r, p) => { events.push(["markSnapshotInstalled", r, p]); _state = "catching_up"; },
+      markCaughtUp: (r) => { events.push(["markCaughtUp", r]); _state = "ready"; },
+      joinState: () => _state,
+      catchUpTarget: () => 0,
+    };
+  }
+
+  test("peer caught up → onPeerAuthorized returns early, no enterSyncMode", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const syncHandler = buildSyncStub();
+    const narwhal = buildNarwhalStub();
+    const bullshark = { lastCommittedRound: () => 100, markOrderedUpTo: jest.fn() };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+    const snapshotHandler = { requestSnapshotFromPeer: jest.fn() };
+    const queryPeerStatus = async () => ({ committed_round: 100 });
+
+    await onPeerAuthorized("peer-123", "TIP_NODE", {
+      syncHandler, snapshotHandler, commitHandler,
+      dag: destDag, narwhal, bullshark, nodeId: "OUR_NODE",
+      queryPeerStatus,
+    });
+
+    expect(narwhal.events).toEqual([]);
+    expect(syncHandler.calls.length).toBe(0);
+    expect(snapshotHandler.requestSnapshotFromPeer).not.toHaveBeenCalled();
+  });
+
+  test("peer ahead → onPeerAuthorized runs full flow (enter sync, snapshot, etc.)", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const syncHandler = buildSyncStub();
+    const narwhal = buildNarwhalStub();
+    const bullshark = { lastCommittedRound: () => 50, markOrderedUpTo: jest.fn(), setConsensusIndex: jest.fn() };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+    const snapshotHandler = { requestSnapshotFromPeer: async () => null };
+    const queryPeerStatus = async () => ({ committed_round: 200 });
+
+    await onPeerAuthorized("peer-123", "TIP_NODE", {
+      syncHandler, snapshotHandler, commitHandler,
+      dag: destDag, narwhal, bullshark, nodeId: "OUR_NODE",
+      queryPeerStatus,
+    });
+
+    expect(narwhal.events[0]).toBe("enter");
+    expect(syncHandler.calls.length).toBe(1);
+  });
+
+  test("queryPeerStatus failure → falls through to legacy unconditional sync (backward safety)", async () => {
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const syncHandler = buildSyncStub();
+    const narwhal = buildNarwhalStub();
+    const bullshark = { lastCommittedRound: () => 100, markOrderedUpTo: jest.fn(), setConsensusIndex: jest.fn() };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+    const snapshotHandler = { requestSnapshotFromPeer: async () => null };
+    const queryPeerStatus = async () => { throw new Error("rpc unreachable"); };
+
+    await onPeerAuthorized("peer-123", "TIP_NODE", {
+      syncHandler, snapshotHandler, commitHandler,
+      dag: destDag, narwhal, bullshark, nodeId: "OUR_NODE",
+      queryPeerStatus,
+    });
+
+    expect(narwhal.events[0]).toBe("enter");
+    expect(syncHandler.calls.length).toBe(1);
   });
 });
