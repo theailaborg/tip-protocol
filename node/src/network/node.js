@@ -69,6 +69,11 @@ const TOPICS = Object.freeze({
   CERTIFICATES: "tip/certificates",
   MEMPOOL: "tip/mempool",
   CONSENSUS: "tip/consensus",
+  // #68 multi-sig committee-rotation coordination — proposer broadcasts
+  // RotationProposal here; previous-committee members broadcast their
+  // RotationSignature votes back on the same topic. Once a node aggregates
+  // ≥ ceil(2n/3) distinct sigs it submits the COMMITTEE_ROTATION tx.
+  ROTATION_COORDINATION: "tip/rotation-coordination",
 });
 
 /**
@@ -158,6 +163,7 @@ async function createNetworkNode(options = {}) {
   pubsub.subscribe(TOPICS.CERTIFICATES);
   pubsub.subscribe(TOPICS.MEMPOOL);
   pubsub.subscribe(TOPICS.CONSENSUS);
+  pubsub.subscribe(TOPICS.ROTATION_COORDINATION);
   log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
   const directPeers = createDirectPeersManager(pubsub, log);
 
@@ -242,6 +248,9 @@ async function createNetworkNode(options = {}) {
           break;
         case TOPICS.CONSENSUS:
           if (_topicHandlers.onConsensus) _topicHandlers.onConsensus(data, peerId);
+          break;
+        case TOPICS.ROTATION_COORDINATION:
+          if (_topicHandlers.onRotationCoordination) _topicHandlers.onRotationCoordination(data, peerId);
           break;
         default:
           log.debug(`Unknown topic message: ${topic}`);

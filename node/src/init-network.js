@@ -77,6 +77,7 @@ async function initNetworkAndConsensus({ dag, scoring, config }) {
       onMempoolTx: (data) => consensus.handlers.onBatch(data),
       onConsensus: (data) => consensus.handlers.onAck(data),
       onCertificate: (data) => consensus.handlers.onCertificate(data),
+      onRotationCoordination: (data, peerId) => consensus.handlers.onRotationCoordination(data, peerId),
     });
 
     // Joiner gating: a fresh node whose own record isn't yet in the DAG

@@ -21,6 +21,7 @@ scrape_configs:
           - "host.docker.internal:4000"
           - "host.docker.internal:4100"
           - "host.docker.internal:4200"
+          - "host.docker.internal:4300"
 
   - job_name: "prometheus"
     static_configs:

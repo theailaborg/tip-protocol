@@ -161,6 +161,43 @@ message RoundAdvance {
   bytes signature = 4;
 }
 
+// ─── #68 Multi-sig committee-rotation coordination ───────────────────────────
+
+/**
+ * RotationProposal — broadcast by the boundary anchor's leader to the
+ * `tip/rotation-coordination` gossip topic. Every node currently in the
+ * previous committee verifies (a) live committee == proposer's view of
+ * previous committee, (b) `new_committee` matches what they would compute
+ * locally from rotation_participation (deterministic per #75), (c) the
+ * proposer's signature is valid. On verification, sign `payload_hash` and
+ * reply with a `RotationSignature`.
+ */
+message RotationProposal {
+  uint64 rotation_number = 1;
+  uint64 effective_round = 2;
+  repeated CommitteeMember new_committee = 3;
+  string payload_hash = 4;          // hex; what every signer signs as `rotation:${payload_hash}:${signer}`
+  string proposer_node_id = 5;
+  bytes proposer_signature = 6;     // sig over `rotation:${payload_hash}:${proposer_node_id}` — both proves identity AND counts as the proposer's vote
+}
+
+/**
+ * RotationSignature — every previous-committee member's vote on a
+ * `RotationProposal`. Aggregator collects ≥ ceil(2n/3) distinct sigs from
+ * the previous committee, then submits the COMMITTEE_ROTATION tx.
+ */
+message RotationSignature {
+  uint64 rotation_number = 1;
+  string payload_hash = 2;
+  string signer_node_id = 3;
+  bytes signature = 4;
+}
+
+message CommitteeMember {
+  string node_id = 1;
+  string public_key = 2;
+}
+
 // ─── Mempool ─────────────────────────────────────────────────────────────────
 
 /**
