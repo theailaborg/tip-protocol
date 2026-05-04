@@ -103,10 +103,19 @@ class KnexAdapter {
     let connection;
     if (config.dbUrl) {
       connection = config.dbUrl;
+    } else if (driver === "oracle" || driver === "oracledb") {
+      const host = config.dbHost || process.env.DB_HOST || "localhost";
+      const port = config.dbPort || Number(process.env.DB_PORT || 1521);
+      const svc  = config.dbName || process.env.DB_NAME || "FREEPDB1";
+      connection = {
+        connectString: `${host}:${port}/${svc}`,
+        user:          config.dbUser     || process.env.DB_USER     || "tip",
+        password:      config.dbPassword || process.env.DB_PASSWORD || "",
+      };
     } else {
       connection = {
         host:     config.dbHost     || process.env.DB_HOST     || "localhost",
-        port:     config.dbPort     || Number(process.env.DB_PORT || (driver === "postgres" ? 5432 : driver === "mssql" || driver === "sqlserver" ? 1433 : driver === "oracle" ? 1521 : 3306)),
+        port:     config.dbPort     || Number(process.env.DB_PORT || (driver === "postgres" ? 5432 : driver === "mssql" || driver === "sqlserver" ? 1433 : 3306)),
         database: config.dbName     || process.env.DB_NAME     || "tip_protocol",
         user:     config.dbUser     || process.env.DB_USER     || "tip",
         password: config.dbPassword || process.env.DB_PASSWORD || "",
@@ -128,6 +137,7 @@ class KnexAdapter {
       },
       acquireConnectionTimeout: 10000,
     });
+    this._isOracleDB = (driver === "oracle" || driver === "oracledb");
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────
@@ -410,12 +420,40 @@ class KnexAdapter {
     fn().catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
 
+  // Oracle doesn't support knex's .onConflict(). Use INSERT + catch ORA-00001 instead.
+  // MERGE INTO … USING DUAL fails for CLOB columns because positional bind vars are
+  // typed as VARCHAR2 (max 4 000 bytes). Knex's own .insert()/.update() handle CLOB
+  // binding correctly, so we use those and handle the duplicate-key error ourselves.
+  _dbInsert(table, pkCols, row, onConflict) {
+    if (!this._isOracleDB) {
+      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+      const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
+      return onConflict === "merge" ? q.merge() : q.ignore();
+    }
+    // Oracle path: INSERT, catch ORA-00001 (unique constraint violated)
+    return this.knex(table).insert(row).catch(async err => {
+      if (!/ORA-00001/.test(err.message)) throw err;
+      if (onConflict === "merge") {
+        const pks   = Array.isArray(pkCols) ? pkCols : [pkCols];
+        const nonPk = Object.keys(row).filter(k => !pks.includes(k));
+        if (nonPk.length > 0) {
+          const updates = {};
+          nonPk.forEach(k => { updates[k] = row[k]; });
+          let q = this.knex(table);
+          pks.forEach(pk => { q = q.where(pk, row[pk]); });
+          return q.update(updates);
+        }
+      }
+      // 'ignore' or no non-PK columns to update: swallow the duplicate
+    });
+  }
+
   // ── Transactions ───────────────────────────────────────────────────────────
 
   saveTx(tx) {
     this.mirror.saveTx(tx);
     const entry = this.mirror._txs.get(tx.tx_id);
-    this._ff(() => this.knex("transactions").insert({
+    const row = {
       tx_id:          tx.tx_id,
       tx_type:        tx.tx_type,
       data:           JSON.stringify(tx.data || {}),
@@ -423,7 +461,8 @@ class KnexAdapter {
       prev:           JSON.stringify(tx.prev || []),
       signature:      tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
-    }).onConflict("tx_id").ignore());
+    };
+    this._ff(() => this._dbInsert("transactions", "tx_id", row, "ignore"));
   }
 
   getTx(id)              { return this.mirror.getTx(id); }
@@ -441,7 +480,7 @@ class KnexAdapter {
 
   saveIdentity(rec) {
     this.mirror.saveIdentity(rec);
-    this._ff(() => this.knex("identities").insert({
+    const row = {
       tip_id:             rec.tip_id,
       region:             rec.region || "US",
       public_key:         rec.public_key,
@@ -454,7 +493,8 @@ class KnexAdapter {
       registered_at:      rec.registered_at,
       creator_name:       rec.creator_name || null,
       tx_id:              rec.tx_id || null,
-    }).onConflict("tip_id").merge());
+    };
+    this._ff(() => this._dbInsert("identities", "tip_id", row, "merge"));
   }
 
   getIdentity(id)      { return this.mirror.getIdentity(id); }
@@ -464,7 +504,7 @@ class KnexAdapter {
 
   saveContent(rec) {
     this.mirror.saveContent(rec);
-    this._ff(() => this.knex("content").insert({
+    const row = {
       tip_ctid:           rec.ctid,
       origin_code:        rec.origin_code,
       content_hash:       rec.content_hash,
@@ -477,7 +517,8 @@ class KnexAdapter {
       registered_at:      rec.registered_at,
       registered_url:     rec.registered_url || null,
       tx_id:              rec.tx_id || null,
-    }).onConflict("tip_ctid").merge());
+    };
+    this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));
   }
 
   getContent(ctid)                      { return this.mirror.getContent(ctid); }
@@ -501,12 +542,8 @@ class KnexAdapter {
 
   setScore(tipId, score, offenseCount, lastUpdatedISO) {
     this.mirror.setScore(tipId, score, offenseCount, lastUpdatedISO);
-    this._ff(() => this.knex("scores").insert({
-      tip_id:        tipId,
-      score,
-      offense_count: offenseCount || 0,
-      last_updated:  lastUpdatedISO,
-    }).onConflict("tip_id").merge());
+    const row = { tip_id: tipId, score, offense_count: offenseCount || 0, last_updated: lastUpdatedISO };
+    this._ff(() => this._dbInsert("scores", "tip_id", row, "merge"));
   }
 
   getScore(id) { return this.mirror.getScore(id); }
@@ -515,7 +552,7 @@ class KnexAdapter {
 
   addDedupHash(hash, createdAt) {
     this.mirror.addDedupHash(hash, createdAt);
-    this._ff(() => this.knex("dedup_registry").insert({ dedup_hash: hash, created_at: createdAt }).onConflict("dedup_hash").ignore());
+    this._ff(() => this._dbInsert("dedup_registry", "dedup_hash", { dedup_hash: hash, created_at: createdAt }, "ignore"));
   }
 
   hasDedupHash(h)  { return this.mirror.hasDedupHash(h); }
@@ -529,7 +566,7 @@ class KnexAdapter {
 
   addRevocation(id, type, ts, txId) {
     this.mirror.addRevocation(id, type, ts, txId);
-    this._ff(() => this.knex("revocations").insert({ tip_id: id, tx_type: type, timestamp: ts, tx_id: txId }).onConflict("tip_id").ignore());
+    this._ff(() => this._dbInsert("revocations", "tip_id", { tip_id: id, tx_type: type, timestamp: ts, tx_id: txId }, "ignore"));
   }
 
   isRevoked(id)            { return this.mirror.isRevoked(id); }
@@ -539,7 +576,7 @@ class KnexAdapter {
 
   saveVP(rec) {
     this.mirror.saveVP(rec);
-    this._ff(() => this.knex("verification_providers").insert({
+    const row = {
       vp_id:             rec.vp_id,
       name:              rec.name,
       jurisdiction:      rec.jurisdiction || "US",
@@ -547,7 +584,8 @@ class KnexAdapter {
       public_key:        rec.public_key || null,
       status:            rec.status || "active",
       registered_at:     rec.registered_at,
-    }).onConflict("vp_id").merge());
+    };
+    this._ff(() => this._dbInsert("verification_providers", "vp_id", row, "merge"));
   }
 
   getVP(id)     { return this.mirror.getVP(id); }
@@ -557,13 +595,14 @@ class KnexAdapter {
 
   saveNode(rec) {
     this.mirror.saveNode(rec);
-    this._ff(() => this.knex("nodes").insert({
+    const row = {
       node_id:       rec.node_id,
       name:          rec.name || null,
       public_key:    rec.public_key,
       status:        rec.status || "active",
       registered_at: rec.registered_at,
-    }).onConflict("node_id").merge());
+    };
+    this._ff(() => this._dbInsert("nodes", "node_id", row, "merge"));
   }
 
   getNode(id)    { return this.mirror.getNode(id); }
@@ -573,7 +612,7 @@ class KnexAdapter {
 
   saveCertificate(cert) {
     this.mirror.saveCertificate(cert);
-    this._ff(() => this.knex("certificates").insert({
+    const row = {
       hash:            cert.hash,
       round:           cert.round,
       author_node_id:  cert.author_node_id,
@@ -582,7 +621,8 @@ class KnexAdapter {
       parent_hashes:   JSON.stringify(cert.parent_hashes || []),
       signature:       cert.signature,
       timestamp:       Number(cert.timestamp || 0),
-    }).onConflict("hash").ignore());
+    };
+    this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
   getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
@@ -605,7 +645,7 @@ class KnexAdapter {
 
   saveCommit(rec) {
     this.mirror.saveCommit(rec);
-    this._ff(() => this.knex("commits").insert({
+    const row = {
       round:             rec.round,
       anchor_cert_hash:  rec.anchor_cert_hash,
       leader_node_id:    rec.leader_node_id,
@@ -620,7 +660,8 @@ class KnexAdapter {
       ack_signed_ats:    JSON.stringify(rec.ack_signed_ats || []),
       cert_timestamp:    Number(rec.cert_timestamp || 0),
       anchor_batch_hash: rec.anchor_batch_hash || null,
-    }).onConflict("round").ignore());
+    };
+    this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
   getCommit(round)             { return this.mirror.getCommit(round); }
@@ -630,7 +671,7 @@ class KnexAdapter {
 
   setConsensusMeta(key, value) {
     this.mirror.setConsensusMeta(key, value);
-    this._ff(() => this.knex("consensus_meta").insert({ key, value: String(value) }).onConflict("key").merge());
+    this._ff(() => this._dbInsert("consensus_meta", "key", { key, value: String(value) }, "merge"));
   }
 
   getConsensusMeta(key)        { return this.mirror.getConsensusMeta(key); }
@@ -642,7 +683,7 @@ class KnexAdapter {
   recordSeenVote(round, author, batchHash) {
     const isNew = this.mirror.recordSeenVote(round, author, batchHash);
     if (isNew) {
-      this._ff(() => this.knex("votes_seen").insert({ round, author, batch_hash: batchHash }).onConflict(["round", "author"]).ignore());
+      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash }, "ignore"));
     }
     return isNew;
   }
@@ -659,11 +700,11 @@ class KnexAdapter {
 
   saveMempoolTx(tx) {
     this.mirror.saveMempoolTx(tx);
-    this._ff(() => this.knex("mempool").insert({
+    this._ff(() => this._dbInsert("mempool", "tx_id", {
       tx_id:          tx.tx_id,
       tx_data:        JSON.stringify(tx),
       subject_tip_id: subjectTipId(tx) || null,
-    }).onConflict("tx_id").ignore());
+    }, "ignore"));
   }
 
   getMempoolTx(txId)            { return this.mirror.getMempoolTx(txId); }
@@ -698,7 +739,7 @@ class KnexAdapter {
       const txData = rec.tx_data == null ? null
         : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
       const subj = rec.tx_data && typeof rec.tx_data === "object" ? subjectTipId(rec.tx_data) : null;
-      this._ff(() => this.knex("tx_rejections").insert({
+      this._ff(() => this._dbInsert("tx_rejections", "tx_id", {
         tx_id:             rec.tx_id,
         reason:            rec.reason,
         reason_detail:     rec.reason_detail || null,
@@ -709,7 +750,7 @@ class KnexAdapter {
         origin_node_id:    rec.origin_node_id || null,
         tx_data:           txData,
         subject_tip_id:    subj,
-      }).onConflict("tx_id").ignore());
+      }, "ignore"));
     }
     return inserted;
   }
