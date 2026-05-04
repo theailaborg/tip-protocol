@@ -87,6 +87,7 @@ data.bak/
 # Multi-node env files
 node-2.env
 node-3.env
+node-*.env
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 logs/

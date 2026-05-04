@@ -75,6 +75,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // After sync, SyncResponse.latestRound gives the authoritative peer round,
   // so we transition "syncing" → "ready" directly and resume ticking.
   let _joinState = "ready";
+  // #78: wall-clock when we entered _joinState=syncing. Reset to 0 on
+  // exitSyncMode. halt-status reads this to flag a node as `stuck_syncing`
+  // when sync attempts have been failing for > 3× ROUND_TIMEOUT_MS — the
+  // observability counterpart of #66's exit-sync watchdog. Without this,
+  // a zombie node (sync attempts failing in a loop) silently appears OK
+  // in Grafana while actually being the cause of a federation halt.
+  let _syncEnteredAt = 0;
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
   let _nextRoundTimer = null;                       // inter-round scheduler
@@ -934,6 +941,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     /** Enter sync mode — suppress all waking during sync */
     enterSyncMode() {
       _joinState = "syncing";
+      // #78: stamp wall-clock so halt-status can detect a sync that's
+      // dragging on (sync attempts failing in a loop, peer offline, etc.).
+      // Stay sticky if already syncing — don't reset the clock on repeat
+      // entries, otherwise the threshold gets reset every retry.
+      if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
       log.notice("Entering sync mode — suppressing round production");
     },
     /**
@@ -955,6 +967,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
       }
       _joinState = "ready";
+      _syncEnteredAt = 0;  // #78: clear so halt-status stops flagging stuck_syncing
       log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
       if (_running) _scheduleNextRound(0);
     },
@@ -998,6 +1011,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
       lastRoundAdvanceAt: _lastRoundAdvanceAt,
+      syncEnteredAt: _syncEnteredAt,  // #78: 0 when not syncing
       metrics: { ..._metrics },
     }),
   };

@@ -49,9 +49,9 @@
       "title": "Peers connected",
       "gridPos": {
         "x": 0,
-        "y": 14,
-        "w": 8,
-        "h": 4
+        "y": 16,
+        "w": 12,
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -76,7 +76,11 @@
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "area",
-        "orientation": "horizontal"
+        "orientation": "horizontal",
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -103,17 +107,17 @@
           "min": 0
         }
       },
-      "description": "**Peers connected** — Number of TIP-handshake-authorized peers this node currently sees.\n\n**Healthy**: equals committee_size − 1 (this node sees all other committee members). For a 2-node federation, healthy = 1. For 3-node, healthy = 2.\n\n**Yellow (1)**: partial mesh — at least one peer reachable but not all.\n\n**Red (0)**: node is isolated. Submissions to this node won't propagate. Check: peer-discovery (#38), DirectPeers (#37), libp2p connectivity, firewall."
+      "description": "**Peers connected** \u2014 Number of TIP-handshake-authorized peers this node currently sees.\n\n**Healthy**: equals committee_size \u2212 1 (this node sees all other committee members). For a 2-node federation, healthy = 1. For 3-node, healthy = 2.\n\n**Yellow (1)**: partial mesh \u2014 at least one peer reachable but not all.\n\n**Red (0)**: node is isolated. Submissions to this node won't propagate. Check: peer-discovery (#38), DirectPeers (#37), libp2p connectivity, firewall."
     },
     {
       "id": 2,
       "type": "stat",
       "title": "Halt status",
       "gridPos": {
-        "x": 8,
-        "y": 14,
-        "w": 8,
-        "h": 4
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -137,7 +141,11 @@
         "textMode": "value_and_name",
         "colorMode": "background",
         "graphMode": "none",
-        "orientation": "horizontal"
+        "orientation": "horizontal",
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -174,7 +182,7 @@
           }
         }
       },
-      "description": "**Halt status** — 0 = consensus advancing normally; 1 = halted (no new commits for > 3× round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational — bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
+      "description": "**Halt status** \u2014 0 = consensus advancing normally; 1 = halted (no new commits for > 3\u00d7 round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational \u2014 bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
     },
     {
       "id": 3,
@@ -182,9 +190,9 @@
       "title": "Consensus divergence (byzantine-fork canary)",
       "gridPos": {
         "x": 16,
-        "y": 14,
+        "y": 3,
         "w": 8,
-        "h": 4
+        "h": 3
       },
       "datasource": {
         "type": "prometheus",
@@ -207,7 +215,11 @@
         },
         "textMode": "value",
         "colorMode": "background",
-        "graphMode": "none"
+        "graphMode": "none",
+        "text": {
+          "titleSize": 14,
+          "valueSize": 26
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -229,18 +241,74 @@
           }
         }
       },
-      "description": "**Consensus divergence** — Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event — page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
+      "description": "**Consensus divergence** \u2014 Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event \u2014 page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Consensus index \u2014 federation max",
+      "description": "Federation-wide max \u2014 what all healthy nodes converge to. Per-node breakdown is in the panel to the right.",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 8,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_bullshark_consensus_index{node=~\"$node\"} and on(instance) up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "max"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "text": {
+          "titleSize": 14,
+          "valueSize": 26
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
     },
     {
       "id": 14,
-      "type": "stat",
-      "title": "Consensus index (anchor commits since genesis)",
-      "description": "**Consensus index** — Network-wide count of anchor commits. Persisted via `consensus_meta` (#44) so it survives restart on idle networks; joining nodes adopt the cluster's value at snapshot install time via `peer_consensus_index` (Cosmos/Sui pattern), so all caught-up nodes converge to the same value.\n\n**Healthy**: all online nodes report the same value (modulo 1-2 of in-flight drift), monotonically increasing.\n\n**Trouble**: a node's value frozen for > 3 minutes = consensus halted on that node. Sustained large absolute-value drift between nodes = a joiner didn't pick up snapshot-based convergence; check sync logs.\n\nFor commit rate, see the next panel (Consensus advance rate) — it's sourced from a per-process counter that's immune to snapshot-adoption jumps. Alert: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
+      "type": "bargauge",
+      "title": "Consensus index (anchor commits since genesis) \u2014 per node",
+      "description": "**Consensus index** \u2014 Network-wide count of anchor commits. Persisted via `consensus_meta` (#44) so it survives restart on idle networks; joining nodes adopt the cluster's value at snapshot install time via `peer_consensus_index` (Cosmos/Sui pattern), so all caught-up nodes converge to the same value.\n\n**Healthy**: all online nodes report the same value (modulo 1-2 of in-flight drift), monotonically increasing.\n\n**Trouble**: a node's value frozen for > 3 minutes = consensus halted on that node. Sustained large absolute-value drift between nodes = a joiner didn't pick up snapshot-based convergence; check sync logs.\n\nFor commit rate, see the next panel (Consensus advance rate) \u2014 it's sourced from a per-process counter that's immune to snapshot-adoption jumps. Alert: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 28,
         "w": 12,
-        "h": 4
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -254,6 +322,9 @@
         }
       ],
       "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal",
+        "showUnfilled": true,
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -261,29 +332,101 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area"
+        "text": {
+          "titleSize": 13,
+          "valueSize": 16
+        },
+        "valueMode": "color",
+        "namePlacement": "left",
+        "minVizWidth": 0,
+        "minVizHeight": 22,
+        "sizing": "auto"
       },
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short"
+          "unit": "short",
+          "max": null,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Anchor rate \u2014 federation max (anchors/min)",
+      "description": "Federation-wide max \u2014 what all healthy nodes converge to. Per-node breakdown is in the panel to the right.",
+      "gridPos": {
+        "x": 8,
+        "y": 3,
+        "w": 8,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max((rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[5m]) * 60) and on(instance) up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "max"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "area",
+        "text": {
+          "titleSize": 14,
+          "valueSize": 26
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         }
       }
     },
     {
       "id": 15,
-      "type": "stat",
-      "title": "Consensus advance rate (anchors/min)",
-      "description": "**Consensus advance rate (anchors/min)** — Rate at which Bullshark commits anchor certs, per minute, over a 5-minute window. Sourced from `tip_bullshark_anchors_committed_total` — a per-process counter that ticks only on real local anchor commits.\n\n**Why not `rate(consensus_index)`?** `consensus_index` jumps when a joining node adopts the peer's network-wide value via `peer_consensus_index` (snapshot fast-sync). That one-step jump produces a spurious rate spike for ~5 min after each new joiner. The per-process anchor counter is immune to those jumps.\n\n**Healthy**: ~25-30 anchors/min on every node, all within ~1/min of each other (Bullshark commits at ~2s cadence).\n\n**Trouble**:\n- Any node < 1/min for 3+ min = consensus halted on that node\n- One node consistently lower than others = lagging, AE should auto-recover\n- All nodes drop together = federation-wide halt (check halt-status panel)\n\nAlertmanager: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
+      "type": "bargauge",
+      "title": "Consensus advance rate (anchors/min) \u2014 per node",
+      "description": "**Consensus advance rate (anchors/min)** \u2014 Rate at which Bullshark commits anchor certs, per minute, over a 5-minute window. Sourced from `tip_bullshark_anchors_committed_total` \u2014 a per-process counter that ticks only on real local anchor commits.\n\n**Why not `rate(consensus_index)`?** `consensus_index` jumps when a joining node adopts the peer's network-wide value via `peer_consensus_index` (snapshot fast-sync). That one-step jump produces a spurious rate spike for ~5 min after each new joiner. The per-process anchor counter is immune to those jumps.\n\n**Healthy**: ~25-30 anchors/min on every node, all within ~1/min of each other (Bullshark commits at ~2s cadence).\n\n**Trouble**:\n- Any node < 1/min for 3+ min = consensus halted on that node\n- One node consistently lower than others = lagging, AE should auto-recover\n- All nodes drop together = federation-wide halt (check halt-status panel)\n\nAlertmanager: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
       "gridPos": {
         "x": 12,
-        "y": 22,
+        "y": 28,
         "w": 12,
-        "h": 4
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -297,6 +440,9 @@
         }
       ],
       "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal",
+        "showUnfilled": true,
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -304,26 +450,29 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area"
+        "text": {
+          "titleSize": 13,
+          "valueSize": 16
+        },
+        "valueMode": "color",
+        "namePlacement": "left",
+        "minVizWidth": 0,
+        "minVizHeight": 22,
+        "sizing": "auto"
       },
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
           },
           "unit": "short",
+          "max": 35,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 1
+                "value": null
               }
             ]
           }
@@ -336,9 +485,9 @@
       "title": "Active committee size (per node)",
       "gridPos": {
         "x": 0,
-        "y": 18,
+        "y": 22,
         "w": 8,
-        "h": 4
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -362,7 +511,11 @@
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "area",
-        "orientation": "horizontal"
+        "orientation": "horizontal",
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -388,7 +541,7 @@
           }
         }
       },
-      "description": "**Active committee size** — Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active ∩ producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator — quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
+      "description": "**Active committee size** \u2014 Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active \u2229 producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator \u2014 quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
     },
     {
       "id": 11,
@@ -396,9 +549,9 @@
       "title": "Mempool depth",
       "gridPos": {
         "x": 8,
-        "y": 18,
+        "y": 22,
         "w": 8,
-        "h": 4
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -422,9 +575,13 @@
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "area",
-        "orientation": "horizontal"
+        "orientation": "horizontal",
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        }
       },
-      "description": "**Mempool depth** — Number of pending transactions waiting to be committed via Bullshark.\n\n**Healthy on idle network**: 0 (no pending submissions).\n\n**Healthy on active network**: briefly > 0, drains within ~2s as anchors commit.\n\n**Trouble**: continuously growing — txs are being submitted faster than they're being committed. Could indicate a halt, slow-network committee, or a DOS pattern."
+      "description": "**Mempool depth** \u2014 Number of pending transactions waiting to be committed via Bullshark.\n\n**Healthy on idle network**: 0 (no pending submissions).\n\n**Healthy on active network**: briefly > 0, drains within ~2s as anchors commit.\n\n**Trouble**: continuously growing \u2014 txs are being submitted faster than they're being committed. Could indicate a halt, slow-network committee, or a DOS pattern."
     },
     {
       "id": 12,
@@ -432,9 +589,9 @@
       "title": "Last committed round",
       "gridPos": {
         "x": 16,
-        "y": 18,
+        "y": 22,
         "w": 8,
-        "h": 4
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -458,9 +615,13 @@
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "area",
-        "orientation": "horizontal"
+        "orientation": "horizontal",
+        "text": {
+          "titleSize": 13,
+          "valueSize": 18
+        }
       },
-      "description": "**Last committed round** — The highest round at which Bullshark has finalized an anchor commit. Tracked in-memory by Bullshark, ticks every successful anchor (~2s on healthy network).\n\n**Healthy**: continuously increasing on all nodes, with at most 1-2 round drift between nodes (Bullshark requires the next wave's votes before finalizing the previous wave's leader).\n\n**Trouble**: stuck for > 6s on any node = halt; large drift between nodes = sync issue."
+      "description": "**Last committed round** \u2014 The highest round at which Bullshark has finalized an anchor commit. Tracked in-memory by Bullshark, ticks every successful anchor (~2s on healthy network).\n\n**Healthy**: continuously increasing on all nodes, with at most 1-2 round drift between nodes (Bullshark requires the next wave's votes before finalizing the previous wave's leader).\n\n**Trouble**: stuck for > 6s on any node = halt; large drift between nodes = sync issue."
     },
     {
       "id": 20,
@@ -468,7 +629,7 @@
       "title": "Narwhal current round",
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 34,
         "w": 12,
         "h": 8
       },
@@ -506,7 +667,7 @@
           ]
         }
       },
-      "description": "**Narwhal current round** — The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
+      "description": "**Narwhal current round** \u2014 The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
     },
     {
       "id": 21,
@@ -514,7 +675,7 @@
       "title": "Bullshark commits / 5s",
       "gridPos": {
         "x": 12,
-        "y": 26,
+        "y": 34,
         "w": 12,
         "h": 8
       },
@@ -554,7 +715,7 @@
           ]
         }
       },
-      "description": "**Bullshark commits / 5s** — Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic — consensus is failing to make progress (check halt status + peer connectivity)."
+      "description": "**Bullshark commits / 5s** \u2014 Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic \u2014 consensus is failing to make progress (check halt status + peer connectivity)."
     },
     {
       "id": 30,
@@ -562,7 +723,7 @@
       "title": "Mempool size over time",
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 42,
         "w": 12,
         "h": 8
       },
@@ -601,7 +762,7 @@
           ]
         }
       },
-      "description": "**Mempool size over time** — Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line — submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
+      "description": "**Mempool size over time** \u2014 Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line \u2014 submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
     },
     {
       "id": 31,
@@ -609,7 +770,7 @@
       "title": "Txs committed (cumulative)",
       "gridPos": {
         "x": 12,
-        "y": 34,
+        "y": 42,
         "w": 12,
         "h": 8
       },
@@ -647,7 +808,7 @@
           ]
         }
       },
-      "description": "**Txs committed (cumulative)** — Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network."
+      "description": "**Txs committed (cumulative)** \u2014 Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network."
     },
     {
       "id": 40,
@@ -655,7 +816,7 @@
       "title": "Anti-entropy: peers queried / gaps pulled",
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 50,
         "w": 12,
         "h": 8
       },
@@ -699,7 +860,7 @@
           ]
         }
       },
-      "description": "**Anti-entropy: peers queried / gaps pulled** — Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing certs (or via #46 falling back to snapshot if the gap exceeds gc_depth).\n\n**Healthy**: peers_queried ticks at the AE cadence; gaps_pulled stays at 0 (push path delivers everything live).\n\n**Trouble**: gaps_pulled > 0 sustained = push-path reliability issue (#26, #27); RPC failures = peer unreachable."
+      "description": "**Anti-entropy: peers queried / gaps pulled** \u2014 Anti-entropy is the pull-side safety net (#28) that runs every 4s, querying every authorized peer's sync-status and pulling missing certs (or via #46 falling back to snapshot if the gap exceeds gc_depth).\n\n**Healthy**: peers_queried ticks at the AE cadence; gaps_pulled stays at 0 (push path delivers everything live).\n\n**Trouble**: gaps_pulled > 0 sustained = push-path reliability issue (#26, #27); RPC failures = peer unreachable."
     },
     {
       "id": 41,
@@ -707,7 +868,7 @@
       "title": "Cert GC (rounds pruned)",
       "gridPos": {
         "x": 12,
-        "y": 42,
+        "y": 50,
         "w": 12,
         "h": 8
       },
@@ -746,16 +907,16 @@
           ]
         }
       },
-      "description": "**Cert GC (rounds pruned)** — Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period)."
+      "description": "**Cert GC (rounds pruned)** \u2014 Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period)."
     },
     {
       "id": 50,
       "type": "table",
-      "title": "Federation status — registered nodes, online state, connections",
-      "description": "One row per TIP node in the DAG registry. **Status** = registered status from the DAG. **Online** = whether the node is currently emitting metrics. **Connected to** = comma-separated names of peers it currently sees (only populated for online nodes; falls back to short TIP ID for peers whose registry row hasn't replicated yet). Empty cells for offline nodes.",
+      "title": "Federation status \u2014 registered nodes, online state, sync state, connections",
+      "description": "One row per TIP node in the DAG registry. **Status** = registered status from the DAG. **Online** = whether the node is currently emitting metrics. **Sync state** = `ready` (advancing normally) or `syncing` (catching up; suppresses round production). **Sync duration** = seconds since the node entered sync mode (\u2014 when ready). Color thresholds: blue < 60s (normal catch-up), orange 60\u2013180s (slow), red > 180s (likely stuck \u2014 see #66). **Connected to** = comma-separated names of peers it currently sees. Empty cells for offline nodes. Pairs with the dedicated halt-status panel below \u2014 sync info shows the *cause* of a halt (stuck node), halt-status shows the *effect* (quorum unreachable).",
       "gridPos": {
         "x": 0,
-        "y": 3,
+        "y": 6,
         "w": 24,
         "h": 10
       },
@@ -779,6 +940,18 @@
         {
           "refId": "Peers",
           "expr": "group by (node, peers) (last_over_time(tip_network_peer_list[10s]))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "SyncState",
+          "expr": "max by (node) (tip_narwhal_syncing)",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "SyncSecs",
+          "expr": "max by (node) (tip_narwhal_sync_duration_seconds)",
           "format": "table",
           "instant": true
         }
@@ -839,13 +1012,17 @@
               "name": 1,
               "status": 2,
               "Value #Online": 3,
-              "peers": 4
+              "Value #SyncState": 4,
+              "Value #SyncSecs": 5,
+              "peers": 6
             },
             "renameByName": {
               "node": "Node",
               "name": "Name",
               "status": "Status",
               "Value #Online": "Online",
+              "Value #SyncState": "Sync state",
+              "Value #SyncSecs": "Sync duration",
               "peers": "Connected to"
             }
           }
@@ -952,6 +1129,120 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Sync state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": -0.5,
+                      "to": 0.5,
+                      "result": {
+                        "text": "ready",
+                        "color": "green",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.5,
+                      "to": 1.5,
+                      "result": {
+                        "text": "syncing",
+                        "color": "blue",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "\u2014",
+                        "color": "text",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sync duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "\u2014",
+                        "color": "text"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 60
+                    },
+                    {
+                      "color": "red",
+                      "value": 180
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Connected to"
             },
             "properties": [
@@ -962,7 +1253,7 @@
                     "type": "value",
                     "options": {
                       "": {
-                        "text": "(none — isolated)",
+                        "text": "(none \u2014 isolated)",
                         "color": "orange"
                       }
                     }
@@ -982,7 +1273,7 @@
                     "options": {
                       "match": "empty",
                       "result": {
-                        "text": "(none — isolated)",
+                        "text": "(none \u2014 isolated)",
                         "color": "orange"
                       }
                     }
@@ -1065,7 +1356,7 @@
           ]
         }
       },
-      "description": "**Registered nodes** — Total count of nodes registered in the DAG `nodes` table, regardless of their current online state.\n\n**Healthy**: matches the operator's expected federation size. Equals the sum of online + offline registered nodes (see Federation Status table below).\n\n**Trouble**: drift from expected count = unauthorized registration or missed deregistration."
+      "description": "**Registered nodes** \u2014 Total count of nodes registered in the DAG `nodes` table, regardless of their current online state.\n\n**Healthy**: matches the operator's expected federation size. Equals the sum of online + offline registered nodes (see Federation Status table below).\n\n**Trouble**: drift from expected count = unauthorized registration or missed deregistration."
     },
     {
       "id": 91,
@@ -1123,7 +1414,7 @@
           }
         }
       },
-      "description": "**Online (scrapeable)** — Count of nodes currently emitting metrics — `up{job=\"tip-federation\"} == 1`. Reflects whether Prometheus can reach each node's `/metrics` endpoint, NOT whether they're healthy at the consensus layer.\n\n**Healthy**: equals registered nodes (all online).\n\n**Trouble**: < registered means at least one node is unreachable. Cross-check with the Federation Status table to identify which."
+      "description": "**Online (scrapeable)** \u2014 Count of nodes currently emitting metrics \u2014 `up{job=\"tip-federation\"} == 1`. Reflects whether Prometheus can reach each node's `/metrics` endpoint, NOT whether they're healthy at the consensus layer.\n\n**Healthy**: equals registered nodes (all online).\n\n**Trouble**: < registered means at least one node is unreachable. Cross-check with the Federation Status table to identify which."
     },
     {
       "id": 92,
@@ -1173,7 +1464,7 @@
           }
         }
       },
-      "description": "**Quorum threshold** — The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
+      "description": "**Quorum threshold** \u2014 The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
     },
     {
       "id": 93,
@@ -1231,16 +1522,16 @@
           }
         }
       },
-      "description": "**Active committee (max)** — Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG → split-brain on quorum denominator. Investigate immediately."
+      "description": "**Active committee (max)** \u2014 Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG \u2192 split-brain on quorum denominator. Investigate immediately."
     },
     {
       "id": 100,
       "type": "stat",
       "title": "Node uptime",
-      "description": "**Node uptime** — Seconds since this node's process started (`tip_process_uptime_seconds`). Resets on process restart.\n\n**Healthy**: continuously increasing; matches operator's expectation of when the node was last brought up. Rolling restarts during deploys are expected.\n\n**Trouble**: unexpected reset = node crashed or was killed (OOM, panic, segfault). Cross-check with crash logs and the memory panel below — OOM is the most common cause of unexpected restarts.",
+      "description": "**Node uptime** \u2014 Seconds since this node's process started (`tip_process_uptime_seconds`). Resets on process restart.\n\n**Healthy**: continuously increasing; matches operator's expectation of when the node was last brought up. Rolling restarts during deploys are expected.\n\n**Trouble**: unexpected reset = node crashed or was killed (OOM, panic, segfault). Cross-check with crash logs and the memory panel below \u2014 OOM is the most common cause of unexpected restarts.",
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 58,
         "w": 12,
         "h": 4
       },
@@ -1281,10 +1572,10 @@
       "id": 101,
       "type": "stat",
       "title": "Process memory (RSS)",
-      "description": "**Process memory (RSS)** — Resident Set Size of each node's Node.js process (`tip_process_memory_rss_bytes`). Includes V8 heap, libp2p buffers, SQLite page cache, and native modules.\n\n**Healthy**: stable or slowly growing; should plateau in the hundreds of MB on a healthy node. Brief spikes during snapshot install are expected.\n\n**Trouble**: unbounded growth = memory leak. Likely candidates: cert GC misconfigured (`TIP_GC_DISABLED`), mempool evictor stuck, libp2p pubsub buffer not draining, or the ordered-cert cache exceeding `ORDERED_HASH_CACHE_SIZE`. RSS approaching system memory triggers the OOM killer — cross-check with the uptime panel.",
+      "description": "**Process memory (RSS)** \u2014 Resident Set Size of each node's Node.js process (`tip_process_memory_rss_bytes`). Includes V8 heap, libp2p buffers, SQLite page cache, and native modules.\n\n**Healthy**: stable or slowly growing; should plateau in the hundreds of MB on a healthy node. Brief spikes during snapshot install are expected.\n\n**Trouble**: unbounded growth = memory leak. Likely candidates: cert GC misconfigured (`TIP_GC_DISABLED`), mempool evictor stuck, libp2p pubsub buffer not draining, or the ordered-cert cache exceeding `ORDERED_HASH_CACHE_SIZE`. RSS approaching system memory triggers the OOM killer \u2014 cross-check with the uptime panel.",
       "gridPos": {
         "x": 12,
-        "y": 50,
+        "y": 58,
         "w": 12,
         "h": 4
       },
@@ -1325,10 +1616,10 @@
       "id": 102,
       "type": "timeseries",
       "title": "Mempool throughput (submit / drain rate)",
-      "description": "**Mempool throughput** — Cumulative-counter rate of txs entering and leaving the mempool, per second.\n\n- **received**: `rate(tip_mempool_received_total[1m])` — submit rate (txs accepted into the mempool)\n- **drained**: `rate(tip_mempool_drained_total[1m])` — commit rate (txs pulled into Narwhal batches)\n\n**Healthy**: drained tracks received closely on a busy network. On idle, both stay flat at 0.\n\n**Trouble**:\n- received > drained sustained = consensus can't keep up; mempool grows unbounded (see Mempool size over time)\n- received > 0 with drained = 0 = halt-gate is engaged or batches aren't being pulled (#26/#27)\n- drained > received = catching up on backlog (transient, healthy)\n\nThese counters fix the sampling blind spot of the gauge: gauge can return to 0 between scrapes; counters never miss transient flow.",
+      "description": "**Mempool throughput** \u2014 Cumulative-counter rate of txs entering and leaving the mempool, per second.\n\n- **received**: `rate(tip_mempool_received_total[1m])` \u2014 submit rate (txs accepted into the mempool)\n- **drained**: `rate(tip_mempool_drained_total[1m])` \u2014 commit rate (txs pulled into Narwhal batches)\n\n**Healthy**: drained tracks received closely on a busy network. On idle, both stay flat at 0.\n\n**Trouble**:\n- received > drained sustained = consensus can't keep up; mempool grows unbounded (see Mempool size over time)\n- received > 0 with drained = 0 = halt-gate is engaged or batches aren't being pulled (#26/#27)\n- drained > received = catching up on backlog (transient, healthy)\n\nThese counters fix the sampling blind spot of the gauge: gauge can return to 0 between scrapes; counters never miss transient flow.",
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 62,
         "w": 24,
         "h": 8
       },
