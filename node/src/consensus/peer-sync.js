@@ -245,16 +245,21 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
       bullshark.markOrderedUpTo(result.toRound);
     }
 
-    // Transition back to ready using the peer's authoritative latest round.
-    // SyncResponse.latestRound is always present — use it to set _currentRound
-    // so we start producing at the same round the cluster is on (or one after).
-    // Falls back to DAG-derived round if peer didn't report one; falls back
-    // further to the snapshot's round if even that's 0.
-    const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
-    narwhal.exitSyncMode(targetRound);
-
-    // Committee is derived from DAG state — peer's certs (and any nodes
-    // installed via snapshot) are already reflected. No local mutation needed.
+    // Promotion to ready is owned by the catch-up flow now: the snapshot
+    // install fired narwhal.markSnapshotInstalled (syncing → catching_up),
+    // cert-sync above filled the tail, and the next anti-entropy tick
+    // confirms our state_merkle_root matches an authorized peer's root
+    // before calling narwhal.markCaughtUp (catching_up → ready). Peers
+    // that never went through snapshot install (already ready, or failed
+    // sync entirely) keep their existing state — no transition fires.
+    //
+    // Fallback: if narwhal exposes the FSM accessor and we're still in
+    // syncing here (cert-only path with no snapshot install), promote
+    // directly to ready since this codepath used to call exitSyncMode.
+    if (typeof narwhal.joinState === "function" && narwhal.joinState() === "syncing") {
+      const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
+      narwhal.exitSyncMode(targetRound);
+    }
   } catch (err) {
     log.warn(`Sync from peer ${peerId.slice(0, 12)} failed: ${err.message}`);
   }

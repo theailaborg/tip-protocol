@@ -954,11 +954,20 @@ describe("start/stop", () => {
 //   - On snapshot failure: leave node alone. Don't false-ready-claim, don't
 //     loop. Next AE cycle (4s later) retries.
 
-function fakeNarwhal() {
-  const calls = { enter: 0, exit: [] };
+function fakeNarwhal({ joinState = "ready", catchUpTarget = 0 } = {}) {
+  const calls = { enter: 0, exit: [], markSnapshotInstalled: [], markCaughtUp: [] };
+  let _state = joinState;
+  let _target = catchUpTarget;
   return {
-    enterSyncMode: () => { calls.enter++; },
-    exitSyncMode: (round) => { calls.exit.push(round); },
+    enterSyncMode: () => { calls.enter++; _state = "syncing"; },
+    exitSyncMode: (round) => { calls.exit.push(round); _state = "ready"; _target = 0; },
+    markSnapshotInstalled: (round, peerCommitted) => {
+      calls.markSnapshotInstalled.push({ round, peerCommitted });
+      _state = "catching_up"; _target = peerCommitted || round;
+    },
+    markCaughtUp: (round) => { calls.markCaughtUp.push(round); _state = "ready"; _target = 0; },
+    joinState: () => _state,
+    catchUpTarget: () => _target,
     _calls: calls,
   };
 }
@@ -974,6 +983,143 @@ function fakeSnapshotHandler({ snapImpl } = {}) {
     _calls: calls,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// catching_up → ready promotion via markCaughtUp.
+//
+// This is the second half of the tri-state contract: after snapshot-handler
+// fires markSnapshotInstalled (syncing → catching_up), AE drives the final
+// promotion to ready when an authorized peer confirms our state_merkle_root
+// at our current committed_round AND we've reached the snapshot's recorded
+// peer head (catchUpTarget). Without this gate the joiner could "go ready"
+// with a half-closed cert tail and produce certs against unreachable
+// parents — same fingerprint as the round-2477→2928 zombie state.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("checkAndReconcile catching_up → ready promotion", () => {
+  test("catching_up + peer agrees on root + tail closed → fires markCaughtUp", async () => {
+    const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: 100 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "abc" }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "abc" }),
+      selfState({ committed_round: 100, state_merkle_root: "abc" })
+    );
+
+    expect(result).toBe("equal");
+    expect(narwhal._calls.markCaughtUp).toHaveLength(1);
+    expect(narwhal._calls.markCaughtUp[0]).toBe(100);
+    expect(narwhal.joinState()).toBe("ready");
+  });
+
+  test("catching_up + roots match but tail NOT yet closed → does NOT fire markCaughtUp", async () => {
+    const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: 200 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "abc" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "abc" }),
+      selfState({ committed_round: 100, state_merkle_root: "abc" })
+    );
+
+    expect(narwhal._calls.markCaughtUp).toHaveLength(0);
+    expect(narwhal.joinState()).toBe("catching_up");
+  });
+
+  test("catching_up + roots DIFFER → does NOT fire markCaughtUp (divergence path)", async () => {
+    const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: 100 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaa" }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "bbb" }),
+      selfState({ committed_round: 100, state_merkle_root: "aaa" })
+    );
+
+    expect(result).toBe("divergent");
+    expect(narwhal._calls.markCaughtUp).toHaveLength(0);
+    expect(narwhal.joinState()).toBe("catching_up");
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(1);
+  });
+
+  test("ready state ignores promotion path (no-op when already ready)", async () => {
+    const narwhal = fakeNarwhal({ joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "abc" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "abc" }),
+      selfState({ committed_round: 100, state_merkle_root: "abc" })
+    );
+
+    expect(narwhal._calls.markCaughtUp).toHaveLength(0);
+  });
+
+  test("syncing state + peer agrees on root + round → exits via override (no install needed)", async () => {
+    // Recovery path: enterSyncMode fired unnecessarily (peer-auth churn,
+    // already-caught-up joiner). When AE confirms peer agreement, the
+    // override exitSyncMode unblocks production directly. Without this
+    // branch a node sits in syncing until syncWithRetry's 60-90s budget
+    // exhausts and even then re-enters on the next reconnect.
+    const narwhal = fakeNarwhal({ joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "abc" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "abc" }),
+      selfState({ committed_round: 100, state_merkle_root: "abc" })
+    );
+
+    expect(narwhal._calls.markCaughtUp).toHaveLength(0);   // not the catching_up path
+    expect(narwhal._calls.exit).toEqual([100]);            // override fired with peer's round
+    expect(narwhal.joinState()).toBe("ready");
+  });
+
+  test("syncing state + roots DIFFER → does NOT exit (divergence path)", async () => {
+    const narwhal = fakeNarwhal({ joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, state_merkle_root: "aaa" }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 100, state_merkle_root: "bbb" }),
+      selfState({ committed_round: 100, state_merkle_root: "aaa" })
+    );
+
+    expect(result).toBe("divergent");
+    expect(narwhal._calls.exit).toHaveLength(0);
+    expect(narwhal.joinState()).toBe("syncing");
+  });
+});
 
 describe("#46 anti-entropy snapshot fallback", () => {
   test("snapshot_required → invokes requestSnapshotFromPeer with earliestAvailableRound", async () => {
@@ -997,10 +1143,12 @@ describe("#46 anti-entropy snapshot fallback", () => {
     expect(snap._calls[0].opts.minRound).toBe(4500);
   });
 
-  test("snapshot install enters sync mode BEFORE install and exits AFTER with snapshot's round", async () => {
-    // Track call order to verify enterSyncMode fires first, then install,
-    // then exitSyncMode. Required so consensus doesn't commit at stale
-    // rounds while the DAG is being atomically rewritten.
+  test("snapshot install enters sync mode BEFORE install; promotion to ready is owned by snapshot-handler / catch-up flow, not AE", async () => {
+    // AE's responsibility on success ends at "trigger the install." The
+    // snapshot-handler's success path fires narwhal.markSnapshotInstalled
+    // (syncing → catching_up); a later AE tick promotes to ready via
+    // markCaughtUp once state-roots agree. AE must NOT call exitSyncMode
+    // on success — that would bypass the catch-up gate.
     const order = [];
     const sync = fakeSyncHandler({
       syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
@@ -1014,6 +1162,8 @@ describe("#46 anti-entropy snapshot fallback", () => {
     const narwhal = {
       enterSyncMode: () => order.push("enterSyncMode"),
       exitSyncMode: (round) => order.push(`exitSyncMode(${round})`),
+      markSnapshotInstalled: (round) => order.push(`markSnapshotInstalled(${round})`),
+      markCaughtUp: (round) => order.push(`markCaughtUp(${round})`),
     };
     const ae = createAntiEntropy({
       network: fakeNetwork(), syncHandler: sync, snapshotHandler: snap, narwhal,
@@ -1024,7 +1174,10 @@ describe("#46 anti-entropy snapshot fallback", () => {
 
     await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
 
-    expect(order).toEqual(["enterSyncMode", "install", "exitSyncMode(4900)"]);
+    // AE no longer calls exitSyncMode on success. The mock snapshot doesn't
+    // fire markSnapshotInstalled (that's the real handler's job); so we
+    // simply assert AE got as far as kicking off the install.
+    expect(order).toEqual(["enterSyncMode", "install"]);
   });
 
   test("snapshot install also fails → no false-ready, exits sync mode at self's pre-install round", async () => {

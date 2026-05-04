@@ -205,7 +205,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // uses this to advance its own committed_round counter past the
   // snapshot anchor when the network's been idle, so anti-entropy
   // doesn't false-positive a "behind" gap and loop.
-  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark });
+  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark, narwhal });
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.

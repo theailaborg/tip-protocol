@@ -57,7 +57,7 @@ function runServer(sourceHandler, server) {
   });
 }
 
-function makeSnapshotHandlerPair({ sourceDag, destDag }) {
+function makeSnapshotHandlerPair({ sourceDag, destDag, destNarwhal = null }) {
   const { client, server } = createStreamPair();
   const sourceHandler = createSnapshotHandler({
     dag: sourceDag,
@@ -68,6 +68,7 @@ function makeSnapshotHandlerPair({ sourceDag, destDag }) {
     dag: destDag,
     network: { node: {}, openStream: async () => client },
     isAuthorizedPeer: () => true,
+    narwhal: destNarwhal,
   });
   return { sourceHandler, destHandler, server };
 }
@@ -147,23 +148,31 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
 
   function stubNarwhal() {
     const events = [];
+    let _state = "ready";
     return {
       events,
-      enterSyncMode: () => events.push("enter"),
-      exitSyncMode: (r) => events.push(["exit", r]),
+      enterSyncMode: () => { events.push("enter"); _state = "syncing"; },
+      exitSyncMode: (r) => { events.push(["exit", r]); _state = "ready"; },
+      markSnapshotInstalled: (round, peerCommittedRound) => {
+        events.push(["markSnapshotInstalled", round, peerCommittedRound]);
+        _state = "catching_up";
+      },
+      markCaughtUp: (r) => { events.push(["markCaughtUp", r]); _state = "ready"; },
+      joinState: () => _state,
+      catchUpTarget: () => 0,
     };
   }
 
-  test("snapshot succeeds → cert-sync asked for snapRound+1 onwards, exitSyncMode at snap round", async () => {
+  test("snapshot succeeds → cert-sync asked for snapRound+1 onwards; install transitions narwhal syncing → catching_up (promotion to ready owned by AE)", async () => {
     const fx = buildCommittedDag({ committeeSize: 1 });
     const destDag = initDAG({ dbPath: ":memory:" });
 
+    const narwhal = stubNarwhal();
     const { sourceHandler, destHandler, server } = makeSnapshotHandlerPair({
-      sourceDag: fx.sourceDag, destDag,
+      sourceDag: fx.sourceDag, destDag, destNarwhal: narwhal,
     });
 
     const syncHandler = stubSyncHandler();
-    const narwhal = stubNarwhal();
     const markedRounds = [];
     const bullshark = { markOrderedUpTo: (r) => markedRounds.push(r) };
     const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
@@ -183,11 +192,16 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // Cert sync called with fromRound = snap.round + 1 = 3.
     expect(syncHandler.calls.length).toBe(1);
     expect(syncHandler.calls[0].opts.fromRound).toBe(3);
-    // Narwhal entered then exited sync mode; exit round >= snap.round.
+    // Narwhal entered sync mode and the install path transitioned it to
+    // catching_up. Promotion to ready is owned by anti-entropy's
+    // markCaughtUp (driven by state-root agreement with peers), so we
+    // should NOT see an exit event from peer-sync.
     expect(narwhal.events[0]).toBe("enter");
-    const exitEvent = narwhal.events.find(e => Array.isArray(e) && e[0] === "exit");
-    expect(exitEvent).toBeTruthy();
-    expect(exitEvent[1]).toBeGreaterThanOrEqual(2);
+    const installEvent = narwhal.events.find(e => Array.isArray(e) && e[0] === "markSnapshotInstalled");
+    expect(installEvent).toBeTruthy();
+    expect(installEvent[1]).toBeGreaterThanOrEqual(2);
+    expect(narwhal.joinState()).toBe("catching_up");
+    expect(narwhal.events.some(e => Array.isArray(e) && e[0] === "exit")).toBe(false);
     // Destination's state_merkle_root matches source's.
     expect(computeStateMerkleRoot(destDag)).toBe(fx.stateRoot);
   });
@@ -278,6 +292,11 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // Sync mode entered + exited; exit round reflects the peer's
     // latest, NOT the original (broken) high round with no state.
     expect(narwhal.events[0]).toBe("enter");
+    // Snapshot is provided via a stub here (not the real handler), so it
+    // doesn't fire markSnapshotInstalled and narwhal stays in syncing.
+    // peer-sync's fallback gate (joinState === "syncing" after cert-sync)
+    // promotes to ready at peerLatestRound — this preserves the legacy
+    // behavior for callers that don't use the install-driven flow.
     const exitEvent = narwhal.events.find(e => Array.isArray(e) && e[0] === "exit");
     expect(exitEvent).toBeTruthy();
     expect(exitEvent[1]).toBe(45520);

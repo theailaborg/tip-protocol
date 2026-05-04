@@ -69,19 +69,22 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
 
-  // Join state: controls when a joining node can start producing.
-  //   "ready"   — normal operation
-  //   "syncing" — sync in progress, suppress round production
-  // After sync, SyncResponse.latestRound gives the authoritative peer round,
-  // so we transition "syncing" → "ready" directly and resume ticking.
+  // Tri-state join FSM.
+  //   syncing      — installing snapshot; no reception, no production.
+  //   catching_up  — snapshot verified, pulling cert tail; receives + parks
+  //                  consensus messages but does NOT produce certs.
+  //   ready        — caught up + state-root matches 2f+1; cert production on.
+  // External callers transition via markSnapshotInstalled / markCaughtUp.
   let _joinState = "ready";
-  // #78: wall-clock when we entered _joinState=syncing. Reset to 0 on
-  // exitSyncMode. halt-status reads this to flag a node as `stuck_syncing`
-  // when sync attempts have been failing for > 3× ROUND_TIMEOUT_MS — the
-  // observability counterpart of #66's exit-sync watchdog. Without this,
-  // a zombie node (sync attempts failing in a loop) silently appears OK
-  // in Grafana while actually being the cause of a federation halt.
+  // Wall-clock when we entered syncing / catching_up. Sticky on repeat
+  // entries; cleared on exit. The watchdog and halt detector both read
+  // these to bound how long we can sit in a non-ready state.
   let _syncEnteredAt = 0;
+  let _catchingUpEnteredAt = 0;
+  // Peer's committed_round at snapshot-install time — the round the cert
+  // tail must reach before catching_up can promote to ready. Anti-entropy
+  // reads this to decide "is the tail closed?".
+  let _catchUpTarget = 0;
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
   let _nextRoundTimer = null;                       // inter-round scheduler
@@ -198,6 +201,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
+    if (_watchdogTimer) { clearInterval(_watchdogTimer); _watchdogTimer = null; }
   }
 
   /**
@@ -215,8 +219,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   // ── Round lifecycle ──────────────────────────────────────────────────────
 
+  function _canProduce() {
+    return _running && _joinState === "ready";
+  }
+
   function _beginRound() {
-    if (!_running || _joinState !== "ready") return;
+    if (!_canProduce()) return;
 
     // #75 atomic boundary — producer-pause. Don't seal a cert at round R
     // until we have the rotation that R's epoch needs in our local
@@ -227,7 +235,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // committee_history right now (or imminently); reschedule shortly.
     const targetRotation = epochOf(_currentRound);
     if (targetRotation > 0 && typeof dag.getCommitteeRotation === "function"
-        && !dag.getCommitteeRotation(targetRotation)) {
+      && !dag.getCommitteeRotation(targetRotation)) {
       log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
       // Brief reschedule. Commit-handler should apply rotation within
       // the next anchor commit (a few seconds at most). Round-timer
@@ -934,43 +942,123 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ./certificate-codec — single source of truth for both gossipsub
   // broadcast (this file) and framed sync (sync-handler.js).
 
+  // Watchdog bounds non-ready states so a node never zombies. syncing's
+  // observability is owned by halt-status (stuck_syncing reason); the
+  // watchdog only acts on catching_up that drags past its threshold —
+  // peer GC'd faster than we synced, current target is unreachable, flip
+  // back to syncing so the next AE tick requests a fresher snapshot.
+  const STUCK_CATCHING_UP_MS = CONSENSUS.ROUND_TIMEOUT_MS * 10;
+  let _watchdogTimer = null;
+
+  function enterSyncMode() {
+    _joinState = "syncing";
+    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    log.notice("Entering sync mode — suppressing round production");
+    _startWatchdog();
+  }
+
+  // syncing → catching_up. Called by snapshot-handler after the install's
+  // contract verification passes. peerCommittedRound is the cluster head
+  // the cert tail must reach before catching_up can promote to ready.
+  function markSnapshotInstalled(round, peerCommittedRound = 0) {
+    if (_joinState !== "syncing") {
+      log.debug(`markSnapshotInstalled ignored — joinState=${_joinState}`);
+      return;
+    }
+    const target = Math.max(round, dag.getLatestRound()) + 1;
+    if (target > _currentRound) {
+      const oldRound = _currentRound;
+      _currentRound = target;
+      _resetRoundState();
+      if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+      log.notice(`Round advanced after snapshot: ${oldRound} → ${_currentRound}`);
+    }
+    _joinState = "catching_up";
+    _syncEnteredAt = 0;
+    _catchingUpEnteredAt = Date.now();
+    _catchUpTarget = Math.max(0, peerCommittedRound || round);
+    log.notice(`Snapshot installed at round ${round}; catching up to peer head ${_catchUpTarget}`);
+    _startWatchdog();
+  }
+
+  // catching_up → ready. Anti-entropy calls this after asserting the cert
+  // tail reached _catchUpTarget AND our state_merkle_root matches 2f+1 of
+  // authorized peers. peerLatestRound is the cluster's current head used
+  // to floor _currentRound for the resumed production.
+  function markCaughtUp(peerLatestRound = 0) {
+    if (_joinState !== "catching_up") {
+      log.debug(`markCaughtUp ignored — joinState=${_joinState}`);
+      return;
+    }
+    _exitToReady(peerLatestRound);
+    log.notice(`Caught up — ready at round ${_currentRound}`);
+  }
+
+  // Public override: forces a direct transition to ready from any state.
+  // Retained for tests that drive _currentRound for setup, and for the
+  // safety-floor branch in anti-entropy._runSnapshotFallback failure path.
+  // Live happy-path callers should prefer markSnapshotInstalled +
+  // markCaughtUp so the AE state-root assertion gates the transition.
+  function exitSyncMode(peerLatestRound = 0) {
+    _exitToReady(peerLatestRound);
+    log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
+  }
+
+  function _exitToReady(peerLatestRound) {
+    const fromDag = dag.getLatestRound();
+    const target = Math.max(peerLatestRound, fromDag) + 1;
+    if (target > _currentRound) {
+      const oldRound = _currentRound;
+      _currentRound = target;
+      _resetRoundState();
+      if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+      log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
+    }
+    _joinState = "ready";
+    _syncEnteredAt = 0;
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    _stopWatchdog();
+    if (_running) _scheduleNextRound(0);
+  }
+
+  function _startWatchdog() {
+    if (_watchdogTimer) return;
+    const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
+    _watchdogTimer = setInterval(_watchdogCheck, tick);
+  }
+
+  function _stopWatchdog() {
+    if (_watchdogTimer) { clearInterval(_watchdogTimer); _watchdogTimer = null; }
+  }
+
+  function _watchdogCheck() {
+    if (!_running || _joinState === "ready") { _stopWatchdog(); return; }
+    if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
+    const elapsed = Date.now() - _catchingUpEnteredAt;
+    if (elapsed <= STUCK_CATCHING_UP_MS) return;
+    log.warn(`Watchdog: catching_up stalled ${Math.floor(elapsed / 1000)}s (target=${_catchUpTarget}, dag=${dag.getLatestRound()}) — reverting to syncing for fresh snapshot`);
+    _joinState = "syncing";
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+  }
+
+  function joinState() { return _joinState; }
+  function catchUpTarget() { return _catchUpTarget; }
+
   return {
     start,
     stop,
     currentRound,
-    /** Enter sync mode — suppress all waking during sync */
-    enterSyncMode() {
-      _joinState = "syncing";
-      // #78: stamp wall-clock so halt-status can detect a sync that's
-      // dragging on (sync attempts failing in a loop, peer offline, etc.).
-      // Stay sticky if already syncing — don't reset the clock on repeat
-      // entries, otherwise the threshold gets reset every retry.
-      if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
-      log.notice("Entering sync mode — suppressing round production");
-    },
-    /**
-     * Exit sync mode and resume normal operation. Uses peer's authoritative
-     * latestRound (from SyncResponse) as the starting round; if not provided,
-     * falls back to local DAG's latest round. Post-sync drift is handled by
-     * handleIncomingBatch adopting higher rounds from incoming batches.
-     * @param {number} [peerLatestRound]  Peer's current round from SyncResponse
-     */
-    exitSyncMode(peerLatestRound = 0) {
-      const fromDag = dag.getLatestRound();
-      const target = Math.max(peerLatestRound, fromDag) + 1;
-      if (target > _currentRound) {
-        const oldRound = _currentRound;
-        _currentRound = target;
-        // Any in-flight round state at the old round is now stale
-        _resetRoundState();
-        if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
-        log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
-      }
-      _joinState = "ready";
-      _syncEnteredAt = 0;  // #78: clear so halt-status stops flagging stuck_syncing
-      log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
-      if (_running) _scheduleNextRound(0);
-    },
+    enterSyncMode,
+    exitSyncMode,
+    markSnapshotInstalled,
+    markCaughtUp,
+    joinState,
+    catchUpTarget,
     handleIncomingBatch,
     handleIncomingAck,
     handleIncomingCertificate,
@@ -1011,7 +1099,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
       lastRoundAdvanceAt: _lastRoundAdvanceAt,
-      syncEnteredAt: _syncEnteredAt,  // #78: 0 when not syncing
+      syncEnteredAt: _syncEnteredAt,
+      catchingUpEnteredAt: _catchingUpEnteredAt,
+      catchUpTarget: _catchUpTarget,
       metrics: { ..._metrics },
     }),
   };
