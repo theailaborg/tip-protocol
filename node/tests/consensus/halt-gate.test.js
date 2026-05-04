@@ -211,6 +211,63 @@ describe("computeHaltStatus transitions", () => {
     expect(r.halted).toBe(false);
     expect(r.reason).toBe("join_state_syncing");
   });
+
+  // ── catching_up coverage. Mirrors stuck_syncing but with a 10× threshold.
+
+  test("catching_up within threshold → not halted (healthy tail closure)", () => {
+    const t0 = 1_000_000;
+    const clock = mkClock(t0);
+    const stats = {
+      running: true, joinState: "catching_up", lastRoundAdvanceAt: 0,
+      catchingUpEnteredAt: t0, catchUpTarget: 5000, round: 4500,
+    };
+    // Just below 10× round timeout — bandwidth-bound tail closure
+    // legitimately takes longer than initial install.
+    clock.advance(ROUND_TIMEOUT_MS * 10 - 1);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(false);
+    expect(r.reason).toBe("join_state_catching_up");
+  });
+
+  test("catching_up past threshold → halted (stuck_catching_up)", () => {
+    const t0 = 1_000_000;
+    const clock = mkClock(t0);
+    const stats = {
+      running: true, joinState: "catching_up", lastRoundAdvanceAt: 0,
+      catchingUpEnteredAt: t0, catchUpTarget: 5000, round: 4500,
+    };
+    clock.advance(ROUND_TIMEOUT_MS * 10 + 1);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(true);
+    expect(r.reason).toBe("stuck_catching_up");
+    expect(r.staleMs).toBeGreaterThan(ROUND_TIMEOUT_MS * 10);
+    expect(r.message).toMatch(/Stuck closing cert tail/);
+    expect(r.message).toMatch(/target=5000/);
+    expect(r.message).toMatch(/current=4500/);
+  });
+
+  test("catching_up without catchingUpEnteredAt → not flagged (backward compat)", () => {
+    const clock = mkClock(1_000_000);
+    const stats = { running: true, joinState: "catching_up", lastRoundAdvanceAt: 0 };
+    clock.advance(ROUND_TIMEOUT_MS * 100);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(false);
+    expect(r.reason).toBe("join_state_catching_up");
+  });
+
+  test("catching_up uses 10× threshold, not 3× (must not false-flag at sync threshold)", () => {
+    const t0 = 1_000_000;
+    const clock = mkClock(t0);
+    const stats = {
+      running: true, joinState: "catching_up", lastRoundAdvanceAt: 0,
+      catchingUpEnteredAt: t0, catchUpTarget: 5000, round: 4500,
+    };
+    // Past the 3× syncing threshold but well within 10× catching_up window
+    clock.advance(ROUND_TIMEOUT_MS * 5);
+    const r = computeHaltStatus(stats, { roundTimeoutMs: ROUND_TIMEOUT_MS, now: clock.now });
+    expect(r.halted).toBe(false);
+    expect(r.reason).toBe("join_state_catching_up");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

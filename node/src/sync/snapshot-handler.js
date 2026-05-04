@@ -78,7 +78,7 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @param {Function} options.isAuthorizedPeer  (peerIdString) => boolean
  * @returns {Object}
  */
-function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null }) {
+function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null }) {
   // §4 + #34: counters surfaced via stats() for /metrics.
   // chain_walk_failures increments every time _verifyRotationChain throws —
   // either rotations_full_root mismatch or any of the chain-of-trust
@@ -710,6 +710,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         `${installed.rotations}/rotations ${installed.certs}/certs ${installed.rp}/rp ` +
         `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
+
+      // Hand off to narwhal: syncing → catching_up. Production stays
+      // gated until anti-entropy asserts our state_merkle_root matches
+      // 2f+1 of authorized peers and the cert tail reaches peerCommittedRound.
+      if (narwhal && typeof narwhal.markSnapshotInstalled === "function") {
+        narwhal.markSnapshotInstalled(snapshotRound, peerCommittedRound);
+      }
 
       return {
         round: Number(header.round),

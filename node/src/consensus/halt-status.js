@@ -56,17 +56,19 @@ function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = Date.now } = {}
   if (!narwhalStats || !narwhalStats.running) {
     return { halted: false, reason: "narwhal_not_started", lastAdvanceAt: 0, staleMs: 0 };
   }
-  const threshold = (roundTimeoutMs || 2000) * 3;
-  if (narwhalStats.joinState !== "ready") {
-    // #78: distinguish "briefly syncing" (healthy, expected) from "stuck
-    // in syncing too long" (cause of federation halt). syncEnteredAt is
-    // the wall-clock when narwhal flipped into syncing state; 0 means it
-    // was never set (older builds). Only flag stuck if the timestamp is
-    // present AND threshold is exceeded.
+  const syncThreshold = (roundTimeoutMs || 2000) * 3;
+  // catching_up is bandwidth-bound (cert tail closure) and legitimately
+  // slower than initial install — give it 3× more headroom than syncing.
+  const catchingUpThreshold = (roundTimeoutMs || 2000) * 10;
+  const threshold = syncThreshold;
+  if (narwhalStats.joinState === "syncing") {
+    // Distinguish "briefly syncing" (healthy, expected) from "stuck in
+    // syncing too long" (cause of federation halt). syncEnteredAt is the
+    // wall-clock when narwhal flipped into syncing state.
     const syncStart = narwhalStats.syncEnteredAt || 0;
     if (syncStart > 0) {
       const stuckMs = now() - syncStart;
-      if (stuckMs > threshold) {
+      if (stuckMs > syncThreshold) {
         return {
           halted: true,
           reason: "stuck_syncing",
@@ -78,7 +80,34 @@ function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = Date.now } = {}
     }
     return {
       halted: false,
-      reason: `join_state_${narwhalStats.joinState}`,
+      reason: "join_state_syncing",
+      lastAdvanceAt: narwhalStats.lastRoundAdvanceAt || 0,
+      staleMs: 0,
+    };
+  }
+  if (narwhalStats.joinState === "catching_up") {
+    // Catch-up tail is bandwidth-bound. Healthy when it converges within
+    // the threshold; stuck when the cert tail isn't closing — peer GC'd
+    // faster than we synced or peer dropped, ops should pick a different
+    // peer or reset the joiner.
+    const catchStart = narwhalStats.catchingUpEnteredAt || 0;
+    if (catchStart > 0) {
+      const stuckMs = now() - catchStart;
+      if (stuckMs > catchingUpThreshold) {
+        const target = narwhalStats.catchUpTarget || 0;
+        const round  = narwhalStats.round ?? 0;
+        return {
+          halted: true,
+          reason: "stuck_catching_up",
+          lastAdvanceAt: narwhalStats.lastRoundAdvanceAt || 0,
+          staleMs: stuckMs,
+          message: `Stuck closing cert tail for ${Math.floor(stuckMs / 1000)}s (target=${target}, current=${round}) — peer likely GC'd past our snapshot. Operator action: pick a peer with a fresher commit horizon or reset this node.`,
+        };
+      }
+    }
+    return {
+      halted: false,
+      reason: "join_state_catching_up",
       lastAdvanceAt: narwhalStats.lastRoundAdvanceAt || 0,
       staleMs: 0,
     };

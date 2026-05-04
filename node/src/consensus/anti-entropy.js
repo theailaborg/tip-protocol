@@ -330,14 +330,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     try {
       const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound });
       const targetRound = Number(installed?.round || 0);
-      if (narwhal && typeof narwhal.exitSyncMode === "function") {
-        narwhal.exitSyncMode(targetRound);
-      }
+      // snapshot-handler.requestSnapshotFromPeer fires narwhal.markSnapshotInstalled
+      // on success, transitioning syncing → catching_up. We do NOT call
+      // exitSyncMode here — production stays gated until a subsequent AE
+      // cycle asserts our state_merkle_root matches an authorized peer's
+      // and the cert tail has reached catchUpTarget (markCaughtUp path).
       _metrics.gaps_pulled++;
       _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed?.rows_installed || 0})`);
       return "snapshot_installed";
     } catch (err) {
       _log.warn(`anti-entropy: snapshot fallback from ${peerId.slice(0, 12)} failed: ${err.message}`);
+      // Failure floor: snapshot didn't land. Fall back to ready at our
+      // pre-install round so the node isn't pinned in syncing waiting on
+      // a transition that won't come. The next AE tick / next peer-auth
+      // retries from a different peer.
       if (narwhal && typeof narwhal.exitSyncMode === "function") {
         const safeRound = Number(selfState.round || 0);
         narwhal.exitSyncMode(safeRound);
@@ -400,6 +406,40 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _metrics.consensus_divergence_total++;
       _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerStatus.node_id || peerId.slice(0, 12)} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
       return "divergent";
+    }
+
+    // Caught-up recovery. Two paths into ready depending on which non-ready
+    // state we're in:
+    //
+    //   catching_up → ready: snapshot was installed, cert tail closed,
+    //     state-root matches an authorized peer at the snapshot's recorded
+    //     peer head. markCaughtUp gates this.
+    //
+    //   syncing → ready: peer-auth fired enterSyncMode but install was
+    //     unnecessary (we were already at peer's committed round) and
+    //     either succeeded into catching_up then bounced back, or never
+    //     made it past install at all. If a peer now agrees on round +
+    //     root, sync is a no-op and the override exitSyncMode unblocks
+    //     production. Without this branch the node sits in syncing until
+    //     onPeerAuthorized's syncWithRetry budget exhausts (60-90s) AND no
+    //     reconnect re-fires enterSyncMode in between.
+    if (
+      peerCommitted === selfCommitted
+      && selfRoot && peerRoot && selfRoot === peerRoot
+      && narwhal
+      && typeof narwhal.joinState === "function"
+    ) {
+      const state = narwhal.joinState();
+      if (state === "catching_up" && typeof narwhal.markCaughtUp === "function") {
+        const target = typeof narwhal.catchUpTarget === "function" ? narwhal.catchUpTarget() : 0;
+        if (selfCommitted >= target) {
+          _log.info(`anti-entropy: catch-up confirmed by peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted} — promoting to ready`);
+          narwhal.markCaughtUp(selfCommitted);
+        }
+      } else if (state === "syncing" && typeof narwhal.exitSyncMode === "function") {
+        _log.info(`anti-entropy: caught up while in syncing (no install needed) — peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted}, exiting via override`);
+        narwhal.exitSyncMode(selfCommitted);
+      }
     }
 
     return peerCommitted < selfCommitted ? "ahead" : "equal";

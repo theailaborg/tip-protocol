@@ -154,11 +154,17 @@ function narwhalSection(s) {
   return [
     gauge("tip_narwhal_current_round", "Current consensus round Narwhal is working on", n.round),
     gauge("tip_narwhal_syncing", "1 if Narwhal is in sync mode (round production suppressed while catching up); 0 if ready", n.joinState === "syncing" ? 1 : 0),
-    // #78: dedicated sync-duration signal so dashboards can flag nodes
-    // pinned in syncing state (#66 fingerprint) without grepping logs.
-    // 0 when ready; positive seconds since enterSyncMode while syncing.
-    gauge("tip_narwhal_sync_duration_seconds", "Seconds since the node entered sync mode; 0 when ready. >180s usually means the sync is stuck (see #66/#78)",
+    // Tri-state join FSM exposed as three indicator gauges. Dashboards can
+    // mux these into one column or chart the timeline of transitions.
+    gauge("tip_narwhal_join_state_ready",       "1 when Narwhal is ready (cert production active)",                  n.joinState === "ready" ? 1 : 0),
+    gauge("tip_narwhal_join_state_catching_up", "1 when Narwhal is catching_up (cert tail closing, no production)", n.joinState === "catching_up" ? 1 : 0),
+    gauge("tip_narwhal_join_state_syncing",     "1 when Narwhal is syncing (snapshot installing)",                   n.joinState === "syncing" ? 1 : 0),
+    gauge("tip_narwhal_sync_duration_seconds", "Seconds since the node entered syncing; 0 when not syncing. Sustained > 3× round timeout means sync attempts are looping",
       n.joinState === "syncing" && n.syncEnteredAt ? Math.floor((Date.now() - n.syncEnteredAt) / 1000) : 0),
+    gauge("tip_narwhal_catching_up_duration_seconds", "Seconds since the node entered catching_up; 0 when not catching_up. Sustained > 10× round timeout flips back to syncing for a fresher snapshot",
+      n.joinState === "catching_up" && n.catchingUpEnteredAt ? Math.floor((Date.now() - n.catchingUpEnteredAt) / 1000) : 0),
+    gauge("tip_narwhal_catch_up_target", "Round the cert tail must reach for catching_up to promote to ready; 0 when not catching up",
+      n.catchUpTarget || 0),
     gauge("tip_narwhal_certificates_this_round", "Certificates collected for current round", n.certificatesThisRound),
     gauge("tip_narwhal_batches_this_round", "Batches received for current round (incl. self)", n.batchesThisRound),
     gauge("tip_narwhal_pending_certs", "Cert waiters parked because parents missing from DAG", n.pendingCerts),
