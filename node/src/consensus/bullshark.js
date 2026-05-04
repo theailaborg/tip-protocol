@@ -530,14 +530,21 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
    * rotations propose but fail commit-handler quorum check;
    * federation continues running with the rotation 1 committee.
    */
-  function _maybeProposeCommitteeRotation(boundaryRound, finishingRotation, leader) {
+  function _maybeProposeCommitteeRotation(boundaryRound, finishingRotation, leader, forceLeader = false) {
     if (!dag.getLatestRotation || !dag.getCommitteeRotation) return;  // chain-of-trust not wired
     if (!proposer || !proposer.nodeId) return;
     // Boundary-leader gate: only the anchor leader at the boundary fires.
     // Deterministic across nodes (every node sees the same anchor leader
     // at the same consensus_index), so exactly one rotation tx is
-    // proposed — no #74 multi-proposer flap.
-    if (proposer.nodeId !== leader) return;
+    // proposed under healthy conditions.
+    //
+    // forceLeader=true bypasses the gate. Used by tryRotationProposal,
+    // invoked from narwhal's producer-pause callback when the federation
+    // is stuck (no anchor commits firing → leader-gated proposer can't
+    // run). Multi-proposer race is safe: rotation-coordinator's multi-
+    // aggregator submits when ANY node hits quorum, and commit-handler
+    // dedupes on rotation_number.
+    if (!forceLeader && proposer.nodeId !== leader) return;
 
     const latest = dag.getLatestRotation();
     if (!latest) return;  // initDAG bootstrap should've written rotation 0; defensive
@@ -901,8 +908,36 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     return nodeIds[wave % nodeIds.length];
   }
 
+  /**
+   * Force a rotation-proposal attempt for the rotation currently blocking
+   * narwhal's producer-pause. Called from narwhal.onProducerPaused when
+   * the federation is deadlocked: no anchor commits fire (round can't
+   * advance without rotation), so onRoundComplete never runs and the
+   * leader-gated proposer never gets a chance to propose. Bypasses the
+   * leader gate so every online prev-committee member tries; rotation-
+   * coordinator's multi-aggregator + commit-handler's rotation_number
+   * dedup ensure exactly one tx commits.
+   *
+   * Defensive re-check: if the rotation has just landed in the DAG
+   * (callback firing race with commit-handler), no-op.
+   */
+  function tryRotationProposal(currentRound, missingRotation) {
+    if (!proposer || !proposer.nodeId) return;
+    const latest = dag.getLatestRotation();
+    const latestNum = latest ? latest.rotation_number : 0;
+    if (missingRotation <= latestNum) return; // rotation already landed
+    const targetRotation = epochOf(currentRound);
+    if (targetRotation !== missingRotation) return; // round/epoch drifted
+    try {
+      _maybeProposeCommitteeRotation(currentRound, latestNum, proposer.nodeId, /* forceLeader */ true);
+    } catch (err) {
+      log.warn(`tryRotationProposal: threw — ${(err && err.message) || err}`);
+    }
+  }
+
   return {
     onRoundComplete,
+    tryRotationProposal,
 
     /** #68 — multi-sig rotation coordinator (null in legacy/test mode) */
     rotationCoordinator: () => (proposer && proposer.coordinator) || null,

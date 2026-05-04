@@ -197,6 +197,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
     // so the root always reflects canonical DAG state.
     onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
+    // Producer-pause notifier — breaks the deadlock where rotation tx
+    // never lands because no rounds advance because rotation tx is
+    // missing. Bullshark.tryRotationProposal re-checks DAG and forces
+    // a proposal attempt (multi-aggregator + commit-handler dedup
+    // ensure exactly one tx commits).
+    onProducerPaused: (round, missingRotation) => {
+      if (bullshark && typeof bullshark.tryRotationProposal === "function") {
+        bullshark.tryRotationProposal(round, missingRotation);
+      }
+    },
   });
   narwhalRef.current = narwhal;
 
@@ -297,6 +307,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();
+      const coord = bullshark.rotationCoordinator?.();
+      if (coord && typeof coord.stop === "function") coord.stop();
       log.notice("Consensus stopped");
     },
 

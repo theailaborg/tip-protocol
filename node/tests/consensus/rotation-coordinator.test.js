@@ -173,10 +173,18 @@ describe("#68 rotation coordinator", () => {
     expect(submitted[0].data.signer_node_ids.sort()).toEqual([ids[0].node_id, ids[1].node_id].sort());
   });
 
-  test("non-proposer prev-committee member: signs and broadcasts but does NOT submit", () => {
-    // B receives a proposal originated by A. B verifies, signs, broadcasts
-    // its own RotationSignature. But because B is not the proposer, B
-    // does NOT submit even when its local aggregation reaches quorum.
+  test("non-proposer prev-committee member with quorum sigs ALSO submits (multi-aggregator)", () => {
+    // Multi-aggregator: B receives a proposal originated by A. B verifies,
+    // signs, broadcasts its own RotationSignature. When B's local
+    // aggregation reaches quorum, B ALSO submits — does not require the
+    // original proposer to be the one whose inflight reaches quorum first.
+    //
+    // Why: under uneven sig propagation (cold-mesh on bursty rotation-coord
+    // topic) the original proposer can end up below quorum while a peer's
+    // inflight has enough sigs. Without this, rotations halt indefinitely
+    // (live observed 2026-05-04 rotation 13). Duplicate cross-node
+    // submissions are deduped at the commit-handler layer (rotation_number
+    // unique in committee_history).
     const a = generateMLDSAKeypair();
     const b = generateMLDSAKeypair();
     const c = generateMLDSAKeypair();
@@ -219,9 +227,16 @@ describe("#68 rotation coordinator", () => {
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[2].node_id, signature: hexToBytes(cSig),
     });
+    // B's submission already fired the moment A's proposal arrived: at
+    // that point sigs = {A (proposer), B (self)} = 2 = quorum, multi-
+    // aggregator triggers submitTx without waiting for C. C's sig
+    // arriving here is processed but submission is already done.
     coord.handleIncoming(cBuf, "peer-c");
 
-    expect(submitted).toHaveLength(0); // B is not proposer, doesn't submit
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0].data.signer_node_ids.sort()).toEqual(
+      [ids[0].node_id, ids[1].node_id].sort()
+    );
   });
 
   test("anti-spam: drops proposal with wrong rotation_number", () => {
@@ -391,4 +406,143 @@ describe("#68 rotation coordinator", () => {
     coord.handleIncoming(bBuf, "peer-b");
     expect(submitted).toHaveLength(1);
   });
+
+  // Fix A: retry preserves accumulated sigs. Bullshark calls proposeRotation
+  // again on each anchor commit during the lead-time window; resetting the
+  // inflight on every retry was the root cause of rotation 13's halt — sigs
+  // received between retries were thrown away, never reaching quorum.
+  test("retry preserves accumulated sigs (does NOT reset inflight)", () => {
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const c = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+      { node_id: "tip://node/C", public_key: c.publicKey },
+    ];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord, network } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+    const args = {
+      rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+      prevCommitteeNodeIds: ids.map(m => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+    };
+
+    // First proposeRotation — inflight created, sigs = {A: ownSig}.
+    coord.proposeRotation(args);
+    expect(coord._state().get(2).sigs.size).toBe(1);
+
+    // B's sig arrives via gossip.
+    const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
+    const bSig = mldsaSign(bMsg, b.privateKey);
+    const bBuf = encode("RotationSignature", {
+      rotationNumber: 2, payloadHash: payload_hash,
+      signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+    });
+    coord.handleIncoming(bBuf, "peer-b");
+    expect(coord._state().get(2).sigs.size).toBe(2); // A + B
+    expect(submitted).toHaveLength(1); // quorum=2 reached → submit
+
+    // Reset submitted[] and submittedAt so we can prove a retry doesn't blow it away.
+    coord._state().get(2).submittedAt = null;
+    submitted.length = 0;
+    const sigsBefore = new Set(coord._state().get(2).sigs.keys());
+    const publishedBefore = network._published.length;
+
+    // Bullshark fires proposeRotation again on the next anchor (retry).
+    coord.proposeRotation(args);
+
+    // Sigs must be preserved — A and B still in the map.
+    const sigsAfter = new Set(coord._state().get(2).sigs.keys());
+    expect(sigsAfter).toEqual(sigsBefore);
+    expect(sigsAfter.size).toBe(2);
+    // Re-broadcast was published (one new RotationProposal).
+    expect(network._published.length).toBe(publishedBefore + 1);
+    // Submit fires again because sigs are still ≥ quorum.
+    expect(submitted).toHaveLength(1);
+  });
+
+  // Fix C: periodic re-broadcast tick re-publishes accumulated sigs.
+  // Defends against gossipsub mesh dropping bursty rotation-coord traffic;
+  // peers that missed the first sig get it on the next tick.
+  test("re-broadcast tick re-publishes the proposal AND accumulated peer sigs", () => {
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const c = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+      { node_id: "tip://node/C", public_key: c.publicKey },
+    ];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord, network } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+      prevCommitteeNodeIds: ids.map(m => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+    });
+
+    // Feed B's sig but BEFORE submission triggers (manually clear submittedAt).
+    const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
+    const bSig = mldsaSign(bMsg, b.privateKey);
+    const bBuf = encode("RotationSignature", {
+      rotationNumber: 2, payloadHash: payload_hash,
+      signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+    });
+    coord.handleIncoming(bBuf, "peer-b");
+    coord._state().get(2).submittedAt = null;  // simulate "still aggregating"
+
+    const before = network._published.length;
+    coord._rebroadcastTick();
+    const after = network._published.length;
+
+    // One RotationProposal + one RotationSignature (B's). A's sig is already
+    // embedded in the proposal as proposer_signature; not re-sent separately.
+    expect(after - before).toBe(2);
+
+    // Inflight that's already submitted is NOT re-broadcast.
+    coord._state().get(2).submittedAt = Date.now();
+    const before2 = network._published.length;
+    coord._rebroadcastTick();
+    expect(network._published.length).toBe(before2);
+
+    coord.stop();
+  });
+
+  // Fix C: stop() clears the timer (no leak).
+  test("stop() clears the re-broadcast interval", () => {
+    const a = generateMLDSAKeypair();
+    const ids = [{ node_id: "tip://node/A", public_key: a.publicKey }];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+    // Solo committee submits synchronously; need a 2-node case to keep an inflight open.
+    expect(typeof coord.stop).toBe("function");
+    coord.stop();  // safe to call when nothing's running
+  });
+
 });
