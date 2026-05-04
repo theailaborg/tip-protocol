@@ -31,6 +31,7 @@
 
 const { TX_TYPES, ORIGIN, CONTENT_STATUS } = require("../../../shared/constants");
 const { DISPUTE, APPEAL } = require("../../../shared/protocol-constants");
+const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -340,9 +341,16 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
     }
   }
 
+  // #68 Part A — tighten quorum to ceil(2n/3), the same formula used for
+  // cert quorum. The pre-fix BFT 2f+1 formula degenerated to quorum=1 for
+  // prevSize ≤ 3, letting any single member of the previous committee
+  // unilaterally rotate membership. ceil(2n/3) gives prevSize=2→2,
+  // prevSize=3→2, prevSize=4→3, prevSize=5→4, prevSize=6→4 — i.e., a true
+  // honest-majority threshold for membership change. Pairs with #68 Part B
+  // (multi-sig coordinator in consensus/rotation-coordinator.js) which
+  // produces the aggregated signatures this gate now requires.
   const prevSize = prev.committee.length;
-  const f = Math.floor((prevSize - 1) / 3);
-  const quorum = 2 * f + 1;
+  const quorum = computeQuorum(prevSize);
   if (validSigs < quorum) {
     return fail(403, `insufficient sigs: ${validSigs}/${prevSize} from previous committee, need ${quorum}`);
   }

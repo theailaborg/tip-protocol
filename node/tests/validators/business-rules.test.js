@@ -533,4 +533,122 @@ describe("canCommitteeRotation", () => {
       try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
     }
   });
+
+  // #68 Part A — quorum tightened from 2f+1 to ceil(2n/3).
+  // Pre-fix: prevSize ≤ 3 → quorum=1 (single member could rotate alone).
+  // Post-fix: prevSize=2→2, prevSize=3→2, prevSize=4→3, prevSize=5→4.
+  describe("#68 Part A — ceil(2n/3) sig quorum", () => {
+    function _signSubset(committee, keys, rec, signerCount) {
+      const payload_hash = shake256(canonicalJson({
+        rotation_number: rec.rotation_number,
+        effective_round: rec.effective_round,
+        committee: rec.new_committee,
+      }));
+      const signers = committee.slice(0, signerCount).map(m => m.node_id);
+      const signatures = signers.map(id => mldsaSign(`rotation:${payload_hash}:${id}`, keys[id]));
+      return { ...rec, payload_hash, signer_node_ids: signers, signatures };
+    }
+
+    test("prev size=2: 1 sig REJECTED (was accepted under 2f+1)", () => {
+      const fx = _setupWithTestRotation0(2);
+      try {
+        const rec = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee.slice(0, 1),
+        }, 1);
+        const r = rules.canCommitteeRotation(fx.dag, rec, cryptoOpts);
+        expect(r.valid).toBe(false);
+        expect(r.error.status).toBe(403);
+        expect(r.error.message).toMatch(/insufficient sigs.*need 2/);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    test("prev size=2: 2 sigs accepted", () => {
+      const fx = _setupWithTestRotation0(2);
+      try {
+        const rec = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 2);
+        const r = rules.canCommitteeRotation(fx.dag, rec, cryptoOpts);
+        expect(r.valid).toBe(true);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    test("prev size=3: 1 sig REJECTED (was accepted under 2f+1)", () => {
+      const fx = _setupWithTestRotation0(3);
+      try {
+        const rec = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 1);
+        const r = rules.canCommitteeRotation(fx.dag, rec, cryptoOpts);
+        expect(r.valid).toBe(false);
+        expect(r.error.status).toBe(403);
+        expect(r.error.message).toMatch(/insufficient sigs.*need 2/);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    test("prev size=3: 2 sigs accepted", () => {
+      const fx = _setupWithTestRotation0(3);
+      try {
+        const rec = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 2);
+        const r = rules.canCommitteeRotation(fx.dag, rec, cryptoOpts);
+        expect(r.valid).toBe(true);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    test("prev size=4: 2 sigs REJECTED, 3 sigs accepted", () => {
+      const fx = _setupWithTestRotation0(4);
+      try {
+        const recBad = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 2);
+        let r = rules.canCommitteeRotation(fx.dag, recBad, cryptoOpts);
+        expect(r.valid).toBe(false);
+        expect(r.error.message).toMatch(/insufficient sigs.*need 3/);
+
+        const recOk = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 3);
+        r = rules.canCommitteeRotation(fx.dag, recOk, cryptoOpts);
+        expect(r.valid).toBe(true);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    test("prev size=1: 1 sig accepted (genesis bootstrap)", () => {
+      const fx = _setupWithTestRotation0(1);
+      try {
+        const rec = _signSubset(fx.committee, fx.keys, {
+          rotation_number: 1, effective_round: 100,
+          new_committee: fx.committee,
+        }, 1);
+        const r = rules.canCommitteeRotation(fx.dag, rec, cryptoOpts);
+        expect(r.valid).toBe(true);
+      } finally {
+        fx.dag.close();
+        try { require("fs").unlinkSync(fx.dbPath); } catch { /* ignore */ }
+      }
+    });
+  });
 });

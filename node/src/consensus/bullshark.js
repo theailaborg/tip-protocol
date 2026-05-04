@@ -26,10 +26,10 @@
 "use strict";
 
 const { computeQuorum } = require("./certificate");
+const { buildRotationTx } = require("./rotation-coordinator");
 const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
-const { TX_TYPES } = require("../../../shared/constants");
-const { shake256, canonicalJson, mldsaSign, computeTxId } = require("../../../shared/crypto");
+const { shake256, canonicalJson, mldsaSign } = require("../../../shared/crypto");
 const { computeNextRotationCommittee, epochOf } = require("./participants");
 const { getLogger } = require("../logger");
 
@@ -578,46 +578,66 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
       rotation_number, effective_round, committee: newCommittee,
     }));
 
-    // MVP: sign only with our own key. The commit-handler accepts the tx
-    // if previous-committee quorum is met by the sigs included; for the
-    // bootstrap case (prev committee = single founding_node), our 1 sig
-    // is the full quorum. #68 Part B will add multi-sig coordination
-    // (proposer aggregates sigs from prev committee BEFORE submitting).
-    const message = `rotation:${payload_hash}:${proposer.nodeId}`;
-    const signature = mldsaSign(message, proposer.nodePrivateKey);
+    // #68 multi-sig coordination. Build a previous-committee descriptor
+    // and hand the proposal off to the coordinator. The coordinator
+    // broadcasts a `RotationProposal` over `tip/rotation-coordination`,
+    // collects ≥ ceil(2n/3) `RotationSignature`s from the previous
+    // committee, then calls `buildTxFromAggregation` (closure below) to
+    // build the COMMITTEE_ROTATION tx with the aggregated sigs and
+    // routes it through `proposer.submitTx`. For solo committees (n=1)
+    // the proposer's own signature is the full quorum, so submission
+    // happens synchronously inside `proposeRotation`.
+    const prevCommitteeArr = Array.isArray(latest.committee) ? latest.committee : [];
+    const prevCommitteeNodeIds = prevCommitteeArr.map(m => m.node_id);
+    const prevPubkeys = {};
+    for (const m of prevCommitteeArr) prevPubkeys[m.node_id] = m.public_key;
 
-    const txData = {
+    if (!proposer.coordinator) {
+      // Test/legacy mode — no coordinator wired. Fall back to single-sig
+      // submission so existing harness tests still drive a rotation tx.
+      // Production wiring (consensus/index.js) always provides a coordinator.
+      const message = `rotation:${payload_hash}:${proposer.nodeId}`;
+      const signature = mldsaSign(message, proposer.nodePrivateKey);
+      const tx = buildRotationTx(
+        dag,
+        { rotation_number, effective_round, new_committee: newCommittee, payload_hash },
+        [proposer.nodeId],
+        [signature],
+      );
+      _metrics.committee_rotation_proposals++;
+      try {
+        const r = proposer.submitTx(tx);
+        if (r && typeof r.catch === "function") {
+          r.catch(err => log.warn(`Rotation ${rotation_number} submitTx rejected: ${(err && err.message) || err}`));
+        }
+        log.info(
+          `Rotation ${rotation_number} proposed at round ${boundaryRound}: ` +
+          `committee size ${currentNodeIds.length} → ${newCommittee.length}, ` +
+          `${setsEqual ? "re-attestation (membership unchanged)" : "membership change"}, ` +
+          `closing rotation ${finishingRotation} [legacy single-sig path]`
+        );
+      } catch (err) {
+        log.warn(`Rotation ${rotation_number} submit failed synchronously: ${(err && err.message) || err}`);
+      }
+      return;
+    }
+
+    _metrics.committee_rotation_proposals++;
+    const fired = proposer.coordinator.proposeRotation({
       rotation_number,
       effective_round,
       new_committee: newCommittee,
       payload_hash,
-      signer_node_ids: [proposer.nodeId],
-      signatures: [signature],
-    };
-
-    const tx = {
-      tx_type: TX_TYPES.COMMITTEE_ROTATION,
-      timestamp: new Date().toISOString(),
-      prev: dag.getRecentPrev ? dag.getRecentPrev() : [],
-      data: txData,
-    };
-    tx.tx_id = computeTxId(tx);
-
-    _metrics.committee_rotation_proposals++;
-
-    try {
-      const r = proposer.submitTx(tx);
-      if (r && typeof r.catch === "function") {
-        r.catch(err => log.warn(`Rotation ${rotation_number} submitTx rejected: ${(err && err.message) || err}`));
-      }
+      prevCommitteeNodeIds,
+      prevPubkeys,
+    });
+    if (fired) {
       log.info(
         `Rotation ${rotation_number} proposed at round ${boundaryRound}: ` +
         `committee size ${currentNodeIds.length} → ${newCommittee.length}, ` +
         `${setsEqual ? "re-attestation (membership unchanged)" : "membership change"}, ` +
         `closing rotation ${finishingRotation}`
       );
-    } catch (err) {
-      log.warn(`Rotation ${rotation_number} submit failed synchronously: ${(err && err.message) || err}`);
     }
   }
 
@@ -883,6 +903,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
 
   return {
     onRoundComplete,
+
+    /** #68 — multi-sig rotation coordinator (null in legacy/test mode) */
+    rotationCoordinator: () => (proposer && proposer.coordinator) || null,
 
     /** Get the leader for a specific round */
     getLeader: _getLeader,

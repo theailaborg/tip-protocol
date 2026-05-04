@@ -20,6 +20,7 @@
 const { createMempool } = require("./mempool");
 const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
+const { createRotationCoordinator } = require("./rotation-coordinator");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
@@ -33,6 +34,7 @@ const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createTxSubmitter } = require("../services/helpers");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { encode, decode } = require("../network/proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -165,6 +167,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       nodePrivateKey: config.nodePrivateKey,
       nodePublicKey: config.nodePublicKey,
       submitTx: (tx) => triggerSubmitter.submitTx(tx),
+      // #68 multi-sig coordinator: bullshark's _maybeProposeCommitteeRotation
+      // hands the proposal off to this coordinator instead of submitting a
+      // 1-of-N tx directly. Coordinator broadcasts a RotationProposal,
+      // collects ≥ ceil(2n/3) RotationSignatures from the previous committee,
+      // builds the aggregated COMMITTEE_ROTATION tx, and routes it through
+      // submitTx. For solo committees (n=1) the proposer's own sig is the
+      // full quorum so submission is synchronous.
+      coordinator: (network && network.publish) ? createRotationCoordinator({
+        dag,
+        network,
+        proto: { encode, decode },
+        identity: {
+          nodeId: config.nodeRegisteredId || config.nodeId,
+          privateKey: config.nodePrivateKey,
+          publicKey: config.nodePublicKey,
+        },
+        submitTx: (tx) => triggerSubmitter.submitTx(tx),
+      }) : null,
     } : null,
   });
 
@@ -287,6 +307,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       onBatch: (data) => narwhal.handleIncomingBatch(data),
       onAck: (data) => narwhal.handleIncomingAck(data),
       onCertificate: (data) => narwhal.handleIncomingCertificate(data),
+      // #68 — RotationProposal / RotationSignature dispatch. Bullshark
+      // exposes its proposer.coordinator via `rotationCoordinator()`;
+      // falls through to no-op when no coordinator is wired (e.g., read-
+      // only nodes without signing keys).
+      onRotationCoordination: (data, peerId) => {
+        const coord = typeof bullshark.rotationCoordinator === "function"
+          ? bullshark.rotationCoordinator() : null;
+        if (coord) coord.handleIncoming(data, peerId);
+      },
     },
 
     /** Access to mempool (for API services to check pending status) */
