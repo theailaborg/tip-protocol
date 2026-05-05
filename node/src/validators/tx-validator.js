@@ -282,10 +282,15 @@ function validateDAGIntegrity(tx, dag, skipPrevCheck = false) {
     errors.push(`tx_id does not match transaction content — transaction may have been tampered with`);
   }
 
-  // Only genesis can have empty prev
+  // Only system txs can have empty prev. GENESIS bootstraps the chain;
+  // COMMITTEE_ROTATION is a system event — its tamper-evidence is the
+  // 2f+1 committee sigs over payload_hash + chain-of-trust walker over
+  // committee_history.prev_rotation, NOT user-tx prev refs. Coupling
+  // rotation to a specific genesis tx_id breaks across DB-drifted
+  // federations where peer DBs disagree on the genesis row.
   if (!tx.prev || tx.prev.length === 0) {
-    if (tx.tx_type !== "GENESIS") {
-      errors.push("Non-genesis tx must have prev references");
+    if (tx.tx_type !== "GENESIS" && tx.tx_type !== TX_TYPES.COMMITTEE_ROTATION) {
+      errors.push("Non-system tx must have prev references");
     }
     return errors.length ? { valid: false, errors } : pass();
   }

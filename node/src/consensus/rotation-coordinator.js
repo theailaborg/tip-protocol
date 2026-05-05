@@ -62,7 +62,7 @@ const log = getLogger("tip.rotation-coord");
  * @param {string[]} signatures        — parallel to signer_node_ids
  * @returns {object} tx with tx_id computed
  */
-function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
+function buildRotationTx(_dag, proposal, signer_node_ids, signatures) {
   const data = {
     rotation_number: proposal.rotation_number,
     effective_round: proposal.effective_round,
@@ -71,10 +71,33 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
     signer_node_ids,
     signatures,
   };
+  // Deterministic outer envelope — every honest node building a rotation
+  // tx for the same (rotation_number, effective_round, committee, sigs)
+  // produces the IDENTICAL tx_id. COMMITTEE_ROTATION is a SYSTEM tx (same
+  // class as GENESIS): tamper-evidence comes from content-addressed tx_id +
+  // 2f+1 committee sigs over payload_hash + chain-of-trust walker over
+  // committee_history.prev_rotation. It is NOT part of the user-tx prev
+  // chain.
+  //
+  //   timestamp: derived from proposal.effective_round (identical across
+  //              nodes; the real BFT wall-clock for the round lives in
+  //              cert.timestamp + commits.committed_at, not here)
+  //   prev:      [] — no user-tx prev refs. Anchoring to GENESIS_TX_ID
+  //              would require every node to share the EXACT same genesis
+  //              tx_id, which is not true in practice across DB-drifted
+  //              federations (live observed 2026-05-05: n4 had only the
+  //              old May-4 genesis row, so prev:[<new GENESIS_TX_ID>]
+  //              failed `prev reference not found in DAG`). Treating
+  //              rotation as a system tx avoids that coupling entirely.
+  //
+  // tx-validator.js permits empty prev for the system-tx set (GENESIS,
+  // COMMITTEE_ROTATION). Both timestamp and prev fall OUTSIDE the
+  // chain-of-trust signature payload (`rotation:${payload_hash}:${signer}`),
+  // so the change has no impact on signature verification.
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
-    timestamp: new Date().toISOString(),
-    prev: dag.getRecentPrev ? dag.getRecentPrev() : [],
+    timestamp: new Date(proposal.effective_round * CONSENSUS.BATCH_WAIT_MS).toISOString(),
+    prev: [],
     data,
   };
   tx.tx_id = computeTxId(tx);

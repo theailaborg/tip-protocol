@@ -170,7 +170,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         dag.runInTransaction(() => {
           for (const tx of validated) {
             dag.addTx(tx);
-            _applyDerivedState(tx);
+            _applyDerivedState(tx, certTimestamp);
             committed++;
           }
           // Remove committed txs from mempool in the same transaction
@@ -430,7 +430,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * Apply derived state updates for a committed transaction.
    * Handles all tx types — identity, content, dispute, jury, appeal, revocation, governance.
    */
-  function _applyDerivedState(tx) {
+  function _applyDerivedState(tx, _committedCertTimestamp = 0) {
     const d = tx.data || {};
 
     switch (tx.tx_type) {
@@ -614,6 +614,16 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // All that's left is to persist the row to committee_history.
       // saveCommitteeRotation uses INSERT OR IGNORE so a re-replay of
       // the same tx is a no-op (matches replay semantics elsewhere).
+      //
+      // committed_at: prefer the BFT-Time `_committedCertTimestamp`
+      // (median of acks.signed_at at this anchor commit, deterministic
+      // across nodes) over `tx.timestamp`. Post-#81 tx.timestamp is a
+      // synthetic value derived from effective_round (deterministic but
+      // not a meaningful wall-clock — would log "1970-01-01..." in
+      // committee_history.committed_at). The cert timestamp gives a real
+      // wall-clock that's STILL deterministic across nodes via BFT-Time
+      // consensus. Falls back to tx.timestamp if certTimestamp wasn't
+      // plumbed (test/legacy paths).
       case TX_TYPES.COMMITTEE_ROTATION:
         dag.saveCommitteeRotation({
           rotation_number: d.rotation_number,
@@ -623,7 +633,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           signer_node_ids: d.signer_node_ids || [],
           signatures: d.signatures || [],
           payload_hash: d.payload_hash,
-          committed_at: tx.timestamp,
+          committed_at: _committedCertTimestamp > 0
+            ? new Date(_committedCertTimestamp).toISOString()
+            : tx.timestamp,
         });
         break;
 
