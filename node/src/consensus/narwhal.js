@@ -755,8 +755,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _currentRound, nodeId, _myBatch, acks, parentHashes, privateKey
     );
 
-    // Persist
-    _saveCertAndNotify(cert);
+    // Persist. If the SQLite connection is busy (snapshot serve in
+    // flight on the same connection) the save is deferred — leave
+    // _myCertificateCreated unset and skip broadcast so the next
+    // round retries with a fresh cert. Cert is in memory only at
+    // this point; nothing to clean up.
+    const persisted = _saveCertAndNotify(cert);
+    if (!persisted) {
+      _scheduleNextRound(100);
+      return;
+    }
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
 
@@ -848,11 +856,42 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   /**
    * Persist, emit save events, and flush any pending certs whose last
    * missing parent is this one.
+   *
+   * better-sqlite3 throws "This database connection is busy executing
+   * a query" if a write is attempted while a streaming iterator
+   * (snapshot serving) is live on the same connection. This is a
+   * transient condition — the iterator finishes within milliseconds.
+   * Treat it as deferrable rather than fatal: log + skip this tick,
+   * the cert is still in memory and will retry on the next round.
+   * Letting it bubble crashes the node (crash observed 2026-05-05
+   * round 800 during concurrent snapshot serve to two reconnecting
+   * peers).
+   *
+   * For OWN cert: caller is `_tryCreateCertificate` from `_beginRound`.
+   * Skipping the save without setting `_myCertificateCreated` lets the
+   * next round retry naturally. Brief liveness hiccup, no state loss.
+   *
+   * For PEER cert: caller is `_processVerifiedCertificate`. Skipping
+   * the save means we don't notify save-event listeners. Peer will
+   * re-broadcast (or anti-entropy will pull) — idempotent via the
+   * `dag.getCertificate()` dedup guard in handleIncomingCertificate.
+   *
+   * Returns true if persisted, false if deferred.
    */
   function _saveCertAndNotify(cert) {
-    dag.saveCertificate(cert);
+    try {
+      dag.saveCertificate(cert);
+    } catch (err) {
+      const msg = (err && err.message) || "";
+      if (msg.includes("database connection is busy")) {
+        log.warn(`Round ${cert.round}: cert save deferred — SQLite connection busy (snapshot serve in flight); will retry`);
+        return false;
+      }
+      throw err;
+    }
     _onCertSaved(cert);
     _flushPendingForParent(cert.hash);
+    return true;
   }
 
   /**
