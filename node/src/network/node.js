@@ -69,12 +69,15 @@ const TOPICS = Object.freeze({
   CERTIFICATES: "tip/certificates",
   MEMPOOL: "tip/mempool",
   CONSENSUS: "tip/consensus",
-  // #68 multi-sig committee-rotation coordination — proposer broadcasts
-  // RotationProposal here; previous-committee members broadcast their
-  // RotationSignature votes back on the same topic. Once a node aggregates
-  // ≥ ceil(2n/3) distinct sigs it submits the COMMITTEE_ROTATION tx.
-  ROTATION_COORDINATION: "tip/rotation-coordination",
 });
+
+// Direct-stream RPC protocol for committee-rotation coordination. Replaces
+// the gossipsub tip/rotation-coordination topic that empirically dropped
+// large RotationProposal messages on cold meshes (live observed 2026-05-04
+// rotation 13 halt). Each proposal/sig is sent via a one-shot stream over
+// the existing TCP/QUIC connection between authorized peers — no mesh, no
+// scoring, no topic warmth required.
+const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
 
 /**
  * Create and start a libp2p network node.
@@ -163,7 +166,6 @@ async function createNetworkNode(options = {}) {
   pubsub.subscribe(TOPICS.CERTIFICATES);
   pubsub.subscribe(TOPICS.MEMPOOL);
   pubsub.subscribe(TOPICS.CONSENSUS);
-  pubsub.subscribe(TOPICS.ROTATION_COORDINATION);
   log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
   const directPeers = createDirectPeersManager(pubsub, log);
 
@@ -249,9 +251,6 @@ async function createNetworkNode(options = {}) {
         case TOPICS.CONSENSUS:
           if (_topicHandlers.onConsensus) _topicHandlers.onConsensus(data, peerId);
           break;
-        case TOPICS.ROTATION_COORDINATION:
-          if (_topicHandlers.onRotationCoordination) _topicHandlers.onRotationCoordination(data, peerId);
-          break;
         default:
           log.debug(`Unknown topic message: ${topic}`);
       }
@@ -289,6 +288,31 @@ async function createNetworkNode(options = {}) {
     // If this was a bootstrap peer, restart its retry chain.
     bootstrapReconnect.onPeerDisconnect(remotePeerId);
   });
+
+  // One-shot broadcast to every authorized peer over a direct stream.
+  // Each peer gets its own dial → write(buf) → close. Failures on one
+  // peer don't block the others; per-peer timeout protects against a
+  // slow peer stalling the whole broadcast. Used for rotation-coord
+  // traffic so delivery doesn't depend on gossipsub topic mesh state.
+  async function broadcastToAuthorized(buf, protocol, { timeoutMs = 2000 } = {}) {
+    const peerIds = [..._authorizedPeers.keys()];
+    await Promise.all(peerIds.map(async (peerId) => {
+      let stream = null;
+      let timer = null;
+      try {
+        timer = setTimeout(() => {
+          try { if (stream) stream.close(); } catch { /* ignore */ }
+        }, timeoutMs);
+        stream = await node.dialProtocol(peerIdFromString(peerId), protocol);
+        await stream.sink([buf]);
+      } catch (err) {
+        log.debug(`broadcastToAuthorized to ${peerId.slice(0, 12)} on ${protocol} failed: ${err.message}`);
+      } finally {
+        if (timer) clearTimeout(timer);
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+      }
+    }));
+  }
 
   // ── Public interface ───────────────────────────────────────────────────
   return {
@@ -359,6 +383,9 @@ async function createNetworkNode(options = {}) {
     async openStream(peerId, protocol) {
       return node.dialProtocol(peerIdFromString(peerId), protocol);
     },
+
+    broadcastToAuthorized,
+    ROTATION_COORD_PROTOCOL,
 
     async stop() {
       rateLimiter.stop();

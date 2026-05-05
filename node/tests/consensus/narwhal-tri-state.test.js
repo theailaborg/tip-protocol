@@ -389,5 +389,66 @@ describe("narwhal tri-state join FSM", () => {
         jest.useRealTimers();
       }
     });
+
+    // Carve-out path must NOT drain the rotation tx from mempool. Without
+    // this, each node carves exactly once at the boundary and producer-
+    // pauses again at R+1 with an empty mempool — anchor-commit at R needs
+    // 2f+1 certs at R+2, but each node only produces one cert at the
+    // boundary epoch then nothing. Federation halts (live observed
+    // 2026-05-04 rotation-13 deadlock: 3 carve-outs at 2600, 1 at 2601, 0
+    // at 2602 — anchor-commit at 2600 impossible). Leaving the tx in
+    // mempool keeps re-carving every round until anchor-commit applies it
+    // through the normal pipeline, at which point commit-handler removes
+    // it via dag.deleteMempoolTxs by tx_id and producer-pause clears.
+    test("carve-out keeps rotation tx in mempool (re-carves until anchor-commit clears it)", () => {
+      jest.useFakeTimers();
+      try {
+        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
+        const fx = buildNarwhal();
+        // Producer-pause for rotation 6 (buildNarwhal seeds 1-5 only).
+        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+
+        // Inject a rotation 6 tx into the SAME mempool narwhal uses.
+        const mp = require(path.join(SRC, "consensus", "mempool")).createMempool;
+        // Rebuild access to narwhal's mempool via fx — buildNarwhal threads
+        // its own mempool into the narwhal closure, so we reuse it here
+        // through the dag-level interface (dag.mempool* statements aren't
+        // public; instead we re-derive a mempool over the same dag and
+        // populate it — narwhal.handleIncomingBatch is the regular path
+        // peer batches arrive on, but for this unit we cut to the chase
+        // and add directly to narwhal's underlying mempool via a fresh
+        // facade against the same SQLite store).
+        const sharedMempool = mp({ dag: fx.dag });
+        const rotTx = {
+          tx_id: "ab".repeat(32),
+          tx_type: "COMMITTEE_ROTATION",
+          data: { rotation_number: 6, effective_round: epochLength * 6 },
+          signature: "00".repeat(64),
+          timestamp: "2026-05-04T12:00:00.000Z",
+          prev: [],
+        };
+        const r = sharedMempool.add(rotTx);
+        expect(r.added).toBe(true);
+        expect(sharedMempool.size()).toBe(1);
+
+        // Drive _beginRound by starting + advancing timers. The carve-out
+        // branch fires for round = epochLength*6 (epochOf=6, missing in CH).
+        // Mempool retention is the contract under test.
+        fx.narwhal.start();
+        jest.advanceTimersByTime(50);
+
+        // KEY ASSERTION: the rotation tx is STILL in mempool after carve-out.
+        // (Pre-fix, mempool.remove drained it here; post-fix, carve-out
+        // builds a batch with the tx but leaves the mempool entry in place
+        // so the next round can re-carve until anchor-commit applies it.)
+        expect(sharedMempool.peekRotationTx(6)).not.toBeNull();
+        expect(sharedMempool.peekRotationTx(6).tx_id).toBe(rotTx.tx_id);
+        expect(sharedMempool.size()).toBe(1);
+
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });
