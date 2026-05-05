@@ -471,8 +471,14 @@ async function registerSeedNode(vpKeypair) {
     let envSrc = fs.readFileSync(envFile, "utf8");
     envSrc = envSrc.replace(/TIP_NODE_PRIVATE_KEY=.*/, `TIP_NODE_PRIVATE_KEY=${_nodeKp.privateKey}`);
     envSrc = envSrc.replace(/TIP_NODE_PUBLIC_KEY=.*/, `TIP_NODE_PUBLIC_KEY=${_nodeKp.publicKey}`);
+    // Default log level to `warn` so a freshly-seeded founding node doesn't
+    // flood the operator's terminal with INFO chatter from every batch /
+    // anchor / rotation. Operators can still set debug/info manually.
+    // Only rewrites if the line already exists; appended below if missing.
+    envSrc = envSrc.replace(/TIP_LOG_LEVEL=.*/, "TIP_LOG_LEVEL=warn");
+    envSrc = envSrc.replace(/TIP_CONSOLE_LEVEL=.*/, "TIP_CONSOLE_LEVEL=warn");
     fs.writeFileSync(envFile, envSrc);
-    ok("Node keys written to .env");
+    ok("Node keys + log levels written to .env");
   }
 
   // Embed founding node in genesis.js so initDAG can bootstrap it on any node

@@ -273,26 +273,87 @@ async function main() {
   const dbPoolMin  = process.env.DB_POOL_MIN  || "";
   const dbPoolMax  = process.env.DB_POOL_MAX  || "";
 
-  const isSQLite = !dbDriver || dbDriver === "sqlite";
-
+  // Self-documenting DB block — mirrors .env.example so the operator
+  // receives one file with every option inline. Inherited values from the
+  // seed node's environment populate the live settings; per-driver
+  // recipes + pool/TLS knobs stay as commented hints below.
+  const v = (val, fallback) => (val ? String(val) : fallback);
   const dbLines = [
     `# ─── Database ─────────────────────────────────────────────────────────────`,
+    `#`,
+    `# DB_DRIVER selects the database engine. Switching databases requires only`,
+    `# changing DB_DRIVER + the connection variables below — no code changes.`,
+    `#`,
+    `#   Driver value   Engine              npm package(s)`,
+    `#   ─────────────────────────────────────────────────────────`,
+    `#   postgres       PostgreSQL          pg             (already installed)`,
+    `#   mariadb        MariaDB / MySQL     mysql2         (already installed)`,
+    `#   mysql          MySQL               mysql2         (alias for mariadb)`,
+    `#   mssql          SQL Server          mssql          (already installed)`,
+    `#   sqlserver      SQL Server          mssql          (alias for mssql)`,
+    `#   oracle         Oracle Database     oracledb       (already installed)`,
+    `#   sqlite         SQLite (local dev)  better-sqlite3 (already installed)`,
+    `#`,
     `# Inherited from the seed node's environment. Change DB_NAME if this node`,
     `# uses a dedicated schema/database (e.g. tip_node2 for Postgres/MariaDB).`,
+    `DB_DRIVER=${v(dbDriver, "sqlite")}`,
+    ``,
+    `# ── Common connection parameters ─────────────────────────────────────────`,
+    `# Used by postgres, mariadb, mssql, and oracle.`,
+    `# Leave DB_PORT blank to use the driver's default (5432 / 3306 / 1433 / 1521).`,
+    `DATABASE_URL=${v(dbUrl, "")}`,
+    `# DB_HOST must match the Docker service name when running in Docker Compose`,
+    `# (postgres / mariadb / oracle / mssql); use localhost outside Docker.`,
+    `DB_HOST=${v(dbHost, "localhost")}`,
+    `DB_PORT=${v(dbPort, "")}`,
+    `DB_NAME=${v(dbName, "tip_protocol")}`,
+    `DB_USER=${v(dbUser, "tip")}`,
+    `DB_PASSWORD=${v(dbPassword, "")}`,
+    ``,
+    `# TLS/SSL — set DB_SSL=true for any remote or cloud database.`,
+    `DB_SSL=${v(dbSsl, "false")}`,
+    `# Set to false ONLY in private networks with self-signed certificates.`,
+    `DB_SSL_REJECT_UNAUTHORIZED=${v(dbSslRejectUnauthorized, "true")}`,
+    ``,
+    `# Connection pool (applies to all server-side drivers).`,
+    `DB_POOL_MIN=${v(dbPoolMin, "2")}`,
+    `DB_POOL_MAX=${v(dbPoolMax, "10")}`,
+    ``,
+    `# ── PostgreSQL ───────────────────────────────────────────────────────────`,
+    `#   DB_DRIVER=postgres`,
+    `#   DATABASE_URL=postgresql://tip:secret@localhost:5432/tip_protocol`,
+    `#   — or use individual params above with DB_PORT=5432 —`,
+    `#`,
+    `# ── MariaDB / MySQL ──────────────────────────────────────────────────────`,
+    `#   DB_DRIVER=mariadb         (or: mysql)`,
+    `#   DB_HOST=mariadb           # Docker service name (use localhost outside Docker)`,
+    `#   DB_PORT=3306`,
+    `# Docker: docker compose -f docker-compose.local.yml --profile mariadb up -d`,
+    `#`,
+    `# ── SQL Server ───────────────────────────────────────────────────────────`,
+    `#   DB_DRIVER=mssql           (or: sqlserver)`,
+    `#   DB_PORT=1433`,
+    `#   DB_PASSWORD=StrongPass123!  # SA password — must meet complexity rules`,
+    `#                                # (uppercase + lowercase + digit + symbol, min 8).`,
+    `#                                # Avoid '#' in .env (parsed as comment).`,
+    `#   DB_SSL=true`,
+    `#   DB_SSL_REJECT_UNAUTHORIZED=false  # dev with self-signed cert`,
+    `# Docker: docker compose -f docker-compose.local.yml --profile mssql up -d`,
+    `#`,
+    `# ── Oracle Database 23ai ─────────────────────────────────────────────────`,
+    `#   DB_DRIVER=oracle`,
+    `#   DB_HOST=oracle            # Docker service name (use localhost outside Docker)`,
+    `#   DB_PORT=1521`,
+    `#   DB_NAME=FREEPDB1          # Oracle service name (not SID)`,
+    `#   DB_USER=tip               # tip_node2 / tip_node3 / tip_node4 for other nodes`,
+    `#   — or set DATABASE_URL to a full connect string / TNS descriptor —`,
+    `# oracledb 6+ uses thin-mode (no Oracle Instant Client required).`,
+    `# Docker: docker compose -f docker-compose.local.yml --profile oracle up -d`,
+    `#`,
+    `# ── SQLite ───────────────────────────────────────────────────────────────`,
+    `# Path to the SQLite .db file (used when DB_DRIVER=sqlite).`,
+    `# TIP_DB_PATH is set above in this file; no further config needed.`,
   ];
-  if (dbDriver)   dbLines.push(`DB_DRIVER=${dbDriver}`);
-  if (dbUrl)      dbLines.push(`DATABASE_URL=${dbUrl}`);
-  if (!isSQLite) {
-    if (dbHost)     dbLines.push(`DB_HOST=${dbHost}`);
-    if (dbPort)     dbLines.push(`DB_PORT=${dbPort}`);
-    if (dbName)     dbLines.push(`DB_NAME=${dbName}`);
-    if (dbUser)     dbLines.push(`DB_USER=${dbUser}`);
-    if (dbPassword) dbLines.push(`DB_PASSWORD=${dbPassword}`);
-    if (dbSsl)      dbLines.push(`DB_SSL=${dbSsl}`);
-    if (dbSslRejectUnauthorized) dbLines.push(`DB_SSL_REJECT_UNAUTHORIZED=${dbSslRejectUnauthorized}`);
-    if (dbPoolMin)  dbLines.push(`DB_POOL_MIN=${dbPoolMin}`);
-    if (dbPoolMax)  dbLines.push(`DB_POOL_MAX=${dbPoolMax}`);
-  }
 
   // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`
   const envContent = [
@@ -310,8 +371,11 @@ async function main() {
     `TIP_DB_PATH=${dataDirRel}/tip.db`,
     `TIP_LOG_DIR=${logDirRel}`,
     `TIP_CORS_ORIGINS=*`,
-    `TIP_LOG_LEVEL=info`,
-    `TIP_CONSOLE_LEVEL=info`,
+    // Default to `warn` so per-node terminals + log files stay quiet on a
+    // healthy federation. Override locally to `info`/`debug` while
+    // investigating an incident.
+    `TIP_LOG_LEVEL=warn`,
+    `TIP_CONSOLE_LEVEL=warn`,
     ``,
     `# ─── Network ───────────────────────────────────────────────────────────────`,
     `# Set publicly-reachable IP so peerStore / identify share a usable address.`,
