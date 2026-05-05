@@ -317,6 +317,26 @@ class KnexAdapter {
       t.string("key", 128).primary();
       t.text("value").notNullable();
     });
+
+    await ensure("committee_history", t => {
+      t.integer("rotation_number").primary();
+      t.integer("effective_round").notNullable();
+      t.text("committee").notNullable();
+      t.integer("prev_rotation").nullable();
+      t.text("signer_node_ids").notNullable().defaultTo("[]");
+      t.text("signatures").notNullable().defaultTo("[]");
+      t.text("payload_hash").nullable();
+      t.string("committed_at", 64).notNullable();
+      t.bigInteger("created_at").notNullable().defaultTo(0);
+      t.index("effective_round", "idx_committee_history_round");
+    });
+
+    await ensure("rotation_participation", t => {
+      _id(t, "node_id").notNullable();
+      t.integer("rotation_number").notNullable();
+      t.integer("count").notNullable().defaultTo(0);
+      t.primary(["node_id", "rotation_number"]);
+    });
   }
 
   async _hydrate() {
@@ -413,6 +433,29 @@ class KnexAdapter {
     if (!this.mirror._consensusMeta) this.mirror._consensusMeta = new Map();
     for (const row of metaRows) {
       this.mirror._consensusMeta.set(row.key, row.value);
+    }
+
+    // Committee history
+    const rotRows = await this.knex("committee_history").select("*");
+    if (!this.mirror._committeeHistory) this.mirror._committeeHistory = new Map();
+    for (const row of rotRows) {
+      this.mirror._committeeHistory.set(row.rotation_number, {
+        rotation_number:  row.rotation_number,
+        effective_round:  row.effective_round,
+        committee:        _j(row.committee) || [],
+        prev_rotation:    row.prev_rotation == null ? null : row.prev_rotation,
+        signer_node_ids:  _j(row.signer_node_ids) || [],
+        signatures:       _j(row.signatures) || [],
+        payload_hash:     row.payload_hash || null,
+        committed_at:     row.committed_at,
+      });
+    }
+
+    // Rotation participation
+    const rpRows = await this.knex("rotation_participation").select("*");
+    if (!this.mirror._rotationParticipation) this.mirror._rotationParticipation = new Map();
+    for (const row of rpRows) {
+      this.mirror._rotationParticipation.set(`${row.node_id}|${row.rotation_number}`, row.count);
     }
   }
 
@@ -799,6 +842,68 @@ class KnexAdapter {
       const subj = subjectTipId(tx);
       if (subj) await this.knex("tx_rejections").where("tx_id", row.tx_id).update({ subject_tip_id: subj });
     }
+  }
+
+  // ── Committee history ──────────────────────────────────────────────────────
+
+  saveCommitteeRotation(rec) {
+    this.mirror.saveCommitteeRotation(rec);
+    const row = {
+      rotation_number:  rec.rotation_number,
+      effective_round:  rec.effective_round,
+      committee:        JSON.stringify(rec.committee || []),
+      prev_rotation:    rec.prev_rotation == null ? null : rec.prev_rotation,
+      signer_node_ids:  JSON.stringify(rec.signer_node_ids || []),
+      signatures:       JSON.stringify(rec.signatures || []),
+      payload_hash:     rec.payload_hash || null,
+      committed_at:     rec.committed_at || new Date().toISOString(),
+      created_at:       Date.now(),
+    };
+    this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
+  }
+
+  getCommitteeRotation(n)  { return this.mirror.getCommitteeRotation(n); }
+  getLatestRotation()      { return this.mirror.getLatestRotation(); }
+  getCommitteeAtRound(r)   { return this.mirror.getCommitteeAtRound(r); }
+  *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
+
+  // ── Rotation participation ─────────────────────────────────────────────────
+
+  incrementRotationParticipation(nodeId, rotationNumber) {
+    this.mirror.incrementRotationParticipation(nodeId, rotationNumber);
+    const count = (this.mirror._rotationParticipation.get(`${nodeId}|${rotationNumber}`) || 0);
+    this._ff(() => this._dbInsert("rotation_participation",
+      ["node_id", "rotation_number"],
+      { node_id: nodeId, rotation_number: rotationNumber, count },
+      "merge"
+    ));
+  }
+
+  getRotationParticipation(n)         { return this.mirror.getRotationParticipation(n); }
+
+  pruneRotationParticipationBefore(n) {
+    const removed = this.mirror.pruneRotationParticipationBefore(n);
+    this._ff(() => this.knex("rotation_participation").where("rotation_number", "<", n).delete());
+    return removed;
+  }
+
+  setRotationParticipation(nodeId, rotationNumber, count) {
+    this.mirror.setRotationParticipation(nodeId, rotationNumber, count);
+    this._ff(() => this._dbInsert("rotation_participation",
+      ["node_id", "rotation_number"],
+      { node_id: nodeId, rotation_number: rotationNumber, count },
+      "merge"
+    ));
+  }
+
+  deleteRotationParticipationByRotation(rotationNumber) {
+    const removed = this.mirror.deleteRotationParticipationByRotation(rotationNumber);
+    this._ff(() => this.knex("rotation_participation").where("rotation_number", rotationNumber).delete());
+    return removed;
+  }
+
+  *iterateRotationParticipationForSnapshot() {
+    yield* this.mirror.iterateRotationParticipationForSnapshot();
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
