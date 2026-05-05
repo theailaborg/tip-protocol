@@ -294,6 +294,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await syncHandler.registerProtocol();
       await snapshotHandler.registerProtocol();
       await antiEntropy.start();
+      const coord = bullshark.rotationCoordinator?.();
+      if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
@@ -320,15 +322,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       onBatch: (data) => narwhal.handleIncomingBatch(data),
       onAck: (data) => narwhal.handleIncomingAck(data),
       onCertificate: (data) => narwhal.handleIncomingCertificate(data),
-      // #68 — RotationProposal / RotationSignature dispatch. Bullshark
-      // exposes its proposer.coordinator via `rotationCoordinator()`;
-      // falls through to no-op when no coordinator is wired (e.g., read-
-      // only nodes without signing keys).
-      onRotationCoordination: (data, peerId) => {
-        const coord = typeof bullshark.rotationCoordinator === "function"
-          ? bullshark.rotationCoordinator() : null;
-        if (coord) coord.handleIncoming(data, peerId);
-      },
+      // RotationProposal / RotationSignature dispatch is now via direct
+      // libp2p stream (/tip/rotation-coord/1.0.0); see coord.registerProtocol.
     },
 
     /** Access to mempool (for API services to check pending status) */

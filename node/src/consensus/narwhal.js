@@ -285,9 +285,23 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Phase 1: Create batch from mempool and broadcast.
     // Carve-out path: only the rotation tx; normal path: drain everything.
+    //
+    // Carve-out does NOT drain the rotation tx from mempool. The rotation
+    // tx must keep re-carving on every round until bullshark anchor-commit
+    // applies it to committee_history through the normal pipeline (commit-
+    // handler → transactions/committee_history/commits/mempool delete in
+    // one transaction). Without this, each node carves exactly once and
+    // then producer-pauses again with an empty mempool — federation halts
+    // because anchor-commit at round R needs 2f+1 certs at R+2, but every
+    // node has only one cert at the boundary epoch then nothing.
+    // Live observed 2026-05-04 rotation-13 deadlock: 3 carve-outs at 2600,
+    // 1 at 2601, 0 at 2602 → anchor-commit at 2600 impossible.
+    // commit-handler dedups duplicate rotation txs ("rotation_number N
+    // already exists") so re-carving across rounds is safe; the eventual
+    // anchor commit removes the tx via deleteMempoolTxs and subsequent
+    // rounds skip the carve branch entirely (rotation in CH).
     let txs;
     if (_carveOutRotationTx) {
-      mempool.remove([_carveOutRotationTx.tx_id]);
       txs = [_carveOutRotationTx];
     } else {
       txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);

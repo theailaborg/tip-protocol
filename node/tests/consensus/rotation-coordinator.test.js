@@ -519,12 +519,117 @@ describe("#68 rotation coordinator", () => {
     // embedded in the proposal as proposer_signature; not re-sent separately.
     expect(after - before).toBe(2);
 
-    // Inflight that's already submitted is NOT re-broadcast.
+    // Submitted inflights ARE re-broadcast — peers below quorum still need
+    // proposal+sigs to reach their own quorum and carve out (live observed
+    // 2026-05-04 rotation 13 halt: fast submitter went silent in 1.2 s,
+    // lagging peers stuck at 2/4 sigs forever).
     coord._state().get(2).submittedAt = Date.now();
     const before2 = network._published.length;
     coord._rebroadcastTick();
-    expect(network._published.length).toBe(before2);
+    expect(network._published.length).toBe(before2 + 2); // proposal + B's sig
 
+    coord.stop();
+  });
+
+  // Fix: keep broadcasting AFTER submission so lagging peers can still reach
+  // quorum, build the same deterministic tx, and inject it into their local
+  // mempool to carve out. Without this, a fast submitter goes silent before
+  // the first re-broadcast tick fires (REBROADCAST_INTERVAL_MS) and peers
+  // missed by the initial broadcast stay below quorum forever.
+  test("post-submit re-broadcast: timer keeps firing after _maybeSubmit succeeds", () => {
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const c = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+      { node_id: "tip://node/C", public_key: c.publicKey },
+    ];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord, network } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+      prevCommitteeNodeIds: ids.map(m => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+    });
+
+    // B's sig pushes us over quorum → submitTx fires.
+    const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
+    const bSig = mldsaSign(bMsg, b.privateKey);
+    coord.handleIncoming(encode("RotationSignature", {
+      rotationNumber: 2, payloadHash: payload_hash,
+      signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+    }), "peer-b");
+    expect(submitted).toHaveLength(1);
+    const inflight = coord._state().get(2);
+    expect(inflight.submittedAt).not.toBeNull();
+
+    // Critical post-submit behavior: a fresh _rebroadcastTick still publishes
+    // the proposal + accumulated sigs (proposer's is embedded in the proposal,
+    // so for n=3 we expect proposal + B's sig = 2 publishes).
+    const before = network._published.length;
+    coord._rebroadcastTick();
+    expect(network._published.length).toBe(before + 2);
+
+    // And again — keeps re-broadcasting on subsequent ticks until pruneExpired.
+    const before2 = network._published.length;
+    coord._rebroadcastTick();
+    expect(network._published.length).toBe(before2 + 2);
+
+    coord.stop();
+  });
+
+  // Fix: pruneExpired naturally bounds the post-submit re-broadcast window.
+  // After deadlineMs * 2 from submittedAt, the entry is dropped and the
+  // rebroadcast timer self-stops on the next tick.
+  test("pruneExpired drops long-submitted inflights and stops rebroadcast", () => {
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+    ];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+      prevCommitteeNodeIds: ids.map(m => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+    });
+    // n=2 quorum=2; A's own sig alone isn't enough — feed B's sig to submit.
+    const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
+    const bSig = mldsaSign(bMsg, b.privateKey);
+    coord.handleIncoming(encode("RotationSignature", {
+      rotationNumber: 2, payloadHash: payload_hash,
+      signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+    }), "peer-b");
+    expect(submitted).toHaveLength(1);
+    expect(coord._state().get(2).submittedAt).not.toBeNull();
+
+    // Backdate submittedAt past deadlineMs * 2 so pruneExpired drops it.
+    coord._state().get(2).submittedAt = Date.now() - 11_000; // deadlineMs=5000 → *2=10000
+    coord.pruneExpired();
+    expect(coord._state().has(2)).toBe(false);
     coord.stop();
   });
 
