@@ -129,205 +129,288 @@ npm install
 
 # Configure
 cp .env.example .env
-# Edit .env: set TIP_JWT_SECRET, TIP_ADMIN_API_KEY, TIP_GENESIS_HASH
-
-# Start the node
-npm start
-
-# Run tests
-npm test
-
-# Node API will be available at:
-# REST API:  http://localhost:4000
-# Gossip:    tcp://localhost:4001
+# Edit .env — see the node setup sections below
 ```
 
-### Register a Node on the DAG
+Each node exposes two ports that must be open in your firewall:
 
-Every peer's public key must be on the DAG (signed by the founding VP) before gossip auth will accept it — new nodes cannot self-register. This step is run by an existing operator who holds the founding VP key.
-
-**Prerequisites**
-
-```bash
-ls genesis-data/founding-vp-keys.json   # must exist
-curl -s http://localhost:4000/health    # must return ok
-```
-
-**Step 1.** Generate a keypair and write a `NODE_REGISTERED` tx to the DAG:
-
-```bash
-node scripts/register-peer-node.js \
-  --name=<node-name> \
-  --port=<node-port> \
-  --peer=ws://<existing-node-host>:4000
-```
-
-**Step 2.** The script writes two files to `generated-nodes/<node-name>/`:
-
-```
-generated-nodes/<node-name>/
-├── keys.json   # node_id, public_key, private_key, algorithm, approving_vp
-└── .env        # TIP_NODE_ID, TIP_NODE_PRIVATE_KEY, TIP_NODE_PUBLIC_KEY,
-                # PORT, TIP_DATA_DIR, TIP_DB_PATH, TIP_PEERS
-```
-
-**Step 3.** Deliver both files to the node operator out-of-band (Bitwarden Send, Signal, hardware token). The genesis seed (`genesis-data/seed.db`) already ships in the repo and does not need to be delivered.
+| Port | Variable | Default | Protocol |
+|------|----------|---------|----------|
+| REST API | `PORT` | 4000 | HTTP |
+| libp2p P2P | `TIP_P2P_PORT` | 4001 | TCP |
 
 ---
 
-### Starting a Node
+### Founding VP Node (first-time setup, run by The AI Lab)
 
-This runbook is run by the node operator after receiving `keys.json` and `.env` from the registering operator.
+The founding node bootstraps the network: it generates the genesis block, registers the founding VP, and writes node keys to `.env`. Run this once on the machine that will host the first node.
 
-**Step 1.** Clone the repo and install dependencies:
+**Step 1 — Bootstrap genesis:**
 
 ```bash
+node --experimental-vm-modules scripts/seed.js
+```
+
+This produces:
+- `genesis-data/founding-vp-keys.json` — VP signing key (chmod 600, **never commit**)
+- `genesis-data/genesis.json` — signed genesis block
+- `genesis-data/seed.db` — bootstrap DAG state
+- `TIP_NODE_PRIVATE_KEY` / `TIP_NODE_PUBLIC_KEY` written to `.env`
+
+**Step 2 — Configure `.env`:**
+
+```ini
+# Identity — auto-written by seed.js, do not change
+TIP_NODE_ID=<auto>
+TIP_NODE_PRIVATE_KEY=<auto>
+TIP_NODE_PUBLIC_KEY=<auto>
+
+# Network
+PORT=4000
+TIP_P2P_PORT=4001
+TIP_PUBLIC_IP=<your-server-public-ip>
+TIP_ENABLE_MDNS=false
+TIP_BOOTSTRAP_PEERS=          # empty for the founding node
+
+# Database (see Database Configuration below)
+DB_DRIVER=postgres
+DB_HOST=localhost
+DB_NAME=tip_protocol
+DB_USER=tip
+DB_PASSWORD=secret
+
+# Logging
+TIP_LOG_LEVEL=info
+TIP_CONSOLE_LEVEL=warn
+```
+
+**Step 3 — Start the node:**
+
+Native (Node.js 18+):
+
+```bash
+node --env-file=.env node/src/index.js
+```
+
+Docker Compose (PostgreSQL default):
+
+```bash
+docker compose -f docker-compose.local.yml up postgres node1 -d
+docker compose -f docker-compose.local.yml logs -f node1
+```
+
+**Step 4 — Confirm it is up and note the bootstrap address:**
+
+```bash
+curl -s http://localhost:4000/health | jq '.data.p2p'
+# Returns: { joinState: "ready", bootstrap_addr: "/ip4/<ip>/tcp/4001/p2p/12D3..." }
+```
+
+Save the `bootstrap_addr` value — every other node uses it as `TIP_BOOTSTRAP_PEERS`.
+
+---
+
+### Registering Additional Nodes
+
+Node registration must be run by the founding operator — it requires `genesis-data/founding-vp-keys.json` and a healthy founding node.
+
+```bash
+node scripts/register-node.js \
+  --name "Partner Node Name" \
+  --node-url http://localhost:4000 \
+  --port 4100 \
+  --p2p-port 4101 \
+  --public-ip <new-node-public-ip>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | `TIP Node <id>` | Human-readable node name |
+| `--node-url` | `http://localhost:4000` | Any healthy node's API URL |
+| `--port` | `4100` | REST API port the new node will use |
+| `--p2p-port` | `port+1` | libp2p port the new node will use |
+| `--public-ip` | `127.0.0.1` | New node's publicly-reachable IP |
+
+The script writes two files to `generated_nodes/<slug>-<id>/`:
+
+```
+generated_nodes/<slug>-<id>/
+├── <slug>.env          ← drop-in node config with ML-DSA-65 keys
+├── <id>.tip.json       ← key backup (chmod 600)
+└── data/               ← per-node data dir
+```
+
+**Deliver to the node operator out-of-band** (Bitwarden Send, Signal, hardware token):
+- `<id>.tip.json` — key backup
+- `<slug>.env` — config with embedded keys
+
+> Regenerating or editing the identity keys invalidates the DAG registration. The node will fail consensus handshakes. Always restore the delivered values if they are accidentally changed.
+
+---
+
+### Starting a Registered Node (node operator runbook)
+
+After receiving `<id>.tip.json` and `<slug>.env` from the registering operator:
+
+**Native (Node.js 18+):**
+
+```bash
+# 1. Clone and install
 git clone https://github.com/theailab/tip-protocol.git
 cd tip-protocol
 npm install
+
+# 2. Place the delivered env file
+cp /path/to/delivered/<slug>.env .env
+chmod 600 .env
+
+# 3. Adjust deployment-specific values in .env:
+#      TIP_PUBLIC_IP        → this server's public IP
+#      TIP_BOOTSTRAP_PEERS  → founding node's bootstrap_addr (from GET /health)
+#      DB_DRIVER            → your database engine (postgres / mariadb / oracle / sqlite)
+#      DB_HOST / DB_NAME / DB_USER / DB_PASSWORD → your database credentials
+#      TIP_PUBLIC_URL       → public HTTPS URL of this node (optional)
+
+# 4. Open firewall: PORT (REST API) and TIP_P2P_PORT (libp2p P2P)
+
+# 5. Start
+node --env-file=.env node/src/index.js
 ```
 
-**Step 2.** Place the delivered files in the repo:
+**Docker:**
 
 ```bash
-mkdir -p generated-nodes/<node-name>
-mv /path/to/delivered/keys.json generated-nodes/<node-name>/keys.json
-cp /path/to/delivered/.env .env
-chmod 600 generated-nodes/<node-name>/keys.json .env
+# 1. Clone
+git clone https://github.com/theailab/tip-protocol.git
+cd tip-protocol
+
+# 2. Place the delivered env file
+cp /path/to/delivered/<slug>.env .env
+chmod 600 .env
+# Set TIP_PUBLIC_IP, TIP_BOOTSTRAP_PEERS, DB_* vars as above
+
+# 3. Build the image (first time only)
+docker build -t tip-protocol/node:2.0.0 .
+
+# 4. Start with PostgreSQL (default)
+docker compose -f docker-compose.local.yml up postgres node1 -d
+docker compose -f docker-compose.local.yml logs -f node1
 ```
 
-**Step 3.** Open `.env` and adjust the deployment-specific values. Identity fields (`TIP_NODE_ID`, `TIP_NODE_PRIVATE_KEY`, `TIP_NODE_PUBLIC_KEY`) must remain exactly as delivered:
+**Verify the node joined the network:**
 
 ```bash
-# ── Identity — from the registration bundle, do not regenerate ────────────
-TIP_NODE_ID=<as delivered>
-TIP_NODE_PRIVATE_KEY=<as delivered>
-TIP_NODE_PUBLIC_KEY=<as delivered>
+curl -s http://localhost:$PORT/health | jq '.data'
+# Look for:  joinState: "ready",  peer_count >= 1
 
-# ── Network — adjust per deployment ───────────────────────────────────────
-PORT=4000
-HOST=0.0.0.0
-TIP_PUBLIC_URL=https://tip.example.org
-TIP_PEERS=wss://node.theailab.org            # The AI Lab public bootstrap node
-TIP_DATA_DIR=/var/lib/tip/data
-TIP_DB_PATH=/var/lib/tip/data/tip.db
-
-# ── Optional ──────────────────────────────────────────────────────────────
-TIP_REGION=US
-TIP_NODE_TYPE=full                           # full | light | vp | archive
-TIP_VP_ID=                                   # set only for a VP node
-TIP_LOG_LEVEL=info                           # debug | info | warn | error
-TIP_CORS_ORIGINS=https://example.org         # comma-separated, or "*"
-
-# ── Optional tuning (scheduler intervals in ms) ───────────────────────────
-# TIP_SCORE_RECOMPUTE_MS=43200000
-# TIP_CLEAN_RECORD_MS=86400000
-# TIP_VERDICT_CHECK_MS=300000
-# TIP_PEER_HEALTH_MS=30000
-
-# ── Optional media size caps (bytes) ──────────────────────────────────────
-# TIP_MAX_VIDEO_BYTES=5368709120
-# TIP_MAX_IMAGE_BYTES=52428800
-# TIP_MAX_AUDIO_BYTES=524288000
-# TIP_MAX_TEXT_BYTES=10485760
+curl -s http://localhost:$PORT/v1/constants
 ```
 
-> `TIP_PEERS` accepts a comma-separated list of `ws://` or `wss://` URLs — the node appends `/gossip` to each. `wss://node.theailab.org` is the public bootstrap node operated by The AI Lab; additional peers may be added as the federation grows.
->
-> Regenerating the identity keys invalidates the DAG registration — the gossip handshake will fail with `Node authentication failed`.
-
-**Step 4.** Open the firewall on `PORT` for inbound gossip WebSocket and HTTP.
-
-**Step 5.** Start the node using either method:
-
-Native (Node.js):
-
-```bash
-npm start --prefix node
-```
-
-Docker Compose:
-
-```bash
-docker compose up -d          # starts tip-node in the background
-docker compose logs -f tip-node
-```
-
-The compose file reads `.env` from the repo root and mounts `./data` into the container at `/app/data`, so `TIP_DATA_DIR` and `TIP_DB_PATH` are set automatically inside the container. Only the `.env` values need to be configured — no additional Docker arguments are required.
-
-On first boot, `genesis-data/seed.db` is auto-copied to `TIP_DB_PATH` (node/src/index.js:57-61) so the founding VP and genesis block are available immediately.
-
-**Step 6.** Within ~10s, these log lines should appear:
+**Expected startup log sequence:**
 
 ```
-Node registered as: <node_id>
-Gossip: connected to peer wss://node.theailab.org
-Gossip: node <peer-node-id> authenticated (registered)
-Gossip: sync imported <N> transactions
+libp2p started on port 4001
+Bootstrap peer connected: /ip4/<ip>/tcp/4001/p2p/12D3...
+Consensus: syncing rounds from peers...
+Consensus: joinState → ready
+API listening on 0.0.0.0:4000
 ```
 
-Troubleshooting:
-- `Node authentication failed` — identity env vars were edited or regenerated; restore the delivered values.
-- `could not connect to wss://…` — firewall, DNS, TLS cert, or the peer node is down.
+**Troubleshooting:**
 
-**Step 7.** Verify the API:
-
-```bash
-curl http://localhost:$PORT/health
-curl http://localhost:$PORT/v1/constants
-```
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `joinState: syncing` persists | `TIP_BOOTSTRAP_PEERS` unreachable | Check IP, port, and founding node firewall |
+| `peer_count: 0` after startup | `TIP_PUBLIC_IP` not set or wrong | Set to this server's public IP |
+| DB connection error | Wrong `DB_HOST` or credentials | For Docker, use the service name (`postgres`, `mariadb`, `oracle`) not `localhost` |
+| Keys rejected by peers | Identity keys were edited | Restore the original delivered values from `<id>.tip.json` |
 
 ---
 
-#### Environment variable ownership
+#### Environment variable reference
 
-| Delivered by operator         | Set by node runner          |
-|-------------------------------|-----------------------------|
-| `TIP_NODE_ID`                 | `PORT`                      |
-| `TIP_NODE_PRIVATE_KEY`        | `TIP_DATA_DIR`              |
-| `TIP_NODE_PUBLIC_KEY`         | `TIP_DB_PATH`               |
-| `TIP_PEERS` (peer gossip URL) | `TIP_PUBLIC_URL`            |
-| `genesis-data/seed.db`        | `TIP_CORS_ORIGINS`, TLS, supervisor, backups |
+| Variable | Who sets it | Description |
+|----------|-------------|-------------|
+| `TIP_NODE_ID` | `register-node.js` | Node identity URI |
+| `TIP_NODE_PRIVATE_KEY` | `register-node.js` | ML-DSA-65 private key — never change |
+| `TIP_NODE_PUBLIC_KEY` | `register-node.js` | ML-DSA-65 public key — never change |
+| `TIP_BOOTSTRAP_PEERS` | Node operator | Founding node libp2p multiaddr (from `GET /health → data.p2p.bootstrap_addr`) |
+| `TIP_PUBLIC_IP` | Node operator | This server's public IP (for peer discovery) |
+| `PORT` | Node operator | REST API port |
+| `TIP_P2P_PORT` | Node operator | libp2p P2P port |
+| `DB_DRIVER` | Node operator | Database engine (`postgres` / `mariadb` / `oracle` / `sqlite`) |
+| `TIP_PUBLIC_URL` | Node operator | Public HTTPS URL (optional, shown in API responses) |
+| `TIP_CORS_ORIGINS` | Node operator | Allowed CORS origins |
 
 ---
 
-### Assigning Peers
+### Database Configuration
 
-`TIP_PEERS` is a comma-separated list of `ws://` or `wss://` URLs that a node dials on startup. The node appends `/gossip` to each URL (node/src/gossip.js:419) and retries with 30s backoff on disconnect (gossip.js:428-431). Inbound connections from any source are also accepted, provided the peer passes the ML-DSA challenge against the DAG node registry.
+TIP Protocol supports four database engines. Switch by changing `DB_DRIVER` in `.env` — no code changes required.
 
-#### Every node lists every other node
+| `DB_DRIVER` | Engine | npm package | Notes |
+|-------------|--------|-------------|-------|
+| `sqlite` | SQLite (file) | `better-sqlite3` | Installed — local dev only, no DB server needed |
+| `postgres` | PostgreSQL | `pg` | Installed — production default |
+| `mariadb` | MariaDB / MySQL | `mysql2` | Installed |
+| `mysql` | MySQL | `mysql2` | Alias for `mariadb` |
+| `oracle` | Oracle Database 23ai | `oracledb` | Installed (thin-mode, no Instant Client needed) |
+| `mssql` | SQL Server | `mssql` | Install separately: `npm install --workspace=node mssql` |
 
-For the pilot, every participating node must list all other nodes in its `TIP_PEERS`. Each pair of nodes therefore dials each other, producing two sockets per pair — one in each direction. This is what the current gossip implementation requires for bidirectional transaction propagation.
+**SQLite — local dev (no DB server):**
 
-Example for a 4-node network (The AI Lab bootstrap plus three partners):
-
-```
-Node on node.theailab.org
-  TIP_PEERS=wss://node.partner1.io,wss://node.partner2.com,wss://node.partner3.xyz
-
-Node on node.partner1.io
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner2.com,wss://node.partner3.xyz
-
-Node on node.partner2.com
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner3.xyz
-
-Node on node.partner3.xyz
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner2.com
+```ini
+DB_DRIVER=sqlite
+TIP_DB_PATH=./data/tip.db
 ```
 
-A transaction created on any node is broadcast to its three directly connected peers. Each peer validates, stores, and relays with TTL=2 (gossip.js:354-356); duplicates are deduplicated by `seenTx` (gossip.js:336-338). All four DAGs converge on the same state.
+**PostgreSQL — production default:**
 
-If one node goes offline, its sockets close on the remaining nodes and outbound connections retry with 30s backoff. The remaining nodes continue to gossip among themselves, and the mesh heals automatically when the node returns.
+```ini
+DB_DRIVER=postgres
+DB_HOST=localhost        # Docker service name: postgres
+DB_PORT=5432
+DB_NAME=tip_protocol
+DB_USER=tip
+DB_PASSWORD=secret
+```
 
-#### Bootstrapping a fresh node
+Docker: `docker compose -f docker-compose.local.yml up postgres node1 -d`
 
-A new node's DAG contains only what shipped in `genesis-data/seed.db` — it does not yet know about other peers' `NODE_REGISTERED` txs. The first successful handshake must therefore be with a node that already has those txs. After that handshake, `SYNC_REQUEST` / `SYNC_RESPONSE` (gossip.js:326-366) backfills the DAG and subsequent peer handshakes succeed.
+**MariaDB / MySQL:**
 
-For this reason, every `TIP_PEERS` list should include `wss://node.theailab.org` — the public bootstrap node operated by The AI Lab — so a fresh node can sync the registry on first boot.
+```ini
+DB_DRIVER=mariadb
+DB_HOST=localhost        # Docker service name: mariadb
+DB_PORT=3306
+DB_NAME=tip_node1
+DB_USER=tip
+DB_PASSWORD=secret
+```
 
-#### TLS
+Docker: `docker compose -f docker-compose.local.yml --profile mariadb up mariadb node1 -d`
 
-`wss://` is terminated at the reverse proxy or load balancer in front of the node — the Node.js process itself serves plain HTTP + WebSocket on `PORT`. Nginx, Caddy, Cloudflare, or an L7 LB in front is sufficient; no TLS configuration inside the node is required.
+**Oracle Database 23ai:**
+
+```ini
+DB_DRIVER=oracle
+DB_HOST=localhost        # Docker service name: oracle
+DB_PORT=1521
+DB_NAME=FREEPDB1
+DB_USER=tip              # tip_node2 / tip_node3 / tip_node4 for additional nodes
+DB_PASSWORD=secret
+```
+
+Docker: `docker compose -f docker-compose.local.yml --profile oracle up -d`
+
+> For remote or cloud databases, also set `DB_SSL=true` (and optionally `DB_SSL_REJECT_UNAUTHORIZED=true`).
+> Connection pool defaults are `DB_POOL_MIN=2` / `DB_POOL_MAX=10` and apply to all server-side drivers.
+
+---
+
+### TLS and Reverse Proxy
+
+The Node.js process serves plain HTTP on `PORT` — TLS is terminated at the reverse proxy or load balancer in front of it. Nginx, Caddy, Cloudflare, or any L7 LB is sufficient; no TLS configuration inside the node is required.
 
 ### Run a Node (Python)
 

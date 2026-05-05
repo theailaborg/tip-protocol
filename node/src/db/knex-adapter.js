@@ -137,7 +137,9 @@ class KnexAdapter {
       },
       acquireConnectionTimeout: 10000,
     });
-    this._isOracleDB = (driver === "oracle" || driver === "oracledb");
+    this._isOracleDB   = (driver === "oracle" || driver === "oracledb");
+    // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
+    this._noOnConflict = this._isOracleDB || driver === "mssql" || driver === "sqlserver";
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────
@@ -420,19 +422,21 @@ class KnexAdapter {
     fn().catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
 
-  // Oracle doesn't support knex's .onConflict(). Use INSERT + catch ORA-00001 instead.
-  // MERGE INTO … USING DUAL fails for CLOB columns because positional bind vars are
-  // typed as VARCHAR2 (max 4 000 bytes). Knex's own .insert()/.update() handle CLOB
-  // binding correctly, so we use those and handle the duplicate-key error ourselves.
+  // Oracle and SQL Server don't support Knex's .onConflict(). Use INSERT + catch
+  // duplicate-key error instead. For Oracle: ORA-00001. For mssql: error number
+  // 2627/2601 or "Cannot insert duplicate key" in message.
   _dbInsert(table, pkCols, row, onConflict) {
-    if (!this._isOracleDB) {
+    if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
       return onConflict === "merge" ? q.merge() : q.ignore();
     }
-    // Oracle path: INSERT, catch ORA-00001 (unique constraint violated)
+    // Oracle / mssql path: INSERT, catch duplicate-key error
     return this.knex(table).insert(row).catch(async err => {
-      if (!/ORA-00001/.test(err.message)) throw err;
+      const isDup = /ORA-00001/.test(err.message) ||
+                    /Cannot insert duplicate key/.test(err.message) ||
+                    err.number === 2627 || err.number === 2601;
+      if (!isDup) throw err;
       if (onConflict === "merge") {
         const pks   = Array.isArray(pkCols) ? pkCols : [pkCols];
         const nonPk = Object.keys(row).filter(k => !pks.includes(k));
