@@ -357,6 +357,101 @@ must NOT be regenerated — they're tied to the DAG registration.
 | `TIP_DATA_DIR=./data`, `TIP_LOG_DIR=./logs/node-1` | per-node `./generated_nodes/<slug>/data` + `./logs/<slug>` |
 | Operator-set: `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_CORS_ORIGINS`, `DB_DRIVER` + DB credentials | Same |
 
+---
+
+### Database Configuration
+
+TIP Protocol supports five database engines. Switch by changing `DB_DRIVER` in `.env` — no code changes required.
+
+| `DB_DRIVER` | Engine | npm package | Notes |
+|-------------|--------|-------------|-------|
+| `sqlite` | SQLite (file) | `better-sqlite3` | Installed — local dev only, no DB server needed |
+| `postgres` | PostgreSQL | `pg` | Installed — production default |
+| `mariadb` | MariaDB / MySQL | `mysql2` | Installed |
+| `mysql` | MySQL | `mysql2` | Alias for `mariadb` |
+| `oracle` | Oracle Database 23ai | `oracledb` | Installed (thin-mode, no Instant Client needed) |
+| `mssql` | SQL Server | `mssql` | Installed |
+
+**SQLite — local dev (no DB server):**
+
+```ini
+DB_DRIVER=sqlite
+TIP_DB_PATH=./data/tip.db
+```
+
+**PostgreSQL — production default:**
+
+```ini
+DB_DRIVER=postgres
+DB_HOST=localhost        # Docker service name: postgres
+DB_PORT=5432
+DB_NAME=tip_protocol
+DB_USER=tip
+DB_PASSWORD=secret
+```
+
+Docker: `docker compose -f docker-compose.local.yml --profile postgres up -d`
+
+**MariaDB / MySQL:**
+
+```ini
+DB_DRIVER=mariadb
+DB_HOST=localhost        # Docker service name: mariadb
+DB_PORT=3306
+DB_NAME=tip_protocol
+DB_USER=tip
+DB_PASSWORD=secret
+```
+
+Docker: `docker compose -f docker-compose.local.yml --profile mariadb up -d`
+
+**Oracle Database 23ai:**
+
+```ini
+DB_DRIVER=oracle
+DB_HOST=localhost        # Docker service name: oracle
+DB_PORT=1521
+DB_NAME=FREEPDB1         # service name, not SID
+DB_USER=tip
+DB_PASSWORD=secret
+```
+
+Docker: `docker compose -f docker-compose.local.yml --profile oracle up -d`
+
+**SQL Server 2022:**
+
+```ini
+DB_DRIVER=mssql
+DB_HOST=localhost        # Docker service name: mssql
+DB_PORT=1433
+DB_NAME=tip_protocol
+DB_USER=sa
+DB_PASSWORD=StrongPass123!   # must meet SQL Server complexity rules
+DB_SSL=true
+DB_SSL_REJECT_UNAUTHORIZED=false   # dev only — self-signed cert
+```
+
+Docker: `docker compose -f docker-compose.local.yml --profile mssql up -d`
+
+> For remote or cloud databases, also set `DB_SSL=true` (and optionally `DB_SSL_REJECT_UNAUTHORIZED=true`).
+> Connection pool defaults are `DB_POOL_MIN=2` / `DB_POOL_MAX=10` and apply to all server-side drivers.
+> The Knex adapter uses an in-memory mirror for reads + fire-and-forget for writes (see `node/src/db/knex-adapter.js`).
+
+---
+
+### TLS and Reverse Proxy
+
+The Node.js process serves plain HTTP on `PORT` and plain TCP libp2p on
+`TIP_P2P_PORT` — TLS is terminated at the reverse proxy or load
+balancer in front of it. Nginx, Caddy, Cloudflare, or any L7 LB is
+sufficient; no TLS configuration inside the node is required.
+
+For libp2p connections to remote peers, secure transport (Noise / TLS
+1.3) is handled inside the libp2p stack itself — independent of any
+reverse proxy in front of the REST API.
+
+---
+
 ### Drop-in Badge Widget
 
 ```html
