@@ -114,72 +114,35 @@ A TIP node runs ML-DSA-65 signatures on every transaction and Groth16 ZK proofs 
 
 Notes:
 
-- Storage grows ~14 KB per DAG transaction (signature + canonical JSON). The DAG is append-only — there is no built-in pruning.
+- Storage grows ~14 KB per DAG transaction (signature + canonical JSON). Transient consensus data (certificates, equivocation votes, mempool, expired rotation participation) is pruned automatically by the cert-GC and rotation-boundary handlers; canonical state (transactions, identities, content, scores, commits, committee history) is retained as the authoritative ledger.
 - Node.js 18+ and 64-bit OS are required (`better-sqlite3` and the post-quantum crypto bindings ship as native modules).
-
-### Run a Node (Node.js)
-
-```bash
-# Clone the repository
-git clone https://github.com/theailab/tip-protocol.git
-cd tip-protocol
-
-# Install dependencies
-npm install
-
-# Configure
-cp .env.example .env
-# Edit .env: set TIP_JWT_SECRET, TIP_ADMIN_API_KEY, TIP_GENESIS_HASH
-
-# Start the node
-npm start
-
-# Run tests
-npm test
-
-# Node API will be available at:
-# REST API:  http://localhost:4000
-# Gossip:    tcp://localhost:4001
-```
-
-### Register a Node on the DAG
-
-Every peer's public key must be on the DAG (signed by the founding VP) before gossip auth will accept it — new nodes cannot self-register. This step is run by an existing operator who holds the founding VP key.
-
-**Prerequisites**
-
-```bash
-ls genesis-data/founding-vp-keys.json   # must exist
-curl -s http://localhost:4000/health    # must return ok
-```
-
-**Step 1.** Generate a keypair and write a `NODE_REGISTERED` tx to the DAG:
-
-```bash
-node scripts/register-peer-node.js \
-  --name=<node-name> \
-  --port=<node-port> \
-  --peer=ws://<existing-node-host>:4000
-```
-
-**Step 2.** The script writes two files to `generated-nodes/<node-name>/`:
-
-```
-generated-nodes/<node-name>/
-├── keys.json   # node_id, public_key, private_key, algorithm, approving_vp
-└── .env        # TIP_NODE_ID, TIP_NODE_PRIVATE_KEY, TIP_NODE_PUBLIC_KEY,
-                # PORT, TIP_DATA_DIR, TIP_DB_PATH, TIP_PEERS
-```
-
-**Step 3.** Deliver both files to the node operator out-of-band (Bitwarden Send, Signal, hardware token). The genesis seed (`genesis-data/seed.db`) already ships in the repo and does not need to be delivered.
-
----
 
 ### Starting a Node
 
-This runbook is run by the node operator after receiving `keys.json` and `.env` from the registering operator.
+Two paths depending on whether you're running the canonical federation
+or spinning up a local multi-node setup for development.
 
-**Step 1.** Clone the repo and install dependencies:
+- **Production** — start the founding node that bootstraps the federation
+  from `genesis.js`. This is the path The AI Lab runs in production. It
+  is also the path needed by any operator running a registered node
+  whose identity bundle was delivered out-of-band.
+- **Development** — generate any number of additional nodes locally
+  using `scripts/register-node.js`, each with isolated data, logs, and
+  ports. Use this for local 2/3/4-node federations or for issuing
+  registration bundles that get delivered to external operators.
+
+---
+
+#### Production: Run the Federation Founding Node
+
+The genesis founding-node identity is baked into `genesis.js` at seed
+time and never changes for the life of the federation. The AI Lab
+delivers the operator a pre-filled `.env` file (founding-node ML-DSA-65
+keys, port assignments, network defaults) along with the matching
+`<id>.tip.json` key backup. Both files contain secrets and must be
+`chmod 600`.
+
+**Step 1.** Clone and install:
 
 ```bash
 git clone https://github.com/theailab/tip-protocol.git
@@ -187,167 +150,212 @@ cd tip-protocol
 npm install
 ```
 
-**Step 2.** Place the delivered files in the repo:
+**Step 2.** Drop the delivered `.env` at the repo root and back up the keys:
 
 ```bash
-mkdir -p generated-nodes/<node-name>
-mv /path/to/delivered/keys.json generated-nodes/<node-name>/keys.json
-cp /path/to/delivered/.env .env
-chmod 600 generated-nodes/<node-name>/keys.json .env
+# .env file (delivered out-of-band — Bitwarden Send / Signal / hardware token)
+cp /path/to/delivered/founding.env .env
+chmod 600 .env
+
+# Key backup — store off the live server (offline/cold storage)
+cp /path/to/delivered/<id>.tip.json /secure/backups/<id>.tip.json
+chmod 600 /secure/backups/<id>.tip.json
 ```
 
-**Step 3.** Open `.env` and adjust the deployment-specific values. Identity fields (`TIP_NODE_ID`, `TIP_NODE_PRIVATE_KEY`, `TIP_NODE_PUBLIC_KEY`) must remain exactly as delivered:
+**Step 3.** Adjust the deployment-specific values in `.env`. Identity
+fields (`TIP_NODE_ID`, `TIP_NODE_PRIVATE_KEY`, `TIP_NODE_PUBLIC_KEY`) and
+ports come pre-filled — leave them as delivered. Update only:
 
-```bash
-# ── Identity — from the registration bundle, do not regenerate ────────────
-TIP_NODE_ID=<as delivered>
-TIP_NODE_PRIVATE_KEY=<as delivered>
-TIP_NODE_PUBLIC_KEY=<as delivered>
+```ini
+# ── Network — adjust per host ─────────────────────────────────────────────
+TIP_PUBLIC_IP=<this-server's-public-ip>      # required for libp2p reachability
+TIP_PUBLIC_URL=https://tip.example.org       # optional, surfaced in API responses
+TIP_CORS_ORIGINS=*                           # comma-separated origins, or "*"
 
-# ── Network — adjust per deployment ───────────────────────────────────────
-PORT=4000
-HOST=0.0.0.0
-TIP_PUBLIC_URL=https://tip.example.org
-TIP_PEERS=wss://node.theailab.org            # The AI Lab public bootstrap node
-TIP_DATA_DIR=/var/lib/tip/data
-TIP_DB_PATH=/var/lib/tip/data/tip.db
-
-# ── Optional ──────────────────────────────────────────────────────────────
-TIP_REGION=US
-TIP_NODE_TYPE=full                           # full | light | vp | archive
-TIP_VP_ID=                                   # set only for a VP node
-TIP_LOG_LEVEL=info                           # debug | info | warn | error
-TIP_CORS_ORIGINS=https://example.org         # comma-separated, or "*"
-
-# ── Optional tuning (scheduler intervals in ms) ───────────────────────────
-# TIP_SCORE_RECOMPUTE_MS=43200000
-# TIP_CLEAN_RECORD_MS=86400000
-# TIP_VERDICT_CHECK_MS=300000
-# TIP_PEER_HEALTH_MS=30000
-
-# ── Optional media size caps (bytes) ──────────────────────────────────────
-# TIP_MAX_VIDEO_BYTES=5368709120
-# TIP_MAX_IMAGE_BYTES=52428800
-# TIP_MAX_AUDIO_BYTES=524288000
-# TIP_MAX_TEXT_BYTES=10485760
+# ── Database — pick one driver (see "Database Configuration" below) ──────
+DB_DRIVER=postgres                           # sqlite | postgres | mariadb | mssql | oracle
+DB_HOST=localhost                            # Docker service name when in compose
+DB_PORT=5432
+DB_NAME=tip_protocol
+DB_USER=tip
+DB_PASSWORD=<db-password>
 ```
 
-> `TIP_PEERS` accepts a comma-separated list of `ws://` or `wss://` URLs — the node appends `/gossip` to each. `wss://node.theailab.org` is the public bootstrap node operated by The AI Lab; additional peers may be added as the federation grows.
->
-> Regenerating the identity keys invalidates the DAG registration — the gossip handshake will fail with `Node authentication failed`.
+The delivered `.env` already sets `TIP_DATA_DIR`, `TIP_DB_PATH`, and
+`TIP_LOG_DIR` to per-node paths. Leave those as delivered.
 
-**Step 4.** Open the firewall on `PORT` for inbound gossip WebSocket and HTTP.
+**Step 4.** Open the firewall:
+- `PORT` (REST API)
+- `TIP_P2P_PORT` (libp2p TCP)
 
-**Step 5.** Start the node using either method:
+**Step 5.** Start.
 
-Native (Node.js):
+Native:
 
 ```bash
-npm start --prefix node
+npm start
 ```
 
 Docker Compose:
 
 ```bash
-docker compose up -d          # starts tip-node in the background
+docker compose up -d
 docker compose logs -f tip-node
 ```
 
-The compose file reads `.env` from the repo root and mounts `./data` into the container at `/app/data`, so `TIP_DATA_DIR` and `TIP_DB_PATH` are set automatically inside the container. Only the `.env` values need to be configured — no additional Docker arguments are required.
-
-On first boot, `genesis-data/seed.db` is auto-copied to `TIP_DB_PATH` (node/src/index.js:57-61) so the founding VP and genesis block are available immediately.
-
-**Step 6.** Within ~10s, these log lines should appear:
-
-```
-Node registered as: <node_id>
-Gossip: connected to peer wss://node.theailab.org
-Gossip: node <peer-node-id> authenticated (registered)
-Gossip: sync imported <N> transactions
-```
-
-Troubleshooting:
-- `Node authentication failed` — identity env vars were edited or regenerated; restore the delivered values.
-- `could not connect to wss://…` — firewall, DNS, TLS cert, or the peer node is down.
-
-**Step 7.** Verify the API:
+**Step 6.** Verify:
 
 ```bash
-curl http://localhost:$PORT/health
-curl http://localhost:$PORT/v1/constants
+curl -s http://localhost:$PORT/health | jq '{joinState: .data.consensus.narwhal.joinState, halted: .data.consensus.halt.halted, peers: .data.peers.connected}'
+# → { "joinState": "ready", "halted": false, "peers": 0 }    ← founding node alone
+
+curl -s http://localhost:$PORT/health | jq -r '.data.p2p.bootstrap_addr'
+# → "/ip4/<your-ip>/tcp/4001/p2p/12D3Koo..."
 ```
+
+The `bootstrap_addr` is what every other node will use as
+`TIP_BOOTSTRAP_PEERS` when it joins.
+
+---
+
+#### Development: Generate and Run Additional Nodes Locally
+
+`scripts/register-node.js` issues a `NODE_REGISTERED` tx on the running
+federation (signed by the founding VP) and writes a complete
+self-contained bundle for the new node — including isolated `data/`
+and `logs/` directories so multiple nodes on the same host don't
+clobber each other. Use this both for local multi-node testing and for
+producing the bundles that get delivered to external operators.
+
+**Step 1.** Clone and install (skip if already done):
+
+```bash
+git clone https://github.com/theailab/tip-protocol.git
+cd tip-protocol
+npm install
+```
+
+**Step 2.** Generate a fresh genesis + founding-node + founding-VP keypair:
+
+```bash
+npm run seed:fresh
+```
+
+What this does (`scripts/seed.js`):
+- Generates a new founding-VP ML-DSA-65 keypair → `genesis-data/founding-vp-keys.json`
+- Generates a new founding-node ML-DSA-65 keypair → `genesis-data/founder-keys.json`
+- Embeds the founding-node identity into `genesis.js`, `protocol-constants.js`, and `python/scripts/seed.py` (so all three implementations share the same chain anchor)
+- Writes the canonical genesis block → `genesis-data/genesis.json`
+- Writes a provenance record → `genesis-data/seed-output.json`
+
+> **Why we can't reuse the committed `genesis.js`:** the founder private
+> key (`genesis-data/founder-keys.json`) is `.gitignore`d for security
+> and only exists on the machine that ran `seed`. Anyone cloning this
+> repo therefore has the public-side genesis but cannot run the
+> founding node without re-running `seed` to generate matching keys.
+> Each `seed` run produces a new isolated dev federation — that's the
+> intended behavior.
+
+The plain `npm run seed` command is idempotent — re-running it on an
+existing seed leaves keys in place and only regenerates derived files.
+Use `seed:fresh` (which `rm -rf`s `genesis-data/` and `data/` first)
+when you want a clean slate.
+
+**Step 3.** Start the founding node — follow the **Production** section
+above, but use the keys from your locally-generated
+`genesis-data/founder-keys.json` to populate `.env`. Because the
+founding-node `.env` doesn't get auto-generated, copy the template:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+# Then paste TIP_NODE_ID / TIP_NODE_PRIVATE_KEY / TIP_NODE_PUBLIC_KEY
+# from genesis-data/founder-keys.json into the corresponding fields,
+# leave TIP_BOOTSTRAP_PEERS empty, and pick DB_DRIVER (sqlite is the
+# fastest local option).
+npm start
+```
+
+Once the founding node logs `joinState=ready` you can register
+additional nodes against it.
+
+**Step 4.** Generate one or more additional nodes:
+
+```bash
+node --experimental-vm-modules scripts/register-node.js \
+  --name "Partner Node" \
+  --node-url http://localhost:4000 \
+  --port 4100 \
+  --p2p-port 4101 \
+  --public-ip 127.0.0.1
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--name` | `TIP Node <id>` | Human-readable node name |
+| `--node-url` | `http://localhost:4000` | Any healthy node's REST URL |
+| `--port` | `4100` | REST API port for the new node |
+| `--p2p-port` | `<port>+1` | libp2p TCP port for the new node |
+| `--public-ip` | `127.0.0.1` | Publicly-reachable IP of the new node |
+
+The script writes:
+
+```
+generated_nodes/<slug>-<short-id>/
+├── <slug>.env          ← drop-in env file (ML-DSA-65 keys + ports + bootstrap multiaddr embedded)
+├── <id>.tip.json       ← key backup, chmod 600
+└── data/               ← per-node DB + keystore directory
+```
+
+The generated `.env` already sets `TIP_DATA_DIR`,
+`TIP_DB_PATH=./generated_nodes/<slug>-<short-id>/data/tip.db`, and
+`TIP_LOG_DIR=./logs/<slug>-<short-id>` so each node's storage stays
+isolated.
+
+**Start a generated node:**
+
+```bash
+node --env-file=./generated_nodes/<slug>-<short-id>/<slug>.env node/src/index.js
+```
+
+By default the generated node uses `DB_DRIVER=sqlite` (no extra setup).
+For Postgres/MariaDB/MSSQL/Oracle, edit the generated `.env` and add
+the `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`
+values for that node's database.
+
+**Issuing bundles to external operators:** deliver the generated
+`<slug>.env` and `<id>.tip.json` files out-of-band (Bitwarden Send,
+Signal, hardware token). The recipient drops `<slug>.env` to `.env`
+in their own clone of the repo, adjusts `TIP_PUBLIC_IP` and database
+credentials, and runs `npm start`. Identity and `TIP_BOOTSTRAP_PEERS`
+must NOT be regenerated — they're tied to the DAG registration.
+
+---
+
+#### Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `Node tip://node/... not in registry` at handshake | Identity env vars were edited or regenerated. Restore the delivered values exactly, OR re-run `register-node.js` for that node. |
+| `Genesis hash mismatch` at handshake | Wrong network / forked federation. The peer's `genesis.js` differs from yours. |
+| `No bootstrap peers configured — discovery via mDNS only` | `TIP_BOOTSTRAP_PEERS` is empty. Founding nodes leave this empty intentionally; everyone else needs the founding node's `bootstrap_addr` here. |
+| `joinState` stuck at `syncing` or `catching_up` | Bootstrap peer unreachable, or it is itself behind — check firewall, DNS, and the upstream peer's `/health`. |
+| `DB connection error` (Postgres / MariaDB / Oracle) | For Docker, set `DB_HOST` to the **service name** (`postgres`, `mariadb`, `oracle`) not `localhost`. For native runs on the host, `localhost` is correct. |
+| Multiple generated nodes sharing one `node/logs/` | `TIP_LOG_DIR` not set in the node's `.env`. Re-generate with the latest `register-node.js` (logs default to `./logs/<slug>-<short-id>`). |
 
 ---
 
 #### Environment variable ownership
 
-| Delivered by operator         | Set by node runner          |
-|-------------------------------|-----------------------------|
-| `TIP_NODE_ID`                 | `PORT`                      |
-| `TIP_NODE_PRIVATE_KEY`        | `TIP_DATA_DIR`              |
-| `TIP_NODE_PUBLIC_KEY`         | `TIP_DB_PATH`               |
-| `TIP_PEERS` (peer gossip URL) | `TIP_PUBLIC_URL`            |
-| `genesis-data/seed.db`        | `TIP_CORS_ORIGINS`, TLS, supervisor, backups |
-
----
-
-### Assigning Peers
-
-`TIP_PEERS` is a comma-separated list of `ws://` or `wss://` URLs that a node dials on startup. The node appends `/gossip` to each URL (node/src/gossip.js:419) and retries with 30s backoff on disconnect (gossip.js:428-431). Inbound connections from any source are also accepted, provided the peer passes the ML-DSA challenge against the DAG node registry.
-
-#### Every node lists every other node
-
-For the pilot, every participating node must list all other nodes in its `TIP_PEERS`. Each pair of nodes therefore dials each other, producing two sockets per pair — one in each direction. This is what the current gossip implementation requires for bidirectional transaction propagation.
-
-Example for a 4-node network (The AI Lab bootstrap plus three partners):
-
-```
-Node on node.theailab.org
-  TIP_PEERS=wss://node.partner1.io,wss://node.partner2.com,wss://node.partner3.xyz
-
-Node on node.partner1.io
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner2.com,wss://node.partner3.xyz
-
-Node on node.partner2.com
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner3.xyz
-
-Node on node.partner3.xyz
-  TIP_PEERS=wss://node.theailab.org,wss://node.partner1.io,wss://node.partner2.com
-```
-
-A transaction created on any node is broadcast to its three directly connected peers. Each peer validates, stores, and relays with TTL=2 (gossip.js:354-356); duplicates are deduplicated by `seenTx` (gossip.js:336-338). All four DAGs converge on the same state.
-
-If one node goes offline, its sockets close on the remaining nodes and outbound connections retry with 30s backoff. The remaining nodes continue to gossip among themselves, and the mesh heals automatically when the node returns.
-
-#### Bootstrapping a fresh node
-
-A new node's DAG contains only what shipped in `genesis-data/seed.db` — it does not yet know about other peers' `NODE_REGISTERED` txs. The first successful handshake must therefore be with a node that already has those txs. After that handshake, `SYNC_REQUEST` / `SYNC_RESPONSE` (gossip.js:326-366) backfills the DAG and subsequent peer handshakes succeed.
-
-For this reason, every `TIP_PEERS` list should include `wss://node.theailab.org` — the public bootstrap node operated by The AI Lab — so a fresh node can sync the registry on first boot.
-
-#### TLS
-
-`wss://` is terminated at the reverse proxy or load balancer in front of the node — the Node.js process itself serves plain HTTP + WebSocket on `PORT`. Nginx, Caddy, Cloudflare, or an L7 LB in front is sufficient; no TLS configuration inside the node is required.
-
-### Run a Node (Python)
-
-```bash
-# Clone and enter
-git clone https://github.com/theailab/tip-protocol.git
-cd tip-protocol/python
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure
-cp .env.example .env
-
-# Start the node
-python -m tip_node.main
-
-# Run tests (201 tests)
-python -m pytest tests/ -v
-```
+| In the founding `.env` (production) | In a generated `.env` (development / external operator) |
+|---|---|
+| `TIP_NODE_ID` (founder identity) | `TIP_NODE_ID` (registered identity, written by script) |
+| `TIP_NODE_PRIVATE_KEY` | `TIP_NODE_PRIVATE_KEY` |
+| `TIP_NODE_PUBLIC_KEY` | `TIP_NODE_PUBLIC_KEY` |
+| `TIP_BOOTSTRAP_PEERS` empty | `TIP_BOOTSTRAP_PEERS=<founding bootstrap_addr>` |
+| `PORT=4000`, `TIP_P2P_PORT=4001` | `PORT=<assigned>`, `TIP_P2P_PORT=<assigned>` |
+| `TIP_DATA_DIR=./data`, `TIP_LOG_DIR=./logs/node-1` | per-node `./generated_nodes/<slug>/data` + `./logs/<slug>` |
+| Operator-set: `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_CORS_ORIGINS`, `DB_DRIVER` + DB credentials | Same |
 
 ### Drop-in Badge Widget
 
@@ -525,13 +533,16 @@ tip-protocol/
 │   ├── package.json
 │   ├── src/
 │   │   ├── index.js             ← Entry point
-│   │   ├── dag.js               ← DAG engine
-│   │   ├── identity.js          ← TIP-ID management
-│   │   ├── content.js           ← Content registration
-│   │   ├── trust.js             ← Score computation
-│   │   ├── crypto.js            ← Post-quantum crypto
-│   │   ├── gossip.js            ← Peer gossip protocol
-│   │   └── api/                 ← REST API routes
+│   │   ├── dag.js               ← DAG engine + SQLite store + MemoryStore
+│   │   ├── genesis.js           ← Genesis bootstrap
+│   │   ├── api.js, routes/      ← REST API
+│   │   ├── services/            ← Identity, content, dispute, governance, ...
+│   │   ├── consensus/           ← Narwhal/Bullshark, commit-handler, rotation-coord
+│   │   ├── network/             ← libp2p, handshake, peer-discovery
+│   │   ├── sync/                ← Snapshot install, anti-entropy, peer-sync
+│   │   ├── validators/          ← Tx validator, business rules
+│   │   ├── db/                  ← Multi-DB adapter (Knex: pg/mariadb/mssql/oracle)
+│   │   └── middleware/          ← Express error handler, request id, validation
 │   └── tests/
 │
 ├── python/                      ← Python reference implementation
@@ -551,8 +562,10 @@ tip-protocol/
 ├── cli/                         ← Command-line tools
 ├── browser-extension/           ← [Moved to github.com/theailaborg/tip-extension]
 ├── badge/                       ← <tip-badge> web component
-└── scripts/                     ← Utilities and seed scripts
-    └── seed.py                  ← Genesis block generation
+└── scripts/                     ← Utilities
+    ├── seed.js                  ← Genesis block generation (founding-node bootstrap)
+    ├── register-node.js         ← Issue NODE_REGISTERED tx + emit per-node bundle
+    └── zk-setup.js              ← Groth16 trusted-setup helper
 ```
 
 ---

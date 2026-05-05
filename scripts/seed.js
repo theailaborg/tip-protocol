@@ -361,17 +361,20 @@ function initDirectDAG() {
 
   _nodeKp = generateMLDSAKeypair();
   const cfg = loadConfig();
-  cfg.dbPath = path.join(DATA_DIR, "seed.db");
+  // In-memory DAG: seed.js only uses the DAG as scratch space to validate
+  // the genesis state shape; the canonical outputs (founder-keys.json,
+  // founding-vp-keys.json, genesis.json, seed-output.json + genesis.js
+  // patch) are written directly. The runtime `_writeGenesisBlock`
+  // (dag.js) re-bootstraps the DB from those embedded values on first
+  // `npm start`, so no on-disk seed.db is needed.
+  cfg.dbPath = ":memory:";
   cfg.nodePrivateKey = _nodeKp.privateKey;
   cfg.nodePublicKey = _nodeKp.publicKey;
-
-  if (fs.existsSync(cfg.dbPath)) fs.unlinkSync(cfg.dbPath);
 
   _dag = initDAG(cfg);
   _scoring = initScoring(_dag, cfg);
 
-  ok("Direct-mode DAG initialized");
-  label("DB path", cfg.dbPath);
+  ok("Direct-mode DAG initialized (in-memory)");
 }
 
 function _withTxId(txBody) {
@@ -380,7 +383,7 @@ function _withTxId(txBody) {
 }
 
 // ─── Step 4: Register The AI Lab as founding VP ───────────────────────────────
-async function registerFoundingVP(genesisBlock, vpKeypair) {
+async function registerFoundingVP(vpKeypair) {
   head("STEP 3: Register The AI Lab Verification Provider");
 
   // Re-read genesis (top-level getFoundingVP import has stale GENESIS_PAYLOAD)
@@ -480,6 +483,14 @@ async function registerSeedNode(vpKeypair) {
   fs.writeFileSync(genesisJsFile, gSrc);
   ok("Embedded founding node in genesis.js");
 
+  // Clear require cache so subsequent steps (mintGenesisBlock, verifyDAGState)
+  // see the just-embedded founding_node when they re-read genesis.js. Without
+  // this, the genesis hash bakes against `founding_node=null` and the STEP 6
+  // verification (which clears cache itself) computes a different hash.
+  Object.keys(require.cache).forEach(key => {
+    if (key.includes("genesis")) delete require.cache[key];
+  });
+
   ok(`Seed node registered: ${nodeId}`);
   label("Node ID", nodeId);
   return { nodeId, name: nodeName, publicKey: _nodeKp.publicKey };
@@ -540,7 +551,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         tx_id: tx.tx_id,
       });
       _dag.addDedupHash(mockDedupHash, Math.floor(new Date(registeredAt).getTime() / 1000));
-      _dag.setScore(tipId, 550, 0);
+      _dag.setScore(tipId, 550, 0, registeredAt);
 
       regResult = {
         tip_id: tipId,
@@ -1001,17 +1012,26 @@ async function main() {
     // Step 1: Generate founding VP keypair and embed in genesis source files
     const vpKeypair = await embedFoundingVPKey();
 
-    // Step 2: Mint genesis block (signed by founding VP key)
-    const genesisBlock = await mintGenesisBlock(vpKeypair);
-
-    // Step 2b: Initialize real DAG for direct mode
+    // Step 1b: Initialize real DAG for direct mode. _writeGenesisBlock fires
+    // here from the just-embedded VP + ring keys; founding_node is still
+    // null at this point so the bootstrap walk skips that branch and the
+    // node row gets written explicitly in Step 2b below.
     if (useDirectMode) initDirectDAG();
 
-    // Step 3: Founding VP
-    const { vpRecord } = await registerFoundingVP(genesisBlock, vpKeypair);
+    // Step 2: Founding VP
+    const { vpRecord } = await registerFoundingVP(vpKeypair);
 
-    // Step 3b: Register seed node
+    // Step 2b: Register seed node — embeds founding_node into genesis.js +
+    // clears require.cache so the genesis hash computed in Step 3 below
+    // sees the full payload (founding_vp + genesis_ring_keys + founding_node).
     const seedNode = await registerSeedNode(vpKeypair);
+
+    // Step 3: Mint genesis block (signed by founding VP key) — DEFERRED to
+    // after seed-node embedding so the hash + signature cover the complete
+    // payload. Otherwise the STEP 6 verification (which re-reads genesis.js
+    // with founding_node now set) computes a different hash and the
+    // "Genesis block hash" check fails.
+    const genesisBlock = await mintGenesisBlock(vpKeypair);
 
     // Step 4: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
@@ -1044,10 +1064,10 @@ async function main() {
       process.exit(1);
     }
 
-    // Close DAG
+    // Close DAG (in-memory; nothing to flush to disk).
     if (_dag) {
       _dag.close();
-      ok(`DAG closed. Seed DB: ${path.join(DATA_DIR, "seed.db")}`);
+      ok("DAG closed (in-memory scratch).");
     }
 
   } catch (err) {
