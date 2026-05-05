@@ -650,4 +650,110 @@ describe("#68 rotation coordinator", () => {
     coord.stop();  // safe to call when nothing's running
   });
 
+  // #81 — buildRotationTx must produce identical tx_id across all honest
+  // nodes given the same (rotation_number, effective_round, committee,
+  // signer_node_ids, signatures). Closes the determinism gap that caused
+  // n5 to commit a different physical tx than n1-n4 starting rotation 20
+  // (live observed 2026-05-05). Without this contract, multi-aggregator
+  // submission produces divergent transactions.tx_id per node — invisible
+  // to state_merkle_root by canonicalization design but a latent landmine
+  // for any future tx-id-based tooling (light-client proofs, explorers).
+  test("buildRotationTx is deterministic — same proposal → same tx_id across simulated nodes", () => {
+    const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
+
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const c = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+      { node_id: "tip://node/C", public_key: c.publicKey },
+    ];
+
+    const proposal = {
+      rotation_number: 17,
+      effective_round: 3400,
+      new_committee: ids,
+      payload_hash: "abc123def456".repeat(5),
+    };
+    const signer_node_ids = [ids[0].node_id, ids[1].node_id, ids[2].node_id].sort();
+    const signatures = signer_node_ids.map((_, i) => "11".repeat(32 + i));
+
+    // Simulate two different nodes calling buildRotationTx with different
+    // local DAG state (different getRecentPrev results) and at different
+    // wall-clock times.
+    const dagStateA = { getRecentPrev: () => ["nodeA-recent-tx-1", "nodeA-recent-tx-2"] };
+    const dagStateB = { getRecentPrev: () => ["nodeB-totally-different-1", "nodeB-totally-different-2"] };
+
+    const txFromNodeA = buildRotationTx(dagStateA, proposal, signer_node_ids, signatures);
+    // Sleep a bit between calls (different wall-clock) — pre-#81 this
+    // alone produced different tx_ids.
+    const before = Date.now();
+    while (Date.now() - before < 5) { /* spin briefly */ }
+    const txFromNodeB = buildRotationTx(dagStateB, proposal, signer_node_ids, signatures);
+
+    // Critical assertion: tx_id must be IDENTICAL despite different local
+    // DAG state and different wall-clock timing.
+    expect(txFromNodeA.tx_id).toBe(txFromNodeB.tx_id);
+    expect(txFromNodeA.timestamp).toBe(txFromNodeB.timestamp);
+    expect(txFromNodeA.prev).toEqual(txFromNodeB.prev);
+
+    // Sanity: tx_id is a 64-char hex string (SHAKE-256). prev is empty
+    // — rotation tx is a system tx, not part of the user-tx prev chain.
+    expect(txFromNodeA.tx_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(txFromNodeA.prev).toEqual([]);
+  });
+
+  test("buildRotationTx timestamp is derived from effective_round, not wall-clock", () => {
+    const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
+    const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
+
+    const proposal = {
+      rotation_number: 5,
+      effective_round: 1000,
+      new_committee: [{ node_id: "tip://node/X", public_key: "ab".repeat(32) }],
+      payload_hash: "00".repeat(32),
+    };
+    const tx = buildRotationTx({}, proposal, ["tip://node/X"], ["00".repeat(32)]);
+
+    // Expected timestamp = ISO of (effective_round * BATCH_WAIT_MS)
+    const expectedMs = proposal.effective_round * CONSENSUS.BATCH_WAIT_MS;
+    expect(tx.timestamp).toBe(new Date(expectedMs).toISOString());
+
+    // Different effective_round → different timestamp (so audit ordering
+    // by tx.timestamp still reflects rotation order, just not real time)
+    const tx2 = buildRotationTx({}, { ...proposal, effective_round: 2000 }, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx2.timestamp).not.toBe(tx.timestamp);
+    expect(new Date(tx2.timestamp).getTime()).toBeGreaterThan(new Date(tx.timestamp).getTime());
+  });
+
+  // System-tx semantic: rotation tx with empty prev passes structural
+  // validation. Prevents regressing the validator's "non-system tx must
+  // have prev refs" rule into rejecting legitimate rotation txs — the
+  // exact failure that broke n4 mid-flight on 2026-05-05 when one node's
+  // DB held only the old genesis row and rotation tx prev pointed to the
+  // current genesis tx_id.
+  test("buildRotationTx output passes validateTransaction with empty prev", () => {
+    const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
+    const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
+
+    const a = generateMLDSAKeypair();
+    const ids = [{ node_id: "tip://node/A", public_key: a.publicKey }];
+    const dag = _setupDagWith(ids);
+
+    const proposal = {
+      rotation_number: 2,
+      effective_round: 400,
+      new_committee: ids,
+      payload_hash: _payloadHash({ rotation_number: 2, effective_round: 400, committee: ids }),
+    };
+    const aMsg = `rotation:${proposal.payload_hash}:${ids[0].node_id}`;
+    const aSig = mldsaSign(aMsg, a.privateKey);
+    const tx = buildRotationTx(dag, proposal, [ids[0].node_id], [aSig]);
+
+    expect(tx.prev).toEqual([]);
+    const result = validateTransaction(tx, dag, { skipState: true });
+    expect(result).toEqual({ valid: true, errors: [], layer: null });
+  });
+
 });

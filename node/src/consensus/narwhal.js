@@ -702,7 +702,23 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _tryCreateCertificate() {
     if (_myCertificateCreated || !_myBatch) return;
 
-    const acks = _batchAcks.get(_myBatch.hash) || [];
+    // Filter to committee-member acks only. Non-committee peers (late-
+    // joiners, recently-rotated-out nodes) may also send acks for
+    // network responsiveness, but only committee members count toward
+    // the BFT quorum. Without this filter, the cert author may seal a
+    // cert with 2f+1 ack signatures that includes non-committee signers.
+    // That cert verifies fine at runtime (peers do the same lenient
+    // count), but FAILS snapshot-install verification in joiners
+    // (snapshot-handler.js applies the strict committee-membership rule
+    // at line 640: `if (!committeeSet.has(signer)) continue`). The two
+    // layers using two different rules for "valid quorum ack" was the
+    // 2026-05-05 incident where wiped-n5 couldn't re-sync because the
+    // peer's snapshot anchor cert had a non-committee ack from n4.
+    // Keeping rules consistent across cert-seal and snapshot-verify
+    // closes that gap.
+    const allAcks = _batchAcks.get(_myBatch.hash) || [];
+    const committeeSet = new Set(_getCommittee(_currentRound));
+    const acks = allAcks.filter(a => committeeSet.has(a.acker_node_id));
     const quorum = _getQuorum();
 
     if (acks.length < quorum) return;
