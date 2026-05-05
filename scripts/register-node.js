@@ -247,6 +247,13 @@ async function main() {
   // recorded relative to the project root because that's where the node
   // is meant to be launched from.
   const dataDirRel = `./${path.relative(process.cwd(), path.join(outDir, "data"))}`;
+  // Per-node log dir at the top-level `./logs/<slug>-<short-id>` — matches
+  // the existing convention used by docker-compose (`./logs/node-1`) and
+  // by the founding `.env`. Without an explicit TIP_LOG_DIR, the logger
+  // defaults to `node/logs/` which every generated node would share,
+  // clobbering each other's per-process log streams. Each node's own
+  // sub-directory keeps debug.log / info.log / error.log unambiguous.
+  const logDirRel = `./logs/${slug}-${shortId}`;
   const envFileName = `${slug}.env`;
   const envPath = path.join(outDir, envFileName);
   const envRelForLaunch = path.relative(process.cwd(), envPath);
@@ -301,6 +308,7 @@ async function main() {
     `TIP_REGION=US`,
     `TIP_DATA_DIR=${dataDirRel}`,
     `TIP_DB_PATH=${dataDirRel}/tip.db`,
+    `TIP_LOG_DIR=${logDirRel}`,
     `TIP_CORS_ORIGINS=*`,
     `TIP_LOG_LEVEL=info`,
     `TIP_CONSOLE_LEVEL=info`,
