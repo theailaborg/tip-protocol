@@ -36,6 +36,31 @@ const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 
+// Process-level error boundary for the consensus loops + libp2p stream
+// handlers + scheduled timers. Without these, any throw inside a
+// setTimeout/setInterval callback or unhandled promise rejection
+// (e.g. transient SQLite contention from concurrent snapshot serving,
+// peer message decode failure, network blip) crashes the node — taking
+// it out of consensus and forcing operator restart.
+//
+// Policy: log loudly, keep running. The Express error handler in
+// `middleware/error-handler.js` covers the HTTP request lifecycle;
+// these handlers cover everything else (consensus ticks, p2p streams,
+// anti-entropy loop, snapshot streamer, rotation-coord handlers).
+//
+// For a BFT node, "log + continue" is strictly better than "exit": a
+// crashed node loses liveness, while a node operating on degraded
+// state will be caught by anti-entropy state_merkle_root divergence
+// detection within seconds. Truly fatal errors (schema corruption,
+// OOM) self-handle via specific catches at lower layers.
+process.on("uncaughtException", (err, origin) => {
+  log.error(`UNCAUGHT EXCEPTION (${origin}): ${err.stack || err.message || err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  const msg = (reason && (reason.stack || reason.message)) || reason;
+  log.error(`UNHANDLED REJECTION: ${msg}`);
+});
+
 async function main() {
   await initCrypto();
   const config = loadConfig();
