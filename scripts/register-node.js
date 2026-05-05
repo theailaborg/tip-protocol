@@ -18,6 +18,7 @@
  *   --port 4100                  API port for the new node (default: 4100)
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
+ *   --db-name tip_node2          Per-node DB name override (optional; defaults to DB_NAME from env)
  *
  * Output layout:
  *   generated_nodes/<slug>-<short-tip-id>/
@@ -81,6 +82,7 @@ const outDirOverride = getArg("--out-dir", null);
 const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the new node
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
 const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod / cloud deployments
+const dbNameOverride = getArg("--db-name", null);         // per-node DB name (optional)
 
 /** Slugify a display name into a filesystem-safe identifier. */
 function slugify(s) {
@@ -249,6 +251,42 @@ async function main() {
   const envPath = path.join(outDir, envFileName);
   const envRelForLaunch = path.relative(process.cwd(), envPath);
 
+  // Collect DB settings from the current environment (loaded by dotenv above).
+  // DB_NAME may be overridden per-node via --db-name; all other settings are
+  // inherited from the seed node's environment so the new node uses the same DB.
+  const dbDriver   = process.env.DB_DRIVER   || "";
+  const dbUrl      = process.env.DATABASE_URL || "";
+  const dbHost     = process.env.DB_HOST      || "";
+  const dbPort     = process.env.DB_PORT      || "";
+  const dbName     = dbNameOverride || process.env.DB_NAME || "";
+  const dbUser     = process.env.DB_USER      || "";
+  const dbPassword = process.env.DB_PASSWORD  || "";
+  const dbSsl      = process.env.DB_SSL       || "";
+  const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
+  const dbPoolMin  = process.env.DB_POOL_MIN  || "";
+  const dbPoolMax  = process.env.DB_POOL_MAX  || "";
+
+  const isSQLite = !dbDriver || dbDriver === "sqlite";
+
+  const dbLines = [
+    `# ─── Database ─────────────────────────────────────────────────────────────`,
+    `# Inherited from the seed node's environment. Change DB_NAME if this node`,
+    `# uses a dedicated schema/database (e.g. tip_node2 for Postgres/MariaDB).`,
+  ];
+  if (dbDriver)   dbLines.push(`DB_DRIVER=${dbDriver}`);
+  if (dbUrl)      dbLines.push(`DATABASE_URL=${dbUrl}`);
+  if (!isSQLite) {
+    if (dbHost)     dbLines.push(`DB_HOST=${dbHost}`);
+    if (dbPort)     dbLines.push(`DB_PORT=${dbPort}`);
+    if (dbName)     dbLines.push(`DB_NAME=${dbName}`);
+    if (dbUser)     dbLines.push(`DB_USER=${dbUser}`);
+    if (dbPassword) dbLines.push(`DB_PASSWORD=${dbPassword}`);
+    if (dbSsl)      dbLines.push(`DB_SSL=${dbSsl}`);
+    if (dbSslRejectUnauthorized) dbLines.push(`DB_SSL_REJECT_UNAUTHORIZED=${dbSslRejectUnauthorized}`);
+    if (dbPoolMin)  dbLines.push(`DB_POOL_MIN=${dbPoolMin}`);
+    if (dbPoolMax)  dbLines.push(`DB_POOL_MAX=${dbPoolMax}`);
+  }
+
   // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`
   const envContent = [
     `# TIP Protocol — ${name}`,
@@ -283,6 +321,8 @@ async function main() {
     `# ─── Node Keys (ML-DSA-65) ─────────────────────────────────────────────────`,
     `TIP_NODE_PRIVATE_KEY=${keypair.privateKey}`,
     `TIP_NODE_PUBLIC_KEY=${keypair.publicKey}`,
+    ``,
+    ...dbLines,
     ``,
   ].join("\n");
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });

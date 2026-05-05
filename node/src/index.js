@@ -3,7 +3,7 @@
  * @description TIP Protocol Full Node — Entry Point
  *
  * Starts:
- *   1. SQLite-backed DAG store
+ *   1. DAG store (SQLite, PostgreSQL, MariaDB, MSSQL, or Oracle via Knex)
  *   2. Trust scoring engine
  *   3. Express REST API (v1)
  *   4. WebSocket gossip server (peer-to-peer DAG propagation)
@@ -35,6 +35,7 @@ const { initNetworkAndConsensus } = require("./init-network");
 const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
+const { resolveDriver } = require("./db/index");
 
 // Process-level error boundary for the consensus loops + libp2p stream
 // handlers + scheduled timers. Without these, any throw inside a
@@ -76,12 +77,26 @@ async function main() {
   }
 
   // Startup banner: notice-level so it always shows regardless of TIP_CONSOLE_LEVEL
+  const effectiveDriver = resolveDriver(config);
+  const isSQLite = effectiveDriver === "sqlite" || effectiveDriver === "memory";
+
+  const defaultPorts = { postgres: 5432, mariadb: 3306, mysql: 3306, mssql: 1433, sqlserver: 1433, oracle: 1521 };
+  const dbEndpoint = config.dbUrl
+    ? config.dbUrl.replace(/:\/\/[^:]+:[^@]+@/, "://<credentials>@")
+    : `${config.dbHost}:${config.dbPort || defaultPorts[effectiveDriver] || ""}/${config.dbName}`;
+
   log.notice(`=== TIP Protocol Node v${config.nodeVersion} ===`);
   log.notice(`Node ID     : ${config.nodeId}`);
   log.notice(`Region      : ${config.region}`);
   log.notice(`Port        : ${config.port}`);
-  log.notice(`Data dir    : ${config.dataDir}`);
   log.notice(`Node type   : ${config.nodeType}`);
+  if (isSQLite) {
+    log.notice(`DB driver   : sqlite`);
+    log.notice(`Data dir    : ${config.dbPath}`);
+  } else {
+    log.notice(`DB driver   : ${effectiveDriver}`);
+    log.notice(`DB endpoint : ${dbEndpoint}`);
+  }
   log.notice("================================");
 
   // 1. Initialise DAG store
@@ -89,11 +104,12 @@ async function main() {
   // if the DB doesn't exist yet — no seed.db copy needed.
   const fs = require("fs");
   const path = require("path");
-  if (!fs.existsSync(config.dbPath)) {
+  if (isSQLite && !fs.existsSync(config.dbPath)) {
     fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
   }
 
   const dag = await initDAGAsync(config);
+  log.notice(`DB          : connected (${effectiveDriver})`);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
 
   // Look up this node's registered ID from the node registry (by public key)
