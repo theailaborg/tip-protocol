@@ -801,3 +801,94 @@ describe("§14/#49 snapshot full-history shipping", () => {
     expect(fx.sourceDag.getTx(joinerPrev[1])).not.toBeNull();
   });
 });
+
+describe("§69 snapshot ships recent certs for joiner committee derivation", () => {
+  // Live regression — 2026-05-02 federation halt:
+  //   Node 2 installed snapshot at round=98 with peer_committed=146.
+  //   Snapshot shipped state + txs + commits + rotations but NOT certs.
+  //   Cert-sync filled rounds [snap.round+1, peer_committed] from peer
+  //   (the peer-sync.js `return snap.round` fix), but the joiner still
+  //   had no certs from rounds [1, snap.round]. For runtime committee
+  //   derivation (post-§4 fix uses cert history), the joiner's K=300
+  //   window for any near-future round R extended back into the
+  //   pre-snapshot range — where the joiner had no data — causing its
+  //   `getActiveCommittee` to differ from full-history nodes for K
+  //   rounds after install. Result: mid-flight quorum-asymmetry halt.
+  //
+  // §69 fix: snapshot ships every cert in
+  // `[max(1, peer_committed - K - VOTES_RETENTION_ROUNDS), peer_committed]`.
+  // After install the joiner's certificates table covers exactly the
+  // K-window the runtime committee derivation reads from, so its
+  // `getActiveCommittee` matches full-history nodes from the moment
+  // sync completes — no transient halt window.
+
+  test("joiner's certificates table covers the K-window after install", async () => {
+    // Seed cert history across rounds [1, round-1] so the snapshot's
+    // Phase E has real data to ship. buildCommittedDag's seedCertsFromRound
+    // option produces structurally-valid certs (proper hashes, ack stubs)
+    // — same canonical form normal consensus would write.
+    const fx = buildCommittedDag({
+      committeeSize: 1,
+      round: 50,
+      seedCertsFromRound: 1,
+    });
+
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    const [, result] = await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Certs were shipped: 49 seeded + 1 anchor = 50 in [1, 50].
+    expect(result.cert_rows_installed).toBeGreaterThan(0);
+    expect(fx.seededCerts.length).toBe(49);  // sanity: 49 rounds × 1 author
+
+    // Joiner's DAG has the same cert count for the K-window range as
+    // the source. iterateCertsByRoundRange yields every cert in
+    // [fromRound, toRound]; both sides' iteration MUST produce the
+    // same set after install (canonical projection round-trips
+    // identically through SnapshotCertRow.canonical_json).
+    const sourceCerts = [...fx.sourceDag.iterateCertsByRoundRange(1, 50)];
+    const destCerts = [...destDag.iterateCertsByRoundRange(1, 50)];
+    expect(destCerts.length).toBe(sourceCerts.length);
+
+    // Round-by-round identity — same authors at same rounds.
+    const keyOf = (c) => `${c.round}:${c.author_node_id}:${c.hash.slice(0, 16)}`;
+    expect(destCerts.map(keyOf).sort()).toEqual(sourceCerts.map(keyOf).sort());
+  });
+
+  test("joiner's getActiveCommittee derives the same answer as source post-install", async () => {
+    // The end-to-end property the §69 fix exists for: after snapshot
+    // install, the joiner's `getActiveCommittee` at any round in the
+    // K-window-after-snap range MUST equal the source's. Before the
+    // fix this was the divergence root cause — joiner saw a smaller
+    // producer set than full-history → smaller committee → smaller
+    // quorum → asymmetric cert validation → halt.
+    const { getActiveCommittee } = require(path.join(SRC, "consensus", "participants"));
+
+    const fx = buildCommittedDag({
+      committeeSize: 2,
+      round: 100,
+      seedCertsFromRound: 1,  // both committee members produce in every round
+    });
+
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
+
+    await Promise.all([
+      sourceHandler._handleIncomingSnapshot(server, "test-client"),
+      destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+
+    // Pick a query round in the post-snapshot K-window. With K=300
+    // (default), the joiner's K-window for any round 100..399 reads
+    // back into the snapshotted history. Both nodes MUST agree.
+    for (const queryRound of [100, 150, 200, 300, 399]) {
+      const sourceCommittee = getActiveCommittee(fx.sourceDag, queryRound);
+      const destCommittee = getActiveCommittee(destDag, queryRound);
+      expect(destCommittee).toEqual(sourceCommittee);
+    }
+  });
+});

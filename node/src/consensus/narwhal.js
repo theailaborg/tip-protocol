@@ -38,9 +38,16 @@ const {
   serializeCertificate, deserializeCertificate,
 } = require("./certificate-codec");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
+const { epochOf } = require("./participants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
+
+// #64: rate-limit the late-batch ack WARN. ~60 rounds ≈ 1 minute at the
+// default 1s round budget — short enough that a sustained pathology
+// (mis-sized horizon, persistently lagging peer) is still visible
+// within a few minutes, long enough that warm-up doesn't flood.
+const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
 
 /**
  * Create the Narwhal data availability layer.
@@ -55,19 +62,35 @@ const log = getLogger("tip.narwhal");
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
+  const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
+  // Rate-limit the producer-pause notify. _beginRound retries every 50ms
+  // while paused; the upstream consumer (bullshark rotation proposer)
+  // doesn't need that frequency. 1.5s matches the rotation-coord
+  // re-broadcast cadence so each cycle gets one fresh proposal attempt.
+  let _lastProducerPausedAt = 0;
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
 
-  // Join state: controls when a joining node can start producing.
-  //   "ready"   — normal operation
-  //   "syncing" — sync in progress, suppress round production
-  // After sync, SyncResponse.latestRound gives the authoritative peer round,
-  // so we transition "syncing" → "ready" directly and resume ticking.
+  // Tri-state join FSM.
+  //   syncing      — installing snapshot; no reception, no production.
+  //   catching_up  — snapshot verified, pulling cert tail; receives + parks
+  //                  consensus messages but does NOT produce certs.
+  //   ready        — caught up + state-root matches 2f+1; cert production on.
+  // External callers transition via markSnapshotInstalled / markCaughtUp.
   let _joinState = "ready";
+  // Wall-clock when we entered syncing / catching_up. Sticky on repeat
+  // entries; cleared on exit. The watchdog and halt detector both read
+  // these to bound how long we can sit in a non-ready state.
+  let _syncEnteredAt = 0;
+  let _catchingUpEnteredAt = 0;
+  // Peer's committed_round at snapshot-install time — the round the cert
+  // tail must reach before catching_up can promote to ready. Anti-entropy
+  // reads this to decide "is the tail closed?".
+  let _catchUpTarget = 0;
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
   let _nextRoundTimer = null;                       // inter-round scheduler
@@ -84,6 +107,14 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // no peer cert is silently dropped for arriving before its parents.
   const _pendingCerts = new Map();                  // certHash → { cert, missing: Set<parentHash> }
   const _pendingByParent = new Map();               // parentHash → Set<certHash>
+
+  // #64: per-peer rate limiter for the late-batch ack WARN log. During
+  // warm-up (quorum=1, no peers) every round advances faster than gossip
+  // RTT, so every batch arrives "late" and the WARN floods one-per-round
+  // per peer. We keep the metric per-batch but log only at first sighting
+  // and every LATE_BATCH_LOG_INTERVAL_ROUNDS rounds thereafter, with a
+  // running count of suppressed warns.
+  const _lateBatchAckTracker = new Map();           // authorId → { count, lastLoggedRound }
 
   // Consensus counters — read by stats() for /v1/stats and periodic summary.
   // These are cumulative for the lifetime of the process; a supervisor can
@@ -176,6 +207,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     if (_nextRoundTimer) { clearTimeout(_nextRoundTimer); _nextRoundTimer = null; }
+    if (_watchdogTimer) { clearInterval(_watchdogTimer); _watchdogTimer = null; }
   }
 
   /**
@@ -193,13 +225,87 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   // ── Round lifecycle ──────────────────────────────────────────────────────
 
+  function _canProduce() {
+    return _running && _joinState === "ready";
+  }
+
   function _beginRound() {
-    if (!_running || _joinState !== "ready") return;
+    if (!_canProduce()) return;
+
+    // #75 atomic boundary — producer-pause. Don't seal a cert at round R
+    // until we have the rotation that R's epoch needs in our local
+    // committee_history. Without this gate, a node whose commit-handler
+    // hasn't yet applied the latest rotation tx would produce certs under
+    // stale committee assumptions, causing peer-validation halts (the
+    // 2026-05-03 round-202 halt). The rotation tx is being applied to
+    // committee_history right now (or imminently); reschedule shortly.
+    //
+    // If the rotation isn't being produced (deadlock: no anchor commits
+    // → bullshark never retries proposeRotation), the rate-limited
+    // onProducerPaused callback nudges bullshark to attempt a proposal.
+    // Three layers prevent over-firing: rate-limit here, DAG re-check on
+    // bullshark's side, and rotation-coordinator's per-rotation inflight
+    // dedup. Without the nudge the federation sits halted indefinitely.
+    const targetRotation = epochOf(_currentRound);
+    let _carveOutRotationTx = null;
+    if (targetRotation > 0 && typeof dag.getCommitteeRotation === "function"
+      && !dag.getCommitteeRotation(targetRotation)) {
+      // Carve-out: if the missing rotation's tx is sitting in our local
+      // mempool, drain ONLY that tx and produce a rotation-only batch.
+      // Cert validation by peers at this boundary still uses the previous
+      // committee (rotation N takes effect FOR FUTURE rounds; the cert at
+      // round R = N×epoch_length is signed/ack'd by N-1's committee).
+      // Acking peers don't need to leave producer-pause — only ONE node
+      // needs to drain the rotation tx for the cert to form. Without this
+      // carve-out the federation deadlocks when the rotation tx lands in
+      // mempool but no node can drain it (everyone paused).
+      _carveOutRotationTx = typeof mempool.peekRotationTx === "function"
+        ? mempool.peekRotationTx(targetRotation) : null;
+      if (!_carveOutRotationTx) {
+        log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
+        if (_onProducerPaused) {
+          const now = Date.now();
+          if (now - _lastProducerPausedAt > 1500) {
+            _lastProducerPausedAt = now;
+            try { _onProducerPaused(_currentRound, targetRotation); }
+            catch (err) { log.warn(`onProducerPaused threw: ${err.message}`); }
+          }
+        }
+        // Brief reschedule. The onProducerPaused callback nudges
+        // bullshark to attempt a rotation proposal; once that lands a
+        // tx in mempool, the carve-out above will fire on the next
+        // _beginRound and unblock the federation.
+        _scheduleNextRound(50);
+        return;
+      }
+      log.notice(`Round ${_currentRound}: producer-pause carve-out — producing rotation-only batch for rotation ${targetRotation}`);
+    }
 
     _resetRoundState();
 
-    // Phase 1: Create batch from mempool and broadcast
-    const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+    // Phase 1: Create batch from mempool and broadcast.
+    // Carve-out path: only the rotation tx; normal path: drain everything.
+    //
+    // Carve-out does NOT drain the rotation tx from mempool. The rotation
+    // tx must keep re-carving on every round until bullshark anchor-commit
+    // applies it to committee_history through the normal pipeline (commit-
+    // handler → transactions/committee_history/commits/mempool delete in
+    // one transaction). Without this, each node carves exactly once and
+    // then producer-pauses again with an empty mempool — federation halts
+    // because anchor-commit at round R needs 2f+1 certs at R+2, but every
+    // node has only one cert at the boundary epoch then nothing.
+    // Live observed 2026-05-04 rotation-13 deadlock: 3 carve-outs at 2600,
+    // 1 at 2601, 0 at 2602 → anchor-commit at 2600 impossible.
+    // commit-handler dedups duplicate rotation txs ("rotation_number N
+    // already exists") so re-carving across rounds is safe; the eventual
+    // anchor commit removes the tx via deleteMempoolTxs and subsequent
+    // rounds skip the carve branch entirely (rotation in CH).
+    let txs;
+    if (_carveOutRotationTx) {
+      txs = [_carveOutRotationTx];
+    } else {
+      txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+    }
 
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);
@@ -441,8 +547,24 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       return;
     }
     if (batch.round < _currentRound) {
-      log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id}`);
       _metrics.batches_acked_late++;
+      // #64: rate-limit the WARN. First sighting from a peer logs immediately;
+      // subsequent ones are summarised every LATE_BATCH_LOG_INTERVAL_ROUNDS
+      // rounds with a running count. Otherwise warm-up (quorum=1, no peers)
+      // floods the log one-per-round per peer because each round advances
+      // before gossip RTT completes.
+      const tracker = _lateBatchAckTracker.get(batch.author_node_id);
+      if (!tracker) {
+        log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id}`);
+        _lateBatchAckTracker.set(batch.author_node_id, { count: 1, lastLoggedRound: _currentRound });
+      } else {
+        tracker.count++;
+        if (_currentRound - tracker.lastLoggedRound >= LATE_BATCH_LOG_INTERVAL_ROUNDS) {
+          log.warn(`Round ${_currentRound}: ack'ing late batch from round ${batch.round} (within horizon ${horizon}) author=${batch.author_node_id} — ${tracker.count} late batches from this peer since last log`);
+          tracker.count = 0;
+          tracker.lastLoggedRound = _currentRound;
+        }
+      }
       // fall through to equivocation guard + ack
     }
 
@@ -580,7 +702,23 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _tryCreateCertificate() {
     if (_myCertificateCreated || !_myBatch) return;
 
-    const acks = _batchAcks.get(_myBatch.hash) || [];
+    // Filter to committee-member acks only. Non-committee peers (late-
+    // joiners, recently-rotated-out nodes) may also send acks for
+    // network responsiveness, but only committee members count toward
+    // the BFT quorum. Without this filter, the cert author may seal a
+    // cert with 2f+1 ack signatures that includes non-committee signers.
+    // That cert verifies fine at runtime (peers do the same lenient
+    // count), but FAILS snapshot-install verification in joiners
+    // (snapshot-handler.js applies the strict committee-membership rule
+    // at line 640: `if (!committeeSet.has(signer)) continue`). The two
+    // layers using two different rules for "valid quorum ack" was the
+    // 2026-05-05 incident where wiped-n5 couldn't re-sync because the
+    // peer's snapshot anchor cert had a non-committee ack from n4.
+    // Keeping rules consistent across cert-seal and snapshot-verify
+    // closes that gap.
+    const allAcks = _batchAcks.get(_myBatch.hash) || [];
+    const committeeSet = new Set(_getCommittee(_currentRound));
+    const acks = allAcks.filter(a => committeeSet.has(a.acker_node_id));
     const quorum = _getQuorum();
 
     if (acks.length < quorum) return;
@@ -617,8 +755,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _currentRound, nodeId, _myBatch, acks, parentHashes, privateKey
     );
 
-    // Persist
-    _saveCertAndNotify(cert);
+    // Persist. If the SQLite connection is busy (snapshot serve in
+    // flight on the same connection) the save is deferred — leave
+    // _myCertificateCreated unset and skip broadcast so the next
+    // round retries with a fresh cert. Cert is in memory only at
+    // this point; nothing to clean up.
+    const persisted = _saveCertAndNotify(cert);
+    if (!persisted) {
+      _scheduleNextRound(100);
+      return;
+    }
     _roundCertificates.set(nodeId, cert);
     _myCertificateCreated = true;
 
@@ -635,7 +781,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     _metrics.certs_created++;
-    log.debug(`Round ${_currentRound}: certificate created (${acks.length} acks, ${(cert.batch.txs || []).length} txs)`);
+    // INFO-level so this surfaces in info.log too — diff author's view
+    // against the receiver's "Rejected certificate ... my committee at R"
+    // line to spot gossip-lag asymmetry at sealing time.
+    const committeeShort = _getCommittee(_currentRound).map(id => id.slice(-8)).join(",");
+    const ackerShort = acks.map(a => (a.acker_node_id || "").slice(-8)).join(",");
+    log.info(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
 
     _tryAdvanceRound();
   }
@@ -673,10 +824,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Committee is wave-stable, so cert.round maps to the cert's wave's
     // committee. Every node computes the same value from the same DAG, so
     // ack-count validation matches what the author used when signing.
-    const quorum = computeQuorum(_getCommittee(cert.round).length);
+    const committeeAtCertRound = _getCommittee(cert.round);
+    const quorum = computeQuorum(committeeAtCertRound.length);
     const result = verifyCertificate(cert, getNodeKey, quorum);
     if (!result.valid) {
-      log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: ${result.error}`);
+      // Extra context on rejection — surfaces gossip-lag asymmetry where
+      // author and validator computed different committees from different
+      // local DAG states at cert.round. Diff this line on author vs.
+      // validator side to see exactly where they disagreed.
+      const ackerIds = (cert.acknowledgments || []).map(a => (a.acker_node_id || "").slice(-8)).join(",");
+      const committeeShort = committeeAtCertRound.map(id => id.slice(-8)).join(",");
+      log.warn(`Rejected certificate from ${cert.author_node_id} round ${cert.round}: ${result.error} | my committee at R=${cert.round}: [${committeeShort}] (size=${committeeAtCertRound.length}, quorum=${quorum}) | cert ackers: [${ackerIds}]`);
       return;
     }
 
@@ -698,11 +856,42 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   /**
    * Persist, emit save events, and flush any pending certs whose last
    * missing parent is this one.
+   *
+   * better-sqlite3 throws "This database connection is busy executing
+   * a query" if a write is attempted while a streaming iterator
+   * (snapshot serving) is live on the same connection. This is a
+   * transient condition — the iterator finishes within milliseconds.
+   * Treat it as deferrable rather than fatal: log + skip this tick,
+   * the cert is still in memory and will retry on the next round.
+   * Letting it bubble crashes the node (crash observed 2026-05-05
+   * round 800 during concurrent snapshot serve to two reconnecting
+   * peers).
+   *
+   * For OWN cert: caller is `_tryCreateCertificate` from `_beginRound`.
+   * Skipping the save without setting `_myCertificateCreated` lets the
+   * next round retry naturally. Brief liveness hiccup, no state loss.
+   *
+   * For PEER cert: caller is `_processVerifiedCertificate`. Skipping
+   * the save means we don't notify save-event listeners. Peer will
+   * re-broadcast (or anti-entropy will pull) — idempotent via the
+   * `dag.getCertificate()` dedup guard in handleIncomingCertificate.
+   *
+   * Returns true if persisted, false if deferred.
    */
   function _saveCertAndNotify(cert) {
-    dag.saveCertificate(cert);
+    try {
+      dag.saveCertificate(cert);
+    } catch (err) {
+      const msg = (err && err.message) || "";
+      if (msg.includes("database connection is busy")) {
+        log.warn(`Round ${cert.round}: cert save deferred — SQLite connection busy (snapshot serve in flight); will retry`);
+        return false;
+      }
+      throw err;
+    }
     _onCertSaved(cert);
     _flushPendingForParent(cert.hash);
+    return true;
   }
 
   /**
@@ -866,37 +1055,123 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ./certificate-codec — single source of truth for both gossipsub
   // broadcast (this file) and framed sync (sync-handler.js).
 
+  // Watchdog bounds non-ready states so a node never zombies. syncing's
+  // observability is owned by halt-status (stuck_syncing reason); the
+  // watchdog only acts on catching_up that drags past its threshold —
+  // peer GC'd faster than we synced, current target is unreachable, flip
+  // back to syncing so the next AE tick requests a fresher snapshot.
+  const STUCK_CATCHING_UP_MS = CONSENSUS.ROUND_TIMEOUT_MS * 10;
+  let _watchdogTimer = null;
+
+  function enterSyncMode() {
+    _joinState = "syncing";
+    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    log.notice("Entering sync mode — suppressing round production");
+    _startWatchdog();
+  }
+
+  // syncing → catching_up. Called by snapshot-handler after the install's
+  // contract verification passes. peerCommittedRound is the cluster head
+  // the cert tail must reach before catching_up can promote to ready.
+  function markSnapshotInstalled(round, peerCommittedRound = 0) {
+    if (_joinState !== "syncing") {
+      log.debug(`markSnapshotInstalled ignored — joinState=${_joinState}`);
+      return;
+    }
+    const target = Math.max(round, dag.getLatestRound()) + 1;
+    if (target > _currentRound) {
+      const oldRound = _currentRound;
+      _currentRound = target;
+      _resetRoundState();
+      if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+      log.notice(`Round advanced after snapshot: ${oldRound} → ${_currentRound}`);
+    }
+    _joinState = "catching_up";
+    _syncEnteredAt = 0;
+    _catchingUpEnteredAt = Date.now();
+    _catchUpTarget = Math.max(0, peerCommittedRound || round);
+    log.notice(`Snapshot installed at round ${round}; catching up to peer head ${_catchUpTarget}`);
+    _startWatchdog();
+  }
+
+  // catching_up → ready. Anti-entropy calls this after asserting the cert
+  // tail reached _catchUpTarget AND our state_merkle_root matches 2f+1 of
+  // authorized peers. peerLatestRound is the cluster's current head used
+  // to floor _currentRound for the resumed production.
+  function markCaughtUp(peerLatestRound = 0) {
+    if (_joinState !== "catching_up") {
+      log.debug(`markCaughtUp ignored — joinState=${_joinState}`);
+      return;
+    }
+    _exitToReady(peerLatestRound);
+    log.notice(`Caught up — ready at round ${_currentRound}`);
+  }
+
+  // Public override: forces a direct transition to ready from any state.
+  // Retained for tests that drive _currentRound for setup, and for the
+  // safety-floor branch in anti-entropy._runSnapshotFallback failure path.
+  // Live happy-path callers should prefer markSnapshotInstalled +
+  // markCaughtUp so the AE state-root assertion gates the transition.
+  function exitSyncMode(peerLatestRound = 0) {
+    _exitToReady(peerLatestRound);
+    log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
+  }
+
+  function _exitToReady(peerLatestRound) {
+    const fromDag = dag.getLatestRound();
+    const target = Math.max(peerLatestRound, fromDag) + 1;
+    if (target > _currentRound) {
+      const oldRound = _currentRound;
+      _currentRound = target;
+      _resetRoundState();
+      if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
+      log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
+    }
+    _joinState = "ready";
+    _syncEnteredAt = 0;
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    _stopWatchdog();
+    if (_running) _scheduleNextRound(0);
+  }
+
+  function _startWatchdog() {
+    if (_watchdogTimer) return;
+    const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
+    _watchdogTimer = setInterval(_watchdogCheck, tick);
+  }
+
+  function _stopWatchdog() {
+    if (_watchdogTimer) { clearInterval(_watchdogTimer); _watchdogTimer = null; }
+  }
+
+  function _watchdogCheck() {
+    if (!_running || _joinState === "ready") { _stopWatchdog(); return; }
+    if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
+    const elapsed = Date.now() - _catchingUpEnteredAt;
+    if (elapsed <= STUCK_CATCHING_UP_MS) return;
+    log.warn(`Watchdog: catching_up stalled ${Math.floor(elapsed / 1000)}s (target=${_catchUpTarget}, dag=${dag.getLatestRound()}) — reverting to syncing for fresh snapshot`);
+    _joinState = "syncing";
+    _catchingUpEnteredAt = 0;
+    _catchUpTarget = 0;
+    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+  }
+
+  function joinState() { return _joinState; }
+  function catchUpTarget() { return _catchUpTarget; }
+
   return {
     start,
     stop,
     currentRound,
-    /** Enter sync mode — suppress all waking during sync */
-    enterSyncMode() {
-      _joinState = "syncing";
-      log.notice("Entering sync mode — suppressing round production");
-    },
-    /**
-     * Exit sync mode and resume normal operation. Uses peer's authoritative
-     * latestRound (from SyncResponse) as the starting round; if not provided,
-     * falls back to local DAG's latest round. Post-sync drift is handled by
-     * handleIncomingBatch adopting higher rounds from incoming batches.
-     * @param {number} [peerLatestRound]  Peer's current round from SyncResponse
-     */
-    exitSyncMode(peerLatestRound = 0) {
-      const fromDag = dag.getLatestRound();
-      const target = Math.max(peerLatestRound, fromDag) + 1;
-      if (target > _currentRound) {
-        const oldRound = _currentRound;
-        _currentRound = target;
-        // Any in-flight round state at the old round is now stale
-        _resetRoundState();
-        if (_roundTimer) { clearTimeout(_roundTimer); _roundTimer = null; }
-        log.notice(`Round resynced: ${oldRound} → ${_currentRound} (peer latest: ${peerLatestRound}, dag latest: ${fromDag})`);
-      }
-      _joinState = "ready";
-      log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
-      if (_running) _scheduleNextRound(0);
-    },
+    enterSyncMode,
+    exitSyncMode,
+    markSnapshotInstalled,
+    markCaughtUp,
+    joinState,
+    catchUpTarget,
     handleIncomingBatch,
     handleIncomingAck,
     handleIncomingCertificate,
@@ -937,6 +1212,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
       lastRoundAdvanceAt: _lastRoundAdvanceAt,
+      syncEnteredAt: _syncEnteredAt,
+      catchingUpEnteredAt: _catchingUpEnteredAt,
+      catchUpTarget: _catchUpTarget,
       metrics: { ..._metrics },
     }),
   };

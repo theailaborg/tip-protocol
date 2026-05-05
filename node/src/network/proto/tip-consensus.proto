@@ -161,6 +161,43 @@ message RoundAdvance {
   bytes signature = 4;
 }
 
+// ─── #68 Multi-sig committee-rotation coordination ───────────────────────────
+
+/**
+ * RotationProposal — broadcast by the boundary anchor's leader to the
+ * `tip/rotation-coordination` gossip topic. Every node currently in the
+ * previous committee verifies (a) live committee == proposer's view of
+ * previous committee, (b) `new_committee` matches what they would compute
+ * locally from rotation_participation (deterministic per #75), (c) the
+ * proposer's signature is valid. On verification, sign `payload_hash` and
+ * reply with a `RotationSignature`.
+ */
+message RotationProposal {
+  uint64 rotation_number = 1;
+  uint64 effective_round = 2;
+  repeated CommitteeMember new_committee = 3;
+  string payload_hash = 4;          // hex; what every signer signs as `rotation:${payload_hash}:${signer}`
+  string proposer_node_id = 5;
+  bytes proposer_signature = 6;     // sig over `rotation:${payload_hash}:${proposer_node_id}` — both proves identity AND counts as the proposer's vote
+}
+
+/**
+ * RotationSignature — every previous-committee member's vote on a
+ * `RotationProposal`. Aggregator collects ≥ ceil(2n/3) distinct sigs from
+ * the previous committee, then submits the COMMITTEE_ROTATION tx.
+ */
+message RotationSignature {
+  uint64 rotation_number = 1;
+  string payload_hash = 2;
+  string signer_node_id = 3;
+  bytes signature = 4;
+}
+
+message CommitteeMember {
+  string node_id = 1;
+  string public_key = 2;
+}
+
 // ─── Mempool ─────────────────────────────────────────────────────────────────
 
 /**
@@ -291,9 +328,11 @@ message PeerAnnounce {
 // anchor cert batch hash → then installs state and resumes live consensus.
 //
 // Stream framing: a single libp2p stream carries length-prefixed messages
-// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow, then
-// SnapshotEnd. Sender writes 4-byte big-endian length prefix before each
-// message; receiver parses one message per length prefix.
+// in sequence: SnapshotHeader, then zero-or-more SnapshotStateRow,
+// SnapshotTxRow, SnapshotCommitRow, SnapshotCommitteeRotationRow,
+// SnapshotCertRow, then SnapshotEnd. Sender writes 4-byte big-endian
+// length prefix before each message; receiver parses one message per
+// length prefix.
 
 /**
  * Joiner's request. Asks for the peer's latest committed state at or
@@ -429,6 +468,52 @@ message SnapshotCommitRow {
 }
 
 /**
+ * One row from the source's `committee_history` table — every rotation
+ * since genesis (rotation 0) up through the latest. Joiner walks these
+ * forward verifying each transition's sigs against the previously-
+ * trusted committee (chain-of-trust, §4 + #34). Sent in `rotation_number`
+ * order.
+ *
+ * `canonical_json` is the byte form of `canonicalJson(canonRotation(r))`.
+ * Same canonical form used for `rotations_full_root`. Joiner installs
+ * via `dag.saveCommitteeRotation` AFTER verifying the chain walk
+ * succeeds — broken chain rejects the entire snapshot atomically.
+ */
+message SnapshotCommitteeRotationRow {
+  bytes canonical_json = 1;
+}
+
+/**
+ * §69: One row from the source's `certificates` table — every cert in
+ * the range `[max(1, peer_committed - K - VOTES_RETENTION_ROUNDS),
+ * peer_committed]`. Joiner installs via `dag.saveCertificate` AFTER
+ * verifying the wire-integrity root match.
+ *
+ * Why we ship recent certs (and not just the snapshot's anchor cert):
+ * the post-§4 runtime committee is derived from `getActiveCommittee()`,
+ * which reads the K-round window of cert history before the queried
+ * round. Without these certs, a fresh joiner's K-window for any round
+ * `R ≤ peer_committed + K` is missing the `[R-K, snap.round]` slice
+ * → its `getActiveCommittee` differs from full-history nodes →
+ * mid-flight quorum-asymmetry halt (live fingerprint 2026-05-02).
+ *
+ * The range covers at least K+horizon rounds so the joiner's K-window
+ * for ANY query round it'll ever produce at is fully populated:
+ *   joiner produces first cert at round = peer_committed + 1
+ *   K-window for that round = [peer_committed + 1 - K, peer_committed]
+ *   → bundle MUST include certs from peer_committed - K backwards
+ *   → +VOTES_RETENTION_ROUNDS for late-batch tolerance.
+ *
+ * Sent in `(round, author_node_id)` order — same canonical ordering
+ * as `dag.iterateCertsByRoundRange` yields. `canonical_json` is the
+ * byte form of `canonicalJson(canonCert(cert))` — receiver feeds
+ * into the same `certs_full_root` builder for verification.
+ */
+message SnapshotCertRow {
+  bytes canonical_json = 1;
+}
+
+/**
  * Terminator. Row counts are sanity checks — joiner verifies they match
  * the number of rows of each type actually received (guards against
  * silent truncation on the wire).
@@ -440,6 +525,12 @@ message SnapshotCommitRow {
  * on either root rejects the snapshot install. They live in the footer
  * (not the header) so the sender can compute them while streaming —
  * one pass over each table.
+ *
+ * §4 + #34: `rotations_full_root` is the same shape — flat hash over
+ * canonical rows of `committee_history`. Wire-format integrity for the
+ * rotation chain. The CHAIN-OF-TRUST verification (sigs from previous
+ * committee, anchored at LOCAL genesis founding_node) runs separately
+ * AFTER the root match passes; mismatch on either step rejects.
  */
 message SnapshotEnd {
   uint64 row_count = 1;             // SnapshotStateRow count (existing)
@@ -447,4 +538,12 @@ message SnapshotEnd {
   uint64 commit_row_count = 3;      // #49: SnapshotCommitRow count
   bytes txs_full_root = 4;          // #49: integrity root over tx stream
   bytes commits_full_root = 5;      // #49: integrity root over commit stream
+  uint64 rotation_row_count = 6;    // §4 + #34: SnapshotCommitteeRotationRow count
+  bytes rotations_full_root = 7;    // §4 + #34: integrity root over rotation stream
+  uint64 cert_row_count = 8;        // #69: SnapshotCertRow count
+  bytes certs_full_root = 9;        // #69: integrity root over cert stream
+  uint64 rp_row_count = 10;         // #75: SnapshotStateRow rotation_participation count
+                                    // (carried in SnapshotStateRow with table=rotation_participation;
+                                    // intentionally NOT in state_merkle_root because RP is real-time
+                                    // counter state that flickers between commits)
 }

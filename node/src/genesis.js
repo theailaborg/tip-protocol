@@ -208,10 +208,23 @@ const GENESIS_PAYLOAD = Object.freeze({
       gc_interval_commits: 10,          // cert GC: run prune every Nth commit (modulo-based throttle). At ~one commit every few seconds this runs ~20-60s apart, keeping SQLite churn bounded.
       anti_entropy_interval_ms: 4000,    // §28: how often the anti-entropy loop polls every authorized peer for its sync state. Default = 2 × batch_wait_ms. Shorter = faster divergence detection, more network chatter; longer = slower but cheaper. 4s is light chatter (~one RPC per peer per 4s).
       anti_entropy_peer_timeout_ms: 2000, // §28: per-peer RPC deadline. Slow peer must not block the loop — times out and marked stale, retried next cycle.
+      rotation_coord_rebroadcast_interval_ms: 1500, // multi-sig committee rotation: re-broadcast the open proposal + accumulated sigs at this cadence while inflight. Defends against transient delivery failures so partial sig sets accumulate across retries. 1.5s gives ~20 retries within a typical 30s aggregation deadline.
       sync_total_timeout_ms: 30000,      // §19 framed sync: total deadline for a single syncFromPeer call. Protects a joiner against a hanging/adversarial peer that accepts the stream then writes slowly. 30s covers normal catch-up on any realistic DAG size; caller (peer-sync retry) handles the failure.
       sync_max_response_bytes: 1073741824, // §19: cumulative byte cap on a single sync response (1 GB). Per-frame cap (snapshot_max_frame_bytes=16MB) bounds individual frames; this one bounds total stream size against a peer that drip-feeds infinite small frames. Aborts the read loop.
       max_round_duration_ms: 300000,     // BFT-time bound: cert.timestamp must lie in [prev_cert.timestamp + 1, prev_cert.timestamp + max_round_duration_ms]. Caps how far time can advance per round so a colluding majority can't jump the clock to expire pending deadlines. 5 min is generous (2-3 orders of magnitude above legitimate per-round drift) and tight enough to defend against meaningful skew. Reference: Tendermint Block.Time validation uses a similar deviation bound.
       bft_time_genesis_ms: new Date(GENESIS_TIMESTAMP).getTime(), // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. Derived deterministically from GENESIS_TIMESTAMP so there is one source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
+      // ─── #75 Rotation-period model ──────────────────────────────────────
+      // Committee changes only at rotation boundaries — every node hits the
+      // boundary at the same `consensus_index` (Bullshark anchor count),
+      // which is bit-identical across all nodes. At each boundary, every
+      // node deterministically computes the next rotation's committee from
+      // the `rotation_participation` counter table (incremented on every
+      // anchor commit). Within a rotation period, getActiveCommittee is a
+      // pure lookup against committee_history — no per-round divergent
+      // computation. Replaces the pre-#75 cert-history span check, which
+      // could not stay deterministic under per-node cert GC timing (#74).
+      committee_rotation_interval_commits: 100,        // rotation period length in anchor commits (consensus_index). Testnet: 100 anchors ≈ 200 rounds ≈ 3 min at 2s rounds. Production override: 43200 ≈ 24h. Deterministic boundary at consensus_index % this == 0. Smaller = faster admission, more rotation churn; larger = longer admission delay, less churn.
+      committee_rotation_participation_pct_of_interval: 70,  // committee admission threshold for next rotation: a node qualifies when its rotation_participation count (raw anchor-walk credits — NOT a fraction of total participation) reaches `ceil(INTERVAL * pct/100)`. With INTERVAL=100 and pct=70 the threshold is `>= 70 credits`, easy to clear since each anchor walk yields several credits per active node. Genesis members are exempt — always in committee while registered+active. Old key `committee_rotation_min_participation_pct` is still read for backward compat.
     },
     network: {
       chain_id: "tip-mainnet-v2",
@@ -391,6 +404,31 @@ function getInitialParams() {
   return Object.freeze({ ...GENESIS_PAYLOAD.initial_params });
 }
 
+/**
+ * Genesis-anchored committee — the founding-node IDs that are admitted
+ * into the runtime committee from round 1, with no K-round proven wait.
+ * Late joiners (any node whose id is NOT in this set) must produce for
+ * `K = COMMITTEE_ROTATION_HYSTERESIS_ROUNDS` rounds before being admitted.
+ *
+ * Source of truth: `GENESIS_PAYLOAD.founding_node`. If genesis later grows
+ * a `founding_committee: [...]` array (multi-founder chain), surface that
+ * here without changing call sites.
+ *
+ * @returns {Set<string>} node IDs that are genesis members
+ */
+function getGenesisCommittee() {
+  const ids = new Set();
+  if (GENESIS_PAYLOAD.founding_node && GENESIS_PAYLOAD.founding_node.node_id) {
+    ids.add(GENESIS_PAYLOAD.founding_node.node_id);
+  }
+  if (Array.isArray(GENESIS_PAYLOAD.founding_committee)) {
+    for (const m of GENESIS_PAYLOAD.founding_committee) {
+      if (m && m.node_id) ids.add(m.node_id);
+    }
+  }
+  return ids;
+}
+
 module.exports = {
   GENESIS_TX_ID,
   GENESIS_TX,
@@ -407,5 +445,6 @@ module.exports = {
   getGenesisPayload,
   getFoundingVP,
   getInitialParams,
+  getGenesisCommittee,
   computeGenesisHash,
 };

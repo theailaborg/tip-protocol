@@ -71,6 +71,14 @@ const TOPICS = Object.freeze({
   CONSENSUS: "tip/consensus",
 });
 
+// Direct-stream RPC protocol for committee-rotation coordination. Replaces
+// the gossipsub tip/rotation-coordination topic that empirically dropped
+// large RotationProposal messages on cold meshes (live observed 2026-05-04
+// rotation 13 halt). Each proposal/sig is sent via a one-shot stream over
+// the existing TCP/QUIC connection between authorized peers — no mesh, no
+// scoring, no topic warmth required.
+const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
+
 /**
  * Create and start a libp2p network node.
  *
@@ -281,6 +289,31 @@ async function createNetworkNode(options = {}) {
     bootstrapReconnect.onPeerDisconnect(remotePeerId);
   });
 
+  // One-shot broadcast to every authorized peer over a direct stream.
+  // Each peer gets its own dial → write(buf) → close. Failures on one
+  // peer don't block the others; per-peer timeout protects against a
+  // slow peer stalling the whole broadcast. Used for rotation-coord
+  // traffic so delivery doesn't depend on gossipsub topic mesh state.
+  async function broadcastToAuthorized(buf, protocol, { timeoutMs = 2000 } = {}) {
+    const peerIds = [..._authorizedPeers.keys()];
+    await Promise.all(peerIds.map(async (peerId) => {
+      let stream = null;
+      let timer = null;
+      try {
+        timer = setTimeout(() => {
+          try { if (stream) stream.close(); } catch { /* ignore */ }
+        }, timeoutMs);
+        stream = await node.dialProtocol(peerIdFromString(peerId), protocol);
+        await stream.sink([buf]);
+      } catch (err) {
+        log.debug(`broadcastToAuthorized to ${peerId.slice(0, 12)} on ${protocol} failed: ${err.message}`);
+      } finally {
+        if (timer) clearTimeout(timer);
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+      }
+    }));
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
   return {
     /** The underlying libp2p node */
@@ -350,6 +383,9 @@ async function createNetworkNode(options = {}) {
     async openStream(peerId, protocol) {
       return node.dialProtocol(peerIdFromString(peerId), protocol);
     },
+
+    broadcastToAuthorized,
+    ROTATION_COORD_PROTOCOL,
 
     async stop() {
       rateLimiter.stop();

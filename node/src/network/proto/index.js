@@ -55,9 +55,15 @@ async function loadTypes() {
     "tip.consensus.SnapshotStateRow",
     "tip.consensus.SnapshotTxRow",
     "tip.consensus.SnapshotCommitRow",
+    "tip.consensus.SnapshotCommitteeRotationRow",   // §4 + #34 chain-of-trust
+    "tip.consensus.SnapshotCertRow",                // §69 ship recent certs
     "tip.consensus.SnapshotEnd",
     // #48 forward-on-authorize push
     "tip.consensus.PeerAnnounce",
+    // #68 multi-sig rotation coordination
+    "tip.consensus.RotationProposal",
+    "tip.consensus.RotationSignature",
+    "tip.consensus.CommitteeMember",
   ];
 
   _types = {};

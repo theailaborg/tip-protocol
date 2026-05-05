@@ -42,16 +42,22 @@
 
 "use strict";
 
-const { mldsaVerify, canonicalJson } = require("../../../shared/crypto");
+const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
 const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
+  createRotationsFullRootBuilder,
+  createCertsFullRootBuilder,
   canonTx,
   canonCommit,
+  canonRotation,
+  canonCert,
 } = require("./snapshot-roots");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { getGenesisPayload } = require("../genesis");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
 const { frame: _frame, parseLengthPrefixedFrames: _parseLengthPrefixedFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
@@ -72,7 +78,16 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @param {Function} options.isAuthorizedPeer  (peerIdString) => boolean
  * @returns {Object}
  */
-function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null }) {
+function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null }) {
+  // §4 + #34: counters surfaced via stats() for /metrics.
+  // chain_walk_failures increments every time _verifyRotationChain throws —
+  // either rotations_full_root mismatch or any of the chain-of-trust
+  // rejection paths (genesis mismatch, broken sigs, gap, etc.).
+  // Operators rate(...[5m]) this metric to detect a peer serving forged
+  // snapshots, or a peer running an incompatible chain.
+  const _metrics = {
+    chain_walk_failures: 0,
+  };
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
@@ -233,8 +248,28 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     let stateRowsSent = 0;
     let txRowsSent = 0;
     let commitRowsSent = 0;
+    let rotationRowsSent = 0;
+    let certRowsSent = 0;
+    let rpRowsSent = 0;
     let txsFullRoot = "";
     let commitsFullRoot = "";
+    let rotationsFullRoot = "";
+    let certsFullRoot = "";
+
+    // §69 + #75: cert range to ship — enough recent certs that the joiner
+    // can resume Bullshark anchor processing without waiting for cert
+    // sync. Under the rotation-period model, runtime committee comes
+    // from committee_history (also shipped by snapshot), so the cert
+    // window doesn't need to span a full K-round proven check anymore.
+    // We ship ~1 rotation period of recent rounds (INTERVAL_COMMITS
+    // anchors × 2 rounds/anchor at our wave cadence) plus VOTES_RETENTION
+    // for late-batch tolerance. For testnet INTERVAL_COMMITS=100 that's
+    // 200 rounds + ~5 horizon — generous for active-round catch-up.
+    const ROUNDS_PER_ANCHOR_APPROX = 2;
+    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * ROUNDS_PER_ANCHOR_APPROX;
+    const certWindowHorizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
+    const certFromRound = Math.max(1, peerCommittedRound - certWindowK - certWindowHorizon);
+    const certToRound = peerCommittedRound;
     try {
       await stream.sink((async function* () {
         yield _frame(headerBuf);
@@ -269,12 +304,72 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
         commitsFullRoot = commitRoot.finalize();
 
+        // Phase D: committee_history rotations (§4 + #34). Every rotation
+        // since genesis, in rotation_number order. The joiner walks this
+        // chain forward, anchored at LOCAL genesis founding_node, and
+        // verifies each transition's sigs against the previously-trusted
+        // committee.
+        const rotationRoot = createRotationsFullRootBuilder();
+        if (typeof dag.getRotationsFromGenesis === "function") {
+          for (const r of dag.getRotationsFromGenesis()) {
+            yield _frameFullHistoryRow("SnapshotCommitteeRotationRow",
+              canonicalJson(canonRotation(r)), rotationRoot);
+            rotationRowsSent++;
+          }
+        }
+        rotationsFullRoot = rotationRoot.finalize();
+
+        // Phase E: recent certificates (§69). Bounded range
+        // [peer_committed - K - horizon, peer_committed] so the joiner's
+        // K-window for any round it produces at next is fully populated.
+        // Without this, joiner's getActiveCommittee derives a smaller
+        // producer set than full-history nodes for the K rounds after
+        // snapshot install → quorum-asymmetry halt (live fingerprint
+        // 2026-05-02 — see peer-sync.js fix that addressed the related
+        // sync-from-snap_round+1 gap).
+        const certRoot = createCertsFullRootBuilder();
+        if (typeof dag.iterateCertsByRoundRange === "function") {
+          for (const cert of dag.iterateCertsByRoundRange(certFromRound, certToRound)) {
+            yield _frameFullHistoryRow("SnapshotCertRow",
+              canonicalJson(canonCert(cert)), certRoot);
+            certRowsSent++;
+          }
+        }
+        certsFullRoot = certRoot.finalize();
+
+        // Phase F: rotation_participation (#75). Streamed as SnapshotStateRow
+        // with `table="rotation_participation"` so the existing wire format
+        // is reused — but these rows are intentionally NOT included in
+        // state_merkle_root (RP is real-time counter state that flickers
+        // between commits; including it would cause spurious divergence
+        // warnings between honest peers). They install via the same
+        // `setRotationParticipation` setter the source uses for snapshot
+        // recovery. Source's RP for the rotations it still has (after
+        // bullshark's pruneRotationParticipationBefore at boundary) is
+        // shipped wholesale; joiner wipes its local rows for those
+        // rotations first, then installs.
+        if (typeof dag.iterateRotationParticipationForSnapshot === "function") {
+          for (const r of dag.iterateRotationParticipationForSnapshot()) {
+            const rowBuf = encode("SnapshotStateRow", {
+              table: "rotation_participation",
+              canonicalJson: Buffer.from(canonicalJson(r), "utf8"),
+            });
+            yield _frame(rowBuf);
+            rpRowsSent++;
+          }
+        }
+
         const endBuf = encode("SnapshotEnd", {
           rowCount: stateRowsSent,
           txRowCount: txRowsSent,
           commitRowCount: commitRowsSent,
           txsFullRoot: hexToBytes(txsFullRoot),
           commitsFullRoot: hexToBytes(commitsFullRoot),
+          rotationRowCount: rotationRowsSent,
+          rotationsFullRoot: hexToBytes(rotationsFullRoot),
+          certRowCount: certRowsSent,
+          certsFullRoot: hexToBytes(certsFullRoot),
+          rpRowCount: rpRowsSent,
         });
         yield _frame(endBuf);
       })());
@@ -285,7 +380,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     log.info(
       `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
-      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent})`
+      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
+      `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}] ` +
+      `rp=${rpRowsSent})`
     );
   }
 
@@ -341,17 +438,28 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const stateRowCount = Number(end.rowCount || 0);
       const txRowCount = Number(end.txRowCount || 0);
       const commitRowCount = Number(end.commitRowCount || 0);
-      const expectedTotal = stateRowCount + txRowCount + commitRowCount;
+      const rotationRowCount = Number(end.rotationRowCount || 0);
+      const certRowCount = Number(end.certRowCount || 0);
+      const rpRowCount = Number(end.rpRowCount || 0);
+      const expectedTotal = stateRowCount + txRowCount + commitRowCount
+        + rotationRowCount + certRowCount + rpRowCount;
       if (expectedTotal !== rowFrames.length) {
         throw new Error(
           `row count mismatch: end says state=${stateRowCount} txs=${txRowCount} ` +
-          `commits=${commitRowCount} (total=${expectedTotal}), got ${rowFrames.length} frames`
+          `commits=${commitRowCount} rotations=${rotationRowCount} certs=${certRowCount} ` +
+          `rp=${rpRowCount} (total=${expectedTotal}), got ${rowFrames.length} frames`
         );
       }
 
       const stateFrames = rowFrames.slice(0, stateRowCount);
       const txFrames = rowFrames.slice(stateRowCount, stateRowCount + txRowCount);
-      const commitFrames = rowFrames.slice(stateRowCount + txRowCount);
+      const commitFrames = rowFrames.slice(stateRowCount + txRowCount,
+        stateRowCount + txRowCount + commitRowCount);
+      const rotationFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount,
+        stateRowCount + txRowCount + commitRowCount + rotationRowCount);
+      const certFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount,
+        stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
+      const rpFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
 
       // ── Phase A: derived state ───────────────────────────────────────
       // Different shape from B/C (carries a `table` field) so doesn't use
@@ -407,6 +515,98 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`commits_full_root mismatch: expected ${expectedCommits?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
       }
 
+      // ── Phase D: committee_history rotations (§4 + #34) ─────────────
+      // Two-step verification:
+      //   1. Wire integrity — rotations_full_root match (same shape as
+      //      txs/commits roots, catches truncation/tampering of the stream)
+      //   2. Cryptographic chain-of-trust — walk rotations forward from
+      //      genesis, verify each transition's sigs come from the
+      //      previously-trusted committee. Anchored at LOCAL genesis
+      //      founding_node (NOT the peer-provided nodes table) — that's
+      //      what closes the synthetic-snapshot attack.
+      const rotationsRoot = createRotationsFullRootBuilder();
+      const rotationInstallQueue = _decodeFullHistoryFrames(
+        rotationFrames, "SnapshotCommitteeRotationRow", rotationsRoot, "rotation"
+      );
+      const derivedRotations = rotationsRoot.finalize();
+      const expectedRotations = bytesToHex(end.rotationsFullRoot);
+      if (derivedRotations !== expectedRotations) {
+        throw new Error(
+          `rotations_full_root mismatch: expected ${expectedRotations?.slice(0, 16) || "<empty>"}..., ` +
+          `derived ${derivedRotations.slice(0, 16)}...`
+        );
+      }
+
+      // Chain-of-trust walk. Anchor at LOCAL genesis (hardcoded in this
+      // node's binary, NOT from the peer's snapshot). Then walk forward,
+      // adopting each rotation's pubkeys ONLY after verifying its sigs
+      // against the previously-trusted committee. Any broken link rejects
+      // the entire snapshot. See validators/business-rules.canCommitteeRotation
+      // for the predicate this mirrors at commit-time.
+      //
+      // Returns the verified-and-ordered rotation list so the ack-quorum
+      // check below can look up signer pubkeys from the chain-anchored
+      // committee (NOT the peer-provided nodes table) — closes the last
+      // chicken-and-egg corner of fresh-joiner verification.
+      let verifiedRotations;
+      try {
+        verifiedRotations = _verifyRotationChain(rotationInstallQueue);
+      } catch (err) {
+        // §4 + #34: count failures so /metrics surfaces "this joiner
+        // rejected N snapshots due to chain-of-trust break" — sustained
+        // increments across multiple peers indicates either a malicious
+        // peer or a config drift between this node and the rest.
+        _metrics.chain_walk_failures++;
+        throw err;
+      }
+      const chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
+
+      // ── Phase E: recent certificates (§69) ──────────────────────────
+      // Wire-integrity check via certs_full_root. The certs themselves
+      // don't need cryptographic chain-of-trust verification at this
+      // layer — each cert's hash is content-addressable (covers round +
+      // author + batch.hash + acks + timestamp), and consensus already
+      // accepted them at production time via the normal Narwhal cert-
+      // validation path. We're shipping pre-verified history; the
+      // joiner just needs the bits to populate its K-window.
+      //
+      // Certs are install-ordered (round, author) and persisted via
+      // the standard `dag.saveCertificate` path — same as receiving via
+      // gossip, but bulk-loaded inside the snapshot's atomic txn.
+      const certsRoot = createCertsFullRootBuilder();
+      const certInstallQueue = _decodeFullHistoryFrames(
+        certFrames, "SnapshotCertRow", certsRoot, "cert"
+      );
+      const derivedCerts = certsRoot.finalize();
+      const expectedCerts = bytesToHex(end.certsFullRoot);
+      if (derivedCerts !== expectedCerts) {
+        throw new Error(
+          `certs_full_root mismatch: expected ${expectedCerts?.slice(0, 16) || "<empty>"}..., ` +
+          `derived ${derivedCerts.slice(0, 16)}...`
+        );
+      }
+
+      // ── Phase F: rotation_participation (#75) ─────────────────────────
+      // RP rows ship as SnapshotStateRow with table="rotation_participation"
+      // but DELIBERATELY OUTSIDE state_merkle_root — RP is real-time counter
+      // state that flickers between commits, so including it in the merkle
+      // root would cause spurious divergence between honest peers. Source's
+      // pre-snapshot anchor walks have populated whatever rotations haven't
+      // been pruned (last 3 rotations under bullshark's pruning policy),
+      // and the joiner inherits those counts wholesale.
+      const rpInstallQueue = [];
+      for (const frame of rpFrames) {
+        const row = decode("SnapshotStateRow", frame);
+        if (row.table !== "rotation_participation") {
+          throw new Error(`Phase F: expected table=rotation_participation, got "${row.table}"`);
+        }
+        const canonical = bytesToUtf8(row.canonicalJson);
+        let parsed;
+        try { parsed = JSON.parse(canonical); }
+        catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
+        rpInstallQueue.push(parsed);
+      }
+
       // ── Signature quorum ──────────────────────────────────────────────
       const anchorBatchHashHex = bytesToHex(header.anchorBatchHash);
       if (!anchorBatchHashHex) throw new Error("header missing anchor_batch_hash");
@@ -438,7 +638,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const signer = signerIds[i];
         if (seen.has(signer)) continue;          // no double-counting a signer
         if (!committeeSet.has(signer)) continue; // non-committee sig doesn't count toward quorum
-        const pubKey = nodePubKeys.get(signer);
+        // Pubkey lookup prefers the CHAIN-ANCHORED committee (cryptographically
+        // verified via _verifyRotationChain back to LOCAL genesis founding_node)
+        // over the peer-provided nodes table. Empty chain (pre-§4 peer or
+        // legacy snapshot) falls through to nodePubKeys for backwards compat —
+        // those snapshots predate chain-of-trust and rely on the older trust
+        // model (operator-managed bootstrap addresses + state_merkle_root).
+        const pubKey = chainPubkeysAtRound.get(signer) || nodePubKeys.get(signer);
         if (!pubKey) continue;                   // no public key available — can't verify
         // Reconstructed payload mirrors `_ackSignPayload` in certificate.js.
         // Without `signed_at` the signature wouldn't verify (signature scope
@@ -493,13 +699,24 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         stateRows: stateInstallQueue,
         txs: txInstallQueue,
         commits: commitInstallQueue,
+        rotations: rotationInstallQueue,
+        certs: certInstallQueue,
+        rp: rpInstallQueue,
       });
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
         `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ` +
+        `${installed.rotations}/rotations ${installed.certs}/certs ${installed.rp}/rp ` +
         `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
+
+      // Hand off to narwhal: syncing → catching_up. Production stays
+      // gated until anti-entropy asserts our state_merkle_root matches
+      // 2f+1 of authorized peers and the cert tail reaches peerCommittedRound.
+      if (narwhal && typeof narwhal.markSnapshotInstalled === "function") {
+        narwhal.markSnapshotInstalled(snapshotRound, peerCommittedRound);
+      }
 
       return {
         round: Number(header.round),
@@ -517,14 +734,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // network-wide anchor count. Without this, each node's
         // consensus_index drifts based on local restart history.
         peer_consensus_index: peerConsensusIndex,
-        rows_installed: installed.state + installed.txs + installed.commits,
+        rows_installed: installed.state + installed.txs + installed.commits + installed.rotations + installed.certs + installed.rp,
         state_rows_installed: installed.state,
         tx_rows_installed: installed.txs,
         commit_rows_installed: installed.commits,
+        rotation_rows_installed: installed.rotations,
+        cert_rows_installed: installed.certs,
+        rp_rows_installed: installed.rp,
         state_merkle_root: derivedState,
         txs_merkle_root: bytesToHex(header.txsMerkleRoot),
         txs_full_root: derivedTxs,
         commits_full_root: derivedCommits,
+        rotations_full_root: derivedRotations,
+        certs_full_root: derivedCerts,
       };
     } finally {
       try { stream.close(); } catch { /* ignore */ }
@@ -569,6 +791,63 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         commitN++;
       }
 
+      // §4 + #34: install committee_history rotations. Already verified
+      // up the call chain (rotations_full_root match + chain-of-trust
+      // walk). saveCommitteeRotation is INSERT OR IGNORE so re-running
+      // an install is idempotent — the bootstrap rotation 0 from initDAG
+      // and the snapshot's rotation 0 should be byte-identical (same
+      // genesis founding_node), so no conflict. Subsequent rotations
+      // land cleanly because the local DB had none beyond rotation 0
+      // before this install.
+      let rotationN = 0;
+      const rotations = queues.rotations || [];
+      for (const r of rotations) {
+        dag.saveCommitteeRotation({
+          ...r,
+          // canonRotation strips committed_at — restore a deterministic
+          // value here so the row passes its NOT NULL constraint. We use
+          // the rotation's effective_round-derived label (informational
+          // only — not in the canonical hash, not in chain-of-trust).
+          committed_at: r.committed_at || `installed-from-snapshot:rotation-${r.rotation_number}`,
+        });
+        rotationN++;
+      }
+
+      // §69: install recent certs. Already verified upstream via
+      // certs_full_root match. saveCertificate is INSERT OR IGNORE on
+      // (hash) so a cert that arrives twice (e.g., rebroadcast post-
+      // install) is a no-op. Order doesn't matter for storage but
+      // sender ships in (round, author) order, which we preserve.
+      let certN = 0;
+      const certs = queues.certs || [];
+      for (const c of certs) {
+        dag.saveCertificate(c);
+        certN++;
+      }
+
+      // #75 RP install — Phase F. For every rotation_number that the snapshot
+      // ships, wipe the joiner's local rows for that rotation FIRST so any
+      // (node_id, rotation) keys absent in the snapshot become absent locally
+      // too (otherwise stale rows leak). Then write the snapshot's rows.
+      let rpN = 0;
+      const rpRows = queues.rp || [];
+      if (rpRows.length > 0
+          && typeof dag.deleteRotationParticipationByRotation === "function"
+          && typeof dag.setRotationParticipation === "function") {
+        const rotationsInSnapshot = new Set();
+        for (const r of rpRows) {
+          if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);
+        }
+        for (const rotation of rotationsInSnapshot) {
+          dag.deleteRotationParticipationByRotation(rotation);
+        }
+        for (const r of rpRows) {
+          if (!r || r.node_id == null || r.rotation_number == null) continue;
+          dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.count) || 0);
+          rpN++;
+        }
+      }
+
       // Header's commit row — the round whose state_merkle_root we just
       // verified against 2f+1 acks. Convert header bytes-fields back to
       // the hex/string shape dag.saveCommit expects.
@@ -607,8 +886,185 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         cert_timestamp: headerCertTimestamp,
       });
 
-      return { state: stateN, txs: txN, commits: commitN };
+      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
     });
+  }
+
+  /**
+   * §4 + #34 — chain-of-trust walk for incoming snapshot rotations.
+   *
+   * Anchored at LOCAL genesis founding_node (hardcoded in this node's
+   * binary, NOT from the peer-controlled snapshot). Walks rotations in
+   * rotation_number order:
+   *   - Rotation 0: must match local genesis (founding_node + its pubkey),
+   *     no signers/sigs (genesis IS the trust anchor).
+   *   - Rotation N (N>=1): must have ≥ 2f+1 sigs from the previously-
+   *     trusted committee, signed over `rotation:${payload_hash}:${signer}`.
+   *     payload_hash is recomputed from the canonical claim and must match.
+   *
+   * Throws on any failure; the snapshot install is rejected atomically
+   * before any state lands. This is the core defense against the
+   * synthetic-snapshot attack — a fabricated chain breaks at rotation 1
+   * because the attacker can't produce founding_node's signature.
+   */
+  function _verifyRotationChain(rotations) {
+    if (!Array.isArray(rotations) || rotations.length === 0) {
+      // No rotation chain shipped (peer is pre-§4, or empty federation
+      // somehow). Allow for now — the peer's nodes table + state acks
+      // are the prior trust mechanism and remain in effect for fields
+      // covered by state_merkle_root. New federations using §4 always
+      // ship at least rotation 0.
+      log.debug("Snapshot: no committee_history rows shipped — skipping chain-of-trust walk");
+      return [];
+    }
+
+    // Local trust anchor — read genesis founding_node from THIS node's
+    // binary, not the snapshot. This is the cryptographic root that
+    // breaks the chicken-and-egg in fresh-joiner verification.
+    const genesisFounding = getGenesisPayload().founding_node;
+    if (!genesisFounding || !genesisFounding.node_id || !genesisFounding.public_key) {
+      throw new Error("local genesis missing founding_node — can't anchor chain-of-trust");
+    }
+
+    // Sort defensively — sender ships in rotation_number order, but we
+    // verify the contract here so a misordered stream can't slip past.
+    const ordered = [...rotations].sort((a, b) => a.rotation_number - b.rotation_number);
+
+    let trustedPubkeys = Object.create(null);
+
+    for (let i = 0; i < ordered.length; i++) {
+      const rot = ordered[i];
+
+      // Rotation_number contiguity. ordered[0] must be 0; each later
+      // rotation must be exactly previous + 1. Same invariant
+      // commit-handler enforces at write time; verifying it again here
+      // catches a peer that omitted a rotation.
+      if (i === 0 && rot.rotation_number !== 0) {
+        throw new Error(`first rotation must be 0 (genesis), got ${rot.rotation_number}`);
+      }
+      if (i > 0 && rot.rotation_number !== ordered[i - 1].rotation_number + 1) {
+        throw new Error(
+          `rotation chain not contiguous: ${ordered[i - 1].rotation_number} → ${rot.rotation_number}`
+        );
+      }
+
+      if (rot.rotation_number === 0) {
+        // Genesis rotation. Must match LOCAL genesis byte-for-byte on
+        // the security-critical fields (founding_node id + pubkey),
+        // and must have no signers/sigs. prev_rotation must be null.
+        if (rot.prev_rotation !== null) {
+          throw new Error(`genesis rotation: prev_rotation must be null, got ${rot.prev_rotation}`);
+        }
+        if ((rot.signer_node_ids || []).length !== 0
+          || (rot.signatures || []).length !== 0) {
+          throw new Error("genesis rotation: must have no signers or signatures");
+        }
+        if (!Array.isArray(rot.committee) || rot.committee.length !== 1) {
+          throw new Error(`genesis rotation: committee must be exactly [founding_node], got ${rot.committee?.length} entries`);
+        }
+        const m = rot.committee[0];
+        if (!m || m.node_id !== genesisFounding.node_id || m.public_key !== genesisFounding.public_key) {
+          throw new Error(
+            `genesis rotation does not match LOCAL genesis founding_node — ` +
+            `peer claimed ${m?.node_id?.slice(0, 24)}, local has ${genesisFounding.node_id.slice(0, 24)}`
+          );
+        }
+        // Adopt genesis as the trust root.
+        trustedPubkeys[m.node_id] = m.public_key;
+        continue;
+      }
+
+      // Non-genesis rotation. Verify ≥ 2f+1 sigs from currently-trusted
+      // committee. Reuses the exact predicate commit-handler runs at
+      // write time, just over the trustedPubkeys we've built up rather
+      // than dag.getCommitteeRotation(rn-1). This keeps both call sites
+      // in lock-step on the security check.
+      const expectedHash = shake256(canonicalJson({
+        rotation_number: rot.rotation_number,
+        effective_round: rot.effective_round,
+        committee: rot.committee,
+      }));
+      if (rot.payload_hash !== expectedHash) {
+        throw new Error(
+          `rotation ${rot.rotation_number} payload_hash mismatch — recompute=${expectedHash.slice(0, 16)} ` +
+          `claimed=${(rot.payload_hash || "").slice(0, 16)}`
+        );
+      }
+
+      const signers = rot.signer_node_ids || [];
+      const sigs = rot.signatures || [];
+      if (signers.length === 0 || signers.length !== sigs.length) {
+        throw new Error(
+          `rotation ${rot.rotation_number}: signer_node_ids/signatures must be parallel non-empty (got ${signers.length}/${sigs.length})`
+        );
+      }
+
+      let validSigs = 0;
+      const seen = new Set();
+      for (let j = 0; j < signers.length; j++) {
+        const signerId = signers[j];
+        if (seen.has(signerId)) continue;             // duplicate signers count once
+        seen.add(signerId);
+        const pubkey = trustedPubkeys[signerId];
+        if (!pubkey) continue;                        // signer outside currently-trusted committee
+        const message = `rotation:${rot.payload_hash}:${signerId}`;
+        if (mldsaVerify(message, sigs[j], pubkey)) {
+          validSigs++;
+        }
+      }
+
+      const trustedSize = Object.keys(trustedPubkeys).length;
+      const f = Math.floor((trustedSize - 1) / 3);
+      const quorum = 2 * f + 1;
+      if (validSigs < quorum) {
+        throw new Error(
+          `rotation ${rot.rotation_number}: insufficient sigs from previous committee — ` +
+          `${validSigs}/${trustedSize} valid, need ${quorum}`
+        );
+      }
+
+      // Adopt the new committee's pubkeys. These come from the rotation
+      // tx itself (canonRotation.committee carries [{node_id, public_key}]),
+      // NOT from the peer-provided nodes table. Each pubkey is endorsed
+      // by 2f+1 sigs from the previously-trusted committee — the
+      // cryptographic root of the chain-of-trust guarantee.
+      trustedPubkeys = Object.create(null);
+      for (const m of rot.committee) {
+        if (m && m.node_id && m.public_key) {
+          trustedPubkeys[m.node_id] = m.public_key;
+        }
+      }
+    }
+
+    log.debug(`Snapshot: chain-of-trust verified across ${ordered.length} rotations`);
+    return ordered;
+  }
+
+  /**
+   * Build a {node_id → public_key} lookup for the committee in effect at
+   * `round`, drawn from the verified rotation chain. Returns the
+   * committee from the latest rotation whose effective_round <= round.
+   * Empty chain (pre-§4 peer) → empty map; caller falls back to other
+   * pubkey sources.
+   *
+   * Used by ack-quorum verification on the snapshot header so signer
+   * pubkeys come from the cryptographically-anchored chain rather than
+   * the peer-provided nodes table.
+   */
+  function _buildPubkeyLookup(verifiedRotations, round) {
+    const map = new Map();
+    if (!Array.isArray(verifiedRotations) || verifiedRotations.length === 0) return map;
+    let best = null;
+    for (const r of verifiedRotations) {
+      if (r.effective_round > round) continue;
+      if (!best || r.rotation_number > best.rotation_number) best = r;
+    }
+    if (best) {
+      for (const m of best.committee) {
+        if (m && m.node_id && m.public_key) map.set(m.node_id, m.public_key);
+      }
+    }
+    return map;
   }
 
   function _installOneRow(table, row) {
@@ -649,8 +1105,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     registerProtocol,
     requestSnapshotFromPeer,
     SNAPSHOT_PROTOCOL,
+    /** Cumulative counters for /metrics. */
+    stats: () => ({ metrics: { ..._metrics } }),
     // Exposed for unit tests
     _handleIncomingSnapshot,
+    _verifyRotationChain,
   };
 }
 

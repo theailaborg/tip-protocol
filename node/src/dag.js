@@ -91,6 +91,13 @@ function _canonScore(tip_id, v) {
 function _canonDedup(hash, createdAt) {
   return { dedup_hash: hash, created_at: createdAt };
 }
+function _canonRotationParticipation(r) {
+  return {
+    node_id: r.node_id,
+    rotation_number: r.rotation_number,
+    count: r.count,
+  };
+}
 function _canonRevocation(r) {
   return {
     tip_id: r.tip_id,
@@ -120,6 +127,51 @@ function _canonNode(r) {
   };
 }
 
+// §4 + #34: canonical row shape for committee_history. Used to compute
+// committee_history_root over the rotation chain (snapshot-side). NOT part
+// of iterateCanonicalState — rotation rows are shipped in their own
+// snapshot stream with their own root, independent of state_merkle_root.
+// See snapshot-handler for the chain-of-trust walk that consumes these.
+//
+// Schema:
+//   - committee: array of { node_id, public_key } records, sorted by node_id.
+//     Carrying pubkeys IN the rotation (rather than relying on the snapshot's
+//     nodes table) closes the chicken-and-egg verification gap: a fresh
+//     joiner anchors trust at the LOCAL genesis founding_node (hardcoded in
+//     their binary) and walks forward, adopting each rotation's pubkeys ONLY
+//     after verifying the rotation's sigs against the previously-trusted
+//     committee. Without this, snapshot verification would have to look up
+//     pubkeys in the (peer-controlled) nodes table — a self-attestation loop
+//     that admits the synthetic-snapshot attack.
+//   - signer_node_ids: array of node_id strings (parallel order to signatures)
+//   - signatures: array of hex sigs over `rotation:${payload_hash}:${signer_node_id}`
+//
+// Determinism contract: committee must be sorted by node_id before save;
+// signer_node_ids sorted; signatures parallel to signer_node_ids (same
+// indexes, same order). Genesis rotation 0 has prev_rotation=null and
+// no signers/signatures (hardcoded trust anchor — joiner verifies it
+// matches local genesis.founding_node before extending trust).
+function _canonCommitteeRotation(r) {
+  const committee = Array.isArray(r.committee)
+    ? r.committee
+    : JSON.parse(r.committee || "[]");
+  const signer_node_ids = Array.isArray(r.signer_node_ids)
+    ? r.signer_node_ids
+    : JSON.parse(r.signer_node_ids || "[]");
+  const signatures = Array.isArray(r.signatures)
+    ? r.signatures
+    : JSON.parse(r.signatures || "[]");
+  return {
+    rotation_number: r.rotation_number,
+    effective_round: r.effective_round,
+    committee,
+    prev_rotation: r.prev_rotation == null ? null : r.prev_rotation,
+    signer_node_ids,
+    signatures,
+    payload_hash: r.payload_hash || null,
+  };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // IN-MEMORY STORE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +187,8 @@ class MemoryStore {
     this._nodes = new Map();  // node_id -> record
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
+    this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
+    this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
   }
@@ -324,6 +378,18 @@ class MemoryStore {
       .filter(c => c.round >= fromRound)
       .sort((a, b) => a.round !== b.round ? a.round - b.round : a.author_node_id.localeCompare(b.author_node_id));
   }
+  // §69 — bounded iterator over certs in [fromRound, toRound] inclusive.
+  // Yields in canonical (round, author_node_id) order — same as
+  // SQLiteStore. Used by snapshot-handler to ship the K-round cert window
+  // a joiner needs for runtime committee derivation.
+  *iterateCertsByRoundRange(fromRound, toRound) {
+    const sorted = [...this._certs.values()]
+      .filter(c => c.round >= fromRound && c.round <= toRound)
+      .sort((a, b) => a.round !== b.round
+        ? a.round - b.round
+        : a.author_node_id.localeCompare(b.author_node_id));
+    for (const c of sorted) yield c;
+  }
   certificateCount() { return this._certs.size; }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
   // of rows deleted. Callers must ensure the cutoff leaves enough history
@@ -404,6 +470,114 @@ class MemoryStore {
     }
   }
 
+  // ── Committee history (§4 + #34 — chain-of-trust) ────────────────────────
+  // One row per committee rotation. Rotation 0 is bootstrapped at initDAG
+  // from genesis.founding_node (no sigs — hardcoded trust anchor). Every
+  // subsequent rotation requires 2f+1 sigs from the PREVIOUS committee.
+  // Snapshot fast-sync ships these rows in their own stream + root; the
+  // joiner walks the chain forward verifying each transition.
+  saveCommitteeRotation(rec) {
+    if (this._committeeHistory.has(rec.rotation_number)) return; // idempotent like INSERT OR IGNORE
+    this._committeeHistory.set(rec.rotation_number, {
+      rotation_number: rec.rotation_number,
+      effective_round: rec.effective_round,
+      committee: [...(rec.committee || [])],
+      prev_rotation: rec.prev_rotation == null ? null : rec.prev_rotation,
+      signer_node_ids: [...(rec.signer_node_ids || [])],
+      signatures: [...(rec.signatures || [])],
+      payload_hash: rec.payload_hash || null,
+      committed_at: rec.committed_at || new Date().toISOString(),
+    });
+  }
+  getCommitteeRotation(rotationNumber) {
+    const rec = this._committeeHistory.get(rotationNumber);
+    return rec ? { ...rec, committee: [...rec.committee], signer_node_ids: [...rec.signer_node_ids], signatures: [...rec.signatures] } : null;
+  }
+  getLatestRotation() {
+    let latest = null;
+    for (const r of this._committeeHistory.values()) {
+      if (!latest || r.rotation_number > latest.rotation_number) latest = r;
+    }
+    return latest ? { ...latest, committee: [...latest.committee], signer_node_ids: [...latest.signer_node_ids], signatures: [...latest.signatures] } : null;
+  }
+  // Returns the committee in effect at the given round: latest rotation
+  // whose effective_round <= round. If round predates rotation 0 (impossible
+  // in practice once initDAG bootstraps), returns null.
+  getCommitteeAtRound(round) {
+    let best = null;
+    for (const r of this._committeeHistory.values()) {
+      if (r.effective_round > round) continue;
+      if (!best || r.rotation_number > best.rotation_number) best = r;
+    }
+    return best ? { ...best, committee: [...best.committee], signer_node_ids: [...best.signer_node_ids], signatures: [...best.signatures] } : null;
+  }
+  // Streaming iterator over the entire chain in rotation_number order.
+  // Used by snapshot sender (ship every rotation) and chain-of-trust walker.
+  *getRotationsFromGenesis() {
+    const sorted = [...this._committeeHistory.values()].sort((a, b) => a.rotation_number - b.rotation_number);
+    for (const r of sorted) {
+      yield { ...r, committee: [...r.committee], signer_node_ids: [...r.signer_node_ids], signatures: [...r.signatures] };
+    }
+  }
+
+  // ── #75 rotation_participation accessors ─────────────────────────────
+  // Counter per (node_id, rotation_number). Incremented on every Bullshark
+  // anchor commit by bullshark.js (one increment for the leader, one per
+  // ack-signer). Read at rotation boundary to compute next rotation's
+  // committee. See table comment in CREATE TABLE for full semantics.
+  incrementRotationParticipation(nodeId, rotationNumber) {
+    const key = `${nodeId}|${rotationNumber}`;
+    const current = this._rotationParticipation.get(key) || 0;
+    this._rotationParticipation.set(key, current + 1);
+  }
+  getRotationParticipation(rotationNumber) {
+    const out = [];
+    const suffix = `|${rotationNumber}`;
+    for (const [key, count] of this._rotationParticipation) {
+      if (key.endsWith(suffix)) {
+        const node_id = key.slice(0, -suffix.length);
+        out.push({ node_id, count });
+      }
+    }
+    return out;
+  }
+  pruneRotationParticipationBefore(rotationNumber) {
+    let removed = 0;
+    for (const key of this._rotationParticipation.keys()) {
+      const idx = key.lastIndexOf("|");
+      const r = Number(key.slice(idx + 1));
+      if (r < rotationNumber) {
+        this._rotationParticipation.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+  // Idempotent absolute-set (NOT increment) — used by snapshot install to
+  // overwrite the local count with the snapshot's authoritative value.
+  // Re-running with the same args is a no-op; calling with a different count
+  // replaces. Required because snapshot ships RP rows directly (not deltas).
+  setRotationParticipation(nodeId, rotationNumber, count) {
+    const key = `${nodeId}|${rotationNumber}`;
+    this._rotationParticipation.set(key, count);
+  }
+  // Wipe all rows for a single rotation. Used by snapshot install BEFORE
+  // applying the snapshot's RP rows for that rotation, so absent rows in
+  // the snapshot become absent locally too. Without this, a stale local row
+  // for (node_id, rotation) where the snapshot has no entry for that key
+  // would leak past install and produce wrong tallies on the joiner.
+  deleteRotationParticipationByRotation(rotationNumber) {
+    let removed = 0;
+    const suffix = `|${rotationNumber}`;
+    for (const key of [...this._rotationParticipation.keys()]) {
+      if (key.endsWith(suffix)) {
+        this._rotationParticipation.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   // ── Canonical derived state (§14 snapshot-sync) ─────────────────────────
   // Streaming iterator yielding { table, row } in a deterministic order
   // (table order fixed, rows sorted by primary key within each table).
@@ -446,6 +620,36 @@ class MemoryStore {
     for (const r of [...this._nodes.values()]
       .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
+    // RP is real-time counter state that flickers as anchor walks process certs;
+    // two nodes can have slightly different RP at the moment of commit (one
+    // imported a cert the other hasn't yet). Including RP here would cause
+    // state_merkle_root divergence between honest peers that converge later.
+    // RP is shipped in its own snapshot stream (same pattern as committee_history
+    // rotations) — see iterateRotationParticipationForSnapshot below.
+  }
+
+  // RP-snapshot iterator — separate from iterateCanonicalState because RP is
+  // operational metadata that converges asynchronously, not consensus-stable
+  // state. Sorted by (rotation_number, node_id) so the order matches the
+  // SQLite iteration via PK index. Consumed by snapshot-handler Phase F.
+  *iterateRotationParticipationForSnapshot() {
+    const rpRows = [];
+    for (const [key, count] of this._rotationParticipation) {
+      const idx = key.lastIndexOf("|");
+      rpRows.push({
+        node_id: key.slice(0, idx),
+        rotation_number: Number(key.slice(idx + 1)),
+        count,
+      });
+    }
+    rpRows.sort((a, b) => {
+      if (a.rotation_number !== b.rotation_number) return a.rotation_number - b.rotation_number;
+      return a.node_id.localeCompare(b.node_id);
+    });
+    for (const r of rpRows) {
+      yield _canonRotationParticipation(r);
     }
   }
 
@@ -493,16 +697,16 @@ class MemoryStore {
       ? subjectTipId(rec.tx_data)
       : null;
     this._txRejections.set(rec.tx_id, {
-      tx_id:             rec.tx_id,
-      reason:            rec.reason,
-      reason_detail:     rec.reason_detail || null,
-      rejected_at_ms:    rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now(),
+      tx_id: rec.tx_id,
+      reason: rec.reason,
+      reason_detail: rec.reason_detail || null,
+      rejected_at_ms: rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now(),
       rejected_at_round: rec.rejected_at_round != null ? rec.rejected_at_round : null,
-      dropper_node_id:   rec.dropper_node_id,
-      tx_type:           rec.tx_type || null,
-      origin_node_id:    rec.origin_node_id || null,
-      tx_data:           txData,
-      subject_tip_id:    subj,
+      dropper_node_id: rec.dropper_node_id,
+      tx_type: rec.tx_type || null,
+      origin_node_id: rec.origin_node_id || null,
+      tx_data: txData,
+      subject_tip_id: subj,
     });
     return true;
   }
@@ -768,6 +972,75 @@ class SQLiteStore {
         created_at        INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
+
+      -- ── Committee history (§4 + #34 — chain-of-trust) ─────────────
+      -- One row per committee rotation. Bootstrapped at initDAG with
+      -- rotation 0 from genesis.founding_node (no sigs — hardcoded
+      -- trust anchor). Every subsequent rotation requires 2f+1 sigs
+      -- from the PREVIOUS committee, signed over payload_hash =
+      -- shake256(canonical{rotation_number, effective_round, committee}).
+      --
+      -- Snapshot fast-sync ships these rows in their own stream with
+      -- their own committee_history_root (separate from state_merkle_root).
+      -- The joiner walks the chain forward from rotation 0 verifying
+      -- each transition was signed by the previously-trusted committee.
+      -- This catches the synthetic-snapshot attack: a fabricated chain
+      -- collapses at the first link because the founding_node's sig
+      -- can't be forged.
+      --
+      -- committee field schema: JSON array of { node_id, public_key }
+      -- records, sorted by node_id. Carrying pubkeys IN the rotation
+      -- (rather than relying on the snapshot's nodes table) is what
+      -- breaks the chicken-and-egg in fresh-joiner verification — a
+      -- fresh joiner anchors trust at local genesis (hardcoded
+      -- founding_node + public_key in their binary) and adopts each
+      -- rotation's pubkeys only after verifying its sigs against the
+      -- previously-trusted committee.
+      CREATE TABLE IF NOT EXISTS committee_history (
+        rotation_number    INTEGER PRIMARY KEY,
+        effective_round    INTEGER NOT NULL,
+        committee          TEXT NOT NULL,    -- JSON [{node_id, public_key}], sorted by node_id
+        prev_rotation      INTEGER,           -- NULL for rotation 0 (genesis)
+        signer_node_ids    TEXT NOT NULL DEFAULT '[]',  -- JSON sorted node_ids array
+        signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
+        payload_hash       TEXT,              -- hex; what each signer signed
+        committed_at       TEXT NOT NULL,     -- ISO8601 wall-clock (informational only — not in payload_hash)
+        created_at         INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
+
+      -- ── #75 Rotation participation tally ───────────────────────────
+      -- Per-author counter of "appearances in Bullshark anchors during
+      -- rotation N's period". Incremented on every anchor commit (one
+      -- increment for the leader, one per ack-signer). At each rotation
+      -- boundary (consensus_index % COMMITTEE_ROTATION_INTERVAL_COMMITS
+      -- == 0), the next rotation's committee is computed from these
+      -- tallies: anyone with count >= ceil(INTERVAL_COMMITS *
+      -- MIN_PARTICIPATION_PCT / 100), plus genesis members, qualifies.
+      --
+      -- The table is bit-identical across all nodes by Bullshark's BFT
+      -- consensus property: every node sees the same anchor cert at
+      -- consensus_index N (same leader, same ack_signer_ids), so every
+      -- node's increments are identical, so the counters end up
+      -- bit-identical, so the "qualified for next rotation?" boolean
+      -- returns the same answer everywhere. This is what eliminates the
+      -- §4 / #74 divergence at the source — committee derivation is
+      -- now a deterministic function of BFT-attested state, not local
+      -- cert-history.
+      --
+      -- Storage: at most active_committee_size × kept_rotations rows.
+      -- For testnet (3-10 nodes, keep last 3 rotations) ~30 rows. Pruned
+      -- via pruneRotationParticipationBefore. Never grows with chain
+      -- length — distinct from the per-anchor logging approach we
+      -- explicitly avoided (would have been ~1 GB/year).
+      CREATE TABLE IF NOT EXISTS rotation_participation (
+        node_id          TEXT NOT NULL,
+        rotation_number  INTEGER NOT NULL,
+        count            INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (node_id, rotation_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rotation_participation_rotation
+        ON rotation_participation(rotation_number);
 
       -- ── Consensus: Equivocation defense (§1) ──────────────────────
       -- Durable record of "what I've already attested to at (round, author)".
@@ -1119,6 +1392,7 @@ class SQLiteStore {
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
       getEarliestCertRound: this.db.prepare("SELECT MIN(round) AS earliest FROM certificates"),
       getCertsFromRound: this.db.prepare("SELECT * FROM certificates WHERE round>=? ORDER BY round ASC, author_node_id ASC"),
+      getCertsByRoundRange: this.db.prepare("SELECT * FROM certificates WHERE round>=? AND round<=? ORDER BY round ASC, author_node_id ASC"),
       countCerts: this.db.prepare("SELECT COUNT(*) AS n FROM certificates"),
       pruneCertsBefore: this.db.prepare("DELETE FROM certificates WHERE round < ?"),
 
@@ -1143,6 +1417,62 @@ class SQLiteStore {
       ),
       getLatestConsensusIndex: this.db.prepare(
         "SELECT MAX(consensus_index) AS idx FROM commits"
+      ),
+
+      // §4 + #34: committee_history accessors. saveCommitteeRotation uses
+      // INSERT OR IGNORE — re-applying the same rotation is a no-op so the
+      // commit-handler doesn't need to dedup. getCommitteeAtRound is the
+      // hot-path read used by participants.getActiveCommittee (every round).
+      // SQLite picks the index on (effective_round) for the WHERE; the
+      // ORDER BY rotation_number DESC LIMIT 1 narrows to the latest rotation
+      // at-or-before the requested round in a single index scan.
+      saveCommitteeRotation: this.db.prepare(
+        `INSERT OR IGNORE INTO committee_history
+           (rotation_number,effective_round,committee,prev_rotation,
+            signer_node_ids,signatures,payload_hash,committed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      ),
+      getCommitteeRotation: this.db.prepare(
+        "SELECT * FROM committee_history WHERE rotation_number=?"
+      ),
+      getLatestRotation: this.db.prepare(
+        "SELECT * FROM committee_history ORDER BY rotation_number DESC LIMIT 1"
+      ),
+      getCommitteeAtRound: this.db.prepare(
+        "SELECT * FROM committee_history WHERE effective_round<=? ORDER BY rotation_number DESC LIMIT 1"
+      ),
+      getRotationsFromGenesis: this.db.prepare(
+        "SELECT * FROM committee_history ORDER BY rotation_number ASC"
+      ),
+
+      // #75 rotation_participation. UPSERT pattern (INSERT … ON CONFLICT)
+      // increments the counter atomically — first sighting in a rotation
+      // creates the row at count=1, subsequent sightings just bump count.
+      incrementRotationParticipation: this.db.prepare(
+        `INSERT INTO rotation_participation (node_id, rotation_number, count)
+         VALUES (?, ?, 1)
+         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = count + 1`
+      ),
+      getRotationParticipation: this.db.prepare(
+        "SELECT node_id, count FROM rotation_participation WHERE rotation_number = ?"
+      ),
+      pruneRotationParticipationBefore: this.db.prepare(
+        "DELETE FROM rotation_participation WHERE rotation_number < ?"
+      ),
+      // Absolute-set for snapshot install (REPLACE not increment).
+      setRotationParticipation: this.db.prepare(
+        `INSERT INTO rotation_participation (node_id, rotation_number, count)
+         VALUES (?, ?, ?)
+         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = excluded.count`
+      ),
+      // Wipe one rotation's rows — snapshot install pre-pass so absent rows
+      // in the snapshot become absent locally too (see MemoryStore comment).
+      deleteRotationParticipationByRotation: this.db.prepare(
+        "DELETE FROM rotation_participation WHERE rotation_number = ?"
+      ),
+      // Streaming iterator for snapshot/state-root (PK-ordered).
+      iterateRotationParticipation: this.db.prepare(
+        "SELECT node_id, rotation_number, count FROM rotation_participation ORDER BY rotation_number, node_id"
       ),
 
       // #44: consensus_meta singleton kv accessors. INSERT OR REPLACE
@@ -1424,6 +1754,13 @@ class SQLiteStore {
   getCertificatesFromRound(fromRound) {
     return this._stmts.getCertsFromRound.all(fromRound).map(r => this._parseCert(r));
   }
+  // §69 — bounded iterator over certs in [fromRound, toRound] inclusive.
+  // See MemoryStore version for the contract.
+  *iterateCertsByRoundRange(fromRound, toRound) {
+    for (const row of this._stmts.getCertsByRoundRange.iterate(fromRound, toRound)) {
+      yield this._parseCert(row);
+    }
+  }
   certificateCount() {
     return this._stmts.countCerts.get().n;
   }
@@ -1480,6 +1817,70 @@ class SQLiteStore {
   getLatestConsensusIndex() {
     return this._stmts.getLatestConsensusIndex.get().idx || 0;
   }
+
+  // ── Committee history (§4 + #34 — chain-of-trust) ─────────────────────────
+  // See MemoryStore.saveCommitteeRotation for the contract. Caller is
+  // responsible for sorting committee + signer_node_ids and aligning
+  // signatures parallel to signer_node_ids.
+  saveCommitteeRotation(rec) {
+    this._stmts.saveCommitteeRotation.run(
+      rec.rotation_number,
+      rec.effective_round,
+      JSON.stringify(rec.committee || []),
+      rec.prev_rotation == null ? null : rec.prev_rotation,
+      JSON.stringify(rec.signer_node_ids || []),
+      JSON.stringify(rec.signatures || []),
+      rec.payload_hash || null,
+      rec.committed_at || new Date().toISOString(),
+    );
+  }
+  getCommitteeRotation(rotationNumber) {
+    const row = this._stmts.getCommitteeRotation.get(rotationNumber);
+    return row ? this._parseRotation(row) : null;
+  }
+  getLatestRotation() {
+    const row = this._stmts.getLatestRotation.get();
+    return row ? this._parseRotation(row) : null;
+  }
+  getCommitteeAtRound(round) {
+    const row = this._stmts.getCommitteeAtRound.get(round);
+    return row ? this._parseRotation(row) : null;
+  }
+  *getRotationsFromGenesis() {
+    for (const row of this._stmts.getRotationsFromGenesis.iterate()) {
+      yield this._parseRotation(row);
+    }
+  }
+  // #75 rotation_participation — see MemoryStore version for the contract.
+  incrementRotationParticipation(nodeId, rotationNumber) {
+    this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
+  }
+  getRotationParticipation(rotationNumber) {
+    return this._stmts.getRotationParticipation.all(rotationNumber);
+  }
+  pruneRotationParticipationBefore(rotationNumber) {
+    return this._stmts.pruneRotationParticipationBefore.run(rotationNumber).changes;
+  }
+  setRotationParticipation(nodeId, rotationNumber, count) {
+    this._stmts.setRotationParticipation.run(nodeId, rotationNumber, count);
+  }
+  deleteRotationParticipationByRotation(rotationNumber) {
+    return this._stmts.deleteRotationParticipationByRotation.run(rotationNumber).changes;
+  }
+  _parseRotation(row) {
+    if (!row) return null;
+    return {
+      rotation_number: row.rotation_number,
+      effective_round: row.effective_round,
+      committee: JSON.parse(row.committee),
+      prev_rotation: row.prev_rotation == null ? null : row.prev_rotation,
+      signer_node_ids: JSON.parse(row.signer_node_ids || "[]"),
+      signatures: JSON.parse(row.signatures || "[]"),
+      payload_hash: row.payload_hash || null,
+      committed_at: row.committed_at,
+    };
+  }
+
   // #44 — consensus_meta singleton kv (currently used to persist
   // consensus_index across restarts on idle federations).
   setConsensusMeta(key, value) {
@@ -1553,6 +1954,15 @@ class SQLiteStore {
     }
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
+    // version for rationale. RP ships in its own snapshot stream below.
+  }
+
+  // RP-snapshot iterator — see MemoryStore.iterateRotationParticipationForSnapshot.
+  *iterateRotationParticipationForSnapshot() {
+    for (const r of this._stmts.iterateRotationParticipation.iterate()) {
+      yield _canonRotationParticipation(r);
     }
   }
 
@@ -1697,6 +2107,18 @@ function initDAG(config) {
     _writeGenesisBlock(store, config);
   }
 
+  // ── Bootstrap: committee_history rotation 0 (§4 + #34) ────────────────────
+  // Hardcoded trust anchor for the chain-of-trust walker. Committee at
+  // genesis is [founding_node] with its pubkey carried inline so a fresh
+  // joiner can verify rotation 1's signatures against the local genesis
+  // (NOT against the peer-provided nodes table). No signers/signatures
+  // on rotation 0 — genesis IS the trust anchor.
+  //
+  // Run unconditionally (not gated on store.count()) so existing DBs
+  // without the row get populated on the next boot. Idempotent: skips
+  // if rotation 0 already exists.
+  _bootstrapCommitteeRotationZero(store);
+
   // Activity-feed denormalisation: populate `subject_tip_id` for rows
   // that pre-date the column. Idempotent — second startup matches
   // zero rows and exits immediately. Without this, existing committed
@@ -1837,6 +2259,37 @@ function initDAG(config) {
     // sender to ship full commit history for chain-of-trust audits.
     iterateAllCommitsExcept: (latestRound) => store.iterateAllCommitsExcept(latestRound),
 
+    // §69 — bounded iterator over `certificates` in [fromRound, toRound]
+    // inclusive, in canonical (round, author_node_id) order. Used by
+    // snapshot sender to ship the K-round window of recent certs that a
+    // joiner needs for runtime committee derivation. Without these certs,
+    // the joiner's getActiveCommittee derives a different K-window than
+    // full-history nodes for the K rounds after snapshot install.
+    iterateCertsByRoundRange: (fromRound, toRound) => store.iterateCertsByRoundRange(fromRound, toRound),
+
+    // ── Committee history (§4 + #34 — chain-of-trust) ───────────────────
+    // saveCommitteeRotation: write a rotation row (idempotent on rotation_number).
+    // getCommitteeAtRound: hot-path read for participants.getActiveCommittee —
+    //   returns the rotation in effect at the given round (latest whose
+    //   effective_round <= round). Returns null if no rotations yet.
+    // getCommitteeRotation(n): direct lookup by rotation_number.
+    // getLatestRotation: most recent rotation row.
+    // getRotationsFromGenesis: streaming iterator in rotation_number order;
+    //   used by snapshot sender + chain-of-trust walker.
+    saveCommitteeRotation: (rec) => store.saveCommitteeRotation(rec),
+    getCommitteeRotation: (rotationNumber) => store.getCommitteeRotation(rotationNumber),
+    getLatestRotation: () => store.getLatestRotation(),
+    getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
+    getRotationsFromGenesis: () => store.getRotationsFromGenesis(),
+
+    // #75 rotation participation tally
+    incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),
+    getRotationParticipation: (rotationNumber) => store.getRotationParticipation(rotationNumber),
+    pruneRotationParticipationBefore: (rotationNumber) => store.pruneRotationParticipationBefore(rotationNumber),
+    setRotationParticipation: (nodeId, rotationNumber, count) => store.setRotationParticipation(nodeId, rotationNumber, count),
+    deleteRotationParticipationByRotation: (rotationNumber) => store.deleteRotationParticipationByRotation(rotationNumber),
+    iterateRotationParticipationForSnapshot: () => store.iterateRotationParticipationForSnapshot(),
+
     // ── Equivocation defense: votes_seen (§1) ────────────────────────────
     recordSeenVote: (round, author, batchHash) => store.recordSeenVote(round, author, batchHash),
     getSeenVote: (round, author) => store.getSeenVote(round, author),
@@ -1874,6 +2327,54 @@ function initDAG(config) {
 }
 
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
+// §4 + #34: bootstrap committee_history rotation 0 from genesis.
+// Hardcoded trust anchor — committee = [founding_node + its pubkey], no
+// signers/signatures (genesis IS the trust anchor). Idempotent: skips
+// if rotation 0 already exists, so existing DBs get backfilled on next
+// boot without writing duplicates.
+//
+// payload_hash format: shake256(canonical{rotation_number, effective_round, committee})
+// where committee is the JSON-canonical [{node_id, public_key}] array.
+// Future rotations sign over this payload_hash, so genesis is just the
+// "rotation 0" payload_hash with no signatures attached.
+function _bootstrapCommitteeRotationZero(store) {
+  if (store.getCommitteeRotation(0)) return;  // idempotent
+
+  const { getGenesisPayload, GENESIS_TIMESTAMP } = require("./genesis");
+  const { shake256, canonicalJson } = require("../../shared/crypto");
+
+  const payload = getGenesisPayload();
+  const founding = payload && payload.founding_node;
+  if (!founding || !founding.node_id || !founding.public_key) {
+    throw new Error(
+      "Cannot bootstrap committee rotation 0: genesis.founding_node missing node_id or public_key. " +
+      "Check shared/genesis.js or the genesis payload loaded into PC.init()."
+    );
+  }
+
+  const committee = [{
+    node_id: founding.node_id,
+    public_key: founding.public_key,
+  }];
+
+  const payload_hash = shake256(canonicalJson({
+    rotation_number: 0,
+    effective_round: 0,
+    committee,
+  }));
+
+  store.saveCommitteeRotation({
+    rotation_number: 0,
+    effective_round: 0,
+    committee,
+    prev_rotation: null,        // genesis: no predecessor
+    signer_node_ids: [],         // genesis: hardcoded trust, no sigs needed
+    signatures: [],
+    payload_hash,
+    committed_at: GENESIS_TIMESTAMP,
+  });
+}
+
 function _writeGenesisBlock(store, config) {
   const {
     GENESIS_TX_ID, GENESIS_TX, GENESIS_TIMESTAMP, GENESIS_HASH, GENESIS_PAYLOAD,

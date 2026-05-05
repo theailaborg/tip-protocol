@@ -31,6 +31,7 @@
 
 const { TX_TYPES, ORIGIN, CONTENT_STATUS } = require("../../../shared/constants");
 const { DISPUTE, APPEAL } = require("../../../shared/protocol-constants");
+const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -246,6 +247,116 @@ function canRevoke(dag, { tx_type, tip_id, issuing_vp_id }) {
   return ok();
 }
 
+// ─── Committee rotation (§4 + #34 — chain-of-trust) ─────────────────────────
+//
+// Validates a COMMITTEE_ROTATION tx for both call sites:
+//   - bullshark proposer (before broadcasting): bail early if the would-be
+//     rotation can't possibly land (e.g. rotation_number wrong, committee
+//     malformed) so we don't waste a round
+//   - commit-handler (DeliverTx): final gate before writing committee_history
+//
+// Crypto helpers (shake256, canonicalJson, mldsaVerify) are injected via opts
+// so this module stays free of crypto-library import side effects (matches
+// canRevealVote's pattern of injected shake256). All checks are deterministic
+// over DAG state — same accept/reject decision on every node.
+function canCommitteeRotation(dag, { rotation_number, effective_round, new_committee, payload_hash, signer_node_ids, signatures }, opts = {}) {
+  const { shake256, canonicalJson, mldsaVerify } = opts;
+
+  // Structural — invariants the wire schema doesn't enforce.
+  if (typeof rotation_number !== "number" || !Number.isInteger(rotation_number) || rotation_number < 1) {
+    return fail(400, `invalid rotation_number: ${rotation_number}`);
+  }
+  if (typeof effective_round !== "number" || !Number.isInteger(effective_round) || effective_round < 0) {
+    return fail(400, `invalid effective_round: ${effective_round}`);
+  }
+  if (!Array.isArray(new_committee) || new_committee.length === 0) {
+    return fail(400, "new_committee must be a non-empty array");
+  }
+  for (const m of new_committee) {
+    if (!m || typeof m.node_id !== "string" || typeof m.public_key !== "string") {
+      return fail(400, "new_committee entries must have {node_id, public_key} strings");
+    }
+  }
+
+  // Monotonicity — rotation_number must be exactly latest + 1 (no gaps,
+  // no duplicates). Chain-of-trust walker depends on this contiguity.
+  const existing = dag.getCommitteeRotation(rotation_number);
+  if (existing) return fail(409, `rotation_number ${rotation_number} already exists`);
+
+  const latest = dag.getLatestRotation();
+  const expected = (latest?.rotation_number ?? -1) + 1;
+  if (rotation_number !== expected) {
+    return fail(409, `rotation_number ${rotation_number} non-monotonic (expected ${expected})`);
+  }
+  if (latest && effective_round <= latest.effective_round) {
+    return fail(409, `effective_round ${effective_round} not > prev rotation's ${latest.effective_round}`);
+  }
+
+  // Cryptographic — ≥ 2f+1 sigs from PREVIOUS committee endorsing the
+  // payload_hash. Skipped when crypto helpers aren't injected (proposer
+  // can run structural-only check before signing; commit-handler always
+  // injects so signatures are checked at DeliverTx).
+  if (!shake256 || !canonicalJson || !mldsaVerify) {
+    return ok();
+  }
+
+  const prev = dag.getCommitteeRotation(rotation_number - 1);
+  if (!prev || !Array.isArray(prev.committee) || prev.committee.length === 0) {
+    return fail(409, `previous rotation ${rotation_number - 1} not found or empty`);
+  }
+
+  // Recompute payload_hash from the canonical claim — catches tampering
+  // where signers signed a different hash than the tx now carries.
+  const expectedHash = shake256(canonicalJson({
+    rotation_number, effective_round, committee: new_committee,
+  }));
+  if (payload_hash !== expectedHash) {
+    return fail(400, "payload_hash does not match canonical(rotation_number, effective_round, new_committee)");
+  }
+
+  if (!Array.isArray(signer_node_ids) || !Array.isArray(signatures)
+      || signer_node_ids.length === 0 || signer_node_ids.length !== signatures.length) {
+    return fail(400, "signer_node_ids and signatures must be parallel non-empty arrays");
+  }
+
+  // Pubkey lookup from previous rotation's committee — NOT from peer-
+  // provided nodes table. This is what closes the chicken-and-egg in
+  // fresh-joiner verification (#34).
+  const prevPubkeys = Object.create(null);
+  for (const m of prev.committee) {
+    if (m && m.node_id && m.public_key) prevPubkeys[m.node_id] = m.public_key;
+  }
+
+  let validSigs = 0;
+  const seen = new Set();
+  for (let i = 0; i < signer_node_ids.length; i++) {
+    const signerId = signer_node_ids[i];
+    if (seen.has(signerId)) continue;          // duplicate signers count once
+    seen.add(signerId);
+    const pubkey = prevPubkeys[signerId];
+    if (!pubkey) continue;                     // signer outside previous committee
+    const message = `rotation:${payload_hash}:${signerId}`;
+    if (mldsaVerify(message, signatures[i], pubkey)) {
+      validSigs++;
+    }
+  }
+
+  // #68 Part A — tighten quorum to ceil(2n/3), the same formula used for
+  // cert quorum. The pre-fix BFT 2f+1 formula degenerated to quorum=1 for
+  // prevSize ≤ 3, letting any single member of the previous committee
+  // unilaterally rotate membership. ceil(2n/3) gives prevSize=2→2,
+  // prevSize=3→2, prevSize=4→3, prevSize=5→4, prevSize=6→4 — i.e., a true
+  // honest-majority threshold for membership change. Pairs with #68 Part B
+  // (multi-sig coordinator in consensus/rotation-coordinator.js) which
+  // produces the aggregated signatures this gate now requires.
+  const prevSize = prev.committee.length;
+  const quorum = computeQuorum(prevSize);
+  if (validSigs < quorum) {
+    return fail(403, `insufficient sigs: ${validSigs}/${prevSize} from previous committee, need ${quorum}`);
+  }
+  return ok();
+}
+
 module.exports = {
   canRegisterIdentity,
   canRegisterContent,
@@ -257,4 +368,5 @@ module.exports = {
   canRevealVote,
   canFileAppeal,
   canRevoke,
+  canCommitteeRotation,
 };

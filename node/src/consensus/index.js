@@ -20,6 +20,7 @@
 const { createMempool } = require("./mempool");
 const { createNarwhal } = require("./narwhal");
 const { createBullshark } = require("./bullshark");
+const { createRotationCoordinator } = require("./rotation-coordinator");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
@@ -33,6 +34,7 @@ const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createTxSubmitter } = require("../services/helpers");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { encode, decode } = require("../network/proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -144,7 +146,46 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     onOrderedTxs: (orderedTxs, round, certTimestamp) => {
       const result = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       log.info(`Bullshark round ${round}: ${result.committed} committed, ${result.dropped} dropped`);
+      // #73: surface accept/drop counts so bullshark can gate `saveCommit`
+      // on actual state-change presence — a rotation-only round where the
+      // tx was rejected at commit-handler must NOT inflate the commits
+      // table with a no-state-change row.
+      return result;
     },
+    // §4 + #34: rotation proposer. Wired only when the node has a
+    // signing identity (config.nodePrivateKey present). The submitTx
+    // closure routes the rotation tx through consensus.addTx — same
+    // path user-submitted txs and verdict-trigger / clean-record-trigger
+    // batches take (mempool → narwhal batch → bullshark order →
+    // commit-handler). Reuses the shared `triggerSubmitter` helper so
+    // the rotation flow has a SINGLE code path through consensus —
+    // never writes to dag.transactions directly. Closes the same
+    // architectural class issues.md Consensus #13 closes for
+    // schedulers ("scheduler writes bypass consensus").
+    proposer: (config.nodeId && config.nodePrivateKey) ? {
+      nodeId: config.nodeRegisteredId || config.nodeId,
+      nodePrivateKey: config.nodePrivateKey,
+      nodePublicKey: config.nodePublicKey,
+      submitTx: (tx) => triggerSubmitter.submitTx(tx),
+      // #68 multi-sig coordinator: bullshark's _maybeProposeCommitteeRotation
+      // hands the proposal off to this coordinator instead of submitting a
+      // 1-of-N tx directly. Coordinator broadcasts a RotationProposal,
+      // collects ≥ ceil(2n/3) RotationSignatures from the previous committee,
+      // builds the aggregated COMMITTEE_ROTATION tx, and routes it through
+      // submitTx. For solo committees (n=1) the proposer's own sig is the
+      // full quorum so submission is synchronous.
+      coordinator: (network && network.publish) ? createRotationCoordinator({
+        dag,
+        network,
+        proto: { encode, decode },
+        identity: {
+          nodeId: config.nodeRegisteredId || config.nodeId,
+          privateKey: config.nodePrivateKey,
+          publicKey: config.nodePublicKey,
+        },
+        submitTx: (tx) => triggerSubmitter.submitTx(tx),
+      }) : null,
+    } : null,
   });
 
   const narwhal = createNarwhal({
@@ -156,6 +197,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
     // so the root always reflects canonical DAG state.
     onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
+    // Producer-pause notifier — breaks the deadlock where rotation tx
+    // never lands because no rounds advance because rotation tx is
+    // missing. Bullshark.tryRotationProposal re-checks DAG and forces
+    // a proposal attempt (multi-aggregator + commit-handler dedup
+    // ensure exactly one tx commits).
+    onProducerPaused: (round, missingRotation) => {
+      if (bullshark && typeof bullshark.tryRotationProposal === "function") {
+        bullshark.tryRotationProposal(round, missingRotation);
+      }
+    },
   });
   narwhalRef.current = narwhal;
 
@@ -164,7 +215,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // uses this to advance its own committed_round counter past the
   // snapshot anchor when the network's been idle, so anti-entropy
   // doesn't false-positive a "behind" gap and loop.
-  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark });
+  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark, narwhal });
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.
@@ -212,6 +263,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     network.onPeerAuthorized(async (peerId, tipNodeId) => {
       await onPeerAuthorized(peerId, tipNodeId, {
         syncHandler, snapshotHandler, commitHandler, dag, narwhal, bullshark, nodeId,
+        queryPeerStatus: antiEntropy.queryPeer,
       });
     });
 
@@ -242,6 +294,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await syncHandler.registerProtocol();
       await snapshotHandler.registerProtocol();
       await antiEntropy.start();
+      const coord = bullshark.rotationCoordinator?.();
+      if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
@@ -255,6 +309,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();
+      const coord = bullshark.rotationCoordinator?.();
+      if (coord && typeof coord.stop === "function") coord.stop();
       log.notice("Consensus stopped");
     },
 
@@ -266,6 +322,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       onBatch: (data) => narwhal.handleIncomingBatch(data),
       onAck: (data) => narwhal.handleIncomingAck(data),
       onCertificate: (data) => narwhal.handleIncomingCertificate(data),
+      // RotationProposal / RotationSignature dispatch is now via direct
+      // libp2p stream (/tip/rotation-coord/1.0.0); see coord.registerProtocol.
     },
 
     /** Access to mempool (for API services to check pending status) */
@@ -310,6 +368,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
         verdictTrigger: { pending: verdictTrigger.size() },
+        // §4 + #34: chain-walk failure counter for /metrics. Empty
+        // object on legacy snapshot-handler implementations that
+        // don't expose stats.
+        snapshotHandler: typeof snapshotHandler.stats === "function"
+          ? snapshotHandler.stats() : { metrics: {} },
       };
     },
   };
