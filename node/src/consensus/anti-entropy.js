@@ -453,6 +453,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   }
 
   /**
+   * Last AE-observed join_state for a peer. Pure read of the status cache;
+   * defaults to "ready" when unknown so callers fail-open against legacy
+   * peers / first-tick races. Used by narwhal's ack-filter to skip the
+   * divergence-driven refusal while either side is mid-snapshot install
+   * or cert-tail catch-up — partial state naturally disagrees and the
+   * filter would otherwise starve the joiner from quorum.
+   */
+  function peerJoinState(peerNodeId) {
+    if (!peerNodeId) return "ready";
+    const cached = _lastStatus.get(peerNodeId);
+    return String(cached?.join_state || "ready");
+  }
+
+  /**
    * Snapshot of peers we'd currently refuse to ack. For ops surfacing in
    * /v1/sync-status. O(n) over `_lastStatus` — n is committee-size.
    */
@@ -510,10 +524,11 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // starts at our next-uncommitted round so we only fetch the delta.
       _log.info(`anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} by ${peerCommitted - selfCommitted} rounds — pulling gap`);
 
+      const fromRound = selfCommitted + 1;
       let syncResult = null;
       try {
         if (syncHandler && typeof syncHandler.syncFromPeer === "function") {
-          syncResult = await syncHandler.syncFromPeer(peerId, { fromRound: selfCommitted + 1 });
+          syncResult = await syncHandler.syncFromPeer(peerId, { fromRound });
         }
       } catch (err) {
         _log.warn(`anti-entropy: gap pull from ${peerId.slice(0, 12)} failed: ${err.message}`);
@@ -548,6 +563,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
       if (selfJoinState !== "ready" || peerJoinState !== "ready") {
+        // Diagnostic: surface what self vs peer look like at the same
+        // committed_round during catch-up so a stuck joiner is debuggable
+        // without grepping individual /sync-status payloads. Logged at
+        // info so it lands in info.log alongside the catching_up notices.
+        const selfCI = Number(selfState.consensus_index || 0);
+        const peerCI = Number(peerStatus.consensus_index || 0);
+        _log.info(
+          `anti-entropy: round=${selfCommitted} state-mismatch with peer ${peerStatus.node_id || peerId.slice(0, 12)} ` +
+          `(self.join=${selfJoinState} peer.join=${peerJoinState}) ` +
+          `self.root=${selfRoot.slice(0, 16)} peer.root=${peerRoot.slice(0, 16)} ` +
+          `self.ci=${selfCI} peer.ci=${peerCI} (delta=${peerCI - selfCI})`
+        );
         return "equal";  // not divergent enough to flag — treat as no-op
       }
 
@@ -738,6 +765,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     checkAndReconcile,
     registerProtocol,
     isPeerDivergent,
+    peerJoinState,
     divergentPeers,
     _handleIncomingSyncStatus,
     // Exposed for metrics scraping + tests.

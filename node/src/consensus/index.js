@@ -216,10 +216,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     },
     // Ack-filter — defense layer that denies attestation to peers whose
     // state has diverged from ours. Implemented in AE; threaded here via
-    // the deferred ref above.
+    // the deferred ref above. peerJoinState is the sibling getter narwhal
+    // uses to skip the refusal while either side is mid-sync (partial
+    // state naturally diverges).
     isPeerDivergent: (peerNodeId) => {
       try { return antiEntropyForFiltering ? antiEntropyForFiltering.isPeerDivergent(peerNodeId) : false; }
       catch { return false; }
+    },
+    peerJoinState: (peerNodeId) => {
+      try { return antiEntropyForFiltering ? antiEntropyForFiltering.peerJoinState(peerNodeId) : "ready"; }
+      catch { return "ready"; }
     },
   });
   narwhalRef.current = narwhal;

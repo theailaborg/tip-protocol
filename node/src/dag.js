@@ -89,7 +89,20 @@ function _canonScore(tip_id, v) {
   };
 }
 function _canonDedup(hash, createdAt) {
-  return { dedup_hash: hash, created_at: createdAt };
+  // Normalize created_at to string. Source of truth is a unix-seconds
+  // bigint column, but the value reaches the mirror two ways:
+  //   • genesis init — passes Number (Math.floor(getTime()/1000))
+  //   • resume from DB — knex returns bigint as String (default node-pg
+  //     behavior — bigints don't fit in JS Number safely).
+  // Without normalization, a fresh-genesis joiner's state_merkle_root
+  // diverges from a resumed peer's even though their dedup_registry
+  // tables are byte-identical. Verified live 2026-05-06: node-5 stuck
+  // in sync↔catching_up because dedup digest differed by Number-vs-String
+  // canonical encoding.
+  return {
+    dedup_hash: hash,
+    created_at: createdAt != null ? String(createdAt) : null,
+  };
 }
 function _canonRotationParticipation(r) {
   return {

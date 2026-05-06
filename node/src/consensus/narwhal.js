@@ -62,7 +62,7 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
@@ -648,7 +648,25 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // protects us when WE'RE wrong, filter protects us when THEY'RE wrong.
     // The seen-vote was already persisted above so we don't forget what we
     // saw — we just don't put our signature on it.
-    if (typeof isPeerDivergent === "function" && isPeerDivergent(batch.author_node_id)) {
+    //
+    // Catch-up race guard: skip the refusal when either side is mid-
+    // snapshot install or cert-tail replay. A joiner's state_merkle_root
+    // is partial during catching_up and naturally diverges from a ready
+    // peer's; without this guard the filter false-positives every fresh
+    // joiner — joiner gets starved of acks AND refuses every peer batch,
+    // collapsing both directions of quorum participation. Mirrors the
+    // race guard already in _reconcileWithPeer's divergence-flagging
+    // branch. isPeerDivergent stays a pure factual check; the policy
+    // (when to act on it) lives here.
+    const _selfReady = _joinState === "ready";
+    const _peerReady = typeof peerJoinState === "function"
+      ? peerJoinState(batch.author_node_id) === "ready"
+      : true;
+    if (
+      _selfReady && _peerReady
+      && typeof isPeerDivergent === "function"
+      && isPeerDivergent(batch.author_node_id)
+    ) {
       _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
       log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — state divergence at last AE poll`);
       return;
@@ -957,6 +975,33 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (cert.round === _currentRound) {
       _roundCertificates.set(cert.author_node_id, cert);
       _tryAdvanceRound();
+    } else if (cert.round < _currentRound && cert.round > 0 && onCommit) {
+      // Late-cert anchor re-trigger.
+      //
+      // Quorum for round-advance (2f+1 of committee) can be met before all
+      // committee certs at the round have arrived. _tryAdvanceRound fires
+      // onCommit with whatever's in _roundCertificates at that moment, and
+      // Bullshark's _checkAnchorCommit reads dag.getCertificatesByRound —
+      // also limited to certs that already landed. If support for the
+      // anchor's leader is short by exactly the cert that hasn't arrived
+      // yet, the anchor is permanently lost: subsequent gossip saves the
+      // late cert to the DAG, but nothing re-runs the check for that
+      // earlier round. Hits non-committee joiners hardest because they
+      // never have their *own* cert in the round-advance snapshot.
+      //
+      // Fix: when a cert lands for an earlier round, re-invoke
+      // bullshark.onRoundComplete for the relevant vote round (the cert's
+      // own round if even, or the next round if this is a propose-round
+      // cert that may be the missing leader). Bullshark idempotently
+      // gates on _lastCommittedRound + even-round-only, so re-calls for
+      // already-committed or odd rounds are safe no-ops.
+      const voteRound = cert.round % 2 === 0 ? cert.round : cert.round + 1;
+      try {
+        const certs = dag.getCertificatesByRound(voteRound);
+        onCommit(certs, voteRound);
+      } catch (err) {
+        log.debug(`Late-cert anchor re-check at round ${voteRound} failed: ${err.message}`);
+      }
     }
 
     // Remove committed txs from our mempool
