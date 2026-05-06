@@ -188,6 +188,7 @@ node4-env/
 # Local-only documentation
 BFT_TIME_TESTING.md
 CONSENSUS_TESTING.md
+COMMITTEE_ROTATION_TESTING.md
 DAG_EXPLAINED.md
 INFRA_PLANNING.md
 LOCALDEV.md
@@ -198,4 +199,5 @@ scripts/mariadb-init.sql
 scripts/mssql-entrypoint.sh
 scripts/mssql-init.sql
 scripts/oracle-init.sql
+scripts/oracle-init.sh
 scripts/postgres-init.sql

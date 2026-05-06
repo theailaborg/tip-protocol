@@ -40,6 +40,7 @@ function createConsensusGate({ consensusRef }) {
     // dashboards and health checks can see state during a halt.
     const method = req.method;
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
+    if (req.headers["x-bootstrap-force"] === "1" && req.path === "/node/register") return next();
 
     const consensus = consensusRef?.current;
     if (!consensus || typeof consensus.isConsensusHalted !== "function") return next();

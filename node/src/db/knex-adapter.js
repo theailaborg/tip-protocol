@@ -869,13 +869,14 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
-  getCertificate(hash) { return this.mirror.getCertificate(hash); }
-  getCertificatesByRound(round) { return this.mirror.getCertificatesByRound(round); }
-  getCertificateByAuthorRound(a, r) { return this.mirror.getCertificateByAuthorRound(a, r); }
-  getLatestRound() { return this.mirror.getLatestRound(); }
-  getEarliestCertRound() { return this.mirror.getEarliestCertRound(); }
-  getCertificatesFromRound(from) { return this.mirror.getCertificatesFromRound(from); }
-  certificateCount() { return this.mirror.certificateCount(); }
+  getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
+  getCertificatesByRound(round)           { return this.mirror.getCertificatesByRound(round); }
+  getCertificateByAuthorRound(a, r)       { return this.mirror.getCertificateByAuthorRound(a, r); }
+  getLatestRound()                        { return this.mirror.getLatestRound(); }
+  getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
+  getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
+  *iterateCertsByRoundRange(from, to)     { yield* this.mirror.iterateCertsByRoundRange(from, to); }
+  certificateCount()                      { return this.mirror.certificateCount(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
