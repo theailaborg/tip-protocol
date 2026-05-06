@@ -36,8 +36,8 @@ const { subjectTipId } = require("../tx-attribution");
 //  • All tables are created via hasTable → createTable, so re-running migrate()
 //    on an existing database is safe (idempotent).
 
-function _id(t, col)  { return t.string(col, 512); }
-function _pk(t, col)  { return t.string(col, 512).primary(); }
+function _id(t, col) { return t.string(col, 512); }
+function _pk(t, col) { return t.string(col, 512).primary(); }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,45 +47,45 @@ function _j(v) {
 
 function _parseTxRow(row) {
   return {
-    tx_id:          row.tx_id,
-    tx_type:        row.tx_type,
-    data:           _j(row.data) || {},
-    timestamp:      row.timestamp,
-    prev:           _j(row.prev) || [],
-    signature:      row.signature || null,
+    tx_id: row.tx_id,
+    tx_type: row.tx_type,
+    data: _j(row.data) || {},
+    timestamp: row.timestamp,
+    prev: _j(row.prev) || [],
+    signature: row.signature || null,
     subject_tip_id: row.subject_tip_id || null,
   };
 }
 
 function _parseCertRow(row) {
   return {
-    hash:            row.hash,
-    round:           row.round,
-    author_node_id:  row.author_node_id,
-    batch:           _j(row.batch_data) || {},
+    hash: row.hash,
+    round: row.round,
+    author_node_id: row.author_node_id,
+    batch: _j(row.batch_data) || {},
     acknowledgments: _j(row.acknowledgments) || [],
-    parent_hashes:   _j(row.parent_hashes) || [],
-    signature:       row.signature,
-    timestamp:       Number(row.timestamp || 0),
+    parent_hashes: _j(row.parent_hashes) || [],
+    signature: row.signature,
+    timestamp: Number(row.timestamp || 0),
   };
 }
 
 function _parseCommitRow(row) {
   return {
-    round:              row.round,
-    anchor_cert_hash:   row.anchor_cert_hash,
-    leader_node_id:     row.leader_node_id,
-    committee:          _j(row.committee) || [],
-    support_count:      row.support_count,
-    consensus_index:    row.consensus_index,
-    committed_at:       row.committed_at,
-    state_merkle_root:  row.state_merkle_root,
-    txs_merkle_root:    row.txs_merkle_root,
-    ack_signer_ids:     _j(row.ack_signer_ids) || [],
-    ack_signatures:     _j(row.ack_signatures) || [],
-    ack_signed_ats:     _j(row.ack_signed_ats) || [],
-    cert_timestamp:     Number(row.cert_timestamp || 0),
-    anchor_batch_hash:  row.anchor_batch_hash || null,
+    round: row.round,
+    anchor_cert_hash: row.anchor_cert_hash,
+    leader_node_id: row.leader_node_id,
+    committee: _j(row.committee) || [],
+    support_count: row.support_count,
+    consensus_index: row.consensus_index,
+    committed_at: row.committed_at,
+    state_merkle_root: row.state_merkle_root,
+    txs_merkle_root: row.txs_merkle_root,
+    ack_signer_ids: _j(row.ack_signer_ids) || [],
+    ack_signatures: _j(row.ack_signatures) || [],
+    ack_signed_ats: _j(row.ack_signed_ats) || [],
+    cert_timestamp: Number(row.cert_timestamp || 0),
+    anchor_batch_hash: row.anchor_batch_hash || null,
   };
 }
 
@@ -93,7 +93,7 @@ function _parseCommitRow(row) {
 
 class KnexAdapter {
   constructor(driver, config, log) {
-    this.log = log || { info: () => {}, warn: () => {}, error: () => {} };
+    this.log = log || { info: () => { }, warn: () => { }, error: () => { } };
     this.mirror = new MemoryStore();
 
     // Map driver aliases to Knex client names
@@ -106,18 +106,18 @@ class KnexAdapter {
     } else if (driver === "oracle" || driver === "oracledb") {
       const host = config.dbHost || process.env.DB_HOST || "localhost";
       const port = config.dbPort || Number(process.env.DB_PORT || 1521);
-      const svc  = config.dbName || process.env.DB_NAME || "FREEPDB1";
+      const svc = config.dbName || process.env.DB_NAME || "FREEPDB1";
       connection = {
         connectString: `${host}:${port}/${svc}`,
-        user:          config.dbUser     || process.env.DB_USER     || "tip",
-        password:      config.dbPassword || process.env.DB_PASSWORD || "",
+        user: config.dbUser || process.env.DB_USER || "tip",
+        password: config.dbPassword || process.env.DB_PASSWORD || "",
       };
     } else {
       connection = {
-        host:     config.dbHost     || process.env.DB_HOST     || "localhost",
-        port:     config.dbPort     || Number(process.env.DB_PORT || (driver === "postgres" ? 5432 : driver === "mssql" || driver === "sqlserver" ? 1433 : 3306)),
-        database: config.dbName     || process.env.DB_NAME     || "tip_protocol",
-        user:     config.dbUser     || process.env.DB_USER     || "tip",
+        host: config.dbHost || process.env.DB_HOST || "localhost",
+        port: config.dbPort || Number(process.env.DB_PORT || (driver === "postgres" ? 5432 : driver === "mssql" || driver === "sqlserver" ? 1433 : 3306)),
+        database: config.dbName || process.env.DB_NAME || "tip_protocol",
+        user: config.dbUser || process.env.DB_USER || "tip",
         password: config.dbPassword || process.env.DB_PASSWORD || "",
       };
       if (config.dbSsl || process.env.DB_SSL === "true") {
@@ -137,7 +137,7 @@ class KnexAdapter {
       },
       acquireConnectionTimeout: 10000,
     });
-    this._isOracleDB   = (driver === "oracle" || driver === "oracledb");
+    this._isOracleDB = (driver === "oracle" || driver === "oracledb");
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
     this._noOnConflict = this._isOracleDB || driver === "mssql" || driver === "sqlserver";
   }
@@ -167,10 +167,10 @@ class KnexAdapter {
       t.text("signature").nullable();
       _id(t, "subject_tip_id").nullable();
       t.bigInteger("created_at").notNullable().defaultTo(0);
-      t.index("tx_type",       "idx_txs_type");
-      t.index("timestamp",     "idx_txs_ts");
-      t.index("created_at",    "idx_txs_created_at");
-      t.index("subject_tip_id","idx_txs_subject");
+      t.index("tx_type", "idx_txs_type");
+      t.index("timestamp", "idx_txs_ts");
+      t.index("created_at", "idx_txs_created_at");
+      t.index("subject_tip_id", "idx_txs_subject");
     });
 
     await ensure("identities", t => {
@@ -179,14 +179,14 @@ class KnexAdapter {
       t.text("public_key").notNullable();
       t.text("root_public_key").nullable();
       _id(t, "vp_id").nullable();
-      t.string("verification_tier",  8).notNullable().defaultTo("T1");
+      t.string("verification_tier", 8).notNullable().defaultTo("T1");
       t.string("score_display_mode", 32).notNullable().defaultTo("TIER_ONLY");
       t.integer("founding").notNullable().defaultTo(0);
       t.string("status", 32).notNullable().defaultTo("active");
       t.string("registered_at", 64).notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
-      t.index("vp_id",  "idx_id_vp");
+      t.index("vp_id", "idx_id_vp");
       t.index("status", "idx_id_status");
     });
 
@@ -205,8 +205,8 @@ class KnexAdapter {
       t.text("registered_url").nullable();
       _id(t, "tx_id").nullable();
       t.index("author_tip_id", "idx_content_author");
-      t.index("origin_code",   "idx_content_origin");
-      t.index("status",        "idx_content_status");
+      t.index("origin_code", "idx_content_origin");
+      t.index("status", "idx_content_status");
     });
 
     await ensure("scores", t => {
@@ -231,7 +231,7 @@ class KnexAdapter {
     await ensure("verification_providers", t => {
       _pk(t, "vp_id");
       t.string("name", 256).notNullable();
-      t.string("jurisdiction",      8).notNullable().defaultTo("US");
+      t.string("jurisdiction", 8).notNullable().defaultTo("US");
       t.string("jurisdiction_tier", 16).notNullable().defaultTo("green");
       t.text("public_key").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
@@ -256,8 +256,8 @@ class KnexAdapter {
       t.text("signature").notNullable();
       t.bigInteger("timestamp").notNullable().defaultTo(0);
       t.bigInteger("created_at").notNullable().defaultTo(0);
-      t.index("round",                        "idx_cert_round");
-      t.index(["author_node_id", "round"],    "idx_cert_author");
+      t.index("round", "idx_cert_round");
+      t.index(["author_node_id", "round"], "idx_cert_author");
     });
 
     await ensure("commits", t => {
@@ -269,7 +269,7 @@ class KnexAdapter {
       t.integer("consensus_index").notNullable();
       t.string("committed_at", 64).notNullable();
       t.string("state_merkle_root", 128).notNullable();
-      t.string("txs_merkle_root",   128).notNullable();
+      t.string("txs_merkle_root", 128).notNullable();
       t.text("ack_signer_ids").notNullable();
       t.text("ack_signatures").notNullable();
       t.text("ack_signed_ats").notNullable().defaultTo("[]");
@@ -307,7 +307,7 @@ class KnexAdapter {
       _id(t, "origin_node_id").nullable();
       t.text("tx_data").nullable();
       _id(t, "subject_tip_id").nullable();
-      t.index("reason",         "idx_tx_rej_reason");
+      t.index("reason", "idx_tx_rej_reason");
       t.index("rejected_at_ms", "idx_tx_rej_at");
       t.index("origin_node_id", "idx_tx_rej_origin");
       t.index("subject_tip_id", "idx_tx_rej_subject");
@@ -440,14 +440,14 @@ class KnexAdapter {
     if (!this.mirror._committeeHistory) this.mirror._committeeHistory = new Map();
     for (const row of rotRows) {
       this.mirror._committeeHistory.set(row.rotation_number, {
-        rotation_number:  row.rotation_number,
-        effective_round:  row.effective_round,
-        committee:        _j(row.committee) || [],
-        prev_rotation:    row.prev_rotation == null ? null : row.prev_rotation,
-        signer_node_ids:  _j(row.signer_node_ids) || [],
-        signatures:       _j(row.signatures) || [],
-        payload_hash:     row.payload_hash || null,
-        committed_at:     row.committed_at,
+        rotation_number: row.rotation_number,
+        effective_round: row.effective_round,
+        committee: _j(row.committee) || [],
+        prev_rotation: row.prev_rotation == null ? null : row.prev_rotation,
+        signer_node_ids: _j(row.signer_node_ids) || [],
+        signatures: _j(row.signatures) || [],
+        payload_hash: row.payload_hash || null,
+        committed_at: row.committed_at,
       });
     }
 
@@ -477,11 +477,11 @@ class KnexAdapter {
     // Oracle / mssql path: INSERT, catch duplicate-key error
     return this.knex(table).insert(row).catch(async err => {
       const isDup = /ORA-00001/.test(err.message) ||
-                    /Cannot insert duplicate key/.test(err.message) ||
-                    err.number === 2627 || err.number === 2601;
+        /Cannot insert duplicate key/.test(err.message) ||
+        err.number === 2627 || err.number === 2601;
       if (!isDup) throw err;
       if (onConflict === "merge") {
-        const pks   = Array.isArray(pkCols) ? pkCols : [pkCols];
+        const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
         const nonPk = Object.keys(row).filter(k => !pks.includes(k));
         if (nonPk.length > 0) {
           const updates = {};
@@ -501,25 +501,25 @@ class KnexAdapter {
     this.mirror.saveTx(tx);
     const entry = this.mirror._txs.get(tx.tx_id);
     const row = {
-      tx_id:          tx.tx_id,
-      tx_type:        tx.tx_type,
-      data:           JSON.stringify(tx.data || {}),
-      timestamp:      tx.timestamp,
-      prev:           JSON.stringify(tx.prev || []),
-      signature:      tx.signature || null,
+      tx_id: tx.tx_id,
+      tx_type: tx.tx_type,
+      data: JSON.stringify(tx.data || {}),
+      timestamp: tx.timestamp,
+      prev: JSON.stringify(tx.prev || []),
+      signature: tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
     };
     this._ff(() => this._dbInsert("transactions", "tx_id", row, "ignore"));
   }
 
-  getTx(id)              { return this.mirror.getTx(id); }
-  getAllTxs()            { return this.mirror.getAllTxs(); }
-  count()                { return this.mirror.count(); }
-  getTxsByType(t)        { return this.mirror.getTxsByType(t); }
+  getTx(id) { return this.mirror.getTx(id); }
+  getAllTxs() { return this.mirror.getAllTxs(); }
+  count() { return this.mirror.count(); }
+  getTxsByType(t) { return this.mirror.getTxsByType(t); }
   getTxsByTypeAndCtid(t, c) { return this.mirror.getTxsByTypeAndCtid(t, c); }
-  getTxsByTipId(id)      { return this.mirror.getTxsByTipId(id); }
-  getTxsBySubject(id)    { return this.mirror.getTxsBySubject(id); }
-  getRecentPrev()        { return this.mirror.getRecentPrev ? this.mirror.getRecentPrev() : []; }
+  getTxsByTipId(id) { return this.mirror.getTxsByTipId(id); }
+  getTxsBySubject(id) { return this.mirror.getTxsBySubject(id); }
+  getRecentPrev() { return this.mirror.getRecentPrev ? this.mirror.getRecentPrev() : []; }
 
   *iterateAllTransactions() { yield* this.mirror.iterateAllTransactions(); }
 
@@ -528,52 +528,52 @@ class KnexAdapter {
   saveIdentity(rec) {
     this.mirror.saveIdentity(rec);
     const row = {
-      tip_id:             rec.tip_id,
-      region:             rec.region || "US",
-      public_key:         rec.public_key,
-      root_public_key:    rec.root_public_key || null,
-      vp_id:              rec.vp_id || null,
-      verification_tier:  rec.verification_tier || "T1",
+      tip_id: rec.tip_id,
+      region: rec.region || "US",
+      public_key: rec.public_key,
+      root_public_key: rec.root_public_key || null,
+      vp_id: rec.vp_id || null,
+      verification_tier: rec.verification_tier || "T1",
       score_display_mode: rec.score_display_mode || "TIER_ONLY",
-      founding:           rec.founding ? 1 : 0,
-      status:             rec.status || "active",
-      registered_at:      rec.registered_at,
-      creator_name:       rec.creator_name || null,
-      tx_id:              rec.tx_id || null,
+      founding: rec.founding ? 1 : 0,
+      status: rec.status || "active",
+      registered_at: rec.registered_at,
+      creator_name: rec.creator_name || null,
+      tx_id: rec.tx_id || null,
     };
     this._ff(() => this._dbInsert("identities", "tip_id", row, "merge"));
   }
 
-  getIdentity(id)      { return this.mirror.getIdentity(id); }
-  getAllIdentities()    { return this.mirror.getAllIdentities(); }
+  getIdentity(id) { return this.mirror.getIdentity(id); }
+  getAllIdentities() { return this.mirror.getAllIdentities(); }
 
   // ── Content ────────────────────────────────────────────────────────────────
 
   saveContent(rec) {
     this.mirror.saveContent(rec);
     const row = {
-      tip_ctid:           rec.ctid,
-      origin_code:        rec.origin_code,
-      content_hash:       rec.content_hash,
-      perceptual_hash:    rec.perceptual_hash || null,
-      author_tip_id:      rec.author_tip_id,
-      status:             rec.status || "verified",
-      dispute_count:      rec.dispute_count || 0,
+      tip_ctid: rec.ctid,
+      origin_code: rec.origin_code,
+      content_hash: rec.content_hash,
+      perceptual_hash: rec.perceptual_hash || null,
+      author_tip_id: rec.author_tip_id,
+      status: rec.status || "verified",
+      dispute_count: rec.dispute_count || 0,
       verification_count: rec.verification_count || 0,
-      prescan_flagged:    rec.prescan_flagged ? 1 : 0,
-      registered_at:      rec.registered_at,
-      registered_url:     rec.registered_url || null,
-      tx_id:              rec.tx_id || null,
+      prescan_flagged: rec.prescan_flagged ? 1 : 0,
+      registered_at: rec.registered_at,
+      registered_url: rec.registered_url || null,
+      tx_id: rec.tx_id || null,
     };
     this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));
   }
 
-  getContent(ctid)                      { return this.mirror.getContent(ctid); }
-  getContentByStatus(s)                 { return this.mirror.getContentByStatus(s); }
-  getContentByAuthor(id)                { return this.mirror.getContentByAuthor(id); }
-  getCleanRecordEligible(cutoff)        { return this.mirror.getCleanRecordEligible(cutoff); }
-  hasVerification(ctid, tipId)          { return this.mirror.hasVerification(ctid, tipId); }
-  hasDispute(ctid, tipId)               { return this.mirror.hasDispute(ctid, tipId); }
+  getContent(ctid) { return this.mirror.getContent(ctid); }
+  getContentByStatus(s) { return this.mirror.getContentByStatus(s); }
+  getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
+  getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
+  hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }
+  hasDispute(ctid, tipId) { return this.mirror.hasDispute(ctid, tipId); }
 
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);
@@ -602,8 +602,8 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("dedup_registry", "dedup_hash", { dedup_hash: hash, created_at: createdAt }, "ignore"));
   }
 
-  hasDedupHash(h)  { return this.mirror.hasDedupHash(h); }
-  dedupCount()     { return this.mirror.dedupCount(); }
+  hasDedupHash(h) { return this.mirror.hasDedupHash(h); }
+  dedupCount() { return this.mirror.dedupCount(); }
 
   // ── Canonical state iterator (§14 snapshot-sync) ──────────────────────────
 
@@ -616,69 +616,69 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("revocations", "tip_id", { tip_id: id, tx_type: type, timestamp: ts, tx_id: txId }, "ignore"));
   }
 
-  isRevoked(id)            { return this.mirror.isRevoked(id); }
-  getRevocations(since)    { return this.mirror.getRevocations(since); }
+  isRevoked(id) { return this.mirror.isRevoked(id); }
+  getRevocations(since) { return this.mirror.getRevocations(since); }
 
   // ── Verification Providers ─────────────────────────────────────────────────
 
   saveVP(rec) {
     this.mirror.saveVP(rec);
     const row = {
-      vp_id:             rec.vp_id,
-      name:              rec.name,
-      jurisdiction:      rec.jurisdiction || "US",
+      vp_id: rec.vp_id,
+      name: rec.name,
+      jurisdiction: rec.jurisdiction || "US",
       jurisdiction_tier: rec.jurisdiction_tier || "green",
-      public_key:        rec.public_key || null,
-      status:            rec.status || "active",
-      registered_at:     rec.registered_at,
+      public_key: rec.public_key || null,
+      status: rec.status || "active",
+      registered_at: rec.registered_at,
     };
     this._ff(() => this._dbInsert("verification_providers", "vp_id", row, "merge"));
   }
 
-  getVP(id)     { return this.mirror.getVP(id); }
-  getAllVPs()    { return this.mirror.getAllVPs(); }
+  getVP(id) { return this.mirror.getVP(id); }
+  getAllVPs() { return this.mirror.getAllVPs(); }
 
   // ── Nodes ──────────────────────────────────────────────────────────────────
 
   saveNode(rec) {
     this.mirror.saveNode(rec);
     const row = {
-      node_id:       rec.node_id,
-      name:          rec.name || null,
-      public_key:    rec.public_key,
-      status:        rec.status || "active",
+      node_id: rec.node_id,
+      name: rec.name || null,
+      public_key: rec.public_key,
+      status: rec.status || "active",
       registered_at: rec.registered_at,
     };
     this._ff(() => this._dbInsert("nodes", "node_id", row, "merge"));
   }
 
-  getNode(id)    { return this.mirror.getNode(id); }
-  getAllNodes()   { return this.mirror.getAllNodes(); }
+  getNode(id) { return this.mirror.getNode(id); }
+  getAllNodes() { return this.mirror.getAllNodes(); }
 
   // ── Certificates ──────────────────────────────────────────────────────────
 
   saveCertificate(cert) {
     this.mirror.saveCertificate(cert);
     const row = {
-      hash:            cert.hash,
-      round:           cert.round,
-      author_node_id:  cert.author_node_id,
-      batch_data:      JSON.stringify(cert.batch),
+      hash: cert.hash,
+      round: cert.round,
+      author_node_id: cert.author_node_id,
+      batch_data: JSON.stringify(cert.batch),
       acknowledgments: JSON.stringify(cert.acknowledgments),
-      parent_hashes:   JSON.stringify(cert.parent_hashes || []),
-      signature:       cert.signature,
-      timestamp:       Number(cert.timestamp || 0),
+      parent_hashes: JSON.stringify(cert.parent_hashes || []),
+      signature: cert.signature,
+      timestamp: Number(cert.timestamp || 0),
     };
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
-  getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
-  getCertificatesByRound(round)           { return this.mirror.getCertificatesByRound(round); }
-  getCertificateByAuthorRound(a, r)       { return this.mirror.getCertificateByAuthorRound(a, r); }
-  getLatestRound()                        { return this.mirror.getLatestRound(); }
-  getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
-  getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
-  certificateCount()                      { return this.mirror.certificateCount(); }
+  getCertificate(hash) { return this.mirror.getCertificate(hash); }
+  getCertificatesByRound(round) { return this.mirror.getCertificatesByRound(round); }
+  getCertificateByAuthorRound(a, r) { return this.mirror.getCertificateByAuthorRound(a, r); }
+  getLatestRound() { return this.mirror.getLatestRound(); }
+  getEarliestCertRound() { return this.mirror.getEarliestCertRound(); }
+  getCertificatesFromRound(from) { return this.mirror.getCertificatesFromRound(from); }
+  certificateCount() { return this.mirror.certificateCount(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
@@ -693,37 +693,42 @@ class KnexAdapter {
   saveCommit(rec) {
     this.mirror.saveCommit(rec);
     const row = {
-      round:             rec.round,
-      anchor_cert_hash:  rec.anchor_cert_hash,
-      leader_node_id:    rec.leader_node_id,
-      committee:         JSON.stringify(rec.committee || []),
-      support_count:     rec.support_count,
-      consensus_index:   rec.consensus_index,
-      committed_at:      rec.committed_at,
+      round: rec.round,
+      anchor_cert_hash: rec.anchor_cert_hash,
+      leader_node_id: rec.leader_node_id,
+      committee: JSON.stringify(rec.committee || []),
+      support_count: rec.support_count,
+      consensus_index: rec.consensus_index,
+      committed_at: rec.committed_at,
       state_merkle_root: rec.state_merkle_root,
-      txs_merkle_root:   rec.txs_merkle_root,
-      ack_signer_ids:    JSON.stringify(rec.ack_signer_ids || []),
-      ack_signatures:    JSON.stringify(rec.ack_signatures || []),
-      ack_signed_ats:    JSON.stringify(rec.ack_signed_ats || []),
-      cert_timestamp:    Number(rec.cert_timestamp || 0),
+      txs_merkle_root: rec.txs_merkle_root,
+      ack_signer_ids: JSON.stringify(rec.ack_signer_ids || []),
+      ack_signatures: JSON.stringify(rec.ack_signatures || []),
+      ack_signed_ats: JSON.stringify(rec.ack_signed_ats || []),
+      cert_timestamp: Number(rec.cert_timestamp || 0),
       anchor_batch_hash: rec.anchor_batch_hash || null,
     };
     this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
 
-  getCommit(round)             { return this.mirror.getCommit(round); }
-  getLatestCommit()            { return this.mirror.getLatestCommit(); }
-  getCommitsFromRound(from)    { return this.mirror.getCommitsFromRound(from); }
-  getLatestConsensusIndex()    { return this.mirror.getLatestConsensusIndex(); }
+  getCommit(round) { return this.mirror.getCommit(round); }
+  getLatestCommit() { return this.mirror.getLatestCommit(); }
+  getCommitsFromRound(from) { return this.mirror.getCommitsFromRound(from); }
+  getLatestConsensusIndex() { return this.mirror.getLatestConsensusIndex(); }
 
   setConsensusMeta(key, value) {
     this.mirror.setConsensusMeta(key, value);
     this._ff(() => this._dbInsert("consensus_meta", "key", { key, value: String(value) }, "merge"));
   }
 
-  getConsensusMeta(key)        { return this.mirror.getConsensusMeta(key); }
+  getConsensusMeta(key) { return this.mirror.getConsensusMeta(key); }
 
   *iterateAllCommitsExcept(latestRound) { yield* this.mirror.iterateAllCommitsExcept(latestRound); }
+
+  // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
+  // the SQLiteStore generator. Delegates to the in-memory mirror, which has
+  // the full cert window post-_hydrate.
+  *iterateCertsByRoundRange(fromRound, toRound) { yield* this.mirror.iterateCertsByRoundRange(fromRound, toRound); }
 
   // ── Equivocation defense ──────────────────────────────────────────────────
 
@@ -748,15 +753,15 @@ class KnexAdapter {
   saveMempoolTx(tx) {
     this.mirror.saveMempoolTx(tx);
     this._ff(() => this._dbInsert("mempool", "tx_id", {
-      tx_id:          tx.tx_id,
-      tx_data:        JSON.stringify(tx),
+      tx_id: tx.tx_id,
+      tx_data: JSON.stringify(tx),
       subject_tip_id: subjectTipId(tx) || null,
     }, "ignore"));
   }
 
-  getMempoolTx(txId)            { return this.mirror.getMempoolTx(txId); }
-  getMempoolTxs()               { return this.mirror.getMempoolTxs(); }
-  getMempoolTxsByTipId(tipId)   { return this.mirror.getMempoolTxsByTipId(tipId); }
+  getMempoolTx(txId) { return this.mirror.getMempoolTx(txId); }
+  getMempoolTxs() { return this.mirror.getMempoolTxs(); }
+  getMempoolTxsByTipId(tipId) { return this.mirror.getMempoolTxsByTipId(tipId); }
 
   deleteMempoolTx(txId) {
     this.mirror.deleteMempoolTx(txId);
@@ -787,25 +792,25 @@ class KnexAdapter {
         : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
       const subj = rec.tx_data && typeof rec.tx_data === "object" ? subjectTipId(rec.tx_data) : null;
       this._ff(() => this._dbInsert("tx_rejections", "tx_id", {
-        tx_id:             rec.tx_id,
-        reason:            rec.reason,
-        reason_detail:     rec.reason_detail || null,
-        rejected_at_ms:    at,
+        tx_id: rec.tx_id,
+        reason: rec.reason,
+        reason_detail: rec.reason_detail || null,
+        rejected_at_ms: at,
         rejected_at_round: rec.rejected_at_round || null,
-        dropper_node_id:   rec.dropper_node_id,
-        tx_type:           rec.tx_type || null,
-        origin_node_id:    rec.origin_node_id || null,
-        tx_data:           txData,
-        subject_tip_id:    subj,
+        dropper_node_id: rec.dropper_node_id,
+        tx_type: rec.tx_type || null,
+        origin_node_id: rec.origin_node_id || null,
+        tx_data: txData,
+        subject_tip_id: subj,
       }, "ignore"));
     }
     return inserted;
   }
 
-  getTxRejection(txId)                  { return this.mirror.getTxRejection(txId); }
+  getTxRejection(txId) { return this.mirror.getTxRejection(txId); }
   getTxRejectionsByReason(reason, opts) { return this.mirror.getTxRejectionsByReason(reason, opts); }
-  getTxRejectionsByTipId(tipId)         { return this.mirror.getTxRejectionsByTipId(tipId); }
-  countTxRejections()                   { return this.mirror.countTxRejections(); }
+  getTxRejectionsByTipId(tipId) { return this.mirror.getTxRejectionsByTipId(tipId); }
+  countTxRejections() { return this.mirror.countTxRejections(); }
 
   // ── DB Transactions ────────────────────────────────────────────────────────
   // Mirror is already atomic (Map operations). DB writes from inside fn() are
@@ -849,22 +854,22 @@ class KnexAdapter {
   saveCommitteeRotation(rec) {
     this.mirror.saveCommitteeRotation(rec);
     const row = {
-      rotation_number:  rec.rotation_number,
-      effective_round:  rec.effective_round,
-      committee:        JSON.stringify(rec.committee || []),
-      prev_rotation:    rec.prev_rotation == null ? null : rec.prev_rotation,
-      signer_node_ids:  JSON.stringify(rec.signer_node_ids || []),
-      signatures:       JSON.stringify(rec.signatures || []),
-      payload_hash:     rec.payload_hash || null,
-      committed_at:     rec.committed_at || new Date().toISOString(),
-      created_at:       Date.now(),
+      rotation_number: rec.rotation_number,
+      effective_round: rec.effective_round,
+      committee: JSON.stringify(rec.committee || []),
+      prev_rotation: rec.prev_rotation == null ? null : rec.prev_rotation,
+      signer_node_ids: JSON.stringify(rec.signer_node_ids || []),
+      signatures: JSON.stringify(rec.signatures || []),
+      payload_hash: rec.payload_hash || null,
+      committed_at: rec.committed_at || new Date().toISOString(),
+      created_at: Date.now(),
     };
     this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
   }
 
-  getCommitteeRotation(n)  { return this.mirror.getCommitteeRotation(n); }
-  getLatestRotation()      { return this.mirror.getLatestRotation(); }
-  getCommitteeAtRound(r)   { return this.mirror.getCommitteeAtRound(r); }
+  getCommitteeRotation(n) { return this.mirror.getCommitteeRotation(n); }
+  getLatestRotation() { return this.mirror.getLatestRotation(); }
+  getCommitteeAtRound(r) { return this.mirror.getCommitteeAtRound(r); }
   *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
 
   // ── Rotation participation ─────────────────────────────────────────────────
@@ -879,7 +884,7 @@ class KnexAdapter {
     ));
   }
 
-  getRotationParticipation(n)         { return this.mirror.getRotationParticipation(n); }
+  getRotationParticipation(n) { return this.mirror.getRotationParticipation(n); }
 
   pruneRotationParticipationBefore(n) {
     const removed = this.mirror.pruneRotationParticipationBefore(n);

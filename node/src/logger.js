@@ -72,12 +72,24 @@ function _getStreams() {
 /**
  * Format a log entry.
  */
+// Per-process node tag — last 12 chars of TIP_NODE_ID (set by env). When
+// multiple nodes share the same LOG_DIR (e.g. local dev with all 3 in one
+// repo), this disambiguates which process emitted each line. Computed once
+// at module load; if TIP_NODE_ID isn't set yet the tag is empty.
+const _nodeTag = (() => {
+  const id = process.env.TIP_NODE_ID || "";
+  // Strip the `tip://node/` prefix if present so the visible portion is
+  // the short hex; otherwise tail-12 of whatever was given.
+  const tail = id.replace(/^tip:\/\/node\//, "").slice(-12);
+  return tail ? ` [${tail}]` : "";
+})();
+
 function _format(level, source, args) {
   const ts = new Date().toISOString();
   const label = level.toUpperCase().padEnd(5);
   const src = source ? `[${source}] ` : "";
   const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-  return `[${ts}] [${label}] ${src}${msg}`;
+  return `[${ts}] [${label}]${_nodeTag} ${src}${msg}`;
 }
 
 // Skip file writes under Jest so the test runner doesn't pollute the

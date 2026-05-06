@@ -1,65 +1,249 @@
-# TIP Protocol -- Docker Compose
+# TIP Protocol — Docker Compose
 #
-# Quick start:
-#   npm run seed          # run once before first launch
-#   docker compose up
-# Genesis state is bootstrapped automatically from genesis.js on first boot.
+# Single command brings up the founding node + (optionally) a database,
+# selected via Compose profile. The node container is identical for every
+# DB — selection is purely runtime via DB_DRIVER + connection vars in .env.
 #
-# View logs:
-#   docker compose logs -f tip-node
+# ── Quick start ──────────────────────────────────────────────────────────────
+#
+#   npm run seed                                  # once, before first launch
+#
+#   docker compose up -d                          # PostgreSQL (default — see below)
+#   docker compose logs -f tip-node               # tail logs
+#   docker compose down                           # stop (keep volumes)
+#   docker compose down -v                        # stop + wipe DB volumes
+#
+# ── Picking a different database engine ─────────────────────────────────────
+#
+# .env at the repo root sets COMPOSE_PROFILES which Compose reads as if
+# `--profile <value>` were passed. Default is postgres. To switch:
+#
+#   In .env:                                  Effect:
+#   COMPOSE_PROFILES=postgres   (default)     PostgreSQL  + node
+#   COMPOSE_PROFILES=mariadb                  MariaDB     + node
+#   COMPOSE_PROFILES=mssql                    SQL Server  + node
+#   COMPOSE_PROFILES=oracle                   Oracle Free + node
+#   COMPOSE_PROFILES=                         no DB service; node uses SQLite
+#
+# Set the matching DB_DRIVER + DB_HOST in .env too. Override on a single
+# command without editing .env:
+#
+#   docker compose --profile mariadb up -d
+#
+# Genesis state is bootstrapped from genesis.js on first boot — no seed.db
+# is shipped or copied. The runtime _writeGenesisBlock walks the founding
+# values embedded in genesis.js and creates the matching DAG state.
+#
+# ── .env ─────────────────────────────────────────────────────────────────────
+#
+# All node + DB credentials come from .env at the repo root. Set these:
+#
+#   DB_DRIVER=postgres                            # or mariadb/mssql/oracle/sqlite
+#   DB_HOST=postgres                              # MUST match service name below
+#   DB_PORT=5432                                  # leave blank for driver default
+#   DB_NAME=tip_protocol
+#   DB_USER=tip
+#   DB_PASSWORD=<strong>
+#
+# DB_HOST values when running in this stack: postgres / mariadb / mssql /
+# oracle (Compose service names). Use localhost only when running the node
+# OUTSIDE Docker (native node process) against a host-side DB.
 #
 # Author: Dinesh Mendhe <chairman@theailab.org>
 # Copyright 2026 The AI Lab Intelligence Unobscured, Inc.
 # Licensed under TIPCL-1.0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable node config — same image, env, volumes for every DB profile.
+# Anchored YAML alias keeps the file DRY.
+# ─────────────────────────────────────────────────────────────────────────────
+x-node-common: &node-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+  image: tip-protocol/node:2.0.0
+  container_name: tip-node
+  restart: unless-stopped
+  ports:
+    - "${PORT:-4000}:4000"
+    - "${TIP_P2P_PORT:-4001}:4001"
+  volumes:
+    - ./data:/app/data
+    # Per-node host log dir. Maps to /app/logs in the container so
+    # multi-node runs (./logs/node-1, ./logs/node-2) don't collide.
+    - ./logs/node-1:/app/logs
+  environment:
+    NODE_ENV:                   ${NODE_ENV:-production}
+    PORT:                       4000
+    HOST:                       0.0.0.0
+    TIP_NODE_ID:                ${TIP_NODE_ID:-}
+    TIP_NODE_TYPE:              ${TIP_NODE_TYPE:-full}
+    TIP_REGION:                 ${TIP_REGION:-US}
+    TIP_NODE_PRIVATE_KEY:       ${TIP_NODE_PRIVATE_KEY}
+    TIP_NODE_PUBLIC_KEY:        ${TIP_NODE_PUBLIC_KEY}
+    TIP_PEERS:                  ${TIP_PEERS:-}
+    TIP_BOOTSTRAP_PEERS:        ${TIP_BOOTSTRAP_PEERS:-}
+    TIP_ENABLE_MDNS:            ${TIP_ENABLE_MDNS:-true}
+    TIP_PUBLIC_IP:              ${TIP_PUBLIC_IP:-}
+    TIP_PUBLIC_URL:             ${TIP_PUBLIC_URL:-}
+    TIP_CORS_ORIGINS:           ${TIP_CORS_ORIGINS:-*}
+    TIP_LOG_LEVEL:              ${TIP_LOG_LEVEL:-warn}
+    TIP_CONSOLE_LEVEL:          ${TIP_CONSOLE_LEVEL:-warn}
+    TIP_LOG_DIR:                /app/logs
+    TIP_P2P_PORT:               4001
+    TIP_DB_PATH:                /app/data/tip.db
+    TIP_DATA_DIR:               /app/data
+    # ── DB adapter passthrough — values come from .env. DB_HOST should
+    #    match the service name of whichever DB profile is active.
+    DB_DRIVER:                  ${DB_DRIVER:-sqlite}
+    DB_HOST:                    ${DB_HOST:-}
+    DB_PORT:                    ${DB_PORT:-}
+    DB_NAME:                    ${DB_NAME:-tip_protocol}
+    DB_USER:                    ${DB_USER:-tip}
+    DB_PASSWORD:                ${DB_PASSWORD:-}
+    DB_SSL:                     ${DB_SSL:-false}
+    DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
+    DB_POOL_MIN:                ${DB_POOL_MIN:-2}
+    DB_POOL_MAX:                ${DB_POOL_MAX:-10}
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 20s
+  labels:
+    com.theailab.service:    "tip-protocol-node"
+    com.theailab.version:    "2.0.0"
+  # networks:
+  #   - tip-vp-with-mobile-web-app_default  # uncomment for VP-stack integration
+
 services:
+
+  # ── SQLite path — node only, no DB service ───────────────────────────────
+  # Default profile (also matches when no profile is passed). Falls back to
+  # the on-disk SQLite at /app/data/tip.db.
   tip-node:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node
+    <<: *node-common
+    profiles: ["", "sqlite", "postgres", "mariadb", "mssql", "oracle"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      mariadb:
+        condition: service_healthy
+        required: false
+      mssql:
+        condition: service_healthy
+        required: false
+      oracle:
+        condition: service_healthy
+        required: false
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: tip-postgres
+    profiles: ["postgres"]
     restart: unless-stopped
-    ports:
-      - "${PORT:-4000}:4000"
-      - "${TIP_P2P_PORT:-4001}:4001"
-    volumes:
-      - ./data:/app/data
-      # Expose per-date log files on the host so operators can tail
-      # debug.log / info.log without exec'ing into the container.
-      - ./node/logs:/app/node/logs
     environment:
-      NODE_ENV:              ${NODE_ENV:-production}
-      PORT:                  4000
-      HOST:                  0.0.0.0
-      TIP_NODE_ID:           ${TIP_NODE_ID:-}
-      TIP_NODE_TYPE:         ${TIP_NODE_TYPE:-full}
-      TIP_REGION:            ${TIP_REGION:-US}
-      TIP_NODE_PRIVATE_KEY:  ${TIP_NODE_PRIVATE_KEY}
-      TIP_NODE_PUBLIC_KEY:   ${TIP_NODE_PUBLIC_KEY}
-      TIP_PEERS:             ${TIP_PEERS:-}
-      TIP_CORS_ORIGINS:      ${TIP_CORS_ORIGINS:-*}
-      TIP_LOG_LEVEL:         ${TIP_LOG_LEVEL:-info}
-      TIP_CONSOLE_LEVEL:     ${TIP_CONSOLE_LEVEL:-warn}
-      TIP_P2P_PORT:          4001
-      TIP_BOOTSTRAP_PEERS:   ${TIP_BOOTSTRAP_PEERS:-}
-      TIP_ENABLE_MDNS:       ${TIP_ENABLE_MDNS:-true}
-      TIP_PUBLIC_IP:         ${TIP_PUBLIC_IP:-}
-      TIP_DB_PATH:           /app/data/tip.db
-      TIP_DATA_DIR:          /app/data
+      POSTGRES_USER:     ${DB_USER:-tip}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+      POSTGRES_DB:       ${DB_NAME:-tip_protocol}
+    ports:
+      # Bind to localhost only — don't expose Postgres publicly.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tip} -d ${DB_NAME:-tip_protocol}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ── MariaDB / MySQL ──────────────────────────────────────────────────────
+  mariadb:
+    image: mariadb:11
+    container_name: tip-mariadb
+    profiles: ["mariadb"]
+    restart: unless-stopped
+    environment:
+      MARIADB_USER:           ${DB_USER:-tip}
+      MARIADB_PASSWORD:       ${DB_PASSWORD:-secret}
+      MARIADB_DATABASE:       ${DB_NAME:-tip_protocol}
+      MARIADB_ROOT_PASSWORD:  ${DB_PASSWORD:-secret}
+    ports:
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  # ── SQL Server 2022 ──────────────────────────────────────────────────────
+  # Note: SA password must meet SQL Server complexity rules — uppercase +
+  # lowercase + digit + symbol, min 8 chars. Avoid '#' in .env (parsed as
+  # comment). The default DB_PASSWORD fallback below already meets the rule.
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tip-mssql
+    profiles: ["mssql"]
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA:        "Y"
+      MSSQL_SA_PASSWORD:  ${DB_PASSWORD:-StrongPass123!}
+      MSSQL_PID:          "Developer"
+    ports:
+      - "127.0.0.1:${DB_PORT:-1433}:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -No -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── Oracle Database 23ai (Free) ──────────────────────────────────────────
+  # Cold start takes ~2 minutes; the start_period reflects that. After first
+  # start, multi-node schemas can be created via `docker exec tip-oracle
+  # sqlplus sys/${DB_PASSWORD}@//localhost:1521/FREEPDB1 as sysdba`.
+  oracle:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: tip-oracle
+    profiles: ["oracle"]
+    restart: unless-stopped
+    environment:
+      ORACLE_PWD:           ${DB_PASSWORD:-secret}
+      ORACLE_CHARACTERSET:  AL32UTF8
+    ports:
+      - "127.0.0.1:${DB_PORT:-1521}:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "/opt/oracle/checkDBStatus.sh"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 20s
-    labels:
-      com.theailab.service:    "tip-protocol-node"
-      com.theailab.version:    "2.0.0"
-    networks:
-      - tip-vp-with-mobile-web-app_default  # join VP's network so cloudflared can reach us
+      retries: 20
+      start_period: 120s
 
-networks:
-  tip-vp-with-mobile-web-app_default:
-    external: true  # created by the VP docker-compose
+volumes:
+  postgres-data:
+  mariadb-data:
+  mssql-data:
+  oracle-data:
+
+# networks:
+#   tip-vp-with-mobile-web-app_default:
+#     external: true  # created by the VP docker-compose
+#
+# Uncomment the two blocks above (this one + the `networks:` line under
+# x-node-common) to integrate with the VP-with-mobile-web-app compose stack
+# (cloudflared tunnel reaches the node via the shared network).
+# Default is standalone — Compose's default bridge network is sufficient.

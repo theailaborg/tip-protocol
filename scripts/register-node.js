@@ -261,140 +261,108 @@ async function main() {
   // Collect DB settings from the current environment (loaded by dotenv above).
   // DB_NAME may be overridden per-node via --db-name; all other settings are
   // inherited from the seed node's environment so the new node uses the same DB.
-  const dbDriver   = process.env.DB_DRIVER   || "";
-  const dbUrl      = process.env.DATABASE_URL || "";
-  const dbHost     = process.env.DB_HOST      || "";
-  const dbPort     = process.env.DB_PORT      || "";
-  const dbName     = dbNameOverride || process.env.DB_NAME || "";
-  const dbUser     = process.env.DB_USER      || "";
-  const dbPassword = process.env.DB_PASSWORD  || "";
-  const dbSsl      = process.env.DB_SSL       || "";
+  const dbDriver = process.env.DB_DRIVER || "";
+  const dbHost = process.env.DB_HOST || "";
+  const dbPort = process.env.DB_PORT || "";
+  const dbName = dbNameOverride || process.env.DB_NAME || "";
+  const dbUser = process.env.DB_USER || "";
+  const dbPassword = process.env.DB_PASSWORD || "";
+  const dbSsl = process.env.DB_SSL || "";
   const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
-  const dbPoolMin  = process.env.DB_POOL_MIN  || "";
-  const dbPoolMax  = process.env.DB_POOL_MAX  || "";
+  const dbPoolMin = process.env.DB_POOL_MIN || "";
+  const dbPoolMax = process.env.DB_POOL_MAX || "";
+  const composeProfiles = process.env.COMPOSE_PROFILES || "";
 
-  // Self-documenting DB block — mirrors .env.example so the operator
-  // receives one file with every option inline. Inherited values from the
-  // seed node's environment populate the live settings; per-driver
-  // recipes + pool/TLS knobs stay as commented hints below.
+  // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`.
+  // Mirrors .env.example design: same section order, same one-line inline-
+  // comment style, same compact per-engine quick reference. Values are
+  // pre-filled from the seed node's environment so the operator only edits
+  // when switching engines / regions / log levels.
   const v = (val, fallback) => (val ? String(val) : fallback);
-  const dbLines = [
-    `# ─── Database ─────────────────────────────────────────────────────────────`,
-    `#`,
-    `# DB_DRIVER selects the database engine. Switching databases requires only`,
-    `# changing DB_DRIVER + the connection variables below — no code changes.`,
-    `#`,
-    `#   Driver value   Engine              npm package(s)`,
-    `#   ─────────────────────────────────────────────────────────`,
-    `#   postgres       PostgreSQL          pg             (already installed)`,
-    `#   mariadb        MariaDB / MySQL     mysql2         (already installed)`,
-    `#   mysql          MySQL               mysql2         (alias for mariadb)`,
-    `#   mssql          SQL Server          mssql          (already installed)`,
-    `#   sqlserver      SQL Server          mssql          (alias for mssql)`,
-    `#   oracle         Oracle Database     oracledb       (already installed)`,
-    `#   sqlite         SQLite (local dev)  better-sqlite3 (already installed)`,
-    `#`,
-    `# Inherited from the seed node's environment. Change DB_NAME if this node`,
-    `# uses a dedicated schema/database (e.g. tip_node2 for Postgres/MariaDB).`,
-    `DB_DRIVER=${v(dbDriver, "sqlite")}`,
-    ``,
-    `# ── Common connection parameters ─────────────────────────────────────────`,
-    `# Used by postgres, mariadb, mssql, and oracle.`,
-    `# Leave DB_PORT blank to use the driver's default (5432 / 3306 / 1433 / 1521).`,
-    `DATABASE_URL=${v(dbUrl, "")}`,
-    `# DB_HOST must match the Docker service name when running in Docker Compose`,
-    `# (postgres / mariadb / oracle / mssql); use localhost outside Docker.`,
-    `DB_HOST=${v(dbHost, "localhost")}`,
-    `DB_PORT=${v(dbPort, "")}`,
-    `DB_NAME=${v(dbName, "tip_protocol")}`,
-    `DB_USER=${v(dbUser, "tip")}`,
-    `DB_PASSWORD=${v(dbPassword, "")}`,
-    ``,
-    `# TLS/SSL — set DB_SSL=true for any remote or cloud database.`,
-    `DB_SSL=${v(dbSsl, "false")}`,
-    `# Set to false ONLY in private networks with self-signed certificates.`,
-    `DB_SSL_REJECT_UNAUTHORIZED=${v(dbSslRejectUnauthorized, "true")}`,
-    ``,
-    `# Connection pool (applies to all server-side drivers).`,
-    `DB_POOL_MIN=${v(dbPoolMin, "2")}`,
-    `DB_POOL_MAX=${v(dbPoolMax, "10")}`,
-    ``,
-    `# ── PostgreSQL ───────────────────────────────────────────────────────────`,
-    `#   DB_DRIVER=postgres`,
-    `#   DATABASE_URL=postgresql://tip:secret@localhost:5432/tip_protocol`,
-    `#   — or use individual params above with DB_PORT=5432 —`,
-    `#`,
-    `# ── MariaDB / MySQL ──────────────────────────────────────────────────────`,
-    `#   DB_DRIVER=mariadb         (or: mysql)`,
-    `#   DB_HOST=mariadb           # Docker service name (use localhost outside Docker)`,
-    `#   DB_PORT=3306`,
-    `# Docker: docker compose -f docker-compose.local.yml --profile mariadb up -d`,
-    `#`,
-    `# ── SQL Server ───────────────────────────────────────────────────────────`,
-    `#   DB_DRIVER=mssql           (or: sqlserver)`,
-    `#   DB_PORT=1433`,
-    `#   DB_PASSWORD=StrongPass123!  # SA password — must meet complexity rules`,
-    `#                                # (uppercase + lowercase + digit + symbol, min 8).`,
-    `#                                # Avoid '#' in .env (parsed as comment).`,
-    `#   DB_SSL=true`,
-    `#   DB_SSL_REJECT_UNAUTHORIZED=false  # dev with self-signed cert`,
-    `# Docker: docker compose -f docker-compose.local.yml --profile mssql up -d`,
-    `#`,
-    `# ── Oracle Database 23ai ─────────────────────────────────────────────────`,
-    `#   DB_DRIVER=oracle`,
-    `#   DB_HOST=oracle            # Docker service name (use localhost outside Docker)`,
-    `#   DB_PORT=1521`,
-    `#   DB_NAME=FREEPDB1          # Oracle service name (not SID)`,
-    `#   DB_USER=tip               # tip_node2 / tip_node3 / tip_node4 for other nodes`,
-    `#   — or set DATABASE_URL to a full connect string / TNS descriptor —`,
-    `# oracledb 6+ uses thin-mode (no Oracle Instant Client required).`,
-    `# Docker: docker compose -f docker-compose.local.yml --profile oracle up -d`,
-    `#`,
-    `# ── SQLite ───────────────────────────────────────────────────────────────`,
-    `# Path to the SQLite .db file (used when DB_DRIVER=sqlite).`,
-    `# TIP_DB_PATH is set above in this file; no further config needed.`,
-  ];
-
-  // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`
   const envContent = [
     `# TIP Protocol — ${name}`,
     `# Generated by register-node.js on ${new Date().toISOString()}`,
     `# Drop-in usable: node --env-file=${envRelForLaunch} node/src/index.js`,
     ``,
-    `NODE_ENV=development`,
-    `HOST=0.0.0.0`,
-    `PORT=${apiPort}`,
-    `TIP_P2P_PORT=${p2pPort}`,
-    `TIP_NODE_TYPE=full`,
+    `# ─── Node Identity ──────────────────────────────────────────────────────────`,
+    `NODE_ENV=development                       # development | staging | production`,
+    `TIP_NODE_ID=${result.node_id}`,
+    `TIP_NODE_TYPE=full                         # full | light | vp | archive`,
     `TIP_REGION=US`,
-    `TIP_DATA_DIR=${dataDirRel}`,
-    `TIP_DB_PATH=${dataDirRel}/tip.db`,
-    `TIP_LOG_DIR=${logDirRel}`,
-    `TIP_CORS_ORIGINS=*`,
-    // Default to `warn` so per-node terminals + log files stay quiet on a
-    // healthy federation. Override locally to `info`/`debug` while
-    // investigating an incident.
-    `TIP_LOG_LEVEL=warn`,
-    `TIP_CONSOLE_LEVEL=warn`,
     ``,
-    `# ─── Network ───────────────────────────────────────────────────────────────`,
-    `# Set publicly-reachable IP so peerStore / identify share a usable address.`,
-    `# 127.0.0.1 is correct for local-loopback dev; use the LAN/cloud IP in prod.`,
+    `# ─── Network ────────────────────────────────────────────────────────────────`,
+    `PORT=${apiPort}                                  # REST API port`,
+    `HOST=0.0.0.0                               # bind address`,
+    `TIP_P2P_PORT=${p2pPort}                              # libp2p port for Narwhal/Bullshark consensus`,
+    ``,
+    `# Public IP used for peer dial-back. Required for cloud / multi-host setups.`,
     `TIP_PUBLIC_IP=${publicIp}`,
-    `# Disable mDNS by default — peers reach us via the bootstrap below.`,
-    `TIP_ENABLE_MDNS=false`,
-    `# Single bootstrap entry. The TIP-handshake + #48 announce protocol auto-`,
-    `# discovers the rest of the federation; no need to list every peer here.`,
+    ``,
+    `# Bootstrap multiaddr from the seed node's GET /health → data.p2p.bootstrap_addr.`,
     `TIP_BOOTSTRAP_PEERS=${bootstrapAddr}`,
     ``,
-    `# ─── Node Identity ─────────────────────────────────────────────────────────`,
-    `TIP_NODE_ID=${result.node_id}`,
+    `# mDNS auto-discovery — true on a single LAN, false in the cloud.`,
+    `TIP_ENABLE_MDNS=false`,
     ``,
-    `# ─── Node Keys (ML-DSA-65) ─────────────────────────────────────────────────`,
+    `# ─── Storage ────────────────────────────────────────────────────────────────`,
+    `TIP_DATA_DIR=${dataDirRel}`,
+    `TIP_DB_PATH=${dataDirRel}/tip.db           # SQLite file path (only used if DB_DRIVER=sqlite)`,
+    ``,
+    `# ─── Database ───────────────────────────────────────────────────────────────`,
+    `# Switching engines = change DB_DRIVER + connection vars below. No code edits.`,
+    `#`,
+    `#   sqlite     better-sqlite3   local dev only, no DB server needed`,
+    `#   postgres   pg               production default`,
+    `#   mariadb    mysql2           also accepts: mysql (alias)`,
+    `#   mssql      mssql            also accepts: sqlserver (alias)`,
+    `#   oracle     oracledb         thin-mode, no Oracle Instant Client required`,
+    `DB_DRIVER=${v(dbDriver, "postgres")}`,
+    ``,
+    `# Picks which DB service \`docker compose up -d\` brings up alongside the node.`,
+    `# Empty = no DB service (SQLite only). Override per-run with --profile <name>.`,
+    `COMPOSE_PROFILES=${v(composeProfiles, "postgres")}`,
+    ``,
+    `# Connection. DB_HOST = compose service name in Docker (postgres / mariadb /`,
+    `# mssql / oracle), or \`localhost\` when running natively against host-side DB.`,
+    `# Leave DB_PORT blank for driver default (5432 / 3306 / 1433 / 1521).`,
+    `DB_HOST=${v(dbHost, "postgres")}`,
+    `DB_PORT=${v(dbPort, "5432")}`,
+    `DB_NAME=${v(dbName, "tip_protocol")}`,
+    `DB_USER=${v(dbUser, "tip")}`,
+    `DB_PASSWORD=${v(dbPassword, "secret")}`,
+    ``,
+    `# TLS — required for any cloud / managed DB. Set REJECT_UNAUTHORIZED=false`,
+    `# only in private networks with self-signed certs.`,
+    `DB_SSL=${v(dbSsl, "false")}`,
+    `DB_SSL_REJECT_UNAUTHORIZED=${v(dbSslRejectUnauthorized, "true")}`,
+    ``,
+    `# Connection pool (server-side drivers only).`,
+    `DB_POOL_MIN=${v(dbPoolMin, "2")}`,
+    `DB_POOL_MAX=${v(dbPoolMax, "10")}`,
+    ``,
+    `# ── Per-engine quick reference ──────────────────────────────────────────────`,
+    `# PostgreSQL:  DB_HOST=postgres   DB_PORT=5432   (DB_NAME=tip_protocol default)`,
+    `# MariaDB:     DB_HOST=mariadb    DB_PORT=3306`,
+    `# Oracle:      DB_HOST=oracle     DB_PORT=1521   DB_NAME=FREEPDB1 (service name)`,
+    `# SQL Server:  DB_HOST=mssql      DB_PORT=1433   DB_PASSWORD complexity rules:`,
+    `#              uppercase + lowercase + digit + symbol, min 8. Avoid '#' (comment).`,
+    `#              Cloud MSSQL usually needs DB_SSL=true.`,
+    ``,
+    `# ─── Security — Node Keys ───────────────────────────────────────────────────`,
+    `# ML-DSA-65 keypair, hex-encoded. Generated by register-node.js for this node.`,
     `TIP_NODE_PRIVATE_KEY=${keypair.privateKey}`,
     `TIP_NODE_PUBLIC_KEY=${keypair.publicKey}`,
     ``,
-    ...dbLines,
+    `# ─── Logging ────────────────────────────────────────────────────────────────`,
+    `# debug.log always captures EVERYTHING. TIP_LOG_LEVEL gates info.log;`,
+    `# TIP_CONSOLE_LEVEL gates terminal output. Levels: debug > info > warn > error.`,
+    `# Default \`warn\` keeps healthy federations quiet — flip to info/debug to investigate.`,
+    `TIP_LOG_LEVEL=warn`,
+    `TIP_CONSOLE_LEVEL=warn`,
+    `TIP_LOG_DIR=${logDirRel}`,
+    ``,
+    `# ─── CORS ───────────────────────────────────────────────────────────────────`,
+    `TIP_CORS_ORIGINS=*                         # comma-separated origins; '*' for dev only`,
     ``,
   ].join("\n");
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });
@@ -406,9 +374,9 @@ async function main() {
   console.log();
   console.log(`${T.bold}  Setup for the new node:${T.reset}`);
   console.log();
-  console.log(`  1. ${T.bold}Seed the data dir${T.reset} from a known-good peer (until #44/#45 land):`);
+  console.log(`  1. ${T.bold}Seed the data dir${T.reset} from a known-good peer:`);
   console.log(`       ${T.cyan}rm -rf ${dataRel} && cp -r data ${dataRel}${T.reset}`);
-  console.log(`     (a fresh node can't auto-sync the registry yet — see issues.md #44/#45)`);
+  console.log(`     (a fresh node can't auto-sync the registry yet)`);
   console.log();
   console.log(`  2. ${T.bold}Start the node${T.reset} from the project root:`);
   console.log(`       ${T.cyan}node --env-file=${envRel} node/src/index.js${T.reset}`);
