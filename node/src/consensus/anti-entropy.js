@@ -86,6 +86,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // REST endpoint and the loop's decision logic. Key: TIP node_id.
   const _lastStatus = new Map();
 
+  // Per-peer first-observed timestamp for an active divergence at the
+  // current (committed_round, root) tuple. Cleared as soon as the peer
+  // converges (matching root) or moves to a new committed_round. Used to
+  // time-bound the catch-up race guard: a brief sync-time mismatch is
+  // normal and must not trigger halt, but divergence persisting at the
+  // same committed_round longer than CONSENSUS.SYNC_DIVERGENCE_GRACE_MS
+  // is malicious-or-corrupted (an honest replay arriving at the same
+  // committed_round must produce the same state_root) and must be flagged
+  // regardless of either side's joinState.
+  // Key: TIP node_id. Value: { round, rootKey, firstSeenMs }.
+  const _peerDivergenceFirstSeen = new Map();
+
   // Distinct peers reporting divergence at our (committed_round, state_root).
   // Key: `${round}:${rootPrefix}`. Value: Set<peerNodeId>. Old-round entries
   // are pruned as committed_round advances — divergence observations at a
@@ -423,6 +435,40 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   }
 
   /**
+   * Time-bounded catch-up race tracker. Returns true if this peer has
+   * been continuously divergent (different state_root than ours at the
+   * same committed_round) for longer than CONSENSUS.SYNC_DIVERGENCE_
+   * GRACE_MS — at which point an honest sync-time mismatch is no longer
+   * plausible and the divergence is real (corrupted / malicious /
+   * deterministic-bug).
+   *
+   * Tracking is keyed by peerNodeId only — NOT by (round, root) tuple.
+   * Both sides' committed_round advances every few seconds, so a tuple-
+   * keyed tracker would reset its timestamp on every round change and
+   * never reach grace. The signal we care about is "this peer has been
+   * persistently divergent across rounds," not "this peer has been
+   * stuck at this exact (round, root) tuple." The entry is cleared by
+   * `_clearDivergenceTracker` only when the peer converges (matching
+   * root or non-equal committed_round, both signaled from
+   * `_reconcileWithPeer`'s outer match branch).
+   */
+  function _persistentDivergence(peerNodeId) {
+    if (!peerNodeId) return false;
+    const existing = _peerDivergenceFirstSeen.get(peerNodeId);
+    if (!existing) {
+      _peerDivergenceFirstSeen.set(peerNodeId, { firstSeenMs: Date.now() });
+      return false;
+    }
+    return Date.now() - existing.firstSeenMs > CONSENSUS.SYNC_DIVERGENCE_GRACE_MS;
+  }
+
+  function _clearDivergenceTracker(peerNodeId) {
+    if (peerNodeId && _peerDivergenceFirstSeen.has(peerNodeId)) {
+      _peerDivergenceFirstSeen.delete(peerNodeId);
+    }
+  }
+
+  /**
    * Per-peer divergence check used by narwhal's batch handler to decide
    * whether to ack. Returns true iff our last cached AE status for this
    * peer shows same committed_round AND different non-empty state roots.
@@ -453,12 +499,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   }
 
   /**
-   * Last AE-observed join_state for a peer. Pure read of the status cache;
-   * defaults to "ready" when unknown so callers fail-open against legacy
-   * peers / first-tick races. Used by narwhal's ack-filter to skip the
-   * divergence-driven refusal while either side is mid-snapshot install
-   * or cert-tail catch-up — partial state naturally disagrees and the
-   * filter would otherwise starve the joiner from quorum.
+   * Last AE-observed join_state for a peer. Pure read of the status
+   * cache; defaults to "ready" when unknown so callers fail-open
+   * against legacy peers / first-tick races. Used by narwhal's ack-
+   * filter as a cache-lag race guard during the brief window where a
+   * peer just transitioned catching_up → ready and is producing batches
+   * before our next AE poll updates the cache. Persistent malicious-
+   * non-ready peers are caught by the divergence detector's time-bounded
+   * escalation, not here.
    */
   function peerJoinState(peerNodeId) {
     if (!peerNodeId) return "ready";
@@ -549,45 +597,62 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
 
     if (peerCommitted === selfCommitted && selfRoot && peerRoot && selfRoot !== peerRoot) {
-      // Catch-up race guard: skip divergence flagging while either side is
-      // still syncing or catching_up. During those phases the mirror is
-      // being populated in flight (snapshot install, gap-sync), and a
-      // freshly-computed state_merkle_root reflects partial state — every
-      // peer that polls during this window would see "divergence" against
-      // a partially-hydrated node and false-halt it. Wait until both sides
-      // are "ready" before treating same-round-different-root as byzantine.
-      // Verified live 2026-05-06: without this guard, a fresh-DB Node 2
-      // halted itself in joinState=syncing within seconds of restart.
+      // Catch-up race guard, time-bounded. During snapshot install or
+      // cert-tail replay, the mirror is being populated in flight and a
+      // freshly-computed state_merkle_root briefly reflects partial state
+      // — flagging divergence then would false-halt every fresh joiner
+      // (verified live 2026-05-06: fresh-DB Node 2 halted itself in
+      // joinState=syncing within seconds of restart). So we tolerate
+      // mismatch while either side is non-ready... but only briefly.
+      //
+      // An honest replay that reaches the same committed_round as ours
+      // MUST produce the same state_root — that's the consensus invariant.
+      // If a non-ready peer's mismatch persists past
+      // SYNC_DIVERGENCE_GRACE_MS at the same (committed_round, root)
+      // tuple, this is no longer a fresh-joiner race; it's a stuck-
+      // byzantine peer that lost its halt flag on restart, or has
+      // corrupted state, or hit a deterministic bug. Drop the joinState
+      // exemption and treat as real divergence.
+      const peerNode = peerStatus.node_id || peerId;
+      const peerLabel = peerStatus.node_id || peerId.slice(0, 12);
       const selfJoinState = (narwhal && typeof narwhal.joinState === "function")
         ? String(narwhal.joinState() || "ready")
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
       if (selfJoinState !== "ready" || peerJoinState !== "ready") {
-        // Diagnostic: surface what self vs peer look like at the same
-        // committed_round during catch-up so a stuck joiner is debuggable
-        // without grepping individual /sync-status payloads. Logged at
-        // info so it lands in info.log alongside the catching_up notices.
-        const selfCI = Number(selfState.consensus_index || 0);
-        const peerCI = Number(peerStatus.consensus_index || 0);
-        _log.info(
-          `anti-entropy: round=${selfCommitted} state-mismatch with peer ${peerStatus.node_id || peerId.slice(0, 12)} ` +
-          `(self.join=${selfJoinState} peer.join=${peerJoinState}) ` +
-          `self.root=${selfRoot.slice(0, 16)} peer.root=${peerRoot.slice(0, 16)} ` +
-          `self.ci=${selfCI} peer.ci=${peerCI} (delta=${peerCI - selfCI})`
+        const persistent = _persistentDivergence(peerNode, selfCommitted, selfRoot, peerRoot);
+        if (!persistent) {
+          // Within grace — diagnostic only, don't flag. Logged at debug
+          // because this fires every AE tick (~4s) per diverging peer
+          // until the grace window closes (~7-8 lines per event), which
+          // would flood info.log. The actionable signal is the warn
+          // emitted once when grace is exceeded (escalation path below).
+          const selfCI = Number(selfState.consensus_index || 0);
+          const peerCI = Number(peerStatus.consensus_index || 0);
+          _log.debug(
+            `anti-entropy: round=${selfCommitted} state-mismatch with peer ${peerLabel} ` +
+            `(self.join=${selfJoinState} peer.join=${peerJoinState}, within sync grace) ` +
+            `self.root=${selfRoot.slice(0, 16)} peer.root=${peerRoot.slice(0, 16)} ` +
+            `self.ci=${selfCI} peer.ci=${peerCI} (delta=${peerCI - selfCI})`
+          );
+          return "equal";
+        }
+        // Past grace — fall through to flag as malicious. Log at WARN so
+        // ops sees the escalation explicitly (vs the within-grace info).
+        _log.warn(
+          `anti-entropy: persistent divergence past sync grace with peer ${peerLabel} ` +
+          `(peer.join=${peerJoinState}); promoting to byzantine-fork divergence flag`
         );
-        return "equal";  // not divergent enough to flag — treat as no-op
       }
 
-      // Real divergence — equal round, different roots, both sides ready.
-      // Byzantine safety event: never auto-resolve (picking a winner
-      // silently makes a fork worse). Accumulate distinct-peer
-      // disagreements at (round, ourRoot) and halt narwhal once ≥ f+1
-      // peers disagree — that's the formal proof we're the byzantine
-      // minority. Until threshold, log + metric so ops can see the
-      // disagreement building up.
+      // Real divergence — equal round, different roots, both sides ready
+      // (or non-ready past sync grace). Byzantine safety event: never
+      // auto-resolve (picking a winner silently makes a fork worse).
+      // Accumulate distinct-peer disagreements at (round, ourRoot) and
+      // halt narwhal once ≥ f+1 peers disagree — that's the formal proof
+      // we're the byzantine minority. Until threshold, log + metric so
+      // ops can see the disagreement building up.
       _metrics.consensus_divergence_total++;
-      const peerNode = peerStatus.node_id || peerId;
-      const peerLabel = peerStatus.node_id || peerId.slice(0, 12);
       _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerLabel} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
 
       const { observed, threshold } = _recordDivergence(peerNode, selfCommitted, selfRoot);
@@ -597,6 +662,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _maybeHalt(selfCommitted, selfRoot, observed, threshold, peerNode);
       return "divergent";
     }
+
+    // Roots match (or rounds differ): peer is converged or still
+    // catching up. Clear any divergence tracker entry so a peer that
+    // recovered from a transient race isn't held against the grace
+    // window if it ever hits another mismatch later.
+    _clearDivergenceTracker(peerStatus.node_id || peerId);
 
     // Caught-up recovery. Two paths into ready depending on which non-ready
     // state we're in:

@@ -543,6 +543,43 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // newer arrivals at the next round. Don't duplicate the requeue
     // here.
     if (batch.round > _currentRound) {
+      // Atomic-boundary fast-forward gate. A ready producer must NOT
+      // advance _currentRound across a rotation boundary whose CH row
+      // hasn't landed locally — otherwise the cluster ends up with
+      // quorum-orphaned rounds (some nodes FF'd past the boundary while
+      // others are still producing carve-outs at it), and no later anchor
+      // can walk back to apply the rotation tx → permanent halt.
+      //
+      // Live evidence (2026-05-06): cluster halted at round 20003 with
+      // certs scattered: round 20000=4, 20001=1 (only 1 author who hadn't
+      // FF'd yet), 20002=2, 20003=0 — anchor at 20002 needs 3 vote certs
+      // to commit, never gets them, rotation tx in 20000 carve-outs never
+      // ordered, CH stays empty for rotation 100, federation stuck.
+      //
+      // Catching_up/syncing nodes are exempt: they don't produce certs
+      // (_canProduce gates on joinState===ready), so _currentRound is
+      // observation-only — let them track the cluster head freely; the
+      // missing rotation row arrives via natural Bullshark commits as
+      // cert-sync fills the DAG behind them.
+      if (_joinState === "ready") {
+        const fromEpoch = epochOf(_currentRound);
+        const toEpoch = epochOf(batch.round);
+        if (
+          toEpoch > fromEpoch
+          && typeof dag.getCommitteeRotation === "function"
+          && !dag.getCommitteeRotation(toEpoch)
+        ) {
+          _metrics.fast_forwards_refused_boundary = (_metrics.fast_forwards_refused_boundary || 0) + 1;
+          log.warn(
+            `Refusing fast-forward to round ${batch.round} from ${batch.author_node_id}: ` +
+            `rotation ${toEpoch} not in local committee_history. ` +
+            `Peer is past the boundary, so they have rotation ${toEpoch} (or are misbehaving); ` +
+            `staying at ${_currentRound} and continuing carve-out so all ready producers stay locked at the boundary ` +
+            `until the rotation tx commits via natural anchor walk.`
+          );
+          return;
+        }
+      }
       _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
       _currentRound = batch.round;
@@ -649,15 +686,27 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // The seen-vote was already persisted above so we don't forget what we
     // saw — we just don't put our signature on it.
     //
-    // Catch-up race guard: skip the refusal when either side is mid-
-    // snapshot install or cert-tail replay. A joiner's state_merkle_root
-    // is partial during catching_up and naturally diverges from a ready
-    // peer's; without this guard the filter false-positives every fresh
-    // joiner — joiner gets starved of acks AND refuses every peer batch,
-    // collapsing both directions of quorum participation. Mirrors the
-    // race guard already in _reconcileWithPeer's divergence-flagging
-    // branch. isPeerDivergent stays a pure factual check; the policy
-    // (when to act on it) lives here.
+    // Catch-up race guard: skip the refusal during the cache-lag race
+    // where either side is mid-hydration. Two sub-cases:
+    //
+    //   • selfReady=false: our own state_root is briefly partial during
+    //     snapshot install / cert-tail replay. Refusing peer's batch on
+    //     a difference WE introduced would be wrong (the joiner would
+    //     starve the cluster of its own ack-contribution).
+    //
+    //   • peerReady=false (cached): peer just transitioned catching_up →
+    //     ready and is producing again, but our AE cache (≤
+    //     ANTI_ENTROPY_INTERVAL_MS old) still says non-ready. Their
+    //     state_root is fully hydrated by now (snapshot install is
+    //     atomic via runInTransaction); the cache is stale, not the
+    //     peer. Exempt to avoid a false-positive in the staleness window.
+    //
+    // Persistent malicious-non-ready peers are NOT handled here — they're
+    // caught by anti-entropy._reconcileWithPeer's time-bounded halt
+    // escalation, which forces byzantine_fork halt after
+    // CONSENSUS.SYNC_DIVERGENCE_GRACE_MS of persistent divergence
+    // regardless of joinState. Once that fires, the peer self-halts and
+    // stops producing batches, so this code path never sees them again.
     const _selfReady = _joinState === "ready";
     const _peerReady = typeof peerJoinState === "function"
       ? peerJoinState(batch.author_node_id) === "ready"

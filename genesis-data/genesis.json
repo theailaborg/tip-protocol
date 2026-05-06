@@ -167,6 +167,7 @@
       "gc_interval_commits": 10,
       "anti_entropy_interval_ms": 4000,
       "anti_entropy_peer_timeout_ms": 2000,
+      "sync_divergence_grace_ms": 30000,
       "rotation_coord_rebroadcast_interval_ms": 1500,
       "sync_total_timeout_ms": 30000,
       "sync_max_response_bytes": 1073741824,
