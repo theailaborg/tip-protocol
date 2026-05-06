@@ -38,7 +38,7 @@ beforeAll(async () => {
 // ── Test harness ─────────────────────────────────────────────────────────
 
 function silentLog() {
-  return { info: () => { }, debug: () => { }, warn: () => { } };
+  return { info: () => { }, debug: () => { }, warn: () => { }, error: () => { }, notice: () => { } };
 }
 
 function fakeNetwork({ authorized = {}, openStreamImpl, handleImpl } = {}) {
@@ -80,9 +80,10 @@ function peerStatus({
   state_merkle_root = "aabbcc",
   txs_merkle_root = "ddeeff",
   cert_merkle_root = "112233",
+  join_state = "ready",
   checked_at = Date.now(),
 } = {}) {
-  return { node_id, round, committed_round, consensus_index, state_merkle_root, txs_merkle_root, cert_merkle_root, checked_at };
+  return { node_id, round, committed_round, consensus_index, state_merkle_root, txs_merkle_root, cert_merkle_root, join_state, checked_at };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1036,7 +1037,13 @@ describe("checkAndReconcile catching_up → ready promotion", () => {
     expect(narwhal.joinState()).toBe("catching_up");
   });
 
-  test("catching_up + roots DIFFER → does NOT fire markCaughtUp (divergence path)", async () => {
+  test("catching_up + roots DIFFER → does NOT fire markCaughtUp (catch-up race guard skips divergence)", async () => {
+    // While self is catching_up, AE-fresh state-root reflects partial mirror
+    // (snapshot install or gap-sync still in flight). The catch-up race
+    // guard skips divergence flagging entirely while either side isn't
+    // "ready" — otherwise a fresh-DB joiner would false-halt itself
+    // within seconds of restart. The promotion to "ready" still doesn't
+    // fire because the path requires equal roots.
     const narwhal = fakeNarwhal({ joinState: "catching_up", catchUpTarget: 100 });
     const ae = createAntiEntropy({
       network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
@@ -1051,10 +1058,10 @@ describe("checkAndReconcile catching_up → ready promotion", () => {
       selfState({ committed_round: 100, state_merkle_root: "aaa" })
     );
 
-    expect(result).toBe("divergent");
-    expect(narwhal._calls.markCaughtUp).toHaveLength(0);
+    expect(result).toBe("equal");  // guard suppresses divergence flagging
+    expect(narwhal._calls.markCaughtUp).toHaveLength(0);  // KEY: no promotion
     expect(narwhal.joinState()).toBe("catching_up");
-    expect(ae.stats().metrics.consensus_divergence_total).toBe(1);
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(0);  // not counted
   });
 
   test("ready state ignores promotion path (no-op when already ready)", async () => {
@@ -1100,7 +1107,12 @@ describe("checkAndReconcile catching_up → ready promotion", () => {
     expect(narwhal.joinState()).toBe("ready");
   });
 
-  test("syncing state + roots DIFFER → does NOT exit (divergence path)", async () => {
+  test("syncing state + roots DIFFER → does NOT exit (catch-up race guard skips divergence)", async () => {
+    // Same race guard as catching_up: while self is in syncing state,
+    // mirror is being populated atomically by snapshot install — any
+    // computed state_merkle_root mid-install is partial. AE skips the
+    // divergence path so a fresh-DB joiner isn't halted on its own
+    // partial-state derivation.
     const narwhal = fakeNarwhal({ joinState: "syncing" });
     const ae = createAntiEntropy({
       network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
@@ -1115,7 +1127,7 @@ describe("checkAndReconcile catching_up → ready promotion", () => {
       selfState({ committed_round: 100, state_merkle_root: "aaa" })
     );
 
-    expect(result).toBe("divergent");
+    expect(result).toBe("equal");  // guard suppresses divergence flagging
     expect(narwhal._calls.exit).toHaveLength(0);
     expect(narwhal.joinState()).toBe("syncing");
   });
@@ -1248,5 +1260,391 @@ describe("#46 anti-entropy snapshot fallback", () => {
 
     const result = await ae.checkAndReconcile("peer-id", peerStatus({ committed_round: 5000 }), selfState({ committed_round: 5 }));
     expect(["pull_failed", "snapshot_required_no_handler"]).toContain(result);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Byzantine-fork halt: divergence accumulator + threshold trigger
+// ═══════════════════════════════════════════════════════════════════════════
+describe("byzantine-fork halt", () => {
+  function fakeNarwhal({ committee = 4, alreadyHalted = null, joinState = "ready" } = {}) {
+    let halt = alreadyHalted;
+    const haltCalls = [];
+    return {
+      committeeSize: () => committee,
+      joinState: () => joinState,
+      byzantineForkHalt: () => (halt ? { ...halt } : null),
+      haltDueToByzantineFork: (args) => {
+        haltCalls.push(args);
+        if (!halt) halt = { ...args, since: Date.now() };
+      },
+      _haltCalls: haltCalls,
+    };
+  }
+
+  test("single peer disagreement in n=4 stays below threshold (f+1=2) → no halt", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id-A",
+      peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }),
+      selfState({ state_merkle_root: "aaaaaa" })
+    );
+
+    expect(result).toBe("divergent");
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.byzantine_fork_halts_triggered).toBe(0);
+    expect(ae.stats().metrics.consensus_divergence_distinct_peers).toBe(1);
+  });
+
+  test("two distinct peers disagree in n=4 → threshold reached → halt called once", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    const errs = [];
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: { info: () => { }, debug: () => { }, warn: () => { }, error: (m) => errs.push(m), notice: () => { } },
+    });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    expect(narwhal._haltCalls).toHaveLength(0);
+
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", state_merkle_root: "cccccc" }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(1);
+    expect(narwhal._haltCalls[0].atRound).toBe(10);
+    expect(narwhal._haltCalls[0].reason).toMatch(/2\/2 peers disagree/);
+    expect(narwhal._haltCalls[0].peerNodeId).toBe("tip://node/B");
+    expect(ae.stats().metrics.byzantine_fork_halts_triggered).toBe(1);
+    expect(ae.stats().metrics.consensus_divergence_distinct_peers).toBe(2);
+    expect(errs.some(m => /byzantine-fork halt threshold/.test(m))).toBe(true);
+  });
+
+  test("same peer disagreeing twice does NOT double-count (Set semantics)", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    const peer = peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" });
+    await ae.checkAndReconcile("peer-A", peer, selfState({ state_merkle_root: "aaaaaa" }));
+    await ae.checkAndReconcile("peer-A", peer, selfState({ state_merkle_root: "aaaaaa" }));
+    await ae.checkAndReconcile("peer-A", peer, selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.consensus_divergence_distinct_peers).toBe(1);
+  });
+
+  test("already-halted narwhal → AE does NOT re-call halt (idempotent)", async () => {
+    const narwhal = fakeNarwhal({
+      committee: 4,
+      alreadyHalted: { reason: "manual halt", atRound: 5, peerNodeId: "tip://node/X", since: Date.now() },
+    });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", state_merkle_root: "cccccc" }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.byzantine_fork_halts_triggered).toBe(0);
+  });
+
+  test("round advance prunes old-round observations", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    let curRound = 10;
+    let curRoot = "aaaaaa";
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: curRound, state_merkle_root: curRoot }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb", committed_round: 10 }), selfState({ state_merkle_root: "aaaaaa", committed_round: 10 }));
+    expect(ae.getStatus().divergence.distinct_peers_observed).toBe(1);
+
+    curRound = 11;
+    curRoot = "ddddee";
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", state_merkle_root: "cccccc", committed_round: 11 }), selfState({ state_merkle_root: "ddddee", committed_round: 11 }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.getStatus().divergence.distinct_peers_observed).toBe(1);
+  });
+
+  test("n=3 committee → threshold=2 (floored) → single disagreement does NOT halt", async () => {
+    // Formal f+1 for n=3 is 1, but floor of 2 means single disagreement
+    // is treated as undetermined: could be us wrong, could be them wrong.
+    // Need both other peers to disagree to be certain we're the byzantine
+    // minority. Until then, ack-filter excludes the disagreer and the
+    // remaining honest pair forms quorum=2.
+    const narwhal = fakeNarwhal({ committee: 3 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    expect(narwhal._haltCalls).toHaveLength(0);
+
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", state_merkle_root: "cccccc" }), selfState({ state_merkle_root: "aaaaaa" }));
+    expect(narwhal._haltCalls).toHaveLength(1);
+  });
+
+  test("n=2 committee → threshold=2 (unreachable with only 1 other peer; ack-filter handles)", async () => {
+    const narwhal = fakeNarwhal({ committee: 2 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    // Same peer disagreeing N times still only counts once (Set semantics).
+    // With 2 distinct peers required and only 1 ever available, threshold
+    // is unreachable → halt never fires. Ack-filter is the active defense
+    // at n=2 (each peer refuses divergent peer's batches → no quorum).
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.getStatus().divergence.threshold).toBe(2);
+  });
+
+  test("n=7 committee → threshold=3 → halts on third distinct peer", async () => {
+    const narwhal = fakeNarwhal({ committee: 7 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    for (const id of ["A", "B"]) {
+      await ae.checkAndReconcile(`peer-${id}`, peerStatus({ node_id: `tip://node/${id}`, state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    }
+    expect(narwhal._haltCalls).toHaveLength(0);
+
+    await ae.checkAndReconcile("peer-C", peerStatus({ node_id: "tip://node/C", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    expect(narwhal._haltCalls).toHaveLength(1);
+  });
+
+  test("unknown committee size (committeeSize=0) → threshold=Infinity → never halts", async () => {
+    const narwhal = fakeNarwhal({ committee: 0 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    for (const id of ["A", "B", "C", "D", "E"]) {
+      await ae.checkAndReconcile(`peer-${id}`, peerStatus({ node_id: `tip://node/${id}`, state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    }
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.getStatus().divergence.threshold).toBe(Infinity);
+  });
+
+  test("isPeerDivergent: same round + different non-empty roots → true", async () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    await ae.checkAndReconcile("peer-X", peerStatus({ node_id: "tip://node/X", committed_round: 10, state_merkle_root: "bbbb" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));
+    expect(ae.isPeerDivergent("tip://node/X")).toBe(true);
+  });
+
+  test("isPeerDivergent: same root → false", async () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    await ae.checkAndReconcile("peer-X", peerStatus({ node_id: "tip://node/X", committed_round: 10, state_merkle_root: "aaaa" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));
+    expect(ae.isPeerDivergent("tip://node/X")).toBe(false);
+  });
+
+  test("isPeerDivergent: peer never polled → false (default trust)", () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    expect(ae.isPeerDivergent("tip://node/Unknown")).toBe(false);
+  });
+
+  test("isPeerDivergent: different committed_round → false (round skew, not divergence)", async () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    await ae.checkAndReconcile("peer-X", peerStatus({ node_id: "tip://node/X", committed_round: 9, state_merkle_root: "bbbb" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));
+    expect(ae.isPeerDivergent("tip://node/X")).toBe(false);
+  });
+
+  test("isPeerDivergent: either root empty → false (no commits yet on one side)", async () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "" }),
+      log: silentLog(),
+    });
+    await ae.checkAndReconcile("peer-X", peerStatus({ node_id: "tip://node/X", committed_round: 10, state_merkle_root: "bbbb" }), selfState({ committed_round: 10, state_merkle_root: "" }));
+    expect(ae.isPeerDivergent("tip://node/X")).toBe(false);
+  });
+
+  test("isPeerDivergent: empty/null peerNodeId → false", () => {
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal: fakeNarwhal(),
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    expect(ae.isPeerDivergent("")).toBe(false);
+    expect(ae.isPeerDivergent(null)).toBe(false);
+    expect(ae.isPeerDivergent(undefined)).toBe(false);
+  });
+
+  test("divergentPeers + getStatus.filtered_peers: lists exactly the divergent ones", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 10, state_merkle_root: "aaaa" }),
+      log: silentLog(),
+    });
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", committed_round: 10, state_merkle_root: "aaaa" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));  // agree
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", committed_round: 10, state_merkle_root: "bbbb" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));  // diverge
+    await ae.checkAndReconcile("peer-C", peerStatus({ node_id: "tip://node/C", committed_round: 10, state_merkle_root: "cccc" }), selfState({ committed_round: 10, state_merkle_root: "aaaa" }));  // diverge
+
+    expect(ae.divergentPeers().sort()).toEqual(["tip://node/B", "tip://node/C"]);
+    expect(ae.getStatus().divergence.filtered_peers.sort()).toEqual(["tip://node/B", "tip://node/C"]);
+  });
+
+  test("guard: peer in syncing state → divergence flagging skipped, no halt", async () => {
+    const narwhal = fakeNarwhal({ committee: 4, joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    // Peer reports join_state=syncing — its mirror is partial. Its
+    // root will not match ours, but we MUST NOT flag divergence or halt
+    // because the partial state is expected during sync.
+    await ae.checkAndReconcile("peer-A", peerStatus({
+      node_id: "tip://node/A",
+      state_merkle_root: "bbbbbb",
+      join_state: "syncing",
+    }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(0);
+  });
+
+  test("guard: peer in catching_up → divergence flagging skipped", async () => {
+    const narwhal = fakeNarwhal({ committee: 4, joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({
+      node_id: "tip://node/A",
+      state_merkle_root: "bbbbbb",
+      join_state: "catching_up",
+    }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(0);
+  });
+
+  test("guard: self in syncing → divergence flagging skipped against ready peer", async () => {
+    const narwhal = fakeNarwhal({ committee: 4, joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    // Two ready peers disagreeing — would normally trip threshold=2 in n=4.
+    // But self is syncing → partial mirror → must not flag against own state.
+    await ae.checkAndReconcile("peer-A", peerStatus({
+      node_id: "tip://node/A", state_merkle_root: "bbbbbb", join_state: "ready",
+    }), selfState({ state_merkle_root: "aaaaaa" }));
+    await ae.checkAndReconcile("peer-B", peerStatus({
+      node_id: "tip://node/B", state_merkle_root: "cccccc", join_state: "ready",
+    }), selfState({ state_merkle_root: "aaaaaa" }));
+
+    expect(narwhal._haltCalls).toHaveLength(0);
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(0);
+  });
+
+  test("guard: legacy peer (empty join_state) treated as ready (backward compat)", async () => {
+    const narwhal = fakeNarwhal({ committee: 4, joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    // Peer omits join_state — pre-guard wire format. Must still fire.
+    await ae.checkAndReconcile("peer-A", peerStatus({
+      node_id: "tip://node/A", state_merkle_root: "bbbbbb", join_state: undefined,
+    }), selfState({ state_merkle_root: "aaaaaa" }));
+    expect(ae.stats().metrics.consensus_divergence_total).toBe(1);
+  });
+
+  test("getStatus surfaces halt + threshold + observed count", async () => {
+    const narwhal = fakeNarwhal({ committee: 4 });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ state_merkle_root: "aaaaaa" }),
+      log: silentLog(),
+    });
+
+    let status = ae.getStatus();
+    expect(status.byzantine_fork_halt).toBeNull();
+    expect(status.divergence).toEqual({ threshold: 2, distinct_peers_observed: 0, filtered_peers: [] });
+
+    await ae.checkAndReconcile("peer-A", peerStatus({ node_id: "tip://node/A", state_merkle_root: "bbbbbb" }), selfState({ state_merkle_root: "aaaaaa" }));
+    status = ae.getStatus();
+    expect(status.divergence.distinct_peers_observed).toBe(1);
+    expect(status.byzantine_fork_halt).toBeNull();
+
+    await ae.checkAndReconcile("peer-B", peerStatus({ node_id: "tip://node/B", state_merkle_root: "cccccc" }), selfState({ state_merkle_root: "aaaaaa" }));
+    status = ae.getStatus();
+    expect(status.divergence.distinct_peers_observed).toBe(2);
+    expect(status.byzantine_fork_halt).not.toBeNull();
+    expect(status.byzantine_fork_halt.atRound).toBe(10);
   });
 });

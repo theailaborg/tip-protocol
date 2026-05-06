@@ -39,6 +39,31 @@ const { subjectTipId } = require("../tx-attribution");
 function _id(t, col) { return t.string(col, 512); }
 function _pk(t, col) { return t.string(col, 512).primary(); }
 
+// Detect duplicate-key errors across the supported drivers. We need this
+// because Postgres's ON CONFLICT(col) only catches conflicts on the named
+// column — a violation of any OTHER unique index on the same table still
+// throws. Tables like `commits` carry multiple unique constraints (PK on
+// round + unique on consensus_index), so we fall back to recognising the
+// generic duplicate-key signal and swallowing it for "ignore" inserts.
+//
+//   Postgres   error.code === "23505"
+//   MariaDB    error.code === "ER_DUP_ENTRY" (1062)  — Knex passes through
+//   SQLite     error.code === "SQLITE_CONSTRAINT_UNIQUE" or PRIMARYKEY
+//   Oracle     ORA-00001 in message
+//   SQL Server error.number 2627/2601 OR "Cannot insert duplicate key"
+function _isDuplicateKeyError(err) {
+  if (!err) return false;
+  const code = err.code || "";
+  if (code === "23505") return true;                          // postgres
+  if (code === "ER_DUP_ENTRY" || err.errno === 1062) return true;  // mariadb/mysql
+  if (typeof code === "string" && code.startsWith("SQLITE_CONSTRAINT")) return true;
+  if (err.number === 2627 || err.number === 2601) return true;     // mssql
+  const msg = err.message || "";
+  return /ORA-00001/.test(msg)
+    || /Cannot insert duplicate key/.test(msg)
+    || /duplicate key value violates unique constraint/.test(msg);
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function _j(v) {
@@ -472,14 +497,22 @@ class KnexAdapter {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
-      return onConflict === "merge" ? q.merge() : q.ignore();
+      const promise = onConflict === "merge" ? q.merge() : q.ignore();
+      // Some tables carry MULTIPLE unique constraints (e.g. commits has PK
+      // on round AND a unique index on consensus_index). ON CONFLICT(col)
+      // only catches conflicts on `col`; a violation of any OTHER unique
+      // index still bubbles up. For "ignore" mode we want to swallow ALL
+      // duplicate-key errors — the mirror already has the row and the
+      // DB constraint is just preventing a stale rewrite. Catch the
+      // generic duplicate-key error here too.
+      return promise.catch(err => {
+        if (onConflict === "ignore" && _isDuplicateKeyError(err)) return;
+        throw err;
+      });
     }
     // Oracle / mssql path: INSERT, catch duplicate-key error
     return this.knex(table).insert(row).catch(async err => {
-      const isDup = /ORA-00001/.test(err.message) ||
-        /Cannot insert duplicate key/.test(err.message) ||
-        err.number === 2627 || err.number === 2601;
-      if (!isDup) throw err;
+      if (!_isDuplicateKeyError(err)) throw err;
       if (onConflict === "merge") {
         const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
         const nonPk = Object.keys(row).filter(k => !pks.includes(k));

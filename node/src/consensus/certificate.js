@@ -301,6 +301,34 @@ function computeQuorum(nodeCount) {
   return Math.ceil((2 * nodeCount) / 3);
 }
 
+/**
+ * Smallest distinct-disagreer count at which we conclude we are the
+ * byzantine minority and must halt our own consensus loop.
+ *
+ * Formal BFT: with at most f = floor((n-1)/3) byzantine peers, f+1
+ * disagreers includes ≥1 honest peer — so we are the wrong one. Below
+ * f+1, we can't tell who's wrong (could be us, could be them); the
+ * per-peer ack-filter handles individual disagreers without halting.
+ *
+ * Floor of 2 for small federations (n=3): formal f+1 there is 1, but
+ * a single disagreer carries no signal in a 3-node committee. We need
+ * both other peers (= 2) to be certain we're wrong. For n>=4 the formal
+ * f+1 is already >=2 so the floor is redundant — those values are
+ * unchanged. For n<=1 there's nothing to compare against, so we return
+ * Infinity (the threshold is never reached → halt never fires).
+ *
+ * Single source of truth — both anti-entropy and any future BFT-aware
+ * caller MUST use this function instead of recomputing the formula.
+ *
+ * @param {number} committeeSize  Total committee members (n)
+ * @returns {number}  threshold; Infinity if n<=1
+ */
+function bftHaltThreshold(committeeSize) {
+  const n = Number(committeeSize) || 0;
+  if (n <= 1) return Infinity;
+  return Math.max(Math.floor((n - 1) / 3) + 1, 2);
+}
+
 module.exports = {
   createBatch,
   verifyBatch,
@@ -310,4 +338,5 @@ module.exports = {
   createCertificate,
   verifyCertificate,
   computeQuorum,
+  bftHaltThreshold,
 };

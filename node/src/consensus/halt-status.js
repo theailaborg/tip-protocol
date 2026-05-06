@@ -56,6 +56,23 @@ function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = Date.now } = {}
   if (!narwhalStats || !narwhalStats.running) {
     return { halted: false, reason: "narwhal_not_started", lastAdvanceAt: 0, staleMs: 0 };
   }
+  // Byzantine-fork halt takes priority over all other conditions: it's a
+  // safety event (we are the byzantine minority per ≥ f+1 peer agreement,
+  // OR the operator manually flagged us). Surface it to the existing
+  // halt-gate so the /metrics tip_consensus_halted gauge + Grafana "Halt
+  // status" panel reflect this without dashboard changes. /v1/* writes
+  // get 503 via consensus-gate middleware as soon as this fires.
+  if (narwhalStats.byzantineForkHalt) {
+    const h = narwhalStats.byzantineForkHalt;
+    const since = h.since || now();
+    return {
+      halted: true,
+      reason: "byzantine_fork",
+      lastAdvanceAt: narwhalStats.lastRoundAdvanceAt || 0,
+      staleMs: now() - since,
+      message: `Byzantine-fork halt at round ${h.atRound} (${h.reason}). Operator must investigate state divergence and clearByzantineForkHalt() after resolving.`,
+    };
+  }
   const syncThreshold = (roundTimeoutMs || 2000) * 3;
   // catching_up is bandwidth-bound (cert tail closure) and legitimately
   // slower than initial install — give it 3× more headroom than syncing.

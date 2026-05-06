@@ -62,7 +62,7 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
@@ -225,8 +225,31 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   // ── Round lifecycle ──────────────────────────────────────────────────────
 
+  // Byzantine-fork halt: anti-entropy detected persistent same-round
+  // state_merkle_root divergence with ≥1 peer. Stay halted until operator
+  // clears the flag manually (after forensic investigation + manual rejoin).
+  // Auto-resolution would silently mask a real safety-violation event.
+  let _byzantineForkHalt = null;  // { reason, atRound, peerNodeId, since }
+
+  function haltDueToByzantineFork({ reason, atRound, peerNodeId } = {}) {
+    if (_byzantineForkHalt) return; // already halted; first signal wins
+    _byzantineForkHalt = {
+      reason: reason || "unspecified byzantine-fork divergence",
+      atRound: atRound != null ? atRound : _currentRound,
+      peerNodeId: peerNodeId || "unknown",
+      since: Date.now(),
+    };
+    log.error(`HALT (byzantine_fork): ${_byzantineForkHalt.reason}`);
+  }
+
+  function clearByzantineForkHalt() {
+    if (!_byzantineForkHalt) return;
+    log.notice(`Cleared byzantine_fork halt (was: ${_byzantineForkHalt.reason})`);
+    _byzantineForkHalt = null;
+  }
+
   function _canProduce() {
-    return _running && _joinState === "ready";
+    return _running && _joinState === "ready" && !_byzantineForkHalt;
   }
 
   function _beginRound() {
@@ -461,6 +484,19 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function handleIncomingBatch(data) {
     if (!_running) return;
 
+    // Byzantine-fork halt is comprehensive — no production (gated in
+    // _canProduce), no counter advance (gated in _tryAdvanceRound), AND
+    // no acks. Without this gate, a halted node keeps signing acks for
+    // peer batches; those acks land in peer certs; anchor walks count
+    // the halted node's participation; rotation_participation stays
+    // above the eviction threshold. Result: the halted node never gets
+    // dropped at the next committee rotation. Closing this gap lets RP
+    // decay naturally to zero so eviction happens on schedule.
+    if (_byzantineForkHalt) {
+      _metrics.batches_dropped_byzantine_halt = (_metrics.batches_dropped_byzantine_halt || 0) + 1;
+      return;
+    }
+
     // Enforce size limit (batch is part of certificate, share the limit)
     if (data && data.length > CONSENSUS.CERTIFICATE_MAX_BYTES) {
       log.warn(`Rejected oversized batch: ${data.length} bytes`);
@@ -603,6 +639,19 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     } catch (err) {
       log.warn(`Round ${batch.round}: failed to persist vote commitment: ${err.message}`);
       // Proceed anyway — in-memory dedup is fallback for this message.
+    }
+
+    // Ack-filter: refuse to attest for a peer whose last AE-observed state
+    // diverges from ours at the same committed_round. Symmetric — every
+    // honest node applies the rule, so a divergent peer gets no acks and
+    // their certs never reach quorum. Pairs with the threshold halt: halt
+    // protects us when WE'RE wrong, filter protects us when THEY'RE wrong.
+    // The seen-vote was already persisted above so we don't forget what we
+    // saw — we just don't put our signature on it.
+    if (typeof isPeerDivergent === "function" && isPeerDivergent(batch.author_node_id)) {
+      _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
+      log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — state divergence at last AE poll`);
+      return;
     }
 
     // Send ack — signed_at carries this node's wall-clock at sign time and
@@ -987,6 +1036,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Round advancement ────────────────────────────────────────────────────
 
   function _tryAdvanceRound() {
+    // Byzantine-fork halt freezes both production and round counter. Without
+    // this gate, peer certs would still bump _currentRound while we're
+    // halted — defeating "rounds don't grow on divergence" and making
+    // post-halt forensics harder (the round at which divergence was first
+    // detected drifts forward).
+    if (_byzantineForkHalt) return;
+
     const quorum = _getQuorum();
     if (_roundCertificates.size < quorum) return;
 
@@ -1161,6 +1217,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   function joinState() { return _joinState; }
   function catchUpTarget() { return _catchUpTarget; }
+  function committeeSize() { return _getCommittee().length; }
+  function byzantineForkHalt() { return _byzantineForkHalt ? { ..._byzantineForkHalt } : null; }
 
   return {
     start,
@@ -1172,6 +1230,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     markCaughtUp,
     joinState,
     catchUpTarget,
+    committeeSize,
+    haltDueToByzantineFork,
+    clearByzantineForkHalt,
+    byzantineForkHalt,
     handleIncomingBatch,
     handleIncomingAck,
     handleIncomingCertificate,
@@ -1215,6 +1277,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       syncEnteredAt: _syncEnteredAt,
       catchingUpEnteredAt: _catchingUpEnteredAt,
       catchUpTarget: _catchUpTarget,
+      byzantineForkHalt: _byzantineForkHalt ? { ..._byzantineForkHalt } : null,
       metrics: { ..._metrics },
     }),
   };

@@ -47,6 +47,7 @@
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { dialKnownPeers } = require("../network/peer-discovery");
+const { bftHaltThreshold } = require("./certificate");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.anti-entropy");
@@ -76,12 +77,27 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     peer_unauthorized_inbound: 0,   // server side: unauthorized peer asked for our status
     gaps_pulled: 0,
     consensus_divergence_total: 0,
+    consensus_divergence_distinct_peers: 0,  // max distinct peers seen disagreeing in any single window
+    byzantine_fork_halts_triggered: 0,        // times we asked narwhal to halt
     loops_run: 0,
   };
 
   // Rolling cache of the last successful status per peer — feeds both the
   // REST endpoint and the loop's decision logic. Key: TIP node_id.
   const _lastStatus = new Map();
+
+  // Distinct peers reporting divergence at our (committed_round, state_root).
+  // Key: `${round}:${rootPrefix}`. Value: Set<peerNodeId>. Old-round entries
+  // are pruned as committed_round advances — divergence observations at a
+  // round we've moved past are historical noise.
+  //
+  // Halt threshold is f+1 where f = floor((n-1)/3) over committee size n.
+  // Rationale: with at most f byzantine peers, f+1 distinct peers disagreeing
+  // implies ≥1 honest peer disagrees → we are the byzantine minority. This
+  // is the formal "we are wrong" signal in BFT and the safe halt point.
+  // Anything lower (e.g. halt-on-first) is exploitable by a single byzantine
+  // peer to halt the network.
+  const _divergenceObservations = new Map();
 
   let _timer = null;
   let _running = false;
@@ -127,6 +143,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _log.debug(`anti-entropy: knownPeers build failed: ${err.message}`);
       }
 
+      // Surface our narwhal join_state so peers know NOT to flag divergence
+      // against us while we're syncing or catching_up — our mirror is being
+      // populated in flight during those phases and any state-root we
+      // compute is partial.
+      const _selfJoinState = (narwhal && typeof narwhal.joinState === "function")
+        ? String(narwhal.joinState() || "ready")
+        : "ready";
+
       const response = encode("SyncStatusResponse", {
         nodeId: getSelfNodeId ? (getSelfNodeId() || "") : "",
         round: state.round || 0,
@@ -139,6 +163,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           nodeId: kp.node_id || "",
           multiaddrs: Array.isArray(kp.multiaddrs) ? kp.multiaddrs : [],
         })),
+        joinState: _selfJoinState,
       });
 
       try { await stream.sink([response]); }
@@ -277,6 +302,11 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         state_merkle_root: bytesToHex(msg.stateMerkleRoot || Buffer.alloc(0)),
         txs_merkle_root: bytesToHex(msg.txsMerkleRoot || Buffer.alloc(0)),
         cert_merkle_root: bytesToHex(msg.certMerkleRoot || Buffer.alloc(0)),
+        // Empty string from a legacy peer (pre-join_state proto field) is
+        // treated as "ready" — historically peers wouldn't have replied at
+        // all if they weren't running, and the only consumer is the
+        // catch-up guard below which fails-open in the absence of signal.
+        join_state: String(msg.joinState || "ready"),
         checked_at: Date.now(),
       };
     } catch (err) {
@@ -352,6 +382,111 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Byzantine-fork halt: divergence accumulator + threshold trigger.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve the BFT halt threshold for the current committee. Delegates
+   * to the shared `bftHaltThreshold` helper (single source of truth) so
+   * AE and any future caller can never disagree on the formula.
+   *
+   * @returns {number} threshold; Infinity if committee size unknown
+   */
+  function _bftHaltThreshold() {
+    const n = (narwhal && typeof narwhal.committeeSize === "function")
+      ? Number(narwhal.committeeSize() || 0)
+      : 0;
+    return bftHaltThreshold(n);
+  }
+
+  /**
+   * Record a divergence observation from `peerNodeId` at our (round, root).
+   * Drops accumulator entries for rounds we've moved past — those are
+   * historical noise once committed_round has advanced.
+   *
+   * @returns {{observed: number, threshold: number}}
+   */
+  function _recordDivergence(peerNodeId, atRound, ourRoot) {
+    const key = `${atRound}:${ourRoot.slice(0, 16)}`;
+    let set = _divergenceObservations.get(key);
+    if (!set) {
+      set = new Set();
+      _divergenceObservations.set(key, set);
+    }
+    set.add(peerNodeId);
+    for (const k of _divergenceObservations.keys()) {
+      const r = Number(k.split(":")[0]);
+      if (r < atRound) _divergenceObservations.delete(k);
+    }
+    return { observed: set.size, threshold: _bftHaltThreshold() };
+  }
+
+  /**
+   * Per-peer divergence check used by narwhal's batch handler to decide
+   * whether to ack. Returns true iff our last cached AE status for this
+   * peer shows same committed_round AND different non-empty state roots.
+   *
+   * Symmetric: every node applies this rule, so a divergent peer is
+   * naturally excluded from cert formation (no peer signs their batches),
+   * without anyone declaring a halt. Pairs with the threshold halt in
+   * narwhal — halt is "stop us if we're wrong"; this is "deny attestation
+   * to peers we currently disagree with."
+   *
+   * @param {string} peerNodeId  TIP node_id (NOT libp2p peerId)
+   * @returns {boolean}
+   */
+  function isPeerDivergent(peerNodeId) {
+    if (!peerNodeId) return false;
+    const cached = _lastStatus.get(peerNodeId);
+    if (!cached) return false;  // never polled — default trust
+
+    const state = getConsensusState ? getConsensusState() : {};
+    const selfCommitted = Number(state.committed_round || 0);
+    const selfRoot = String(state.state_merkle_root || "");
+    const peerCommitted = Number(cached.committed_round || 0);
+    const peerRoot = String(cached.state_merkle_root || "");
+
+    if (peerCommitted !== selfCommitted) return false;     // round skew, not divergence
+    if (!selfRoot || !peerRoot) return false;              // no commits yet on either side
+    return selfRoot !== peerRoot;
+  }
+
+  /**
+   * Snapshot of peers we'd currently refuse to ack. For ops surfacing in
+   * /v1/sync-status. O(n) over `_lastStatus` — n is committee-size.
+   */
+  function divergentPeers() {
+    const out = [];
+    for (const [nodeId] of _lastStatus.entries()) {
+      if (isPeerDivergent(nodeId)) out.push(nodeId);
+    }
+    return out;
+  }
+
+  /**
+   * Trigger narwhal halt when distinct-peer disagreement reaches the BFT
+   * threshold. Idempotent — narwhal.haltDueToByzantineFork early-returns
+   * once already halted. Logging fires only on the threshold-crossing
+   * call so we don't spam ERROR every AE cycle.
+   */
+  function _maybeHalt(atRound, ourRoot, observed, threshold, peerNodeId) {
+    if (observed < threshold) return;
+    if (!narwhal || typeof narwhal.haltDueToByzantineFork !== "function") return;
+    const alreadyHalted = typeof narwhal.byzantineForkHalt === "function"
+      && narwhal.byzantineForkHalt();
+    if (alreadyHalted) return;
+
+    _metrics.byzantine_fork_halts_triggered++;
+    const reason = `${observed}/${threshold} peers disagree at committed_round=${atRound}; self.state_root=${ourRoot.slice(0, 16)}`;
+    _log.error(`anti-entropy: byzantine-fork halt threshold reached — ${reason}`);
+    narwhal.haltDueToByzantineFork({
+      reason,
+      atRound,
+      peerNodeId,
+    });
+  }
+
   /**
    * Compare one peer's status against our own and take the appropriate action.
    * Pure function of inputs + side effects — no scheduling here.
@@ -399,12 +534,40 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
 
     if (peerCommitted === selfCommitted && selfRoot && peerRoot && selfRoot !== peerRoot) {
-      // Real divergence — equal round, different roots. This is a byzantine
-      // safety event. Log at WARN so it's noisy, emit the metric, do NOT
-      // auto-resolve. Ops should correlate with halt-gate / audit logs and
-      // either rejoin the minority node or halt the fork.
+      // Catch-up race guard: skip divergence flagging while either side is
+      // still syncing or catching_up. During those phases the mirror is
+      // being populated in flight (snapshot install, gap-sync), and a
+      // freshly-computed state_merkle_root reflects partial state — every
+      // peer that polls during this window would see "divergence" against
+      // a partially-hydrated node and false-halt it. Wait until both sides
+      // are "ready" before treating same-round-different-root as byzantine.
+      // Verified live 2026-05-06: without this guard, a fresh-DB Node 2
+      // halted itself in joinState=syncing within seconds of restart.
+      const selfJoinState = (narwhal && typeof narwhal.joinState === "function")
+        ? String(narwhal.joinState() || "ready")
+        : "ready";
+      const peerJoinState = String(peerStatus.join_state || "ready");
+      if (selfJoinState !== "ready" || peerJoinState !== "ready") {
+        return "equal";  // not divergent enough to flag — treat as no-op
+      }
+
+      // Real divergence — equal round, different roots, both sides ready.
+      // Byzantine safety event: never auto-resolve (picking a winner
+      // silently makes a fork worse). Accumulate distinct-peer
+      // disagreements at (round, ourRoot) and halt narwhal once ≥ f+1
+      // peers disagree — that's the formal proof we're the byzantine
+      // minority. Until threshold, log + metric so ops can see the
+      // disagreement building up.
       _metrics.consensus_divergence_total++;
-      _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerStatus.node_id || peerId.slice(0, 12)} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
+      const peerNode = peerStatus.node_id || peerId;
+      const peerLabel = peerStatus.node_id || peerId.slice(0, 12);
+      _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerLabel} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
+
+      const { observed, threshold } = _recordDivergence(peerNode, selfCommitted, selfRoot);
+      if (observed > _metrics.consensus_divergence_distinct_peers) {
+        _metrics.consensus_divergence_distinct_peers = observed;
+      }
+      _maybeHalt(selfCommitted, selfRoot, observed, threshold, peerNode);
       return "divergent";
     }
 
@@ -536,6 +699,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     const allInSync = peers.length > 0 && peers.every(p => p.in_sync);
 
+    // Halt status surfaces both narwhal's flag and the AE-side accumulator
+    // so ops can see "we're at 1/2 disagreements" before the halt fires.
+    const haltStatus = (narwhal && typeof narwhal.byzantineForkHalt === "function")
+      ? narwhal.byzantineForkHalt()
+      : null;
+    let observedAtSelf = 0;
+    for (const [k, set] of _divergenceObservations.entries()) {
+      const [r] = k.split(":");
+      if (Number(r) === selfRound) observedAtSelf = Math.max(observedAtSelf, set.size);
+    }
+
     return {
       self: {
         node_id: getSelfNodeId ? (getSelfNodeId() || "") : "",
@@ -546,6 +720,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       },
       peers,
       in_sync: allInSync,
+      byzantine_fork_halt: haltStatus,
+      divergence: {
+        threshold: _bftHaltThreshold(),
+        distinct_peers_observed: observedAtSelf,
+        filtered_peers: divergentPeers(),
+      },
       timestamp: new Date().toISOString(),
     };
   }
@@ -557,6 +737,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     queryPeer,
     checkAndReconcile,
     registerProtocol,
+    isPeerDivergent,
+    divergentPeers,
     _handleIncomingSyncStatus,
     // Exposed for metrics scraping + tests.
     stats: () => ({ metrics: { ..._metrics }, last_status_size: _lastStatus.size }),

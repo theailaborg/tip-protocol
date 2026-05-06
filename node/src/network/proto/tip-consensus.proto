@@ -295,6 +295,15 @@ message SyncStatusResponse {
   // and resyncs after transient connectivity issues — convergence within
   // ANTI_ENTROPY_INTERVAL_MS regardless of join order.
   repeated KnownPeer known_peers = 9;
+  // Peer's narwhal join_state ("syncing" / "catching_up" / "ready"). AE
+  // skips divergence flagging when either side is not "ready" — during
+  // sync/catch-up the mirror is being populated in flight, AE-fresh
+  // computed state_merkle_root reflects partial state, and any peer that
+  // polls during this window would falsely detect divergence and halt.
+  // Empty = legacy peer (treat as "ready" for backward compat — they
+  // wouldn't have been sending /sync-status replies if they weren't
+  // running, which historically meant ready).
+  string join_state = 10;
 }
 
 // ─── Peer Announce Protocol (#48 forward-on-authorize push) ──────────────────

@@ -452,3 +452,68 @@ describe("narwhal tri-state join FSM", () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Byzantine-fork halt — narwhal-side gates
+// ═══════════════════════════════════════════════════════════════════════════
+describe("narwhal byzantine-fork halt", () => {
+  test("default state: byzantineForkHalt() is null and stats expose it", () => {
+    const { narwhal } = buildNarwhal();
+    expect(narwhal.byzantineForkHalt()).toBeNull();
+    expect(narwhal.stats().byzantineForkHalt).toBeNull();
+  });
+
+  test("haltDueToByzantineFork stamps reason / atRound / peerNodeId / since", () => {
+    const { narwhal } = buildNarwhal();
+    narwhal.haltDueToByzantineFork({
+      reason: "2/2 peers disagree",
+      atRound: 42,
+      peerNodeId: "tip://node/peer",
+    });
+    const halt = narwhal.byzantineForkHalt();
+    expect(halt).not.toBeNull();
+    expect(halt.reason).toBe("2/2 peers disagree");
+    expect(halt.atRound).toBe(42);
+    expect(halt.peerNodeId).toBe("tip://node/peer");
+    expect(halt.since).toBeGreaterThan(0);
+    expect(narwhal.stats().byzantineForkHalt).toEqual(halt);
+  });
+
+  test("halt is idempotent — first signal wins, later calls are no-ops", () => {
+    const { narwhal } = buildNarwhal();
+    narwhal.haltDueToByzantineFork({ reason: "first", atRound: 10, peerNodeId: "A" });
+    const t0 = narwhal.byzantineForkHalt().since;
+    narwhal.haltDueToByzantineFork({ reason: "second", atRound: 99, peerNodeId: "B" });
+    const halt = narwhal.byzantineForkHalt();
+    expect(halt.reason).toBe("first");
+    expect(halt.atRound).toBe(10);
+    expect(halt.peerNodeId).toBe("A");
+    expect(halt.since).toBe(t0);
+  });
+
+  test("clearByzantineForkHalt resets state to null", () => {
+    const { narwhal } = buildNarwhal();
+    narwhal.haltDueToByzantineFork({ reason: "x", atRound: 1, peerNodeId: "p" });
+    expect(narwhal.byzantineForkHalt()).not.toBeNull();
+    narwhal.clearByzantineForkHalt();
+    expect(narwhal.byzantineForkHalt()).toBeNull();
+    expect(narwhal.stats().byzantineForkHalt).toBeNull();
+  });
+
+  test("byzantineForkHalt() returns a copy — caller mutations don't leak into internal state", () => {
+    const { narwhal } = buildNarwhal();
+    narwhal.haltDueToByzantineFork({ reason: "leak-check", atRound: 5, peerNodeId: "p" });
+    const halt = narwhal.byzantineForkHalt();
+    halt.reason = "MUTATED";
+    halt.atRound = 999;
+    expect(narwhal.byzantineForkHalt().reason).toBe("leak-check");
+    expect(narwhal.byzantineForkHalt().atRound).toBe(5);
+  });
+
+  test("committeeSize returns the active committee length (positive integer)", () => {
+    const { narwhal } = buildNarwhal();
+    const n = narwhal.committeeSize();
+    expect(Number.isInteger(n)).toBe(true);
+    expect(n).toBeGreaterThanOrEqual(1);
+  });
+});

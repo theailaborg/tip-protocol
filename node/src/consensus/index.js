@@ -25,6 +25,7 @@ const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { computeHaltStatus } = require("./halt-status");
+const { computeStateMerkleRoot } = require("./state-root");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
@@ -188,6 +189,12 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     } : null,
   });
 
+  // Deferred AE ref — narwhal needs to call AE's isPeerDivergent at batch-
+  // ack time, but AE is constructed AFTER narwhal (it takes narwhal as a
+  // dep). Closure-over-let resolves the cycle: the function is called on
+  // each batch arrival, by which point the let has been assigned.
+  let antiEntropyForFiltering = null;
+
   const narwhal = createNarwhal({
     dag, mempool, network, config,
     getNodeKey: (nId) => getNodeKey(dag, nId),
@@ -206,6 +213,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       if (bullshark && typeof bullshark.tryRotationProposal === "function") {
         bullshark.tryRotationProposal(round, missingRotation);
       }
+    },
+    // Ack-filter — defense layer that denies attestation to peers whose
+    // state has diverged from ours. Implemented in AE; threaded here via
+    // the deferred ref above.
+    isPeerDivergent: (peerNodeId) => {
+      try { return antiEntropyForFiltering ? antiEntropyForFiltering.isPeerDivergent(peerNodeId) : false; }
+      catch { return false; }
     },
   });
   narwhalRef.current = narwhal;
@@ -244,10 +258,17 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       round: narwhal.currentRound(),
       committed_round: bullshark.lastCommittedRound(),
       consensus_index: bullshark.stats().consensusIndex || 0,
-      state_merkle_root: (() => {
-        const latest = dag.getLatestCommit && dag.getLatestCommit();
-        return latest?.state_merkle_root || "";
-      })(),
+      // Live-computed from the in-memory canonical state, NOT cached from
+      // the latest commit row. Reading from the commit row only refreshes
+      // when bullshark commits an anchor; on idle federations that can be
+      // minutes between updates, leaving mirror divergence invisible until
+      // the next commit fires (the lag we hit on the 2026-05-06 test).
+      // Computing fresh on every AE poll makes divergence detection
+      // independent of commit cadence — fires at the next AE cycle (~4s)
+      // regardless of whether anyone has committed in the meantime.
+      // Cost: one iterateCanonicalState walk per /sync-status request,
+      // sub-millisecond at small federation sizes.
+      state_merkle_root: computeStateMerkleRoot(dag),
       txs_merkle_root: (() => {
         const latest = dag.getLatestCommit && dag.getLatestCommit();
         return latest?.txs_merkle_root || "";
@@ -255,6 +276,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       cert_merkle_root: syncHandler.merkleRoot(),
     }),
   });
+  antiEntropyForFiltering = antiEntropy;
 
   // ── Wire network events ────────────────────────────────────────────────
 
