@@ -17,6 +17,9 @@ const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto")
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
 const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
+const { createBatch } = require(path.join(SRC, "consensus", "certificate"));
+const { serializeBatch } = require(path.join(SRC, "consensus", "certificate-codec"));
+const { encode } = require(path.join(SRC, "network", "proto"));
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
 const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
 
@@ -35,11 +38,13 @@ const PEER_C_ID = "tip://node/peerC";
 
 function buildNarwhal({ refreshDirectPeer, sendBatchDirect } = {}) {
   const selfKp = generateMLDSAKeypair();
+  const peerBKp = generateMLDSAKeypair();
+  const peerCKp = generateMLDSAKeypair();
   const dag = initDAG({ inMemory: true });
   for (const [id, kp] of [
     [SELF_ID, selfKp],
-    [PEER_B_ID, generateMLDSAKeypair()],
-    [PEER_C_ID, generateMLDSAKeypair()],
+    [PEER_B_ID, peerBKp],
+    [PEER_C_ID, peerCKp],
   ]) {
     dag.saveNode({
       node_id: id, name: id, public_key: kp.publicKey,
@@ -69,7 +74,7 @@ function buildNarwhal({ refreshDirectPeer, sendBatchDirect } = {}) {
     onCertSaved: () => {},
   });
 
-  return { narwhal, network };
+  return { narwhal, network, selfKp, peerBKp, peerCKp };
 }
 
 describe("narwhal retry Layer 1 — gossipsub mesh refresh", () => {
@@ -144,6 +149,43 @@ describe("narwhal retry Layer 2 — direct stream fallback", () => {
     jest.advanceTimersByTime(CONSENSUS.ROUND_TIMEOUT_MS * 5);
 
     expect(sendSpy).not.toHaveBeenCalled();
+
+    narwhal.stop();
+  });
+});
+
+describe("narwhal Layer 2 — handleIncomingBatch returns ack buffer for direct stream", () => {
+  test("returns encoded BatchAck buffer so direct-stream handler can write it back", () => {
+    const { narwhal, peerBKp } = buildNarwhal();
+    narwhal.start();
+    narwhal.exitSyncMode(0);
+
+    // Build a valid signed batch from PEER_B at round 1 (current round after exitSyncMode)
+    const batch = createBatch(1, PEER_B_ID, [], peerBKp.privateKey);
+    const batchBuf = Buffer.from(encode("Batch", serializeBatch(batch)));
+
+    const result = narwhal.handleIncomingBatch(batchBuf);
+
+    // Must return a non-empty Buffer — the stream handler writes this back as the ack
+    expect(Buffer.isBuffer(result)).toBe(true);
+    expect(result.length).toBeGreaterThan(0);
+
+    narwhal.stop();
+  });
+
+  test("returns undefined (no ack) for an unknown batch author", () => {
+    const { narwhal } = buildNarwhal();
+    narwhal.start();
+    narwhal.exitSyncMode(0);
+
+    // Build batch from an unregistered node — handleIncomingBatch bails early
+    const unknownKp = generateMLDSAKeypair();
+    const batch = createBatch(1, "tip://node/unknown", [], unknownKp.privateKey);
+    const batchBuf = Buffer.from(encode("Batch", serializeBatch(batch)));
+
+    const result = narwhal.handleIncomingBatch(batchBuf);
+
+    expect(result).toBeUndefined();
 
     narwhal.stop();
   });

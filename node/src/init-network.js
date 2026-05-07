@@ -75,6 +75,11 @@ async function initNetworkAndConsensus({ dag, scoring, config }) {
 
     network.setTopicHandlers({
       onMempoolTx: (data) => consensus.handlers.onBatch(data),
+      // Layer 2 direct-stream fallback: same handler as gossipsub MEMPOOL but
+      // called from the /tip/consensus-ack/1.0.0 stream when gossipsub mesh
+      // edges are stale. Returns the ack buffer so the stream handler can write
+      // it back on the same connection, closing the bidirectional loop.
+      onBatch: (data) => consensus.handlers.onBatch(data),
       onConsensus: (data) => consensus.handlers.onAck(data),
       onCertificate: (data) => consensus.handlers.onCertificate(data),
       onRotationCoordination: (data, peerId) => consensus.handlers.onRotationCoordination(data, peerId),

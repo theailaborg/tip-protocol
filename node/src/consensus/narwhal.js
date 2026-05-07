@@ -793,9 +793,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const ack = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
     _recordAck(batch.hash, ack);
 
-    // Broadcast ack on CONSENSUS topic
+    // Build ack buffer once — published via gossipsub AND returned so the
+    // Layer 2 direct-stream handler can write it back on the same connection.
+    // Gossipsub is the broken path that triggered Layer 2; the ack must not
+    // depend on it reaching the batch sender.
+    let ackBuf;
     try {
-      const ackBuf = encode("BatchAck", {
+      ackBuf = encode("BatchAck", {
         batchHash: hexToBytes(batch.hash),
         ackerNodeId: nodeId,
         signature: hexToBytes(ack.signature),
@@ -807,6 +811,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     log.debug(`Round ${_currentRound}: received batch from ${batch.author_node_id} (${(batch.txs || []).length} txs)`);
+    return ackBuf;
   }
 
   // ── Ack handling ─────────────────────────────────────────────────────────

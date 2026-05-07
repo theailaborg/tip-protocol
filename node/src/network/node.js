@@ -192,7 +192,14 @@ async function createNetworkNode(options = {}) {
       const bufs = [];
       for await (const chunk of stream.source) bufs.push(Buffer.from(chunk));
       const data = Buffer.concat(bufs);
-      if (data.length > 0 && _topicHandlers.onBatch) _topicHandlers.onBatch(data);
+      let ackBuf;
+      if (data.length > 0 && _topicHandlers.onBatch) {
+        // handleIncomingBatch returns the encoded ack buffer so we can write it
+        // back here — bypassing gossipsub on the return path too (gossipsub is
+        // the broken mesh edge that forced the caller to use Layer 2).
+        ackBuf = _topicHandlers.onBatch(data);
+      }
+      if (ackBuf) await stream.sink([ackBuf]).catch(err => log.debug(`${CONSENSUS_ACK_PROTOCOL} ack-write error: ${err.message}`));
       stream.close().catch(() => {});
     } catch (err) {
       log.warn(`${CONSENSUS_ACK_PROTOCOL} stream error: ${err.message}`);
@@ -461,16 +468,34 @@ async function createNetworkNode(options = {}) {
       }
       const [peerId] = entry;
       let stream;
+      let ackTimer;
       try {
         stream = await node.dialProtocol(peerIdFromString(peerId), CONSENSUS_ACK_PROTOCOL, {
           signal: AbortSignal.timeout(3000),
         });
+        // Write batch; iterable end half-closes our write side → receiver's source ends.
         await stream.sink([batchBuf]);
-        await stream.close();
-        log.debug(`sendBatchDirect: sent batch to ${tipNodeId} (${peerId.slice(0, 16)}...)`);
+        // Read the ack the receiver writes back on the same stream, so the ack
+        // travels direct instead of via gossipsub (the broken path Layer 2 bypassed).
+        // Bounded at 2s so a slow/unresponsive peer doesn't stall the retry loop.
+        const ackBufs = [];
+        ackTimer = setTimeout(() => {
+          try { stream.abort(new Error("ack read timeout")); } catch { /* ignore */ }
+        }, 2000);
+        for await (const chunk of stream.source) ackBufs.push(Buffer.from(chunk));
+        clearTimeout(ackTimer);
+        ackTimer = null;
+        const ackBuf = Buffer.concat(ackBufs);
+        if (ackBuf.length > 0 && _topicHandlers.onConsensus) {
+          _topicHandlers.onConsensus(ackBuf);
+          log.debug(`sendBatchDirect: batch+ack round-trip complete for ${tipNodeId} (${peerId.slice(0, 16)}...)`);
+        }
       } catch (err) {
         log.warn(`sendBatchDirect to ${tipNodeId}: ${err.message}`);
         if (stream) stream.abort(err).catch(() => {});
+      } finally {
+        if (ackTimer) clearTimeout(ackTimer);
+        try { if (stream) stream.close(); } catch { /* ignore */ }
       }
     },
 
