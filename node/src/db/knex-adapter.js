@@ -571,10 +571,12 @@ class KnexAdapter {
       .catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
 
-  // Oracle and SQL Server don't support Knex's .onConflict(). Use INSERT + catch
-  // duplicate-key error instead. For Oracle: ORA-00001. For mssql: error number
-  // 2627/2601 or "Cannot insert duplicate key" in message.
-  _dbInsert(table, pkCols, row, onConflict) {
+  // Oracle and SQL Server don't support Knex's .onConflict(). For 'merge' we
+  // use UPDATE-first: if the row already exists update it directly (no race);
+  // only INSERT when the UPDATE affects 0 rows. If a concurrent writer sneaks
+  // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
+  // a second UPDATE so our value still wins.
+  async _dbInsert(table, pkCols, row, onConflict) {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -591,21 +593,32 @@ class KnexAdapter {
         throw err;
       });
     }
-    // Oracle / mssql path: INSERT, catch duplicate-key error
-    return this.knex(table).insert(row).catch(async err => {
-      if (!_isDuplicateKeyError(err)) throw err;
-      if (onConflict === "merge") {
-        const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
-        const nonPk = Object.keys(row).filter(k => !pks.includes(k));
-        if (nonPk.length > 0) {
-          const updates = {};
-          nonPk.forEach(k => { updates[k] = row[k]; });
-          let q = this.knex(table);
-          pks.forEach(pk => { q = q.where(pk, row[pk]); });
-          return q.update(updates);
+    // Oracle / mssql path: UPDATE-first for merge, INSERT+ignore for ignore
+    if (onConflict === "merge") {
+      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+      const nonPk = Object.keys(row).filter(k => !pks.includes(k));
+      if (nonPk.length > 0) {
+        const updates = {};
+        nonPk.forEach(k => { updates[k] = row[k]; });
+        let q = this.knex(table);
+        pks.forEach(pk => { q = q.where(pk, row[pk]); });
+        const affected = await q.update(updates);
+        if (affected === 0) {
+          await this.knex(table).insert(row).catch(async err => {
+            if (!_isDuplicateKeyError(err)) throw err;
+            // Concurrent writer inserted between our 0-row UPDATE and INSERT;
+            // re-apply our update so our value wins.
+            let q2 = this.knex(table);
+            pks.forEach(pk => { q2 = q2.where(pk, row[pk]); });
+            return q2.update(updates);
+          });
         }
+        return;
       }
-      // 'ignore' or no non-PK columns to update: swallow the duplicate
+    }
+    // 'ignore' or no non-PK columns to update: INSERT and swallow duplicate
+    return this.knex(table).insert(row).catch(err => {
+      if (!_isDuplicateKeyError(err)) throw err;
     });
   }
 

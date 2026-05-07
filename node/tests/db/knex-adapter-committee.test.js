@@ -178,6 +178,7 @@ async function drain() {
 
     test("setRotationParticipation persists exact count (merge/upsert)", async () => {
       a.setRotationParticipation("nodeX", 2, 50);
+      await drain();  // serialize: first write must land before second upserts over it
       a.setRotationParticipation("nodeX", 2, 99);
       await drain();
 
