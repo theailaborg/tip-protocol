@@ -875,6 +875,9 @@ class KnexAdapter {
   getLatestRound()                        { return this.mirror.getLatestRound(); }
   getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
   getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
+  // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
+  // the SQLiteStore generator. Delegates to the in-memory mirror, which has
+  // the full cert window post-_hydrate.
   *iterateCertsByRoundRange(from, to)     { yield* this.mirror.iterateCertsByRoundRange(from, to); }
   certificateCount()                      { return this.mirror.certificateCount(); }
 
@@ -922,11 +925,6 @@ class KnexAdapter {
   getConsensusMeta(key) { return this.mirror.getConsensusMeta(key); }
 
   *iterateAllCommitsExcept(latestRound) { yield* this.mirror.iterateAllCommitsExcept(latestRound); }
-
-  // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
-  // the SQLiteStore generator. Delegates to the in-memory mirror, which has
-  // the full cert window post-_hydrate.
-  *iterateCertsByRoundRange(fromRound, toRound) { yield* this.mirror.iterateCertsByRoundRange(fromRound, toRound); }
 
   // ── Equivocation defense ──────────────────────────────────────────────────
 
