@@ -93,6 +93,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _catchUpTarget = 0;
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
+  // Counts every retry tick (round-timer expiry + each _scheduleRetry fire).
+  // Drives two self-healing tiers: mesh re-graft at 3, direct-stream bypass at 6+.
+  // Reset to 0 on every round advance so tiers are per-stuck-round, not cumulative.
+  let _retryCount = 0;
   let _nextRoundTimer = null;                       // inter-round scheduler
 
   // Per-round state
@@ -375,8 +379,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         }
         _tryAdvanceRound();
 
-        // If still stuck, schedule periodic retry
+        // If still stuck, enter the retry loop.
+        // We count the round-timer expiry as tick 1 so that _retryCount in
+        // _scheduleRetry() stays aligned with wall-clock multiples of
+        // ROUND_TIMEOUT_MS — Layer 1 fires at exactly 3× (~6s stuck),
+        // Layer 2 at 6× (~12s stuck).
         if (_running && _roundCertificates.size < _getQuorum()) {
+          _retryCount++;
           _scheduleRetry();
         }
       }, CONSENSUS.ROUND_TIMEOUT_MS);
@@ -384,7 +393,18 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   /**
-   * Periodic retry when round can't advance (e.g. waiting for peers).
+   * Periodic retry when the round is stuck below quorum.
+   *
+   * Three escalating tiers, each separated by ROUND_TIMEOUT_MS (~2s):
+   *   ticks 1-2  gossipsub re-broadcast only (existing behavior, best-effort)
+   *   tick  3    Layer 1 — mesh re-graft: remove+re-add each non-acking peer
+   *              from pubsub.direct so gossipsub heals the directed edge on its
+   *              next heartbeat (~700ms). Root cause of the directed-delivery
+   *              failure we saw in the field (stale mesh after reconnection).
+   *   tick  6+   Layer 2 — direct libp2p stream: open /tip/consensus-ack/1.0.0
+   *              to each non-acking peer and push the batch payload, bypassing
+   *              gossipsub entirely. Fires only if mesh re-graft didn't recover
+   *              quorum within 3 more cycles (~6s after Layer 1).
    */
   function _scheduleRetry() {
     if (_retryTimer || !_running) return;
@@ -393,6 +413,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (!_running) return;
 
       _metrics.retries++;
+      _retryCount++;
+
       // GossipSub is best-effort — a dropped batch or cert means this round
       // can never reach quorum. On each retry, re-broadcast whatever we
       // already have so peers that missed the original publish can still
@@ -401,6 +423,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _rebroadcastOwnBatch();
       _rebroadcastOwnCertificate();
 
+      // Layer 1 (retry 3): force-regraft gossipsub mesh edges for non-acking peers.
+      // Removes + re-adds them from pubsub.direct; gossipsub re-grafts on next
+      // heartbeat (~700ms). Clears directed delivery failures caused by stale mesh
+      // edges after node reconnections.
+      if (_retryCount === 3) _refreshMissingAckPeers();
+
+      // Layer 2 (retry 6+): bypass gossipsub entirely via direct libp2p stream.
+      // Fires if mesh refresh didn't recover quorum within 3 more retry cycles.
+      if (_retryCount >= 6) _sendBatchToMissingAckPeers();
+
       _tryCreateCertificate();
       _tryAdvanceRound();
       // Keep retrying if still stuck
@@ -408,6 +440,40 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _scheduleRetry();
       }
     }, CONSENSUS.ROUND_TIMEOUT_MS);
+  }
+
+  // Returns committee peers that have not yet acked _myBatch this round.
+  // Excludes self — we never send ourselves an ack, so our own nodeId would
+  // always appear "missing" and cause spurious self-dials in Layer 2.
+  function _getMissingAckPeers() {
+    if (!_myBatch) return [];
+    const acks = _batchAcks.get(_myBatch.hash) || [];
+    const ackSet = new Set(acks.map(a => a.acker_node_id));
+    return _getCommittee(_currentRound).filter(nId => nId !== nodeId && !ackSet.has(nId));
+  }
+
+  // Layer 1: force-regraft gossipsub mesh edges for non-acking peers.
+  // gossipsub only re-grafts when a peer is re-added to pubsub.direct —
+  // the remove+add triggers the GRAFT control message on the next heartbeat.
+  function _refreshMissingAckPeers() {
+    if (typeof network.refreshDirectPeer !== "function") return;
+    const missing = _getMissingAckPeers();
+    if (missing.length === 0) return;
+    log.info(`Round ${_currentRound}: mesh-refresh for ${missing.length} non-acking peers: [${missing.map(id => id.slice(-8)).join(",")}]`);
+    for (const nId of missing) network.refreshDirectPeer(nId);
+  }
+
+  // Layer 2: push batch directly over a libp2p stream, bypassing gossipsub.
+  // Receiver calls the same _handleBatch path as a normal MEMPOOL message —
+  // no special handling needed on the other side.
+  function _sendBatchToMissingAckPeers() {
+    if (typeof network.sendBatchDirect !== "function") return;
+    if (!_myBatch) return;
+    const missing = _getMissingAckPeers();
+    if (missing.length === 0) return;
+    log.info(`Round ${_currentRound}: direct-stream batch to ${missing.length} non-acking peers: [${missing.map(id => id.slice(-8)).join(",")}]`);
+    const buf = Buffer.from(encode("Batch", serializeBatch(_myBatch)));
+    for (const nId of missing) network.sendBatchDirect(buf, nId);
   }
 
   function _rebroadcastOwnBatch() {
@@ -474,6 +540,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _roundCertificates.clear();
     _myCertificateCreated = false;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    _retryCount = 0;
   }
 
   // ── Batch handling ──────────────────────────────────────────────────────
