@@ -12,17 +12,15 @@ scrape_configs:
     # its actual TIP node id, so dashboards group by real identity instead
     # of port-based synthetic labels.
     honor_labels: true
-    static_configs:
-      # Static port list is just the scrape targets; the `node` label comes
-      # from each node's /metrics output, not from this file. See issue #43
-      # in my-notes/issues.md for the auto-discovery follow-up that drops
-      # this static list entirely.
-      - targets:
-          - "host.docker.internal:4000"
-          - "host.docker.internal:4100"
-          - "host.docker.internal:4200"
-          - "host.docker.internal:4300"
-          - "host.docker.internal:4400"
+    # Targets are generated at container startup from the TIP_NODE_TARGETS
+    # env var (comma-separated `host:port` list) in `.env`. file_sd_configs
+    # re-reads the file on a 30s interval so adding a node only requires
+    # editing .env and restarting the prometheus container — no manual
+    # edit of this file. See README.md "Prometheus targets" for details.
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/tip-targets.json
+        refresh_interval: 30s
 
   - job_name: "prometheus"
     static_configs:

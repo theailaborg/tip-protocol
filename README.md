@@ -452,6 +452,28 @@ reverse proxy in front of the REST API.
 
 ---
 
+### Observability (Prometheus + Grafana)
+
+Each node exposes Prometheus-format metrics on `GET /metrics` over its
+REST port. A ready-to-run local stack (Prometheus + Grafana with the
+`TIP Federation` dashboard pre-loaded) lives in `infra/observability/`:
+
+```bash
+cd infra/observability
+cp .env.example .env       # edit if you want non-default creds or node list
+docker compose up -d
+```
+
+- Grafana → http://localhost:3030  (defaults `admin` / `admin`)
+- Prometheus → http://localhost:9090
+
+Add or remove scrape targets by editing `TIP_NODE_TARGETS` in `.env`,
+no edit of `prometheus.yml` needed. Full setup, configuration, and
+production-hardening notes are in
+[`infra/observability/README.md`](./infra/observability/README.md).
+
+---
+
 ### Drop-in Badge Widget
 
 ```html

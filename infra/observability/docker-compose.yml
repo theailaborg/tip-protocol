@@ -6,14 +6,32 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: tip-prometheus
+    user: root
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom-data:/prometheus
+    environment:
+      # Comma-separated list of `host:port` to scrape. Edit in .env, no
+      # need to touch prometheus.yml. The entrypoint below converts this
+      # into the file_sd_configs targets file at container startup.
+      - TIP_NODE_TARGETS=${TIP_NODE_TARGETS:-host.docker.internal:4000,host.docker.internal:4100,host.docker.internal:4200,host.docker.internal:4300,host.docker.internal:4400}
+      - PROM_RETENTION=${PROM_RETENTION:-7d}
+    entrypoint:
+      - /bin/sh
+      - -c
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=${PROM_RETENTION:-7d}
-      - --web.enable-lifecycle
+      - |
+        # Generate file_sd targets.json from comma-separated TIP_NODE_TARGETS.
+        echo "$$TIP_NODE_TARGETS" | awk -v RS=, '
+          BEGIN { printf "[{\"targets\":[" }
+          { gsub(/[ \t\r\n]/, ""); if (length($$0)) printf "%s\"%s\"", (cnt++ ? "," : ""), $$0 }
+          END   { printf "]}]\n" }
+        ' > /etc/prometheus/tip-targets.json
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time="$$PROM_RETENTION" \
+          --web.enable-lifecycle
     ports:
       - "${PROM_HTTP_PORT:-9090}:9090"
     extra_hosts:
