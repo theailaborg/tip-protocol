@@ -57,6 +57,7 @@ function _canonIdentity(r) {
     founding: r.founding ? 1 : 0,
     status: r.status,
     registered_at: r.registered_at,
+    creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
   };
 }
@@ -74,6 +75,7 @@ function _canonContent(r) {
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
     registered_at: r.registered_at,
+    registered_url: r.registered_url || null,
     tx_id: r.tx_id || null,
   };
 }
