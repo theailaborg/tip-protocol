@@ -17,8 +17,13 @@ genesis_root_key.*
 # Genesis private keys — NEVER commit
 genesis-data/founder-keys.json
 genesis-data/founding-vp-keys.json
+genesis-data/founding-node-keys.json
 genesis-data/genesis-keys.json
 genesis-data/backups/
+
+# Dev-only temp users (output of scripts/seed-temp-users.js).
+# Carries private keys — strictly local test fixtures, never committed.
+genesis-data/temp-users/
 
 # Node registration output (private keys)
 node2/
