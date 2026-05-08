@@ -140,12 +140,22 @@ async function main() {
   console.log();
 
   // 1. Load founding VP keys (needed to sign the council_signature)
+  // founding-vp-keys.json uses the multi-entry envelope: { v:1, type, entries:[{tag, public_key, private_key, ...}] }.
+  // Look up the primary VP entry by tag rather than reading flat top-level fields.
   const vpKeysFile = path.resolve(__dirname, "../genesis-data/founding-vp-keys.json");
   if (!fs.existsSync(vpKeysFile)) {
     fail("founding-vp-keys.json not found — run seed script first");
     process.exit(1);
   }
-  const vpKeys = JSON.parse(fs.readFileSync(vpKeysFile, "utf8"));
+  const vpKeysFile_parsed = JSON.parse(fs.readFileSync(vpKeysFile, "utf8"));
+  const vpEntry = vpKeysFile_parsed?.entries?.find(e => e.tag === "primary-vp");
+  if (!vpEntry?.public_key || !vpEntry?.private_key) {
+    fail("founding-vp-keys.json missing primary-vp entry — re-run seed script");
+    process.exit(1);
+  }
+  // Map the envelope's snake_case fields to the camelCase shape the rest of the
+  // script expects (vpKeys.publicKey / vpKeys.privateKey).
+  const vpKeys = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
   ok("Founding VP keys loaded");
 
   // 2. Check target node is healthy
