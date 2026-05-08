@@ -237,16 +237,56 @@ If content exceeds the calibrated threshold:
 
 Example: For author `tip://id/US-a3f8c91b2d4e7021` registering original human content whose SHAKE-256 hash begins with `7f2a91bc3d5e4a...`, the CTID is `tip://c/OH-7f2a91bc3d5e4a-a3f8`.
 
+**Step 4.5: Registered URL (MANDATORY)**
+
+Every registration MUST include a `registered_url` — the canonical
+permalink where the work is (or will be) published. This is a
+**protocol-level requirement, not a UX convenience**. The registered
+URL is stored on the DAG alongside the CTID, content hash, and
+signature, and is what allows a viewer who encounters a CTID
+elsewhere (a copy, a quote, an embedded reference) to locate the
+original published version.
+
+```
+registered_url: string  // required
+```
+
+**Why mandatory:**
+
+- Without `registered_url`, the trust badge can confirm "this CTID is
+  registered" but offers the viewer no path back to the canonical
+  source. That defeats one of the protocol's primary value props.
+- The URL is included in the signed payload (see Step 5 below), so
+  it cannot be retroactively spoofed without invalidating the
+  signature.
+- Implementations that ship a "register-CTID-before-publishing"
+  workflow (where the CTID is signed before the URL exists, then
+  embedded into the article body before publishing) MUST be retired.
+  The correct workflow is: publish first → get permalink → register
+  CTID → optionally edit the published copy to embed the CTID
+  inline. The DAG accepts post-publish edits.
+
+**Reference implementations:**
+
+- `tip-browser-extension`: every TIP_TYPES and LC_TYPES entry sets
+  `urlRequired: true`. Regression test
+  `tests/news-required-fields.test.js → "TIP Protocol — URL is
+  MANDATORY for every type"` asserts no type sets
+  `urlRequired: false` anywhere.
+- TIP node: `POST /v1/content/register` rejects requests where
+  `registered_url` is missing or fails URL parse validation.
+
 **Step 5: DAG Transaction**  
-An ML-DSA-65 signature is computed over the SHAKE-256 hash of a canonical JSON object containing the author's identity, the content hash, and the origin code:
+An ML-DSA-65 signature is computed over the SHAKE-256 hash of a canonical JSON object containing the author's identity, the content hash, the origin code, and the registered URL:
 
 ```
 signature = ML-DSA-65.sign(
   privateKey,
   SHAKE-256(canonicalJson({
-    "author_tip_id": "tip://id/US-a3f8c91b2d4e7021",
-    "content_hash":  "<SHAKE-256 hex hash of content>",
-    "origin_code":   "OH"
+    "author_tip_id":   "tip://id/US-a3f8c91b2d4e7021",
+    "content_hash":    "<SHAKE-256 hex hash of content>",
+    "origin_code":     "OH",
+    "registered_url":  "https://example.com/articles/the-original"
   }))
 )
 ```
