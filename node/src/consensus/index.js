@@ -202,8 +202,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getCommittee,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
     // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
-    // so the root always reflects canonical DAG state.
-    onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
+    // so the root always reflects canonical DAG state. Also notify bullshark
+    // so it can unblock any parked anchor commit waiting on this cert hash
+    // (Option A — DAG completeness gate).
+    onCertSaved: (cert) => {
+      syncHandler.onCertificateCommitted(cert.hash);
+      if (bullshark && typeof bullshark.onCertSaved === "function") {
+        bullshark.onCertSaved(cert.hash);
+      }
+    },
     // Producer-pause notifier — breaks the deadlock where rotation tx
     // never lands because no rounds advance because rotation tx is
     // missing. Bullshark.tryRotationProposal re-checks DAG and forces
@@ -238,7 +245,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // uses this to advance its own committed_round counter past the
   // snapshot anchor when the network's been idle, so anti-entropy
   // doesn't false-positive a "behind" gap and loop.
-  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark, narwhal });
+  const snapshotHandler = createSnapshotHandler({
+    dag, network, isAuthorizedPeer, bullshark, narwhal,
+    // Called synchronously inside snapshot-handler, right after narwhal.markSnapshotInstalled,
+    // so cancelPendingCommit + resetBftTimeFloor fire before any anti-entropy tick
+    // can re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1).
+    // peerCommittedRound (not snapshotRound) is passed so _lastCommittedRound
+    // advances to the true peer head (SI-5).
+    onSnapshotInstalled: (peerCommittedRound) => {
+      if (bullshark) {
+        if (typeof bullshark.cancelPendingCommit === "function") {
+          bullshark.cancelPendingCommit(peerCommittedRound || 0);
+        }
+        if (typeof bullshark.resetBftTimeFloor === "function") {
+          bullshark.resetBftTimeFloor();
+        }
+      }
+    },
+  });
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.

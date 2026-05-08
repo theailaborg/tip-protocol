@@ -78,7 +78,7 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @param {Function} options.isAuthorizedPeer  (peerIdString) => boolean
  * @returns {Object}
  */
-function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null }) {
+function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null, onSnapshotInstalled = null }) {
   // §4 + #34: counters surfaced via stats() for /metrics.
   // chain_walk_failures increments every time _verifyRotationChain throws —
   // either rotations_full_root mismatch or any of the chain-of-trust
@@ -265,10 +265,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // anchors × 2 rounds/anchor at our wave cadence) plus VOTES_RETENTION
     // for late-batch tolerance. For testnet INTERVAL_COMMITS=100 that's
     // 200 rounds + ~5 horizon — generous for active-round catch-up.
-    const ROUNDS_PER_ANCHOR_APPROX = 2;
-    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * ROUNDS_PER_ANCHOR_APPROX;
-    const certWindowHorizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
-    const certFromRound = Math.max(1, peerCommittedRound - certWindowK - certWindowHorizon);
+    // Ship every cert within GC_DEPTH so the receiver can BFS any anchor
+    // in the window without hitting missing-hash deferred-commit loops.
+    // The prior 205-round window (INTERVAL_COMMITS×2 + VOTES_RETENTION) was
+    // narrower than GC_DEPTH (500), leaving rounds [R-500, R-205] absent
+    // from the snapshot — post-install BFS walked into that gap and triggered
+    // the same deferred-commit/forced-partial-commit divergence we fixed elsewhere.
+    const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     try {
       await stream.sink((async function* () {
@@ -716,6 +719,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // 2f+1 of authorized peers and the cert tail reaches peerCommittedRound.
       if (narwhal && typeof narwhal.markSnapshotInstalled === "function") {
         narwhal.markSnapshotInstalled(snapshotRound, peerCommittedRound);
+      }
+
+      // Notify bullshark synchronously, immediately after narwhal state transition,
+      // so cancelPendingCommit + resetBftTimeFloor fire before any AE tick can
+      // re-detect a deferred commit or BFT-time violation.
+      if (typeof onSnapshotInstalled === "function") {
+        try {
+          onSnapshotInstalled(peerCommittedRound);
+        } catch (err) {
+          log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
+        }
       }
 
       return {

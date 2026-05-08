@@ -125,10 +125,29 @@ function computeNextRotationCommittee(dag, finishingRotation) {
     if (registered.has(id)) next.add(id);
   }
 
-  // Late joiners admitted by participation threshold.
-  for (const { node_id, count } of tallies) {
-    if (count >= threshold && registered.has(node_id)) {
-      next.add(node_id);
+  // Solo-mode bootstrap exception: if the finishing rotation's committee
+  // had only 1 member, no non-genesis node can have accumulated
+  // participation — their certs are never walked in a solo-mode anchor
+  // commit (solo anchor only references its own cert chain). Admit all
+  // registered+active nodes so the cluster can expand beyond single-node
+  // mode. Deterministic: every node reads the same committee_history and
+  // sees the same finishingRotation committee size.
+  const _finishingRot = (typeof dag.getCommitteeRotation === "function")
+    ? dag.getCommitteeRotation(finishingRotation)
+    : null;
+  const _finishingSize = _finishingRot && Array.isArray(_finishingRot.committee)
+    ? _finishingRot.committee.length
+    : null;
+
+  if (_finishingSize !== null && _finishingSize <= 1) {
+    // Bootstrap: admit everyone registered+active regardless of participation.
+    for (const id of registered) next.add(id);
+  } else {
+    // Normal multi-node mode: late joiners admitted by participation threshold.
+    for (const { node_id, count } of tallies) {
+      if (count >= threshold && registered.has(node_id)) {
+        next.add(node_id);
+      }
     }
   }
 

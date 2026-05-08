@@ -111,6 +111,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // peer to halt the network.
   const _divergenceObservations = new Map();
 
+  // Per-key (round:ourRoot) map of peerNodeId → peerRoot for all peers
+  // currently disagreeing with us. Used by the unanimous-minority detector
+  // to verify all disagreeing peers converge on the SAME alternative root
+  // before triggering auto-recovery (prevents a single liar from forcing us
+  // to resync toward their forged root).
+  const _peerRootsForKey = new Map(); // key → Map<peerNodeId, peerRoot>
+
+  // Cooldown to prevent auto-recovery from firing in a tight loop when a
+  // snapshot install doesn't immediately heal the divergence (e.g. because
+  // the installed snapshot is still processed while the AE tick sees stale data).
+  let _lastAutoRecoveryAt = 0;
+
   let _timer = null;
   let _running = false;
   let _protocolRegistered = false;
@@ -419,19 +431,52 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    *
    * @returns {{observed: number, threshold: number}}
    */
-  function _recordDivergence(peerNodeId, atRound, ourRoot) {
+  function _recordDivergence(peerNodeId, atRound, ourRoot, peerRoot) {
     const key = `${atRound}:${ourRoot.slice(0, 16)}`;
+
     let set = _divergenceObservations.get(key);
     if (!set) {
       set = new Set();
       _divergenceObservations.set(key, set);
     }
     set.add(peerNodeId);
+
+    // Track what root this peer claims at this round — needed to detect
+    // unanimous minority (all disagree AND all agree on the same alternative).
+    let peerRootMap = _peerRootsForKey.get(key);
+    if (!peerRootMap) {
+      peerRootMap = new Map();
+      _peerRootsForKey.set(key, peerRootMap);
+    }
+    if (peerRoot) peerRootMap.set(peerNodeId, peerRoot);
+
     for (const k of _divergenceObservations.keys()) {
       const r = Number(k.split(":")[0]);
-      if (r < atRound) _divergenceObservations.delete(k);
+      if (r < atRound) {
+        _divergenceObservations.delete(k);
+        _peerRootsForKey.delete(k);
+      }
     }
     return { observed: set.size, threshold: _bftHaltThreshold() };
+  }
+
+  /**
+   * Returns true when every disagreeing peer agrees on the SAME alternative
+   * root at `atRound` — meaning we are unanimously the minority.
+   * Requires at least `threshold` peers to avoid a single-peer false positive.
+   */
+  function _isUnanimousMinority(atRound, ourRoot, observed, threshold) {
+    if (observed < threshold) return { unanimous: false };
+    const key = `${atRound}:${ourRoot.slice(0, 16)}`;
+    const peerRootMap = _peerRootsForKey.get(key);
+    if (!peerRootMap || peerRootMap.size === 0) return { unanimous: false };
+    const roots = new Set(peerRootMap.values());
+    if (roots.size !== 1) return { unanimous: false }; // peers disagree among themselves too
+    const consensusRoot = [...roots][0];
+    if (consensusRoot === ourRoot) return { unanimous: false }; // shouldn't happen but guard it
+    // Find a peer ID that holds the majority root (used as snapshot source).
+    const sourcePeerNodeId = [...peerRootMap.entries()].find(([, r]) => r === consensusRoot)?.[0];
+    return { unanimous: true, consensusRoot, sourcePeerNodeId };
   }
 
   /**
@@ -542,11 +587,85 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     _metrics.byzantine_fork_halts_triggered++;
     const reason = `${observed}/${threshold} peers disagree at committed_round=${atRound}; self.state_root=${ourRoot.slice(0, 16)}`;
     _log.error(`anti-entropy: byzantine-fork halt threshold reached — ${reason}`);
-    narwhal.haltDueToByzantineFork({
-      reason,
-      atRound,
-      peerNodeId,
-    });
+    narwhal.haltDueToByzantineFork({ reason, atRound, peerNodeId });
+
+    // Option B — unanimous minority auto-recovery. When ALL disagreeing peers
+    // agree on the SAME alternative root, we are provably the minority: our
+    // committed state is wrong (incomplete DAG walk, GC-driven truncation, etc.)
+    // and the honest majority is correct. Trigger a snapshot resync from the
+    // majority peer instead of waiting for manual clearByzantineForkHalt().
+    //
+    // Safety bound: only fire when peers unanimously converge on one root.
+    // If peers disagree among themselves, halt stays manual — ambiguous fork.
+    const { unanimous, sourcePeerNodeId } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
+    if (unanimous && sourcePeerNodeId) {
+      const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
+      const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
+      const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+      if (_lastAutoRecoveryAt > 0 && sinceLastMs < RECOVERY_COOLDOWN_MS) {
+        _log.warn(
+          `anti-entropy: unanimous minority at round=${atRound} — auto-recovery cooldown active ` +
+          `(${Math.floor(sinceLastMs / 1000)}s since last recovery, cooldown=${RECOVERY_COOLDOWN_MS / 1000}s). ` +
+          `Halt remains; retry in ${Math.ceil((RECOVERY_COOLDOWN_MS - sinceLastMs) / 1000)}s.`
+        );
+        return;
+      }
+      _log.warn(
+        `anti-entropy: unanimous minority at round=${atRound} — all ${observed} peers agree on same ` +
+        `alternative root. Scheduling auto-recovery from ${sourcePeerNodeId.slice(-8)} in ${RECOVERY_DELAY_MS}ms.`
+      );
+      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound), RECOVERY_DELAY_MS);
+    }
+  }
+
+  /**
+   * Auto-recovery path for the unanimous-minority case. Clears the halt,
+   * enters sync mode, and installs the majority peer's snapshot — restoring
+   * our committed state to what the honest cluster has agreed on.
+   *
+   * Only fires after unanimous minority detection. Verifies the halt is
+   * still present before acting to handle race with manual clearByzantineForkHalt.
+   */
+  async function _autoRecoverFromMinority(sourceTipNodeId, atRound) {
+    if (!narwhal) return;
+
+    const halt = typeof narwhal.byzantineForkHalt === "function" && narwhal.byzantineForkHalt();
+    if (!halt) {
+      _log.info("anti-entropy: auto-recovery: halt already cleared — skipping");
+      return;
+    }
+
+    // Resolve libp2p peerId from TIP node_id for snapshot transport.
+    let libp2pPeerId = null;
+    if (network && typeof network.authorizedPeers === "function") {
+      for (const [pid, tipId] of Object.entries(network.authorizedPeers())) {
+        if (tipId === sourceTipNodeId) { libp2pPeerId = pid; break; }
+      }
+    }
+    if (!libp2pPeerId) {
+      _log.warn(`anti-entropy: auto-recovery: cannot resolve libp2p peerId for ${sourceTipNodeId} — halting manually`);
+      return;
+    }
+
+    _log.notice(`anti-entropy: auto-recovery: clearing byzantine_fork halt, syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
+
+    // Clear halt BEFORE enterSyncMode so narwhal can respond to sync transitions.
+    if (typeof narwhal.clearByzantineForkHalt === "function") {
+      narwhal.clearByzantineForkHalt();
+    }
+
+    let selfState = {};
+    try { selfState = getConsensusState ? getConsensusState() : {}; } catch { /* best-effort */ }
+
+    const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+    if (result === "snapshot_installed") {
+      // Set cooldown only on confirmed success — failed installs must not
+      // consume the cooldown window (SI-3 / CI-2).
+      _lastAutoRecoveryAt = Date.now();
+      _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}, resuming consensus`);
+    } else {
+      _log.warn(`anti-entropy: auto-recovery: snapshot install returned '${result}' — manual intervention may be needed`);
+    }
   }
 
   /**
@@ -568,6 +687,41 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const peerRoot = String(peerStatus.state_merkle_root || "");
 
     if (peerCommitted > selfCommitted) {
+      // If we have an active byzantine_fork halt, a cert-gap pull cannot heal
+      // the divergence — we committed wrong state at a past round and need a
+      // full snapshot resync. The unanimous-minority path (Option B) only fires
+      // when peer.committed_round === self.committed_round, but if peers moved
+      // on while we were halted, AE never re-detects the divergence and we loop
+      // on cert-gap pulls forever. Detect this here and go straight to snapshot.
+      const selfByzHalt = narwhal && typeof narwhal.byzantineForkHalt === "function"
+        && narwhal.byzantineForkHalt();
+      if (selfByzHalt) {
+        const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
+        const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+        if (_lastAutoRecoveryAt > 0 && sinceLastMs < RECOVERY_COOLDOWN_MS) {
+          _log.warn(
+            `anti-entropy: byzantine_fork halt active (committed_round=${selfCommitted}, peer=${peerCommitted}) — ` +
+            `cooldown active, retry in ${Math.ceil((RECOVERY_COOLDOWN_MS - sinceLastMs) / 1000)}s`
+          );
+          return "behind";
+        }
+        _log.warn(
+          `anti-entropy: byzantine_fork halt active at committed_round=${selfCommitted} — ` +
+          `peer is ${peerCommitted - selfCommitted} rounds ahead; cert-gap pull cannot heal ` +
+          `state divergence, escalating directly to snapshot resync`
+        );
+        if (typeof narwhal.clearByzantineForkHalt === "function") {
+          narwhal.clearByzantineForkHalt();
+        }
+        const result = await _runSnapshotFallback(
+          peerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState
+        );
+        if (result === "snapshot_installed") {
+          _lastAutoRecoveryAt = Date.now();
+        }
+        return result;
+      }
+
       // We're behind. Pull the gap via existing sync protocol. fromRound
       // starts at our next-uncommitted round so we only fetch the delta.
       _log.info(`anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} by ${peerCommitted - selfCommitted} rounds — pulling gap`);
@@ -655,7 +809,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _metrics.consensus_divergence_total++;
       _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerLabel} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
 
-      const { observed, threshold } = _recordDivergence(peerNode, selfCommitted, selfRoot);
+      const { observed, threshold } = _recordDivergence(peerNode, selfCommitted, selfRoot, peerRoot);
       if (observed > _metrics.consensus_divergence_distinct_peers) {
         _metrics.consensus_divergence_distinct_peers = observed;
       }
