@@ -102,15 +102,34 @@ function generateMLDSAKeypair() {
 
 /**
  * Sign data with an ML-DSA-65 private key (secretKey).
+ *
+ * By default uses HEDGED mode (per @noble/post-quantum default — fresh
+ * entropy mixed in on every call). Hedged signatures defend against fault
+ * injection + side-channel attacks where an adversary can observe many
+ * signs of the same message. This is the right mode for runtime user
+ * signing (disputes, votes, registrations) where the same key signs many
+ * messages over time on a user's device.
+ *
+ * Pass `{ deterministic: true }` to switch to DETERMINISTIC mode (FIPS 204
+ * §3.6, `extraEntropy: false`). Same key + same message produces a
+ * byte-identical signature. Use this for genesis-time signing where
+ * reproducibility is operationally valuable (stable genesis_hash across
+ * re-seeds) and the threat model excludes fault-injection (key is signed
+ * a small fixed number of times, then ideally retired or kept offline).
+ * See `npm run seed` flow in scripts/seed.js for the canonical callers.
+ *
  * @param {string|Buffer} data
  * @param {string} privateKeyHex
+ * @param {Object} [opts]
+ * @param {boolean} [opts.deterministic=false]
  * @returns {string} signature hex
  */
-function mldsaSign(data, privateKeyHex) {
+function mldsaSign(data, privateKeyHex, { deterministic = false } = {}) {
   const mlDsa = _requirePQ();
   const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
   const msg = typeof data === "string" ? Buffer.from(data) : data;
-  return Buffer.from(mlDsa.sign(msg, secretKey)).toString("hex");
+  const signOpts = deterministic ? { extraEntropy: false } : {};
+  return Buffer.from(mlDsa.sign(msg, secretKey, signOpts)).toString("hex");
 }
 
 /**
@@ -362,12 +381,14 @@ function generateCTID(originCode, contentHash, tipId) {
  * @param {string} privateKeyHex
  * @returns {Object} tx with signature attached
  */
-function signTransaction(tx, privateKeyHex) {
+function signTransaction(tx, privateKeyHex, opts = {}) {
   if (!tx.timestamp) tx = { ...tx, timestamp: new Date().toISOString() };
   // NOTE: prev must be set before calling this so tx_id commits to chain position.
   // dag.addTx() sets prev first, then calls computeTxId — do not reverse that order.
   const canonical = canonicalTx(tx);
-  const sig = mldsaSign(canonical, privateKeyHex);
+  // opts plumbs `{ deterministic: true }` through to mldsaSign for the genesis
+  // signing path. Old 2-arg callers get opts={} → hedged (same behaviour as before).
+  const sig = mldsaSign(canonical, privateKeyHex, opts);
   const signed = { ...tx, signature: sig };
   // Compute content-addressed tx_id only if prev is already attached
   if (!signed.tx_id && Array.isArray(signed.prev) && signed.prev.length > 0) {
@@ -483,9 +504,13 @@ function canonicalJson(obj) {
 /**
  * Sign a set of fields with ML-DSA-65: sign(shake256(canonicalJson(fields)), privateKey).
  * Used by clients to sign request bodies and by tests to build signatures.
+ *
+ * `opts` plumbs through to mldsaSign — pass `{ deterministic: true }` for the
+ * genesis signing path (so signed payloads are byte-identical across re-seeds).
+ * Old 2-arg callers default to opts={} → hedged signing (unchanged behaviour).
  */
-function signBody(fields, privateKey) {
-  return mldsaSign(shake256(canonicalJson(fields)), privateKey);
+function signBody(fields, privateKey, opts = {}) {
+  return mldsaSign(shake256(canonicalJson(fields)), privateKey, opts);
 }
 
 /**
