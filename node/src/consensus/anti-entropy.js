@@ -496,12 +496,24 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    * `_clearDivergenceTracker` only when the peer converges (matching
    * root or non-equal committed_round, both signaled from
    * `_reconcileWithPeer`'s outer match branch).
+   *
+   * The grace timer resets when the peer's joinState changes (e.g.,
+   * syncing → catching_up). Each FSM transition represents a new phase
+   * of honest state-rebuilding; the 30s window measures continuous
+   * divergence *within a single phase*, not cumulative divergence across
+   * multiple sync phases. Without this reset, a normal restart that
+   * progresses through syncing → catching_up → ready would exhaust the
+   * grace in the syncing phase and then flag every catching_up AE poll as
+   * a byzantine event — producing hundreds of false canary increments.
+   *
+   * @param {string} peerNodeId
+   * @param {string} currentPeerJoinState  peer's current join_state value
    */
-  function _persistentDivergence(peerNodeId) {
+  function _persistentDivergence(peerNodeId, currentPeerJoinState) {
     if (!peerNodeId) return false;
     const existing = _peerDivergenceFirstSeen.get(peerNodeId);
-    if (!existing) {
-      _peerDivergenceFirstSeen.set(peerNodeId, { firstSeenMs: Date.now() });
+    if (!existing || existing.lastJoinState !== currentPeerJoinState) {
+      _peerDivergenceFirstSeen.set(peerNodeId, { firstSeenMs: Date.now(), lastJoinState: currentPeerJoinState });
       return false;
     }
     return Date.now() - existing.firstSeenMs > CONSENSUS.SYNC_DIVERGENCE_GRACE_MS;
@@ -774,7 +786,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
       if (selfJoinState !== "ready" || peerJoinState !== "ready") {
-        const persistent = _persistentDivergence(peerNode, selfCommitted, selfRoot, peerRoot);
+        const persistent = _persistentDivergence(peerNode, peerJoinState);
         if (!persistent) {
           // Within grace — diagnostic only, don't flag. Logged at debug
           // because this fires every AE tick (~4s) per diverging peer

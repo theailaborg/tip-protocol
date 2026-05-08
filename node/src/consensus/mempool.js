@@ -346,7 +346,7 @@ function createMempool(dag, options = {}) {
       const tx = entry.tx;
       if (tx?.tx_type !== "COMMITTEE_ROTATION") continue;
       const rn = tx?.data?.rotation_number;
-      if (rn === rotation_number) return tx;
+      if (Number(rn) === Number(rotation_number)) return tx;
     }
     return null;
   }

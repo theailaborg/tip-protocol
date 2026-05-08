@@ -31,7 +31,7 @@ const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
   createCertificate, verifyCertificate,
-  computeQuorum,
+  computeQuorum, bftHaltThreshold,
 } = require("./certificate");
 const {
   serializeBatch, deserializeBatch,
@@ -62,7 +62,7 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
@@ -783,9 +783,18 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       && typeof isPeerDivergent === "function"
       && isPeerDivergent(batch.author_node_id)
     ) {
-      _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
-      log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — state divergence at last AE poll`);
-      return;
+      // Only refuse acks once the cluster has reached the BFT divergence threshold
+      // (f+1 peers). A single divergent peer can be a lagging rejoiner — refusing
+      // it depletes quorum margin and causes liveness failure when combined with
+      // any other disconnection. Safety is preserved by _maybeHalt in anti-entropy,
+      // which fires haltDueToByzantineFork at the same threshold.
+      const dCount = typeof divergentPeers === "function" ? divergentPeers().length : 0;
+      const threshold = bftHaltThreshold(_getCommittee().length);
+      if (dCount >= threshold) {
+        _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
+        log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — ${dCount}/${threshold} divergent peers at last AE poll`);
+        return;
+      }
     }
 
     // Send ack — signed_at carries this node's wall-clock at sign time and

@@ -237,6 +237,10 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       try { return antiEntropyForFiltering ? antiEntropyForFiltering.peerJoinState(peerNodeId) : "ready"; }
       catch { return "ready"; }
     },
+    divergentPeers: () => {
+      try { return antiEntropyForFiltering ? antiEntropyForFiltering.divergentPeers() : []; }
+      catch { return []; }
+    },
   });
   narwhalRef.current = narwhal;
 
