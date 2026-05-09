@@ -94,7 +94,7 @@ x-node-common: &node-common
     TIP_P2P_PORT:               4001
     TIP_DB_PATH:                /app/data/tip.db
     TIP_DATA_DIR:               /app/data
-    TIP_DEV_BYPASS_VOTE_WINDOWS: 1
+    TIP_DEV_BYPASS_VOTE_WINDOWS: ${TIP_DEV_BYPASS_VOTE_WINDOWS:-0}
     # ── DB adapter passthrough — values come from .env. DB_HOST should
     #    match the service name of whichever DB profile is active.
     DB_DRIVER:                  ${DB_DRIVER:-sqlite}
