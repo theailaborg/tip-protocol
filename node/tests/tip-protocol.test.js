@@ -35,8 +35,31 @@ const {
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
   generateMLDSAKeypair, mldsaSign, signTransaction, verifyTransaction,
-  signBody,
+  signBody, canonicalJson,
 } = require(path.join(SHARED, "crypto"));
+
+// Build a dispute request body that satisfies the current contract:
+//   - reason must be one of DISPUTE_REASONS (origin_mismatch is the only
+//     wired path today; claimed_origin is required for it)
+//   - evidence block is required: { payload: { description, evidence?: [...] }, signature }
+//   - the disputer signs over { disputer_tip_id, reason, claimed_origin?, evidence_hash? }
+//     (truthy-gated; same field set the API + commit-handler verify against)
+function _buildDisputeBody({ disputerTipId, disputerPriv, claimedOrigin = "AG", description = "test dispute description for protocol coverage" }) {
+  const payload = { description };
+  const evidenceHash = shake256(canonicalJson(payload));
+  const evidenceSig = signBody(payload, disputerPriv);
+  const sigFields = {
+    disputer_tip_id: disputerTipId,
+    reason: "origin_mismatch",
+    claimed_origin: claimedOrigin,
+    evidence_hash: evidenceHash,
+  };
+  return {
+    ...sigFields,
+    signature: signBody(sigFields, disputerPriv),
+    evidence: { payload, signature: evidenceSig },
+  };
+}
 
 // Skip real ZK verification in tests — circuit artifacts not present in test env
 process.env.ZK_SKIP_VERIFY = "true";
@@ -799,14 +822,13 @@ describe("REST API", () => {
       tip_id: disputerId, region: "US", public_key: disputerKp.publicKey,
       status: "active", vp_id: testVpId, verified_at: new Date().toISOString(),
     });
-    const disputeFields = {
-      disputer_tip_id: disputerId,
-      reason: "AI classifier detected probable AI generation in OH-declared content",
-      evidence_hash: shake256("classifier output evidence"),
-    };
+    const body = _buildDisputeBody({
+      disputerTipId: disputerId, disputerPriv: disputerKp.privateKey,
+      claimedOrigin: "AG", description: "Test 6.13 dispute body — classifier flagged AI generation",
+    });
     const res = await request(app)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
-      .send({ ...disputeFields, signature: signBody(disputeFields, disputerKp.privateKey) });
+      .send(body);
     expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.success).toBe(true);
   });
@@ -1100,20 +1122,28 @@ describe("Gossip Broadcast Wiring", () => {
     const ctid = cRes.body.data.ctid;
 
     // (gossip broadcast removed — txs go through consensus)
-    const disputeFields = { disputer_tip_id: dTipId, reason: "gossip test" };
+    const body = _buildDisputeBody({
+      disputerTipId: dTipId, disputerPriv: dAuthorPriv, claimedOrigin: "AG",
+      description: "Test 8.5 — gossip broadcast dispute body",
+    });
     const res = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
-      .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
+      .send(body);
     expect(res.status).toBe(202);
     expect(res.body.data.dispute_tx_id).toBeDefined();
     const disputedContent = gossipDag.getContent(ctid);
     expect(disputedContent.status).toBe("disputed");
 
-    // Duplicate dispute should be rejected (content already under dispute)
-    // (gossip broadcast removed — txs go through consensus)
+    // Duplicate dispute should be rejected (content already under dispute).
+    // Vary the description so evidence_hash uniqueness doesn't 409 first —
+    // we want to land on the "already under dispute" rule.
+    const body2 = _buildDisputeBody({
+      disputerTipId: dTipId, disputerPriv: dAuthorPriv, claimedOrigin: "AG",
+      description: "Test 8.5 — duplicate attempt with different description",
+    });
     const res2 = await request(gossipApp)
       .post(`/v1/content/${encodeURIComponent(ctid)}/dispute`)
-      .send({ ...disputeFields, signature: signBody(disputeFields, dAuthorPriv) });
+      .send(body2);
     expect(res2.status).toBe(403);
   });
 });
@@ -1275,17 +1305,25 @@ describe("Semantic Dedup", () => {
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent2, signature: signBody(sdCtSig2, sdAuthorPriv) });
     const ctid2 = ctRes2.body.data.ctid;
 
-    const fields = { disputer_tip_id: sdTipId, reason: "test dispute" };
+    const body = _buildDisputeBody({
+      disputerTipId: sdTipId, disputerPriv: sdAuthorPriv, claimedOrigin: "AG",
+      description: "Test 9.3 — first dispute should land",
+    });
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
-      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+      .send(body);
     expect(res.status).toBe(202);
     expect(res.body.data.success).toBe(true);
 
-    // Duplicate dispute — content already under dispute
+    // Duplicate — content already under dispute. Different description so
+    // evidence_hash uniqueness doesn't fire first.
+    const body2 = _buildDisputeBody({
+      disputerTipId: sdTipId, disputerPriv: sdAuthorPriv, claimedOrigin: "AG",
+      description: "Test 9.3 — duplicate attempt with different description",
+    });
     const res2 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid2)}/dispute`)
-      .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
+      .send(body2);
     expect(res2.status).toBe(403);
     expect(res2.body.error.message).toMatch(/already under dispute/i);
   });
@@ -1341,10 +1379,13 @@ describe("Semantic Dedup", () => {
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content96, signature: signBody(sig96, sdAuthorPriv) });
     const ctid96 = ctRes.body.data.ctid;
 
-    const dFields = { disputer_tip_id: sdVerifierId, reason: "test" };
+    const dBody = _buildDisputeBody({
+      disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
+      description: "Test 9.6 — escalation path coverage",
+    });
     const dRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid96)}/dispute`)
-      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+      .send(dBody);
     expect(dRes.status).toBe(202);
     expect(dRes.body.data.stage1).toBeDefined();
     expect(["escalate", "escalate_high"]).toContain(dRes.body.data.stage1.routing);
@@ -1545,11 +1586,15 @@ describe("Semantic Dedup", () => {
       .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: caseContent, signature: signBody(caseSig, sdAuthorPriv) });
     const caseCtid = ctRes.body.data.ctid;
 
-    // File dispute
-    const dFields = { disputer_tip_id: sdVerifierId, reason: "origin_mismatch", claimed_origin: "AG", evidence_hash: "ev123" };
+    // File dispute (requires the evidence block; client-supplied
+    // evidence_hash without a body is now refused).
+    const dBody = _buildDisputeBody({
+      disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
+      description: "Test 9.13 — dispute-case projection coverage",
+    });
     const disputeRes = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(caseCtid)}/dispute`)
-      .send({ ...dFields, signature: signBody(dFields, sdVerifierPriv) });
+      .send(dBody);
     expect(disputeRes.status).toBe(202);
 
     const res = await request(sdApp)

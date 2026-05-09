@@ -291,11 +291,25 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       }
     }
 
-    // Sort merged stream by timestamp DESC; tx_id as a deterministic
-    // tie-breaker so order is stable across calls when timestamps tie.
+    // Canonical activity order — strict reverse-chronological:
+    //   1. timestamp DESC                  — newer batch on top
+    //   2. SCORE_UPDATE before anchor       — within a same-batch tie, the
+    //                                         side-effect shows above its
+    //                                         trigger because it's the
+    //                                         logically-latest event in the
+    //                                         causal chain ("latest on top"
+    //                                         applies uniformly)
+    //   3. tx_id DESC                       — final deterministic tie-break,
+    //                                         stable across calls
+    // Same rule mirrored in MemoryStore.getTxsBySubject and the SQL
+    // ORDER BY — single source of truth.
     items.sort((a, b) => {
       const d = new Date(b.timestamp) - new Date(a.timestamp);
-      return d !== 0 ? d : (a.tx_id < b.tx_id ? 1 : -1);
+      if (d !== 0) return d;
+      const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
+      const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a.tx_id < b.tx_id ? 1 : -1;
     });
 
     const total = items.length;

@@ -60,18 +60,91 @@ function _seededShuffle(arr, seedHex) {
 }
 
 /**
- * Pick N from shuffled list with geographic diversity cap.
+ * Pick `count` jurors from a deterministically-shuffled candidate list.
+ *
+ * Hard exclusions (the author, disputer, and revoked identities) are
+ * filtered out by the caller BEFORE this function runs — every entry
+ * here is jury-eligible in principle. This function decides how to
+ * order them under the soft preferences:
+ *
+ *   Pass 1 — preferred:    score ≥ minScore  AND  ≤ maxPerRegion same-region
+ *   Pass 2 — geo overflow: score ≥ minScore  (geo cap relaxed)
+ *   Pass 3+ — score cascade: each fallbackFloor in turn (geo still off)
+ *
+ * The `fallbackFloors` rest-arg lets callers chain progressively lower
+ * floors. Example for expert selection (3 cascade levels):
+ *
+ *   _pickWithGeoCap(shuffled, 3, 2, 850, 700, 500)
+ *   //                              ^Pass 1/2  ^Pass 3  ^Pass 4
+ *   // Pass 1: ≥ 850 + geo cap     ; Pass 2: ≥ 850 only ;
+ *   // Pass 3: ≥ 700 (jury-tier)   ; Pass 4: ≥ 500 (VERIFIED-tier ultimate floor).
+ *
+ * Each subsequent floor must be strictly lower than the previous active
+ * floor — non-decreasing entries are skipped (defensive — a redundant
+ * pass would do nothing useful).
+ *
+ * Why floored relaxations: an unrestricted final pass would admit
+ * arbitrarily-low-score jurors (including NOT_TRUSTED-tier) when the pool
+ * is thin. The floors keep cascade-admitted jurors within VERIFIED tier.
+ * If even the lowest floor can't fill `count`, the dispute proceeds with
+ * `insufficient: true` rather than picking near-zero-score jurors.
+ *
+ * Why relaxations at all: rigid caps stalled the dispute pipeline whenever
+ * the eligible pool was lopsided on either axis. Diversity + skill stay a
+ * *preference* (Pass 1 wins when both can be satisfied) but no longer
+ * prevent reaching `count`.
+ *
+ * Determinism: every node runs the same passes against the same seeded
+ * shuffle of the same candidate set. Same input → same output.
+ *
+ * @param {Array} shuffled        candidates, each with { tip_id, region, score }
+ * @param {number} count          target jury size
+ * @param {number} maxPerRegion   Pass-1 geographic cap (still respected when achievable)
+ * @param {number} minScore       Pass-1/2 score threshold
+ * @param  {...number} fallbackFloors  optional cascade floors applied in order, geo cap off
+ * @returns {string[]}            selected tip_ids; length === count when pool allows
  */
-function _pickWithGeoCap(shuffled, count, maxPerRegion) {
+function _pickWithGeoCap(shuffled, count, maxPerRegion, minScore = 0, ...fallbackFloors) {
   const selected = [];
+  const selectedSet = new Set();
   const regionCount = {};
+
+  // Pass 1: preferred — score ≥ minScore AND geo cap respected
   for (const id of shuffled) {
+    if ((id.score ?? Infinity) < minScore) continue;
     const region = id.region || "XX";
     if ((regionCount[region] || 0) >= maxPerRegion) continue;
     regionCount[region] = (regionCount[region] || 0) + 1;
     selected.push(id.tip_id);
-    if (selected.length === count) break;
+    selectedSet.add(id.tip_id);
+    if (selected.length === count) return selected;
   }
+
+  // Pass 2: relax geo cap, keep main score floor
+  for (const id of shuffled) {
+    if (selectedSet.has(id.tip_id)) continue;
+    if ((id.score ?? Infinity) < minScore) continue;
+    selected.push(id.tip_id);
+    selectedSet.add(id.tip_id);
+    if (selected.length === count) return selected;
+  }
+
+  // Pass 3+: cascade through fallback floors. Each floor must be strictly
+  // lower than the previous active floor — non-decreasing entries are
+  // skipped to prevent redundant passes.
+  let currentFloor = minScore;
+  for (const floor of fallbackFloors) {
+    if (typeof floor !== "number" || floor >= currentFloor) continue;
+    for (const id of shuffled) {
+      if (selectedSet.has(id.tip_id)) continue;
+      if ((id.score ?? Infinity) < floor) continue;
+      selected.push(id.tip_id);
+      selectedSet.add(id.tip_id);
+      if (selected.length === count) return selected;
+    }
+    currentFloor = floor;
+  }
+
   return selected;
 }
 
@@ -94,23 +167,29 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
   // Deterministic seed: dispute tx (unpredictable) + identity count (verifiable set size)
   const seed = shake256(`${disputeTxId}:${identityCount}`);
 
-  // Filter eligible jurors, sorted by tip_id for determinism across nodes
-  const eligible = allIdentities
+  // HARD-EXCLUDE filter: never include the author, the disputer, or any
+  // revoked identity — those are security invariants, not preferences.
+  // Score and geographic-diversity are SOFT preferences applied inside
+  // _pickWithGeoCap (Pass 1 strict, Passes 2-3 progressively relaxed).
+  // Sort by tip_id for determinism across nodes before shuffling.
+  const candidates = allIdentities
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
       if (dag.isRevoked(id.tip_id)) return false;
-      const s = scoring.getScore(id.tip_id);
-      if (s.score < JURY.MIN_SCORE) return false;
       return true;
     })
+    .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
     .sort((a, b) => a.tip_id.localeCompare(b.tip_id));
 
-  if (eligible.length < JURY.SIZE) {
-    return { jurors: eligible.map(e => e.tip_id), insufficient: true, seed, identityCount };
+  if (candidates.length < JURY.SIZE) {
+    return { jurors: candidates.map(c => c.tip_id), insufficient: true, seed, identityCount };
   }
 
-  const shuffled = _seededShuffle(eligible, seed);
-  const jurors = _pickWithGeoCap(shuffled, JURY.SIZE, JURY.MAX_SAME_COUNTRY);
+  const shuffled = _seededShuffle(candidates, seed);
+  const jurors = _pickWithGeoCap(
+    shuffled, JURY.SIZE, JURY.MAX_SAME_COUNTRY,
+    JURY.MIN_SCORE, JURY.MIN_SCORE_FALLBACK,
+  );
 
   return { jurors, insufficient: jurors.length < JURY.SIZE, seed, identityCount };
 }
@@ -119,28 +198,53 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
  * Deterministic expert selection for Stage 3 appeal.
  * Same algorithm as jury but higher score threshold and 3 experts.
  */
-function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId) {
+function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, ctid = null) {
   const allIdentities = dag.getAllIdentities();
   const identityCount = allIdentities.length;
 
   const seed = shake256(`${appealTxId}:${identityCount}`);
 
-  const eligible = allIdentities
+  // Stage-2 jurors are excluded from the Stage-3 panel: same dispute, a
+  // fresh judicial body — re-using a juror is a conflict of interest and
+  // also leaks information across stages (a Stage-2 minority voter judging
+  // their own loss). When `ctid` is wired through, look up summoned jurors
+  // for that ctid (is_appeal=false) and exclude them.
+  const priorJurors = ctid && typeof dag.getTxsByTypeAndCtid === "function"
+    ? new Set(
+      dag.getTxsByTypeAndCtid(TX_TYPES.JURY_SUMMONS, ctid)
+        .filter(s => !s.data?.is_appeal)
+        .map(s => s.data?.juror_tip_id)
+        .filter(Boolean)
+    )
+    : new Set();
+
+  // Hard excludes — author, disputer, revoked, prior-stage jurors.
+  // Score + geo-diversity are soft preferences relaxed by _pickWithGeoCap.
+  const candidates = allIdentities
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
+      if (priorJurors.has(id.tip_id)) return false;
       if (dag.isRevoked(id.tip_id)) return false;
-      const s = scoring.getScore(id.tip_id);
-      if (s.score < APPEAL.MIN_EXPERT_SCORE) return false;
       return true;
     })
+    .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
     .sort((a, b) => a.tip_id.localeCompare(b.tip_id));
 
-  if (eligible.length < APPEAL.EXPERT_COUNT) {
-    return { experts: eligible.map(e => e.tip_id), insufficient: true, seed, identityCount };
+  if (candidates.length < APPEAL.EXPERT_COUNT) {
+    return { experts: candidates.map(c => c.tip_id), insufficient: true, seed, identityCount };
   }
 
-  const shuffled = _seededShuffle(eligible, seed);
-  const experts = _pickWithGeoCap(shuffled, APPEAL.EXPERT_COUNT, 2);
+  const shuffled = _seededShuffle(candidates, seed);
+  // Cascade: 850 → 700 (jury-tier) → 500 (VERIFIED-tier ultimate floor).
+  // The ultimate floor is borrowed from JURY.MIN_SCORE_FALLBACK rather than
+  // duplicated as a 4th genesis constant — semantically it represents
+  // "VERIFIED tier is the absolute minimum for any judicial role," shared
+  // across jury and expert selection. If governance later wants
+  // independent expert/jury floors, split into expert_min_score_floor.
+  const experts = _pickWithGeoCap(
+    shuffled, APPEAL.EXPERT_COUNT, APPEAL.MAX_SAME_COUNTRY,
+    APPEAL.MIN_EXPERT_SCORE, APPEAL.MIN_EXPERT_SCORE_FALLBACK, JURY.MIN_SCORE_FALLBACK,
+  );
 
   return { experts, insufficient: experts.length < APPEAL.EXPERT_COUNT, seed, identityCount };
 }
@@ -235,6 +339,34 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
 
   // ── NO_QUORUM auto-escalation ─────────────────────────────────────────────
   if (totalVotes < JURY.QUORUM || nonAbstain < JURY.MAJORITY_VOTE) {
+    // Emit ADJUDICATION_RESULT (verdict=NO_QUORUM) FIRST so every Stage-2
+    // dispute ends with a verdict tx — consistent with the UPHELD /
+    // DISMISSED / CONSERVATIVE_LABEL paths. The APPEAL_FILED that follows
+    // depends on this for prereq validation; emitting it here also keeps
+    // the timeline / activity feed / dispute-case verdict block populated.
+    // No score effect: applyScoreEffect's ADJUDICATION_RESULT case treats
+    // NO_QUORUM as a no-op (verdict gates on === UPHELD).
+    const noQuorumResultTx = nodeSignedAuto({
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp,
+      prev: getRecentPrev(),
+      data: {
+        ctid,
+        verdict: VERDICT.NO_QUORUM,
+        declared_origin: disputeData.declared_origin || rec?.origin_code,
+        confirmed_origin: null,
+        reason: disputeData.reason,
+        author_tip_id: authorTipId,
+        author_score_delta: 0,
+        pre_dispute_status: disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED,
+        match_count: matchCount,
+        mismatch_count: mismatchCount,
+        abstain_count: abstainCount,
+        juror_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
+      },
+    }, config);
+    txs.push(noQuorumResultTx);
+
     const appealTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_FILED,
       timestamp,
@@ -243,7 +375,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     }, config);
     txs.push(appealTx);
 
-    const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId);
+    const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
     const commitDeadline = new Date(Date.now() + APPEAL.COMMIT_WINDOW_HOURS * 3600000).toISOString();
     const revealDeadline = new Date(Date.now() + (APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
     for (const expertTipId of experts.experts) {
@@ -285,9 +417,12 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     : (declared_origin === ORIGIN.AG && confirmed_origin === ORIGIN.OH) ? VERDICT.CONSERVATIVE_LABEL
       : VERDICT.UPHELD;
 
-  // Author penalty embedded in the result tx so APPEAL_RESULT can reverse
-  // the exact value if Stage 3 overturns. computeScore() picks this up
-  // via the ADJUDICATION_RESULT replay path.
+  // Author penalty value precomputed here so it lives on the
+  // ADJUDICATION_RESULT tx as informational metadata (audit trail +
+  // exact-reversal lookup by buildAppealBatch on overturn). The actual
+  // score change is applied by a paired SCORE_UPDATE pushed below — the
+  // RESULT tx itself only carries the offense increment (handled by
+  // commit-handler via score-effects.applyScoreEffect's RESULT case).
   const authorScoreDelta = (verdict === VERDICT.UPHELD && authorTipId)
     ? scoring.getAdjudicationDelta(authorTipId, { declared_origin, confirmed_origin, verdict })
     : 0;
@@ -315,6 +450,20 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     },
   }, config);
   txs.push(resultTx);
+
+  // Author penalty as a paired SCORE_UPDATE — single channel for every
+  // score delta in the system. The offense increment lives on the
+  // ADJUDICATION_RESULT tx above (RESULT-owns-offense rule); this tx
+  // owns the score delta. APPEAL_RESULT can still reverse the exact
+  // value because `author_score_delta` remains on the ADJUDICATION_RESULT
+  // tx as the canonical source of truth.
+  if (verdict === VERDICT.UPHELD && authorTipId && authorScoreDelta < 0) {
+    txs.push(scoring.buildScoreUpdateTx({
+      tipId: authorTipId, delta: authorScoreDelta,
+      reason: `Author penalty: UPHELD on ${ctid}`,
+      ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+    }));
+  }
 
   // ── Juror score effects ───────────────────────────────────────────────────
   const isTie = matchCount === mismatchCount;
@@ -344,19 +493,31 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     }
   }
 
-  // Disputer outcome
-  if (verdict === VERDICT.UPHELD && disputerTipId) {
-    txs.push(scoring.buildScoreUpdateTx({
-      tipId: disputerTipId, delta: DISPUTE.UPHELD_BONUS,
-      reason: `Dispute upheld on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
-    }));
-  } else if (verdict === VERDICT.DISMISSED && disputerTipId) {
-    txs.push(scoring.buildScoreUpdateTx({
-      tipId: disputerTipId, delta: -DISPUTE.DISPUTER_STAKE,
-      reason: `Dispute dismissed on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
-    }));
+  // Disputer outcome — stake-on-file model. The DISPUTER_STAKE is
+  // deducted upfront in dispute-service.fileDispute (the SCORE_UPDATE
+  // ride alongside CONTENT_DISPUTED). Here we only handle the verdict-
+  // driven settlement:
+  //   UPHELD              — refund stake + apply bonus (net +30)
+  //   DISMISSED           — stake stays forfeited (no event needed; the
+  //                         filing-time deduction is the penalty itself)
+  //   CONSERVATIVE_LABEL  — refund stake, no bonus (disputer wasn't right
+  //                         about the claimed origin, but author's
+  //                         declaration was also wrong → neutral outcome)
+  if (disputerTipId) {
+    if (verdict === VERDICT.UPHELD) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
+        reason: `Dispute upheld on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    } else if (verdict === VERDICT.CONSERVATIVE_LABEL) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
+        reason: `Dispute conservative-label on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    }
+    // DISMISSED: no event — filing-time stake deduction is the forfeit.
   }
 
   log.info(`Jury verdict ${verdict} on ${ctid} — ${matchCount}/${mismatchCount}/${abstainCount} match/mismatch/abstain (${txs.length} txs in batch)`);
@@ -454,10 +615,17 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const overturned = (stage2Verdict === VERDICT.UPHELD && verdict === VERDICT.DISMISSED)
     || (stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD);
 
-  // Author-penalty delta for the OVERTURN-of-DISMISSED branch (Stage 2
-  // dismissed; experts say UPHELD). Computed here so it lands in the tx
-  // and commit-handler doesn't need to call scoring.getAdjudicationDelta.
-  const overturnAuthorDelta = (overturned && stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD && authorTipId)
+  // Author-penalty delta for cases where Stage-3 produces the FIRST
+  // applicable penalty: (a) overturn-of-DISMISSED (Stage-2 said no
+  // offense; experts say UPHELD), or (b) NO_QUORUM→UPHELD (Stage-2
+  // didn't reach a decision; Stage-3 is the first verdict). Both apply
+  // a fresh Stage-2-style penalty here. Computed once so the value
+  // lands in the APPEAL_RESULT tx for downstream consumers.
+  const stage3AppliesFreshPenalty = (
+    (stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD)
+    || (stage2Verdict === VERDICT.NO_QUORUM && verdict === VERDICT.UPHELD)
+  );
+  const overturnAuthorDelta = (stage3AppliesFreshPenalty && authorTipId)
     ? scoring.getAdjudicationDelta(authorTipId, { declared_origin, confirmed_origin, verdict })
     : 0;
 
@@ -470,6 +638,11 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       stage2_verdict: stage2Verdict,
       declared_origin, confirmed_origin,
       pre_dispute_status: preStatus,
+      // Self-containment — both party tip_ids embedded so FE / analytics
+      // / audits don't need to walk back to CONTENT_DISPUTED. Not load-
+      // bearing for score effects (those flow through SCORE_UPDATE).
+      author_tip_id: authorTipId,
+      disputer_tip_id: disputerTipId,
       // Reversal data — commit-handler reads these to update content state.
       original_author_delta: stage2AuthorDelta,
       overturn_author_delta: overturnAuthorDelta,
@@ -480,30 +653,43 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   txs.push(resultTx);
 
   // ── Appellant outcome ─────────────────────────────────────────────────────
+  // Stake-on-file model: APPELLANT_STAKE was deducted at fileAppeal time
+  // (the SCORE_UPDATE rides alongside APPEAL_FILED). Here we settle:
+  //   overturned    → refund stake + apply OVERTURN_BONUS = +(stake + bonus)
+  //   not overturned → no event (filing-time deduction stays forfeited)
   if (overturned && appellantTipId) {
     txs.push(scoring.buildScoreUpdateTx({
-      tipId: appellantTipId, delta: APPEAL.OVERTURN_BONUS,
+      tipId: appellantTipId, delta: APPEAL.APPELLANT_STAKE + APPEAL.OVERTURN_BONUS,
       reason: `Appeal overturned on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
       timestamp, getRecentPrev, config,
     }));
 
-    // Reverse Stage-2 disputer effect.
+    // Reverse Stage-2 disputer effect under the stake-on-file model.
+    // Stage-2 settlement deltas were:
+    //   UPHELD     →  +stake +bonus  (refund + bonus = +30)
+    //   DISMISSED  →  no event       (filing-time stake stayed forfeited)
+    // Overturn flips that — for both directions, the new state is the
+    // OPPOSITE Stage-2 outcome:
+    //   UPHELD → DISMISSED    un-refund + un-bonus = -(stake + bonus) = -30
+    //   DISMISSED → UPHELD    apply settlement now: stake refund + bonus = +30
     if (stage2Verdict === VERDICT.UPHELD && disputerTipId) {
       txs.push(scoring.buildScoreUpdateTx({
-        tipId: disputerTipId, delta: -DISPUTE.UPHELD_BONUS,
-        reason: `Appeal overturned: Stage 2 bonus reversed on ${ctid}`,
+        tipId: disputerTipId, delta: -(DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS),
+        reason: `Appeal overturned: Stage 2 settlement reversed on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
     } else if (stage2Verdict === VERDICT.DISMISSED && disputerTipId) {
       txs.push(scoring.buildScoreUpdateTx({
-        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
-        reason: `Appeal overturned: Stage 2 penalty reversed on ${ctid}`,
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
+        reason: `Appeal overturned: stake refunded + bonus on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
     }
 
     // Reverse Stage-2 author penalty (overturn UPHELD → DISMISSED) OR
-    // apply fresh author penalty (overturn DISMISSED → UPHELD).
+    // apply fresh author penalty (overturn DISMISSED → UPHELD). Score
+    // delta only — offense_count adjustment is handled by APPEAL_RESULT
+    // itself (RESULT-owns-offense rule).
     if (stage2Verdict === VERDICT.UPHELD && authorTipId && stage2AuthorDelta < 0) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: authorTipId, delta: -stage2AuthorDelta,
@@ -517,12 +703,45 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
     }
-  } else if (!overturned && appellantTipId) {
-    txs.push(scoring.buildScoreUpdateTx({
-      tipId: appellantTipId, delta: -APPEAL.APPELLANT_STAKE,
-      reason: `Appeal failed on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
-    }));
+  }
+  // Not overturned: no settlement event for the appellant. The
+  // filing-time stake deduction (in dispute-service.fileAppeal) is the
+  // forfeit itself — appeal failed, stake stays consumed.
+
+  // ── NO_QUORUM Stage-3 settlement ──────────────────────────────────────────
+  // Stage-2 NO_QUORUM produced no settlement (no UPHELD bonus, no penalty,
+  // disputer's stake stayed locked). Stage-3 is now the FIRST authoritative
+  // verdict — apply settlement as if Stage-3 were the Stage-2 verdict:
+  //   UPHELD             → disputer refund+bonus, fresh author penalty
+  //   CONSERVATIVE_LABEL → disputer refund only, no author penalty
+  //   DISMISSED          → no event (disputer's stake stays forfeited)
+  // Appellant on NO_QUORUM auto-escalation is "SYSTEM_AUTO_ESCALATION"
+  // (no real tip_id), so no appellant settlement event is emitted.
+  if (stage2Verdict === VERDICT.NO_QUORUM) {
+    if (verdict === VERDICT.UPHELD) {
+      if (disputerTipId) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
+          reason: `Stage 3 verdict UPHELD: stake refunded + bonus on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+      if (authorTipId && overturnAuthorDelta < 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: authorTipId, delta: overturnAuthorDelta,
+          reason: `Stage 3 verdict UPHELD: author penalty on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+    } else if (verdict === VERDICT.CONSERVATIVE_LABEL && disputerTipId) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
+        reason: `Stage 3 verdict CONSERVATIVE_LABEL: stake refunded on ${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+      }));
+    }
+    // DISMISSED on NO_QUORUM: stake stays forfeited (no event), matches
+    // standard DISMISSED handling.
   }
 
   // ── Expert score effects ──────────────────────────────────────────────────

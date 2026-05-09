@@ -48,6 +48,19 @@ const CONTENT_STATUS = Object.freeze({
   RETRACTED: "retracted",
 });
 
+// ─── Dispute reasons ────────────────────────────────────────────────────────
+// Protocol vocabulary — enum of accepted values for the `reason` field on a
+// CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
+// signature fields, eligibility rules, score effects), so this lives with
+// other code-level enums, not in genesis tunables. Today only origin
+// disputes are wired; the (declared_origin, claimed_origin) pair plus the
+// eligibility matrix in business-rules.canDispute carries the
+// classification.
+const DISPUTE_REASON = Object.freeze({
+  ORIGIN_MISMATCH: "origin_mismatch",
+});
+const DISPUTE_REASONS = Object.freeze(Object.values(DISPUTE_REASON));
+
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
@@ -95,6 +108,51 @@ const TX_TYPES = Object.freeze({
 // services that need O(1) "is this a known tx type?" checks (tx-validator,
 // activity feed type filter, etc.) without each caller rebuilding the set.
 const TX_TYPE_SET = Object.freeze(new Set(Object.values(TX_TYPES)));
+
+// ─── Dispute timeline / episode constants ───────────────────────────────────
+// Read-side projection helpers used by node/src/services/dispute-service.js
+// to build the dispute case + timeline view. Pure data — no consensus role.
+
+// Public dispute_id is the first DISPUTE_SHORT_ID_LEN hex chars of
+// dispute_tx_id. 48 bits is well clear of collision risk for dispute volume,
+// short enough for URLs and copy-paste. Lookup is a prefix scan; ambiguous
+// prefixes return 409 so callers can extend.
+const DISPUTE_SHORT_ID_LEN = 12;
+
+// Tx types that belong to a dispute episode (everything except the
+// CONTENT_DISPUTED root tx itself, which always anchors the episode).
+// Order here is irrelevant — used as an enumeration set; sort order
+// across an episode is governed by DISPUTE_EVENT_PRIORITY.
+const DISPUTE_EPISODE_TX_TYPES = Object.freeze([
+  TX_TYPES.AI_CLASSIFIER_RESULT,
+  TX_TYPES.JURY_SUMMONS,
+  TX_TYPES.JURY_VOTE_COMMIT,
+  TX_TYPES.JURY_VOTE_REVEAL,
+  TX_TYPES.ADJUDICATION_RESULT,
+  TX_TYPES.APPEAL_FILED,
+  TX_TYPES.APPEAL_RESULT,
+]);
+
+// Logical-event ordering used as a SECONDARY sort key in
+// collectEpisodeEvents. Many events in a dispute episode are produced in
+// the same atomic submitBatch (CONTENT_DISPUTED + AI_CLASSIFIER_RESULT +
+// 7× JURY_SUMMONS, all built from `new Date().toISOString()` calls within
+// microseconds), so they share an ISO timestamp at millisecond resolution.
+// Sorting on timestamp alone tiebreaks via tx_id (a content hash with no
+// semantic meaning), which can put "AI screening" above "Dispute filed"
+// in the UI even though the dispute logically precedes its own classifier.
+// This priority restores the human-meaningful order whenever timestamps
+// collide. Pure data, no DAG state, no determinism risk.
+const DISPUTE_EVENT_PRIORITY = Object.freeze({
+  [TX_TYPES.CONTENT_DISPUTED]:     0,
+  [TX_TYPES.AI_CLASSIFIER_RESULT]: 1,
+  [TX_TYPES.JURY_SUMMONS]:         2,
+  [TX_TYPES.JURY_VOTE_COMMIT]:     3,
+  [TX_TYPES.JURY_VOTE_REVEAL]:     4,
+  [TX_TYPES.ADJUDICATION_RESULT]:  5,
+  [TX_TYPES.APPEAL_FILED]:         6,
+  [TX_TYPES.APPEAL_RESULT]:        7,
+});
 
 
 // ─── Tx-rejection reason codes (#64 follow-up: no-loss invariant) ───────────
@@ -211,8 +269,13 @@ module.exports = {
   JURY_VOTES,
   VERDICT,
   CONTENT_STATUS,
+  DISPUTE_REASON,
+  DISPUTE_REASONS,
   TX_TYPES,
   TX_TYPE_SET,
+  DISPUTE_SHORT_ID_LEN,
+  DISPUTE_EPISODE_TX_TYPES,
+  DISPUTE_EVENT_PRIORITY,
   TX_REJECTION_REASON,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,

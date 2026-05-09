@@ -362,6 +362,17 @@ class KnexAdapter {
       t.integer("count").notNullable().defaultTo(0);
       t.primary(["node_id", "rotation_number"]);
     });
+
+    // Off-chain dispute body store. Per-node, NOT consensus state — see
+    // MemoryStore.saveDisputeDetails for the rationale. Excluded from
+    // iterateCanonicalState / state_merkle_root.
+    await ensure("dispute_details", t => {
+      t.string("evidence_hash", 128).primary();
+      _id(t, "disputer_tip_id").notNullable();
+      t.text("payload_json").notNullable();
+      t.text("signature").notNullable();
+      t.string("created_at", 64).notNullable();
+    });
   }
 
   async _hydrate() {
@@ -453,6 +464,12 @@ class KnexAdapter {
       this.mirror._txRejections.set(row.tx_id, { ...row });
     }
 
+    // Dispute details (off-chain dispute body)
+    const detailRows = await this.knex("dispute_details").select("*");
+    for (const row of detailRows) {
+      this.mirror._disputeDetails.set(row.evidence_hash, { ...row });
+    }
+
     // Consensus meta
     const metaRows = await this.knex("consensus_meta").select("*");
     if (!this.mirror._consensusMeta) this.mirror._consensusMeta = new Map();
@@ -485,9 +502,19 @@ class KnexAdapter {
   }
 
   // ── Fire-and-forget ────────────────────────────────────────────────────────
-
+  //
+  // FIFO chain ordering: writes to the SAME row from the SAME tick (e.g. two
+  // SCORE_UPDATE txs in one anchor batch both targeting the same tip_id) used
+  // to race — both `setScore` calls would dispatch independent promises, the
+  // older write could land last, and the SQL row would diverge from the
+  // synchronously-updated in-memory mirror. Chaining every write off the
+  // previous one's settle-time guarantees order matches call order, so the
+  // final SQL state matches the mirror. Failures are swallowed per-write so a
+  // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    fn().catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
+    this._ffChain = (this._ffChain || Promise.resolve())
+      .then(() => fn())
+      .catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
 
   // Oracle and SQL Server don't support Knex's .onConflict(). Use INSERT + catch
@@ -607,6 +634,32 @@ class KnexAdapter {
   getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
   hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }
   hasDispute(ctid, tipId) { return this.mirror.hasDispute(ctid, tipId); }
+
+  // ── Dispute details (off-chain dispute body) ──────────────────────────────
+  // Per-node store, NOT consensus state. Mirrors the in-memory map and
+  // writes through to Knex so disputes survive restart.
+  saveDisputeDetails(rec) {
+    const fresh = this.mirror.saveDisputeDetails(rec);
+    if (fresh) {
+      this._ff(() => this._dbInsert("dispute_details", "evidence_hash", {
+        evidence_hash: rec.evidence_hash,
+        disputer_tip_id: rec.disputer_tip_id,
+        payload_json: rec.payload_json,
+        signature: rec.signature,
+        created_at: rec.created_at,
+      }, "ignore"));
+    }
+    return fresh;
+  }
+  getDisputeDetails(hash) { return this.mirror.getDisputeDetails(hash); }
+  hasDisputeDetails(hash) { return this.mirror.hasDisputeDetails(hash); }
+  deleteDisputeDetails(hash) {
+    const removed = this.mirror.deleteDisputeDetails(hash);
+    if (removed) {
+      this._ff(() => this.knex("dispute_details").where("evidence_hash", hash).del());
+    }
+    return removed;
+  }
 
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);

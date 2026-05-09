@@ -26,6 +26,7 @@ const { createTxSubmitter } = require("./services/helpers");
 const { createIdentityService } = require("./services/identity-service");
 const { createContentService } = require("./services/content-service");
 const { createDisputeService } = require("./services/dispute-service");
+const { createDisputeDetailsService } = require("./services/dispute-details-service");
 const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 
@@ -36,6 +37,7 @@ const metricsRoutes = require("./routes/metrics");
 const identityRoutes = require("./routes/identity");
 const contentRoutes = require("./routes/content");
 const disputeRoutes = require("./routes/dispute");
+const disputeDetailsRoutes = require("./routes/dispute-details");
 const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
@@ -47,7 +49,8 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
   const contentService = createContentService(ctx);
-  const disputeService = createDisputeService(ctx);
+  const disputeDetailsService = createDisputeDetailsService(ctx);
+  const disputeService = createDisputeService({ ...ctx, disputeDetailsService });
   const revocationService = createRevocationService(ctx);
   const governanceService = createGovernanceService(ctx);
 
@@ -131,6 +134,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, identityRoutes.createRouter({ identityService }));
   app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
   app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
+  app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));
   app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));

@@ -149,6 +149,7 @@ const DISPUTE = {
 const JURY = {
   get SIZE() { return _j().jury_size; },
   get MIN_SCORE() { return _j().jury_min_score; },
+  get MIN_SCORE_FALLBACK() { return _j().jury_min_score_fallback; },  // Pass-3 floor in selectJury — see jury.js _pickWithGeoCap
   get JUROR_STAKE() { return _j().jury_stake; },           // positive amount
   get MAJORITY_VOTE() { return _j().jury_majority_vote; },
   get COMMIT_WINDOW_HOURS() { return _j().jury_commit_hours; },
@@ -163,6 +164,8 @@ const JURY = {
 const APPEAL = {
   get APPELLANT_STAKE() { return _j().appeal_stake; },         // positive amount, code applies -
   get MIN_EXPERT_SCORE() { return _j().expert_min_score; },
+  get MIN_EXPERT_SCORE_FALLBACK() { return _j().expert_min_score_fallback; },  // Pass-3 floor in selectExperts
+  get MAX_SAME_COUNTRY() { return _j().appeal_max_same_country; },              // tighter than jury cap; was hardcoded as 2
   get EXPERT_COUNT() { return _j().expert_panel_size; },
   get MIN_VOTES() { return _j().expert_min_votes; },
   get FILING_WINDOW_HOURS() { return _j().appeal_window_hours; },

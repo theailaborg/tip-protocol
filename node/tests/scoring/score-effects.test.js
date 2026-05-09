@@ -50,11 +50,16 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(next.delta).toBe(0);
   });
 
-  test("CONTENT_VERIFIED applies weighted_delta to current score", () => {
+  test("CONTENT_VERIFIED is score-neutral inline — paired SCORE_UPDATE owns the delta (single-channel rule)", () => {
     const tx = { tx_type: TX_TYPES.CONTENT_VERIFIED, data: { author_tip_id: "tip://id/x", weighted_delta: 3, ctid: "tip://content/y" } };
     const next = applyScoreEffect(tx, { score: 600, offense_count: 0, frozen: false });
-    expect(next.score).toBe(603);
-    expect(next.delta).toBe(3);
+    // Score does NOT move from CONTENT_VERIFIED itself — content-service.verify
+    // emits a paired SCORE_UPDATE in the same atomic batch and that one carries
+    // the +N delta. scoreTargetTipId returns null for CONTENT_VERIFIED so the
+    // commit-handler skips the read-and-write cycle entirely.
+    expect(scoreTargetTipId(tx)).toBeNull();
+    expect(next.score).toBe(600);
+    expect(next.delta).toBe(0);
   });
 
   test("SCORE_UPDATE applies tx.data.delta to current score", () => {
@@ -63,11 +68,15 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(next.score).toBe(560);
   });
 
-  test("CONTENT_RETRACTED applies retraction penalty (negative delta)", () => {
+  test("CONTENT_RETRACTED is score-neutral inline — paired SCORE_UPDATE owns the retraction delta", () => {
     const tx = { tx_type: TX_TYPES.CONTENT_RETRACTED, data: { author_tip_id: "tip://id/x", ctid: "tip://content/y" } };
     const next = applyScoreEffect(tx, { score: 600, offense_count: 0, frozen: false });
-    expect(next.score).toBeLessThan(600);
-    expect(next.delta).toBeLessThan(0);
+    // content-service.retract emits a paired SCORE_UPDATE for the
+    // -RETRACTION_PENALTY delta in the same batch. The CONTENT_RETRACTED
+    // tx itself records the retraction event; it does not touch the score.
+    expect(scoreTargetTipId(tx)).toBeNull();
+    expect(next.score).toBe(600);
+    expect(next.delta).toBe(0);
   });
 
   test("REVOKE_VOLUNTARY freezes — positive deltas are zeroed afterwards", () => {
@@ -81,7 +90,7 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(next.score).toBe(600);  // delta zeroed by freeze rule
   });
 
-  test("ADJUDICATION_RESULT UPHELD applies tx.data.author_score_delta to author + bumps offense_count", () => {
+  test("ADJUDICATION_RESULT UPHELD bumps offense_count; score delta lives on a paired SCORE_UPDATE", () => {
     const tx = {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       data: {
@@ -89,9 +98,15 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
         author_tip_id: "tip://id/x", author_score_delta: -100,
       },
     };
+    // Targets the author so commit-handler walks applyScoreEffect for
+    // the offense increment. RESULT-owns-offense / SCORE_UPDATE-owns-delta:
+    // jury.buildAdjudicationBatch emits the -100 as a separate SCORE_UPDATE
+    // in the same batch; this test asserts the RESULT tx itself only flips
+    // the offense counter.
     expect(scoreTargetTipId(tx)).toBe("tip://id/x");
     const next = applyScoreEffect(tx, { score: 700, offense_count: 0, frozen: false });
-    expect(next.score).toBe(600);
+    expect(next.score).toBe(700);
+    expect(next.delta).toBe(0);
     expect(next.offense_count).toBe(1);
   });
 
@@ -160,53 +175,77 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(next.score).toBe(700);
   });
 
-  test("REVOKE_DEVICE applies device-compromise penalty AND freezes", () => {
+  test("REVOKE_DEVICE freezes inline; the device-compromise penalty rides a paired SCORE_UPDATE", () => {
+    // Single-channel rule: the REVOKE_* path flips `frozen` (a state flag,
+    // not a score delta), and the `-DEVICE_COMPROMISE_PENDING` penalty —
+    // when that flow lands — must arrive as a paired SCORE_UPDATE
+    // emitted alongside REVOKE_DEVICE in the same batch (no live emission
+    // point yet). score-effects.applyScoreEffect itself does not subtract
+    // the penalty inline.
     const tx = { tx_type: TX_TYPES.REVOKE_DEVICE, data: { tip_id: "tip://id/x" } };
     const next = applyScoreEffect(tx, { score: 700, offense_count: 0, frozen: false });
     expect(next.frozen).toBe(true);
-    expect(next.score).toBe(700 + SCORE_EVENTS.DEVICE_COMPROMISE_PENDING.delta);
+    expect(next.score).toBe(700);
+    expect(next.delta).toBe(0);
   });
 
   test("frozen state — penalty (negative delta) still lands; positive delta zeroed", () => {
-    // After a REVOKE, both behaviors are tested in one chain so the
-    // `frozen` invariant is unmistakable.
+    // Single-channel: every score delta arrives as a SCORE_UPDATE, so the
+    // freeze invariant is exercised through SCORE_UPDATEs rather than
+    // CONTENT_VERIFIED / CONTENT_RETRACTED (which no longer apply inline
+    // deltas — the paired SCORE_UPDATE is what carries the number).
     const revoke = applyScoreEffect(
       { tx_type: TX_TYPES.REVOKE_VOLUNTARY, data: { tip_id: "tip://id/x" } },
       { score: 700, offense_count: 0, frozen: false },
     );
 
     // Positive delta zeroed.
-    const verifyBonus = applyScoreEffect(
-      { tx_type: TX_TYPES.CONTENT_VERIFIED, data: { author_tip_id: "tip://id/x", weighted_delta: 3 } },
+    const bonus = applyScoreEffect(
+      { tx_type: TX_TYPES.SCORE_UPDATE, data: { tip_id: "tip://id/x", delta: 3, reason: "Content verified" } },
       revoke,
     );
-    expect(verifyBonus.score).toBe(700);
+    expect(bonus.score).toBe(700);
 
     // Negative delta still applies (penalties survive freeze).
     const retract = applyScoreEffect(
-      { tx_type: TX_TYPES.CONTENT_RETRACTED, data: { author_tip_id: "tip://id/x", ctid: "tip://content/c" } },
+      { tx_type: TX_TYPES.SCORE_UPDATE, data: { tip_id: "tip://id/x", delta: SCORE_EVENTS.CONTENT_RETRACTION.delta, reason: "Content retracted" } },
       revoke,
     );
     expect(retract.score).toBe(700 + SCORE_EVENTS.CONTENT_RETRACTION.delta);
     expect(retract.frozen).toBe(true);
   });
 
-  test("ADJUDICATION_RESULT with delta = 0 is no-op (no target, no score change)", () => {
+  test("ADJUDICATION_RESULT UPHELD with delta=0 still targets author (offense_count bump fires regardless of delta)", () => {
+    // Under the single-channel architecture, score deltas live on a paired
+    // SCORE_UPDATE — author_score_delta on the RESULT tx is informational
+    // metadata. UPHELD with author_tip_id always routes to the author so
+    // applyScoreEffect can bump offense_count, even when the score-delta
+    // metadata is zero.
     const tx = {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       data: { ctid: "tip://content/y", verdict: "UPHELD", author_tip_id: "tip://id/x", author_score_delta: 0 },
     };
-    expect(scoreTargetTipId(tx)).toBeNull();
+    expect(scoreTargetTipId(tx)).toBe("tip://id/x");
+    const next = applyScoreEffect(tx, { score: 700, offense_count: 0, frozen: false });
+    expect(next.score).toBe(700);
+    expect(next.offense_count).toBe(1);
   });
 
-  test("ADJUDICATION_RESULT with positive delta — defensive: not applied (penalties only)", () => {
+  test("ADJUDICATION_RESULT UPHELD with positive author_score_delta — score still doesn't move (delta lives on paired SCORE_UPDATE)", () => {
+    // Defensive: a positive author_score_delta is a malformed verdict tx
+    // (penalties only). Under the single-channel rule the RESULT tx never
+    // mutates the score regardless of sign, so the only effect is the
+    // offense_count bump from UPHELD. If a positive delta ever does need
+    // to land, it must come through a SCORE_UPDATE in the same batch.
     const tx = {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       data: { ctid: "tip://content/y", verdict: "UPHELD", author_tip_id: "tip://id/x", author_score_delta: 50 },
     };
-    // scoreTargetTipId only returns the author when delta < 0 (penalty).
-    // A positive value is a malformed verdict tx — score-effects refuses.
-    expect(scoreTargetTipId(tx)).toBeNull();
+    expect(scoreTargetTipId(tx)).toBe("tip://id/x");
+    const next = applyScoreEffect(tx, { score: 700, offense_count: 0, frozen: false });
+    expect(next.score).toBe(700);
+    expect(next.delta).toBe(0);
+    expect(next.offense_count).toBe(1);
   });
 });
 
@@ -366,7 +405,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
     expect(cached.score).toBe(replayed.score);
   });
 
-  test("CONTENT_VERIFIED — commit-handler writes the author's row immediately (#38 gap closed)", () => {
+  test("CONTENT_VERIFIED + paired SCORE_UPDATE — both paths reflect the +3 immediately (#38 gap closed)", () => {
     const fx = _makeFx();
     const { tx: author, tip_id: authorId } = _registerIdentityTx(fx, {
       social_attested: false, timestamp: "2026-04-29T00:00:00.000Z",
@@ -374,8 +413,11 @@ describe("commit-handler vs computeScore — same final score for any tx history
     fx.handler.commitOrderedTxs([author], 100);
     expect(fx.dag.getScore(authorId).score).toBe(500);
 
-    // Bypass full validation by calling _applyScoreEffect directly via
-    // a synthetic verify tx. computeScore + commit-handler must agree.
+    // Single-channel rule: CONTENT_VERIFIED owns the verification record;
+    // the score delta lives on a paired SCORE_UPDATE in the same atomic
+    // batch (content-service.verify emits both). Applying both txs is what
+    // realises the +3 — CONTENT_VERIFIED alone is intentionally a no-op
+    // for the score row.
     const verify = {
       tx_type: TX_TYPES.CONTENT_VERIFIED,
       timestamp: "2026-04-29T00:01:00.000Z",
@@ -388,7 +430,20 @@ describe("commit-handler vs computeScore — same final score for any tx history
     verify.tx_id = computeTxId(verify);
     verify.signature = "00";
     fx.dag.addTx({ ...verify });
-    // Re-derive via computeScore — must reflect the +3 immediately.
+
+    // CONTENT_VERIFIED alone leaves the score at 500 (single-channel).
+    expect(fx.scoring.computeScore(authorId).score).toBe(500);
+
+    // The paired SCORE_UPDATE carries the +3.
+    const scoreUpdate = _scoreUpdateTx(fx, {
+      tip_id: authorId, delta: 3,
+      reason: `Content verified (tip://content/x)`,
+      timestamp: "2026-04-29T00:01:00.001Z",
+    });
+    fx.handler.commitOrderedTxs([scoreUpdate], 101);
+
+    // Both the live mirror and the replay must now agree on 503.
+    expect(fx.dag.getScore(authorId).score).toBe(503);
     expect(fx.scoring.computeScore(authorId).score).toBe(503);
   });
 });
