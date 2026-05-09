@@ -289,9 +289,16 @@ describe("Flow 1 — UPHELD → author appeals → overturn (Stage-3 DISMISSED)"
     expect(stage3.overturned).toBe(true);
     _commitBatch(fx.dag, stage3.txs);
 
-    // Author final: -100 (Stage-2) -25 (appeal stake) +35 (overturn refund+bonus) +100 (reversal) = +10 above start
+    // Author journey:
+    //   500 (start)
+    //   -100 (Stage-2 UPHELD penalty) = 400
+    //    -25 (appeal stake)            = 375
+    //    +35 (overturn refund+bonus)   = 410
+    //   +100 (Stage-2 penalty reversal) = 510
+    //     +5 (Stage-3 vindication: appeal cleared the author) = 515
+    // Net +15 from start. Offense 0→1→0 (overturn decrements).
     const authorFinal = _replay(fx.dag, ids.authorTipId);
-    expect(authorFinal.score).toBe(SCORE.INITIAL_IDENTITY + STAKES.OVERTURN_BONUS);
+    expect(authorFinal.score).toBe(SCORE.INITIAL_IDENTITY + STAKES.OVERTURN_BONUS + DISPUTE.VINDICATION_BONUS);
     expect(authorFinal.offense_count).toBe(0);
 
     // Disputer final: -15 (filing) +20 (Stage-2) -20 (overturn reversal) = -15 net
@@ -330,11 +337,13 @@ describe("Flow 2 — DISMISSED → disputer appeals → overturn UPHELD", () => 
     expect(stage2.verdict).toBe(VERDICT.DISMISSED);
     _commitBatch(fx.dag, stage2.txs);
 
-    // No author penalty, no disputer settlement event on DISMISSED
-    expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY);
+    // After Stage-2 DISMISSED:
+    //   author: +VINDICATION_BONUS (+5) — tentative, retracted on overturn
+    //   disputer: -DISPUTER_STAKE forfeit at filing time, no settlement event
+    expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
     expect(_replay(fx.dag, ids.disputerTipId).score).toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
 
-    // ── Disputer files appeal → -25
+    // ── Disputer files appeal → -25 stake debit
     _appealFilingDebit(fx.dag, ctid, ids.disputerTipId);
     _appealFiled(fx.dag, ctid, ids.disputerTipId, VERDICT.DISMISSED);
 
@@ -350,10 +359,26 @@ describe("Flow 2 — DISMISSED → disputer appeals → overturn UPHELD", () => 
     expect(stage3.overturned).toBe(true);
     _commitBatch(fx.dag, stage3.txs);
 
-    // Author: now -25 fresh (AA→AG 1st), offense 0→1
+    // Author journey:
+    //   500 (start)
+    //   +5  Stage-2 vindication                = 505
+    //   -5  Stage-3 vindication retracted      = 500
+    //   -25 Stage-3 fresh AA→AG 1st-offense    = 475
+    // Net Stage-3 alone (from 505): -30. Net from start (500): -25.
+    // offense_count 0 → 1 fires on the overturn (DISMISSED → UPHELD branch).
     const authorFinal = _replay(fx.dag, ids.authorTipId);
     expect(authorFinal.score).toBe(SCORE.INITIAL_IDENTITY - STAKES.AA_AS_AG_1ST);
     expect(authorFinal.offense_count).toBe(1);
+
+    // Vindication retraction lands as a distinct SCORE_UPDATE in the
+    // appeal batch — verify the wire shape, not just the final score.
+    const retraction = stage3.txs.find(t =>
+      t.tx_type === TX_TYPES.SCORE_UPDATE
+      && t.data?.tip_id === ids.authorTipId
+      && /vindication retracted/i.test(t.data.reason),
+    );
+    expect(retraction).toBeDefined();
+    expect(retraction.data.delta).toBe(-DISPUTE.VINDICATION_BONUS);
 
     // Disputer journey:
     //   500 (start) -15 (filing) = 485
@@ -431,7 +456,7 @@ describe("Flow 3 — UPHELD → author appeals → appeal FAILS (Stage-3 confirm
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("Flow 4 — DISMISSED → disputer appeals → confirm DISMISSED", () => {
-  test("disputer loses both stakes (-40 net); author untouched", () => {
+  test("disputer loses both stakes (-40 net); author keeps the +5 vindication (Stage-2 stands)", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow4dddddddddd-4444";
     const ids = _seedDispute(fx.dag, ctid);
@@ -461,14 +486,24 @@ describe("Flow 4 — DISMISSED → disputer appeals → confirm DISMISSED", () =
     expect(stage3.overturned).toBe(false);
     _commitBatch(fx.dag, stage3.txs);
 
-    // Author untouched (correct from start to end)
+    // Author: +5 vindication earned at Stage-2 stays (Stage-3 confirmed
+    // DISMISSED, so the retraction branch never fires). offense_count
+    // never moved.
     const authorFinal = _replay(fx.dag, ids.authorTipId);
-    expect(authorFinal.score).toBe(SCORE.INITIAL_IDENTITY);
+    expect(authorFinal.score).toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
     expect(authorFinal.offense_count).toBe(0);
 
     // Disputer: -15 (filing) -25 (appeal) = -40 net, both forfeited
     expect(_replay(fx.dag, ids.disputerTipId).score)
       .toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER - STAKES.APPELLANT);
+
+    // No retraction event in the appeal batch — Stage-3 confirm leaves
+    // the vindication intact.
+    const retraction = stage3.txs.find(t =>
+      t.tx_type === TX_TYPES.SCORE_UPDATE
+      && /vindication retracted/i.test(t.data?.reason || ""),
+    );
+    expect(retraction).toBeUndefined();
   });
 });
 
@@ -640,7 +675,7 @@ describe("Flow 8 — zero-participation NO_QUORUM (every juror is a no-show)", (
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror score effects", () => {
-  test("DISMISSED, no juror SCORE_UPDATE for revealers, -10 for the no-show", () => {
+  test("DISMISSED, no juror SCORE_UPDATE for revealers, -10 for the no-show, +5 author vindication", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow9iiiiiiiiii-9999";
     const ids = _seedDispute(fx.dag, ctid);
@@ -659,8 +694,10 @@ describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror scor
     expect(stage2.mismatchCount).toBe(3);
     _commitBatch(fx.dag, stage2.txs);
 
-    // Author untouched
-    expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY);
+    // Author: +5 vindication (any DISMISSED — including a tie-resolved
+    // one — credits the cleared author).
+    expect(_replay(fx.dag, ids.authorTipId).score)
+      .toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
     expect(_replay(fx.dag, ids.authorTipId).offense_count).toBe(0);
 
     // Disputer's stake stays forfeited (DISMISSED produces no settlement)
@@ -676,8 +713,8 @@ describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror scor
     expect(noShowSU).toHaveLength(1);
     expect(noShowSU[0].data.delta).toBe(-STAKES.NO_SHOW);
 
-    // Total score-updates in batch: 1 no-show only
-    expect(stage2.txs.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE)).toHaveLength(1);
+    // Total score-updates in batch: 1 no-show + 1 author vindication = 2
+    expect(stage2.txs.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE)).toHaveLength(2);
   });
 
   test("Stage-3 tie (1 MATCH + 1 MISMATCH + 1 ABSTAIN): DISMISSED, no expert score effects", () => {

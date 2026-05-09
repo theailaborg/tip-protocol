@@ -517,7 +517,25 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         timestamp, getRecentPrev, config,
       }));
     }
-    // DISMISSED: no event — filing-time stake deduction is the forfeit.
+    // DISMISSED: no disputer event — filing-time stake deduction is the forfeit.
+  }
+
+  // Author vindication on DISMISSED. Spec (TIP_Scoring_v2 Reputation §):
+  // a creator whose content the jury exonerates earns
+  // DISPUTE.VINDICATION_BONUS — the only path that credits the author
+  // through the dispute machinery. CONSERVATIVE_LABEL is neutral
+  // (under-disclosure was honest but the claimed origin was off);
+  // UPHELD/NO_QUORUM never trigger this.
+  //
+  // Reversal: if the disputer appeals and Stage-3 overturns to UPHELD,
+  // the vindication is retracted (-VINDICATION_BONUS) by buildAppealBatch
+  // — the author wasn't actually right after all.
+  if (verdict === VERDICT.DISMISSED && authorTipId && DISPUTE.VINDICATION_BONUS > 0) {
+    txs.push(scoring.buildScoreUpdateTx({
+      tipId: authorTipId, delta: DISPUTE.VINDICATION_BONUS,
+      reason: `Dispute vindication on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+      timestamp, getRecentPrev, config,
+    }));
   }
 
   log.info(`Jury verdict ${verdict} on ${ctid} — ${matchCount}/${mismatchCount}/${abstainCount} match/mismatch/abstain (${txs.length} txs in batch)`);
@@ -696,12 +714,34 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         reason: `Appeal overturned: Stage 2 penalty reversed on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
+      // Stage-3 cleared the author — credit the vindication bonus that
+      // Stage-2 didn't emit (because Stage-2 incorrectly UPHELD). Mirrors
+      // what buildAdjudicationBatch would have emitted if Stage-2 had
+      // ruled DISMISSED in the first place.
+      if (DISPUTE.VINDICATION_BONUS > 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: authorTipId, delta: DISPUTE.VINDICATION_BONUS,
+          reason: `Appeal overturned: vindication on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
     } else if (stage2Verdict === VERDICT.DISMISSED && authorTipId && overturnAuthorDelta < 0) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: authorTipId, delta: overturnAuthorDelta,
         reason: `Appeal overturned: mismatch confirmed on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
+      // Retract the Stage-2 vindication — the author wasn't actually
+      // right after all. Symmetric with the disputer-stake reversal a
+      // few lines above: when an overturn flips the verdict, every
+      // settlement that rode on the prior verdict gets reversed.
+      if (DISPUTE.VINDICATION_BONUS > 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: authorTipId, delta: -DISPUTE.VINDICATION_BONUS,
+          reason: `Appeal overturned: vindication retracted on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
     }
   }
   // Not overturned: no settlement event for the appellant. The

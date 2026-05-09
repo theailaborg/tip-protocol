@@ -201,10 +201,6 @@ describe.skip("reputation — spec rules not yet enforced in production", () => 
     // and +5 vindication land directly on it, capped only by MAX_TOTAL.
     // The 50-point bucket cap is a spec goal awaiting the bucket engine.
   });
-
-  test("Vindication +5 fires on Stage-2 DISMISSED to the cleared author", () => {
-    // jury.buildAdjudicationBatch does NOT currently emit a +5 SCORE_UPDATE
-    // for the author when verdict=DISMISSED. genesis exposes
-    // dispute_cleared_bonus=5 and vindication_bonus=5 as the value to use.
-  });
+  // Vindication +5 on Stage-2 DISMISSED is now wired — see
+  // dispute-stake-economy.test.js "vindication +5 to author on DISMISSED".
 });

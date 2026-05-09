@@ -251,7 +251,7 @@ describe("Stage-2 verdict — author penalty rides on a paired SCORE_UPDATE", ()
     expect(authorPenalty[0].data.delta).toBe(-100);
   });
 
-  test("DISMISSED: no author penalty SCORE_UPDATE", () => {
+  test("DISMISSED: no penalty SCORE_UPDATE; author gets the +VINDICATION_BONUS", () => {
     const fx = _setup();
     const ids = _seedDisputeFixture(fx.dag);
     const reveals = _buildReveals(ids.jurors, [
@@ -261,7 +261,12 @@ describe("Stage-2 verdict — author penalty rides on a paired SCORE_UPDATE", ()
 
     const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
     expect(out.verdict).toBe(VERDICT.DISMISSED);
-    expect(_findSU(out.txs, ids.authorTipId)).toHaveLength(0);
+
+    // Single SCORE_UPDATE for the author: the vindication bonus.
+    const authorSU = _findSU(out.txs, ids.authorTipId);
+    expect(authorSU).toHaveLength(1);
+    expect(authorSU[0].data.delta).toBe(DISPUTE.VINDICATION_BONUS);
+    expect(authorSU[0].data.reason).toMatch(/vindication/i);
   });
 });
 
@@ -463,11 +468,73 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
 
 // ─── Spec-forward gaps (NOT YET ENFORCED) ───────────────────────────────────
 
-describe.skip("vindication +5 to creator on DISMISSED (spec, not yet wired)", () => {
-  test("DISMISSED emits a +5 SCORE_UPDATE to the cleared author (Reputation bucket)", () => {
-    // Spec: Reputation Score, "Dispute cleared (vindicated) +5".
-    // genesis.protocol_constants.jury.vindication_bonus = 5 already, but
-    // jury.buildAdjudicationBatch does not currently emit it on DISMISSED.
-    // When wired, the test below should pass without modification.
+describe("vindication +5 to author on DISMISSED", () => {
+  test("DISMISSED emits a +VINDICATION_BONUS SCORE_UPDATE to the cleared author", () => {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+    const reveals = _buildReveals(ids.jurors, [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH,
+      VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ]);
+
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+
+    const vindication = _findSU(out.txs, ids.authorTipId,
+      t => /vindication/i.test(t.data.reason));
+    expect(vindication).toHaveLength(1);
+    expect(vindication[0].data.delta).toBe(DISPUTE.VINDICATION_BONUS);
+  });
+
+  test("Stage-3 overturn (DISMISSED → UPHELD) retracts the vindication", () => {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+
+    // Run Stage-2 DISMISSED to seed the vindication tx into the DAG.
+    const stage2Reveals = _buildReveals(ids.jurors, [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH,
+      VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ]);
+    const stage2 = buildAdjudicationBatch(CTID, stage2Reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    for (const t of stage2.txs) fx.dag.addTx(t);
+
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: "2026-04-04T00:00:01.000Z",
+      data: { ctid: CTID, appellant_tip_id: ids.disputerTipId, stage2_verdict: VERDICT.DISMISSED, stake: APPEAL.APPELLANT_STAKE },
+    });
+
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    for (const e of experts) _seedIdentity(fx.dag, e, 900);
+    const expSummons = (() => {
+      const out = [];
+      for (let i = 0; i < experts.length; i++) {
+        out.push(_addTx(fx.dag, {
+          tx_type: TX_TYPES.JURY_SUMMONS,
+          timestamp: `2026-04-05T00:00:0${i}.000Z`,
+          data: {
+            ctid: CTID, juror_tip_id: experts[i], is_appeal: true,
+            stake: JURY.JUROR_STAKE,
+            commit_deadline: "2030-01-01T00:00:00.000Z",
+            reveal_deadline: "2030-01-01T00:00:00.000Z",
+            seed: shake256("e"), identity_count: 3,
+          },
+        }));
+      }
+      return out;
+    })();
+    const expReveals = experts.map((e, i) => ({
+      tx_id: shake256(`er-vind-${i}`),
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-06T00:00:00.000Z",
+      data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MISMATCH, salt: shake256(`s${i}`), confirmed_origin: ORIGIN.AG, is_appeal: true },
+    }));
+
+    const stage3 = buildAppealBatch(CTID, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
+    expect(stage3.verdict).toBe(VERDICT.UPHELD);
+    expect(stage3.overturned).toBe(true);
+
+    const retraction = _findSU(stage3.txs, ids.authorTipId,
+      t => /vindication retracted/i.test(t.data.reason));
+    expect(retraction).toHaveLength(1);
+    expect(retraction[0].data.delta).toBe(-DISPUTE.VINDICATION_BONUS);
   });
 });

@@ -285,11 +285,12 @@ describe("replay determinism — Stage-3 overturn lifecycle (UPHELD → DISMISSE
     //   - 25  (appeal stake)
     //   + 25 + 10  (overturn refund + bonus = 35)
     //   + 100 (Stage-2 penalty reversal)
-    //  = INITIAL + 10
+    //   +   5  (Stage-3 vindication — Stage-2 wrongly UPHELD; appeal cleared the author)
+    //  = INITIAL + 15
     // Offense count: +1 from ADJ_RESULT, -1 from APPEAL_RESULT (overturn) = 0
     const all = fx.dag.getTxsByTipId(ids.authorTipId);
     const author = _replayForSubject(all, ids.authorTipId);
-    expect(author.score).toBe(SCORE.INITIAL_IDENTITY + APPEAL.OVERTURN_BONUS);
+    expect(author.score).toBe(SCORE.INITIAL_IDENTITY + APPEAL.OVERTURN_BONUS + DISPUTE.VINDICATION_BONUS);
     expect(author.offense_count).toBe(0);
   });
 
