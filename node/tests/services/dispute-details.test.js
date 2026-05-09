@@ -316,7 +316,7 @@ describe("fileDispute + evidence — happy path", () => {
     expect(fx.submitted.some(t => t.tx_type === TX_TYPES.CONTENT_DISPUTED)).toBe(true);
   });
 
-  test("dispute without evidence still succeeds (evidence is optional)", () => {
+  test("dispute without evidence is rejected (evidence is required)", () => {
     const fx = _setup();
     const ctid = "tip://c/x";
     _seedContent(fx.dag, ctid, fx.authorTipId);
@@ -324,13 +324,10 @@ describe("fileDispute + evidence — happy path", () => {
     const sigFields = { disputer_tip_id: fx.disputerTipId, reason: "origin_mismatch", claimed_origin: "AG" };
     const sig = _signDisputeFields(sigFields, fx.disputerKp.privateKey);
 
-    const out = fx.disputeService.fileDispute(ctid, {
+    expect(() => fx.disputeService.fileDispute(ctid, {
       ...sigFields,
       signature: sig,
-    });
-
-    expect(out.success).toBe(true);
-    expect(out.evidence_hash).toBeNull();
+    })).toThrow(expect.objectContaining({ status: 400, error: expect.stringMatching(/evidence is required/i) }));
   });
 });
 
@@ -392,9 +389,13 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
     });
   }
 
+  // Builds a valid dispute body with an attached evidence block. The
+  // payload's `description` is unique per claimed_origin so the
+  // evidence_hash uniqueness rule doesn't trip across the eligibility
+  // matrix tests.
   function _disputeBodyOnly({ disputerTipId, disputerKp, claimed_origin }) {
-    const sigFields = { disputer_tip_id: disputerTipId, reason: "origin_mismatch", claimed_origin };
-    return { ...sigFields, signature: _signDisputeFields(sigFields, disputerKp.privateKey) };
+    const payload = _validPayload(`origin-matrix-${claimed_origin}-${Date.now()}-${Math.random()}`);
+    return _buildDisputeBody({ disputerTipId, disputerKp, payload, claimed_origin });
   }
 
   test.each([

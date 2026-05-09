@@ -79,14 +79,16 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       disputer_tip_id: { required: true },
       signature: { required: true },
       reason: { required: true, oneOf: DISPUTE_REASONS },
+      evidence: { required: true },
     });
     const { disputer_tip_id, reason, claimed_origin, signature, evidence } = body;
     if (reason === DISPUTE_REASON.ORIGIN_MISMATCH && !claimed_origin) throw { status: 400, error: "claimed_origin required for origin_mismatch disputes" };
     if (claimed_origin && !ORIGIN_CODES.includes(claimed_origin)) throw { status: 400, error: `Invalid claimed_origin. Must be one of: ${ORIGIN_CODES.join(", ")}` };
 
     // Disallow client-supplied evidence_hash without an evidence body.
-    // The combined endpoint computes the hash from `evidence.payload`;
-    // a bare hash would refer to a body this node may not hold.
+    // (Belt-and-suspenders — `evidence` is now required above, but the
+    // explicit check stays so the error is precise if someone bypasses
+    // the validator.)
     if (body.evidence_hash !== undefined && evidence === undefined) {
       throw { status: 400, error: "evidence_hash provided without an evidence body — attach `evidence: { payload, signature }` instead" };
     }

@@ -800,7 +800,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         const disputer = dag.getIdentity(d.disputer_tip_id);
         if (!disputer || !d.signature) return false;
-        const disputeFields = d.claimed_origin ? ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"] : ["disputer_tip_id", "reason", "evidence_hash"];
+        // Mirror dispute-service.fileDispute and the UI: claimed_origin and
+        // evidence_hash are only in the signed fields when truthy. The on-wire
+        // tx data carries them as `null` when absent, but verifyBodySignature
+        // treats `null !== undefined` as "defined", so listing them
+        // unconditionally would diverge from the signer. Same drift class as
+        // #54 / #55 / #56.
+        const disputeFields = ["disputer_tip_id", "reason"];
+        if (d.claimed_origin) disputeFields.push("claimed_origin");
+        if (d.evidence_hash)  disputeFields.push("evidence_hash");
         return verifyBodySignature(d, d.signature, disputer.public_key, disputeFields);
       }
 

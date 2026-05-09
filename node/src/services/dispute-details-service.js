@@ -66,7 +66,13 @@ function _validatePayload(payload) {
     throw { status: 400, error: `payload.description exceeds ${MAX_DESCRIPTION_CHARS} chars` };
   }
 
-  if (!Array.isArray(evidence)) throw { status: 400, error: "payload.evidence must be an array" };
+  // Items array is optional. Clients drop the key entirely when there are
+  // no items — empty/null fields must never appear in the signed canonical
+  // payload, otherwise the hash diverges from a description-only build.
+  if (evidence === undefined) return;
+
+  if (!Array.isArray(evidence)) throw { status: 400, error: "payload.evidence must be an array (or omit the key entirely)" };
+  if (evidence.length === 0) throw { status: 400, error: "payload.evidence must be omitted when empty — do not send `evidence: []`" };
   if (evidence.length > MAX_EVIDENCE_ITEMS) {
     throw { status: 400, error: `payload.evidence exceeds ${MAX_EVIDENCE_ITEMS} items` };
   }
