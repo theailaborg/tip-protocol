@@ -305,6 +305,32 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.JURY_VOTE_COMMIT: {
+        // In-batch dedup. canCommitVote (in _statefulCheck) checks DAG state,
+        // but two commits from the same juror landed in the same round both
+        // see "no existing commit" pre-batch. Drop the second so verdict
+        // tally and score effects can't double-count a juror.
+        if (!d.ctid || !d.juror_tip_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.JURY_VOTE_COMMIT
+          && t.data?.ctid === d.ctid
+          && t.data?.juror_tip_id === d.juror_tip_id
+          && (!!t.data?.is_appeal) === (!!d.is_appeal));
+        if (inBatch) return { valid: false, error: `duplicate JURY_VOTE_COMMIT in batch for (${d.ctid}, ${d.juror_tip_id})` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.JURY_VOTE_REVEAL: {
+        if (!d.ctid || !d.juror_tip_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.JURY_VOTE_REVEAL
+          && t.data?.ctid === d.ctid
+          && t.data?.juror_tip_id === d.juror_tip_id
+          && (!!t.data?.is_appeal) === (!!d.is_appeal));
+        if (inBatch) return { valid: false, error: `duplicate JURY_VOTE_REVEAL in batch for (${d.ctid}, ${d.juror_tip_id})` };
+        return { valid: true };
+      }
+
       case TX_TYPES.COMMITTEE_ROTATION: {
         // §4 + #34: in-batch dedup only — the rest of the rotation-validity
         // checks (monotonic rotation_number, effective_round, structural,
@@ -390,6 +416,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       }
 
       case TX_TYPES.APPEAL_FILED: {
+        // SYSTEM_AUTO_ESCALATION (Stage-2 NO_QUORUM) bypasses canFileAppeal:
+        // the prereq ADJUDICATION_RESULT is in the SAME atomic batch (built
+        // by jury.buildAdjudicationBatch's NO_QUORUM path), and validation
+        // runs before application — so dag.getTxsByTypeAndCtid would not
+        // see the in-batch verdict tx. The user-filed appeal path keeps
+        // the prereq check.
+        if (d.appellant_tip_id === "SYSTEM_AUTO_ESCALATION") return { valid: true };
         if (d.appellant_tip_id) {
           const r = rules.canFileAppeal(dag, {
             ctid: d.ctid, appellant_tip_id: d.appellant_tip_id,
@@ -659,6 +692,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     // write must be deterministic across every node — hence it goes
     // through the same pure function as the read-only replay.
     _applyScoreEffect(tx);
+
+    // Verdict-trigger heap maintenance. Single dispatch, no caller-side
+    // tx-type filter — the trigger's own switch (with default: return)
+    // decides relevance. Keeping the list in one place avoids drift:
+    // the previous design buried this call inside _applyScoreEffect's
+    // score-target gate, which silently skipped JURY_SUMMONS (no score
+    // effect) and left the heap empty in steady state, so verdicts
+    // never fired naturally between restarts.
+    if (verdictTrigger) {
+      try {
+        verdictTrigger.onTxCommitted(tx);
+      } catch (err) {
+        // Heap-state update failure is non-fatal — the next checkPending
+        // will rescan as needed. Log so we notice persistent issues.
+        log.warn(`verdict-trigger.onTxCommitted(${tx.tx_type}) failed: ${err.message}`);
+      }
+    }
   }
 
   /**
@@ -688,23 +738,6 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     // last_updated from tx.timestamp — same value on every node so the
     // scores row stays in state_merkle_root (issues.md Consensus #31).
     dag.setScore(target, next.score, next.offense_count, tx.timestamp);
-
-    // Commit 3 — notify the verdict-trigger of any verdict-relevant
-    // tx commit so it can update its pending-deadline heap. Delegation
-    // only; commit-handler holds no heap state of its own.
-    if (verdictTrigger
-      && (tx.tx_type === TX_TYPES.JURY_SUMMONS
-        || tx.tx_type === TX_TYPES.ADJUDICATION_RESULT
-        || tx.tx_type === TX_TYPES.APPEAL_RESULT
-        || tx.tx_type === TX_TYPES.APPEAL_FILED)) {
-      try {
-        verdictTrigger.onTxCommitted(tx);
-      } catch (err) {
-        // Heap-state update failure is non-fatal — the next checkPending
-        // will rescan as needed. Log so we notice persistent issues.
-        log.warn(`verdict-trigger.onTxCommitted(${tx.tx_type}) failed: ${err.message}`);
-      }
-    }
   }
 
   /**

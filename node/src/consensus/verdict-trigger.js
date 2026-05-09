@@ -46,10 +46,21 @@
 "use strict";
 
 const { TX_TYPES } = require("../../../shared/constants");
+const { JURY, APPEAL } = require("../../../shared/protocol-constants");
 const { createPendingDeadlines } = require("./pending-deadlines");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.verdict-trigger");
+
+// Dev-only escape hatch — pairs with the validator-side bypass in
+// business-rules.js. When set, `checkPending` ignores the heap's
+// reveal_deadline so verdicts fire as soon as reveals land, instead of
+// waiting out the on-chain (immutable) deadline. Identical predicate runs
+// on every node, so leader gating + idempotency guard still hold.
+function _devBypassVoteWindows() {
+  return process.env.NODE_ENV !== "production"
+      && process.env.TIP_DEV_BYPASS_VOTE_WINDOWS === "1";
+}
 
 /**
  * Convert a JURY_SUMMONS reveal_deadline (ISO string) to integer epoch ms.
@@ -210,6 +221,25 @@ function createVerdictTrigger({ dag, jury, scoring, config, submitBatch, getComm
    * defaults to true so every node fires — that's the original
    * pre-leader-gate behaviour and still correct via first-wins dedup.
    */
+  // Bypass-mode "ready" signal: enough unique-juror reveals committed to
+  // reach quorum. Replaces the deadline gate — without it, a freshly-summoned
+  // dispute fires NO_QUORUM auto-escalation before any reveals can land,
+  // emitting orphan expert summons (since APPEAL_FILED with a non-tip-id
+  // appellant fails canFileAppeal at deliver-time). Same dedup discipline
+  // as the verdict tally so ill-formed duplicate reveals can't satisfy quorum.
+  function _quorumReachedFor(entry) {
+    const isAppeal = entry.stage === "appeal";
+    const reveals = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, entry.ctid)
+      .filter(r => !!r.data?.is_appeal === isAppeal);
+    const uniqueJurors = new Set();
+    for (const r of reveals) {
+      const id = r?.data?.juror_tip_id;
+      if (id) uniqueJurors.add(id);
+    }
+    const required = isAppeal ? APPEAL.MIN_VOTES : JURY.QUORUM;
+    return uniqueJurors.size >= required;
+  }
+
   function _isMyRoundLeader(round) {
     if (typeof getCommittee !== "function") return true;
     const committee = getCommittee(round);
@@ -229,11 +259,29 @@ function createVerdictTrigger({ dag, jury, scoring, config, submitBatch, getComm
     // first-wins dedup catches it; K is bounded by rounds-until-commit.
     if (Number.isFinite(round) && !_isMyRoundLeader(round)) return;
 
+    // Dev bypass changes the "ready to fire" signal from "deadline passed"
+    // to "quorum reached" — that way we don't fire NO_QUORUM auto-escalation
+    // on a fresh dispute just because the deadline gate is disabled. Heap is
+    // ordered by deadline, irrelevant under bypass, so we walk a snapshot
+    // and pull entries by ctid instead of pop-from-top.
+    const bypass = _devBypassVoteWindows();
+    const eligible = bypass
+      ? _heap.snapshot().filter(e => _quorumReachedFor(e))
+      : null;
+    let bypassIdx = 0;
+
     let fired = 0;
     while (true) {
-      const top = _heap.peek();
-      if (!top || top.deadline > certTimestamp) break;
-      _heap.pop();
+      let top;
+      if (bypass) {
+        if (bypassIdx >= eligible.length) break;
+        top = eligible[bypassIdx++];
+        if (!_heap.removeByCtid(top.ctid, top.stage)) continue;
+      } else {
+        top = _heap.peek();
+        if (!top || top.deadline > certTimestamp) break;
+        _heap.pop();
+      }
       _tracked.delete(_key(top.ctid, top.stage));
 
       try {
@@ -270,7 +318,8 @@ function createVerdictTrigger({ dag, jury, scoring, config, submitBatch, getComm
           // Mempool may reject as duplicate (peer beat us), or consensus
           // is halted — either way, NOT fatal: next round's check will
           // see the result land or retry.
-          log.debug(`Verdict batch submission deferred for ${top.ctid} (${top.stage}): ${err?.error || err?.message || err}`);
+          const reason = err?.error || err?.message || String(err);
+          log.warn(`Verdict batch submission deferred for ${top.ctid} (${top.stage}): ${reason}`);
         }
       } catch (err) {
         log.warn(`Verdict trigger failed for ${top.ctid} (${top.stage}): ${err.message}`);

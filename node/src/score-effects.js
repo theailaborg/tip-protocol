@@ -173,6 +173,12 @@ function applyScoreEffect(tx, current) {
       // (see `jury.buildAdjudicationBatch`). The `author_score_delta`
       // field stays in tx.data as informational metadata (audit trail
       // + reversal lookup by `jury.buildAppealBatch`).
+      //
+      // NO_QUORUM / DISMISSED / CONSERVATIVE_LABEL all fall through as
+      // no-ops here: only UPHELD constitutes an "offense" against the
+      // author. Quorum-failure isn't the author's fault, dismissal
+      // means the dispute had no merit, conservative-label means the
+      // author under-claimed (honest direction).
       if (d.verdict === VERDICT.UPHELD && d.author_tip_id) {
         nextOffense += 1;
       }

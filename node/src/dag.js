@@ -206,6 +206,7 @@ class MemoryStore {
     this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
+    this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -241,8 +242,22 @@ class MemoryStore {
   }
   // Broad role-aware lookup via the denormalised subject_tip_id column.
   // Mirrors SQLiteStore.getTxsBySubject — used by the activity feed.
+  //
+  // Returned order matches identity-service.getActivity's canonical sort
+  // (strict reverse-chronological): timestamp DESC, SCORE_UPDATE-before-
+  // anchor (side-effect is logically latest in the causal chain), tx_id
+  // DESC. Single source of truth for activity-feed ordering.
   getTxsBySubject(tipId) {
-    return [...this._txs.values()].filter(t => t.subject_tip_id === tipId);
+    return [...this._txs.values()]
+      .filter(t => t.subject_tip_id === tipId)
+      .sort((a, b) => {
+        const d = new Date(b.timestamp) - new Date(a.timestamp);
+        if (d !== 0) return d;
+        const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
+        const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        return a.tx_id < b.tx_id ? 1 : -1;
+      });
   }
 
   // ── Identities ────────────────────────────────────────────────────────────
@@ -754,6 +769,32 @@ class MemoryStore {
   }
   countTxRejections() { return this._txRejections.size; }
 
+  // ── Dispute details (off-chain dispute body) ──────────────────────────
+  // Holds the disputer-submitted description + structured evidence array
+  // bound by `evidence_hash` to a CONTENT_DISPUTED tx. NOT consensus state:
+  // each node stores what it accepted-as-uploader or fetched-from-peers.
+  // Excluded from iterateCanonicalState / state_merkle_root.
+  saveDisputeDetails(rec) {
+    if (this._disputeDetails.has(rec.evidence_hash)) return false;
+    this._disputeDetails.set(rec.evidence_hash, {
+      evidence_hash: rec.evidence_hash,
+      disputer_tip_id: rec.disputer_tip_id,
+      payload_json: rec.payload_json,
+      signature: rec.signature,
+      created_at: rec.created_at,
+    });
+    return true;
+  }
+  getDisputeDetails(hash) {
+    return this._disputeDetails.get(hash) || null;
+  }
+  hasDisputeDetails(hash) {
+    return this._disputeDetails.has(hash);
+  }
+  deleteDisputeDetails(hash) {
+    return this._disputeDetails.delete(hash);
+  }
+
   // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
   // writes always populate the column at save time; nothing to retrofit.
   backfillSubjectTipId(_subjectTipId) {
@@ -1146,6 +1187,23 @@ class SQLiteStore {
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      -- ── Dispute details (off-chain dispute body) ──────────────────
+      -- Holds the disputer-submitted description + structured evidence
+      -- array, bound by evidence_hash to a CONTENT_DISPUTED tx. The hash
+      -- is on-chain; the body is NOT. NOT consensus state — excluded
+      -- from iterateCanonicalState / state_merkle_root. Per-node copies
+      -- may legitimately diverge. INSERT OR IGNORE on evidence_hash PK
+      -- keeps uploads idempotent. disputer_tip_id is stored (not
+      -- derivable from signature alone) so reads can fetch the pubkey
+      -- and re-verify the signature.
+      CREATE TABLE IF NOT EXISTS dispute_details (
+        evidence_hash    TEXT PRIMARY KEY,
+        disputer_tip_id  TEXT NOT NULL,
+        payload_json     TEXT NOT NULL,
+        signature        TEXT NOT NULL,
+        created_at       TEXT NOT NULL
+      );
     `);
 
     // Backfill registered_url column for pre-existing content tables
@@ -1319,10 +1377,17 @@ class SQLiteStore {
       // disputer's dispute all attribute to that user even though
       // they don't appear under tip_id/author_tip_id. Powers the
       // activity feed (see identity-service.getActivity).
+      // ORDER BY matches identity-service.getActivity's canonical sort
+      // (strict reverse-chronological): timestamp DESC, SCORE_UPDATE
+      // first within ties (it's the logically-latest event), tx_id DESC.
+      // Single source of truth for activity-feed ordering across the SQL
+      // layer and the JS comparator.
       txsBySubject: this.db.prepare(
         `SELECT * FROM transactions
          WHERE subject_tip_id=?
-         ORDER BY created_at ASC`
+         ORDER BY timestamp DESC,
+                  CASE WHEN tx_type='SCORE_UPDATE' THEN 0 ELSE 1 END ASC,
+                  tx_id DESC`
       ),
 
       saveIdentity: this.db.prepare(
@@ -1553,6 +1618,23 @@ class SQLiteStore {
          ORDER BY rejected_at_ms DESC`
       ),
       countTxRejections: this.db.prepare("SELECT COUNT(*) AS n FROM tx_rejections"),
+
+      // Dispute details (off-chain dispute body). INSERT OR IGNORE on
+      // evidence_hash PK keeps re-uploads idempotent.
+      saveDisputeDetails: this.db.prepare(
+        `INSERT OR IGNORE INTO dispute_details
+           (evidence_hash, disputer_tip_id, payload_json, signature, created_at)
+         VALUES (?,?,?,?,?)`
+      ),
+      getDisputeDetails: this.db.prepare(
+        "SELECT * FROM dispute_details WHERE evidence_hash=?"
+      ),
+      hasDisputeDetails: this.db.prepare(
+        "SELECT 1 AS hit FROM dispute_details WHERE evidence_hash=?"
+      ),
+      deleteDisputeDetails: this.db.prepare(
+        "DELETE FROM dispute_details WHERE evidence_hash=?"
+      ),
     };
   }
 
@@ -2081,6 +2163,29 @@ class SQLiteStore {
   }
   countTxRejections() { return this._stmts.countTxRejections.get().n; }
 
+  // ── Dispute details (off-chain dispute body) ────────────────────────────
+  // Mirrors MemoryStore.saveDisputeDetails. Idempotent on evidence_hash —
+  // re-uploads of the same payload are a silent no-op.
+  saveDisputeDetails(rec) {
+    const res = this._stmts.saveDisputeDetails.run(
+      rec.evidence_hash,
+      rec.disputer_tip_id,
+      rec.payload_json,
+      rec.signature,
+      rec.created_at,
+    );
+    return res.changes === 1;
+  }
+  getDisputeDetails(hash) {
+    return this._stmts.getDisputeDetails.get(hash) || null;
+  }
+  hasDisputeDetails(hash) {
+    return !!this._stmts.hasDisputeDetails.get(hash);
+  }
+  deleteDisputeDetails(hash) {
+    return this._stmts.deleteDisputeDetails.run(hash).changes > 0;
+  }
+
   /**
    * Run a function inside a SQLite transaction (BEGIN → fn() → COMMIT).
    * If fn throws, the transaction is rolled back. Crash-safe.
@@ -2318,6 +2423,12 @@ function _buildDagHandle(store, config) {
     getTxRejectionsByReason: (reason, opts) => store.getTxRejectionsByReason(reason, opts),
     getTxRejectionsByTipId: (tipId) => store.getTxRejectionsByTipId(tipId),
     countTxRejections: () => store.countTxRejections(),
+
+    // ── Dispute details (off-chain dispute body) ────────────────────────
+    saveDisputeDetails: (rec) => store.saveDisputeDetails(rec),
+    getDisputeDetails: (hash) => store.getDisputeDetails(hash),
+    hasDisputeDetails: (hash) => store.hasDisputeDetails(hash),
+    deleteDisputeDetails: (hash) => store.deleteDisputeDetails(hash),
 
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),

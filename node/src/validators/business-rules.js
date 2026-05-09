@@ -29,12 +29,33 @@
 
 "use strict";
 
-const { TX_TYPES, ORIGIN, CONTENT_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON } = require("../../../shared/constants");
 const { DISPUTE, APPEAL } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+// Dev-only escape hatch for the JURY vote-window time gates. Lets a developer
+// drive a live dispute through commit→reveal→verdict without waiting the full
+// 72h+6h windows or re-seeding. NEVER takes effect in production: requires
+// both NODE_ENV != "production" AND the explicit opt-in flag. Bypasses ONLY
+// the wall-clock checks — signature, juror membership, double-vote, and
+// commitment-hash verification are still enforced.
+function _devBypassVoteWindows() {
+  return process.env.NODE_ENV !== "production"
+      && process.env.TIP_DEV_BYPASS_VOTE_WINDOWS === "1";
+}
+
+// Eligible (declared → claimed) transitions for origin_mismatch disputes.
+// First three are penalty paths in score-effects.adjudicationDelta; AG→OH
+// is the CONSERVATIVE_LABEL path in jury.js (no penalty, but content origin
+// updates). Anything else (same-origin, MX, "downgrade" claims like AA→OH)
+// has no verdict effect and would just burn jury cycles, so reject up-front.
+const ELIGIBLE_ORIGIN_MISMATCHES = Object.freeze(new Set([
+  "OH:AG", "OH:AA", "AA:AG", "AG:OH",
+]));
+const ELIGIBLE_ORIGIN_MISMATCH_LIST = "OH→AG, OH→AA, AA→AG, AG→OH";
 
 function ok() {
   return { valid: true };
@@ -127,7 +148,7 @@ function canRetract(dag, { ctid, author_tip_id }) {
 
 // ─── Dispute / Jury ────────────────────────────────────────────────────────
 
-function canDispute(dag, scoring, { ctid, disputer_tip_id }) {
+function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason, claimed_origin }) {
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(403, "Content has been retracted — dispute not allowed");
@@ -144,6 +165,32 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id }) {
   }
   if (dag.hasDispute(ctid, disputer_tip_id)) return fail(409, "You have already disputed this content");
 
+  // Origin-mismatch eligibility — the (declared → claimed) transition
+  // must be one the verdict path actually acts on. See
+  // ELIGIBLE_ORIGIN_MISMATCHES above for the rationale.
+  if (reason === DISPUTE_REASON.ORIGIN_MISMATCH) {
+    const declared = rec.origin_code;
+    if (declared === claimed_origin) {
+      return fail(400, `claimed_origin must differ from declared origin (${declared})`);
+    }
+    if (!ELIGIBLE_ORIGIN_MISMATCHES.has(`${declared}:${claimed_origin}`)) {
+      return fail(400, `Origin transition ${declared}→${claimed_origin} is not a disputable mismatch — eligible: ${ELIGIBLE_ORIGIN_MISMATCH_LIST}`);
+    }
+  }
+
+  // Each evidence body backs at most one dispute. Reusing the same
+  // evidence_hash across disputes would tangle takedown / attribution /
+  // audit semantics, so disputers must vary the body (or omit it).
+  // Walks DAG state, so the accept/reject decision is identical at
+  // CheckTx and at commit-handler DeliverTx — consensus-deterministic.
+  if (evidence_hash) {
+    const collision = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
+      .find(t => t.data?.evidence_hash === evidence_hash);
+    if (collision) {
+      return fail(409, "evidence_hash already used by another dispute — vary the evidence body to produce a unique hash");
+    }
+  }
+
   return ok();
 }
 
@@ -159,7 +206,7 @@ function canCommitVote(dag, { ctid, juror_tip_id, is_appeal = false }, { now }) 
   }
 
   const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
-  if (now > commitDeadline) return fail(403, "Commit window has closed");
+  if (now > commitDeadline && !_devBypassVoteWindows()) return fail(403, "Commit window has closed");
 
   const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .find(t => t.data?.juror_tip_id === juror_tip_id && (!!t.data?.is_appeal) === is_appeal);
@@ -180,8 +227,9 @@ function canRevealVote(dag, { ctid, juror_tip_id, is_appeal = false, vote, salt 
 
   const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
   const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
-  if (now < commitDeadline) return fail(403, "Reveal window has not opened yet");
-  if (now > revealDeadline) return fail(403, "Reveal window has closed");
+  const bypass = _devBypassVoteWindows();
+  if (now < commitDeadline && !bypass) return fail(403, "Reveal window has not opened yet");
+  if (now > revealDeadline && !bypass) return fail(403, "Reveal window has closed");
 
   const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .find(t => t.data?.juror_tip_id === juror_tip_id && (!!t.data?.is_appeal) === is_appeal);

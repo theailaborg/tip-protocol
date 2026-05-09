@@ -34,6 +34,34 @@ function createRouter({ disputeService }) {
     res.status(202).json(disputeService.appealReveal(req.params.ctid, req.body));
   }));
 
+  // ── Dispute listing / lookup / timeline ─────────────────────────────────
+  // Read-only views over existing tx state. No new tx types — status is
+  // projected from the DAG at request time.
+
+  router.get("/disputes", asyncHandler((req, res) => {
+    res.json(disputeService.listDisputesForTipId(req.query.tip_id));
+  }));
+
+  // Per-user attention feed. Open / unauthenticated by design — see
+  // my-notes/USER_DASHBOARD_API.md "Authentication" for the rationale.
+  router.get("/users/:tip_id/dashboard", asyncHandler((req, res) => {
+    res.json(disputeService.getUserDashboard(req.params.tip_id));
+  }));
+
+  // All-time jury / expert history for a user. Paginated.
+  // Optional query params: limit, offset, status, role.
+  router.get("/users/:tip_id/jury-history", asyncHandler((req, res) => {
+    res.json(disputeService.getJuryHistoryForTipId(req.params.tip_id, req.query));
+  }));
+
+  router.get("/disputes/:dispute_id/timeline", asyncHandler((req, res) => {
+    res.json(disputeService.getDisputeTimeline(req.params.dispute_id));
+  }));
+
+  router.get("/disputes/:dispute_id", asyncHandler((req, res) => {
+    res.json(disputeService.getDisputeById(req.params.dispute_id));
+  }));
+
   return router;
 }
 
