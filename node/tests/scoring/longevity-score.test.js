@@ -78,11 +78,11 @@ describe.skip("longevity — runtime computation (not yet implemented)", () => {
   });
 
   test.each([
-    [6,   15],
-    [12,  30],
-    [24,  45],
-    [36,  60],
-    [60,  70],
+    [6, 15],
+    [12, 30],
+    [24, 45],
+    [36, 60],
+    [60, 70],
     [120, 70],   // capped at MAX_LONGEVITY
   ])("age %i months → +%i longevity points", (_months, _expected) => {
     // Same shape as above. Each row is a boundary case from the spec.

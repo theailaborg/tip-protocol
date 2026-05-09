@@ -81,17 +81,17 @@ describe("tier thresholds — genesis constants match spec", () => {
 describe("getTier — exact boundaries map to the higher tier", () => {
   test.each([
     [1000, "HIGHLY_TRUSTED"],
-    [850,  "HIGHLY_TRUSTED"],   // boundary — inclusive
-    [849,  "TRUSTED"],
-    [700,  "TRUSTED"],
-    [650,  "TRUSTED"],          // boundary
-    [649,  "VERIFIED"],
-    [500,  "VERIFIED"],
-    [400,  "VERIFIED"],         // boundary
-    [399,  "CAUTION"],
-    [200,  "CAUTION"],          // boundary
-    [199,  "NOT_TRUSTED"],
-    [0,    "NOT_TRUSTED"],
+    [850, "HIGHLY_TRUSTED"],   // boundary — inclusive
+    [849, "TRUSTED"],
+    [700, "TRUSTED"],
+    [650, "TRUSTED"],          // boundary
+    [649, "VERIFIED"],
+    [500, "VERIFIED"],
+    [400, "VERIFIED"],         // boundary
+    [399, "CAUTION"],
+    [200, "CAUTION"],          // boundary
+    [199, "NOT_TRUSTED"],
+    [0, "NOT_TRUSTED"],
   ])("score %i → %s", (score, expected) => {
     expect(getTier(score).name).toBe(expected);
   });
