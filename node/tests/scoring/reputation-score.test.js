@@ -183,19 +183,86 @@ describe("clean-record bonus delta application — applyScoreEffect", () => {
   });
 });
 
-// ─── Spec-forward gaps ─────────────────────────────────────────────────────
+// ─── 'no content → no bonus' — anti-spam rule from spec ───────────────────
 
-describe.skip("reputation — spec rules not yet enforced in production", () => {
-  test("'no content → no bonus' — identity must have registered ≥1 OH/AA content in the window", () => {
-    // Spec: "If a user registers zero OH or AA content in a 90-day period,
-    //   they do not earn the clean record bonus. This prevents idle score
-    //   farming."
-    // Today's getCleanRecordEligible accepts ANY activity in the window
-    // (a SCORE_UPDATE noise tx, a JURY_VOTE_REVEAL, etc.) — so an idle user
-    // who reveals one jury vote per quarter would qualify. When the OH/AA
-    // requirement lands, this test should pass without modification.
+describe("clean-record eligibility — must register ≥1 OH/AA content in window", () => {
+  test("idle juror with reveals but no OH/AA content registration is NOT eligible", () => {
+    // Spec rationale: "If a user registers zero OH or AA content in a
+    // 90-day period, they do not earn the clean record bonus. This
+    // prevents idle score farming."
+    const fx = _setup();
+    const tipId = "tip://id/idle-juror";
+    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+
+    // Plenty of activity — but it's all jury participation, not authored
+    // content registrations. The user is "active" but hasn't published.
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-02-01T00:00:00.000Z",
+      data: { ctid: "tip://c/x", juror_tip_id: tipId, vote: "MATCH", salt: "00", confirmed_origin: "OH" },
+    });
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-02-15T00:00:00.000Z",
+      data: { tip_id: tipId, delta: 3, reason: "Jury majority vote on tip://c/x" },
+    });
+
+    expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
   });
 
+  test("user with ≥1 OH content registration in window IS eligible", () => {
+    const fx = _setup();
+    const tipId = "tip://id/publisher";
+    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      data: { ctid: "tip://c/x", author_tip_id: tipId, origin_code: "OH", content_hash: "00" },
+    });
+    expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
+  });
+
+  test("user with ≥1 AA content registration in window IS eligible", () => {
+    const fx = _setup();
+    const tipId = "tip://id/aa-publisher";
+    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      data: { ctid: "tip://c/y", author_tip_id: tipId, origin_code: "AA", content_hash: "00" },
+    });
+    expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
+  });
+
+  test("only AG / MX content registrations do NOT qualify (must be OH or AA)", () => {
+    // Spec is explicit: "at least one OH or AA content". AG / MX
+    // registrations don't carry the same "creator effort" signal.
+    const fx = _setup();
+    const tipId = "tip://id/ag-only";
+    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      data: { ctid: "tip://c/z", author_tip_id: tipId, origin_code: "AG", content_hash: "00" },
+    });
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-15T00:00:00.000Z",
+      data: { ctid: "tip://c/zz", author_tip_id: tipId, origin_code: "MX", content_hash: "00" },
+    });
+    expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
+  });
+
+  test("OH/AA registration BEFORE the window does not satisfy the rule", () => {
+    const fx = _setup();
+    const tipId = "tip://id/old-publisher";
+    _seedIdentity(fx.dag, tipId, "2025-06-01T00:00:00.000Z");
+    // Registered before the cutoff — outside the window.
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2025-08-01T00:00:00.000Z",
+      data: { ctid: "tip://c/old", author_tip_id: tipId, origin_code: "OH", content_hash: "00" },
+    });
+    expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
+  });
+});
+
+// ─── Remaining spec-forward gaps ───────────────────────────────────────────
+
+describe.skip("reputation — spec rules awaiting bucket-aware engine", () => {
   test("Reputation Score capped at 50 — bucket-aware engine", () => {
     // Today the engine carries a single combined `score`, so the +10 bonus
     // and +5 vindication land directly on it, capped only by MAX_TOTAL.

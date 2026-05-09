@@ -291,11 +291,28 @@ class MemoryStore {
         // around long enough to have a 90-day clean record yet.
         if (!id.registered_at || id.registered_at > cutoff) return false;
         const userTxs = txs.filter(t => t.data?.tip_id === tipId || t.data?.author_tip_id === tipId);
-        const hasActivity = userTxs.some(t => t.timestamp >= cutoff);
-        if (!hasActivity) return false;
+        // Spec (TIP_Scoring_v2 Reputation §): the bonus requires the user
+        // to have registered ≥1 OH or AA content during the window. Any
+        // other activity (a juror reveal, a SCORE_UPDATE, an inbound
+        // dispute) does NOT qualify — that would let idle high-score users
+        // farm the bonus by sitting on jury duty.
+        const hasOhAaContent = userTxs.some(t =>
+          t.tx_type === "REGISTER_CONTENT"
+          && t.data?.author_tip_id === tipId
+          && (t.data?.origin_code === "OH" || t.data?.origin_code === "AA")
+          && t.timestamp >= cutoff,
+        );
+        if (!hasOhAaContent) return false;
         const hasUpheld = userTxs.some(t => t.tx_type === "ADJUDICATION_RESULT" && t.data?.verdict === "UPHELD" && t.timestamp >= cutoff);
         if (hasUpheld) return false;
-        const hasBonus = userTxs.some(t => t.tx_type === "SCORE_UPDATE" && t.data?.reason === "clean_record_bonus" && t.timestamp >= cutoff);
+        // Match `clean_record_bonus` with or without the window-id suffix.
+        // The trigger emits `clean_record_bonus:YYYY-MM-DD` so the
+        // (tip_id, ctid, reason) dedup at commit-handler scopes per
+        // window; legacy un-suffixed bonuses still match for backward-compat.
+        const hasBonus = userTxs.some(t => t.tx_type === "SCORE_UPDATE"
+          && typeof t.data?.reason === "string"
+          && t.data.reason.startsWith("clean_record_bonus")
+          && t.timestamp >= cutoff);
         if (hasBonus) return false;
         return true;
       })
@@ -1715,18 +1732,21 @@ class SQLiteStore {
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
   getCleanRecordEligible(cutoff) {
-    // Clean-record bonus eligibility: identity must be active, registered
-    // for at least CLEAN_PERIOD_DAYS (`registered_at <= cutoff`), have had
-    // some on-network activity inside the window, no UPHELD adjudication
-    // inside the window, and no prior bonus inside the window.
+    // Clean-record bonus eligibility (TIP_Scoring_v2 Reputation §):
+    //   - identity active and registered for at least CLEAN_PERIOD_DAYS
+    //   - registered ≥1 OH or AA content inside the window (jury duty
+    //     and other activity do NOT qualify — prevents idle score-farming)
+    //   - no UPHELD adjudication against them inside the window
+    //   - no prior clean_record_bonus inside the window
     return this.db.prepare(`
       SELECT DISTINCT i.tip_id FROM identities i
       WHERE i.status = 'active'
         AND i.registered_at <= ?
         AND EXISTS (
           SELECT 1 FROM transactions t
-          WHERE (json_extract(t.data,'$.tip_id') = i.tip_id
-              OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
+          WHERE t.tx_type = 'REGISTER_CONTENT'
+            AND json_extract(t.data,'$.author_tip_id') = i.tip_id
+            AND json_extract(t.data,'$.origin_code') IN ('OH','AA')
             AND t.timestamp >= ?
         )
         AND NOT EXISTS (
@@ -1741,7 +1761,7 @@ class SQLiteStore {
           WHERE t.tx_type = 'SCORE_UPDATE'
             AND (json_extract(t.data,'$.tip_id') = i.tip_id
               OR json_extract(t.data,'$.author_tip_id') = i.tip_id)
-            AND json_extract(t.data,'$.reason') = 'clean_record_bonus'
+            AND json_extract(t.data,'$.reason') LIKE 'clean_record_bonus%'
             AND t.timestamp >= ?
         )
     `).all(cutoff, cutoff, cutoff, cutoff).map(r => r.tip_id);

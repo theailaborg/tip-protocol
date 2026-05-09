@@ -10,8 +10,9 @@
  *
  * Predicate (post-fix):
  *   - identity.status = 'active'
- *   - identity.registered_at <= cutoff   (≥ CLEAN_PERIOD_DAYS old — added)
- *   - has on-network activity in last CLEAN_PERIOD_DAYS
+ *   - identity.registered_at <= cutoff   (≥ CLEAN_PERIOD_DAYS old)
+ *   - registered ≥1 OH/AA content in last CLEAN_PERIOD_DAYS
+ *     (any other tx — jury reveals, score updates — does NOT qualify)
  *   - no UPHELD adjudication in last CLEAN_PERIOD_DAYS
  *   - no prior clean_record_bonus in last CLEAN_PERIOD_DAYS
  *
@@ -69,12 +70,22 @@ function _addTx(dag, body) {
   return txBody;
 }
 
-function _seedActivity(dag, tipId, timestamp) {
-  // Any tx that mentions the tipId in data counts as activity.
+function _seedActivity(dag, tipId, timestamp, origin = "OH") {
+  // Spec rule: only OH/AA content registration counts as qualifying
+  // activity for the clean-record bonus. Other tx types (jury reveals,
+  // SCORE_UPDATEs) deliberately don't satisfy the eligibility predicate.
+  // Each call gets a unique ctid so the same tipId can register multiple
+  // contents without tx_id collisions.
   _addTx(dag, {
-    tx_type: TX_TYPES.SCORE_UPDATE,
+    tx_type: TX_TYPES.REGISTER_CONTENT,
     timestamp,
-    data: { tip_id: tipId, delta: 1, reason: "test_activity", node_id: "tip://node/n1" },
+    data: {
+      ctid: `tip://c/test-${shake256(`${tipId}:${timestamp}`).slice(0, 14)}`,
+      author_tip_id: tipId,
+      origin_code: origin,
+      content_hash: shake256(`${tipId}:${timestamp}`),
+      node_id: "tip://node/n1",
+    },
   });
 }
 

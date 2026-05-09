@@ -108,10 +108,22 @@ function createCleanRecordTrigger({ dag, scoring, config, submitBatch, getCommit
     if (eligible.length === 0) return;
 
     const proposedTimestamp = new Date(certTimestamp).toISOString();
+    // Window-scoped reason. The bonus is recurring (every CLEAN_PERIOD_DAYS),
+    // so a constant `"clean_record_bonus"` reason would collide forever
+    // under the (tip_id, ctid, reason) dedup at commit-handler — only the
+    // first window's bonus would ever land. Embedding the trigger-day's
+    // ISO date scopes the dedup naturally per day:
+    //   - Same node firing twice on the same day  → same reason → dedup ✓
+    //   - Two nodes firing on the same day        → same BFT-time-derived
+    //     day → same reason → second one rejected ✓ (multi-leader race)
+    //   - Same user on a later day (next window)  → different reason →
+    //     accepted, predicate's window check is the actual eligibility gate.
+    const todayISO = new Date(today * MS_PER_DAY).toISOString().slice(0, 10);
+    const reason = `clean_record_bonus:${todayISO}`;
     const txs = eligible.map(tipId => scoring.buildScoreUpdateTx({
       tipId,
       delta: REPUTATION.CLEAN_PERIOD_BONUS,
-      reason: "clean_record_bonus",
+      reason,
       ctid: null,
       relatedTxId: null,
       timestamp: proposedTimestamp,

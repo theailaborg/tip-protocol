@@ -100,7 +100,12 @@ describe("clean-record-trigger: day-boundary fast path", () => {
     expect(fx.submitted.length).toBe(1);
     expect(fx.submitted[0].length).toBe(3);
     expect(fx.submitted[0][0].tx_type).toBe("SCORE_UPDATE");
-    expect(fx.submitted[0][0].data.reason).toBe("clean_record_bonus");
+    // Reason is window-scoped: "clean_record_bonus:YYYY-MM-DD" derived
+    // from the trigger day. The prefix is stable; the suffix (the day's
+    // ISO date) makes the (tip_id, ctid, reason) dedup naturally per
+    // window, so a user can collect again in the next 90-day epoch.
+    const expectedDay = new Date(20000 * MS_PER_DAY).toISOString().slice(0, 10);
+    expect(fx.submitted[0][0].data.reason).toBe(`clean_record_bonus:${expectedDay}`);
     expect(fx.submitted[0][0].data.delta).toBe(REPUTATION.CLEAN_PERIOD_BONUS);
   });
 
