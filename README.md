@@ -10,6 +10,10 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)]()
 [![DAG](https://img.shields.io/badge/Ledger-Federated%20DAG-purple.svg)]()
 [![Crypto](https://img.shields.io/badge/Crypto-Post--Quantum-red.svg)]()
+[![Wikidata: Org](https://img.shields.io/badge/Wikidata-Q139715497-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715497)
+[![Wikidata: Founder](https://img.shields.io/badge/Founder-Q139715509-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715509)
+
+> Authored and maintained by **[The AI Lab Intelligence Unobscured, Inc.](https://www.wikidata.org/wiki/Q139715497)** ([theailab.org](https://theailab.org)). Inventor: **[Dinesh Mendhe](https://www.wikidata.org/wiki/Q139715509)**.
 
 ---
 
