@@ -216,7 +216,10 @@ describe("listDisputesForTipId", () => {
     expect(out.juror_active[0].committed).toBe(true);
   });
 
-  test("appealable surfaces a verdict where caller is author and window is open", () => {
+  test("appealable surfaces a verdict only to the LOSING party (loser-only appeal CTA)", () => {
+    // UPHELD: author lost → author sees appeal CTA. Disputer won → no
+    // entry in their appealable[]. Mirrors dashboard.appeal_available
+    // and the FE's `losing_tip_id === me` rule so the two feeds agree.
     const fx = _setup();
     const ctid = "tip://c/x";
     _seedContent(fx.dag, ctid);
@@ -232,9 +235,29 @@ describe("listDisputesForTipId", () => {
     expect(authorView.appealable).toHaveLength(1);
     expect(authorView.appealable[0].role).toBe("author");
 
+    // Winner (disputer on UPHELD) gets no appeal CTA.
+    const disputerView = fx.service.listDisputesForTipId(DISPUTER);
+    expect(disputerView.appealable).toHaveLength(0);
+  });
+
+  test("appealable on DISMISSED surfaces only to the disputer (the loser)", () => {
+    const fx = _setup();
+    const ctid = "tip://c/dismissed";
+    _seedContent(fx.dag, ctid);
+    _fileDispute(fx.dag, ctid);
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp: new Date(Date.now() - 60 * 1000).toISOString(),
+      data: { ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH", author_tip_id: AUTHOR, node_id: NODE_ID },
+    });
+
     const disputerView = fx.service.listDisputesForTipId(DISPUTER);
     expect(disputerView.appealable).toHaveLength(1);
     expect(disputerView.appealable[0].role).toBe("disputer");
+
+    // Winner (author on DISMISSED) sees no appeal CTA.
+    const authorView = fx.service.listDisputesForTipId(AUTHOR);
+    expect(authorView.appealable).toHaveLength(0);
   });
 
   test("appealable hides verdicts already appealed", () => {
