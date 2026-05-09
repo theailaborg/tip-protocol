@@ -334,6 +334,22 @@ in their own clone of the repo, adjusts `TIP_PUBLIC_IP` and database
 credentials, and runs `npm start`. Identity and `TIP_BOOTSTRAP_PEERS`
 must NOT be regenerated — they're tied to the DAG registration.
 
+#### Dev tooling — temp users and dispute-flow drivers
+
+Two helper scripts make iterating on dispute flows tractable on a
+local cluster:
+
+- `scripts/seed-temp-users.js` — register N synthetic identities at
+  varied scores so jury selection has a realistic pool to draw from
+  (default: 50 users, 70% jury-eligible).
+- `scripts/drive-jury.js` — auto-submit commit + reveal across all
+  summoned jurors for a live dispute, optionally biased so the
+  verdict lands UPHELD or DISMISSED.
+
+CLI flags, the post-seed restart gotcha, and an end-to-end runbook
+("file a dispute, drive it to a verdict in one developer session")
+live in `scripts/README.md`.
+
 ---
 
 #### Troubleshooting
