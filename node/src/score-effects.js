@@ -92,7 +92,14 @@ function scoreTargetTipId(tx) {
       return null;
 
     case TX_TYPES.APPEAL_RESULT:
-      if (d.overturned && d.author_tip_id) return d.author_tip_id;
+      // Route to author when Stage-3 affects offense_count: any overturn,
+      // OR NO_QUORUM→UPHELD (first verdict applying an offense). Other
+      // outcomes (confirms, NO_QUORUM→DISMISSED, NO_QUORUM→CONSERVATIVE)
+      // leave offense_count unchanged so no routing is needed.
+      if (d.author_tip_id && (
+        d.overturned
+        || (d.stage2_verdict === VERDICT.NO_QUORUM && d.verdict === VERDICT.UPHELD)
+      )) return d.author_tip_id;
       return null;
 
     // REVOKE_* still routes via the inline channel because the freeze
@@ -202,19 +209,24 @@ function applyScoreEffect(tx, current) {
     }
 
     case TX_TYPES.APPEAL_RESULT: {
-      // Offense_count adjustment for overturn — symmetric in both
-      // directions:
-      //   UPHELD → DISMISSED   Stage-2 incremented offense; reverse it (-1)
-      //   DISMISSED → UPHELD   Stage-2 didn't increment but Stage-3 says
-      //                        UPHELD → apply the increment now (+1)
-      // Score reversals (and any fresh penalty) ride on paired
-      // SCORE_UPDATE txs in the same batch — see jury.buildAppealBatch.
-      if (d.overturned) {
-        if (d.stage2_verdict === VERDICT.UPHELD && nextOffense > 0) {
-          nextOffense -= 1;
-        } else if (d.stage2_verdict === VERDICT.DISMISSED && d.verdict === VERDICT.UPHELD) {
-          nextOffense += 1;
-        }
+      // Offense_count adjustment — three cases where Stage-3 alters
+      // the final offense state:
+      //   UPHELD → DISMISSED (overturn): Stage-2 incremented; reverse (-1)
+      //   DISMISSED → UPHELD (overturn): Stage-2 didn't increment but
+      //                                   Stage-3 says UPHELD → +1
+      //   NO_QUORUM → UPHELD: Stage-2 had no offense decision; Stage-3
+      //                       is the first verdict → +1
+      // Other paths (UPHELD→UPHELD confirm, DISMISSED→DISMISSED confirm,
+      // NO_QUORUM→DISMISSED, NO_QUORUM→CONSERVATIVE_LABEL) leave
+      // offense_count unchanged.
+      // Score reversals / fresh penalties ride on paired SCORE_UPDATE
+      // txs in the same batch — see jury.buildAppealBatch.
+      if (d.overturned && d.stage2_verdict === VERDICT.UPHELD && nextOffense > 0) {
+        nextOffense -= 1;
+      } else if (d.overturned && d.stage2_verdict === VERDICT.DISMISSED && d.verdict === VERDICT.UPHELD) {
+        nextOffense += 1;
+      } else if (d.stage2_verdict === VERDICT.NO_QUORUM && d.verdict === VERDICT.UPHELD) {
+        nextOffense += 1;
       }
       break;
     }

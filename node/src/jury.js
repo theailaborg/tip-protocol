@@ -615,10 +615,17 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const overturned = (stage2Verdict === VERDICT.UPHELD && verdict === VERDICT.DISMISSED)
     || (stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD);
 
-  // Author-penalty delta for the OVERTURN-of-DISMISSED branch (Stage 2
-  // dismissed; experts say UPHELD). Computed here so it lands in the tx
-  // and commit-handler doesn't need to call scoring.getAdjudicationDelta.
-  const overturnAuthorDelta = (overturned && stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD && authorTipId)
+  // Author-penalty delta for cases where Stage-3 produces the FIRST
+  // applicable penalty: (a) overturn-of-DISMISSED (Stage-2 said no
+  // offense; experts say UPHELD), or (b) NO_QUORUM→UPHELD (Stage-2
+  // didn't reach a decision; Stage-3 is the first verdict). Both apply
+  // a fresh Stage-2-style penalty here. Computed once so the value
+  // lands in the APPEAL_RESULT tx for downstream consumers.
+  const stage3AppliesFreshPenalty = (
+    (stage2Verdict === VERDICT.DISMISSED && verdict === VERDICT.UPHELD)
+    || (stage2Verdict === VERDICT.NO_QUORUM && verdict === VERDICT.UPHELD)
+  );
+  const overturnAuthorDelta = (stage3AppliesFreshPenalty && authorTipId)
     ? scoring.getAdjudicationDelta(authorTipId, { declared_origin, confirmed_origin, verdict })
     : 0;
 
@@ -700,6 +707,42 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   // Not overturned: no settlement event for the appellant. The
   // filing-time stake deduction (in dispute-service.fileAppeal) is the
   // forfeit itself — appeal failed, stake stays consumed.
+
+  // ── NO_QUORUM Stage-3 settlement ──────────────────────────────────────────
+  // Stage-2 NO_QUORUM produced no settlement (no UPHELD bonus, no penalty,
+  // disputer's stake stayed locked). Stage-3 is now the FIRST authoritative
+  // verdict — apply settlement as if Stage-3 were the Stage-2 verdict:
+  //   UPHELD             → disputer refund+bonus, fresh author penalty
+  //   CONSERVATIVE_LABEL → disputer refund only, no author penalty
+  //   DISMISSED          → no event (disputer's stake stays forfeited)
+  // Appellant on NO_QUORUM auto-escalation is "SYSTEM_AUTO_ESCALATION"
+  // (no real tip_id), so no appellant settlement event is emitted.
+  if (stage2Verdict === VERDICT.NO_QUORUM) {
+    if (verdict === VERDICT.UPHELD) {
+      if (disputerTipId) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
+          reason: `Stage 3 verdict UPHELD: stake refunded + bonus on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+      if (authorTipId && overturnAuthorDelta < 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: authorTipId, delta: overturnAuthorDelta,
+          reason: `Stage 3 verdict UPHELD: author penalty on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+    } else if (verdict === VERDICT.CONSERVATIVE_LABEL && disputerTipId) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
+        reason: `Stage 3 verdict CONSERVATIVE_LABEL: stake refunded on ${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+      }));
+    }
+    // DISMISSED on NO_QUORUM: stake stays forfeited (no event), matches
+    // standard DISMISSED handling.
+  }
 
   // ── Expert score effects ──────────────────────────────────────────────────
   const isTie = matchCount === mismatchCount;
