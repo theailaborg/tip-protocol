@@ -182,8 +182,9 @@ function createContentService({ dag, scoring, config, submitTx }) {
       Math.max(0, VERIFY_CAPS.PER_DAY - dailyDeltaSum),
       Math.max(0, VERIFY_CAPS.PER_MONTH - monthlyDeltaSum));
 
+    const verifyTxTimestamp = new Date().toISOString();
     const verifyTxBody = {
-      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: dag.getRecentPrev(),
       data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId, signature },
     };
     const signedTx = withTxId(verifyTxBody);
@@ -191,6 +192,21 @@ function createContentService({ dag, scoring, config, submitTx }) {
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
     submitTx(signedTx);
+
+    // Paired score-effect (single-channel rule): the CONTENT_VERIFIED tx
+    // owns the verification record; this SCORE_UPDATE owns the score
+    // delta. Submitted right after so they land in the same anchor commit.
+    if (weightedDelta > 0 && authorTipId) {
+      const scoreTx = scoring.buildScoreUpdateTx({
+        tipId: authorTipId, delta: weightedDelta,
+        reason: `Content verified (${ctid})`,
+        ctid, relatedTxId: signedTx.tx_id,
+        timestamp: verifyTxTimestamp,
+        getRecentPrev: () => dag.getRecentPrev(),
+        config,
+      });
+      submitTx(scoreTx);
+    }
 
     return {
       success: true, delta_applied: weightedDelta,
@@ -246,11 +262,25 @@ function createContentService({ dag, scoring, config, submitTx }) {
       throw { status: 403, error: "Author signature verification failed" };
     }
 
+    const retractTimestamp = new Date().toISOString();
     const retractTx = withTxId({
-      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: dag.getRecentPrev(),
       data: { ctid, author_tip_id, signature, origin_code: rec.origin_code, pre_retract_status: rec.status },
     });
     submitTx(retractTx);
+
+    // Paired score-effect (single-channel rule): retraction record on
+    // CONTENT_RETRACTED, score delta on SCORE_UPDATE. Submitted together
+    // so they land in the same anchor commit.
+    const scoreTx = scoring.buildScoreUpdateTx({
+      tipId: author_tip_id, delta: SCORE_EVENTS.CONTENT_RETRACTION.delta,
+      reason: `Content retracted (${ctid})`,
+      ctid, relatedTxId: retractTx.tx_id,
+      timestamp: retractTimestamp,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+    submitTx(scoreTx);
 
     log.info(`Content retraction proposed: ${ctid} by ${author_tip_id}`);
     return { success: true, ctid, penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta, tx_id: retractTx.tx_id, confirmation: "proposed" };

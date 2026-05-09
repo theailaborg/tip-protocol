@@ -64,40 +64,42 @@ function scoreTargetTipId(tx) {
     case TX_TYPES.REGISTER_IDENTITY:
       return d.tip_id || null;
 
+    // CONTENT_VERIFIED / CONTENT_RETRACTED no longer carry a score
+    // effect here — they emit a paired SCORE_UPDATE that handles the
+    // delta. Returning null keeps commit-handler from doing a wasted
+    // read-and-no-write cycle for these txs.
     case TX_TYPES.CONTENT_VERIFIED:
     case TX_TYPES.CONTENT_RETRACTED:
-      return d.author_tip_id || null;
+      return null;
 
     case TX_TYPES.SCORE_UPDATE:
       return d.tip_id || null;
 
-    // ADJUDICATION_RESULT carries the author penalty in
-    // `tx.data.author_score_delta` (precomputed by jury.js via
-    // `adjudicationDelta` so APPEAL_RESULT can reverse the exact value).
-    //
-    // PENALTY-ONLY INVARIANT (`< 0`): the verdict tx is the only
-    // inline-score-effect channel in the system; every other party's
-    // outcome (jurors, disputer, future vindication bonus per Scoring
-    // #12) flows through separate SCORE_UPDATE txs in the same batch.
-    // Author bonuses (e.g. DISMISSED vindication) MUST follow that
-    // pattern — they don't ride here. A positive value reaching this
-    // path means the verdict tx is malformed; refusing to apply it is
-    // defensive and keeps the inline channel exclusively for the
-    // appeal-reversal use case it exists to serve.
+    // RESULT txs route to the author so applyScoreEffect runs and
+    // adjusts offense_count. Score deltas live elsewhere — in paired
+    // SCORE_UPDATE txs in the same atomic batch, built by jury.js
+    // (`buildAdjudicationBatch` for Stage-2, `buildAppealBatch` for
+    // Stage-3). The architectural rule:
+    //   RESULT  → offense_count (the verdict decides "did an offense
+    //             happen?")
+    //   SCORE_UPDATE → score delta (single channel for all numeric
+    //                  changes)
+    // `author_score_delta` stays on the ADJUDICATION_RESULT tx data as
+    // informational metadata — it's the audit trail and the value
+    // `buildAppealBatch` reads to compute the exact reversal on overturn.
     case TX_TYPES.ADJUDICATION_RESULT:
-      if (d.verdict === VERDICT.UPHELD && Number.isFinite(d.author_score_delta) && d.author_score_delta < 0) {
-        return d.author_tip_id || null;
-      }
+      if (d.verdict === VERDICT.UPHELD && d.author_tip_id) return d.author_tip_id;
       return null;
 
-    // APPEAL_RESULT is purely orchestration — overturn-driven score
-    // adjustments (penalty reversal, fresh penalty, appellant
-    // bonus/penalty) are emitted as discrete SCORE_UPDATE txs in the
-    // appeal batch by jury.js. The verdict tx itself doesn't move any
-    // score row; it only flips offense_count via the freeze rule below.
     case TX_TYPES.APPEAL_RESULT:
+      if (d.overturned && d.author_tip_id) return d.author_tip_id;
       return null;
 
+    // REVOKE_* still routes via the inline channel because the freeze
+    // flag (`frozen=true`) is a state flip applied by applyScoreEffect,
+    // not a score delta. Score-side penalty for REVOKE_DEVICE (when
+    // that flow gets implemented) must be emitted as a paired
+    // SCORE_UPDATE alongside.
     case TX_TYPES.REVOKE_VOLUNTARY:
     case TX_TYPES.REVOKE_VP:
     case TX_TYPES.REVOKE_DECEASED:
@@ -143,16 +145,15 @@ function applyScoreEffect(tx, current) {
     }
 
     case TX_TYPES.CONTENT_VERIFIED: {
-      // weighted_delta is computed at API time (caps applied) and frozen
-      // in tx.data so every node applies the same number deterministically.
-      delta = Number.isFinite(d.weighted_delta) ? d.weighted_delta : 0;
-      reason = `Content verified (${d.ctid || ""})`;
+      // No score effect here — paired SCORE_UPDATE in the same batch
+      // (emitted by content-service.verify) carries the delta.
+      // Single-channel rule: SCORE_UPDATE owns score deltas.
       break;
     }
 
     case TX_TYPES.CONTENT_RETRACTED: {
-      delta = SCORE_EVENTS.CONTENT_RETRACTION.delta;
-      reason = `Content retracted (${d.ctid || ""})`;
+      // No score effect here — paired SCORE_UPDATE emitted by
+      // content-service.retract carries the delta.
       break;
     }
 
@@ -163,17 +164,16 @@ function applyScoreEffect(tx, current) {
     }
 
     case TX_TYPES.ADJUDICATION_RESULT: {
-      // Author penalty for an UPHELD verdict. Pre-computed by jury.js
-      // (`adjudicationDelta` below) and embedded in tx.data so
-      // APPEAL_RESULT can read the exact value back to reverse it on
-      // overturn. Treating ADJUDICATION_RESULT as a score-effect tx
-      // (rather than a no-op that rides on a separate SCORE_UPDATE)
-      // keeps the verdict tx self-contained and matches Cosmos's
-      // slashing pattern. Tracked migration to a fully unified
-      // SCORE_UPDATE channel as Node #62.
-      if (d.verdict === VERDICT.UPHELD && Number.isFinite(d.author_score_delta) && d.author_score_delta < 0) {
-        delta = d.author_score_delta;
-        reason = `Adjudication: UPHELD on ${d.ctid || ""}`;
+      // Architectural rule: RESULT txs own offense_count (the verdict
+      // decides whether an offense happened); SCORE_UPDATE txs own
+      // score deltas. ADJUDICATION_RESULT therefore increments
+      // offense_count inline on UPHELD, but DOES NOT apply
+      // `author_score_delta` as a score change here — the Stage-2
+      // batch emits a paired SCORE_UPDATE for the author penalty
+      // (see `jury.buildAdjudicationBatch`). The `author_score_delta`
+      // field stays in tx.data as informational metadata (audit trail
+      // + reversal lookup by `jury.buildAppealBatch`).
+      if (d.verdict === VERDICT.UPHELD && d.author_tip_id) {
         nextOffense += 1;
       }
       break;
@@ -187,18 +187,28 @@ function applyScoreEffect(tx, current) {
       break;
 
     case TX_TYPES.REVOKE_DEVICE: {
-      delta = SCORE_EVENTS.DEVICE_COMPROMISE_PENDING.delta;
+      // Inline freeze flag stays here (it's a state flip, not a score
+      // delta). The compromise penalty must be emitted as a paired
+      // SCORE_UPDATE by whichever service builds the REVOKE_DEVICE tx
+      // (no live emission point yet — wire it up when that flow exists).
       nextFrozen = true;
-      reason = "Device compromise — re-verification required";
       break;
     }
 
     case TX_TYPES.APPEAL_RESULT: {
-      // No direct delta. If overturned a Stage 2 UPHELD, that offense no
-      // longer counts — reverse the offense_count increment so future
-      // adjudications see the right penalty tier.
-      if (d.overturned && d.stage2_verdict === VERDICT.UPHELD && nextOffense > 0) {
-        nextOffense -= 1;
+      // Offense_count adjustment for overturn — symmetric in both
+      // directions:
+      //   UPHELD → DISMISSED   Stage-2 incremented offense; reverse it (-1)
+      //   DISMISSED → UPHELD   Stage-2 didn't increment but Stage-3 says
+      //                        UPHELD → apply the increment now (+1)
+      // Score reversals (and any fresh penalty) ride on paired
+      // SCORE_UPDATE txs in the same batch — see jury.buildAppealBatch.
+      if (d.overturned) {
+        if (d.stage2_verdict === VERDICT.UPHELD && nextOffense > 0) {
+          nextOffense -= 1;
+        } else if (d.stage2_verdict === VERDICT.DISMISSED && d.verdict === VERDICT.UPHELD) {
+          nextOffense += 1;
+        }
       }
       break;
     }
