@@ -206,6 +206,7 @@ class KnexAdapter {
       _id(t, "vp_id").nullable();
       t.string("verification_tier", 8).notNullable().defaultTo("T1");
       t.string("score_display_mode", 32).notNullable().defaultTo("TIER_ONLY");
+      t.string("tip_id_type", 32).notNullable().defaultTo("personal");  // personal | organization
       t.integer("founding").notNullable().defaultTo(0);
       t.string("status", 32).notNullable().defaultTo("active");
       t.string("registered_at", 64).notNullable();
@@ -213,6 +214,7 @@ class KnexAdapter {
       _id(t, "tx_id").nullable();
       t.index("vp_id", "idx_id_vp");
       t.index("status", "idx_id_status");
+      t.index("tip_id_type", "idx_id_type");
     });
 
     await ensure("content", t => {
@@ -601,6 +603,7 @@ class KnexAdapter {
       vp_id: rec.vp_id || null,
       verification_tier: rec.verification_tier || "T1",
       score_display_mode: rec.score_display_mode || "TIER_ONLY",
+      tip_id_type: rec.tip_id_type || "personal",
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
       registered_at: rec.registered_at,

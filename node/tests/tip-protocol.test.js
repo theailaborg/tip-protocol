@@ -66,6 +66,16 @@ function _buildDisputeBody({ disputerTipId, disputerPriv, claimedOrigin = "AG", 
 // the 9-field canonical payload. Tests that previously inline-built the
 // CNA-2 (3-field) form now route through this helper.
 const contentRegisterSchema = require(path.join(__dirname, "../src/schemas/content-register"));
+const registerIdentitySchema = require(path.join(__dirname, "../src/schemas/register-identity"));
+
+// VP-signature helper for REGISTER_IDENTITY: builds the canonical
+// signed payload via the schema module and signs it. Same path the
+// production VP would take. Use everywhere a test fixture needs a
+// vp_signature for /v1/identity/register.
+function _signIdentity(idFields, vpPriv) {
+  const payload = registerIdentitySchema.buildSigningPayload(idFields);
+  return registerIdentitySchema.sign(payload, vpPriv);
+}
 function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCode = "OH", title }) {
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
@@ -726,7 +736,7 @@ describe("REST API", () => {
       region: "DE", public_key: authorKp.publicKey, dedup_hash: MOCK_DEDUP_HASH, zk_proof: MOCK_ZK_PROOF,
       verification_tier: "T1", vp_id: testVpId, social_attested: false,
     };
-    const vpSig = signBody(idFields, testVpKp.privateKey);
+    const vpSig = _signIdentity(idFields, testVpKp.privateKey);
 
     const res = await request(app)
       .post("/v1/identity/register")
@@ -778,19 +788,26 @@ describe("REST API", () => {
 
   test("6.10b POST /v1/identity/verify-ownership succeeds with correct key", async () => {
     const challenge = "test-challenge-" + Date.now();
-    const sig = mldsaSign(challenge, authorKp.privateKey);
+    // Canonical signing: sign the payload { challenge, tip_id } via the
+    // shared signing primitive — same as registerIdentitySchema.sign for
+    // any canonical payload.
+    const { signPayload } = require(path.join(SRC, "schemas", "_common"));
+    const sig = signPayload({ challenge, tip_id: authorId }, authorKp.privateKey);
     const res = await request(app)
       .post("/v1/identity/verify-ownership")
       .send({ tip_id: authorId, challenge, signature: sig });
     expect(res.status).toBe(200);
     expect(res.body.data.verified).toBe(true);
     expect(res.body.data.tip_id).toBe(authorId);
+    expect(res.body.data.tip_id_type).toBe("personal");
+    expect(res.body.data.verification_tier).toBeDefined();
   });
 
   test("6.10c POST /v1/identity/verify-ownership fails with wrong key", async () => {
     const fakeKp = generateMLDSAKeypair();
     const challenge = "test-challenge-" + Date.now();
-    const sig = mldsaSign(challenge, fakeKp.privateKey);
+    const { signPayload } = require(path.join(SRC, "schemas", "_common"));
+    const sig = signPayload({ challenge, tip_id: authorId }, fakeKp.privateKey);
     const res = await request(app)
       .post("/v1/identity/verify-ownership")
       .send({ tip_id: authorId, challenge, signature: sig });
@@ -952,7 +969,7 @@ describe("Integration: Full Registration Flow", () => {
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: integrationVpId, social_attested: false,
     };
-    const intVpSig = signBody(idFields, integrationKp.privateKey);
+    const intVpSig = _signIdentity(idFields, integrationKp.privateKey);
 
     const idRes = await request(app)
       .post("/v1/identity/register")
@@ -991,7 +1008,7 @@ describe("Integration: Full Registration Flow", () => {
       region: "SG", public_key: dupKp.publicKey, dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
       verification_tier: "T1", vp_id: integrationVpId, social_attested: false,
     };
-    const dupVpSig = signBody(dupFields, integrationKp.privateKey);
+    const dupVpSig = _signIdentity(dupFields, integrationKp.privateKey);
 
     // Try registering the same person twice
     const res = await request(app)
@@ -1060,7 +1077,7 @@ describe("Gossip Broadcast Wiring", () => {
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
-    const vpSig = signBody(idFields, gFoundingVpKp.privateKey);
+    const vpSig = _signIdentity(idFields, gFoundingVpKp.privateKey);
 
     const res = await request(gossipApp)
       .post("/v1/identity/register")
@@ -1079,7 +1096,7 @@ describe("Gossip Broadcast Wiring", () => {
       zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
-    const vpSig = signBody(idFields, gFoundingVpKp.privateKey);
+    const vpSig = _signIdentity(idFields, gFoundingVpKp.privateKey);
 
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
@@ -1121,7 +1138,7 @@ describe("Gossip Broadcast Wiring", () => {
     };
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({ ...idFields, vp_signature: signBody(idFields, rVpKp.privateKey) });
+      .send({ ...idFields, vp_signature: _signIdentity(idFields, rVpKp.privateKey) });
     const rTipId = idRes.body.data.tip_id;
 
     // (gossip broadcast removed — txs go through consensus)
@@ -1147,7 +1164,7 @@ describe("Gossip Broadcast Wiring", () => {
     };
     const idRes = await request(gossipApp)
       .post("/v1/identity/register")
-      .send({ ...dIdFields, vp_signature: signBody(dIdFields, gFoundingVpKp.privateKey) });
+      .send({ ...dIdFields, vp_signature: _signIdentity(dIdFields, gFoundingVpKp.privateKey) });
     const dTipId = idRes.body.data.tip_id;
     const dAuthorPriv = kp85.privateKey;
 
@@ -1220,7 +1237,7 @@ describe("Semantic Dedup", () => {
     };
     const idRes = await request(sdApp)
       .post("/v1/identity/register")
-      .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
+      .send({ ...idFields, vp_signature: _signIdentity(idFields, sdVpKp.privateKey) });
     sdTipId = idRes.body.data.tip_id;
     sdAuthorPriv = sdKp.privateKey;
     sdDag.setScore(sdTipId, 800, 0, "2026-01-01T00:00:00.000Z");
@@ -1235,7 +1252,7 @@ describe("Semantic Dedup", () => {
     };
     const vRes = await request(sdApp)
       .post("/v1/identity/register")
-      .send({ ...vFields, vp_signature: signBody(vFields, sdVpKp.privateKey) });
+      .send({ ...vFields, vp_signature: _signIdentity(vFields, sdVpKp.privateKey) });
     sdVerifierId = vRes.body.data.tip_id;
     sdVerifierPriv = vKp.privateKey;
     sdDag.setScore(sdVerifierId, 800, 0, "2026-01-01T00:00:00.000Z");
@@ -1296,7 +1313,7 @@ describe("Semantic Dedup", () => {
       };
       const idRes = await request(sdApp)
         .post("/v1/identity/register")
-        .send({ ...idFields, vp_signature: signBody(idFields, sdVpKp.privateKey) });
+        .send({ ...idFields, vp_signature: _signIdentity(idFields, sdVpKp.privateKey) });
       sdDag.setScore(idRes.body.data.tip_id, 800, 0, "2026-01-01T00:00:00.000Z"); // high-trust for +3 each
       verifiers.push({ tipId: idRes.body.data.tip_id, priv: kp.privateKey });
     }
@@ -1734,7 +1751,7 @@ describe("Semantic Dedup", () => {
     };
     const thirdRes = await request(sdApp)
       .post("/v1/identity/register")
-      .send({ ...thirdFields, vp_signature: signBody(thirdFields, sdVpKp.privateKey) });
+      .send({ ...thirdFields, vp_signature: _signIdentity(thirdFields, sdVpKp.privateKey) });
     const thirdTipId = thirdRes.body.data.tip_id;
 
     // Register + simulate verdict

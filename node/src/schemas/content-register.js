@@ -62,8 +62,24 @@ const AUTHOR_KEYS = CNA22_AUTHOR_KEYS;
  */
 function _checkAuthorsRegistered(authors, dag) {
   for (const a of authors) {
-    if (!dag.getIdentity(a.tip_id)) {
+    const identity = dag.getIdentity(a.tip_id);
+    if (!identity) {
       throw schemaError(412, `Author TIP-ID not registered on DAG: ${a.tip_id}`, "author_not_registered");
+    }
+    // Strict cross-check: the per-author tip_id_type claim in the
+    // signed payload MUST match the type on the DAG identity row.
+    // Catches misattribution (e.g., claiming an org TIP-ID as a
+    // personal byline). identity.tip_id_type defaults to "personal"
+    // for any pre-tip_id_type-field identity (back-compat default
+    // applied at DB level too).
+    const claimedType = a.tip_id_type || "personal";
+    const actualType = identity.tip_id_type || "personal";
+    if (claimedType !== actualType) {
+      throw schemaError(
+        412,
+        `Author tip_id_type mismatch for ${a.tip_id}: payload claims "${claimedType}", DAG identity is "${actualType}"`,
+        "author_tip_id_type_mismatch",
+      );
     }
   }
 }

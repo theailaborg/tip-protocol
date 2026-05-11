@@ -109,6 +109,20 @@ const ATTRIBUTION_MODES = Object.freeze({
 });
 const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 
+// Canonical `tip_id_type` values — the kind of TIP-ID an identity is.
+// Locked enum; rejected at REGISTER_IDENTITY validation time and at
+// REGISTER_CONTENT author cross-check time.
+//   - PERSONAL      individual human (default for personal creators)
+//   - ORGANIZATION  an org / outlet / platform — required to claim a
+//                   domain binding, sign content on behalf of authors,
+//                   etc. VP attests at REGISTER_IDENTITY time; the
+//                   registrant can't self-claim.
+const TIP_ID_TYPES = Object.freeze({
+  PERSONAL:     "personal",
+  ORGANIZATION: "organization",
+});
+const TIP_ID_TYPE_VALUES = Object.freeze(Object.values(TIP_ID_TYPES));
+
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
@@ -323,6 +337,8 @@ module.exports = {
   CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
+  TIP_ID_TYPES,
+  TIP_ID_TYPE_VALUES,
   TX_TYPES,
   TX_TYPE_SET,
   DISPUTE_SHORT_ID_LEN,

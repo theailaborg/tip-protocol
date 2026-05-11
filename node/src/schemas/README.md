@@ -105,6 +105,7 @@ verification and commit-time re-verification.
 | TX_TYPE | Schema | Status | Module | Spec |
 |---|---|---|---|---|
 | `REGISTER_CONTENT` | CNA-2.2 | ✅ | `schemas/content-register.js` | `docs/CONTENT_SIGNING.md` |
+| `REGISTER_IDENTITY` | 9-field canonical (VP sig) | ✅ | `schemas/register-identity.js` | inline header doc + `docs/IDENTITY_SIGNING.md` (TBD) |
 | `CONTENT_VERIFIED` | (verifier sig) | ⏳ inline today | — | TBD |
 | `UPDATE_ORIGIN` | (author sig) | ⏳ inline today | — | TBD |
 | `CONTENT_RETRACTED` | (author sig) | ⏳ inline today | — | TBD |
@@ -112,7 +113,6 @@ verification and commit-time re-verification.
 | `JURY_VOTE_COMMIT` | (juror sig) | ⏳ inline today | — | TBD |
 | `JURY_VOTE_REVEAL` | (juror sig) | ⏳ inline today | — | TBD |
 | `APPEAL_FILED` | (appellant sig) | ⏳ inline today | — | TBD |
-| `REGISTER_IDENTITY` | (VP sig) | ⏳ inline today | — | TBD |
 | `VP_REGISTERED` | (governance VP sig) | ⏳ inline today | — | TBD |
 | `NODE_REGISTERED` | (governance VP sig) | ⏳ inline today | — | TBD |
 | `REVOKED` | (VP sig) | ⏳ inline today | — | TBD |

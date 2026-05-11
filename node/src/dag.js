@@ -54,6 +54,7 @@ function _canonIdentity(r) {
     vp_id: r.vp_id || null,
     verification_tier: r.verification_tier,
     score_display_mode: r.score_display_mode || "TIER_ONLY",
+    tip_id_type: r.tip_id_type || "personal",
     founding: r.founding ? 1 : 0,
     status: r.status,
     registered_at: r.registered_at,
@@ -928,14 +929,16 @@ class SQLiteStore {
         vp_id               TEXT,
         verification_tier   TEXT NOT NULL DEFAULT 'T1',
         score_display_mode  TEXT NOT NULL DEFAULT 'TIER_ONLY',
+        tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
         registered_at       TEXT NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
       );
-      CREATE INDEX IF NOT EXISTS idx_id_vp     ON identities(vp_id);
-      CREATE INDEX IF NOT EXISTS idx_id_status ON identities(status);
+      CREATE INDEX IF NOT EXISTS idx_id_vp        ON identities(vp_id);
+      CREATE INDEX IF NOT EXISTS idx_id_status    ON identities(status);
+      CREATE INDEX IF NOT EXISTS idx_id_type      ON identities(tip_id_type);
 
       -- ── Content ───────────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS content (
@@ -1431,8 +1434,8 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,founding,status,registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+            verification_tier,tip_id_type,founding,status,registered_at,creator_name,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -1721,6 +1724,7 @@ class SQLiteStore {
       rec.tip_id, rec.region || "US",
       rec.public_key, rec.root_public_key || null,
       rec.vp_id || null, rec.verification_tier || "T1",
+      rec.tip_id_type || "personal",
       rec.founding ? 1 : 0,
       rec.status || "active",
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
@@ -2662,6 +2666,11 @@ function _writeGenesisBlock(store, config) {
 
     const mockZkProof = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
     const registeredAt = GENESIS_TIMESTAMP;
+    // tip_id_type + creator_name come from genesis_ring_keys (seed.js
+    // embeds them per-member). Defaults to "personal" / null for any
+    // historical entry that pre-dates the field.
+    const memberType = member.tip_id_type || "personal";
+    const memberCreatorName = member.creator_name || null;
     const idTx = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: registeredAt,
@@ -2672,6 +2681,8 @@ function _writeGenesisBlock(store, config) {
         public_key: member.public_key,
         vp_id: foundingVP.vp_id,
         verification_tier: "T1",
+        tip_id_type: memberType,
+        creator_name: memberCreatorName,
         social_attested: true,
         founding: true,
         dedup_hash: member.dedup_hash,
@@ -2688,6 +2699,8 @@ function _writeGenesisBlock(store, config) {
       public_key: member.public_key,
       vp_id: foundingVP.vp_id,
       verification_tier: "T1",
+      tip_id_type: memberType,
+      creator_name: memberCreatorName,
       founding: true,
       status: "active",
       registered_at: registeredAt,

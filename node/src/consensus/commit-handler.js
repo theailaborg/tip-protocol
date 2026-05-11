@@ -22,6 +22,7 @@ const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON } = require("../.
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
+const registerIdentitySchema = require("../schemas/register-identity");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -483,13 +484,11 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             root_public_key: d.root_public_key || "",
             vp_id: d.vp_id || "",
             verification_tier: d.verification_tier || "T1",
+            tip_id_type: d.tip_id_type || "personal",
             founding: d.founding || false,
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
-            // #55: forward creator_name from tx.data so the VP-attested
-            // display name persists in the DAG row. Column already exists
-            // on `identities` (dag.js); this was the missing forward-through.
             creator_name: d.creator_name || null,
           });
         }
@@ -770,14 +769,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       }
 
       if (tt === TX_TYPES.REGISTER_IDENTITY) {
-        const vp = dag.getVP(d.vp_id);
-        if (!vp || !d.vp_signature) return false;
-        // Mirror identity-service.js — include creator_name when the VP
-        // attested a display name. Same drift class as #54; tracked
-        // separately as #55.
-        const BASE_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
-        const fields = d.creator_name ? [...BASE_FIELDS, "creator_name"] : BASE_FIELDS;
-        return verifyBodySignature(d, d.vp_signature, vp.public_key, fields);
+        // Single canonical path. The schemas/register-identity module
+        // owns the canonical payload, builder, and verifier — same
+        // module identity-service.register uses at API time.
+        return registerIdentitySchema.verifyTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.CONTENT_VERIFIED) {

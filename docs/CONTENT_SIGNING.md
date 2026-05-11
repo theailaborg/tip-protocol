@@ -125,7 +125,7 @@ Constraints:
 - `key_mode` values: `"attribution"` (default — the author is credited but didn't sign separately) and `"co_signed"` (the author also produced their own signature, carried in the request envelope's `co_signatures[]` — see §10).
 - `role` values: `"byline"` (visible byline), `"contributor"` (named contributor not in the byline), `"editor"`, `"translator"`. Free-form for now; UIs render whatever's there.
 - `signed` MUST be `true` if and only if a corresponding co-signature is present in the envelope.
-- `tip_id_type`: `"personal"` or `"publisher"`. Mirrors the (forthcoming) `tip_id_type` column on the identity row — this is the per-author assertion of role, signed at byline granularity.
+- `tip_id_type`: `"personal"` or `"organization"`. Mirrors the `tip_id_type` column on the identity row (set at REGISTER_IDENTITY time, VP-attested). **Strict cross-check:** at API admission and consensus replay, the verifier confirms that `authors[i].tip_id_type` matches `dag.getIdentity(authors[i].tip_id).tip_id_type` — mismatch → `412 author_tip_id_type_mismatch`. This prevents misattribution (e.g. claiming an org TIP-ID as a personal byline).
 
 ---
 
@@ -270,7 +270,7 @@ The TIP node performs the following on every incoming `POST /v1/content/register
 
 1. **Envelope validation** (`schemas/content-register#validateRequest`) — body shape: `signer_tip_id` format, `origin_code` in enum, `signature` non-empty, content / media XOR, content-size limits, `authors[]` non-empty + each entry has a `tip://id/...` `tip_id`. Bad shape → `400`.
 2. **Signer DAG presence** (`schemas/content-register#resolveSigner`) — `dag.getIdentity(signer_tip_id)`. Missing → `412 signer_not_registered`. Revoked → `403 signer_revoked`.
-3. **Authors DAG presence** (`schemas/content-register#_checkAuthorsRegistered`) — every `authors[i].tip_id` must be on the DAG. Missing → `412 author_not_registered` with the offending TIP-ID in the error.
+3. **Authors DAG presence + type cross-check** (`schemas/content-register#_checkAuthorsRegistered`) — every `authors[i].tip_id` must be on the DAG. Missing → `412 author_not_registered` with the offending TIP-ID. Additionally, `authors[i].tip_id_type` MUST match the `tip_id_type` on the DAG identity row — mismatch → `412 author_tip_id_type_mismatch` (the claim is misattribution).
 4. **Content hash verification** — recompute `SHAKE-256(CNA-1(content), 32)` over the canonical content bytes; compare to `body.content_hash`. Mismatch → `400 content_hash_mismatch`.
 5. **Canonical payload reconstruction** (`schemas/content-register#buildSigningPayload`) — pick the 8 signed fields from the body, normalise (uppercase `origin_code`, default-fill optional fields, normalise each author entry to exactly 5 keys, validate `attribution_mode` against the enum), build the canonical JSON.
 6. **Signature verification** — `ML_DSA_65.verify(dag_identity.public_key, ASCII(SHAKE256(canonical).hex()), signature)`. Mismatch → `403 signature_invalid`.
@@ -438,6 +438,7 @@ Common codes for `POST /v1/content/register`:
 | 409 | `ctid_already_registered` | The derived CTID already exists. |
 | 412 | `signer_not_registered` | Signer's TIP-ID is not on the DAG. Get the upstream VP to publish it first. |
 | 412 | `author_not_registered` | One of the `authors[].tip_id` values is not on the DAG. The error message names the offending TIP-ID. |
+| 412 | `author_tip_id_type_mismatch` | An `authors[i].tip_id_type` claim doesn't match the type on the DAG identity row. Catches misattribution (e.g. claiming an org TIP-ID as a personal byline). |
 | 422 | `cna_unsupported` | `cna_version` is not in `PAYLOAD_SCHEMAS.REGISTER_CONTENT.versions`. |
 
 ---

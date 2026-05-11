@@ -71,6 +71,7 @@ const { getTier } = PC;
 const { initDAG } = require("../node/src/dag");
 const { initScoring } = require("../node/src/scoring");
 const { loadConfig } = require("../node/src/config");
+const registerIdentitySchema = require("../node/src/schemas/register-identity");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -193,10 +194,16 @@ function get(url) {
 }
 
 // ─── Founding members definition ─────────────────────────────────────────────
+// `tip_id_type` is signed into the genesis_ring_keys VP signature so the
+// type is cryptographically attested at bootstrap, not just inferred.
+// `tag` is the stable lookup key for founder-keys.json — adding a new
+// member with a fresh tag generates a fresh keypair on next seed; existing
+// tags reuse cached keypairs so tip_ids stay stable across re-seeds.
 const FOUNDING_MEMBERS = [
-  { name: "Dinesh Mendhe — Founder", role: "Founder & Sole Inventor", region: "US", tag: "founder" },
-  { name: "Tushar Bhendarkar — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-tushar" },
-  { name: "Vishal — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-vishal" },
+  { name: "The AI Lab Intelligence Unobscured, Inc.", role: "Founding Organization", region: "US", tag: "ai-lab", tip_id_type: "organization" },
+  { name: "Dinesh Mendhe — Founder",   role: "Founder & Sole Inventor",     region: "US", tag: "founder",         tip_id_type: "personal" },
+  { name: "Tushar Bhendarkar — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-tushar", tip_id_type: "personal" },
+  { name: "Vishal — Co-Founder",       role: "Co-Founder & Core Engineer",  region: "US", tag: "cofounder-vishal", tip_id_type: "personal" },
 ];
 
 // Keypairs generated in Step 2, used in Step 5
@@ -308,15 +315,33 @@ async function embedFoundingVPKey() {
   // Embed genesis_ring_keys (public keys + dedup hashes + VP signatures for initDAG)
   const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
     const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
+    const tipIdType = member.tip_id_type || "personal";
+    // creator_name attested for organizations (so the VP-vouched display
+    // name persists on the identity row). Personal members keep null.
+    const creatorName = tipIdType === "organization" ? member.name : null;
     const idFields = {
-      region: member.region, dedup_hash: dedupHash,
+      region: member.region, public_key: keypair.publicKey, dedup_hash: dedupHash,
       zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
       verification_tier: "T1", vp_id: vpId, social_attested: true,
+      tip_id_type: tipIdType,
+      ...(creatorName ? { creator_name: creatorName } : {}),
     };
-    // Deterministic so the embedded vp_signature is byte-identical across
-    // re-seeds → genesis_ring_keys hash stays stable → genesis_hash stays stable.
-    const vpSignature = signBody(idFields, vpKeypair.privateKey, { deterministic: true });
-    return { tip_id: tipId, region: member.region.toUpperCase(), public_key: keypair.publicKey, dedup_hash: dedupHash, vp_signature: vpSignature };
+    // Sign via the canonical-payload schema — same model as the API and
+    // commit-handler use, so the embedded signature would re-verify
+    // identically if any future path checks it. Deterministic so re-seeds
+    // produce byte-identical bytes → genesis_ring_keys hash stays stable
+    // → GENESIS_HASH stays stable.
+    const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
+    const vpSignature = registerIdentitySchema.sign(canonicalPayload, vpKeypair.privateKey, { deterministic: true });
+    return {
+      tip_id: tipId,
+      region: member.region.toUpperCase(),
+      public_key: keypair.publicKey,
+      dedup_hash: dedupHash,
+      tip_id_type: tipIdType,
+      ...(creatorName ? { creator_name: creatorName } : {}),
+      vp_signature: vpSignature,
+    };
   });
   jsSrc = fs.readFileSync(genesisJsFile, "utf8");
   jsSrc = jsSrc.replace(/genesis_ring_keys:\s*\[.*?\]/s, `genesis_ring_keys: ${JSON.stringify(ringKeys)}`);
@@ -633,12 +658,20 @@ async function createGenesisRing(vpRecord, vpKeypair) {
     let regResult;
 
     if (useDirectMode) {
-      // VP signs the identity fields (same as API verifies)
+      // VP signs the canonical 9-field payload (schemas/register-identity).
+      // tip_id_type + creator_name are signed so the type is cryptographically
+      // attested at genesis, not just inferred.
+      const memberType = member.tip_id_type || "personal";
+      const memberCreatorName = memberType === "organization" ? member.name : null;
       const idFields = {
-        region: member.region, dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+        region: member.region, public_key: keypair.publicKey,
+        dedup_hash: mockDedupHash, zk_proof: mockZkProof,
         verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
+        tip_id_type: memberType,
+        ...(memberCreatorName ? { creator_name: memberCreatorName } : {}),
       };
-      const vpSignature = signBody(idFields, vpKeypair.privateKey);
+      const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
+      const vpSignature = registerIdentitySchema.sign(canonicalPayload, vpKeypair.privateKey);
 
       const registeredAt = new Date().toISOString();
       const txBody = {
@@ -651,6 +684,8 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           public_key: keypair.publicKey,
           vp_id: vpRecord.vp_id,
           verification_tier: "T1",
+          tip_id_type: memberType,
+          creator_name: memberCreatorName,
           social_attested: true,
           founding: true,
           dedup_hash: mockDedupHash,
@@ -667,6 +702,8 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         public_key: keypair.publicKey,
         vp_id: vpRecord.vp_id,
         verification_tier: "T1",
+        tip_id_type: memberType,
+        creator_name: memberCreatorName,
         founding: true,
         status: "active",
         registered_at: registeredAt,
@@ -686,11 +723,17 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       };
     } else {
       try {
+        const memberType = member.tip_id_type || "personal";
+        const memberCreatorName = memberType === "organization" ? member.name : null;
         const idFields = {
-          region: member.region, dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+          region: member.region, public_key: keypair.publicKey,
+          dedup_hash: mockDedupHash, zk_proof: mockZkProof,
           verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
+          tip_id_type: memberType,
+          ...(memberCreatorName ? { creator_name: memberCreatorName } : {}),
         };
-        const vpSignature = signBody(idFields, vpKeypair.privateKey);
+        const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
+        const vpSignature = registerIdentitySchema.sign(canonicalPayload, vpKeypair.privateKey);
 
         regResult = await post(`${nodeUrl}/v1/identity/register`, {
           ...idFields, vp_signature: vpSignature,
@@ -708,11 +751,14 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       }
     }
 
+    const memberType = member.tip_id_type || "personal";
     const identity = {
       tag: member.tag,
       name: member.name,
       role: member.role,
       tip_id: regResult.tip_id,
+      tip_id_type: memberType,
+      creator_name: memberType === "organization" ? member.name : null,
       public_key: keypair.publicKey,
       private_key: keypair.privateKey,  // Stored in seed output — replace with real keys in production
       founding: true,
@@ -1029,6 +1075,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
     founding_identities: identities.map(i => ({
       tag: i.tag,
       tip_id: i.tip_id,
+      tip_id_type: i.tip_id_type || "personal",
       name: i.name,
       role: i.role,
       region: "US",
@@ -1036,6 +1083,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
       founding: true,
       score: i.score,
       registered_at: i.registered_at,
+      ...(i.creator_name ? { creator_name: i.creator_name } : {}),
     })),
     sample_content: content.map(c => ({
       origin: c.origin,
@@ -1057,6 +1105,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
   writeCachedEntries(keysOutputFile, KEYS_FILE_TYPES.IDENTITIES, identities.map(i => ({
     tag: i.tag,
     tip_id: i.tip_id,
+    tip_id_type: i.tip_id_type || "personal",
     name: i.name,
     role: i.role,
     region: "US",
@@ -1064,6 +1113,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
     public_key: i.public_key,
     private_key: i.private_key,
     created_at: i.registered_at || new Date().toISOString(),
+    ...(i.creator_name ? { creator_name: i.creator_name } : {}),
   })));
   ok(`Founder keys written to: ${keysOutputFile} (chmod 600)`);
 
@@ -1085,13 +1135,15 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
       type: "identity",
       name: identity.name,
       tip_id: identity.tip_id,
+      tip_id_type: identity.tip_id_type || "personal",
+      ...(identity.creator_name ? { creator_name: identity.creator_name } : {}),
       public_key: identity.public_key,
       private_key: identity.private_key,
       created: identity.registered_at || new Date().toISOString(),
     }, null, 2);
     const filePath = path.join(backupDir, toFileName(identity.tip_id));
     fs.writeFileSync(filePath, tipJson, { mode: 0o600 });
-    ok(`  Backup: ${toFileName(identity.tip_id)} — ${identity.name}`);
+    ok(`  Backup: ${toFileName(identity.tip_id)} — ${identity.name} (${identity.tip_id_type || "personal"})`);
   }
 
   // VP backup

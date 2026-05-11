@@ -1,11 +1,13 @@
 "use strict";
 
 const {
-  shake256, generateTIPID, verifyBodySignature, verifyTxId, mldsaVerify,
+  shake256, generateTIPID, verifyTxId,
 } = require("../../../shared/crypto");
 const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
 const { SCORE } = require("../../../shared/protocol-constants");
+const registerIdentitySchema = require("../schemas/register-identity");
+const { schemaError, verifyPayload } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -104,69 +106,75 @@ function projectActivityItem(tx, tipId, status, extra = {}) {
 function createIdentityService({ dag, scoring, config, submitTx }) {
 
   async function register(body) {
-    validate(body, {
-      public_key: { required: true },
-      dedup_hash: { required: true },
-      zk_proof: { required: true },
-      vp_id: { required: true },
-      vp_signature: { required: true },
-    });
+    // Single envelope gate — schemas/register-identity owns shape + DAG
+    // presence (VP must exist and be active). Spec: §1 of the
+    // register-identity schema module.
+    registerIdentitySchema.validateRequest(body, { dag });
 
     const {
-      region = "US", public_key, dedup_hash, zk_proof,
-      verification_tier = "T1", vp_id, vp_signature, social_attested = false,
-      creator_name,
+      public_key, dedup_hash, zk_proof, vp_id, vp_signature,
     } = body;
 
-    {
-      const r = rules.canRegisterIdentity(dag, { dedup_hash, vp_id });
-      if (!r.valid) {
-        const err = { status: r.error.status, error: r.error.message };
-        if (r.error.message.startsWith("Identity already")) err.code = "DUPLICATE_IDENTITY";
-        throw err;
-      }
+    const { valid, error } = rules.canRegisterIdentity(dag, { dedup_hash, vp_id });
+    if (!valid) {
+      const code = error.message.startsWith("Identity already") ? "DUPLICATE_IDENTITY" : error.code;
+      throw schemaError(error.status, error.message, code);
     }
-    const vp = dag.getVP(vp_id);
 
-    // VP signs all required fields; creator_name is included in the signed
-    // payload only when the VP attested a name for the identity.
-    const BASE_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
-    const VP_IDENTITY_FIELDS = creator_name ? [...BASE_FIELDS, "creator_name"] : BASE_FIELDS;
-    if (!verifyBodySignature(body, vp_signature, vp.public_key, VP_IDENTITY_FIELDS)) {
-      throw { status: 403, error: "VP signature verification failed" };
+    // Build the canonical signed payload, verify the VP's signature
+    // over it. canonicalPayload is also written verbatim onto tx.data
+    // (mirroring CNA-2.2 content-register pattern) so commit-handler
+    // can replay buildSigningPayload(d) deterministically.
+    const canonicalPayload = registerIdentitySchema.buildSigningPayload(body);
+    const vp = registerIdentitySchema.resolveVP(vp_id, dag);
+    if (!registerIdentitySchema.verifySignature(canonicalPayload, vp_signature, vp.public_key)) {
+      throw schemaError(403, "VP signature verification failed", "signature_invalid");
     }
 
     const proofValid = await verifyDedupProof(dedup_hash, zk_proof);
-    if (!proofValid) throw { status: 400, error: "ZK proof verification failed" };
+    if (!proofValid) throw schemaError(400, "ZK proof verification failed", "zk_proof_invalid");
 
-    const tipId = generateTIPID(region, public_key);
+    const tipId = generateTIPID(canonicalPayload.region, public_key);
     const registeredAt = new Date().toISOString();
     const founding = false;
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
       data: {
-        tip_id: tipId, region: region.toUpperCase(), public_key, vp_id, vp_signature,
-        verification_tier, social_attested, founding, dedup_hash, zk_proof,
-        ...(creator_name ? { creator_name } : {}),
+        // ── Server-derived / tx-level fields ──────────────────────
+        tip_id: tipId,
+        vp_signature,
+        founding,
+        // ── Signed canonical fields (mirror canonicalPayload so
+        //    commit-handler can replay buildSigningPayload(d))
+        creator_name:      canonicalPayload.creator_name,
+        dedup_hash:        canonicalPayload.dedup_hash,
+        public_key:        canonicalPayload.public_key,
+        region:            canonicalPayload.region,
+        social_attested:   canonicalPayload.social_attested,
+        tip_id_type:       canonicalPayload.tip_id_type,
+        verification_tier: canonicalPayload.verification_tier,
+        vp_id:             canonicalPayload.vp_id,
+        zk_proof:          canonicalPayload.zk_proof,
       },
     };
     const signedTx = withTxId(txBody);
 
     const validation = validateTransaction(signedTx, dag, {});
-    if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
-    log.info(`Identity proposed: ${tipId} (tier: ${verification_tier}, vp: ${vp_id})`);
+    log.info(`Identity proposed: ${tipId} (type: ${canonicalPayload.tip_id_type}, tier: ${canonicalPayload.verification_tier}, vp: ${vp_id})`);
 
     // Note: direct dag.saveIdentity / addDedupHash / setScore happen in
     // commit-handler when the tx commits via consensus. API returns 202-style
     // "proposed" so client knows to expect async finalization.
     return {
       tip_id: tipId, public_key, tx_id: signedTx.tx_id,
+      tip_id_type: canonicalPayload.tip_id_type,
       score: SCORE.INITIAL_IDENTITY, registered_at: registeredAt,
       confirmation: "proposed",
-      ...(creator_name ? { creator_name } : {}),
+      ...(canonicalPayload.creator_name ? { creator_name: canonicalPayload.creator_name } : {}),
     };
   }
 
@@ -192,22 +200,39 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
+  // Ownership-proof: client signs the canonical payload { challenge, tip_id }
+  // (alphabetical key order, SHAKE-256 → ASCII-hex bytes → ML-DSA-65) —
+  // same canonical-payload pattern the rest of the protocol uses.
+  //
+  // Binding `tip_id` into the signed bytes prevents a signature from being
+  // replayed against a different TIP-ID (the old raw-challenge signing
+  // had no such binding — a captured signature was valid for any TIP-ID
+  // sharing the public key).
   function verifyOwnership(body) {
     validate(body, { tip_id: { required: true }, challenge: { required: true }, signature: { required: true } });
     const { tip_id, challenge, signature } = body;
 
     const identity = dag.getIdentity(tip_id);
-    if (!identity) throw { status: 404, error: "TIP-ID not found" };
-    if (dag.isRevoked(tip_id)) throw { status: 403, error: "TIP-ID is revoked" };
+    if (!identity) throw schemaError(404, "TIP-ID not found", "tip_id_not_found");
+    if (dag.isRevoked(tip_id)) throw schemaError(403, "TIP-ID is revoked", "tip_id_revoked");
 
-    const valid = mldsaVerify(challenge, signature, identity.public_key);
-    if (!valid) throw { status: 403, error: "Signature verification failed — you do not own this TIP-ID" };
+    const canonicalPayload = { challenge, tip_id };
+    const valid = verifyPayload(canonicalPayload, signature, identity.public_key);
+    if (!valid) throw schemaError(403, "Signature verification failed — you do not own this TIP-ID", "signature_invalid");
 
     const scoreData = scoring.getScore(tip_id);
     return {
-      verified: true, tip_id,
-      creator_name: identity.creator_name || null,
-      score: scoreData.score, tier: scoreData.tier.name, status: identity.status,
+      verified: true,
+      tip_id,
+      tip_id_type:       identity.tip_id_type || "personal",
+      verification_tier: identity.verification_tier || "T1",
+      region:            identity.region || "US",
+      vp_id:             identity.vp_id || null,
+      founding:          !!identity.founding,
+      creator_name:      identity.creator_name || null,
+      score:             scoreData.score,
+      tier:              scoreData.tier.name,
+      status:            identity.status,
     };
   }
 

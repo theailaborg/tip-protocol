@@ -21,7 +21,7 @@
 const { mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto");
 const {
   TX_TYPES, TX_TYPE_SET, ORIGIN,
-  CNA_VERSIONS, ATTRIBUTION_MODE_VALUES,
+  CNA_VERSIONS, ATTRIBUTION_MODE_VALUES, TIP_ID_TYPE_VALUES,
 } = require("../../../shared/constants");
 
 // Validator accepts every tx type from the shared frozen set plus the
@@ -194,6 +194,10 @@ function validateBusinessRules(tx) {
       // dedup_hash must be a decimal string (BN128 field element from Poseidon circuit)
       if (d.dedup_hash && !/^\d{1,78}$/.test(d.dedup_hash)) {
         errors.push(`dedup_hash must be a decimal field element string (Poseidon output)`);
+      }
+      // tip_id_type, if present, must be in the canonical enum
+      if (d.tip_id_type !== undefined && !TIP_ID_TYPE_VALUES.includes(d.tip_id_type)) {
+        errors.push(`tip_id_type must be one of: ${TIP_ID_TYPE_VALUES.join(", ")}`);
       }
       // zk_proof must be a Groth16 proof object
       if (d.zk_proof !== undefined) {

@@ -82,14 +82,13 @@ function _setup() {
   return { dag, scoring, handler, config, nodeKp, vpKp, authorKp, authorTipId };
 }
 
-// REGISTER_IDENTITY signature scope — must match commit-handler exactly
-// (commit-handler.js:_verifyTxSignature). Without `creator_name`, it's
-// the BASE_FIELDS set below.
-const REG_IDENTITY_SIGNED_FIELDS = ["region", "public_key", "dedup_hash", "zk_proof", "verification_tier", "vp_id", "social_attested"];
+// REGISTER_IDENTITY signs the canonical 9-field payload via the
+// schemas/register-identity module — same module identity-service
+// and commit-handler use, so canonical bytes can't drift.
+const registerIdentitySchema = require(path.join(SRC, "schemas", "register-identity"));
 function _signRegisterIdentity(vpKp, data) {
-  const signedFields = {};
-  for (const f of REG_IDENTITY_SIGNED_FIELDS) if (data[f] !== undefined) signedFields[f] = data[f];
-  return signBody(signedFields, vpKp.privateKey);
+  const payload = registerIdentitySchema.buildSigningPayload(data);
+  return registerIdentitySchema.sign(payload, vpKp.privateKey);
 }
 
 // REGISTER_CONTENT signs the canonical 9-field CNA-2.2 payload — see

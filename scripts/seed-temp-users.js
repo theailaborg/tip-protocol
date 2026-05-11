@@ -55,7 +55,8 @@ const http = require("http");
 const { execSync } = require("child_process");
 const crypto = require("crypto");
 
-const { initCrypto, generateMLDSAKeypair, signBody } = require("../shared/crypto");
+const { initCrypto, generateMLDSAKeypair } = require("../shared/crypto");
+const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { generateDedupProof } = require("../shared/zk");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -250,16 +251,17 @@ async function registerOne({ kp, region, vpKp, vpId, nodeUrl, creatorName }) {
   const dob = "1990-01-01";
   const { dedup_hash, proof: zk_proof } = await generateDedupProof(govId, dob, region);
 
-  // VP signs BASE_FIELDS, plus "creator_name" appended when provided
-  // (see node/src/services/identity-service.js:130 — VP_IDENTITY_FIELDS).
-  // Order matters — the canonical-json sort is alphabetical at sign time,
-  // but the *field set* must match server-side or signature verify fails.
+  // VP signs the canonical 9-field payload (schemas/register-identity).
+  // Temp users are always `tip_id_type: "personal"` — dev fixtures
+  // representing individual humans.
   const idFields = {
     region, public_key: kp.publicKey, dedup_hash, zk_proof,
     verification_tier: "T1", vp_id: vpId, social_attested: false,
+    tip_id_type: "personal",
     ...(creatorName ? { creator_name: creatorName } : {}),
   };
-  const vp_signature = signBody(idFields, vpKp.privateKey);
+  const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
+  const vp_signature = registerIdentitySchema.sign(canonicalPayload, vpKp.privateKey);
 
   // 60s timeout: ZK verify + consensus admission can be slow on a busy local
   // cluster. The prior 10s timeout caused the divergent-tx-during-recovery
@@ -406,6 +408,7 @@ async function main() {
     const score = pickScore(args, isHigh);
     users.push({
       tip_id: result.tip_id,
+      tip_id_type: "personal",
       creator_name: creatorName,
       region,
       public_key: kp.publicKey,
@@ -452,6 +455,8 @@ async function main() {
       type: "identity",
       name: u.creator_name || `Temp user ${u.tip_id.slice(-8)}`,
       tip_id: u.tip_id,
+      tip_id_type: u.tip_id_type || "personal",
+      ...(u.creator_name ? { creator_name: u.creator_name } : {}),
       public_key: u.public_key,
       private_key: u.private_key,
       created: payload.created_at,
