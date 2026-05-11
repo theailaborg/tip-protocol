@@ -81,7 +81,7 @@ function _seedActivity(dag, tipId, timestamp, origin = "OH") {
     timestamp,
     data: {
       ctid: `tip://c/test-${shake256(`${tipId}:${timestamp}`).slice(0, 14)}`,
-      author_tip_id: tipId,
+      signer_tip_id: tipId,
       origin_code: origin,
       content_hash: shake256(`${tipId}:${timestamp}`),
       node_id: "tip://node/n1",

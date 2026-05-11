@@ -21,6 +21,7 @@
 const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
+const contentRegisterSchema = require("../schemas/content-register");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -369,7 +370,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
       case TX_TYPES.REGISTER_CONTENT: {
         const r = rules.canRegisterContent(dag, {
-          author_tip_id: d.author_tip_id, ctid: d.ctid, origin_code: d.origin_code,
+          signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
         });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
@@ -500,19 +501,29 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // ── Content ───────────────────────────────────────────────────────
       case TX_TYPES.REGISTER_CONTENT:
         if (d.ctid && !dag.getContent(d.ctid)) {
+          // author_tip_id = primary byline (authors[0].tip_id). In
+          // self-attribution mode the signer IS the primary byline so
+          // this equals signer_tip_id; in employed / hosted modes the
+          // signer is the publisher and the byline is a separate human.
+          // Fall back to signer_tip_id only if authors[] is missing.
+          const primaryByline = Array.isArray(d.authors) && d.authors[0] && d.authors[0].tip_id
+            ? d.authors[0].tip_id
+            : d.signer_tip_id;
           dag.saveContent({
             ctid: d.ctid,
             origin_code: d.origin_code,
             content_hash: d.content_hash,
             perceptual_hash: d.perceptual_hash || null,
-            author_tip_id: d.author_tip_id,
+            author_tip_id: primaryByline,
+            signer_tip_id: d.signer_tip_id,
+            authors: Array.isArray(d.authors) ? d.authors : [],
+            attribution_mode: d.attribution_mode || "self",
+            extras: (d.extras && typeof d.extras === "object" && !Array.isArray(d.extras)) ? d.extras : {},
+            cna_version: d.cna_version,
             status: d.prescan_flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
-            // #54: forward registered_url so the URL persists in the DAG row.
-            // The column already exists on `content` (dag.js); this was the
-            // missing forward-through from tx.data.
-            registered_url: d.registered_url || null,
+            registered_urls: Array.isArray(d.registered_urls) ? d.registered_urls : [],
           });
         }
         break;
@@ -751,16 +762,11 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
     try {
       if (tt === TX_TYPES.REGISTER_CONTENT) {
-        const identity = dag.getIdentity(d.author_tip_id);
-        if (!identity || !d.signature) return false;
-        // Mirror content-service.js — include registered_url in the
-        // signed-fields list when the client included it. Field list
-        // drift between API and commit-handler is the #56 systemic
-        // class; this case is #54.
-        const fields = d.registered_url
-          ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
-          : ["author_tip_id", "origin_code", "content_hash"];
-        return verifyBodySignature(d, d.signature, identity.public_key, fields);
+        // Single canonical path (CNA-2.2). The schemas/content-register
+        // module owns the field list, canonical-payload builder, and
+        // verifier. Same module the API used at submit time, so the two
+        // sides cannot drift. Spec: docs/CONTENT_SIGNING.md.
+        return contentRegisterSchema.verifyTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.REGISTER_IDENTITY) {
@@ -808,7 +814,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // #54 / #55 / #56.
         const disputeFields = ["disputer_tip_id", "reason"];
         if (d.claimed_origin) disputeFields.push("claimed_origin");
-        if (d.evidence_hash)  disputeFields.push("evidence_hash");
+        if (d.evidence_hash) disputeFields.push("evidence_hash");
         return verifyBodySignature(d, d.signature, disputer.public_key, disputeFields);
       }
 

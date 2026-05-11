@@ -6,114 +6,104 @@ const {
 } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
+const contentRegisterSchema = require("../schemas/content-register");
+const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { preScanContent } = require("./helpers");
-const { validate, validateContentSize } = require("../middleware/validate");
+const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
-
-const ORIGIN_CODES = Object.keys(ORIGIN);
 
 function createContentService({ dag, scoring, config, submitTx }) {
 
   function register(body) {
-    validate(body, {
-      author_tip_id: { required: true },
-      origin_code: { required: true, oneOf: ORIGIN_CODES },
-      signature: { required: true },
-    });
-    const {
-      author_tip_id, origin_code, content, content_type, signature, registered_url,
-      media_canonical_hash, media_exact_hash, media_perceptual_hash, media_normalization_version,
-    } = body;
-    // content is required unless media hash is provided
-    if (!content && !media_canonical_hash) throw { status: 400, error: "content or media_canonical_hash required" };
-    if (content) validateContentSize(content, content_type, config.mediaLimits);
+    contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
-    const identity = dag.getIdentity(author_tip_id);
-    if (!identity) throw { status: 404, error: "Author TIP-ID not found" };
+    const {
+      signer_tip_id, origin_code, content, signature, media_canonical_hash,
+    } = body;
+    const identity = contentRegisterSchema.resolveSigner(signer_tip_id, dag);
 
     // CNA-MIX-1: when media hash is present, combine media + text hashes.
     // The client signs the combined hash, so the node must reproduce it.
     const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
-    let contentHashFull;
-    let normalizationVersion = "CNA-2";
-    if (media_canonical_hash) {
-      contentHashFull = shake256(media_canonical_hash + textHashFull);
-      normalizationVersion = "CNA-MIX-1";
-    } else {
-      contentHashFull = textHashFull;
-    }
+    const contentHashFull = media_canonical_hash
+      ? shake256(media_canonical_hash + textHashFull)
+      : textHashFull;
     const contentHashShort = hashContent(content || media_canonical_hash || "");
 
-    // Signature binds author + origin + content_hash, and optionally registered_url.
-    // The fields list must match exactly what the client signed.
-    const CONTENT_FIELDS = registered_url
-      ? ["author_tip_id", "origin_code", "content_hash", "registered_url"]
-      : ["author_tip_id", "origin_code", "content_hash"];
-    const sigBody = { author_tip_id, origin_code, content_hash: contentHashFull };
-    if (registered_url) sigBody.registered_url = registered_url;
-    if (!verifyBodySignature(sigBody, signature, identity.public_key, CONTENT_FIELDS)) {
-      throw { status: 403, error: "Content signature verification failed" };
+    // ── Signature verification ─────────────────────────────────────────────
+    const canonicalPayload = contentRegisterSchema.buildSigningPayload(body, contentHashFull);
+    if (!contentRegisterSchema.verifySignature(canonicalPayload, signature, identity.public_key)) {
+      throw schemaError(403, "Content signature verification failed", "signature_invalid");
     }
 
     const perceptHash = content ? perceptualHashText(content) : null;
-    const contentHistory = { verified_oh_count: dag.getContentByAuthor(author_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
+    const contentHistory = { verified_oh_count: dag.getContentByAuthor(signer_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
     const preScan = preScanContent(content || "", origin_code, contentHistory);
 
     const registeredAt = new Date().toISOString();
-    const ctid = generateCTID(origin_code, contentHashShort, author_tip_id);
+    const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
-    // Stateful pre-conditions (author not revoked, ctid free, valid origin) —
-    // re-checked at commit time against `cert.timestamp` to keep API and
-    // commit-handler in lockstep.
-    {
-      const r = rules.canRegisterContent(dag, { author_tip_id, ctid, origin_code });
-      if (!r.valid) throw { status: r.error.status, error: r.error.message, ctid };
-    }
+    const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
+    if (!valid) throw schemaError(error.status, error.message, error.code);
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: dag.getRecentPrev(),
       data: {
-        ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
+        // ── Server-derived / informational fields ─────────────────
+        // origin_code + content_hash mirror the canonical signed values
+        // (verifier needs them on tx.data to rebuild the payload).
+        // origin_label is derived at response time from origin_code —
+        // not stored on tx.data. author_tip_id is derived at persist
+        // time from signer_tip_id — see commit-handler REGISTER_CONTENT.
+        ctid, origin_code: canonicalPayload.origin_code,
         content_hash: contentHashFull, perceptual_hash: perceptHash,
-        author_tip_id, signature,
+        signature,
         prescan_flagged: preScan.flagged, prescan_probability: preScan.probability,
-        ...(registered_url ? { registered_url } : {}),
+
+        // ── CNA-2.2 signed canonical fields (mirror canonicalPayload
+        //    so commit-handler can replay buildSigningPayload(d, d.content_hash))
+        cna_version: canonicalPayload.cna_version,
+        attribution_mode: canonicalPayload.attribution_mode,
+        authors: canonicalPayload.authors,
+        extras: canonicalPayload.extras,
+        registered_urls: canonicalPayload.registered_urls,
+        signer_tip_id: canonicalPayload.signer_tip_id,
       },
     };
     const signedTx = withTxId(txBody);
     const validation = validateTransaction(signedTx, dag, {});
-    if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
 
     const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
-    log.info(`Content proposed: ${ctid} (origin: ${origin_code}, author: ${author_tip_id})`);
+    log.info(`Content proposed: ${ctid} (origin: ${origin_code}, signer: ${signer_tip_id})`);
 
     // Note: direct dag.saveContent happens in commit-handler when the tx
     // commits via consensus. API returns 202-style "proposed" so client
     // knows to expect async finalization.
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
-      content_hash: contentHashFull, author_tip_id, tx_id: signedTx.tx_id,
+      content_hash: contentHashFull, signer_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
-      author_name: identity.creator_name || null,
-      registered_url: registered_url || null,
+      author_name: identity?.creator_name || null,
+      registered_urls: canonicalPayload.registered_urls,
       prescan_flagged: preScan.flagged,
       prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
       http_headers: {
-        [HTTP_HEADERS.AUTHOR]: author_tip_id, [HTTP_HEADERS.CONTENT]: ctid,
+        [HTTP_HEADERS.AUTHOR]: signer_tip_id, [HTTP_HEADERS.CONTENT]: ctid,
         [HTTP_HEADERS.ORIGIN]: ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
-        [HTTP_HEADERS.TRUST_SCORE]: scoring.getScore(author_tip_id).score.toString(),
+        [HTTP_HEADERS.TRUST_SCORE]: scoring.getScore(signer_tip_id).score.toString(),
         [HTTP_HEADERS.SIGNATURE]: signature,
       },
       meta_tags: {
-        "tip:author": author_tip_id, "tip:content": ctid,
+        "tip:author": signer_tip_id, "tip:content": ctid,
         "tip:origin": ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
-        "tip:score": scoring.getScore(author_tip_id).score.toString(),
+        "tip:score": scoring.getScore(signer_tip_id).score.toString(),
         "tip:status": preScan.flagged ? "PENDING" : "REGISTERED",
       },
     };
@@ -121,7 +111,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
   function resolve(ctid) {
     const rec = dag.getContent(ctid);
-    if (!rec) throw { status: 404, error: "Content record not found" };
+    if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
 
     const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
     const txValid = tx ? verifyTxId(tx) : false;
@@ -152,16 +142,14 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const { verifier_tip_id, verdict, signature } = body;
 
     // Stateful pre-conditions — same predicate as commit-handler.
-    {
-      const r = rules.canVerify(dag, { ctid, verifier_tip_id });
-      if (!r.valid) throw { status: r.error.status, error: r.error.message };
-    }
+    const { valid, error } = rules.canVerify(dag, { ctid, verifier_tip_id });
+    if (!valid) throw schemaError(error.status, error.message, error.code);
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
 
     const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
     if (!verifyBodySignature(body, signature, verifier.public_key, VERIFY_FIELDS)) {
-      throw { status: 403, error: "Verifier signature verification failed" };
+      throw schemaError(403, "Verifier signature verification failed", "signature_invalid");
     }
 
     // Caps
@@ -189,7 +177,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
     };
     const signedTx = withTxId(verifyTxBody);
     const validation = validateTransaction(signedTx, dag, {});
-    if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
 
@@ -225,16 +213,14 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     // Stateful + time-window pre-conditions. Time-window uses Date.now()
     // at API call; commit-handler re-checks with cert.timestamp.
-    {
-      const r = rules.canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now: Date.now() });
-      if (!r.valid) throw { status: r.error.status, error: r.error.message };
-    }
+    const { valid, error } = rules.canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now: Date.now() });
+    if (!valid) throw schemaError(error.status, error.message, error.code);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
     const UPDATE_FIELDS = ["author_tip_id", "new_origin_code"];
     if (!verifyBodySignature(body, signature, author.public_key, UPDATE_FIELDS)) {
-      throw { status: 403, error: "Author signature verification failed" };
+      throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
     const updateTx = withTxId({
@@ -251,15 +237,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
     validate(body, { author_tip_id: { required: true }, signature: { required: true } });
     const { author_tip_id, signature } = body;
 
-    {
-      const r = rules.canRetract(dag, { ctid, author_tip_id });
-      if (!r.valid) throw { status: r.error.status, error: r.error.message };
-    }
+    const { valid, error } = rules.canRetract(dag, { ctid, author_tip_id });
+    if (!valid) throw schemaError(error.status, error.message, error.code);
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
     if (!verifyBodySignature(body, signature, author.public_key, ["author_tip_id"])) {
-      throw { status: 403, error: "Author signature verification failed" };
+      throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
     const retractTimestamp = new Date().toISOString();

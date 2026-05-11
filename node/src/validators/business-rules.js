@@ -80,13 +80,13 @@ function canRegisterIdentity(dag, { dedup_hash, vp_id }) {
 
 // ─── Content ───────────────────────────────────────────────────────────────
 
-function canRegisterContent(dag, { author_tip_id, ctid, origin_code }) {
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
-  const author = dag.getIdentity(author_tip_id);
-  if (!author) return fail(404, "Author TIP-ID not found");
-  if (dag.isRevoked(author_tip_id)) return fail(403, "Author TIP-ID is revoked");
+  const signer = dag.getIdentity(signer_tip_id);
+  if (!signer) return fail(404, "Signer TIP-ID not found");
+  if (dag.isRevoked(signer_tip_id)) return fail(403, "Signer TIP-ID is revoked");
   if (ctid && dag.getContent(ctid)) {
     return fail(409, `Content already registered with this origin code (CTID: ${ctid})`);
   }

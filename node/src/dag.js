@@ -66,16 +66,26 @@ function _canonContent(r) {
   // dead columns today (always 0 — never written) and would trap a future
   // writer that updates them non-deterministically. Re-add if/when they
   // start being incremented from commit-handler with tx context.
+  //
+  // Every other column is included — fields are populated from tx.data
+  // (deterministic across nodes), so any divergence on the persisted
+  // row would indicate a code bug, and the merkle-root mismatch is
+  // exactly where we want that bug surfaced.
   return {
     ctid: r.ctid,
     origin_code: r.origin_code,
     content_hash: r.content_hash,
     perceptual_hash: r.perceptual_hash || null,
     author_tip_id: r.author_tip_id,
+    signer_tip_id: r.signer_tip_id,
+    authors:          Array.isArray(r.authors) ? r.authors : [],
+    attribution_mode: r.attribution_mode || "self",
+    extras:           (r.extras && typeof r.extras === "object" && !Array.isArray(r.extras)) ? r.extras : {},
+    cna_version:      r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
     registered_at: r.registered_at,
-    registered_url: r.registered_url || null,
+    registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
     tx_id: r.tx_id || null,
   };
 }
@@ -234,10 +244,15 @@ class MemoryStore {
   getTxsByTypeAndCtid(type, ctid) {
     return [...this._txs.values()].filter(t => t.tx_type === type && t.data?.ctid === ctid);
   }
-  // Narrow OR-pattern lookup (scoring scope).
+  // Narrow OR-pattern lookup (scoring scope). Matches the canonical
+  // tip-id field for each tx type: `tip_id` (REGISTER_IDENTITY, SCORE_UPDATE…),
+  // `signer_tip_id` (REGISTER_CONTENT — CNA-2.2 canonical), or
+  // `author_tip_id` (UPDATE_ORIGIN / CONTENT_RETRACTED / ADJUDICATION_RESULT).
   getTxsByTipId(tipId) {
     return [...this._txs.values()].filter(t =>
-      t.data?.tip_id === tipId || t.data?.author_tip_id === tipId
+      t.data?.tip_id === tipId
+      || t.data?.signer_tip_id === tipId
+      || t.data?.author_tip_id === tipId
     );
   }
   // Broad role-aware lookup via the denormalised subject_tip_id column.
@@ -290,15 +305,20 @@ class MemoryStore {
         // `cutoff` (i.e. less than CLEAN_PERIOD_DAYS ago) hasn't been
         // around long enough to have a 90-day clean record yet.
         if (!id.registered_at || id.registered_at > cutoff) return false;
-        const userTxs = txs.filter(t => t.data?.tip_id === tipId || t.data?.author_tip_id === tipId);
+        const userTxs = txs.filter(t =>
+          t.data?.tip_id === tipId
+          || t.data?.signer_tip_id === tipId
+          || t.data?.author_tip_id === tipId
+        );
         // Spec (TIP_Scoring_v2 Reputation §): the bonus requires the user
         // to have registered ≥1 OH or AA content during the window. Any
         // other activity (a juror reveal, a SCORE_UPDATE, an inbound
         // dispute) does NOT qualify — that would let idle high-score users
         // farm the bonus by sitting on jury duty.
+        // REGISTER_CONTENT uses signer_tip_id (CNA-2.2 canonical field).
         const hasOhAaContent = userTxs.some(t =>
           t.tx_type === "REGISTER_CONTENT"
-          && t.data?.author_tip_id === tipId
+          && t.data?.signer_tip_id === tipId
           && (t.data?.origin_code === "OH" || t.data?.origin_code === "AA")
           && t.timestamp >= cutoff,
         );
@@ -923,16 +943,22 @@ class SQLiteStore {
         origin_code         TEXT NOT NULL,
         content_hash        TEXT NOT NULL,
         perceptual_hash     TEXT,
-        author_tip_id       TEXT NOT NULL,
+        author_tip_id       TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
+        signer_tip_id       TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
+        authors             TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
+        attribution_mode    TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
+        extras              TEXT,                            -- JSON-encoded extension data
+        cna_version         TEXT NOT NULL,                   -- CNA version this content was signed under
         status              TEXT NOT NULL DEFAULT 'verified',
         dispute_count       INTEGER NOT NULL DEFAULT 0,
         verification_count  INTEGER NOT NULL DEFAULT 0,
         prescan_flagged     INTEGER NOT NULL DEFAULT 0,
         registered_at       TEXT NOT NULL,
-        registered_url      TEXT,
+        registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
         tx_id               TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
+      CREATE INDEX IF NOT EXISTS idx_content_signer ON content(signer_tip_id);
       CREATE INDEX IF NOT EXISTS idx_content_origin ON content(origin_code);
       CREATE INDEX IF NOT EXISTS idx_content_status ON content(status);
 
@@ -1223,11 +1249,6 @@ class SQLiteStore {
       );
     `);
 
-    // Backfill registered_url column for pre-existing content tables
-    const contentCols = this.db.prepare("PRAGMA table_info(content)").all().map(c => c.name);
-    if (!contentCols.includes("registered_url")) {
-      this.db.exec("ALTER TABLE content ADD COLUMN registered_url TEXT");
-    }
     // Backfill creator_name column for pre-existing identities tables
     const idCols = this.db.prepare("PRAGMA table_info(identities)").all().map(c => c.name);
     if (!idCols.includes("creator_name")) {
@@ -1418,9 +1439,10 @@ class SQLiteStore {
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
-           (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,
-            status,prescan_flagged,registered_at,registered_url,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
+           (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
+            authors,attribution_mode,extras,cna_version,
+            status,prescan_flagged,registered_at,registered_urls,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -1714,20 +1736,45 @@ class SQLiteStore {
 
   // ── Content ───────────────────────────────────────────────────────────────
   saveContent(rec) {
+    // CNA-2.2 canonical fields stored on the row: authors[],
+    // attribution_mode, extras, cna_version, registered_urls. JSON-
+    // encode the array/object ones; the rest are scalars.
+    const urls    = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
+    const authors = Array.isArray(rec.authors) ? rec.authors : [];
+    const extras  = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
       rec.content_hash, rec.perceptual_hash || null,
-      rec.author_tip_id,
+      rec.author_tip_id, rec.signer_tip_id,
+      JSON.stringify(authors),
+      rec.attribution_mode || "self",
+      JSON.stringify(extras),
+      rec.cna_version,
       rec.status || "registered",
       rec.prescan_flagged ? 1 : 0,
-      rec.registered_at, rec.registered_url || null, rec.tx_id || null
+      rec.registered_at, JSON.stringify(urls), rec.tx_id || null
     );
   }
-  getContent(ctid) { return this._stmts.getContent.get(ctid) || null; }
+  // SQL returns array/object columns as JSON-encoded TEXT. Decode all
+  // of them on every read.
+  _hydrateContent(row) {
+    if (!row) return null;
+    const decode = (s, fallback) => {
+      if (typeof s !== "string" || !s.length) return fallback;
+      try { return JSON.parse(s); } catch { return fallback; }
+    };
+    return {
+      ...row,
+      registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
+      authors:         (() => { const v = decode(row.authors, []);         return Array.isArray(v) ? v : []; })(),
+      extras:          (() => { const v = decode(row.extras, {});          return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
+    };
+  }
+  getContent(ctid) { return this._hydrateContent(this._stmts.getContent.get(ctid)); }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
-  getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId); }
-  getContentByStatus(status) { return this._stmts.contentByStatus.all(status); }
+  getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
+  getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
@@ -1745,7 +1792,7 @@ class SQLiteStore {
         AND EXISTS (
           SELECT 1 FROM transactions t
           WHERE t.tx_type = 'REGISTER_CONTENT'
-            AND json_extract(t.data,'$.author_tip_id') = i.tip_id
+            AND json_extract(t.data,'$.signer_tip_id') = i.tip_id
             AND json_extract(t.data,'$.origin_code') IN ('OH','AA')
             AND t.timestamp >= ?
         )
@@ -2055,7 +2102,12 @@ class SQLiteStore {
       yield { table: "identities", row: _canonIdentity({ ...r, founding: r.founding === 1 }) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
-      yield { table: "content", row: _canonContent({ ...r, prescan_flagged: r.prescan_flagged === 1 }) };
+      // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
+      // so _canonContent sees parsed values — matching the MemoryStore path.
+      // Without this, JSON columns come through as strings and _canonContent's
+      // Array.isArray / typeof === "object" checks fail, emitting defaults
+      // and silently forking the state_merkle_root vs MemoryStore-backed nodes.
+      yield { table: "content", row: _canonContent({ ...this._hydrateContent(r), prescan_flagged: r.prescan_flagged === 1 }) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };

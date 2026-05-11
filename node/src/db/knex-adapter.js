@@ -221,15 +221,21 @@ class KnexAdapter {
       t.string("origin_code", 8).notNullable();
       t.string("content_hash", 128).notNullable();
       t.string("perceptual_hash", 128).nullable();
-      _id(t, "author_tip_id").notNullable();
+      _id(t, "author_tip_id").notNullable();                       // = authors[0].tip_id (primary byline)
+      _id(t, "signer_tip_id").notNullable();                       // the entity that produced the signature; differs from author in employed/hosted
+      t.text("authors").nullable();                                 // JSON-encoded authors[] (5-key entries per CNA-2.2)
+      t.string("attribution_mode", 32).notNullable().defaultTo("self");   // self / employed / hosted
+      t.text("extras").nullable();                                  // JSON-encoded extension data
+      t.string("cna_version", 32).notNullable();                    // CNA version this content was signed under
       t.string("status", 32).notNullable().defaultTo("verified");
       t.integer("dispute_count").notNullable().defaultTo(0);
       t.integer("verification_count").notNullable().defaultTo(0);
       t.integer("prescan_flagged").notNullable().defaultTo(0);
       t.string("registered_at", 64).notNullable();
-      t.text("registered_url").nullable();
+      t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
       _id(t, "tx_id").nullable();
       t.index("author_tip_id", "idx_content_author");
+      t.index("signer_tip_id", "idx_content_signer");
       t.index("origin_code", "idx_content_origin");
       t.index("status", "idx_content_status");
     });
@@ -611,18 +617,26 @@ class KnexAdapter {
 
   saveContent(rec) {
     this.mirror.saveContent(rec);
+    const urls    = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
+    const authors = Array.isArray(rec.authors) ? rec.authors : [];
+    const extras  = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
     const row = {
       tip_ctid: rec.ctid,
       origin_code: rec.origin_code,
       content_hash: rec.content_hash,
       perceptual_hash: rec.perceptual_hash || null,
       author_tip_id: rec.author_tip_id,
+      signer_tip_id: rec.signer_tip_id,
+      authors: JSON.stringify(authors),
+      attribution_mode: rec.attribution_mode || "self",
+      extras: JSON.stringify(extras),
+      cna_version: rec.cna_version,
       status: rec.status || "verified",
       dispute_count: rec.dispute_count || 0,
       verification_count: rec.verification_count || 0,
       prescan_flagged: rec.prescan_flagged ? 1 : 0,
       registered_at: rec.registered_at,
-      registered_url: rec.registered_url || null,
+      registered_urls: JSON.stringify(urls),
       tx_id: rec.tx_id || null,
     };
     this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));

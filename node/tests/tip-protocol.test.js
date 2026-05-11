@@ -61,6 +61,34 @@ function _buildDisputeBody({ disputerTipId, disputerPriv, claimedOrigin = "AG", 
   };
 }
 
+// Build a CNA-2.2 content-register request body per docs/CONTENT_SIGNING.md.
+// Single canonical signing path now — every spec-compliant client signs
+// the 9-field canonical payload. Tests that previously inline-built the
+// CNA-2 (3-field) form now route through this helper.
+const contentRegisterSchema = require(path.join(__dirname, "../src/schemas/content-register"));
+function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCode = "OH", title }) {
+  const contentHashFull = shake256(tipNormalize(content));
+  const fields = {
+    origin_code: originCode,
+    registered_urls: [],
+    extras: {},
+    authors: [{ key_mode: "attribution", role: "byline", signed: false,
+                 tip_id: authorTipId, tip_id_type: "personal" }],
+    signer_tip_id: authorTipId,
+    attribution_mode: "self",
+  };
+  const payload = contentRegisterSchema.buildSigningPayload(fields, contentHashFull);
+  const signature = contentRegisterSchema.sign(payload, authorPriv);
+  return {
+    ...fields,
+    cna_version: contentRegisterSchema.CURRENT_CNA_VERSION,
+    content,
+    content_type: "text",
+    signature,
+    ...(title ? { title } : {}),
+  };
+}
+
 // Skip real ZK verification in tests — circuit artifacts not present in test env
 process.env.ZK_SKIP_VERIFY = "true";
 
@@ -578,9 +606,13 @@ describe("Transaction Validator", () => {
       data: {
         ctid, origin_code: ORIGIN.OH,
         content_hash: contentHashFull,
-        author_tip_id: tipId,
+        signer_tip_id: tipId,
         pre_scan_passed: true,
         signature: authorSig,
+        // CNA-2.2 wire contract fields (required by tx-validator)
+        cna_version: "CNA-2.2",
+        authors: [{ key_mode: "attribution", role: "byline", signed: false,
+                     tip_id: tipId, tip_id_type: "personal" }],
       },
       prev: dag.getRecentPrev(),
     };
@@ -782,8 +814,10 @@ describe("REST API", () => {
     });
     dag.setScore(authorId, 500, 0, "2026-01-01T00:00:00.000Z");
     const content = "This is a test article written by a human author with enough words to pass.";
-    const sigFields = { author_tip_id: authorId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
-    const body = { author_tip_id: authorId, origin_code: ORIGIN.OH, content, title: "Test Article", signature: signBody(sigFields, authorKp.privateKey) };
+    const body = _buildContentRegisterBody({
+      authorTipId: authorId, authorPriv: authorKp.privateKey, content,
+      title: "Test Article",
+    });
     const res = await request(app)
       .post("/v1/content/register")
       .send(body);
@@ -930,10 +964,12 @@ describe("Integration: Full Registration Flow", () => {
     // Step 3: Register Content (client has private key — never sent to server)
     const authorPrivateKey = authorKp2.privateKey;
     const content = "An original human-written article about trust and identity on the internet.";
-    const ctSigFields = { author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const contentRes = await request(app)
       .post("/v1/content/register")
-      .send({ author_tip_id: integrationTipId, origin_code: ORIGIN.OH, content, title: "Trust and Identity", signature: signBody(ctSigFields, authorPrivateKey) });
+      .send(_buildContentRegisterBody({
+        authorTipId: integrationTipId, authorPriv: authorPrivateKey, content,
+        title: "Trust and Identity",
+      }));
     expect([200, 201, 202]).toContain(contentRes.status);
     const ctid = contentRes.body.data.ctid;
     expect(ctid).toMatch(/^tip:\/\/c\/OH-/);
@@ -1053,10 +1089,11 @@ describe("Gossip Broadcast Wiring", () => {
 
     // (gossip broadcast removed — txs go through consensus)
     const content = "Gossip broadcast wiring test content article.";
-    const ctSigFields = { author_tip_id: tipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const res = await request(gossipApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: tipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields, authorPrivKey) });
+      .send(_buildContentRegisterBody({
+        authorTipId: tipId, authorPriv: authorPrivKey, content,
+      }));
     expect([200, 201, 202]).toContain(res.status);
     expect(res.body.data.ctid).toBeDefined();
     const registeredContent = gossipDag.getContent(res.body.data.ctid);
@@ -1115,10 +1152,11 @@ describe("Gossip Broadcast Wiring", () => {
     const dAuthorPriv = kp85.privateKey;
 
     const content = "Dispute gossip broadcast test article.";
-    const ctSigFields2 = { author_tip_id: dTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content)) };
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: dTipId, origin_code: ORIGIN.OH, content, signature: signBody(ctSigFields2, dAuthorPriv) });
+      .send(_buildContentRegisterBody({
+        authorTipId: dTipId, authorPriv: dAuthorPriv, content,
+      }));
     const ctid = cRes.body.data.ctid;
 
     // (gossip broadcast removed — txs go through consensus)
@@ -1204,10 +1242,9 @@ describe("Semantic Dedup", () => {
 
     // Register content
     const sdContent = "Semantic dedup test content.";
-    const sdCtSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(sdContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent, signature: signBody(sdCtSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: sdContent }));
     sdCtid = ctRes.body.data.ctid;
   });
 
@@ -1242,10 +1279,9 @@ describe("Semantic Dedup", () => {
   test("9.2b Per-content cap enforced", async () => {
     // Register fresh content for cap test
     const capContent = "Content for verification cap test.";
-    const capSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(capContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: capContent, signature: signBody(capSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: capContent }));
     const capCtid = ctRes.body.data.ctid;
 
     // Create 3 verifier identities to fill the cap
@@ -1299,10 +1335,9 @@ describe("Semantic Dedup", () => {
   test("9.3 First dispute succeeds", async () => {
     // Register second content for dispute test
     const sdContent2 = "Second content for dispute dedup.";
-    const sdCtSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(sdContent2)) };
     const ctRes2 = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: sdContent2, signature: signBody(sdCtSig2, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: sdContent2 }));
     const ctid2 = ctRes2.body.data.ctid;
 
     const body = _buildDisputeBody({
@@ -1331,10 +1366,9 @@ describe("Semantic Dedup", () => {
   test("9.4 Update origin within 24h succeeds", async () => {
     // Register fresh content for update test
     const updateContent = "Content for origin update test.";
-    const updateSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(updateContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent, signature: signBody(updateSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: updateContent }));
     expect(ctRes.status).toBe(202);
     const updateCtid = ctRes.body.data.ctid;
     expect(ctRes.body.data.status).toBe("registered");
@@ -1356,10 +1390,9 @@ describe("Semantic Dedup", () => {
 
   test("9.5 Non-author cannot update origin", async () => {
     const updateContent2 = "Content for non-author update test.";
-    const updateSig2 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(updateContent2)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: updateContent2, signature: signBody(updateSig2, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: updateContent2 }));
     const nonAuthorCtid = ctRes.body.data.ctid;
 
     // Verifier (different identity) tries to update
@@ -1373,10 +1406,9 @@ describe("Semantic Dedup", () => {
 
   test("9.6 Dispute always escalates to Stage 2 with AI result", async () => {
     const content96 = "Short dispute escalate test.";
-    const sig96 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content96)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content96, signature: signBody(sig96, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: content96 }));
     const ctid96 = ctRes.body.data.ctid;
 
     const dBody = _buildDisputeBody({
@@ -1397,10 +1429,9 @@ describe("Semantic Dedup", () => {
 
   test("9.7 Escalated dispute keeps content status as disputed", async () => {
     const content97 = "Escalated dispute test content.";
-    const sig97 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content97)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content97, signature: signBody(sig97, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: content97 }));
     const ctid97 = ctRes.body.data.ctid;
 
     // Simulate escalated dispute (AI confidence >= 30%)
@@ -1412,10 +1443,9 @@ describe("Semantic Dedup", () => {
 
   test("9.8 Verify blocked on disputed content", async () => {
     const content98 = "Verify block test content.";
-    const sig98 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content98)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content98, signature: signBody(sig98, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: content98 }));
     const ctid98 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid98, "disputed");
 
@@ -1429,10 +1459,9 @@ describe("Semantic Dedup", () => {
 
   test("9.9 Update-origin blocked on disputed content", async () => {
     const content99 = "Update origin block test content.";
-    const sig99 = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(content99)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: content99, signature: signBody(sig99, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: content99 }));
     const ctid99 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid99, "disputed");
 
@@ -1447,10 +1476,9 @@ describe("Semantic Dedup", () => {
   test("9.10 Jury commit succeeds and duplicate rejected", async () => {
     // Register content
     const juryContent = "Content for jury commit test.";
-    const jurySig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(juryContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: juryContent, signature: signBody(jurySig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: juryContent }));
     const juryCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(juryCtid, "disputed");
 
@@ -1487,10 +1515,9 @@ describe("Semantic Dedup", () => {
   test("9.11 Jury reveal verifies commitment and records vote", async () => {
     // Register content + set disputed
     const revContent = "Content for jury reveal test.";
-    const revSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(revContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: revContent, signature: signBody(revSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: revContent }));
     const revCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(revCtid, "disputed");
 
@@ -1538,10 +1565,9 @@ describe("Semantic Dedup", () => {
 
   test("9.12 MISMATCH vote requires confirmed_origin", async () => {
     const misContent = "Content for mismatch origin test.";
-    const misSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(misContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: misContent, signature: signBody(misSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: misContent }));
     const misCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(misCtid, "disputed");
 
@@ -1580,10 +1606,9 @@ describe("Semantic Dedup", () => {
   test("9.13 GET dispute-case returns full case details", async () => {
     // Register content
     const caseContent = "Content for dispute case test.";
-    const caseSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(caseContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: caseContent, signature: signBody(caseSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: caseContent }));
     const caseCtid = ctRes.body.data.ctid;
 
     // File dispute (requires the evidence block; client-supplied
@@ -1641,10 +1666,9 @@ describe("Semantic Dedup", () => {
   test("9.15 Appeal filing requires Stage 2 verdict", async () => {
     // Content without any verdict — appeal should fail
     const appContent = "Content for appeal test without verdict.";
-    const appSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(appContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appContent, signature: signBody(appSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: appContent }));
     const appCtid = ctRes.body.data.ctid;
 
     const appFields = { appellant_tip_id: sdTipId };
@@ -1659,10 +1683,9 @@ describe("Semantic Dedup", () => {
     // Register content + simulate full dispute flow
     const { computeTxId } = require("../../shared/crypto");
     const appealContent = "Content for appeal flow test.";
-    const appealSig = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(appealContent)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: appealContent, signature: signBody(appealSig, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: appealContent }));
     const appealCtid = ctRes.body.data.ctid;
     sdDag.updateContentStatus(appealCtid, "disputed");
 
@@ -1716,10 +1739,9 @@ describe("Semantic Dedup", () => {
 
     // Register + simulate verdict
     const tc = "Content for third party appeal test.";
-    const ts = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(tc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: tc, signature: signBody(ts, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: tc }));
     const tCtid = ctRes.body.data.ctid;
 
     const dTx = {
@@ -1747,10 +1769,9 @@ describe("Semantic Dedup", () => {
     // Register new content for this test
     const { computeTxId } = require("../../shared/crypto");
     const dc = "Content for duplicate appeal test.";
-    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(dc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: dc }));
     const dCtid = ctRes.body.data.ctid;
 
     const dTx = {
@@ -1778,10 +1799,9 @@ describe("Semantic Dedup", () => {
 
   test("9.19 Content retraction succeeds with -50 penalty", async () => {
     const rc = "Content for retraction test.";
-    const rs = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(rc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: rc, signature: signBody(rs, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: rc }));
     const rCtid = ctRes.body.data.ctid;
 
     const retractFields = { author_tip_id: sdTipId };
@@ -1799,10 +1819,9 @@ describe("Semantic Dedup", () => {
 
   test("9.20 Non-author cannot retract", async () => {
     const nc = "Content for non-author retract test.";
-    const ns = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(nc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: nc, signature: signBody(ns, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: nc }));
     const nCtid = ctRes.body.data.ctid;
 
     const retractFields = { author_tip_id: sdVerifierId };
@@ -1815,10 +1834,9 @@ describe("Semantic Dedup", () => {
 
   test("9.21 Duplicate retraction rejected", async () => {
     const dc = "Content for duplicate retract test.";
-    const ds = { author_tip_id: sdTipId, origin_code: ORIGIN.OH, content_hash: shake256(tipNormalize(dc)) };
     const ctRes = await request(sdApp)
       .post("/v1/content/register")
-      .send({ author_tip_id: sdTipId, origin_code: ORIGIN.OH, content: dc, signature: signBody(ds, sdAuthorPriv) });
+      .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: dc }));
     const dCtid = ctRes.body.data.ctid;
 
     // First retraction

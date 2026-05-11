@@ -63,6 +63,9 @@ function subjectTipId(tx) {
 
     // ── Author actions on owned content ─────────────────────────────────
     case TX_TYPES.REGISTER_CONTENT:
+      // CNA-2.2: signer_tip_id is the canonical field; in self-attribution
+      // mode the signer is the author.
+      return d.signer_tip_id || null;
     case TX_TYPES.UPDATE_ORIGIN:
     case TX_TYPES.CONTENT_RETRACTED:
       return d.author_tip_id || null;

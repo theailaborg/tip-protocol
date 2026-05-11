@@ -92,18 +92,18 @@ describe("canRegisterIdentity", () => {
 // ─── canRegisterContent ─────────────────────────────────────────────────────
 
 describe("canRegisterContent", () => {
-  test("valid author + free ctid → valid", () => {
+  test("valid signer + free ctid → valid", () => {
     const dag = _seedDag();
     const r = rules.canRegisterContent(dag, {
-      author_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "OH",
+      signer_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "OH",
     });
     expect(r.valid).toBe(true);
   });
 
-  test("missing author → 404", () => {
+  test("missing signer → 404", () => {
     const dag = _seedDag();
     const r = rules.canRegisterContent(dag, {
-      author_tip_id: "tip://id/missing", ctid: "tip://content/new", origin_code: "OH",
+      signer_tip_id: "tip://id/missing", ctid: "tip://content/new", origin_code: "OH",
     });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(404);
@@ -112,7 +112,7 @@ describe("canRegisterContent", () => {
   test("invalid origin_code → 400", () => {
     const dag = _seedDag();
     const r = rules.canRegisterContent(dag, {
-      author_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "ZZ",
+      signer_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "ZZ",
     });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(400);
@@ -121,7 +121,7 @@ describe("canRegisterContent", () => {
   test("ctid already registered → 409", () => {
     const dag = _seedDag();
     const r = rules.canRegisterContent(dag, {
-      author_tip_id: "tip://id/author", ctid: "tip://content/x", origin_code: "OH",
+      signer_tip_id: "tip://id/author", ctid: "tip://content/x", origin_code: "OH",
     });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(409);

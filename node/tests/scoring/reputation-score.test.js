@@ -214,7 +214,7 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
-      data: { ctid: "tip://c/x", author_tip_id: tipId, origin_code: "OH", content_hash: "00" },
+      data: { ctid: "tip://c/x", signer_tip_id: tipId, origin_code: "OH", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
   });
@@ -225,7 +225,7 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
-      data: { ctid: "tip://c/y", author_tip_id: tipId, origin_code: "AA", content_hash: "00" },
+      data: { ctid: "tip://c/y", signer_tip_id: tipId, origin_code: "AA", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
   });
@@ -238,11 +238,11 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
-      data: { ctid: "tip://c/z", author_tip_id: tipId, origin_code: "AG", content_hash: "00" },
+      data: { ctid: "tip://c/z", signer_tip_id: tipId, origin_code: "AG", content_hash: "00" },
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-15T00:00:00.000Z",
-      data: { ctid: "tip://c/zz", author_tip_id: tipId, origin_code: "MX", content_hash: "00" },
+      data: { ctid: "tip://c/zz", signer_tip_id: tipId, origin_code: "MX", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
   });
@@ -254,7 +254,7 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     // Registered before the cutoff — outside the window.
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2025-08-01T00:00:00.000Z",
-      data: { ctid: "tip://c/old", author_tip_id: tipId, origin_code: "OH", content_hash: "00" },
+      data: { ctid: "tip://c/old", signer_tip_id: tipId, origin_code: "OH", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
   });

@@ -92,13 +92,24 @@ function _signRegisterIdentity(vpKp, data) {
   return signBody(signedFields, vpKp.privateKey);
 }
 
-// REGISTER_CONTENT signature scope — see commit-handler.js:_verifyTxSignature
-// (no `registered_url` variant since these tests don't exercise that path).
-const REG_CONTENT_SIGNED_FIELDS = ["author_tip_id", "origin_code", "content_hash"];
+// REGISTER_CONTENT signs the canonical 9-field CNA-2.2 payload — see
+// docs/CONTENT_SIGNING.md and node/src/schemas/content-register.js.
+// This helper builds the same payload tx.data must carry so the
+// commit-handler can re-verify, and signs it. Mutates `data` in-place
+// to fill in the CNA-2.2 fields that ride alongside the signature.
+const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
 function _signRegisterContent(authorKp, data) {
-  const signedFields = {};
-  for (const f of REG_CONTENT_SIGNED_FIELDS) if (data[f] !== undefined) signedFields[f] = data[f];
-  return signBody(signedFields, authorKp.privateKey);
+  const tipId = data.signer_tip_id;
+  if (!data.authors) {
+    data.authors = [{ key_mode: "attribution", role: "byline", signed: false,
+                       tip_id: tipId, tip_id_type: "personal" }];
+  }
+  if (!data.attribution_mode) data.attribution_mode = "self";
+  if (!data.extras) data.extras = {};
+  if (!data.registered_urls) data.registered_urls = [];
+  if (!data.cna_version) data.cna_version = contentRegisterSchema.CURRENT_CNA_VERSION;
+  const payload = contentRegisterSchema.buildSigningPayload(data, data.content_hash);
+  return contentRegisterSchema.sign(payload, authorKp.privateKey);
 }
 
 function _signByNode(dag, nodeKp, txBody) {
@@ -251,7 +262,7 @@ describe("commit-handler — business-rule revalidation: content_already_registe
       ctid,
       origin_code: "OH",
       content_hash: shake256("c2"),
-      author_tip_id: fx.authorTipId,
+      signer_tip_id: fx.authorTipId,
     };
     data.signature = _signRegisterContent(fx.authorKp, data);
     const tx = _signByNode(fx.dag, fx.nodeKp, {

@@ -61,6 +61,54 @@ const DISPUTE_REASON = Object.freeze({
 });
 const DISPUTE_REASONS = Object.freeze(Object.values(DISPUTE_REASON));
 
+// ─── Canonical signing schema versions ────────────────────────────────────────
+// One entry per signing schema in node/src/signing/. Bump on any
+// schema change (field added/removed/renamed); commit-handler dispatches
+// on the version found in tx.data so older committed txs keep verifying
+// under their original schema (replay correctness). Spec docs:
+// docs/CONTENT_SIGNING.md (CNA-2.2 → REGISTER_CONTENT).
+// Canonical Content Normalization Algorithm versions, per tx type that
+// signs content. Each entry carries:
+//   - `versions` — every CNA version ever released for this tx type.
+//     Verification accepts any value in this array so historical txs
+//     (signed under earlier CNA versions) keep verifying forever
+//     (replay correctness / chain integrity).
+//   - `current`  — the CNA version new submissions are signed under.
+//     The canonical-payload builder forces this string into the signed
+//     payload's `cna` field; clients can't pick a different one.
+//
+// CNA defines the algorithm that turns raw content bytes into the
+// canonical bytes hashed into `content_hash`. Implementation lives
+// in `shared/crypto.js#tipNormalize`. See docs/CONTENT_SIGNING.md.
+const CNA_VERSIONS = Object.freeze({
+  REGISTER_CONTENT: Object.freeze({
+    versions: Object.freeze(["CNA-2.2"]),
+    current:  "CNA-2.2",
+  }),
+});
+
+// Per-author entry in CNA-2.2 `authors[]` has exactly these 5 keys.
+// Reject-on-extra is enforced at canonical-builder time so client
+// junk never gets bound to the signature.
+const CNA22_AUTHOR_KEYS = Object.freeze([
+  "key_mode", "role", "signed", "tip_id", "tip_id_type",
+]);
+
+// Canonical `attribution_mode` values per docs/CONTENT_SIGNING.md §2.
+// Locks the enum so any non-listed value is rejected at canonical-builder
+// time. Default is SELF for the personal/self-publishing case.
+//   - SELF      signer IS the author (most personal-creator submissions)
+//   - EMPLOYED  signer is publishing on behalf of one or more authors
+//               under an employer/agency relationship (e.g. newsroom)
+//   - HOSTED    signer is a platform / host publishing third-party
+//               content the platform itself doesn't claim authorship of
+const ATTRIBUTION_MODES = Object.freeze({
+  SELF:     "self",
+  EMPLOYED: "employed",
+  HOSTED:   "hosted",
+});
+const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
+
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
@@ -271,6 +319,10 @@ module.exports = {
   CONTENT_STATUS,
   DISPUTE_REASON,
   DISPUTE_REASONS,
+  CNA_VERSIONS,
+  CNA22_AUTHOR_KEYS,
+  ATTRIBUTION_MODES,
+  ATTRIBUTION_MODE_VALUES,
   TX_TYPES,
   TX_TYPE_SET,
   DISPUTE_SHORT_ID_LEN,

@@ -111,7 +111,7 @@ describe("dag migration — subject_tip_id (pre-migration → migrated DB)", () 
       "c".repeat(64), "mempool_full", 1_700_000_000_000, "tip://node/x", "REGISTER_CONTENT",
       JSON.stringify({
         tx_id: "c".repeat(64), tx_type: "REGISTER_CONTENT",
-        data: { author_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa" },
+        data: { signer_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa" },
       })
     );
     seedDb.close();

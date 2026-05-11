@@ -18,8 +18,11 @@
 
 "use strict";
 
-const { verifyTransaction, mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto");
-const { TX_TYPES, TX_TYPE_SET, ORIGIN } = require("../../../shared/constants");
+const { mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto");
+const {
+  TX_TYPES, TX_TYPE_SET, ORIGIN,
+  CNA_VERSIONS, ATTRIBUTION_MODE_VALUES,
+} = require("../../../shared/constants");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -27,34 +30,44 @@ const { TX_TYPES, TX_TYPE_SET, ORIGIN } = require("../../../shared/constants");
 const KNOWN_TX_TYPES = new Set([...TX_TYPE_SET, "GENESIS"]);
 
 // ─── Validation result helper ─────────────────────────────────────────────────
-function pass()             { return { valid: true, errors: [] }; }
-function fail(...errors)    { return { valid: false, errors }; }
-function merge(a, b)        { return { valid: a.valid && b.valid, errors: [...a.errors, ...b.errors] }; }
+function pass() { return { valid: true, errors: [] }; }
+function fail(...errors) { return { valid: false, errors }; }
 
 // ─── Schema rules per transaction type ────────────────────────────────────────
 const SCHEMA = {
   [TX_TYPES.REGISTER_IDENTITY]: {
     required: ["tip_id", "region", "public_key", "vp_id", "verification_tier", "dedup_hash", "zk_proof"],
-    types:    { tip_id: "string", region: "string", public_key: "string", vp_id: "string", dedup_hash: "string" },
+    types: { tip_id: "string", region: "string", public_key: "string", vp_id: "string", dedup_hash: "string" },
   },
   [TX_TYPES.REGISTER_CONTENT]: {
-    required: ["ctid", "origin_code", "content_hash", "author_tip_id", "signature"],
-    types:    { ctid: "string", origin_code: "string", content_hash: "string" },
+    // CNA-2.2 wire contract — every field below MUST be on tx.data so
+    // commit-handler can replay `buildSigningPayload(d, d.content_hash)`
+    // deterministically. Deep validation (authors[] entry shape,
+    // attribution_mode enum, registered_urls/extras types) is enforced
+    // in validateBusinessRules below. Spec: docs/CONTENT_SIGNING.md.
+    required: [
+      "ctid", "origin_code", "content_hash", "signer_tip_id", "signature",
+      "cna_version", "authors",
+    ],
+    types: {
+      ctid: "string", origin_code: "string", content_hash: "string",
+      signer_tip_id: "string", cna_version: "string",
+    },
   },
   [TX_TYPES.CONTENT_VERIFIED]: {
     required: ["ctid", "verifier_tip_id", "weighted_delta"],
-    types:    { ctid: "string", verifier_tip_id: "string" },
+    types: { ctid: "string", verifier_tip_id: "string" },
   },
   [TX_TYPES.CONTENT_DISPUTED]: {
     required: ["ctid"],
-    types:    { ctid: "string" },
+    types: { ctid: "string" },
   },
   [TX_TYPES.ADJUDICATION_RESULT]: {
     // confirmed_origin is only present for UPHELD verdicts (it's the
     // jury's confirmed actual origin); DISMISSED / CONSERVATIVE_LABEL /
     // NO_QUORUM all leave it null. Don't require it across all verdicts.
     required: ["ctid", "declared_origin", "verdict"],
-    types:    { ctid: "string", verdict: "string" },
+    types: { ctid: "string", verdict: "string" },
   },
   [TX_TYPES.SCORE_UPDATE]: {
     // `score_after` is no longer required at build-time. With #15, the
@@ -64,27 +77,27 @@ const SCHEMA = {
     // case of `_applyDerivedState`. If `score_after` is present we still
     // sanity-check its range (back-compat with legacy in-line writes).
     required: ["tip_id", "delta", "reason"],
-    types:    { tip_id: "string", delta: "number", score_after: "number" },
+    types: { tip_id: "string", delta: "number", score_after: "number" },
   },
   [TX_TYPES.REVOKE_VOLUNTARY]: {
     required: ["tip_id"],
-    types:    { tip_id: "string" },
+    types: { tip_id: "string" },
   },
   [TX_TYPES.REVOKE_VP]: {
     required: ["tip_id", "reason_code", "evidence_hash", "issuing_vp_id"],
-    types:    { tip_id: "string", issuing_vp_id: "string" },
+    types: { tip_id: "string", issuing_vp_id: "string" },
   },
   [TX_TYPES.REVOKE_DECEASED]: {
     required: ["tip_id", "issuing_vp_id"],
-    types:    { tip_id: "string" },
+    types: { tip_id: "string" },
   },
   [TX_TYPES.REVOKE_DEVICE]: {
     required: ["tip_id"],
-    types:    { tip_id: "string" },
+    types: { tip_id: "string" },
   },
   [TX_TYPES.VP_REGISTERED]: {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
-    types:    { vp_id: "string", name: "string" },
+    types: { vp_id: "string", name: "string" },
   },
   [TX_TYPES.COMMITTEE_ROTATION]: {
     // §4 + #34: chain-of-trust rotation event. Deeper validation
@@ -92,7 +105,7 @@ const SCHEMA = {
     // quorum) lives in commit-handler — those checks need DAG state
     // and can't run in the structure-only layer here.
     required: ["rotation_number", "effective_round", "new_committee", "payload_hash", "signer_node_ids", "signatures"],
-    types:    { rotation_number: "number", effective_round: "number", payload_hash: "string" },
+    types: { rotation_number: "number", effective_round: "number", payload_hash: "string" },
   },
 };
 
@@ -102,11 +115,11 @@ function validateStructure(tx) {
 
   if (!tx || typeof tx !== "object") { return fail("Transaction must be a non-null object"); }
   // (covered by null check above)
-  if (!tx.tx_id)                    errors.push("tx_id is required");
-  if (!tx.tx_type)                  errors.push("tx_type is required");
-  if (!tx.timestamp)                errors.push("timestamp is required");
+  if (!tx.tx_id) errors.push("tx_id is required");
+  if (!tx.tx_type) errors.push("tx_type is required");
+  if (!tx.timestamp) errors.push("timestamp is required");
   if (!tx.data || typeof tx.data !== "object") errors.push("data must be a non-null object");
-  if (!Array.isArray(tx.prev))      errors.push("prev must be an array");
+  if (!Array.isArray(tx.prev)) errors.push("prev must be an array");
 
   if (errors.length) return fail(...errors);
 
@@ -175,7 +188,7 @@ function validateBusinessRules(tx) {
         errors.push(`Invalid TIP-ID format: "${d.tip_id}". Expected: tip://id/[REGION]-[16hex]`);
       }
       // Verification tier must be T1–T4
-      if (d.verification_tier && !["T1","T2","T3","T4"].includes(d.verification_tier)) {
+      if (d.verification_tier && !["T1", "T2", "T3", "T4"].includes(d.verification_tier)) {
         errors.push(`Invalid verification_tier: "${d.verification_tier}". Must be T1, T2, T3, or T4`);
       }
       // dedup_hash must be a decimal string (BN128 field element from Poseidon circuit)
@@ -205,6 +218,48 @@ function validateBusinessRules(tx) {
       // Content hash must be 64-char hex (full SHAKE-256)
       if (d.content_hash && !/^[0-9a-f]{64}$/.test(d.content_hash)) {
         errors.push(`content_hash must be a 64-char hex string`);
+      }
+      // CNA version check (docs/CONTENT_SIGNING.md §13). Accept any
+      // whitelisted CNA version so historical txs keep verifying after
+      // a CNA bump.
+      const supportedVersions = CNA_VERSIONS.REGISTER_CONTENT.versions;
+      if (d.cna_version && !supportedVersions.includes(d.cna_version)) {
+        errors.push(`Unsupported cna_version: "${d.cna_version}". Must be one of: ${supportedVersions.join(", ")}.`);
+      }
+      // authors[] must be a non-empty array of objects with tip://id/... tip_id
+      if (d.authors !== undefined) {
+        if (!Array.isArray(d.authors) || d.authors.length === 0) {
+          errors.push("authors[] must be a non-empty array");
+        } else {
+          for (const a of d.authors) {
+            if (!a || typeof a !== "object"
+              || typeof a.tip_id !== "string"
+              || !a.tip_id.startsWith("tip://id/")) {
+              errors.push("authors[] entry must be an object with a tip://id/... tip_id");
+              break;
+            }
+          }
+        }
+      }
+      // attribution_mode (optional on tx.data — buildSigningPayload defaults
+      // to "self"; if present here it MUST be in the canonical enum).
+      if (d.attribution_mode !== undefined
+        && !ATTRIBUTION_MODE_VALUES.includes(d.attribution_mode)) {
+        errors.push(
+          `Invalid attribution_mode: "${d.attribution_mode}". Must be one of: ${ATTRIBUTION_MODE_VALUES.join(", ")}`,
+        );
+      }
+      // registered_urls (optional, default []): must be array of strings if present
+      if (d.registered_urls !== undefined) {
+        if (!Array.isArray(d.registered_urls)
+          || d.registered_urls.some(u => typeof u !== "string")) {
+          errors.push("registered_urls must be an array of strings");
+        }
+      }
+      // extras (optional, default {}): must be a plain object if present
+      if (d.extras !== undefined
+        && (d.extras === null || typeof d.extras !== "object" || Array.isArray(d.extras))) {
+        errors.push("extras must be an object (use {} for empty)");
       }
       break;
     }
@@ -341,13 +396,17 @@ function validateState(tx, dag) {
     }
 
     case TX_TYPES.REGISTER_CONTENT: {
-      // Author must exist and not be revoked
-      if (d.author_tip_id) {
-        const identity = dag.getIdentity(d.author_tip_id);
+      // Signer must exist on the DAG and not be revoked. Single
+      // canonical signing path (CNA-2.2 per docs/CONTENT_SIGNING.md);
+      // off-DAG signers are rejected at the API layer with 412
+      // signer_not_registered, so a tx reaching this validator with an
+      // unknown signer_tip_id indicates a malformed submission.
+      if (d.signer_tip_id) {
+        const identity = dag.getIdentity(d.signer_tip_id);
         if (!identity) {
-          errors.push(`Author TIP-ID not found: ${d.author_tip_id}`);
-        } else if (dag.isRevoked(d.author_tip_id)) {
-          errors.push(`Author TIP-ID is revoked and cannot register content: ${d.author_tip_id}`);
+          errors.push(`Signer TIP-ID not found: ${d.signer_tip_id}`);
+        } else if (dag.isRevoked(d.signer_tip_id)) {
+          errors.push(`Signer TIP-ID is revoked and cannot register content: ${d.signer_tip_id}`);
         }
       }
       // CTID must not already exist

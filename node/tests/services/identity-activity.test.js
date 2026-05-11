@@ -139,14 +139,14 @@ describe("getActivity — ?include filter merges pending + rejected", () => {
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: "2026-04-29T00:00:00.000Z",
       data: { ctid: "tip://c/OH-aaaaaaaaaaaaaa-1111", origin_code: "OH",
-        content_hash: shake256("c1"), author_tip_id: tipId, signature: "00" },
+        content_hash: shake256("c1"), signer_tip_id: tipId, signature: "00" },
     });
     // 1 pending REGISTER_CONTENT (still in mempool, never committed)
     fx.dag.saveMempoolTx({
       tx_id: "p".repeat(64),
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: "2026-04-30T01:00:00.000Z",
-      data: { author_tip_id: tipId, ctid: "tip://c/OH-bbbbbbbbbbbbbb-2222" },
+      data: { signer_tip_id: tipId, ctid: "tip://c/OH-bbbbbbbbbbbbbb-2222" },
     });
     // 1 rejected REGISTER_IDENTITY (full body preserved for replay)
     fx.dag.saveTxRejection({
@@ -245,7 +245,7 @@ describe("getActivity — defensive paths", () => {
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: "2026-04-01T00:00:00.000Z",
       data: { ctid: "tip://c/OH-cccccccccccccc-3333", origin_code: "OH",
-        content_hash: shake256("c2"), author_tip_id: tipId, signature: "00" },
+        content_hash: shake256("c2"), signer_tip_id: tipId, signature: "00" },
     });
     fx.dag.saveMempoolTx({
       tx_id: "q".repeat(64),

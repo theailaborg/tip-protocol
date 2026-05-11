@@ -75,7 +75,11 @@ function projectActivityItem(tx, tipId, status, extra = {}) {
   // ignore it but the field name lets a feed renderer template differently.
   let role = "other";
   if (d.tip_id === tipId) role = "subject";
-  else if (d.author_tip_id === tipId) role = "author";
+  // signer_tip_id is the CNA-2.2 canonical field on REGISTER_CONTENT;
+  // author_tip_id remains the field name on UPDATE_ORIGIN /
+  // CONTENT_RETRACTED / ADJUDICATION_RESULT. Both map to the "author"
+  // role for activity-feed display purposes.
+  else if (d.signer_tip_id === tipId || d.author_tip_id === tipId) role = "author";
   else if (d.verifier_tip_id === tipId) role = "verifier";
   else if (d.disputer_tip_id === tipId) role = "disputer";
   else if (d.juror_tip_id === tipId) role = "juror";
