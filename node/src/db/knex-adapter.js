@@ -261,6 +261,40 @@ class KnexAdapter {
       _id(t, "tx_id").notNullable();
     });
 
+    // Domain bindings (org-only, canonical, in state_merkle_root).
+    // expires_at + consecutive_failures are v2 renewal prep slots — set at
+    // BIND commit to (verified_at + DOMAIN_HEALTHY_EXPIRY_MS, 0) and
+    // untouched until the adaptive-expiry RENEW_DOMAIN scheduler ships.
+    await ensure("domain_bindings", t => {
+      t.string("domain", 253).primary();
+      _id(t, "tip_id").notNullable();
+      t.string("binding_state", 32).notNullable();
+      t.string("method", 16).notNullable();
+      t.string("claimed_at", 64).notNullable();
+      t.string("verified_at", 64).notNullable();
+      t.string("expires_at", 64).notNullable();
+      t.integer("consecutive_failures").notNullable().defaultTo(0);
+      _id(t, "node_id").notNullable();
+      t.text("claim_signature").notNullable();
+      t.text("binding_signature").notNullable();
+      _id(t, "tx_id").notNullable();
+      t.index("tip_id", "idx_dom_bind_tip_id");
+      t.index("binding_state", "idx_dom_bind_state");
+      t.index("expires_at", "idx_dom_bind_expires");
+    });
+
+    // Pending domain claims (NOT canonical; per-node storage between
+    // POST /register and POST /verify).
+    await ensure("pending_domain_claims", t => {
+      t.string("domain", 253).primary();
+      _id(t, "tip_id").notNullable();
+      t.string("method", 16).notNullable();
+      t.string("claimed_at", 64).notNullable();
+      t.text("signature").notNullable();
+      t.string("received_at", 64).notNullable();
+      t.index("tip_id", "idx_pending_dom_tip_id");
+    });
+
     await ensure("verification_providers", t => {
       _pk(t, "vp_id");
       t.string("name", 256).notNullable();
@@ -478,6 +512,18 @@ class KnexAdapter {
       this.mirror._disputeDetails.set(row.evidence_hash, { ...row });
     }
 
+    // Domain bindings (canonical)
+    const bindingRows = await this.knex("domain_bindings").select("*");
+    for (const row of bindingRows) {
+      this.mirror._domainBindings.set(row.domain, { ...row });
+    }
+
+    // Pending domain claims (per-node local)
+    const pendingRows = await this.knex("pending_domain_claims").select("*");
+    for (const row of pendingRows) {
+      this.mirror._domainPending.set(row.domain, { ...row });
+    }
+
     // Consensus meta
     const metaRows = await this.knex("consensus_meta").select("*");
     if (!this.mirror._consensusMeta) this.mirror._consensusMeta = new Map();
@@ -620,9 +666,9 @@ class KnexAdapter {
 
   saveContent(rec) {
     this.mirror.saveContent(rec);
-    const urls    = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
+    const urls = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
     const authors = Array.isArray(rec.authors) ? rec.authors : [];
-    const extras  = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
+    const extras = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
     const row = {
       tip_ctid: rec.ctid,
       origin_code: rec.origin_code,
@@ -721,6 +767,54 @@ class KnexAdapter {
 
   isRevoked(id) { return this.mirror.isRevoked(id); }
   getRevocations(since) { return this.mirror.getRevocations(since); }
+
+  // ── Domain bindings (canonical) + pending claims (local-only) ─────────────
+
+  saveDomainBinding(rec) {
+    this.mirror.saveDomainBinding(rec);
+    const row = {
+      domain: rec.domain,
+      tip_id: rec.tip_id,
+      binding_state: rec.binding_state,
+      method: rec.method,
+      claimed_at: rec.claimed_at,
+      verified_at: rec.verified_at,
+      expires_at: rec.expires_at,
+      consecutive_failures: typeof rec.consecutive_failures === "number" ? rec.consecutive_failures : 0,
+      node_id: rec.node_id,
+      claim_signature: rec.claim_signature,
+      binding_signature: rec.binding_signature,
+      tx_id: rec.tx_id,
+    };
+    this._ff(() => this._dbInsert("domain_bindings", "domain", row, "merge"));
+  }
+
+  getDomainBinding(domain) { return this.mirror.getDomainBinding(domain); }
+  getDomainBindingsByTipId(tipId) { return this.mirror.getDomainBindingsByTipId(tipId); }
+  getAllDomainBindings() { return this.mirror.getAllDomainBindings(); }
+
+  savePendingDomainClaim(rec) {
+    this.mirror.savePendingDomainClaim(rec);
+    const row = {
+      domain: rec.domain,
+      tip_id: rec.tip_id,
+      method: rec.method,
+      claimed_at: rec.claimed_at,
+      signature: rec.signature,
+      received_at: rec.received_at,
+    };
+    this._ff(() => this._dbInsert("pending_domain_claims", "domain", row, "merge"));
+  }
+
+  getPendingDomainClaim(domain) { return this.mirror.getPendingDomainClaim(domain); }
+
+  deletePendingDomainClaim(domain) {
+    const removed = this.mirror.deletePendingDomainClaim(domain);
+    if (removed) {
+      this._ff(() => this.knex("pending_domain_claims").where("domain", domain).del());
+    }
+    return removed;
+  }
 
   // ── Verification Providers ─────────────────────────────────────────────────
 

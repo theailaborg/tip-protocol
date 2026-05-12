@@ -123,6 +123,65 @@ const TIP_ID_TYPES = Object.freeze({
 });
 const TIP_ID_TYPE_VALUES = Object.freeze(Object.values(TIP_ID_TYPES));
 
+// ─── Domain binding ──────────────────────────────────────────────────────────
+// Org-only claim of "TIP-ID X operates publishing surface at <domain>".
+// Two-step flow: user-signed claim → node-verified DNS/HTTP proof → DAG tx
+// (BIND_DOMAIN) signed by the verifying node. Spec: my-notes/DOMAIN_VERIFICATION.md.
+const DOMAIN_BINDING_STATUS = Object.freeze({
+  PENDING:             "pending_verification",  // claim recorded, awaiting node verify
+  VERIFIED:            "verified",                // node observed proof and committed to DAG
+  VERIFICATION_FAILED: "verification_failed",     // last re-check failed (record kept for audit)
+  UNVERIFIED:          "unverified",              // no claim or binding exists
+});
+const DOMAIN_BINDING_STATUS_VALUES = Object.freeze(Object.values(DOMAIN_BINDING_STATUS));
+
+const DOMAIN_VERIFICATION_METHODS = Object.freeze({
+  HTTP: "http",   // GET https://<domain>/.well-known/tip-protocol.json
+  DNS:  "dns",    // TXT _tip-protocol.<domain> contains "tip-id=<tip_id>"
+  AUTO: "auto",   // try HTTP, fall back to DNS
+});
+const DOMAIN_VERIFICATION_METHOD_VALUES = Object.freeze(Object.values(DOMAIN_VERIFICATION_METHODS));
+
+// DNS host prefix for the TXT record (case-insensitive). Substring match for
+// `tip-id=<tip_id>` is performed against every TXT value at this hostname,
+// so additional keys can coexist (`v=tip1; tip-id=...; verified=true`).
+const DOMAIN_DNS_TXT_PREFIX = "_tip-protocol";
+
+// HTTP well-known path served by the publisher; must return JSON with at
+// least { domain, tip_id, public_key } — the node matches both fields
+// against the claim and the DAG identity record.
+const DOMAIN_WELL_KNOWN_PATH = "/.well-known/tip-protocol.json";
+
+// How long a pending domain claim (POST /v1/domain/register) is honoured
+// before /verify rejects it as stale. 7 days gives an operator a generous
+// window to publish the DNS / well-known record without forcing a fresh
+// canonical signing round.
+const DOMAIN_PENDING_CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Canonical reasons an UNBIND_DOMAIN tx may carry. Locked enum — rejected
+// at schema-build time so the signed payload always carries a known value.
+const DOMAIN_UNBIND_REASONS = Object.freeze({
+  OWNER_REVOKED:     "owner_revoked",      // claimant TIP-ID emitted a voluntary revoke
+  TIP_ID_REVOKED:    "tip_id_revoked",     // claimant TIP-ID was revoked (cascade)
+  VERIFICATION_LOST: "verification_lost",  // re-verify failed past the grace window
+  ADMIN_ACTION:      "admin_action",       // governance-driven removal
+});
+const DOMAIN_UNBIND_REASON_VALUES = Object.freeze(Object.values(DOMAIN_UNBIND_REASONS));
+
+// ─── Domain binding renewal (v2 prep slots) ──────────────────────────────────
+// Canonical state already carries `expires_at` and `consecutive_failures`
+// per binding so the adaptive-expiry renewal feature can land as a pure
+// code-add (new RENEW_DOMAIN tx + scheduler) without a second schema
+// migration. Until v2 ships, every binding is set to {expires_at =
+// verified_at + DOMAIN_HEALTHY_EXPIRY_MS, consecutive_failures = 0} at
+// BIND_DOMAIN commit time. Read paths surface `expires_at` so consumers
+// can already apply their own freshness policy.
+const DOMAIN_HEALTHY_EXPIRY_MS    = 30 * 24 * 60 * 60 * 1000;  // 30 days — refreshed on successful renewal
+const DOMAIN_RETRY_EXPIRY_MS      = 1 * 24 * 60 * 60 * 1000;   // 1 day — refreshed on transient failure
+const DOMAIN_MAX_FAILURES         = 5;                          // consecutive failures → binding flips to unverified
+const DOMAIN_RENEWAL_WINDOW_MS    = 60 * 60 * 1000;             // 1 hour — scheduler look-ahead
+const DOMAIN_SCHEDULER_INTERVAL_MS = 10 * 60 * 1000;            // 10 min — scheduler tick cadence
+
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
@@ -133,6 +192,9 @@ const TX_TYPES = Object.freeze({
   REGISTER_IDENTITY: "REGISTER_IDENTITY",
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
   LINK_PLATFORM: "LINK_PLATFORM",
+  // Domain binding (org-only)
+  BIND_DOMAIN: "BIND_DOMAIN",
+  UNBIND_DOMAIN: "UNBIND_DOMAIN",
   // Content
   REGISTER_CONTENT: "REGISTER_CONTENT",
   UPDATE_ORIGIN: "UPDATE_ORIGIN",
@@ -241,6 +303,7 @@ const TX_REJECTION_REASON = Object.freeze({
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
   IDENTITY_ALREADY_REGISTERED:     "identity_already_registered",
   CONTENT_ALREADY_REGISTERED:      "content_already_registered",
+  DOMAIN_ALREADY_CLAIMED:          "domain_already_claimed",
   VERIFIER_NOT_AUTHORIZED:         "verifier_not_authorized",
   CLEAN_RECORD_VIOLATION:          "clean_record_violation",
   REVALIDATION_FAILED:             "revalidation_failed",
@@ -339,6 +402,20 @@ module.exports = {
   ATTRIBUTION_MODE_VALUES,
   TIP_ID_TYPES,
   TIP_ID_TYPE_VALUES,
+  DOMAIN_BINDING_STATUS,
+  DOMAIN_BINDING_STATUS_VALUES,
+  DOMAIN_VERIFICATION_METHODS,
+  DOMAIN_VERIFICATION_METHOD_VALUES,
+  DOMAIN_DNS_TXT_PREFIX,
+  DOMAIN_WELL_KNOWN_PATH,
+  DOMAIN_PENDING_CLAIM_TTL_MS,
+  DOMAIN_UNBIND_REASONS,
+  DOMAIN_UNBIND_REASON_VALUES,
+  DOMAIN_HEALTHY_EXPIRY_MS,
+  DOMAIN_RETRY_EXPIRY_MS,
+  DOMAIN_MAX_FAILURES,
+  DOMAIN_RENEWAL_WINDOW_MS,
+  DOMAIN_SCHEDULER_INTERVAL_MS,
   TX_TYPES,
   TX_TYPE_SET,
   DISPUTE_SHORT_ID_LEN,

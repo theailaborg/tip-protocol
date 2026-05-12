@@ -73,6 +73,13 @@ x-node-common: &node-common
     # Per-node host log dir. Maps to /app/logs in the container so
     # multi-node runs (./logs/node-1, ./logs/node-2) don't collide.
     - ./logs/node-1:/app/logs
+  # Make `host.docker.internal` resolvable inside the container on every
+  # Docker setup (Docker Desktop on macOS/Windows already provides it; Linux
+  # daemons do not without this hint). Used by TIP_DEV_LOCALHOST_FETCH_HOST
+  # in the domain-binding verifier when the user binds a loopback domain.
+  # Harmless in production (the dev-only flag is the actual gate).
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   environment:
     NODE_ENV:                   ${NODE_ENV:-production}
     PORT:                       4000
@@ -95,6 +102,8 @@ x-node-common: &node-common
     TIP_DB_PATH:                /app/data/tip.db
     TIP_DATA_DIR:               /app/data
     TIP_DEV_BYPASS_VOTE_WINDOWS: ${TIP_DEV_BYPASS_VOTE_WINDOWS:-0}
+    TIP_DEV_ALLOW_LOCALHOST_DOMAINS: ${TIP_DEV_ALLOW_LOCALHOST_DOMAINS:-0}
+    TIP_DEV_LOCALHOST_FETCH_HOST: ${TIP_DEV_LOCALHOST_FETCH_HOST:-}
     # ── DB adapter passthrough — values come from .env. DB_HOST should
     #    match the service name of whichever DB profile is active.
     DB_DRIVER:                  ${DB_DRIVER:-sqlite}

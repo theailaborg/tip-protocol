@@ -44,7 +44,7 @@ const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
 // commitment-hash verification are still enforced.
 function _devBypassVoteWindows() {
   return process.env.NODE_ENV !== "production"
-      && process.env.TIP_DEV_BYPASS_VOTE_WINDOWS === "1";
+    && process.env.TIP_DEV_BYPASS_VOTE_WINDOWS === "1";
 }
 
 // Eligible (declared → claimed) transitions for origin_mismatch disputes.
@@ -295,6 +295,27 @@ function canRevoke(dag, { tx_type, tip_id, issuing_vp_id }) {
   return ok();
 }
 
+// ─── Domain binding ─────────────────────────────────────────────────────────
+//
+// Same dual-call-site pattern as canRegisterContent / canRegisterIdentity:
+//   - domain-service.register (API time) — fast user-visible 409
+//   - commit-handler._statefulCheck (consensus time) — closes the
+//     gossip-bypass gap so a tx submitted directly to a peer can't
+//     silently overwrite an existing binding
+//
+// Returns "already bound" only when the existing row is for a DIFFERENT
+// tip_id AND it's currently verified. Re-binding the SAME tip_id is
+// allowed (re-verify path, post-revoke re-claim); a "revoked" row also
+// doesn't block a new claimant.
+function canBindDomain(dag, { tip_id, domain }) {
+  if (typeof dag.getDomainBinding !== "function") return ok();
+  const existing = dag.getDomainBinding(domain);
+  if (!existing) return ok();
+  if (existing.tip_id === tip_id) return ok();
+  if (existing.binding_state !== "verified") return ok();
+  return fail(409, `Domain "${domain}" is already bound to a different TIP-ID`);
+}
+
 // ─── Committee rotation (§4 + #34 — chain-of-trust) ─────────────────────────
 //
 // Validates a COMMITTEE_ROTATION tx for both call sites:
@@ -363,7 +384,7 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
   }
 
   if (!Array.isArray(signer_node_ids) || !Array.isArray(signatures)
-      || signer_node_ids.length === 0 || signer_node_ids.length !== signatures.length) {
+    || signer_node_ids.length === 0 || signer_node_ids.length !== signatures.length) {
     return fail(400, "signer_node_ids and signatures must be parallel non-empty arrays");
   }
 
@@ -416,5 +437,6 @@ module.exports = {
   canRevealVote,
   canFileAppeal,
   canRevoke,
+  canBindDomain,
   canCommitteeRotation,
 };

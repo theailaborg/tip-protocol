@@ -29,6 +29,7 @@ const { createDisputeService } = require("./services/dispute-service");
 const { createDisputeDetailsService } = require("./services/dispute-details-service");
 const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
+const { createDomainService } = require("./services/domain-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -41,6 +42,7 @@ const disputeDetailsRoutes = require("./routes/dispute-details");
 const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
+const domainRoutes = require("./routes/domain");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -53,6 +55,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const disputeService = createDisputeService({ ...ctx, disputeDetailsService });
   const revocationService = createRevocationService(ctx);
   const governanceService = createGovernanceService(ctx);
+  const domainService = createDomainService(ctx);
 
   // ── Build Express app ──────────────────────────────────────────────────────
   const app = express();
@@ -137,6 +140,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));
   app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
+  app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
@@ -154,6 +158,11 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
 
   // ── Global error handler (must be last) ────────────────────────────────────
   app.use(errorHandler);
+
+  // Expose select services on the app for out-of-band consumers (e.g. the
+  // domain re-verify scheduler in index.js). The app stays Express-shaped;
+  // these are tucked under `app.locals` so they don't collide with routes.
+  app.locals.domainService = domainService;
 
   return app;
 }

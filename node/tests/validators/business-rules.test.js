@@ -652,3 +652,47 @@ describe("canCommitteeRotation", () => {
     });
   });
 });
+
+// ─── canBindDomain ──────────────────────────────────────────────────────────
+
+describe("canBindDomain", () => {
+  function _makeFakeDag(bindings = {}) {
+    return { getDomainBinding: (d) => bindings[d] || null };
+  }
+
+  test("no existing binding → valid", () => {
+    const r = rules.canBindDomain(_makeFakeDag(), { tip_id: "tip://id/US-org1", domain: "acme.com" });
+    expect(r.valid).toBe(true);
+  });
+
+  test("existing binding for SAME tip_id → valid (re-verify path)", () => {
+    const dag = _makeFakeDag({
+      "acme.com": { tip_id: "tip://id/US-org1", binding_state: "verified" },
+    });
+    const r = rules.canBindDomain(dag, { tip_id: "tip://id/US-org1", domain: "acme.com" });
+    expect(r.valid).toBe(true);
+  });
+
+  test("existing VERIFIED binding for DIFFERENT tip_id → 409", () => {
+    const dag = _makeFakeDag({
+      "acme.com": { tip_id: "tip://id/US-org1", binding_state: "verified" },
+    });
+    const r = rules.canBindDomain(dag, { tip_id: "tip://id/US-org2", domain: "acme.com" });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+    expect(r.error.message).toMatch(/already bound to a different TIP-ID/);
+  });
+
+  test("existing REVOKED binding for different tip_id → valid (claim becomes available)", () => {
+    const dag = _makeFakeDag({
+      "acme.com": { tip_id: "tip://id/US-org1", binding_state: "revoked" },
+    });
+    const r = rules.canBindDomain(dag, { tip_id: "tip://id/US-org2", domain: "acme.com" });
+    expect(r.valid).toBe(true);
+  });
+
+  test("dag without getDomainBinding (older fixture) → valid no-op", () => {
+    const r = rules.canBindDomain({}, { tip_id: "tip://id/US-org1", domain: "acme.com" });
+    expect(r.valid).toBe(true);
+  });
+});
