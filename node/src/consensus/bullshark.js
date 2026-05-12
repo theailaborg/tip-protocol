@@ -60,7 +60,7 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -331,9 +331,24 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
       );
       const timer = setTimeout(() => {
         if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound === voteRound) {
-          log.warn(`Round ${voteRound}: deferred anchor timed out — committing with available certs (${_pendingAnchorCommit.missingHashes.size} still missing)`);
-          _pendingAnchorCommit = null;
-          _checkAnchorCommit(voteRound, { force: true });
+          const stillMissing = _pendingAnchorCommit.missingHashes.size;
+          // The missing certs were never produced (node was paused) — AE can't
+          // pull what doesn't exist. Force-committing with a truncated cert set
+          // produces a different tx set than honest peers → byzantine_fork halt.
+          // Trigger a snapshot resync instead so we pull the correct committed
+          // state from a peer rather than writing divergent state locally.
+          if (stillMissing > 0 && typeof onMissingCertsTimeout === "function") {
+            log.warn(
+              `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
+              `missing — triggering snapshot resync instead of force-committing divergent state`
+            );
+            _pendingAnchorCommit = null;
+            onMissingCertsTimeout(voteRound, stillMissing);
+          } else {
+            log.warn(`Round ${voteRound}: deferred anchor timed out — committing with available certs (${stillMissing} still missing)`);
+            _pendingAnchorCommit = null;
+            _checkAnchorCommit(voteRound, { force: true });
+          }
         }
       }, DEFER_MS);
       _pendingAnchorCommit = { voteRound, anchorCert: leaderCert, missingHashes, timer };

@@ -139,6 +139,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    onMissingCertsTimeout: (voteRound, missingCount) => {
+      if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
+        antiEntropyForResync.triggerSnapshotResync(voteRound, missingCount).catch(err => {
+          log.warn(`Bullshark.onMissingCertsTimeout: snapshot resync failed: ${err.message}`);
+        });
+      } else {
+        log.warn(`Bullshark.onMissingCertsTimeout: anti-entropy not ready — falling back to force-commit at round ${voteRound}`);
+      }
+    },
     // BFT-Time — bullshark passes the anchor cert's timestamp (median of
     // acks.signed_at, deterministic across nodes) so commit-handler can
     // use it as the canonical wall-clock for derived state, audit logs,
@@ -193,7 +202,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ack time, but AE is constructed AFTER narwhal (it takes narwhal as a
   // dep). Closure-over-let resolves the cycle: the function is called on
   // each batch arrival, by which point the let has been assigned.
+  // Same pattern used for bullshark → AE: bullshark's onMissingCertsTimeout
+  // calls antiEntropyForResync.triggerSnapshotResync() after antiEntropy is
+  // assigned (deferred anchor timer fires seconds later, never at create-time).
   let antiEntropyForFiltering = null;
+  let antiEntropyForResync = null;
 
   const narwhal = createNarwhal({
     dag, mempool, network, config,
@@ -314,6 +327,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     }),
   });
   antiEntropyForFiltering = antiEntropy;
+  antiEntropyForResync = antiEntropy;
 
   // ── Wire network events ────────────────────────────────────────────────
 
