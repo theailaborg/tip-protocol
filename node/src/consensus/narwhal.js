@@ -795,6 +795,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — ${dCount}/${threshold} divergent peers at last AE poll`);
         return;
       }
+      log.debug(`Round ${_currentRound}: ack-filter: ${batch.author_node_id.slice(-8)} is divergent but ${dCount}/${threshold} below threshold — ack proceeds`);
     }
 
     // Send ack — signed_at carries this node's wall-clock at sign time and
@@ -1364,6 +1365,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _syncEnteredAt = 0;
     _catchingUpEnteredAt = 0;
     _catchUpTarget = 0;
+    // Reset the halt-detector timestamp so the node gets a fresh grace window
+    // after sync recovery. Without this, _lastRoundAdvanceAt reflects the
+    // pre-halt epoch (potentially 30+ min stale) and computeHaltStatus fires
+    // sub_quorum immediately on the first _isConsensusHalted() call after exit.
+    _lastRoundAdvanceAt = Date.now();
     _stopWatchdog();
     if (_running) _scheduleNextRound(0);
   }
