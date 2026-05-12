@@ -23,6 +23,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
+const bindDomainSchema = require("../schemas/bind-domain");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -50,6 +51,7 @@ function _mapBusinessRuleReason(error) {
   if (!error) return TX_REJECTION_REASON.REVALIDATION_FAILED;
   if (error.includes("Identity already registered")) return TX_REJECTION_REASON.IDENTITY_ALREADY_REGISTERED;
   if (error.includes("Content already registered")) return TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED;
+  if (error.includes("already bound to a different TIP-ID")) return TX_REJECTION_REASON.DOMAIN_ALREADY_CLAIMED;
   return TX_REJECTION_REASON.REVALIDATION_FAILED;
 }
 
@@ -393,6 +395,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
+      case TX_TYPES.BIND_DOMAIN: {
+        // Closes the gossip-bypass gap: a peer-submitted tx that didn't go
+        // through the API service's 409 still hits the same predicate here.
+        const r = rules.canBindDomain(dag, { tip_id: d.tip_id, domain: d.domain });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
       case TX_TYPES.CONTENT_DISPUTED: {
         // Cascade-issued disputes (auto: true, e.g. REVOKE_VP cascade) bypass
         // the disputer-score / state predicates because the issuer is the node
@@ -539,6 +548,48 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         // Author retraction penalty is applied via the unified
         // `_applyScoreEffect(tx)` pass below.
+        break;
+
+      // ── Domain binding (org-only) ────────────────────────────────────
+      // BIND_DOMAIN is node-attested (binding_signature in tx.data).
+      // _verifyTxSignature has already validated both the node sig and
+      // the embedded user claim sig. Apply the canonical row to
+      // domain_bindings; commit-handler is the sole writer so the table
+      // stays deterministic and participates in state_merkle_root. The
+      // off-chain `evidence` blob is NOT persisted on the binding row —
+      // it lives on tx.data for audit replay only.
+      case TX_TYPES.BIND_DOMAIN:
+        if (d.domain && d.tip_id) {
+          dag.saveDomainBinding({
+            domain:            d.domain,
+            tip_id:            d.tip_id,
+            binding_state:     d.binding_state,
+            method:            d.method,
+            claimed_at:        d.claimed_at,
+            verified_at:       d.verified_at,
+            node_id:           d.node_id,
+            claim_signature:   d.claim_signature,
+            binding_signature: d.binding_signature,
+            tx_id:             tx.tx_id,
+          });
+          // Drop the pending claim on whichever node was holding it.
+          // Safe no-op on other nodes (delete-by-key, no-op if absent).
+          if (typeof dag.deletePendingDomainClaim === "function") {
+            dag.deletePendingDomainClaim(d.domain);
+          }
+        }
+        break;
+
+      // UNBIND_DOMAIN reserved (revocation cascade or explicit owner
+      // revoke). No-op until the path is wired in v2 — having the case
+      // here keeps the switch exhaustive.
+      case TX_TYPES.UNBIND_DOMAIN:
+        if (d.domain) {
+          const existing = dag.getDomainBinding(d.domain);
+          if (existing) {
+            dag.saveDomainBinding({ ...existing, binding_state: "revoked" });
+          }
+        }
         break;
 
       // ── Verification ──────────────────────────────────────────────────
@@ -773,6 +824,18 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // owns the canonical payload, builder, and verifier — same
         // module identity-service.register uses at API time.
         return registerIdentitySchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.BIND_DOMAIN) {
+        // Dual-signature: schemas/bind-domain.verifyTx checks both the
+        // verifying node's ML-DSA-65 attestation AND the embedded user
+        // claim signature. Replicating nodes do NOT re-perform DNS / HTTP
+        // (would diverge across nodes / time).
+        return bindDomainSchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.UNBIND_DOMAIN) {
+        return bindDomainSchema.verifyUnbindTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.CONTENT_VERIFIED) {

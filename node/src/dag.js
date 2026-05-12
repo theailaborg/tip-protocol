@@ -79,10 +79,10 @@ function _canonContent(r) {
     perceptual_hash: r.perceptual_hash || null,
     author_tip_id: r.author_tip_id,
     signer_tip_id: r.signer_tip_id,
-    authors:          Array.isArray(r.authors) ? r.authors : [],
+    authors: Array.isArray(r.authors) ? r.authors : [],
     attribution_mode: r.attribution_mode || "self",
-    extras:           (r.extras && typeof r.extras === "object" && !Array.isArray(r.extras)) ? r.extras : {},
-    cna_version:      r.cna_version,
+    extras: (r.extras && typeof r.extras === "object" && !Array.isArray(r.extras)) ? r.extras : {},
+    cna_version: r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
     registered_at: r.registered_at,
@@ -129,6 +129,25 @@ function _canonRevocation(r) {
     tip_id: r.tip_id,
     tx_type: r.tx_type,
     timestamp: r.timestamp,
+    tx_id: r.tx_id,
+  };
+}
+// Domain bindings: every column participates in state_merkle_root. The
+// committed binding_state (verified | revoked) is the single source of
+// truth across the federation; periodic re-verification will be handled
+// by a consensus-emitted trigger so the public surface stays node-agnostic.
+// See schemas/bind-domain.js for the trust-model rationale.
+function _canonDomainBinding(r) {
+  return {
+    domain: r.domain,
+    tip_id: r.tip_id,
+    binding_state: r.binding_state,
+    method: r.method,
+    claimed_at: r.claimed_at,
+    verified_at: r.verified_at,
+    node_id: r.node_id,
+    claim_signature: r.claim_signature,
+    binding_signature: r.binding_signature,
     tx_id: r.tx_id,
   };
 }
@@ -218,6 +237,8 @@ class MemoryStore {
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
+    this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
+    this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -402,6 +423,35 @@ class MemoryStore {
   getRevocations(since) {
     const all = [...this._revocations.values()];
     return since ? all.filter(r => new Date(r.timestamp) > new Date(since)) : all;
+  }
+
+  // ── Domain bindings (org-only; canonical, in state_merkle_root) ──────────
+  saveDomainBinding(rec) {
+    this._domainBindings.set(rec.domain, { ...rec });
+  }
+  getDomainBinding(domain) {
+    return this._domainBindings.get(domain) || null;
+  }
+  getDomainBindingsByTipId(tipId) {
+    return [...this._domainBindings.values()].filter(b => b.tip_id === tipId);
+  }
+  getAllDomainBindings() {
+    return [...this._domainBindings.values()];
+  }
+
+  // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
+  // Stores the user-signed claim between POST /register and POST /verify.
+  // Only the receiving node has the claim — verification re-establishes
+  // the chain of trust via the user's signature on the canonical payload,
+  // so no cross-node replication is required.
+  savePendingDomainClaim(rec) {
+    this._domainPending.set(rec.domain, { ...rec });
+  }
+  getPendingDomainClaim(domain) {
+    return this._domainPending.get(domain) || null;
+  }
+  deletePendingDomainClaim(domain) {
+    return this._domainPending.delete(domain);
   }
 
   // ── Verification Providers ────────────────────────────────────────────────
@@ -680,6 +730,10 @@ class MemoryStore {
     for (const r of [...this._revocations.values()]
       .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
       yield { table: "revocations", row: _canonRevocation(r) };
+    }
+    for (const r of [...this._domainBindings.values()]
+      .sort((a, b) => a.domain.localeCompare(b.domain))) {
+      yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
     for (const r of [...this._vps.values()]
       .sort((a, b) => a.vp_id.localeCompare(b.vp_id))) {
@@ -989,6 +1043,46 @@ class SQLiteStore {
         timestamp   TEXT NOT NULL,
         tx_id       TEXT NOT NULL
       );
+
+      -- ── Domain bindings (org-only; canonical, in state_merkle_root) ──
+      -- One row per verified domain. Written by commit-handler on every
+      -- committed BIND_DOMAIN tx. binding_signature is the node's ML-DSA
+      -- attestation over {binding_state, claim_signature, claimed_at,
+      -- domain, method, node_id, tip_id, verified_at} — the canonical
+      -- payload that schemas/bind-domain.verifyTx reconstructs.
+      --
+      -- Re-verification (24h cadence per spec) lands as its own
+      -- consensus-emitted tx in a follow-up so the public GET surface
+      -- stays node-agnostic — no per-node last_check_* columns here.
+      CREATE TABLE IF NOT EXISTS domain_bindings (
+        domain             TEXT PRIMARY KEY,
+        tip_id             TEXT NOT NULL,
+        binding_state      TEXT NOT NULL,
+        method             TEXT NOT NULL,
+        claimed_at         TEXT NOT NULL,
+        verified_at        TEXT NOT NULL,
+        node_id            TEXT NOT NULL,
+        claim_signature    TEXT NOT NULL,
+        binding_signature  TEXT NOT NULL,
+        tx_id              TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id ON domain_bindings(tip_id);
+      CREATE INDEX IF NOT EXISTS idx_dom_bind_state  ON domain_bindings(binding_state);
+
+      -- ── Pending domain claims (local-only; NOT in state_merkle_root) ─
+      -- Stores the user-signed claim between POST /v1/domain/register
+      -- and POST /v1/domain/verify. Per-node — the claim arrives at one
+      -- node and verification is initiated against that same node. Once
+      -- /verify succeeds and a BIND_DOMAIN tx commits, the row is removed.
+      CREATE TABLE IF NOT EXISTS pending_domain_claims (
+        domain      TEXT PRIMARY KEY,
+        tip_id      TEXT NOT NULL,
+        method      TEXT NOT NULL,
+        claimed_at  TEXT NOT NULL,
+        signature   TEXT NOT NULL,
+        received_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pending_dom_tip_id ON pending_domain_claims(tip_id);
 
       -- ── Verification Providers ────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS verification_providers (
@@ -1486,6 +1580,25 @@ class SQLiteStore {
       revocSince: this.db.prepare("SELECT * FROM revocations WHERE timestamp>? ORDER BY timestamp DESC"),
       revokeIdent: this.db.prepare("UPDATE identities SET status='revoked' WHERE tip_id=?"),
 
+      // Domain bindings (canonical) + pending claims (local-only)
+      saveDomainBinding: this.db.prepare(
+        `INSERT OR REPLACE INTO domain_bindings
+           (domain,tip_id,binding_state,method,claimed_at,verified_at,node_id,
+            claim_signature,binding_signature,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      ),
+      getDomainBinding: this.db.prepare("SELECT * FROM domain_bindings WHERE domain=?"),
+      getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
+      getAllDomainBindings: this.db.prepare("SELECT * FROM domain_bindings"),
+
+      savePendingDomainClaim: this.db.prepare(
+        `INSERT OR REPLACE INTO pending_domain_claims
+           (domain,tip_id,method,claimed_at,signature,received_at)
+         VALUES (?,?,?,?,?,?)`
+      ),
+      getPendingDomainClaim: this.db.prepare("SELECT * FROM pending_domain_claims WHERE domain=?"),
+      deletePendingDomainClaim: this.db.prepare("DELETE FROM pending_domain_claims WHERE domain=?"),
+
       saveVP: this.db.prepare(
         `INSERT OR REPLACE INTO verification_providers
            (vp_id,name,jurisdiction,jurisdiction_tier,public_key,status,registered_at)
@@ -1743,9 +1856,9 @@ class SQLiteStore {
     // CNA-2.2 canonical fields stored on the row: authors[],
     // attribution_mode, extras, cna_version, registered_urls. JSON-
     // encode the array/object ones; the rest are scalars.
-    const urls    = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
+    const urls = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
     const authors = Array.isArray(rec.authors) ? rec.authors : [];
-    const extras  = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
+    const extras = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
       rec.content_hash, rec.perceptual_hash || null,
@@ -1770,8 +1883,8 @@ class SQLiteStore {
     return {
       ...row,
       registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
-      authors:         (() => { const v = decode(row.authors, []);         return Array.isArray(v) ? v : []; })(),
-      extras:          (() => { const v = decode(row.extras, {});          return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
+      authors: (() => { const v = decode(row.authors, []); return Array.isArray(v) ? v : []; })(),
+      extras: (() => { const v = decode(row.extras, {}); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
     };
   }
   getContent(ctid) { return this._hydrateContent(this._stmts.getContent.get(ctid)); }
@@ -1858,6 +1971,29 @@ class SQLiteStore {
     return since
       ? this._stmts.revocSince.all(since)
       : this._stmts.revocAll.all();
+  }
+
+  // ── Domain bindings (canonical) ──────────────────────────────────────────
+  saveDomainBinding(rec) {
+    this._stmts.saveDomainBinding.run(
+      rec.domain, rec.tip_id, rec.binding_state, rec.method,
+      rec.claimed_at, rec.verified_at, rec.node_id,
+      rec.claim_signature, rec.binding_signature, rec.tx_id,
+    );
+  }
+  getDomainBinding(domain) { return this._stmts.getDomainBinding.get(domain) || null; }
+  getDomainBindingsByTipId(tipId) { return this._stmts.getDomainBindingsByTipId.all(tipId); }
+  getAllDomainBindings() { return this._stmts.getAllDomainBindings.all(); }
+
+  // ── Pending domain claims (local-only) ───────────────────────────────────
+  savePendingDomainClaim(rec) {
+    this._stmts.savePendingDomainClaim.run(
+      rec.domain, rec.tip_id, rec.method, rec.claimed_at, rec.signature, rec.received_at,
+    );
+  }
+  getPendingDomainClaim(domain) { return this._stmts.getPendingDomainClaim.get(domain) || null; }
+  deletePendingDomainClaim(domain) {
+    return this._stmts.deletePendingDomainClaim.run(domain).changes > 0;
   }
 
   // ── Verification Providers ────────────────────────────────────────────────
@@ -2121,6 +2257,9 @@ class SQLiteStore {
     }
     for (const r of db.prepare("SELECT * FROM revocations ORDER BY tip_id").iterate()) {
       yield { table: "revocations", row: _canonRevocation(r) };
+    }
+    for (const r of db.prepare("SELECT * FROM domain_bindings ORDER BY domain").iterate()) {
+      yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
     for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
       yield { table: "verification_providers", row: _canonVP(r) };
@@ -2401,6 +2540,15 @@ function _buildDagHandle(store, config) {
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
     isRevoked: (id) => store.isRevoked(id),
     getRevocations: (since) => store.getRevocations(since),
+
+    // ── Domain bindings (canonical) + pending claims (local-only) ────────
+    saveDomainBinding: (rec) => store.saveDomainBinding(rec),
+    getDomainBinding: (domain) => store.getDomainBinding(domain),
+    getDomainBindingsByTipId: (tipId) => store.getDomainBindingsByTipId(tipId),
+    getAllDomainBindings: () => store.getAllDomainBindings(),
+    savePendingDomainClaim: (rec) => store.savePendingDomainClaim(rec),
+    getPendingDomainClaim: (domain) => store.getPendingDomainClaim(domain),
+    deletePendingDomainClaim: (domain) => store.deletePendingDomainClaim(domain),
 
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),

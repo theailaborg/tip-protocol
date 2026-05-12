@@ -22,7 +22,9 @@ const { mldsaVerify, canonicalTx, verifyTxId } = require("../../../shared/crypto
 const {
   TX_TYPES, TX_TYPE_SET, ORIGIN,
   CNA_VERSIONS, ATTRIBUTION_MODE_VALUES, TIP_ID_TYPE_VALUES,
+  DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
+const { isValidDomain } = require("../schemas/register-domain");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -57,6 +59,28 @@ const SCHEMA = {
   [TX_TYPES.CONTENT_VERIFIED]: {
     required: ["ctid", "verifier_tip_id", "weighted_delta"],
     types: { ctid: "string", verifier_tip_id: "string" },
+  },
+  [TX_TYPES.BIND_DOMAIN]: {
+    // Wire contract — every field is on tx.data so commit-handler can
+    // replay bindDomainSchema.buildSigningPayload(d) deterministically.
+    // Deeper checks (domain format, enum values, sig presence/length)
+    // live in validateBusinessRules below + schemas/bind-domain.verifyTx.
+    required: [
+      "binding_state", "claim_signature", "claimed_at", "domain", "method",
+      "node_id", "tip_id", "verified_at", "binding_signature",
+    ],
+    types: {
+      binding_state: "string", claim_signature: "string", claimed_at: "string",
+      domain: "string", method: "string", node_id: "string", tip_id: "string",
+      verified_at: "string", binding_signature: "string",
+    },
+  },
+  [TX_TYPES.UNBIND_DOMAIN]: {
+    required: ["domain", "node_id", "reason", "revoked_at", "unbind_signature"],
+    types: {
+      domain: "string", node_id: "string", reason: "string",
+      revoked_at: "string", unbind_signature: "string",
+    },
   },
   [TX_TYPES.CONTENT_DISPUTED]: {
     required: ["ctid"],
@@ -272,6 +296,62 @@ function validateBusinessRules(tx) {
       // Score must be in valid range
       if (d.score_after !== undefined && (d.score_after < 0 || d.score_after > 1000)) {
         errors.push(`score_after must be 0–1000, got ${d.score_after}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.BIND_DOMAIN: {
+      if (d.tip_id && !d.tip_id.startsWith("tip://id/")) {
+        errors.push(`tip_id must be a tip://id/... string`);
+      }
+      if (d.node_id && !d.node_id.startsWith("tip://node/")) {
+        errors.push(`node_id must be a tip://node/... string`);
+      }
+      // Same regex normalizeDomain uses at API time. Mirrors the registry
+      // pattern (or loopback in dev mode). Without this, a gossiped tx
+      // with a garbage `domain` value reaches signature verification
+      // before failing with an unhelpful diagnostic.
+      if (d.domain && !isValidDomain(d.domain)) {
+        errors.push(`domain must be a valid hostname: "${d.domain}"`);
+      }
+      if (d.method && !DOMAIN_VERIFICATION_METHOD_VALUES.includes(d.method)) {
+        errors.push(`method must be one of: ${DOMAIN_VERIFICATION_METHOD_VALUES.join(", ")}`);
+      }
+      // binding_state on a committed BIND_DOMAIN tx is always "verified".
+      // (Locally-computed states pending_verification / verification_failed
+      // never reach the DAG.)
+      if (d.binding_state && d.binding_state !== "verified") {
+        errors.push(`BIND_DOMAIN binding_state must be "verified"`);
+      }
+      // ISO8601 + logical ordering. The node observes proof at verified_at
+      // AFTER the user signed at claimed_at — reversed order indicates
+      // either a clock skew exploit or a malformed tx.
+      const claimedMs = d.claimed_at ? Date.parse(d.claimed_at) : NaN;
+      const verifiedMs = d.verified_at ? Date.parse(d.verified_at) : NaN;
+      if (d.claimed_at && Number.isNaN(claimedMs)) {
+        errors.push(`claimed_at must be an ISO8601 timestamp`);
+      }
+      if (d.verified_at && Number.isNaN(verifiedMs)) {
+        errors.push(`verified_at must be an ISO8601 timestamp`);
+      }
+      if (!Number.isNaN(claimedMs) && !Number.isNaN(verifiedMs) && verifiedMs < claimedMs) {
+        errors.push(`verified_at must not precede claimed_at`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UNBIND_DOMAIN: {
+      if (d.node_id && !d.node_id.startsWith("tip://node/")) {
+        errors.push(`node_id must be a tip://node/... string`);
+      }
+      if (d.domain && !isValidDomain(d.domain)) {
+        errors.push(`domain must be a valid hostname: "${d.domain}"`);
+      }
+      if (d.reason && !DOMAIN_UNBIND_REASON_VALUES.includes(d.reason)) {
+        errors.push(`reason must be one of: ${DOMAIN_UNBIND_REASON_VALUES.join(", ")}`);
+      }
+      if (d.revoked_at && Number.isNaN(Date.parse(d.revoked_at))) {
+        errors.push(`revoked_at must be an ISO8601 timestamp`);
       }
       break;
     }
