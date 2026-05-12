@@ -17,6 +17,22 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 
+// ── File logging ─────────────────────────────────────────────────────────────
+const LOG_DIR = path.resolve('./logs');
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const _logDate = new Date().toISOString().slice(0, 10);
+const _logFile = path.join(LOG_DIR, `tx-flood-${_logDate}.log`);
+const _logStream = fs.createWriteStream(_logFile, { flags: 'a' });
+_logStream.write(`\n${'='.repeat(72)}\n`);
+_logStream.write(`tx-flood session started: ${new Date().toISOString()}\n`);
+_logStream.write(`${'='.repeat(72)}\n`);
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+console.log = (...args) => { const line = args.join(' '); _origLog(line); _logStream.write(line + '\n'); };
+console.error = (...args) => { const line = args.join(' '); _origErr(line); _logStream.write('[ERROR] ' + line + '\n'); };
+process.on('exit', () => _logStream.end());
+process.on('SIGINT', () => { console.log(`\n[flood] Session ended. Log: ${_logFile}`); process.exit(0); });
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { signBody, initCrypto } = require(path.resolve(__dirname, '../shared/crypto.js'));
@@ -40,12 +56,16 @@ try {
   console.log(`VP ID (from local genesis.json): ${vpId}`);
 }
 
-let seq       = 0;
+let seq       = parseInt(process.env.START_SEQ || '0', 10);
 let accepted  = 0;
 let rejected  = 0;
 let errors    = 0;
 const perNode = {};
-for (const p of PORTS) perNode[p] = { sent: 0, ok: 0 };
+for (const p of PORTS) perNode[p] = { sent: 0, ok: 0, err: 0 };
+
+// Track drained totals from the previous stats print to compute throughput delta.
+const prevDrained = {};
+for (const p of PORTS) prevDrained[p] = 0;
 
 function pad(n, w) { return String(n).padStart(w, ' '); }
 
@@ -81,18 +101,36 @@ function metrics(port) {
 
 async function printStats() {
   process.stdout.write('\n');
+  let totalDrainDelta = 0;
   for (const port of PORTS) {
-    const raw  = await metrics(port);
-    // Metrics use labels: tip_narwhal_current_round{node="..."} 42
+    const raw   = await metrics(port);
     const round = (raw.match(/^tip_narwhal_current_round\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
     const halted= (raw.match(/^tip_consensus_halted\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
     const recv  = (raw.match(/^tip_mempool_received_total\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
     const drain = (raw.match(/^tip_mempool_drained_total\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
     const retry = (raw.match(/^tip_narwhal_retries_total\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
-    const haltFlag = halted === '1' ? ' ⚠ HALTED' : '';
-    console.log(`  :${port}  round=${pad(round,5)}  halted=${halted}${haltFlag}  mempool recv=${pad(recv,4)} drained=${pad(drain,4)}  retries=${retry}`);
+    const committed = (raw.match(/^tip_bullshark_txs_committed_total\{[^}]*\}\s+(\d+)/m) || [])[1] || '?';
+
+    // How many txs were drained (batch-included by narwhal) since last print.
+    const drainNum   = parseInt(drain, 10);
+    const drainDelta = isNaN(drainNum) ? 0 : drainNum - (prevDrained[port] || 0);
+    if (!isNaN(drainNum)) { prevDrained[port] = drainNum; totalDrainDelta += drainDelta; }
+
+    const haltFlag  = halted === '1' ? ' ⚠ HALTED' : '';
+    const drainTag  = drainDelta > 0 ? `+${drainDelta}` : (raw ? `+0` : 'DOWN');
+    const nodeErr   = perNode[port].err;
+    const errTag    = nodeErr > 0 ? `  err=${nodeErr}` : '';
+    console.log(
+      `  :${port}  round=${pad(round,5)}  halted=${halted}${haltFlag}` +
+      `  recv=${pad(recv,4)} drained=${pad(drain,4)}(${pad(drainTag,4)}/15s)` +
+      `  committed=${pad(committed,5)}  retries=${retry}${errTag}`
+    );
   }
-  console.log(`  flood: seq=${seq}  accepted=${accepted}  rejected=${rejected}  errors=${errors}`);
+  console.log(`  flood: seq=${seq}  accepted=${accepted}  rejected=${rejected}  errors=${errors}  drain/15s=${totalDrainDelta}`);
+  // Warn if the whole cluster stopped draining txs — sign of consensus stall.
+  if (totalDrainDelta === 0 && seq > 10) {
+    console.log(`  *** WARNING: no txs drained in the last 15s — chain may be stalled ***`);
+  }
 }
 
 setInterval(async () => {
@@ -121,7 +159,7 @@ setInterval(async () => {
 
   perNode[port].sent++;
   if (status === 202) { accepted++; perNode[port].ok++; }
-  else if (status === 0) errors++;
+  else if (status === 0) { errors++; perNode[port].err++; }
   else rejected++;
 
   process.stdout.write(`\r  tx #${pad(seq,5)}  :${port}  status=${status}  acc=${accepted}  rej=${rejected}  err=${errors}   `);
