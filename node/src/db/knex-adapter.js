@@ -771,6 +771,21 @@ class KnexAdapter {
 
   *iterateCanonicalState() { yield* this.mirror.iterateCanonicalState(); }
 
+  clearCanonicalState() {
+    this.mirror.clearCanonicalState();
+    // Fire DB deletes before snapshot rows arrive. Mirror is the authoritative
+    // source for computeStateMerkleRoot; DB cleanup is for restart persistence.
+    Promise.all([
+      this.knex("identities").delete(),
+      this.knex("content").delete(),
+      this.knex("scores").delete(),
+      this.knex("dedup_registry").delete(),
+      this.knex("revocations").delete(),
+      this.knex("verification_providers").delete(),
+      this.knex("nodes").delete(),
+    ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
+  }
+
   // ── Revocations ────────────────────────────────────────────────────────────
 
   addRevocation(id, type, ts, txId) {

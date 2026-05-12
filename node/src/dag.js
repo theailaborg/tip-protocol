@@ -470,6 +470,17 @@ class MemoryStore {
   getNode(nodeId) { return this._nodes.get(nodeId) || null; }
   getAllNodes() { return [...this._nodes.values()]; }
 
+  clearCanonicalState() {
+    this._identities.clear();
+    this._content.clear();
+    this._scores.clear();
+    this._dedup.clear();
+    if (this._dedupCreated) this._dedupCreated.clear();
+    this._revocations.clear();
+    this._vps.clear();
+    this._nodes.clear();
+  }
+
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
   saveCertificate(cert) { this._certs.set(cert.hash, { ...cert }); }
   getCertificate(hash) { return this._certs.get(hash) || null; }
@@ -2286,6 +2297,18 @@ class SQLiteStore {
     // version for rationale. RP ships in its own snapshot stream below.
   }
 
+  clearCanonicalState() {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM identities").run();
+      this.db.prepare("DELETE FROM content").run();
+      this.db.prepare("DELETE FROM scores").run();
+      this.db.prepare("DELETE FROM dedup_registry").run();
+      this.db.prepare("DELETE FROM revocations").run();
+      this.db.prepare("DELETE FROM verification_providers").run();
+      this.db.prepare("DELETE FROM nodes").run();
+    })();
+  }
+
   // RP-snapshot iterator — see MemoryStore.iterateRotationParticipationForSnapshot.
   *iterateRotationParticipationForSnapshot() {
     for (const r of this._stmts.iterateRotationParticipation.iterate()) {
@@ -2550,6 +2573,7 @@ function _buildDagHandle(store, config) {
     // Streaming iterator over all derived-state tables in deterministic
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: () => store.iterateCanonicalState(),
+    clearCanonicalState: () => store.clearCanonicalState(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),

@@ -89,6 +89,23 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     chain_walk_failures: 0,
   };
 
+  // ── Install-once guard ───────────────────────────────────────────────────
+  // When a node resumes after a long pause it reconnects to all peers
+  // simultaneously. Each reconnection triggers onPeerAuthorized → peer-sync
+  // → requestSnapshotFromPeer in parallel. Without this guard all N snapshots
+  // install concurrently and the last DB write wins — which may have a
+  // different tx count, corrupting state_merkle_root and causing permanent
+  // AE divergence. The guard makes installs first-wins within one sync cycle;
+  // resetInstallState() is called by anti-entropy whenever enterSyncMode()
+  // fires so the guard resets for the next needed resync.
+  let _snapInstalled = false;
+  let _snapInstallInProgress = false;
+
+  function resetInstallState() {
+    _snapInstalled = false;
+    _snapInstallInProgress = false;
+  }
+
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
   // The state phase has a different shape (each row carries `table`) and
@@ -402,6 +419,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    */
   async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "" } = {}) {
     if (!network) throw new Error("snapshot: no network node");
+
+    // First-wins guard: if another install already completed or is in progress
+    // this sync cycle, skip — the winning install's state is authoritative.
+    if (_snapInstalled) {
+      log.debug(`Snapshot: skipping request from ${peerId.slice(0, 12)} — already installed this sync cycle`);
+      return null;
+    }
+    if (_snapInstallInProgress) {
+      log.debug(`Snapshot: skipping request from ${peerId.slice(0, 12)} — install already in progress`);
+      return null;
+    }
+    _snapInstallInProgress = true;
 
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
@@ -762,9 +791,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         rotations_full_root: derivedRotations,
         certs_full_root: derivedCerts,
       };
+    } catch (err) {
+      _snapInstallInProgress = false;
+      throw err;
     } finally {
       try { stream.close(); } catch { /* ignore */ }
     }
+    _snapInstalled = true;
+    _snapInstallInProgress = false;
   }
 
   function _installSnapshot(header, queues) {
@@ -787,6 +821,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
     return dag.runInTransaction(() => {
+      // Wipe the 7 canonical-state tables before installing the peer's rows.
+      // Without this, extra rows from this node's divergent history survive
+      // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
+      // never overwrites dedup_registry at all), so computeStateMerkleRoot
+      // returns the wrong root after install and the catching_up watchdog
+      // loops forever.
+      dag.clearCanonicalState();
+
       let stateN = 0;
       for (const { table, row } of queues.stateRows) {
         _installOneRow(table, row);
@@ -1118,6 +1160,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   return {
     registerProtocol,
     requestSnapshotFromPeer,
+    resetInstallState,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics } }),
