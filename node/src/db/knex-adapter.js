@@ -262,9 +262,9 @@ class KnexAdapter {
     });
 
     // Domain bindings (org-only, canonical, in state_merkle_root).
-    // 24h re-verification will land as its own consensus-emitted tx in a
-    // follow-up so the public GET surface stays node-agnostic — no
-    // per-node check columns here.
+    // expires_at + consecutive_failures are v2 renewal prep slots — set at
+    // BIND commit to (verified_at + DOMAIN_HEALTHY_EXPIRY_MS, 0) and
+    // untouched until the adaptive-expiry RENEW_DOMAIN scheduler ships.
     await ensure("domain_bindings", t => {
       t.string("domain", 253).primary();
       _id(t, "tip_id").notNullable();
@@ -272,12 +272,15 @@ class KnexAdapter {
       t.string("method", 16).notNullable();
       t.string("claimed_at", 64).notNullable();
       t.string("verified_at", 64).notNullable();
+      t.string("expires_at", 64).notNullable();
+      t.integer("consecutive_failures").notNullable().defaultTo(0);
       _id(t, "node_id").notNullable();
       t.text("claim_signature").notNullable();
       t.text("binding_signature").notNullable();
       _id(t, "tx_id").notNullable();
       t.index("tip_id", "idx_dom_bind_tip_id");
       t.index("binding_state", "idx_dom_bind_state");
+      t.index("expires_at", "idx_dom_bind_expires");
     });
 
     // Pending domain claims (NOT canonical; per-node storage between
@@ -776,6 +779,8 @@ class KnexAdapter {
       method: rec.method,
       claimed_at: rec.claimed_at,
       verified_at: rec.verified_at,
+      expires_at: rec.expires_at,
+      consecutive_failures: typeof rec.consecutive_failures === "number" ? rec.consecutive_failures : 0,
       node_id: rec.node_id,
       claim_signature: rec.claim_signature,
       binding_signature: rec.binding_signature,

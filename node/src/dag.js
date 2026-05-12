@@ -136,6 +136,10 @@ function _canonRevocation(r) {
 // committed binding_state (verified | revoked) is the single source of
 // truth across the federation; periodic re-verification will be handled
 // by a consensus-emitted trigger so the public surface stays node-agnostic.
+// `expires_at` + `consecutive_failures` are v2 prep slots — set at BIND
+// commit (verified_at + DOMAIN_HEALTHY_EXPIRY_MS / 0) and untouched until
+// the renewal scheduler + RENEW_DOMAIN tx land. Including them in canonical
+// state now means v2 needs no migration.
 // See schemas/bind-domain.js for the trust-model rationale.
 function _canonDomainBinding(r) {
   return {
@@ -145,6 +149,8 @@ function _canonDomainBinding(r) {
     method: r.method,
     claimed_at: r.claimed_at,
     verified_at: r.verified_at,
+    expires_at: r.expires_at,
+    consecutive_failures: typeof r.consecutive_failures === "number" ? r.consecutive_failures : 0,
     node_id: r.node_id,
     claim_signature: r.claim_signature,
     binding_signature: r.binding_signature,
@@ -1051,23 +1057,28 @@ class SQLiteStore {
       -- domain, method, node_id, tip_id, verified_at} — the canonical
       -- payload that schemas/bind-domain.verifyTx reconstructs.
       --
-      -- Re-verification (24h cadence per spec) lands as its own
-      -- consensus-emitted tx in a follow-up so the public GET surface
-      -- stays node-agnostic — no per-node last_check_* columns here.
+      -- expires_at + consecutive_failures are v2 renewal prep slots
+      -- (adaptive-expiry RENEW_DOMAIN). Set at BIND commit to
+      -- (verified_at + DOMAIN_HEALTHY_EXPIRY_MS, 0) and untouched until
+      -- v2 ships. Including them in canonical state now avoids a second
+      -- migration when the renewal scheduler lands.
       CREATE TABLE IF NOT EXISTS domain_bindings (
-        domain             TEXT PRIMARY KEY,
-        tip_id             TEXT NOT NULL,
-        binding_state      TEXT NOT NULL,
-        method             TEXT NOT NULL,
-        claimed_at         TEXT NOT NULL,
-        verified_at        TEXT NOT NULL,
-        node_id            TEXT NOT NULL,
-        claim_signature    TEXT NOT NULL,
-        binding_signature  TEXT NOT NULL,
-        tx_id              TEXT NOT NULL
+        domain                TEXT PRIMARY KEY,
+        tip_id                TEXT NOT NULL,
+        binding_state         TEXT NOT NULL,
+        method                TEXT NOT NULL,
+        claimed_at            TEXT NOT NULL,
+        verified_at           TEXT NOT NULL,
+        expires_at            TEXT NOT NULL,
+        consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+        node_id               TEXT NOT NULL,
+        claim_signature       TEXT NOT NULL,
+        binding_signature     TEXT NOT NULL,
+        tx_id                 TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id ON domain_bindings(tip_id);
-      CREATE INDEX IF NOT EXISTS idx_dom_bind_state  ON domain_bindings(binding_state);
+      CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id  ON domain_bindings(tip_id);
+      CREATE INDEX IF NOT EXISTS idx_dom_bind_state   ON domain_bindings(binding_state);
+      CREATE INDEX IF NOT EXISTS idx_dom_bind_expires ON domain_bindings(expires_at);
 
       -- ── Pending domain claims (local-only; NOT in state_merkle_root) ─
       -- Stores the user-signed claim between POST /v1/domain/register
@@ -1583,9 +1594,10 @@ class SQLiteStore {
       // Domain bindings (canonical) + pending claims (local-only)
       saveDomainBinding: this.db.prepare(
         `INSERT OR REPLACE INTO domain_bindings
-           (domain,tip_id,binding_state,method,claimed_at,verified_at,node_id,
+           (domain,tip_id,binding_state,method,claimed_at,verified_at,
+            expires_at,consecutive_failures,node_id,
             claim_signature,binding_signature,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getDomainBinding: this.db.prepare("SELECT * FROM domain_bindings WHERE domain=?"),
       getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
@@ -1977,7 +1989,10 @@ class SQLiteStore {
   saveDomainBinding(rec) {
     this._stmts.saveDomainBinding.run(
       rec.domain, rec.tip_id, rec.binding_state, rec.method,
-      rec.claimed_at, rec.verified_at, rec.node_id,
+      rec.claimed_at, rec.verified_at,
+      rec.expires_at,
+      typeof rec.consecutive_failures === "number" ? rec.consecutive_failures : 0,
+      rec.node_id,
       rec.claim_signature, rec.binding_signature, rec.tx_id,
     );
   }

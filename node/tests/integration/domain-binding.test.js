@@ -23,7 +23,9 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256 } = require(path.join(SHARED, "crypto"));
-const { TIP_ID_TYPES, DOMAIN_BINDING_STATUS } = require(path.join(SHARED, "constants"));
+const {
+  TIP_ID_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_HEALTHY_EXPIRY_MS,
+} = require(path.join(SHARED, "constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createDomainService } = require(path.join(SRC, "services", "domain-service"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -318,5 +320,98 @@ describe("GET for unknown domain", () => {
     const got = fx.domainService.get("acmenews.com");
     expect(got.status).toBe(DOMAIN_BINDING_STATUS.PENDING);
     expect(got.tip_id).toBe(tipId);
+  });
+});
+
+// ─── 8. Renewal prep (v2 canonical-state slots + read-time expiry) ──────────
+//
+// The renewal scheduler / RENEW_DOMAIN tx are deferred to a follow-up, but
+// the canonical-state slots and the read-time "expired" derivation land
+// now so consumers and the future scheduler share a single API surface.
+// These tests pin the contract so v2 doesn't have to renegotiate it.
+
+describe("v2 prep — expires_at, consecutive_failures, read-time expiry", () => {
+  test("BIND_DOMAIN commit sets expires_at = verified_at + DOMAIN_HEALTHY_EXPIRY_MS and consecutive_failures = 0", async () => {
+    const fx = setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("acme-expiry").slice(0, 16)}`;
+    seedOrgIdentity(fx.dag, tipId, kp);
+
+    fx.domainService.register(buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "acmenews.com" }));
+    const verifyOut = await fx.domainService.verify({ domain: "acmenews.com" });
+    fx.commitSubmitted();
+
+    const binding = fx.dag.getDomainBinding("acmenews.com");
+    expect(binding.expires_at).toBeDefined();
+    expect(binding.consecutive_failures).toBe(0);
+
+    const expectedExpiryMs = Date.parse(verifyOut.verified_at) + DOMAIN_HEALTHY_EXPIRY_MS;
+    expect(Date.parse(binding.expires_at)).toBe(expectedExpiryMs);
+  });
+
+  test("GET /v1/domain/:domain surfaces expires_at, days_until_expiry, consecutive_failures", async () => {
+    const fx = setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("acme-get-expiry").slice(0, 16)}`;
+    seedOrgIdentity(fx.dag, tipId, kp);
+
+    fx.domainService.register(buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "acmenews.com" }));
+    await fx.domainService.verify({ domain: "acmenews.com" });
+    fx.commitSubmitted();
+
+    const got = fx.domainService.get("acmenews.com");
+    expect(got.expires_at).toBeDefined();
+    expect(got.consecutive_failures).toBe(0);
+    expect(got.days_until_expiry).toBeGreaterThan(28);
+    expect(got.days_until_expiry).toBeLessThanOrEqual(30);
+    expect(got.status).toBe(DOMAIN_BINDING_STATUS.VERIFIED);
+  });
+
+  test("status derives to 'unverified' once now > expires_at (cert-expiry safety net)", async () => {
+    const fx = setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("acme-expired").slice(0, 16)}`;
+    seedOrgIdentity(fx.dag, tipId, kp);
+
+    fx.domainService.register(buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "acmenews.com" }));
+    await fx.domainService.verify({ domain: "acmenews.com" });
+    fx.commitSubmitted();
+
+    // Backdate the binding so expires_at is in the past — same effect as if
+    // the v2 scheduler had not renewed for 31+ days.
+    const current = fx.dag.getDomainBinding("acmenews.com");
+    fx.dag.saveDomainBinding({
+      ...current,
+      expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const got = fx.domainService.get("acmenews.com");
+    expect(got.status).toBe(DOMAIN_BINDING_STATUS.UNVERIFIED);
+    expect(got.days_until_expiry).toBeLessThanOrEqual(0);
+    // Canonical row stays — historical signatures remain verifiable;
+    // only the derived status flips.
+    expect(fx.dag.getDomainBinding("acmenews.com")).not.toBeNull();
+  });
+
+  test("canonical state includes expires_at + consecutive_failures (state_merkle_root determinism)", async () => {
+    const fx = setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("acme-canon").slice(0, 16)}`;
+    seedOrgIdentity(fx.dag, tipId, kp);
+
+    fx.domainService.register(buildSignedClaim({ tipId, privKey: kp.privateKey, domain: "acmenews.com" }));
+    await fx.domainService.verify({ domain: "acmenews.com" });
+    fx.commitSubmitted();
+
+    let domainRow = null;
+    for (const entry of fx.dag.iterateCanonicalState()) {
+      if (entry.table === "domain_bindings" && entry.row.domain === "acmenews.com") {
+        domainRow = entry.row;
+        break;
+      }
+    }
+    expect(domainRow).not.toBeNull();
+    expect(domainRow).toHaveProperty("expires_at");
+    expect(domainRow).toHaveProperty("consecutive_failures", 0);
   });
 });

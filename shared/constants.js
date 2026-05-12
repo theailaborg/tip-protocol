@@ -168,6 +168,20 @@ const DOMAIN_UNBIND_REASONS = Object.freeze({
 });
 const DOMAIN_UNBIND_REASON_VALUES = Object.freeze(Object.values(DOMAIN_UNBIND_REASONS));
 
+// ─── Domain binding renewal (v2 prep slots) ──────────────────────────────────
+// Canonical state already carries `expires_at` and `consecutive_failures`
+// per binding so the adaptive-expiry renewal feature can land as a pure
+// code-add (new RENEW_DOMAIN tx + scheduler) without a second schema
+// migration. Until v2 ships, every binding is set to {expires_at =
+// verified_at + DOMAIN_HEALTHY_EXPIRY_MS, consecutive_failures = 0} at
+// BIND_DOMAIN commit time. Read paths surface `expires_at` so consumers
+// can already apply their own freshness policy.
+const DOMAIN_HEALTHY_EXPIRY_MS    = 30 * 24 * 60 * 60 * 1000;  // 30 days — refreshed on successful renewal
+const DOMAIN_RETRY_EXPIRY_MS      = 1 * 24 * 60 * 60 * 1000;   // 1 day — refreshed on transient failure
+const DOMAIN_MAX_FAILURES         = 5;                          // consecutive failures → binding flips to unverified
+const DOMAIN_RENEWAL_WINDOW_MS    = 60 * 60 * 1000;             // 1 hour — scheduler look-ahead
+const DOMAIN_SCHEDULER_INTERVAL_MS = 10 * 60 * 1000;            // 10 min — scheduler tick cadence
+
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
@@ -397,6 +411,11 @@ module.exports = {
   DOMAIN_PENDING_CLAIM_TTL_MS,
   DOMAIN_UNBIND_REASONS,
   DOMAIN_UNBIND_REASON_VALUES,
+  DOMAIN_HEALTHY_EXPIRY_MS,
+  DOMAIN_RETRY_EXPIRY_MS,
+  DOMAIN_MAX_FAILURES,
+  DOMAIN_RENEWAL_WINDOW_MS,
+  DOMAIN_SCHEDULER_INTERVAL_MS,
   TX_TYPES,
   TX_TYPE_SET,
   DISPUTE_SHORT_ID_LEN,

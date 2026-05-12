@@ -18,7 +18,7 @@
 
 "use strict";
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -560,17 +560,27 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // it lives on tx.data for audit replay only.
       case TX_TYPES.BIND_DOMAIN:
         if (d.domain && d.tip_id) {
+          // expires_at + consecutive_failures are v2 renewal prep slots
+          // (adaptive-expiry RENEW_DOMAIN, deferred). Set deterministically
+          // from verified_at — every replicating node computes the same
+          // value, so the column stays merkle-consistent across nodes.
+          const verifiedMs = Date.parse(d.verified_at);
+          const expiresAt = Number.isFinite(verifiedMs)
+            ? new Date(verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS).toISOString()
+            : null;
           dag.saveDomainBinding({
-            domain:            d.domain,
-            tip_id:            d.tip_id,
-            binding_state:     d.binding_state,
-            method:            d.method,
-            claimed_at:        d.claimed_at,
-            verified_at:       d.verified_at,
-            node_id:           d.node_id,
-            claim_signature:   d.claim_signature,
+            domain: d.domain,
+            tip_id: d.tip_id,
+            binding_state: d.binding_state,
+            method: d.method,
+            claimed_at: d.claimed_at,
+            verified_at: d.verified_at,
+            expires_at: expiresAt,
+            consecutive_failures: 0,
+            node_id: d.node_id,
+            claim_signature: d.claim_signature,
             binding_signature: d.binding_signature,
-            tx_id:             tx.tx_id,
+            tx_id: tx.tx_id,
           });
           // Drop the pending claim on whichever node was holding it.
           // Safe no-op on other nodes (delete-by-key, no-op if absent).

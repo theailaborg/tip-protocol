@@ -201,9 +201,17 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
   // ── GET /v1/domain/:domain ───────────────────────────────────────────
   // Public reverse lookup. Returns the DAG-committed binding as the single
   // source of truth — the same answer on every node in the federation.
-  // Periodic re-verification + downgrade lands as a consensus-emitted tx
-  // in a follow-up; until then a binding stays `verified` until either an
-  // explicit revoke or the v2 trigger fires.
+  //
+  // Status derivation (read-time):
+  //   - canonical binding_state === "revoked"     → "revoked"
+  //   - now > expires_at                          → "expired"
+  //   - otherwise                                 → canonical binding_state ("verified")
+  //
+  // `expires_at` + `days_until_expiry` are surfaced so consumers can apply
+  // their own freshness policy (e.g. high-stakes citation flows may bound
+  // staleness tighter than the protocol-wide expiry). When the v2 adaptive
+  // renewal scheduler lands, the same fields drive automated re-probe;
+  // the API surface is forward-compatible.
   function get(domain) {
     const normalized = registerDomainSchema.normalizeDomain(domain);
     const binding = dag.getDomainBinding(normalized);
@@ -220,6 +228,9 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
           method: pending.method,
           claimed_at: pending.claimed_at,
           verified_at: null,
+          expires_at: null,
+          days_until_expiry: null,
+          consecutive_failures: 0,
           binding_signature: null,
           node_id: null,
           tx_id: null,
@@ -228,13 +239,30 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       throw schemaError(404, `No binding for domain ${normalized}`, "domain_not_found");
     }
 
+    const expiresMs = binding.expires_at ? Date.parse(binding.expires_at) : NaN;
+    const nowMs = Date.now();
+    const isExpired = Number.isFinite(expiresMs) && nowMs > expiresMs;
+    const status = binding.binding_state === "revoked"
+      ? "revoked"
+      : isExpired
+        ? DOMAIN_BINDING_STATUS.UNVERIFIED
+        : binding.binding_state;
+    const daysUntilExpiry = Number.isFinite(expiresMs)
+      ? Math.ceil((expiresMs - nowMs) / (24 * 60 * 60 * 1000))
+      : null;
+
     return {
       domain: binding.domain,
       tip_id: binding.tip_id,
-      status: binding.binding_state,
+      status,
       method: binding.method,
       claimed_at: binding.claimed_at,
       verified_at: binding.verified_at,
+      expires_at: binding.expires_at || null,
+      days_until_expiry: daysUntilExpiry,
+      consecutive_failures: typeof binding.consecutive_failures === "number"
+        ? binding.consecutive_failures
+        : 0,
       binding_signature: binding.binding_signature,
       node_id: binding.node_id,
       tx_id: binding.tx_id,
