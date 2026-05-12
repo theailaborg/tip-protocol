@@ -211,6 +211,56 @@ describe("canDispute", () => {
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/already under dispute/i);
   });
+
+  test("author cannot dispute their own content → 403", () => {
+    const dag = _seedDag();
+    const r = rules.canDispute(dag, STUB_SCORING, {
+      ctid: "tip://content/x", disputer_tip_id: "tip://id/author",
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
+    expect(r.error.message).toMatch(/your own content/i);
+  });
+
+  test("signer (EMPLOYED / HOSTED mode) cannot dispute content they signed → 403", () => {
+    const dag = _seedDag();
+    // Override the seeded content row to model EMPLOYED attribution where
+    // signer_tip_id != author_tip_id. The "you signed it" guard fires
+    // independently of the author check.
+    dag.saveContent({
+      ctid: "tip://content/x", origin_code: "OH", content_hash: shake256("c1"),
+      author_tip_id: "tip://id/author",
+      signer_tip_id: "tip://id/disputer",
+      status: CONTENT_STATUS.REGISTERED,
+      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:x"),
+    });
+    const r = rules.canDispute(dag, STUB_SCORING, {
+      ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
+    expect(r.error.message).toMatch(/content you signed/i);
+  });
+
+  test("listed author in authors[] cannot dispute → 403", () => {
+    const dag = _seedDag();
+    dag.saveContent({
+      ctid: "tip://content/x", origin_code: "OH", content_hash: shake256("c1"),
+      author_tip_id: "tip://id/author",
+      authors: [
+        { tip_id: "tip://id/author", role: "primary" },
+        { tip_id: "tip://id/disputer", role: "contributor" },
+      ],
+      status: CONTENT_STATUS.REGISTERED,
+      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:x"),
+    });
+    const r = rules.canDispute(dag, STUB_SCORING, {
+      ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
+    expect(r.error.message).toMatch(/listed as an author/i);
+  });
 });
 
 // ─── canCommitVote ──────────────────────────────────────────────────────────
