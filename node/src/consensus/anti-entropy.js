@@ -64,7 +64,7 @@ const log = getLogger("tip.anti-entropy");
  * @param {Object} [options.log]            Override logger (for tests)
  * @returns {Object} { start, stop, getStatus, queryPeer, checkAndReconcile, registerProtocol, _handleIncomingSyncStatus, _metrics }
  */
-function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, getSelfNodeId, getConsensusState, isAuthorizedPeer, log: customLog } = {}) {
+function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, getSelfNodeId, getConsensusState, isAuthorizedPeer, cancelPendingCommit: cancelPendingCommitCb = null, log: customLog } = {}) {
   const _log = customLog || log;
   const _isAuthorizedPeer = typeof isAuthorizedPeer === "function" ? isAuthorizedPeer : null;
   const _metrics = {
@@ -124,6 +124,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   let _lastAutoRecoveryAt = 0;
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
+  let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
+  const _cancelPendingCommit = typeof cancelPendingCommitCb === "function" ? cancelPendingCommitCb : null;
   const SNAPSHOT_RESYNC_COOLDOWN_MS = CONSENSUS.SNAPSHOT_RESYNC_COOLDOWN_MS || 60000;
 
   let _timer = null;
@@ -398,6 +400,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // and the cert tail has reached catchUpTarget (markCaughtUp path).
       _metrics.gaps_pulled++;
       _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed?.rows_installed || 0})`);
+      _clearDivergenceAccumulators();  // Bug 2: stale pre-install observations would re-trigger BYZ_FORK
       return "snapshot_installed";
     } catch (err) {
       _log.warn(`anti-entropy: snapshot fallback from ${peerId.slice(0, 12)} failed: ${err.message}`);
@@ -408,6 +411,13 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       if (narwhal && typeof narwhal.exitSyncMode === "function") {
         const safeRound = Number(selfState.round || 0);
         narwhal.exitSyncMode(safeRound);
+      }
+      // Bug 3: cancel any deferred anchor timer that was running before this
+      // install attempt. On success, onSnapshotInstalled calls cancelPendingCommit.
+      // On failure, nothing cancels it — the stale timer can fire later and trigger
+      // another resync loop.
+      if (_cancelPendingCommit) {
+        try { _cancelPendingCommit(0); } catch { /* best-effort */ }
       }
       return "snapshot_failed";
     }
@@ -465,6 +475,26 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
     return { observed: set.size, threshold: _bftHaltThreshold() };
+  }
+
+  /**
+   * Clear all (or rounds ≤ upToRound) divergence accumulator entries so that
+   * a post-recovery AE tick doesn't immediately re-trigger BYZ_FORK on stale
+   * pre-recovery observations. Called after successful snapshot install, after
+   * halt auto-recovery, and when all peers self-heal.
+   */
+  function _clearDivergenceAccumulators(upToRound) {
+    if (upToRound !== undefined) {
+      for (const k of [..._divergenceObservations.keys()]) {
+        if (Number(k.split(":")[0]) <= upToRound) {
+          _divergenceObservations.delete(k);
+          _peerRootsForKey.delete(k);
+        }
+      }
+    } else {
+      _divergenceObservations.clear();
+      _peerRootsForKey.clear();
+    }
   }
 
   /**
@@ -735,6 +765,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     if (typeof narwhal.clearByzantineForkHalt === "function") {
       narwhal.clearByzantineForkHalt();
     }
+    // Bug 2: clear stale divergence observations so the first AE tick after recovery
+    // doesn't immediately re-trigger BYZ_FORK on pre-recovery entries at the same round.
+    _clearDivergenceAccumulators();
     // Reset install guard so the recovery snapshot is accepted as a fresh cycle.
     if (snapshotHandler && typeof snapshotHandler.resetInstallState === "function") {
       snapshotHandler.resetInstallState();
@@ -940,6 +973,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         if (typeof narwhal.clearByzantineForkHalt === "function") {
           narwhal.clearByzantineForkHalt();
         }
+        // Bug 2: clear stale observations so the next AE tick doesn't immediately
+        // re-trigger BYZ_FORK from the now-resolved pre-convergence entries.
+        _clearDivergenceAccumulators(selfCommitted);
         // Restart round production. clearByzantineForkHalt only clears the
         // flag; it does NOT reset _lastRoundAdvanceAt, clear stale _peerBatches,
         // or reschedule _beginRound. Without this, the halt-cleared node's round
@@ -1134,11 +1170,23 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "already_syncing";
     }
 
+    // Bug 1 — intra-node in-flight guard. Prevents a second concurrent call on
+    // this node from racing past the joinState check before the first call has
+    // transitioned narwhal into syncing (enterSyncMode fires inside
+    // _runSnapshotFallback, not here, so there is a short window after the
+    // joinState check where _snapshotResyncInFlight is the only barrier).
+    if (_snapshotResyncInFlight) {
+      _log.warn(`anti-entropy: triggerSnapshotResync skipped — resync already in flight (round=${fromRound}, missing=${missingCount})`);
+      return "already_syncing";
+    }
+
     // Serialization guard: if any peer is currently syncing/catching_up, defer
     // this resync with jitter. With BULLSHARK_DEFER_MS=60s, snapshot resyncs are
     // rare (only genuinely GC'd certs trigger them). If two nodes hit the timer
     // simultaneously anyway, this prevents both from entering syncing at once
     // (which would drop active participants to 3 < quorum=4 and cause sub_quorum).
+    // NOTE: _lastStatus is a ~4s-stale cache. A peer that entered syncing <4s ago
+    // won't appear here — the fresh-peer queryPeer below catches that case.
     for (const [, s] of _lastStatus.entries()) {
       if (s && (s.joinState === "syncing" || s.joinState === "catching_up")) {
         const jitterMs = 5000 + Math.floor(Math.random() * 10000); // 5-15s
@@ -1149,7 +1197,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
         setTimeout(() => {
           const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
-          if (st === "ready") triggerSnapshotResync(fromRound, missingCount).catch(() => {});
+          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
         }, jitterMs);
         return "deferred";
       }
@@ -1201,6 +1249,30 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     _log.info(`anti-entropy: triggerSnapshotResync: pulling snapshot from ${bestPeerId.slice(0, 12)} (cached_round=${bestRound})`);
 
+    // Bug 1 — fresh peer query. The _lastStatus cache is up to 4s stale. Two nodes
+    // can simultaneously fire triggerSnapshotResync (12ms apart from the same deferred
+    // anchor timer), both see each other as "ready" in the stale cache, both proceed,
+    // pull from different peers, install different roots → BYZ_FORK. A live RPC to the
+    // selected peer verifies it is genuinely ready before we commit to entering sync
+    // mode. If the peer just entered syncing (caught by the fresh status), defer with
+    // jitter so only one node syncs at a time.
+    const freshPeerStatus = await queryPeer(bestPeerId);
+    if (freshPeerStatus) {
+      const freshJoinState = freshPeerStatus.join_state || "ready";
+      if (freshJoinState === "syncing" || freshJoinState === "catching_up") {
+        const jitterMs = 8000 + Math.floor(Math.random() * 12000); // 8-20s
+        _log.warn(
+          `anti-entropy: triggerSnapshotResync: fresh-check found peer ${bestPeerId.slice(0, 12)} ` +
+          `in ${freshJoinState} — deferring ${Math.round(jitterMs / 1000)}s to avoid simultaneous sync`
+        );
+        setTimeout(() => {
+          const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
+          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
+        }, jitterMs);
+        return "deferred";
+      }
+    }
+
     let selfState = {};
     try { selfState = getConsensusState ? getConsensusState() : {}; } catch { /* best-effort */ }
 
@@ -1208,15 +1280,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       snapshotHandler.resetInstallState();
     }
 
-    const result = await _runSnapshotFallback(bestPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
-    if (result === "snapshot_installed") {
-      _lastAutoRecoveryAt = Date.now();
-      _lastSnapshotResyncCompletedAt = Date.now();
-      _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed, resuming consensus`);
-    } else {
-      _log.warn(`anti-entropy: triggerSnapshotResync: snapshot install returned '${result}'`);
+    _snapshotResyncInFlight = true;
+    try {
+      const result = await _runSnapshotFallback(bestPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+      if (result === "snapshot_installed") {
+        _lastAutoRecoveryAt = Date.now();
+        _lastSnapshotResyncCompletedAt = Date.now();
+        _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed, resuming consensus`);
+      } else {
+        _log.warn(`anti-entropy: triggerSnapshotResync: snapshot install returned '${result}'`);
+      }
+      return result;
+    } finally {
+      _snapshotResyncInFlight = false;
     }
-    return result;
   }
 
   function isSnapshotResyncThrottled() {

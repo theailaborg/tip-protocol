@@ -177,6 +177,21 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
 
     const minRound = Number(request.minRound || 0);
+
+    // Bug 4: refuse to serve while our own snapshot install is in progress. The
+    // install pipeline calls dag.clearCanonicalState() then rebuilds the in-memory
+    // mirror row-by-row. During that window iterateCanonicalState() returns partial
+    // data whose SHAKE-256 root diverges from the latest commit row's state_merkle_root
+    // (which was written at the PREVIOUS commit). A joiner that receives this
+    // inconsistent snapshot will compute a mismatched root, fail install, or — worse —
+    // install silently inconsistent state and diverge from honest peers.
+    if (_snapInstallInProgress) {
+      const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
+      await stream.sink([_frame(errHeader)]);
+      log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
+      return;
+    }
+
     const latest = dag.getLatestCommit ? dag.getLatestCommit() : null;
 
     if (!latest || latest.round < minRound) {

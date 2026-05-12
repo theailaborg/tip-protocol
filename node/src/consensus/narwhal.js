@@ -746,7 +746,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
           log.debug(`Round ${_currentRound}: dedup re-ack encode failed for ${batch.author_node_id}: ${err.message}`);
         }
       }
-      return;
+      // Different hash from same author — fall through to process normally.
+      // Equivocation check above already passed (votes_seen consistent), so this
+      // is an edge case (e.g. DB write failure left _peerBatches out-of-sync with
+      // votes_seen). Process the batch and return a fresh ack instead of silently
+      // returning undefined, which would strand the Layer-2 direct-stream caller.
     }
 
     _peerBatches.set(batch.author_node_id, batch);

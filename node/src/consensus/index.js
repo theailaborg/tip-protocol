@@ -325,6 +325,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       })(),
       cert_merkle_root: syncHandler.merkleRoot(),
     }),
+    // Bug 3: cancel any deferred anchor timer on snapshot install failure.
+    // On success, onSnapshotInstalled (in snapshotHandler) calls cancelPendingCommit.
+    // On failure, nothing did — the stale timer could fire later and trigger another
+    // resync→install→fail loop or commit partial state.
+    cancelPendingCommit: (round) => {
+      if (bullshark && typeof bullshark.cancelPendingCommit === "function") {
+        bullshark.cancelPendingCommit(round || 0);
+      }
+    },
   });
   antiEntropyForFiltering = antiEntropy;
   antiEntropyForResync = antiEntropy;
