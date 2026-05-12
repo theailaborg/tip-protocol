@@ -489,6 +489,8 @@ async function createNetworkNode(options = {}) {
         if (ackBuf.length > 0 && _topicHandlers.onConsensus) {
           _topicHandlers.onConsensus(ackBuf);
           log.debug(`sendBatchDirect: batch+ack round-trip complete for ${tipNodeId} (${peerId.slice(0, 16)}...)`);
+        } else if (ackBuf.length === 0) {
+          log.warn(`sendBatchDirect to ${tipNodeId}: empty ack response — receiver deduped without re-ack (stale mesh)`);
         }
       } catch (err) {
         log.warn(`sendBatchDirect to ${tipNodeId}: ${err.message}`);

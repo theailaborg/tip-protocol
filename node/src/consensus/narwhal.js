@@ -726,8 +726,28 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       // but non-identical signature; both are equally valid attestations).
     }
 
-    // Deduplicate
-    if (_peerBatches.has(batch.author_node_id)) return;
+    // Deduplicate — already processed this batch in this session.
+    // Still re-sign and return the ack for Layer 2 direct-stream retries:
+    // the sender is retrying precisely because their original gossipsub ack
+    // was lost. Re-signing is safe (ML-DSA randomized; priorVote already
+    // persisted so no double-vote risk). Skip re-broadcast and re-record —
+    // only hand the ack bytes back to the direct-stream caller.
+    if (_peerBatches.has(batch.author_node_id)) {
+      if (_peerBatches.get(batch.author_node_id).hash === batch.hash) {
+        const reAck = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
+        try {
+          return encode("BatchAck", {
+            batchHash: hexToBytes(batch.hash),
+            ackerNodeId: nodeId,
+            signature: hexToBytes(reAck.signature),
+            signedAt: reAck.signed_at,
+          });
+        } catch (err) {
+          log.debug(`Round ${_currentRound}: dedup re-ack encode failed for ${batch.author_node_id}: ${err.message}`);
+        }
+      }
+      return;
+    }
 
     _peerBatches.set(batch.author_node_id, batch);
     _metrics.batches_received++;
