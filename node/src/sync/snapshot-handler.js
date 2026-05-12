@@ -449,8 +449,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
-    const stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
+    // openStream is inside the try so any connection failure clears
+    // _snapInstallInProgress via the catch below instead of leaking it.
+    let stream;
     try {
+      stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
@@ -810,7 +813,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _snapInstallInProgress = false;
       throw err;
     } finally {
-      try { stream.close(); } catch { /* ignore */ }
+      if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
     _snapInstalled = true;
     _snapInstallInProgress = false;

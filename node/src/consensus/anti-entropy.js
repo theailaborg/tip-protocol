@@ -404,6 +404,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "snapshot_installed";
     } catch (err) {
       _log.warn(`anti-entropy: snapshot fallback from ${peerId.slice(0, 12)} failed: ${err.message}`);
+      // Belt-and-suspenders: clear the install-in-progress flag so the node
+      // can serve and receive snapshots again. requestSnapshotFromPeer's own
+      // try-catch handles the common case; this catches any path where the
+      // flag leaked (e.g. openStream failure before the inner try block runs
+      // in older builds, or an unforeseen exception path).
+      if (typeof snapshotHandler.resetInstallState === "function") {
+        snapshotHandler.resetInstallState();
+      }
       // Failure floor: snapshot didn't land. Fall back to ready at our
       // pre-install round so the node isn't pinned in syncing waiting on
       // a transition that won't come. The next AE tick / next peer-auth
