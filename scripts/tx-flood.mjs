@@ -42,18 +42,30 @@ const INTERVAL  = parseInt(process.env.INTERVAL_MS || '1500', 10);
 
 await initCrypto();
 
-const vp = JSON.parse(fs.readFileSync('./genesis-data/founding-vp-keys.json', 'utf8'));
+const _vpFile = JSON.parse(fs.readFileSync('./genesis-data/founding-vp-keys.json', 'utf8'));
+// Support both the legacy flat format { privateKey, publicKey }
+// and the new envelope format { entries: [{ private_key, public_key, id }] }.
+const _vpEntry = _vpFile.entries ? _vpFile.entries[0] : _vpFile;
+const vp = {
+  privateKey: _vpEntry.private_key ?? _vpEntry.privateKey,
+  publicKey:  _vpEntry.public_key  ?? _vpEntry.publicKey,
+};
+const _vpIdFromFile = _vpEntry.id ?? null;
 
-// Fetch the authoritative VP ID from the running node1 container — the local
-// genesis-data/genesis.json may be out of sync after node re-registration.
-let vpId;
-try {
-  const raw = execSync('docker exec tip-node1 cat /app/genesis-data/genesis.json', { timeout: 5000 }).toString();
-  vpId = JSON.parse(raw).founding_vp.vp_id;
-  console.log(`VP ID (from container): ${vpId}`);
-} catch {
-  vpId = JSON.parse(fs.readFileSync('./genesis-data/genesis.json', 'utf8')).founding_vp.vp_id;
-  console.log(`VP ID (from local genesis.json): ${vpId}`);
+// Prefer the VP ID embedded in the keys file (always in sync after re-seed).
+// Fall back to reading the container/local genesis.json.
+let vpId = _vpIdFromFile;
+if (!vpId) {
+  try {
+    const raw = execSync('docker exec tip-node1 cat /app/genesis-data/genesis.json', { timeout: 5000 }).toString();
+    vpId = JSON.parse(raw).founding_vp.vp_id;
+    console.log(`VP ID (from container): ${vpId}`);
+  } catch {
+    vpId = JSON.parse(fs.readFileSync('./genesis-data/genesis.json', 'utf8')).founding_vp.vp_id;
+    console.log(`VP ID (from local genesis.json): ${vpId}`);
+  }
+} else {
+  console.log(`VP ID (from keys file): ${vpId}`);
 }
 
 let seq       = parseInt(process.env.START_SEQ || '0', 10);
@@ -152,9 +164,23 @@ setInterval(async () => {
     vp_id: vpId,
     social_attested: false,
     creator_name: `FloodTx-${seq}`,
+    tip_id_type: 'personal',
   };
 
-  const payload = { ...body, vp_signature: signBody(body, vp.privateKey) };
+  // Sign the canonical payload matching registerIdentitySchema.buildSigningPayload —
+  // the server verifies against that exact field set (tip_id_type was added in d2da883).
+  const canonicalPayload = {
+    creator_name: body.creator_name,
+    dedup_hash:   body.dedup_hash,
+    public_key:   body.public_key,
+    region:       body.region.toUpperCase(),
+    social_attested: !!body.social_attested,
+    tip_id_type:  body.tip_id_type,
+    verification_tier: body.verification_tier,
+    vp_id:        body.vp_id,
+    zk_proof:     body.zk_proof,
+  };
+  const payload = { ...body, vp_signature: signBody(canonicalPayload, vp.privateKey) };
   const { status } = await post(port, payload);
 
   perNode[port].sent++;

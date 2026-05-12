@@ -432,10 +432,25 @@ class KnexAdapter {
       this.mirror._identities.set(row.tip_id, { ...row, founding: !!row.founding });
     }
 
-    // Content
+    // Content — JSON-encoded columns (authors, extras, registered_urls) must be
+    // decoded on read; the mirror expects arrays/objects, not JSON strings.
+    const _decodeJson = (s, fallback) => {
+      if (typeof s !== "string" || !s.length) return fallback;
+      try { return JSON.parse(s); } catch { return fallback; }
+    };
     const contentRows = await this.knex("content").select("*");
     for (const row of contentRows) {
-      const mapped = { ...row, ctid: row.tip_ctid, prescan_flagged: !!row.prescan_flagged };
+      const urls    = _decodeJson(row.registered_urls, []);
+      const authors = _decodeJson(row.authors, []);
+      const extras  = _decodeJson(row.extras, {});
+      const mapped = {
+        ...row,
+        ctid: row.tip_ctid,
+        prescan_flagged: !!row.prescan_flagged,
+        registered_urls: Array.isArray(urls)   ? urls    : [],
+        authors:         Array.isArray(authors) ? authors : [],
+        extras:          (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
+      };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
     }
