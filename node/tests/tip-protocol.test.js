@@ -1154,7 +1154,7 @@ describe("Gossip Broadcast Wiring", () => {
   });
 
   test("8.5 Dispute triggers gossip broadcast", async () => {
-    // Register identity + content, then dispute
+    // Author identity (registers the content).
     const kp85 = generateMLDSAKeypair();
     const dIdFields = {
       region: "US", public_key: kp85.publicKey,
@@ -1168,6 +1168,22 @@ describe("Gossip Broadcast Wiring", () => {
     const dTipId = idRes.body.data.tip_id;
     const dAuthorPriv = kp85.privateKey;
 
+    // Separate disputer identity — canDispute blocks self-dispute on
+    // author_tip_id / signer_tip_id / authors[] match, so this test needs
+    // a distinct identity to drive the dispute path.
+    const kp85d = generateMLDSAKeypair();
+    const disputerIdFields = {
+      region: "US", public_key: kp85d.publicKey,
+      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455557",
+      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      vp_id: gFoundingVpId, social_attested: false,
+    };
+    const disputerRes = await request(gossipApp)
+      .post("/v1/identity/register")
+      .send({ ...disputerIdFields, vp_signature: _signIdentity(disputerIdFields, gFoundingVpKp.privateKey) });
+    const disputerTipId = disputerRes.body.data.tip_id;
+    const disputerPriv = kp85d.privateKey;
+
     const content = "Dispute gossip broadcast test article.";
     const cRes = await request(gossipApp)
       .post("/v1/content/register")
@@ -1178,7 +1194,7 @@ describe("Gossip Broadcast Wiring", () => {
 
     // (gossip broadcast removed — txs go through consensus)
     const body = _buildDisputeBody({
-      disputerTipId: dTipId, disputerPriv: dAuthorPriv, claimedOrigin: "AG",
+      disputerTipId, disputerPriv, claimedOrigin: "AG",
       description: "Test 8.5 — gossip broadcast dispute body",
     });
     const res = await request(gossipApp)
@@ -1193,7 +1209,7 @@ describe("Gossip Broadcast Wiring", () => {
     // Vary the description so evidence_hash uniqueness doesn't 409 first —
     // we want to land on the "already under dispute" rule.
     const body2 = _buildDisputeBody({
-      disputerTipId: dTipId, disputerPriv: dAuthorPriv, claimedOrigin: "AG",
+      disputerTipId, disputerPriv, claimedOrigin: "AG",
       description: "Test 8.5 — duplicate attempt with different description",
     });
     const res2 = await request(gossipApp)
@@ -1350,7 +1366,10 @@ describe("Semantic Dedup", () => {
   });
 
   test("9.3 First dispute succeeds", async () => {
-    // Register second content for dispute test
+    // Register second content for dispute test — sdTipId is the author;
+    // sdVerifierId (already registered in setup) acts as the disputer
+    // because canDispute blocks self-dispute on author_tip_id /
+    // signer_tip_id / authors[] match.
     const sdContent2 = "Second content for dispute dedup.";
     const ctRes2 = await request(sdApp)
       .post("/v1/content/register")
@@ -1358,7 +1377,7 @@ describe("Semantic Dedup", () => {
     const ctid2 = ctRes2.body.data.ctid;
 
     const body = _buildDisputeBody({
-      disputerTipId: sdTipId, disputerPriv: sdAuthorPriv, claimedOrigin: "AG",
+      disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
       description: "Test 9.3 — first dispute should land",
     });
     const res = await request(sdApp)
@@ -1370,7 +1389,7 @@ describe("Semantic Dedup", () => {
     // Duplicate — content already under dispute. Different description so
     // evidence_hash uniqueness doesn't fire first.
     const body2 = _buildDisputeBody({
-      disputerTipId: sdTipId, disputerPriv: sdAuthorPriv, claimedOrigin: "AG",
+      disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
       description: "Test 9.3 — duplicate attempt with different description",
     });
     const res2 = await request(sdApp)

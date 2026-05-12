@@ -159,6 +159,19 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   if (!disputer) return fail(404, "Disputer TIP-ID not found");
   if (dag.isRevoked(disputer_tip_id)) return fail(403, "Disputer TIP-ID is revoked");
 
+  // No self-disputes — covers author of record, the signer (relevant in
+  // EMPLOYED / HOSTED attribution modes where signer differs from author),
+  // and every entry in the authors[] array (multi-author registrations).
+  // Mirrors canVerify's "Cannot verify your own content" symmetry: an
+  // entity associated with a piece of content cannot dispute it. Same
+  // predicate runs at API CheckTx and commit DeliverTx, so a direct tx
+  // submission bypassing the API gets dropped consistently.
+  if (disputer_tip_id === rec.author_tip_id) return fail(403, "Cannot dispute your own content");
+  if (disputer_tip_id === rec.signer_tip_id) return fail(403, "Cannot dispute content you signed");
+  if (Array.isArray(rec.authors) && rec.authors.some(a => a && a.tip_id === disputer_tip_id)) {
+    return fail(403, "Cannot dispute content you are listed as an author of");
+  }
+
   const disputerScore = scoring.getScore(disputer_tip_id).score;
   if (disputerScore < DISPUTE.MIN_SCORE_TO_DISPUTE) {
     return fail(403, `Score must be >= ${DISPUTE.MIN_SCORE_TO_DISPUTE} to dispute (current: ${disputerScore})`);
