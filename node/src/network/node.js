@@ -190,7 +190,7 @@ async function createNetworkNode(options = {}) {
         return;
       }
       const bufs = [];
-      for await (const chunk of stream.source) bufs.push(Buffer.from(chunk));
+      for await (const chunk of stream.source) bufs.push(chunk.subarray ? chunk.subarray() : chunk);
       const data = Buffer.concat(bufs);
       let ackBuf;
       if (data.length > 0 && _topicHandlers.onBatch) {
@@ -482,7 +482,7 @@ async function createNetworkNode(options = {}) {
         ackTimer = setTimeout(() => {
           try { stream.abort(new Error("ack read timeout")); } catch { /* ignore */ }
         }, 2000);
-        for await (const chunk of stream.source) ackBufs.push(Buffer.from(chunk));
+        for await (const chunk of stream.source) ackBufs.push(chunk.subarray ? chunk.subarray() : chunk);
         clearTimeout(ackTimer);
         ackTimer = null;
         const ackBuf = Buffer.concat(ackBufs);
