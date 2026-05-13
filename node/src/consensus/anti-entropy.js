@@ -125,6 +125,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
   let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
+  // Gates consensus_divergence_total to fire once per incident (not once per
+  // AE tick). Reset by _clearDivergenceAccumulators on recovery so the next
+  // genuine divergence event still registers.
+  let _divergenceActive = false;
   const _cancelPendingCommit = typeof cancelPendingCommitCb === "function" ? cancelPendingCommitCb : null;
   const SNAPSHOT_RESYNC_COOLDOWN_MS = CONSENSUS.SNAPSHOT_RESYNC_COOLDOWN_MS || 60000;
 
@@ -519,6 +523,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // Always reset grace timers so every post-recovery divergence observation
     // gets a full fresh SYNC_DIVERGENCE_GRACE_MS window.
     _peerDivergenceFirstSeen.clear();
+    // Reset incident gate so the next genuine divergence event after recovery
+    // registers in consensus_divergence_total (see _divergenceActive usage).
+    _divergenceActive = false;
   }
 
   /**
@@ -975,7 +982,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // halt narwhal once ≥ f+1 peers disagree — that's the formal proof
       // we're the byzantine minority. Until threshold, log + metric so
       // ops can see the disagreement building up.
-      _metrics.consensus_divergence_total++;
+      //
+      // Count once per incident: after docker pause/unpause the recovering
+      // node is "ready" immediately, so every AE tick for the ~12s recovery
+      // window would fire this counter for each of the 4 peers. Gate on
+      // _divergenceActive so the metric reads "N incidents" not "N*peers*ticks".
+      if (!_divergenceActive) {
+        _metrics.consensus_divergence_total++;
+        _divergenceActive = true;
+      }
       _log.warn(`anti-entropy: DIVERGENCE at committed_round=${selfCommitted} with peer ${peerLabel} — self.state_root=${selfRoot.slice(0, 16)} peer.state_root=${peerRoot.slice(0, 16)}`);
 
       const { observed, threshold } = _recordDivergence(peerNode, selfCommitted, selfRoot, peerRoot);
