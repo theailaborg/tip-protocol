@@ -147,15 +147,15 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         founding,
         // ── Signed canonical fields (mirror canonicalPayload so
         //    commit-handler can replay buildSigningPayload(d))
-        creator_name:      canonicalPayload.creator_name,
-        dedup_hash:        canonicalPayload.dedup_hash,
-        public_key:        canonicalPayload.public_key,
-        region:            canonicalPayload.region,
-        social_attested:   canonicalPayload.social_attested,
-        tip_id_type:       canonicalPayload.tip_id_type,
+        creator_name: canonicalPayload.creator_name,
+        dedup_hash: canonicalPayload.dedup_hash,
+        public_key: canonicalPayload.public_key,
+        region: canonicalPayload.region,
+        social_attested: canonicalPayload.social_attested,
+        tip_id_type: canonicalPayload.tip_id_type,
         verification_tier: canonicalPayload.verification_tier,
-        vp_id:             canonicalPayload.vp_id,
-        zk_proof:          canonicalPayload.zk_proof,
+        vp_id: canonicalPayload.vp_id,
+        zk_proof: canonicalPayload.zk_proof,
       },
     };
     const signedTx = withTxId(txBody);
@@ -224,15 +224,15 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     return {
       verified: true,
       tip_id,
-      tip_id_type:       identity.tip_id_type || "personal",
+      tip_id_type: identity.tip_id_type || "personal",
       verification_tier: identity.verification_tier || "T1",
-      region:            identity.region || "US",
-      vp_id:             identity.vp_id || null,
-      founding:          !!identity.founding,
-      creator_name:      identity.creator_name || null,
-      score:             scoreData.score,
-      tier:              scoreData.tier.name,
-      status:            identity.status,
+      region: identity.region || "US",
+      vp_id: identity.vp_id || null,
+      founding: !!identity.founding,
+      creator_name: identity.creator_name || null,
+      score: scoreData.score,
+      tier: scoreData.tier.name,
+      status: identity.status,
     };
   }
 
