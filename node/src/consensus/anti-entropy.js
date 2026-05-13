@@ -392,14 +392,21 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     try {
       const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound });
-      const targetRound = Number(installed?.round || 0);
+      // null means the handler skipped (already installed or in-progress guard fired).
+      // Treat as failure so the caller can try the next peer rather than falsely
+      // reporting success and setting the recovery cooldown clock.
+      if (installed === null) {
+        _log.warn(`anti-entropy: snapshot handler returned null for ${peerId.slice(0, 12)} — guard fired or concurrent install; treating as failed`);
+        throw new Error("snapshot handler returned null — skipped by guard");
+      }
+      const targetRound = Number(installed.round || 0);
       // snapshot-handler.requestSnapshotFromPeer fires narwhal.markSnapshotInstalled
       // on success, transitioning syncing → catching_up. We do NOT call
       // exitSyncMode here — production stays gated until a subsequent AE
       // cycle asserts our state_merkle_root matches an authorized peer's
       // and the cert tail has reached catchUpTarget (markCaughtUp path).
       _metrics.gaps_pulled++;
-      _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed?.rows_installed || 0})`);
+      _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed.rows_installed || 0})`);
       _clearDivergenceAccumulators();  // Bug 2: stale pre-install observations would re-trigger BYZ_FORK
       return "snapshot_installed";
     } catch (err) {
@@ -490,6 +497,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    * a post-recovery AE tick doesn't immediately re-trigger BYZ_FORK on stale
    * pre-recovery observations. Called after successful snapshot install, after
    * halt auto-recovery, and when all peers self-heal.
+   *
+   * Also clears _peerDivergenceFirstSeen (the 30s grace timers). Without this,
+   * stale timers left over from before a recovery attempt expire immediately on
+   * the first post-recovery AE tick and promote any new divergence observation
+   * to "persistent" without a fresh grace window — causing the node to re-halt
+   * in < 1 AE cycle even when the recovery was genuine.
    */
   function _clearDivergenceAccumulators(upToRound) {
     if (upToRound !== undefined) {
@@ -503,6 +516,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _divergenceObservations.clear();
       _peerRootsForKey.clear();
     }
+    // Always reset grace timers so every post-recovery divergence observation
+    // gets a full fresh SYNC_DIVERGENCE_GRACE_MS window.
+    _peerDivergenceFirstSeen.clear();
   }
 
   /**
@@ -545,8 +561,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
     for (const [consensusRoot, count] of rootCounts) {
       if (count >= recoveryThreshold && consensusRoot !== ourRoot) {
-        const sourcePeerNodeId = [...peerRootMap.entries()].find(([, r]) => r === consensusRoot)?.[0];
-        return { unanimous: true, consensusRoot, sourcePeerNodeId };
+        // Return ALL majority peers so the caller can try each in turn if the
+        // first is busy (e.g. declining with "snapshot install in progress").
+        const sourcePeerIds = [...peerRootMap.entries()]
+          .filter(([, r]) => r === consensusRoot)
+          .map(([id]) => id);
+        return { unanimous: true, consensusRoot, sourcePeerNodeId: sourcePeerIds[0], sourcePeerIds };
       }
     }
     return { unanimous: false };
@@ -682,7 +702,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // Halt fired at threshold (2 peers). Minority-recovery requires a majority
       // (3 of 5 peers). The 3rd+ peer reports on subsequent AE ticks when
       // alreadyHalted=true. Re-check recovery now that `observed` has grown.
-      const { unanimous: u2, sourcePeerNodeId: src2 } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
+      const { unanimous: u2, sourcePeerNodeId: src2, sourcePeerIds: srcIds2 = [] } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
       if (u2 && src2 && !_minorityRecoveryPending) {
         const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
         const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
@@ -694,11 +714,11 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _minorityRecoveryPending = true;
         _log.warn(
           `anti-entropy: majority minority detected while halted at round=${atRound} — ` +
-          `majority of peers hold same alternative root. Scheduling auto-recovery from ${src2.slice(-8)} in ${RECOVERY_DELAY_MS}ms.`
+          `majority of peers hold same alternative root. Scheduling auto-recovery from ${src2.slice(-8)} in ${RECOVERY_DELAY_MS}ms (${srcIds2.length} fallback(s)).`
         );
         setTimeout(() => {
           _minorityRecoveryPending = false;
-          _autoRecoverFromMinority(src2, atRound);
+          _autoRecoverFromMinority(src2, atRound, srcIds2);
         }, RECOVERY_DELAY_MS);
       }
       return;
@@ -717,7 +737,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     //
     // Safety bound: only fire when peers unanimously converge on one root.
     // If peers disagree among themselves, halt stays manual — ambiguous fork.
-    const { unanimous, sourcePeerNodeId } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
+    const { unanimous, sourcePeerNodeId, sourcePeerIds = [] } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
     if (unanimous && sourcePeerNodeId) {
       const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
       const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
@@ -732,9 +752,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
       _log.warn(
         `anti-entropy: majority minority at round=${atRound} — majority of peers hold same ` +
-        `alternative root. Scheduling auto-recovery from ${sourcePeerNodeId.slice(-8)} in ${RECOVERY_DELAY_MS}ms.`
+        `alternative root. Scheduling auto-recovery from ${sourcePeerNodeId.slice(-8)} in ${RECOVERY_DELAY_MS}ms (${sourcePeerIds.length} fallback(s)).`
       );
-      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound), RECOVERY_DELAY_MS);
+      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound, sourcePeerIds), RECOVERY_DELAY_MS);
     }
   }
 
@@ -746,8 +766,16 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    * Only fires after unanimous minority detection. Verifies the halt is
    * still present before acting to handle race with manual clearByzantineForkHalt.
    */
-  async function _autoRecoverFromMinority(sourceTipNodeId, atRound) {
+  async function _autoRecoverFromMinority(sourceTipNodeId, atRound, allSourceTipNodeIds = []) {
     if (!narwhal) return;
+
+    // Guard against concurrent execution with triggerSnapshotResync. Both paths
+    // call _runSnapshotFallback which calls resetInstallState() — concurrent runs
+    // can clear each other's _snapInstallInProgress flag mid-install.
+    if (_snapshotResyncInFlight) {
+      _log.warn("anti-entropy: auto-recovery: snapshot resync already in flight — skipping concurrent call");
+      return;
+    }
 
     const halt = typeof narwhal.byzantineForkHalt === "function" && narwhal.byzantineForkHalt();
     if (!halt) {
@@ -755,26 +783,28 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return;
     }
 
-    // Resolve libp2p peerId from TIP node_id for snapshot transport.
-    let libp2pPeerId = null;
+    // Build ordered candidate list: primary source first, then remaining majority
+    // peers as fallbacks. If the chosen peer is busy (declining with "snapshot
+    // install in progress — try another peer"), we try the next majority peer
+    // instead of giving up and re-halting on the very next AE tick.
+    const candidateTipIds = [sourceTipNodeId, ...allSourceTipNodeIds.filter(id => id !== sourceTipNodeId)];
+
+    // Resolve libp2p peerIds for all candidates up front.
+    const libp2pPeerMap = {};
     if (network && typeof network.authorizedPeers === "function") {
       for (const [pid, tipId] of Object.entries(network.authorizedPeers())) {
-        if (tipId === sourceTipNodeId) { libp2pPeerId = pid; break; }
+        libp2pPeerMap[tipId] = pid;
       }
     }
-    if (!libp2pPeerId) {
-      _log.warn(`anti-entropy: auto-recovery: cannot resolve libp2p peerId for ${sourceTipNodeId} — halting manually`);
-      return;
-    }
-
-    _log.notice(`anti-entropy: auto-recovery: clearing byzantine_fork halt, syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
 
     // Clear halt BEFORE enterSyncMode so narwhal can respond to sync transitions.
+    // This must happen before the install loop so the node is in the correct state
+    // regardless of which peer we end up using.
     if (typeof narwhal.clearByzantineForkHalt === "function") {
       narwhal.clearByzantineForkHalt();
     }
-    // Bug 2: clear stale divergence observations so the first AE tick after recovery
-    // doesn't immediately re-trigger BYZ_FORK on pre-recovery entries at the same round.
+    // Clear stale divergence observations AND grace timers so the first AE tick
+    // after recovery doesn't immediately re-trigger BYZ_FORK on stale entries.
     _clearDivergenceAccumulators();
     // Reset install guard so the recovery snapshot is accepted as a fresh cycle.
     if (snapshotHandler && typeof snapshotHandler.resetInstallState === "function") {
@@ -784,14 +814,26 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     let selfState = {};
     try { selfState = getConsensusState ? getConsensusState() : {}; } catch { /* best-effort */ }
 
-    const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
-    if (result === "snapshot_installed") {
-      // Set cooldown only on confirmed success — failed installs must not
-      // consume the cooldown window (SI-3 / CI-2).
-      _lastAutoRecoveryAt = Date.now();
-      _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}, resuming consensus`);
-    } else {
-      _log.warn(`anti-entropy: auto-recovery: snapshot install returned '${result}' — manual intervention may be needed`);
+    _snapshotResyncInFlight = true;
+    try {
+      for (const tipId of candidateTipIds) {
+        const libp2pPeerId = libp2pPeerMap[tipId];
+        if (!libp2pPeerId) {
+          _log.warn(`anti-entropy: auto-recovery: cannot resolve libp2p peerId for ${tipId.slice(-8)} — trying next peer`);
+          continue;
+        }
+        _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
+        const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        if (result === "snapshot_installed") {
+          _lastAutoRecoveryAt = Date.now();
+          _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}, resuming consensus`);
+          return;
+        }
+        _log.warn(`anti-entropy: auto-recovery: snapshot from ${libp2pPeerId.slice(0, 12)} returned '${result}' — trying next peer`);
+      }
+      _log.warn(`anti-entropy: auto-recovery: all ${candidateTipIds.length} candidate peer(s) failed — manual intervention may be needed`);
+    } finally {
+      _snapshotResyncInFlight = false;
     }
   }
 
