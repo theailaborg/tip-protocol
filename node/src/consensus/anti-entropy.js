@@ -709,7 +709,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // Halt fired at threshold (2 peers). Minority-recovery requires a majority
       // (3 of 5 peers). The 3rd+ peer reports on subsequent AE ticks when
       // alreadyHalted=true. Re-check recovery now that `observed` has grown.
-      const { unanimous: u2, sourcePeerNodeId: src2, sourcePeerIds: srcIds2 = [] } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
+      const { unanimous: u2, sourcePeerNodeId: src2, sourcePeerIds: srcIds2 = [], consensusRoot: cRoot2 } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
       if (u2 && src2 && !_minorityRecoveryPending) {
         const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
         const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
@@ -725,7 +725,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
         setTimeout(() => {
           _minorityRecoveryPending = false;
-          _autoRecoverFromMinority(src2, atRound, srcIds2);
+          _autoRecoverFromMinority(src2, atRound, srcIds2, cRoot2);
         }, RECOVERY_DELAY_MS);
       }
       return;
@@ -744,7 +744,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     //
     // Safety bound: only fire when peers unanimously converge on one root.
     // If peers disagree among themselves, halt stays manual — ambiguous fork.
-    const { unanimous, sourcePeerNodeId, sourcePeerIds = [] } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
+    const { unanimous, sourcePeerNodeId, sourcePeerIds = [], consensusRoot } = _isUnanimousMinority(atRound, ourRoot, observed, threshold);
     if (unanimous && sourcePeerNodeId) {
       const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
       const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
@@ -761,7 +761,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         `anti-entropy: majority minority at round=${atRound} — majority of peers hold same ` +
         `alternative root. Scheduling auto-recovery from ${sourcePeerNodeId.slice(-8)} in ${RECOVERY_DELAY_MS}ms (${sourcePeerIds.length} fallback(s)).`
       );
-      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound, sourcePeerIds), RECOVERY_DELAY_MS);
+      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound, sourcePeerIds, consensusRoot), RECOVERY_DELAY_MS);
     }
   }
 
@@ -773,7 +773,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    * Only fires after unanimous minority detection. Verifies the halt is
    * still present before acting to handle race with manual clearByzantineForkHalt.
    */
-  async function _autoRecoverFromMinority(sourceTipNodeId, atRound, allSourceTipNodeIds = []) {
+  async function _autoRecoverFromMinority(sourceTipNodeId, atRound, allSourceTipNodeIds = [], expectedRoot = "") {
     if (!narwhal) return;
 
     // Guard against concurrent execution with triggerSnapshotResync. Both paths
@@ -828,6 +828,24 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         if (!libp2pPeerId) {
           _log.warn(`anti-entropy: auto-recovery: cannot resolve libp2p peerId for ${tipId.slice(-8)} — trying next peer`);
           continue;
+        }
+
+        // Verify this candidate still holds the expected majority root before
+        // installing. During concurrent multi-node churn, a peer that was on the
+        // majority root when _isUnanimousMinority fired may have since installed a
+        // snapshot from a different source and moved to a different root. Installing
+        // from such a peer would propagate a wrong root and fragment the cluster.
+        if (expectedRoot) {
+          let freshStatus = null;
+          try { freshStatus = await queryPeer(libp2pPeerId); } catch { /* best-effort */ }
+          const freshRoot = String(freshStatus?.state_merkle_root || "");
+          if (freshStatus && freshRoot && freshRoot !== expectedRoot) {
+            _log.warn(
+              `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)} — root drifted ` +
+              `from expected ${expectedRoot.slice(0, 16)} to ${freshRoot.slice(0, 16)} since majority detection`
+            );
+            continue;
+          }
         }
         _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
         const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
@@ -1018,22 +1036,31 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // once they observe the minority has converged to their root.
     const selfByzHalt = narwhal && typeof narwhal.byzantineForkHalt === "function" && narwhal.byzantineForkHalt();
     if (selfByzHalt && peerCommitted === selfCommitted && selfRoot && peerRoot && selfRoot === peerRoot) {
-      let allConverged = true;
+      // Require POSITIVE quorum confirmation before clearing halt, not just the
+      // absence of disagreement. The old approach (allConverged=true when no
+      // explicit disagreer at selfCommitted) was a false positive when _lastStatus
+      // held stale entries at round selfCommitted-1: no peer was "explicitly
+      // divergent at this round" so allConverged=true and the halt cleared without
+      // any real confirmation — the node immediately re-diverged and cascaded.
+      //
+      // New approach: count peers explicitly agreeing at selfCommitted with
+      // selfRoot. Require at least _bftHaltThreshold() (f+1) of them AND zero
+      // explicitly disagreeing peers. Stale peers (different committed_round or
+      // empty root) are simply ignored — they don't block OR confirm.
+      let agreeCount = 0;
+      let disagreeCount = 0;
       for (const [, cached] of _lastStatus.entries()) {
         const cachedRoot = String(cached?.state_merkle_root || "");
         const cachedCommitted = Number(cached?.committed_round || 0);
-        // Only count peers that are explicitly divergent at this round.
-        // Peers with different committed_round or empty root are still syncing
-        // — don't let them block halt-clear, they'll re-converge on their own.
-        if (cachedCommitted === selfCommitted && cachedRoot && cachedRoot !== selfRoot) {
-          allConverged = false;
-          break;
-        }
+        if (cachedCommitted !== selfCommitted || !cachedRoot) continue;
+        if (cachedRoot === selfRoot) agreeCount++;
+        else { disagreeCount++; break; }
       }
-      if (allConverged && _lastStatus.size > 0) {
+      const healThreshold = _bftHaltThreshold(); // f+1: same bar used to halt
+      if (disagreeCount === 0 && agreeCount >= healThreshold) {
         _log.warn(
           `anti-entropy: byzantine_fork halt at round=${selfCommitted} self-healed — ` +
-          `all peers now agree on root=${selfRoot.slice(0, 16)}; clearing halt`
+          `${agreeCount}/${_lastStatus.size} peers explicitly agree on root=${selfRoot.slice(0, 16)}; clearing halt`
         );
         if (typeof narwhal.clearByzantineForkHalt === "function") {
           narwhal.clearByzantineForkHalt();
