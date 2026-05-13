@@ -1110,6 +1110,14 @@ class KnexAdapter {
   getLatestRotation() { return this.mirror.getLatestRotation(); }
   getCommitteeAtRound(r) { return this.mirror.getCommitteeAtRound(r); }
   *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
+  clearCommitteeHistory() {
+    this.mirror.clearCommitteeHistory();
+    // Fire DB delete before snapshot rotations arrive (same pattern as
+    // clearCanonicalState). Mirror is authoritative for reads; DB cleanup
+    // ensures persistence survives a restart after snapshot install.
+    this.knex("committee_history").delete()
+      .catch(err => this.log.warn(`clearCommitteeHistory DB flush failed: ${err.message}`));
+  }
 
   // ── Rotation participation ─────────────────────────────────────────────────
 
