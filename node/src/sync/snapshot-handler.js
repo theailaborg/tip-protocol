@@ -867,12 +867,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       // §4 + #34: install committee_history rotations. Already verified
       // up the call chain (rotations_full_root match + chain-of-trust
-      // walk). saveCommitteeRotation is INSERT OR IGNORE so re-running
-      // an install is idempotent — the bootstrap rotation 0 from initDAG
-      // and the snapshot's rotation 0 should be byte-identical (same
-      // genesis founding_node), so no conflict. Subsequent rotations
-      // land cleanly because the local DB had none beyond rotation 0
-      // before this install.
+      // walk). Clear existing rows first so INSERT OR IGNORE can't
+      // silently skip a corrected rotation for a rotation_number that
+      // already exists locally from a divergent history (e.g. after a
+      // byzantine_fork where different nodes committed different
+      // COMMITTEE_ROTATION txs at the same rotation_number).
+      if (typeof dag.clearCommitteeHistory === "function") {
+        dag.clearCommitteeHistory();
+      }
       let rotationN = 0;
       const rotations = queues.rotations || [];
       for (const r of rotations) {

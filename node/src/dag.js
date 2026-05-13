@@ -646,6 +646,12 @@ class MemoryStore {
     }
     return best ? { ...best, committee: [...best.committee], signer_node_ids: [...best.signer_node_ids], signatures: [...best.signatures] } : null;
   }
+  // Clear all committee_history rows. Called by snapshot install before
+  // re-installing the sender's rotation chain, so INSERT OR IGNORE can't
+  // silently skip a corrected rotation for a rotation_number that this node
+  // already had (from a divergent history after a byzantine_fork).
+  clearCommitteeHistory() { this._committeeHistory.clear(); }
+
   // Streaming iterator over the entire chain in rotation_number order.
   // Used by snapshot sender (ship every rotation) and chain-of-trust walker.
   *getRotationsFromGenesis() {
@@ -2181,6 +2187,9 @@ class SQLiteStore {
       yield this._parseRotation(row);
     }
   }
+  clearCommitteeHistory() {
+    this.db.prepare("DELETE FROM committee_history").run();
+  }
   // #75 rotation_participation — see MemoryStore version for the contract.
   incrementRotationParticipation(nodeId, rotationNumber) {
     this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
@@ -2647,6 +2656,7 @@ function _buildDagHandle(store, config) {
     // getRotationsFromGenesis: streaming iterator in rotation_number order;
     //   used by snapshot sender + chain-of-trust walker.
     saveCommitteeRotation: (rec) => store.saveCommitteeRotation(rec),
+    clearCommitteeHistory: () => store.clearCommitteeHistory(),
     getCommitteeRotation: (rotationNumber) => store.getCommitteeRotation(rotationNumber),
     getLatestRotation: () => store.getLatestRotation(),
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
