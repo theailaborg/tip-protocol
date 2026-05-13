@@ -186,7 +186,7 @@ async function createNetworkNode(options = {}) {
       // arbitrary batch payloads into consensus.
       if (!_authorizedPeers.has(remotePeerId)) {
         log.warn(`${CONSENSUS_ACK_PROTOCOL}: rejected stream from unauthorized peer ${remotePeerId.slice(0, 16)}`);
-        stream.abort(new Error("unauthorized")).catch(() => {});
+        try { stream.abort(new Error("unauthorized")); } catch { /* ignore */ }
         return;
       }
       const bufs = [];
@@ -494,7 +494,7 @@ async function createNetworkNode(options = {}) {
         }
       } catch (err) {
         log.warn(`sendBatchDirect to ${tipNodeId}: ${err.message}`);
-        if (stream) stream.abort(err).catch(() => {});
+        if (stream) { try { stream.abort(err); } catch { /* ignore */ } }
       } finally {
         if (ackTimer) clearTimeout(ackTimer);
         try { if (stream) stream.close(); } catch { /* ignore */ }
