@@ -48,6 +48,26 @@ const CONTENT_STATUS = Object.freeze({
   RETRACTED: "retracted",
 });
 
+// ─── Prescan tiers ──────────────────────────────────────────────────────────
+// Vocabulary enum for the 4-tier categorical model. Threshold values that
+// decide which probability falls into which tier live in genesis under
+// `prescan.tier_thresholds` (accessed via PRESCAN_TIER_THRESHOLDS from
+// shared/protocol-constants.js) — same pattern as the existing
+// PRESCAN_THRESHOLDS legacy field.
+const PRESCAN_TIERS = Object.freeze({
+  LOW: "low",
+  ELEVATED: "elevated",
+  HIGH: "high",
+  CRITICAL: "critical",
+});
+
+const PRESCAN_TIER_VALUES = Object.freeze([
+  PRESCAN_TIERS.LOW,
+  PRESCAN_TIERS.ELEVATED,
+  PRESCAN_TIERS.HIGH,
+  PRESCAN_TIERS.CRITICAL,
+]);
+
 // ─── Dispute reasons ────────────────────────────────────────────────────────
 // Protocol vocabulary — enum of accepted values for the `reason` field on a
 // CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
@@ -394,6 +414,8 @@ module.exports = {
   JURY_VOTES,
   VERDICT,
   CONTENT_STATUS,
+  PRESCAN_TIERS,
+  PRESCAN_TIER_VALUES,
   DISPUTE_REASON,
   DISPUTE_REASONS,
   CNA_VERSIONS,

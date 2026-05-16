@@ -3,7 +3,12 @@
 const {
   signTransaction, computeTxId,
 } = require("../../../shared/crypto");
-const { ORIGIN, PRESCAN_THRESHOLDS } = require("../../../shared/protocol-constants");
+const {
+  PRESCAN_THRESHOLDS,
+  PRESCAN_TIER_THRESHOLDS,
+  CALIBRATION_THRESHOLDS,
+} = require("../../../shared/protocol-constants");
+const { ORIGIN, PRESCAN_TIERS } = require("../../../shared/constants");
 const { log } = require("../logger");
 
 /**
@@ -24,32 +29,131 @@ function nodeSignedAuto(txBody, config) {
 }
 
 /**
- * AI pre-scan for content origin mismatch detection.
+ * Threshold table for tier classification. The `contentType` parameter is a
+ * v2 hook — when content categorization is wired in, thresholds can be
+ * content-type-specific (legal text higher, casual chat lower). For v1 the
+ * parameter is accepted and ignored; every content uses the spec defaults.
  */
-function preScanContent(content, originCode, creatorHistory) {
-  if (originCode !== "OH") return { flagged: false, probability: 0 };
+function getTierThresholds(contentType = null) {
+  return PRESCAN_TIER_THRESHOLDS;
+}
+
+/**
+ * Map raw probability to a tier label using the threshold table.
+ *
+ * This is the "spec-pure" tier — no calibration applied. Useful for audit
+ * display and as input to adjustTier(). The persisted tier on the content
+ * row is the calibrated one (adjustTier output); raw_tier is derivable
+ * any time from the persisted probability + this function.
+ */
+function computeRawTier(probability, contentType = null) {
+  const t = getTierThresholds(contentType);
+  if (probability >= t.critical) return PRESCAN_TIERS.CRITICAL;
+  if (probability >= t.high)     return PRESCAN_TIERS.HIGH;
+  if (probability >= t.elevated) return PRESCAN_TIERS.ELEVATED;
+  return PRESCAN_TIERS.LOW;
+}
+
+/**
+ * Apply creator-history calibration to a raw tier (Claim Group G / FIX-03).
+ *
+ * Veterans with clean track records get a one-tier-down adjustment as
+ * benefit-of-doubt — AI classifiers have non-zero false-positive rates, and
+ * a creator with 200+ verified OH pieces has demonstrated they consistently
+ * write legitimate human content. Never shifts 2 tiers (CRITICAL→ELEVATED
+ * skip) — prevents "build clean history, then post AI as OH" gaming at the
+ * 0.98+ probability end.
+ *
+ * LOW and ELEVATED never adjusted (already not flagged; calibration would
+ * be a no-op).
+ */
+function adjustTier(rawTier, creatorHistory) {
+  if (rawTier === PRESCAN_TIERS.LOW || rawTier === PRESCAN_TIERS.ELEVATED) return rawTier;
+  const verifiedCount = creatorHistory?.verified_oh_count || 0;
+  if (verifiedCount >= CALIBRATION_THRESHOLDS.VETERAN_MIN) {
+    if (rawTier === PRESCAN_TIERS.CRITICAL) return PRESCAN_TIERS.HIGH;
+    if (rawTier === PRESCAN_TIERS.HIGH)     return PRESCAN_TIERS.ELEVATED;
+  } else if (verifiedCount >= CALIBRATION_THRESHOLDS.MODERATE_MIN) {
+    if (rawTier === PRESCAN_TIERS.HIGH) return PRESCAN_TIERS.ELEVATED;
+    // CRITICAL stays for moderate creators — too suspicious to demote at 0.98+
+  }
+  return rawTier;
+}
+
+// Origin codes that go through prescan. OH and AA both claim human-primary
+// authorship (OH = no AI, AA = AI-assisted), so an HIGH/CRITICAL classifier
+// signal suggests under-declaration: OH→AA/AG or AA→AG. AG and MX already
+// maximally disclose AI involvement — no further "downgrade" exists, so
+// running the classifier on them produces no useful action.
+const PRESCAN_ELIGIBLE_ORIGINS = new Set([ORIGIN.OH, ORIGIN.AA]);
+
+/**
+ * AI pre-scan for content origin mismatch detection.
+ *
+ * Runs for OH and AA origin codes (both claim human-primary authorship).
+ * AG and MX skip prescan — they already disclose AI involvement.
+ *
+ * Returns:
+ *   flagged       — boolean; back-compat signal driven by the legacy adaptive
+ *                   threshold. Existing callers (commit-handler) still read
+ *                   this to set initial content status. Migrate to `tier`.
+ *   probability   — raw classifier output [0.0, 1.0]
+ *   raw_tier      — tier from probability alone (spec-pure)
+ *   tier          — calibrated tier (raw_tier + creator-history adjustment)
+ *   threshold     — legacy adaptive threshold value (retained for back-compat)
+ */
+function preScanContent(content, originCode, creatorHistory, contentType = null) {
+  if (!PRESCAN_ELIGIBLE_ORIGINS.has(originCode)) {
+    return {
+      flagged: false,
+      probability: 0,
+      raw_tier: PRESCAN_TIERS.LOW,
+      tier: PRESCAN_TIERS.LOW,
+    };
+  }
 
   const words = content.split(/\s+/);
   const wordCount = words.length;
-  if (wordCount < 20) return { flagged: false, probability: 0.1 };
+  if (wordCount < 20) {
+    return {
+      flagged: false,
+      probability: 0.1,
+      raw_tier: PRESCAN_TIERS.LOW,
+      tier: PRESCAN_TIERS.LOW,
+    };
+  }
 
   const uniqueRatio = new Set(words).size / wordCount;
   const avgWordLen = words.reduce((s, w) => s + w.length, 0) / wordCount;
   const hasLongSentences = (content.match(/[.!?]/g) || []).length < wordCount / 25;
 
-  let prob = 0;
-  if (uniqueRatio < 0.55) prob += 0.2;
-  if (avgWordLen > 5.5) prob += 0.15;
-  if (hasLongSentences) prob += 0.1;
+  let probability = 0;
+  if (uniqueRatio < 0.55) probability += 0.2;
+  if (avgWordLen > 5.5) probability += 0.15;
+  if (hasLongSentences) probability += 0.1;
 
+  // Legacy adaptive threshold — drives the back-compat `flagged` boolean.
+  // Existing commit-handler reads d.prescan_flagged to set initial PENDING_REVIEW
+  // status. Will be removed once consumers migrate to `tier` (Phase 2).
   const verifiedCount = creatorHistory?.verified_oh_count || 0;
-  const threshold = verifiedCount > 200
+  const legacyThreshold = verifiedCount > 200
     ? PRESCAN_THRESHOLDS.ceiling
     : verifiedCount > 50
       ? 0.90
       : PRESCAN_THRESHOLDS.default;
 
-  return { flagged: prob > threshold, probability: prob, threshold };
+  // New tier-based output. raw_tier comes straight from probability; tier
+  // applies creator-history calibration on top (Claim G).
+  const rawTier = computeRawTier(probability, contentType);
+  const tier = adjustTier(rawTier, creatorHistory);
+
+  return {
+    flagged: probability > legacyThreshold,
+    probability,
+    raw_tier: rawTier,
+    tier,
+    threshold: legacyThreshold,
+  };
 }
 
 /**
@@ -105,4 +209,7 @@ module.exports = {
   nodeSignedAuto,
   createTxSubmitter,
   preScanContent,
+  computeRawTier,
+  getTierThresholds,
+  adjustTier,
 };

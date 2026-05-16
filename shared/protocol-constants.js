@@ -201,6 +201,33 @@ const PRESCAN_THRESHOLDS = {
   get ceiling() { return _ps().ceiling; },
 };
 
+// 4-tier categorical thresholds for the spec's Content Verification flow.
+// Read from genesis so they're consensus-aligned across the federation.
+const PRESCAN_TIER_THRESHOLDS = {
+  get elevated() { return _ps().tier_thresholds.elevated; },
+  get high()     { return _ps().tier_thresholds.high; },
+  get critical() { return _ps().tier_thresholds.critical; },
+};
+
+// Creator-history calibration buckets (Claim Group G / FIX-03).
+const CALIBRATION_THRESHOLDS = {
+  get MODERATE_MIN() { return _ps().calibration.moderate_min; },
+  get VETERAN_MIN()  { return _ps().calibration.veteran_min; },
+};
+
+const _rv = () => get().reviewer;
+const REVIEWER = {
+  get MIN_SCORE()              { return _rv().min_score; },
+  get MAX_OVERTURN_RATE()      { return _rv().max_overturn_rate; },
+  get ACCURACY_SAMPLE_SIZE()   { return _rv().accuracy_sample_size; },
+};
+
+const _cg = () => get().content_grace;
+const CONTENT_GRACE = {
+  get UNFLAGGED_MS() { return _cg().unflagged_ms; },
+  get FLAGGED_MS()   { return _cg().flagged_ms; },
+};
+
 const _c = () => get().consensus;
 const _n = () => get().network;
 const _r = () => get().reputation;
@@ -321,5 +348,7 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
+  PRESCAN_THRESHOLDS, PRESCAN_TIER_THRESHOLDS, CALIBRATION_THRESHOLDS,
+  REVIEWER, CONTENT_GRACE,
+  CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
 };

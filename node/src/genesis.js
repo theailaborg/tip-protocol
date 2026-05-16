@@ -189,6 +189,35 @@ const GENESIS_PAYLOAD = Object.freeze({
       legal: 0.93,
       floor: 0.80,
       ceiling: 0.94,
+      // 4-tier categorical model — fixed cutoffs for v1; per-content-type
+      // overrides come in v2 when categorization wires in.
+      tier_thresholds: {
+        elevated: 0.70,
+        high: 0.90,
+        critical: 0.98,
+      },
+      // Creator-history calibration (Claim Group G / FIX-03). Veterans with
+      // clean track records get a one-tier-down adjustment. Never shifts 2
+      // tiers — prevents "build clean history then post AI as OH" gaming.
+      calibration: {
+        moderate_min: 50,
+        veteran_min: 200,
+      },
+    },
+    reviewer: {
+      // Runtime eligibility gates for reviewer pool. No REGISTER_REVIEWER tx —
+      // selection is a pure function of identity state + DAG history,
+      // mirroring jury selection.
+      min_score: 800,
+      max_overturn_rate: 0.30,
+      accuracy_sample_size: 20,
+    },
+    content_grace: {
+      // Self-correction windows. Unflagged content keeps the original 24h
+      // window; HIGH/CRITICAL prescan-flagged content with override gets 48h,
+      // matching the time before reviewer engagement at h=48.
+      unflagged_ms: 86400000,    // 24h
+      flagged_ms: 172800000,     // 48h
     },
     consensus: {
       round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round

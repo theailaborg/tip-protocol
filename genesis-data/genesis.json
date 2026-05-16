@@ -147,7 +147,25 @@
       "academic": 0.92,
       "legal": 0.93,
       "floor": 0.8,
-      "ceiling": 0.94
+      "ceiling": 0.94,
+      "tier_thresholds": {
+        "elevated": 0.70,
+        "high": 0.90,
+        "critical": 0.98
+      },
+      "calibration": {
+        "moderate_min": 50,
+        "veteran_min": 200
+      }
+    },
+    "reviewer": {
+      "min_score": 800,
+      "max_overturn_rate": 0.30,
+      "accuracy_sample_size": 20
+    },
+    "content_grace": {
+      "unflagged_ms": 86400000,
+      "flagged_ms": 172800000
     },
     "consensus": {
       "round_timeout_ms": 2000,
