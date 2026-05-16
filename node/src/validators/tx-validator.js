@@ -25,11 +25,13 @@ const {
   DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
+const { getFoundingVP, getGenesisCommittee } = require("../genesis");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
 // isn't a regular tx and therefore isn't in TX_TYPES.
 const KNOWN_TX_TYPES = new Set([...TX_TYPE_SET, "GENESIS"]);
+const BOOTSTRAP_ONLY_TX_TYPES = new Set(["GENESIS"]);
 
 // ─── Validation result helper ─────────────────────────────────────────────────
 function pass() { return { valid: true, errors: [] }; }
@@ -196,9 +198,21 @@ function validateSchema(tx) {
 }
 
 // ─── Layer 3: Business rules ──────────────────────────────────────────────────
-function validateBusinessRules(tx) {
+function validateBusinessRules(tx, dag = null) {
   const errors = [];
   const d = tx.data;
+
+  if (dag && dag.getLatestRound() > 1) {
+    if (BOOTSTRAP_ONLY_TX_TYPES.has(tx.tx_type)) {
+      return fail(`${tx.tx_type} is a bootstrap-only tx and cannot enter via gossip after round 1`);
+    }
+    if (tx.tx_type === TX_TYPES.VP_REGISTERED && d.vp_id === getFoundingVP().vp_id) {
+      return fail(`VP_REGISTERED for the founding VP cannot enter via gossip after round 1`);
+    }
+    if (tx.tx_type === TX_TYPES.NODE_REGISTERED && getGenesisCommittee().has(d.node_id)) {
+      return fail(`NODE_REGISTERED for founding node ${d.node_id} cannot enter via gossip after round 1`);
+    }
+  }
 
   switch (tx.tx_type) {
 
@@ -559,7 +573,7 @@ function validateTransaction(tx, dag, options = {}) {
   }
 
   // Layer 3: Business rules
-  const businessResult = validateBusinessRules(tx);
+  const businessResult = validateBusinessRules(tx, dag);
   if (!businessResult.valid) {
     return { valid: false, errors: businessResult.errors, layer: "business_rules" };
   }
