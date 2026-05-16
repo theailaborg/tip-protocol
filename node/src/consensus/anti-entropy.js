@@ -873,6 +873,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
    */
   async function checkAndReconcile(peerId, peerStatus, selfState) {
     if (!peerStatus) return "ahead";  // conservative — no info, do nothing
+    // Annotate with libp2p peerId so triggerSnapshotResync can cross-reference
+    // status entries back to the network address needed for snapshot requests.
+    peerStatus._libp2pPeerId = peerId;
     _lastStatus.set(peerStatus.node_id || peerId, peerStatus);
 
     const selfCommitted = Number(selfState.committed_round || 0);
@@ -904,15 +907,11 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           `peer is ${peerCommitted - selfCommitted} rounds ahead; cert-gap pull cannot heal ` +
           `state divergence, escalating directly to snapshot resync`
         );
-        if (typeof narwhal.clearByzantineForkHalt === "function") {
-          narwhal.clearByzantineForkHalt();
-        }
-        const result = await _runSnapshotFallback(
-          peerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState
-        );
-        if (result === "snapshot_installed") {
-          _lastAutoRecoveryAt = Date.now();
-        }
+        // Route through triggerSnapshotResync to get multi-peer retry: if the
+        // first candidate is busy ("snapshot install in progress"), we fall through
+        // to the next peer instead of returning snapshot_failed and re-halting.
+        // triggerSnapshotResync handles clearByzantineForkHalt internally.
+        const result = await triggerSnapshotResync(selfCommitted, 0);
         return result;
       }
 
@@ -1160,6 +1159,33 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _log.debug(`anti-entropy: peer ${peerId.slice(0, 12)} cycle error: ${err.message}`);
       }
     }));
+
+    // Deadlock escape: when all nodes have concurrent byzantine_fork halts,
+    // round production stops cluster-wide — no new deferred anchor timers
+    // ever fire, so triggerSnapshotResync is never called and the cluster is
+    // permanently stuck. Detect this by checking if WE have been halted for
+    // longer than 2× the auto-recovery cooldown with no successful recovery.
+    // If so, fire triggerSnapshotResync proactively (consensus-based peer
+    // selection will pick the majority-root source).
+    if (!_running) return;
+    const selfByzHalt = narwhal && typeof narwhal.byzantineForkHalt === "function"
+      ? narwhal.byzantineForkHalt()
+      : null;
+    if (selfByzHalt && !_snapshotResyncInFlight) {
+      const DEADLOCK_ESCAPE_MS = (CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000) * 2;
+      const haltSince    = Number(selfByzHalt.since || 0);
+      const haltDuration = haltSince ? (Date.now() - haltSince) : 0;
+      const sinceLastMs  = Date.now() - _lastAutoRecoveryAt;
+      if (haltDuration > DEADLOCK_ESCAPE_MS && (_lastAutoRecoveryAt === 0 || sinceLastMs > DEADLOCK_ESCAPE_MS)) {
+        _log.warn(
+          `anti-entropy: halt deadlock detected — halted ${Math.round(haltDuration / 1000)}s ` +
+          `with no successful recovery; triggering consensus-based snapshot resync`
+        );
+        triggerSnapshotResync(0, 0).catch(err =>
+          _log.warn(`anti-entropy: deadlock escape resync failed: ${err.message}`)
+        );
+      }
+    }
   }
 
   function _scheduleNext() {
@@ -1300,11 +1326,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       `— selecting best peer for snapshot pull`
     );
 
-    // Pick the authorized peer with the highest committed_round from the
-    // status cache. If cache is stale or empty, fall back to any peer.
-    let bestPeerId = null;
-    let bestRound = -1;
-
+    // Select the snapshot source using consensus-majority voting.
+    // Each _lastStatus entry stores _libp2pPeerId (set by checkAndReconcile),
+    // so we can cross-reference TIP node state back to network addresses.
+    // We tally state_merkle_root votes; the root with the most supporting peers
+    // is the canonical state we should sync to. Picking a divergent peer as
+    // source would just install their bad state and re-halt immediately.
     let authorizedPeerIds = [];
     try {
       if (network && typeof network.authorizedPeers === "function") {
@@ -1312,24 +1339,32 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     } catch { /* network not ready */ }
 
-    // Map libp2p peerId → last known committed_round via _lastStatus
-    for (const peerId of authorizedPeerIds) {
-      // _lastStatus keyed by node_id; find matching entry by iterating
-      // (cache is small — committee size, typically 5)
-      let peerCommitted = 0;
-      for (const [, s] of _lastStatus.entries()) {
-        // peerStatus objects don't carry libp2p peerId directly; use any
-        // peer that is ahead of us as a reasonable choice.
-        const cr = Number(s.committed_round || 0);
-        if (cr > peerCommitted) peerCommitted = cr;
-      }
-      if (peerCommitted > bestRound) {
-        bestRound = peerCommitted;
-        bestPeerId = peerId;
+    // Tally votes: root → { votes, committed_round, libp2pPeerId }
+    const rootVotes = new Map();
+    for (const [, s] of _lastStatus.entries()) {
+      const root = s.state_merkle_root || "";
+      const cr   = Number(s.committed_round || 0);
+      const lid  = s._libp2pPeerId;
+      if (!root || !lid) continue;
+      if (!rootVotes.has(root)) rootVotes.set(root, { votes: 0, cr, libp2pPeerId: lid });
+      const entry = rootVotes.get(root);
+      entry.votes++;
+      if (cr > entry.cr) { entry.cr = cr; entry.libp2pPeerId = lid; }
+    }
+
+    // Pick the root with the most votes (tie-break: highest committed_round).
+    let bestPeerId = null;
+    let bestRound  = -1;
+    let bestVotes  = 0;
+    for (const [, { votes, cr, libp2pPeerId }] of rootVotes.entries()) {
+      if (votes > bestVotes || (votes === bestVotes && cr > bestRound)) {
+        bestVotes  = votes;
+        bestRound  = cr;
+        bestPeerId = libp2pPeerId;
       }
     }
 
-    // If we couldn't identify a best peer, fall back to first authorized peer.
+    // Fall back to first authorized peer when cache is empty (early startup).
     if (!bestPeerId && authorizedPeerIds.length > 0) {
       bestPeerId = authorizedPeerIds[0];
     }
@@ -1339,7 +1374,19 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "no_peers";
     }
 
-    _log.info(`anti-entropy: triggerSnapshotResync: pulling snapshot from ${bestPeerId.slice(0, 12)} (cached_round=${bestRound})`);
+    // Build ordered fallback list: majority-root peer first, then remaining peers
+    // sorted by vote count descending. Mirrors _autoRecoverFromMinority's retry
+    // strategy so a busy peer ("snapshot install in progress") doesn't block recovery.
+    const orderedPeerIds = [bestPeerId];
+    for (const [, { libp2pPeerId }] of [...rootVotes.entries()]
+        .sort(([, a], [, b]) => b.votes - a.votes || b.cr - a.cr)) {
+      if (libp2pPeerId && libp2pPeerId !== bestPeerId) orderedPeerIds.push(libp2pPeerId);
+    }
+    for (const pid of authorizedPeerIds) {
+      if (!orderedPeerIds.includes(pid)) orderedPeerIds.push(pid);
+    }
+
+    _log.info(`anti-entropy: triggerSnapshotResync: pulling snapshot from ${bestPeerId.slice(0, 12)} (cached_round=${bestRound}, fallbacks=${orderedPeerIds.length - 1})`);
 
     // Bug 1 — fresh peer query. The _lastStatus cache is up to 4s stale. Two nodes
     // can simultaneously fire triggerSnapshotResync (12ms apart from the same deferred
@@ -1372,17 +1419,34 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       snapshotHandler.resetInstallState();
     }
 
+    // Clear any active byzantine_fork halt BEFORE the install so narwhal can
+    // transition through syncing → catching_up → ready after the snapshot lands.
+    // Without this the halt flag stays set, round production stays suppressed,
+    // no new deferred anchor timers ever fire, and the node is permanently stuck.
+    // Consistent with the peer-ahead and unanimous-minority recovery paths which
+    // both call clearByzantineForkHalt() before _runSnapshotFallback.
+    if (narwhal && typeof narwhal.clearByzantineForkHalt === "function") {
+      const activeHalt = narwhal.byzantineForkHalt && narwhal.byzantineForkHalt();
+      if (activeHalt) {
+        _log.notice(`anti-entropy: triggerSnapshotResync: clearing active halt before snapshot install`);
+        narwhal.clearByzantineForkHalt();
+      }
+    }
+
     _snapshotResyncInFlight = true;
     try {
-      const result = await _runSnapshotFallback(bestPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
-      if (result === "snapshot_installed") {
-        _lastAutoRecoveryAt = Date.now();
-        _lastSnapshotResyncCompletedAt = Date.now();
-        _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed, resuming consensus`);
-      } else {
-        _log.warn(`anti-entropy: triggerSnapshotResync: snapshot install returned '${result}'`);
+      for (const candidatePeer of orderedPeerIds) {
+        const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        if (result === "snapshot_installed") {
+          _lastAutoRecoveryAt = Date.now();
+          _lastSnapshotResyncCompletedAt = Date.now();
+          _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed from ${candidatePeer.slice(0, 12)}, resuming consensus`);
+          return "snapshot_installed";
+        }
+        _log.warn(`anti-entropy: triggerSnapshotResync: snapshot from ${candidatePeer.slice(0, 12)} returned '${result}' — trying next peer`);
       }
-      return result;
+      _log.warn(`anti-entropy: triggerSnapshotResync: all ${orderedPeerIds.length} peer(s) exhausted`);
+      return "snapshot_failed";
     } finally {
       _snapshotResyncInFlight = false;
     }
