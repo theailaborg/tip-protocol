@@ -209,6 +209,8 @@ class KnexAdapter {
       t.string("tip_id_type", 32).notNullable().defaultTo("personal");  // personal | organization
       t.integer("founding").notNullable().defaultTo(0);
       t.string("status", 32).notNullable().defaultTo("active");
+      t.integer("reviewer_consent").notNullable().defaultTo(0);          // opt-in for runtime reviewer pool
+      t.integer("juror_consent").notNullable().defaultTo(0);             // opt-in for jury + expert panel selection
       t.string("registered_at", 64).notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
@@ -233,6 +235,9 @@ class KnexAdapter {
       t.integer("dispute_count").notNullable().defaultTo(0);
       t.integer("verification_count").notNullable().defaultTo(0);
       t.integer("prescan_flagged").notNullable().defaultTo(0);
+      t.float("prescan_probability").notNullable().defaultTo(0);          // raw classifier output
+      t.string("prescan_tier", 16).notNullable().defaultTo("low");        // low|elevated|high|critical
+      t.integer("override").notNullable().defaultTo(0);                   // creator confirmed OH despite HIGH/CRITICAL warning
       t.string("registered_at", 64).notNullable();
       t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
       _id(t, "tx_id").nullable();
@@ -429,13 +434,23 @@ class KnexAdapter {
     // Identities
     const idRows = await this.knex("identities").select("*");
     for (const row of idRows) {
-      this.mirror._identities.set(row.tip_id, { ...row, founding: !!row.founding });
+      this.mirror._identities.set(row.tip_id, {
+        ...row,
+        founding: !!row.founding,
+        reviewer_consent: !!row.reviewer_consent,
+        juror_consent: !!row.juror_consent,
+      });
     }
 
     // Content
     const contentRows = await this.knex("content").select("*");
     for (const row of contentRows) {
-      const mapped = { ...row, ctid: row.tip_ctid, prescan_flagged: !!row.prescan_flagged };
+      const mapped = {
+        ...row,
+        ctid: row.tip_ctid,
+        prescan_flagged: !!row.prescan_flagged,
+        override: !!row.override,
+      };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
     }
@@ -652,6 +667,8 @@ class KnexAdapter {
       tip_id_type: rec.tip_id_type || "personal",
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
+      reviewer_consent: rec.reviewer_consent ? 1 : 0,
+      juror_consent: rec.juror_consent ? 1 : 0,
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,
@@ -684,6 +701,9 @@ class KnexAdapter {
       dispute_count: rec.dispute_count || 0,
       verification_count: rec.verification_count || 0,
       prescan_flagged: rec.prescan_flagged ? 1 : 0,
+      prescan_probability: typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
+      prescan_tier: rec.prescan_tier || "low",
+      override: rec.override ? 1 : 0,
       registered_at: rec.registered_at,
       registered_urls: JSON.stringify(urls),
       tx_id: rec.tx_id || null,

@@ -57,6 +57,8 @@ function _canonIdentity(r) {
     tip_id_type: r.tip_id_type || "personal",
     founding: r.founding ? 1 : 0,
     status: r.status,
+    reviewer_consent: r.reviewer_consent ? 1 : 0,
+    juror_consent: r.juror_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
@@ -85,6 +87,9 @@ function _canonContent(r) {
     cna_version: r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
+    prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
+    prescan_tier: r.prescan_tier || "low",
+    override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
     tx_id: r.tx_id || null,
@@ -992,6 +997,8 @@ class SQLiteStore {
         tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
+        reviewer_consent    INTEGER NOT NULL DEFAULT 0,        -- opt-in for runtime reviewer pool selection
+        juror_consent       INTEGER NOT NULL DEFAULT 0,        -- opt-in for jury + expert panel selection (runtime filters distinguish)
         registered_at       TEXT NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
@@ -1016,6 +1023,9 @@ class SQLiteStore {
         dispute_count       INTEGER NOT NULL DEFAULT 0,
         verification_count  INTEGER NOT NULL DEFAULT 0,
         prescan_flagged     INTEGER NOT NULL DEFAULT 0,
+        prescan_probability REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
+        prescan_tier        TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
+        override            INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
         registered_at       TEXT NOT NULL,
         registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
         tx_id               TEXT
@@ -1539,8 +1549,9 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,tip_id_type,founding,status,registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+            verification_tier,tip_id_type,founding,status,reviewer_consent,juror_consent,
+            registered_at,creator_name,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -1549,8 +1560,9 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO content
            (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
-            status,prescan_flagged,registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            status,prescan_flagged,prescan_probability,prescan_tier,override,
+            registered_at,registered_urls,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -1852,12 +1864,19 @@ class SQLiteStore {
       rec.tip_id_type || "personal",
       rec.founding ? 1 : 0,
       rec.status || "active",
+      rec.reviewer_consent ? 1 : 0,
+      rec.juror_consent ? 1 : 0,
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
   getIdentity(id) {
     const row = this._stmts.getIdentity.get(id);
-    return row ? { ...row, founding: row.founding === 1 } : null;
+    return row ? {
+      ...row,
+      founding: row.founding === 1,
+      reviewer_consent: row.reviewer_consent === 1,
+      juror_consent: row.juror_consent === 1,
+    } : null;
   }
   getAllIdentities() {
     return this._stmts.getAllIdentities.all().map(r => ({ ...r, founding: r.founding === 1 }));
@@ -1881,6 +1900,9 @@ class SQLiteStore {
       rec.cna_version,
       rec.status || "registered",
       rec.prescan_flagged ? 1 : 0,
+      typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
+      rec.prescan_tier || "low",
+      rec.override ? 1 : 0,
       rec.registered_at, JSON.stringify(urls), rec.tx_id || null
     );
   }
@@ -2254,7 +2276,12 @@ class SQLiteStore {
   *iterateCanonicalState() {
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
-      yield { table: "identities", row: _canonIdentity({ ...r, founding: r.founding === 1 }) };
+      yield { table: "identities", row: _canonIdentity({
+        ...r,
+        founding: r.founding === 1,
+        reviewer_consent: r.reviewer_consent === 1,
+        juror_consent: r.juror_consent === 1,
+      }) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
@@ -2262,7 +2289,13 @@ class SQLiteStore {
       // Without this, JSON columns come through as strings and _canonContent's
       // Array.isArray / typeof === "object" checks fail, emitting defaults
       // and silently forking the state_merkle_root vs MemoryStore-backed nodes.
-      yield { table: "content", row: _canonContent({ ...this._hydrateContent(r), prescan_flagged: r.prescan_flagged === 1 }) };
+      yield { table: "content", row: _canonContent({
+        ...this._hydrateContent(r),
+        prescan_flagged: r.prescan_flagged === 1,
+        prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
+        prescan_tier: r.prescan_tier || "low",
+        override: r.override === 1,
+      }) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
