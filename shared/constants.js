@@ -79,6 +79,27 @@ const PRESCAN_NOTES = Object.freeze({
   [PRESCAN_TIERS.CRITICAL]: "Our system has VERY HIGH confidence (98%+) this content was AI-generated. You have 48 hours to change at zero penalty. Significant penalty applies if the declaration is later overturned.",
 });
 
+// ─── Prescan-review state ──────────────────────────────────────────────────
+// Lifecycle states for a `prescan_reviews` row. State machine:
+//
+//   triggered → (creator self-corrects via UPDATE_ORIGIN)    → closed_self_correct
+//   triggered → reviewer DISMISSES (AI's flag was wrong)     → closed_dismissed
+//   triggered → reviewer CONFIRMS (AI's flag was right)      → confirmed
+//   confirmed → (creator accepts correction privately)       → closed_accepted_private
+//   confirmed → (24h elapses without creator action)         → escalated_to_dispute
+//   triggered → assigned reviewer recuses                    → recused
+const PRESCAN_REVIEW_STATES = Object.freeze({
+  TRIGGERED: "triggered",                              // reviewer assigned, awaiting decision
+  CLOSED_SELF_CORRECT: "closed_self_correct",          // creator updated origin within window
+  CLOSED_DISMISSED: "closed_dismissed",                // reviewer said "AI's flag was wrong"
+  CONFIRMED: "confirmed",                              // reviewer said "AI's flag was right"; creator decision window open
+  CLOSED_ACCEPTED_PRIVATE: "closed_accepted_private",  // creator accepted correction privately
+  ESCALATED_TO_DISPUTE: "escalated_to_dispute",        // auto-escalated to CONTENT_DISPUTED after creator window
+  RECUSED: "recused",                                  // reviewer recused; reassigned (terminal for this review_id slot)
+});
+
+const PRESCAN_REVIEW_STATE_VALUES = Object.freeze(Object.values(PRESCAN_REVIEW_STATES));
+
 // ─── Dispute reasons ────────────────────────────────────────────────────────
 // Protocol vocabulary — enum of accepted values for the `reason` field on a
 // CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
@@ -224,6 +245,14 @@ const TX_TYPES = Object.freeze({
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
+  // Prescan review pipeline — human reviewer auditing whether the AI
+  // prescan's HIGH/CRITICAL flag was correct. Single-reviewer gate
+  // between prescan flag and public CONTENT_DISPUTED. On DAG for
+  // federation consistency; UI policy filters dismissed reviews from
+  // public surfaces.
+  PRESCAN_REVIEW_TRIGGERED: "PRESCAN_REVIEW_TRIGGERED",
+  PRESCAN_REVIEW_DISMISSED: "PRESCAN_REVIEW_DISMISSED",
+  PRESCAN_REVIEW_CONFIRMED: "PRESCAN_REVIEW_CONFIRMED",
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
@@ -429,6 +458,8 @@ module.exports = {
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,
+  PRESCAN_REVIEW_STATES,
+  PRESCAN_REVIEW_STATE_VALUES,
   DISPUTE_REASON,
   DISPUTE_REASONS,
   CNA_VERSIONS,

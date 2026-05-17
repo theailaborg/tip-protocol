@@ -406,6 +406,24 @@ class KnexAdapter {
       t.index("effective_round", "idx_committee_history_round");
     });
 
+    // Prescan reviews (Phase 2 — human reviewing AI prescan flag).
+    // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
+    await ensure("prescan_reviews", t => {
+      t.string("review_id", 128).primary();
+      _id(t, "ctid").notNullable();
+      _id(t, "creator_tip_id").notNullable();
+      _id(t, "assigned_reviewer").nullable();
+      t.integer("triggered_at_round").notNullable();
+      t.integer("decided_at_round").nullable();
+      t.integer("confirmed_at_round").nullable();
+      t.string("state", 32).notNullable().defaultTo("triggered");
+      t.text("decision_note").nullable();
+      t.string("suggested_origin", 8).nullable();
+      t.index("ctid", "idx_prescan_reviews_ctid");
+      t.index("state", "idx_prescan_reviews_state");
+      t.index("assigned_reviewer", "idx_prescan_reviews_reviewer");
+    });
+
     await ensure("rotation_participation", t => {
       _id(t, "node_id").notNullable();
       t.integer("rotation_number").notNullable();
@@ -569,6 +587,24 @@ class KnexAdapter {
     if (!this.mirror._rotationParticipation) this.mirror._rotationParticipation = new Map();
     for (const row of rpRows) {
       this.mirror._rotationParticipation.set(`${row.node_id}|${row.rotation_number}`, row.count);
+    }
+
+    // Prescan reviews
+    const prRows = await this.knex("prescan_reviews").select("*");
+    if (!this.mirror._prescanReviews) this.mirror._prescanReviews = new Map();
+    for (const row of prRows) {
+      this.mirror._prescanReviews.set(row.review_id, {
+        review_id: row.review_id,
+        ctid: row.ctid,
+        creator_tip_id: row.creator_tip_id,
+        assigned_reviewer: row.assigned_reviewer || null,
+        triggered_at_round: row.triggered_at_round,
+        decided_at_round: row.decided_at_round == null ? null : row.decided_at_round,
+        confirmed_at_round: row.confirmed_at_round == null ? null : row.confirmed_at_round,
+        state: row.state,
+        decision_note: row.decision_note || null,
+        suggested_origin: row.suggested_origin || null,
+      });
     }
   }
 
@@ -1089,6 +1125,30 @@ class KnexAdapter {
   getLatestRotation() { return this.mirror.getLatestRotation(); }
   getCommitteeAtRound(r) { return this.mirror.getCommitteeAtRound(r); }
   *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
+
+  // ── Prescan reviews ────────────────────────────────────────────────────────
+
+  savePrescanReview(rec) {
+    this.mirror.savePrescanReview(rec);
+    const row = {
+      review_id: rec.review_id,
+      ctid: rec.ctid,
+      creator_tip_id: rec.creator_tip_id,
+      assigned_reviewer: rec.assigned_reviewer || null,
+      triggered_at_round: rec.triggered_at_round,
+      decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
+      confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      state: rec.state || "triggered",
+      decision_note: rec.decision_note || null,
+      suggested_origin: rec.suggested_origin || null,
+    };
+    this._ff(() => this._dbInsert("prescan_reviews", "review_id", row, "merge"));
+  }
+
+  getPrescanReview(reviewId) { return this.mirror.getPrescanReview(reviewId); }
+  getOpenPrescanReviewByCtid(ctid) { return this.mirror.getOpenPrescanReviewByCtid(ctid); }
+  getPrescanReviewsByReviewer(tipId) { return this.mirror.getPrescanReviewsByReviewer(tipId); }
+  getPrescanReviewsByCtid(ctid) { return this.mirror.getPrescanReviewsByCtid(ctid); }
 
   // ── Rotation participation ─────────────────────────────────────────────────
 
