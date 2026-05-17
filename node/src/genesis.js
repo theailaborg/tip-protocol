@@ -215,6 +215,12 @@ const GENESIS_PAYLOAD = Object.freeze({
       // prescan-review trigger emits an auto-cascade CONTENT_DISPUTED once
       // this elapses against cert.ts.
       creator_decision_window_ms: 86400000,
+      // Score delta applied to the creator when they accept the reviewer's
+      // correction privately (Option 1). Negative — accepting the
+      // CONFIRMED finding still carries a small penalty, smaller than the
+      // dispute pipeline's OH→AA range (-10..-30). Stored as the signed
+      // delta directly so the call site does not negate.
+      accept_correction_score_delta: -10,
     },
     content_grace: {
       // Self-correction windows. Unflagged content keeps the original 24h

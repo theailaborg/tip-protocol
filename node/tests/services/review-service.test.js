@@ -79,12 +79,26 @@ function _setup() {
   const now = new Date().toISOString();
   dag.setScore(REVIEWER_1, 900, 0, now);
   dag.setScore(REVIEWER_2, 900, 0, now);
+  dag.setScore(CREATOR, 700, 0, now);
+
+  // Node-signed SCORE_UPDATE txs (emitted by accept-correction) need a
+  // real node keypair on the DAG for signature verification.
+  const nodeKp = generateMLDSAKeypair();
+  const NODE_ID = "tip://node/n1";
+  dag.saveNode({
+    node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
+    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+  });
+  const config = {
+    nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
+  };
 
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); };
-  const service = createReviewService({ dag, scoring, submitTx });
+  const submitBatch = (txs) => { for (const tx of txs) submitted.push(tx); };
+  const service = createReviewService({ dag, scoring, submitTx, submitBatch, config });
 
-  return { dag, scoring, service, submitted, creatorKp, reviewer1Kp, reviewer2Kp };
+  return { dag, scoring, service, submitted, config, creatorKp, reviewer1Kp, reviewer2Kp };
 }
 
 function _seedTriggeredReview(fx, { reviewId = "rv_t", ctid = CTID_1 } = {}) {
@@ -261,7 +275,8 @@ describe("review-service.acceptCorrection", () => {
     return signBody({ author_tip_id, new_origin_code }, creatorKp.privateKey);
   }
 
-  test("emits UPDATE_ORIGIN with new_origin_code from body", () => {
+  test("emits UPDATE_ORIGIN + SCORE_UPDATE batch with new_origin_code from body", () => {
+    const { REVIEWER } = require(path.join(SHARED, "protocol-constants"));
     const fx = _setup();
     _seedConfirmedReview(fx, { reviewId: "rv_acc1", suggestedOrigin: "AG" });
     _seedContent(fx);
@@ -270,11 +285,24 @@ describe("review-service.acceptCorrection", () => {
     const out = fx.service.acceptCorrection("rv_acc1", {
       author_tip_id: CREATOR, new_origin_code: "AG", signature,
     });
-    expect(fx.submitted.length).toBe(1);
-    expect(fx.submitted[0].tx_type).toBe(TX_TYPES.UPDATE_ORIGIN);
-    expect(fx.submitted[0].data.new_origin_code).toBe("AG");
-    expect(fx.submitted[0].data.author_tip_id).toBe(CREATOR);
+    expect(fx.submitted.length).toBe(2);
+
+    const updateTx = fx.submitted.find(t => t.tx_type === TX_TYPES.UPDATE_ORIGIN);
+    expect(updateTx).toBeDefined();
+    expect(updateTx.data.new_origin_code).toBe("AG");
+    expect(updateTx.data.author_tip_id).toBe(CREATOR);
+
+    const scoreTx = fx.submitted.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
+    expect(scoreTx).toBeDefined();
+    expect(scoreTx.data.tip_id).toBe(CREATOR);
+    expect(scoreTx.data.delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);
+    expect(scoreTx.data.delta).toBeLessThan(0);
+    expect(scoreTx.data.reason).toBe("accept_correction:rv_acc1");
+    expect(scoreTx.data.ctid).toBe(CTID_1);
+    expect(scoreTx.data.related_tx_id).toBe(updateTx.tx_id);
+
     expect(out.new_origin_code).toBe("AG");
+    expect(out.score_delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);
   });
 
   test("defaults new_origin_code to review.suggested_origin when omitted", () => {
@@ -286,7 +314,8 @@ describe("review-service.acceptCorrection", () => {
     fx.service.acceptCorrection("rv_acc2", {
       author_tip_id: CREATOR, signature,
     });
-    expect(fx.submitted[0].data.new_origin_code).toBe("MX");
+    const updateTx = fx.submitted.find(t => t.tx_type === TX_TYPES.UPDATE_ORIGIN);
+    expect(updateTx.data.new_origin_code).toBe("MX");
   });
 
   test("rejects when review is not in 'confirmed' state", () => {

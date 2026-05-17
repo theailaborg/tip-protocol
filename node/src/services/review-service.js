@@ -23,6 +23,7 @@
 "use strict";
 
 const { TX_TYPES } = require("../../../shared/constants");
+const { REVIEWER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
@@ -34,7 +35,7 @@ const { getLogger } = require("../logger");
 
 const log = getLogger("tip.review");
 
-function createReviewService({ dag, scoring, submitTx }) {
+function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
   function getReview(reviewId) {
     const review = dag.getPrescanReview(reviewId);
@@ -120,9 +121,10 @@ function createReviewService({ dag, scoring, submitTx }) {
     const { review, content, new_origin_code } =
       acceptCorrectionSchema.validateRequest(reviewId, body, { dag });
 
-    const tx = withTxId({
+    const timestamp = new Date().toISOString();
+    const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
-      timestamp: new Date().toISOString(),
+      timestamp,
       prev: dag.getRecentPrev(),
       data: {
         ctid: review.ctid,
@@ -132,15 +134,35 @@ function createReviewService({ dag, scoring, submitTx }) {
         signature: body.signature,
       },
     });
-    submitTx(tx);
-    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code}`);
+
+    // Score penalty batched atomically with the origin update. Accepting
+    // the reviewer's CONFIRM still costs the creator
+    // REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA (a signed-negative integer)
+    // — Option 1 is strictly cheaper than letting auto-escalation run
+    // the dispute pipeline (OH→AA range -10..-30) but is not free, so
+    // the reviewer-was-right outcome carries economic weight.
+    const scoreTx = scoring.buildScoreUpdateTx({
+      tipId: body.author_tip_id,
+      delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
+      reason: `accept_correction:${reviewId}`,
+      ctid: review.ctid,
+      relatedTxId: updateTx.tx_id,
+      timestamp,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+
+    submitBatch([updateTx, scoreTx]);
+    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (delta=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA})`);
 
     return {
       review_id: reviewId,
       ctid: review.ctid,
       old_origin_code: content.origin_code,
       new_origin_code,
-      tx_id: tx.tx_id,
+      score_delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
+      tx_id: updateTx.tx_id,
+      score_tx_id: scoreTx.tx_id,
       confirmation: "proposed",
     };
   }

@@ -224,6 +224,11 @@ const REVIEWER = {
   // PRESCAN_REVIEW_CONFIRMED. After this elapses, the scheduler emits
   // an auto-cascade CONTENT_DISPUTED on the creator's behalf.
   get CREATOR_DECISION_WINDOW_MS() { return _rv().creator_decision_window_ms; },
+  // Signed delta applied to the creator's score on accept-correction.
+  // Negative — Option 1 still carries a small penalty; smaller than the
+  // dispute pipeline's OH→AA range so accepting privately is strictly
+  // cheaper than letting auto-escalation run.
+  get ACCEPT_CORRECTION_SCORE_DELTA() { return _rv().accept_correction_score_delta; },
 };
 
 const _cg = () => get().content_grace;
