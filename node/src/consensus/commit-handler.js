@@ -25,6 +25,9 @@ const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
 const updateProfileSchema = require("../schemas/update-profile");
+const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
+const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
+const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -175,7 +178,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         dag.runInTransaction(() => {
           for (const tx of validated) {
             dag.addTx(tx);
-            _applyDerivedState(tx, certTimestamp);
+            _applyDerivedState(tx, certTimestamp, round);
             committed++;
           }
           // Remove committed txs from mempool in the same transaction
@@ -466,6 +469,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
+      case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
+        // Content must exist + no duplicate open review per CTID. The
+        // scheduler guards this when emitting, but consensus-replay must
+        // enforce too — a malicious or buggy node emitting a second
+        // trigger after another node already triggered is byzantine.
+        if (!dag.getContent(d.ctid)) {
+          return { valid: false, error: `Content not found: ${d.ctid}` };
+        }
+        const existing = dag.getOpenPrescanReviewByCtid(d.ctid);
+        if (existing && existing.review_id !== d.review_id) {
+          return {
+            valid: false,
+            error: `Cannot trigger review: an open review already exists for ${d.ctid} (review_id=${existing.review_id})`,
+          };
+        }
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
@@ -475,7 +496,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * Apply derived state updates for a committed transaction.
    * Handles all tx types — identity, content, dispute, jury, appeal, revocation, governance.
    */
-  function _applyDerivedState(tx, _committedCertTimestamp = 0) {
+  function _applyDerivedState(tx, _committedCertTimestamp = 0, round = 0) {
     const d = tx.data || {};
 
     switch (tx.tx_type) {
@@ -520,6 +541,61 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             if (d[field] !== undefined) merged[field] = d[field];
           }
           dag.saveIdentity(merged);
+        }
+        break;
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
+        // Scheduler-emitted; signature already validated. Create the
+        // prescan_reviews row with state=triggered + reviewer assignment.
+        // Content.status flip to PENDING_REVIEW is handled in Phase 2.3.
+        // Idempotent: if a review already exists for this review_id,
+        // savePrescanReview replaces it (same row carries the assignment
+        // forward — no duplicate trigger occurs because the scheduler
+        // checks getOpenPrescanReviewByCtid before emitting).
+        dag.savePrescanReview({
+          review_id: d.review_id,
+          ctid: d.ctid,
+          creator_tip_id: d.creator_tip_id,
+          assigned_reviewer: d.assigned_reviewer_tip_id,
+          triggered_at_round: d.triggered_at_round,
+          state: "triggered",
+        });
+        break;
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_DISMISSED: {
+        // Reviewer said "AI's flag was wrong". Close the review and
+        // (Phase 2.3) restore content.status to REGISTERED. Schema
+        // module enforced that the review is in state=triggered and
+        // assigned to this reviewer.
+        const review = dag.getPrescanReview(d.review_id);
+        if (review) {
+          dag.savePrescanReview({
+            ...review,
+            state: "closed_dismissed",
+            decided_at_round: round,
+            decision_note: d.decision_note || null,
+          });
+        }
+        break;
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
+        // Reviewer said "AI's flag was right". Transition to state=confirmed
+        // + record suggested_origin + start the creator's 24h decision
+        // window (confirmed_at_round). Auto-escalation to CONTENT_DISPUTED
+        // is handled by a scheduler in Phase 2.3.
+        const review = dag.getPrescanReview(d.review_id);
+        if (review) {
+          dag.savePrescanReview({
+            ...review,
+            state: "confirmed",
+            decided_at_round: round,
+            confirmed_at_round: round,
+            decision_note: d.decision_note || null,
+            suggested_origin: d.suggested_origin,
+          });
         }
         break;
       }
@@ -864,6 +940,25 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // fields) and signature verification against the user's own
         // identity public key.
         return updateProfileSchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.PRESCAN_REVIEW_TRIGGERED) {
+        // Node-emitted system tx (scheduler). Signed by the emitting
+        // node's ML-DSA-65 key over canonicalTx(tx). Schema module
+        // verifies node-registry presence + signature.
+        return prescanReviewTriggeredSchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.PRESCAN_REVIEW_DISMISSED) {
+        // Reviewer's "AI was wrong" decision. Schema module verifies
+        // signature against the assigned-reviewer's identity public key.
+        return prescanReviewDismissedSchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.PRESCAN_REVIEW_CONFIRMED) {
+        // Reviewer's "AI was right" decision. Same signature pattern as
+        // dismissed; canonical payload also carries the suggested_origin.
+        return prescanReviewConfirmedSchema.verifyTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.BIND_DOMAIN) {
