@@ -842,6 +842,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     _snapshotResyncInFlight = true;
     try {
+      const rootDriftedPeers = []; // peers skipped because root drifted from expectedRoot
       for (const tipId of candidateTipIds) {
         const libp2pPeerId = libp2pPeerMap[tipId];
         if (!libp2pPeerId) {
@@ -863,6 +864,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
               `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)} — root drifted ` +
               `from expected ${expectedRoot.slice(0, 16)} to ${freshRoot.slice(0, 16)} since majority detection`
             );
+            rootDriftedPeers.push({ libp2pPeerId, freshRoot });
             continue;
           }
         }
@@ -875,7 +877,36 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         }
         _log.warn(`anti-entropy: auto-recovery: snapshot from ${libp2pPeerId.slice(0, 12)} returned '${result}' — trying next peer`);
       }
+
+      // All expectedRoot-matching candidates were exhausted. If every drifted peer
+      // agrees on ONE new root, the cluster has already converged to a new canonical
+      // state. Install from any of them rather than giving up entirely.
+      if (rootDriftedPeers.length > 0) {
+        const uniqueDriftedRoots = new Set(rootDriftedPeers.map(p => p.freshRoot));
+        if (uniqueDriftedRoots.size === 1) {
+          const newRoot = uniqueDriftedRoots.values().next().value;
+          const { libp2pPeerId: fallbackPeer } = rootDriftedPeers[0];
+          _log.warn(
+            `anti-entropy: auto-recovery: all ${rootDriftedPeers.length} drifted peer(s) unanimously ` +
+            `agree on new root ${newRoot.slice(0, 16)} — retrying install from ${fallbackPeer.slice(0, 12)}`
+          );
+          const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          if (result === "snapshot_installed") {
+            _lastAutoRecoveryAt = Date.now();
+            _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${fallbackPeer.slice(0, 12)} (drifted-root fallback), resuming consensus`);
+            return;
+          }
+        }
+      }
+
       _log.warn(`anti-entropy: auto-recovery: all ${candidateTipIds.length} candidate peer(s) failed — manual intervention may be needed`);
+      // Return narwhal to ready so the deadlock-escape or next recovery tick can
+      // retry. Without this, if the node is in syncing (e.g. watchdog reverted it),
+      // triggerSnapshotResync is permanently blocked and the node stays stuck.
+      if (narwhal && typeof narwhal.exitSyncMode === "function") {
+        const safeRound = Number(selfState.round || 0);
+        narwhal.exitSyncMode(safeRound);
+      }
     } finally {
       _snapshotResyncInFlight = false;
     }
