@@ -62,10 +62,11 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers, onMeshRefresh }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
+  const _onMeshRefresh = typeof onMeshRefresh === "function" ? onMeshRefresh : null;
   // Rate-limit the producer-pause notify. _beginRound retries every 50ms
   // while paused; the upstream consumer (bullshark rotation proposer)
   // doesn't need that frequency. 1.5s matches the rotation-coord
@@ -97,6 +98,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // Drives two self-healing tiers: mesh re-graft at 3, direct-stream bypass at 6+.
   // Reset to 0 on every round advance so tiers are per-stuck-round, not cumulative.
   let _retryCount = 0;
+  // Counts consecutive rounds where we produced a tx-bearing batch but received
+  // 0 peer acks (batch was orphaned). Covers the fast-forward code path where
+  // _retryCount never reaches 3 because peers at higher rounds push us forward
+  // before the retry loop fires. Reset when we successfully form our own cert.
+  let _consecutiveOrphanedBatches = 0;
   let _nextRoundTimer = null;                       // inter-round scheduler
 
   // Per-round state
@@ -380,10 +386,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _tryAdvanceRound();
 
         // If still stuck, enter the retry loop.
-        // We count the round-timer expiry as tick 1 so that _retryCount in
-        // _scheduleRetry() stays aligned with wall-clock multiples of
-        // ROUND_TIMEOUT_MS — Layer 1 fires at exactly 3× (~6s stuck),
-        // Layer 2 at 6× (~12s stuck).
         if (_running && _roundCertificates.size < _getQuorum()) {
           _retryCount++;
           _scheduleRetry();
@@ -395,16 +397,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   /**
    * Periodic retry when the round is stuck below quorum.
    *
-   * Three escalating tiers, each separated by ROUND_TIMEOUT_MS (~2s):
-   *   ticks 1-2  gossipsub re-broadcast only (existing behavior, best-effort)
-   *   tick  3    Layer 1 — mesh re-graft: remove+re-add each non-acking peer
-   *              from pubsub.direct so gossipsub heals the directed edge on its
-   *              next heartbeat (~700ms). Root cause of the directed-delivery
-   *              failure we saw in the field (stale mesh after reconnection).
-   *   tick  6+   Layer 2 — direct libp2p stream: open /tip/consensus-ack/1.0.0
-   *              to each non-acking peer and push the batch payload, bypassing
-   *              gossipsub entirely. Fires only if mesh re-graft didn't recover
-   *              quorum within 3 more cycles (~6s after Layer 1).
+   * GossipSub is best-effort — on each retry, re-broadcast whatever we already
+   * have so peers that missed the original publish can still collect it.
+   * Receivers dedup on message hash, so re-publishing is a no-op for peers
+   * that already have it.
    */
   function _scheduleRetry() {
     if (_retryTimer || !_running) return;
@@ -415,23 +411,20 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _metrics.retries++;
       _retryCount++;
 
-      // GossipSub is best-effort — a dropped batch or cert means this round
-      // can never reach quorum. On each retry, re-broadcast whatever we
-      // already have so peers that missed the original publish can still
-      // collect it. Receivers dedup on message hash, so re-publishing to
-      // peers that already got the message is a no-op.
+      // Tier 1 self-heal: after 3 stuck-round retries (~6s), force a gossipsub
+      // mesh refresh. Clears stale directed edges where specific peers stopped
+      // delivering acks through the mesh (Issue #13 sub_quorum halt pattern).
+      if (_retryCount === 3 && _onMeshRefresh) {
+        log.warn(`Round ${_currentRound}: retry #3 — refreshing gossipsub mesh to clear stale edges`);
+        try {
+          Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
+        } catch (e) {
+          log.warn(`Mesh refresh error: ${e.message}`);
+        }
+      }
+
       _rebroadcastOwnBatch();
       _rebroadcastOwnCertificate();
-
-      // Layer 1 (retry 3): force-regraft gossipsub mesh edges for non-acking peers.
-      // Removes + re-adds them from pubsub.direct; gossipsub re-grafts on next
-      // heartbeat (~700ms). Clears directed delivery failures caused by stale mesh
-      // edges after node reconnections.
-      if (_retryCount === 3) _refreshMissingAckPeers();
-
-      // Layer 2 (retry 6+): bypass gossipsub entirely via direct libp2p stream.
-      // Fires if mesh refresh didn't recover quorum within 3 more retry cycles.
-      if (_retryCount >= 6) _sendBatchToMissingAckPeers();
 
       _tryCreateCertificate();
       _tryAdvanceRound();
@@ -440,40 +433,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _scheduleRetry();
       }
     }, CONSENSUS.ROUND_TIMEOUT_MS);
-  }
-
-  // Returns committee peers that have not yet acked _myBatch this round.
-  // Excludes self — we never send ourselves an ack, so our own nodeId would
-  // always appear "missing" and cause spurious self-dials in Layer 2.
-  function _getMissingAckPeers() {
-    if (!_myBatch) return [];
-    const acks = _batchAcks.get(_myBatch.hash) || [];
-    const ackSet = new Set(acks.map(a => a.acker_node_id));
-    return _getCommittee(_currentRound).filter(nId => nId !== nodeId && !ackSet.has(nId));
-  }
-
-  // Layer 1: force-regraft gossipsub mesh edges for non-acking peers.
-  // gossipsub only re-grafts when a peer is re-added to pubsub.direct —
-  // the remove+add triggers the GRAFT control message on the next heartbeat.
-  function _refreshMissingAckPeers() {
-    if (typeof network.refreshDirectPeer !== "function") return;
-    const missing = _getMissingAckPeers();
-    if (missing.length === 0) return;
-    log.info(`Round ${_currentRound}: mesh-refresh for ${missing.length} non-acking peers: [${missing.map(id => id.slice(-8)).join(",")}]`);
-    for (const nId of missing) network.refreshDirectPeer(nId);
-  }
-
-  // Layer 2: push batch directly over a libp2p stream, bypassing gossipsub.
-  // Receiver calls the same _handleBatch path as a normal MEMPOOL message —
-  // no special handling needed on the other side.
-  function _sendBatchToMissingAckPeers() {
-    if (typeof network.sendBatchDirect !== "function") return;
-    if (!_myBatch) return;
-    const missing = _getMissingAckPeers();
-    if (missing.length === 0) return;
-    log.info(`Round ${_currentRound}: direct-stream batch to ${missing.length} non-acking peers: [${missing.map(id => id.slice(-8)).join(",")}]`);
-    const buf = Buffer.from(encode("Batch", serializeBatch(_myBatch)));
-    for (const nId of missing) network.sendBatchDirect(buf, nId);
   }
 
   function _rebroadcastOwnBatch() {
@@ -527,12 +486,33 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         }
         _metrics.my_batches_orphaned++;
         log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
+
+        // Tier 1b: track consecutive tx-batch orphans. Covers the fast-forward
+        // path where _retryCount never reaches 3 (peers at higher rounds push
+        // us forward before the retry loop fires). After 3 straight orphaned
+        // rounds, peers are likely not receiving our batch publications at all
+        // — stale gossipsub mesh edge. Refresh to clear it (Issue #13).
+        if (_joinState === "ready") {
+          _consecutiveOrphanedBatches++;
+          if (_consecutiveOrphanedBatches >= 3 && _onMeshRefresh) {
+            log.warn(`Round ${_myBatch.round}: ${_consecutiveOrphanedBatches} consecutive orphaned tx-batches — refreshing gossipsub mesh to clear stale edges`);
+            _consecutiveOrphanedBatches = 0;
+            try {
+              Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
+            } catch (e) {
+              log.warn(`Mesh refresh error: ${e.message}`);
+            }
+          }
+        }
       }
       // Empty batches at vote rounds advancing without cert is normal
       // (peer certs arrive faster than ack quorum on our self-emitted
       // empty batch). Don't bump my_batches_orphaned for them — would
       // drown the signal we actually care about (orphaned tx-bearing
       // batches).
+    } else {
+      // Cert was created or no batch this round — reset the orphan streak.
+      _consecutiveOrphanedBatches = 0;
     }
     _myBatch = null;
     _peerBatches.clear();
@@ -727,30 +707,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     // Deduplicate — already processed this batch in this session.
-    // Still re-sign and return the ack for Layer 2 direct-stream retries:
-    // the sender is retrying precisely because their original gossipsub ack
-    // was lost. Re-signing is safe (ML-DSA randomized; priorVote already
-    // persisted so no double-vote risk). Skip re-broadcast and re-record —
-    // only hand the ack bytes back to the direct-stream caller.
     if (_peerBatches.has(batch.author_node_id)) {
       if (_peerBatches.get(batch.author_node_id).hash === batch.hash) {
-        const reAck = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
-        try {
-          return encode("BatchAck", {
-            batchHash: hexToBytes(batch.hash),
-            ackerNodeId: nodeId,
-            signature: hexToBytes(reAck.signature),
-            signedAt: reAck.signed_at,
-          });
-        } catch (err) {
-          log.debug(`Round ${_currentRound}: dedup re-ack encode failed for ${batch.author_node_id}: ${err.message}`);
-        }
+        return;
       }
-      // Different hash from same author — fall through to process normally.
-      // Equivocation check above already passed (votes_seen consistent), so this
-      // is an edge case (e.g. DB write failure left _peerBatches out-of-sync with
-      // votes_seen). Process the batch and return a fresh ack instead of silently
-      // returning undefined, which would strand the Layer-2 direct-stream caller.
+      // Different hash from same author — fall through to process normally
+      // (equivocation check above already passed; edge case from DB write failure).
     }
 
     _peerBatches.set(batch.author_node_id, batch);
@@ -827,13 +789,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const ack = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
     _recordAck(batch.hash, ack);
 
-    // Build ack buffer once — published via gossipsub AND returned so the
-    // Layer 2 direct-stream handler can write it back on the same connection.
-    // Gossipsub is the broken path that triggered Layer 2; the ack must not
-    // depend on it reaching the batch sender.
-    let ackBuf;
     try {
-      ackBuf = encode("BatchAck", {
+      const ackBuf = encode("BatchAck", {
         batchHash: hexToBytes(batch.hash),
         ackerNodeId: nodeId,
         signature: hexToBytes(ack.signature),
@@ -845,7 +802,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
 
     log.debug(`Round ${_currentRound}: received batch from ${batch.author_node_id} (${(batch.txs || []).length} txs)`);
-    return ackBuf;
   }
 
   // ── Ack handling ─────────────────────────────────────────────────────────

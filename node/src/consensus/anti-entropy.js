@@ -997,11 +997,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
 
       // #46: peer's GC horizon already pruned the cert range we need.
-      // Fall back to §14 state snapshot via the focused helper. Returning
-      // the Promise directly (rather than `return await`) is fine —
-      // checkAndReconcile is async and the caller awaits its result.
+      // Fall back to §14 state snapshot via the focused helper. Guard with
+      // _snapshotResyncInFlight so the 4 parallel checkAndReconcile calls
+      // (from Promise.all fan-out) cannot each trigger a concurrent install.
       if (syncResult?.snapshotRequired) {
-        return _runSnapshotFallback(peerId, syncResult, selfState);
+        if (_snapshotResyncInFlight) {
+          _log.warn(`anti-entropy: snapshot required by peer ${peerId.slice(0, 12)} but resync already in flight — skipping`);
+          return "already_syncing";
+        }
+        _snapshotResyncInFlight = true;
+        try {
+          return await _runSnapshotFallback(peerId, syncResult, selfState);
+        } finally {
+          _snapshotResyncInFlight = false;
+        }
       }
 
       // Normal cert-sync gap pull succeeded (or no syncHandler wired).
@@ -1350,8 +1359,26 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // yet another timeout→resync loop. The current sync will fill the gap.
     const currentState = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
     if (currentState === "syncing" || currentState === "catching_up") {
-      _log.warn(`anti-entropy: triggerSnapshotResync skipped — already in ${currentState} (round=${fromRound}, missing=${missingCount})`);
-      return "already_syncing";
+      // Exception: if stuck in syncing with no install in flight, the watchdog
+      // fired "catching_up stalled" and reverted to syncing before the snapshot
+      // could complete its catching_up→ready transition. In that state the node
+      // cannot recover on its own — call exitSyncMode to return to ready so the
+      // snapshot pull below can proceed (which will re-enter syncing via
+      // enterSyncMode in _runSnapshotFallback). catching_up is always a live
+      // install (markSnapshotInstalled was already called), so we keep the guard.
+      if (currentState === "syncing" && !_snapshotResyncInFlight) {
+        _log.warn(
+          `anti-entropy: triggerSnapshotResync: stuck in syncing (no install in flight) — ` +
+          `calling exitSyncMode(${fromRound}) to escape before fresh snapshot pull`
+        );
+        if (narwhal && typeof narwhal.exitSyncMode === "function") {
+          narwhal.exitSyncMode(fromRound);
+        }
+        // Fall through to execute the snapshot pull below
+      } else {
+        _log.warn(`anti-entropy: triggerSnapshotResync skipped — already in ${currentState} (round=${fromRound}, missing=${missingCount})`);
+        return "already_syncing";
+      }
     }
 
     // Bug 1 — intra-node in-flight guard. Prevents a second concurrent call on
@@ -1363,6 +1390,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _log.warn(`anti-entropy: triggerSnapshotResync skipped — resync already in flight (round=${fromRound}, missing=${missingCount})`);
       return "already_syncing";
     }
+
+    // TOCTOU fix: claim the flag synchronously right here — before any await.
+    // The joinState check above and this guard are both synchronous, so no event-
+    // loop yield can occur between them. Without this early claim, a second async
+    // call that passed the joinState check could race past this guard while we
+    // are suspended at queryPeer (line ~1482), causing two concurrent installs
+    // that corrupt the node's committed state and trigger a divergence loop.
+    _snapshotResyncInFlight = true;
 
     // Serialization guard: if any peer is currently syncing/catching_up, defer
     // this resync with jitter. With BULLSHARK_DEFER_MS=60s, snapshot resyncs are
@@ -1383,6 +1418,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
           if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
         }, jitterMs);
+        _snapshotResyncInFlight = false;
         return "deferred";
       }
     }
@@ -1437,6 +1473,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     if (!bestPeerId) {
       _log.warn(`anti-entropy: triggerSnapshotResync: no authorized peers available — cannot resync`);
+      _snapshotResyncInFlight = false;
       return "no_peers";
     }
 
@@ -1474,6 +1511,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
           if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
         }, jitterMs);
+        _snapshotResyncInFlight = false;
         return "deferred";
       }
     }
@@ -1499,7 +1537,6 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
-    _snapshotResyncInFlight = true;
     try {
       for (const candidatePeer of orderedPeerIds) {
         const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);

@@ -80,10 +80,6 @@ const TOPICS = Object.freeze({
 const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
 // Direct-stream fallback for batch delivery when gossipsub mesh edges are stale.
 // After node reconnections, specific directed edges in the gossipsub mesh can
-// fail silently — re-broadcasts hit the same broken path indefinitely. This
-// protocol lets narwhal Layer 2 push the batch payload directly over the
-// existing TCP/QUIC connection, bypassing gossipsub scoring and mesh state.
-const CONSENSUS_ACK_PROTOCOL = "/tip/consensus-ack/1.0.0";
 
 /**
  * Create and start a libp2p network node.
@@ -174,38 +170,6 @@ async function createNetworkNode(options = {}) {
   pubsub.subscribe(TOPICS.CONSENSUS);
   log.info(`Subscribed to topics: ${Object.values(TOPICS).join(", ")}`);
   const directPeers = createDirectPeersManager(pubsub, log);
-
-  // Direct-stream handler for narwhal Layer 2 retry fallback.
-  // Receives batches that couldn't be delivered via gossipsub on broken mesh
-  // edges. Dispatches to the same _topicHandlers.onBatch path as gossipsub.
-  await node.handle(CONSENSUS_ACK_PROTOCOL, async ({ stream, connection }) => {
-    try {
-      const remotePeerId = connection.remotePeer.toString();
-      // Gossipsub enforces topic-level scoring; direct streams have no such
-      // gate. Without this check any peer that can TCP-dial us could inject
-      // arbitrary batch payloads into consensus.
-      if (!_authorizedPeers.has(remotePeerId)) {
-        log.warn(`${CONSENSUS_ACK_PROTOCOL}: rejected stream from unauthorized peer ${remotePeerId.slice(0, 16)}`);
-        try { stream.abort(new Error("unauthorized")); } catch { /* ignore */ }
-        return;
-      }
-      const bufs = [];
-      for await (const chunk of stream.source) bufs.push(chunk.subarray ? chunk.subarray() : chunk);
-      const data = Buffer.concat(bufs);
-      let ackBuf;
-      if (data.length > 0 && _topicHandlers.onBatch) {
-        // handleIncomingBatch returns the encoded ack buffer so we can write it
-        // back here — bypassing gossipsub on the return path too (gossipsub is
-        // the broken mesh edge that forced the caller to use Layer 2).
-        ackBuf = _topicHandlers.onBatch(data);
-      }
-      if (ackBuf) await stream.sink([ackBuf]).catch(err => log.debug(`${CONSENSUS_ACK_PROTOCOL} ack-write error: ${err.message}`));
-      stream.close().catch(() => {});
-    } catch (err) {
-      log.warn(`${CONSENSUS_ACK_PROTOCOL} stream error: ${err.message}`);
-    }
-  });
-  log.info(`Registered protocol handler: ${CONSENSUS_ACK_PROTOCOL}`);
 
   // Handshake context (shared with handshake.js functions).
   // onPeerAuthorized wires two concerns: (1) add peer to gossipsub
@@ -424,81 +388,19 @@ async function createNetworkNode(options = {}) {
 
     broadcastToAuthorized,
     ROTATION_COORD_PROTOCOL,
-    CONSENSUS_ACK_PROTOCOL,
 
     /**
-     * Force-regraft the gossipsub direct-peer edge for a TIP node ID.
-     * Called by narwhal Layer 1 retry when a round is stuck (~6s).
-     *
-     * gossipsub does not automatically re-graft a direct peer whose mesh
-     * edge went stale after a reconnection — the edge stays "open" in the
-     * peer list but messages don't flow. The only way to trigger a fresh
-     * GRAFT control message is to remove the peer from pubsub.direct and
-     * re-add it; gossipsub sends GRAFT on the next heartbeat (~700ms).
-     * @param {string} tipNodeId  TIP node_id string (tip://node/...)
+     * Drop and rejoin all gossipsub consensus topics, forcing the mesh to
+     * rebuild fresh edges. Called by Narwhal when a round is stuck for ~6s
+     * (retry #3) to clear stale directed-delivery failures (Issue #13).
      */
-    refreshDirectPeer(tipNodeId) {
-      const entry = [..._authorizedPeers.entries()].find(([, nId]) => nId === tipNodeId);
-      if (!entry) {
-        log.warn(`refreshDirectPeer: no authorized peer found for ${tipNodeId}`);
-        return;
+    async refreshGossipsubMesh() {
+      const topics = [TOPICS.CERTIFICATES, TOPICS.MEMPOOL, TOPICS.CONSENSUS];
+      for (const topic of topics) {
+        pubsub.unsubscribe(topic);
+        pubsub.subscribe(topic);
       }
-      const [peerId] = entry;
-      directPeers.remove(peerId);
-      directPeers.add(peerId);
-      log.info(`refreshDirectPeer: re-grafted ${tipNodeId} (${peerId.slice(0, 16)}...)`);
-    },
-
-    /**
-     * Send a raw batch buffer directly to a peer via libp2p stream,
-     * bypassing gossipsub. Called by narwhal Layer 2 retry (~12s stuck).
-     *
-     * The 3s dial timeout is intentional: if the peer is unreachable, we
-     * must not block the retry loop — the next _scheduleRetry tick must
-     * still fire. Failure is logged as warn and silently skipped; the
-     * retry loop continues and will try again on the next tick.
-     * @param {Buffer} batchBuf   Protobuf-encoded Batch message
-     * @param {string} tipNodeId  TIP node_id of the target peer
-     */
-    async sendBatchDirect(batchBuf, tipNodeId) {
-      const entry = [..._authorizedPeers.entries()].find(([, nId]) => nId === tipNodeId);
-      if (!entry) {
-        log.warn(`sendBatchDirect: no authorized peer found for ${tipNodeId}`);
-        return;
-      }
-      const [peerId] = entry;
-      let stream;
-      let ackTimer;
-      try {
-        stream = await node.dialProtocol(peerIdFromString(peerId), CONSENSUS_ACK_PROTOCOL, {
-          signal: AbortSignal.timeout(3000),
-        });
-        // Write batch; iterable end half-closes our write side → receiver's source ends.
-        await stream.sink([batchBuf]);
-        // Read the ack the receiver writes back on the same stream, so the ack
-        // travels direct instead of via gossipsub (the broken path Layer 2 bypassed).
-        // Bounded at 2s so a slow/unresponsive peer doesn't stall the retry loop.
-        const ackBufs = [];
-        ackTimer = setTimeout(() => {
-          try { stream.abort(new Error("ack read timeout")); } catch { /* ignore */ }
-        }, 2000);
-        for await (const chunk of stream.source) ackBufs.push(chunk.subarray ? chunk.subarray() : chunk);
-        clearTimeout(ackTimer);
-        ackTimer = null;
-        const ackBuf = Buffer.concat(ackBufs);
-        if (ackBuf.length > 0 && _topicHandlers.onConsensus) {
-          _topicHandlers.onConsensus(ackBuf);
-          log.debug(`sendBatchDirect: batch+ack round-trip complete for ${tipNodeId} (${peerId.slice(0, 16)}...)`);
-        } else if (ackBuf.length === 0) {
-          log.warn(`sendBatchDirect to ${tipNodeId}: empty ack response — receiver deduped without re-ack (stale mesh)`);
-        }
-      } catch (err) {
-        log.warn(`sendBatchDirect to ${tipNodeId}: ${err.message}`);
-        if (stream) { try { stream.abort(err); } catch { /* ignore */ } }
-      } finally {
-        if (ackTimer) clearTimeout(ackTimer);
-        try { if (stream) stream.close(); } catch { /* ignore */ }
-      }
+      log.info("Gossipsub mesh refreshed: dropped + rejoined all consensus topics");
     },
 
     async stop() {

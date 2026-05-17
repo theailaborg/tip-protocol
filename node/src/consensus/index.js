@@ -262,6 +262,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       try { return antiEntropyForFiltering ? antiEntropyForFiltering.divergentPeers() : []; }
       catch { return []; }
     },
+    // Tier-1 sub_quorum self-heal: after 3 consecutive stuck retries (~6s),
+    // narwhal drops + rejoins all gossipsub topics so stale directed mesh edges
+    // are rebuilt fresh. Fixes Issue #13 where specific peer acks stopped
+    // delivering through degraded mesh edges without any node being down.
+    onMeshRefresh: () => {
+      if (network && typeof network.refreshGossipsubMesh === "function") {
+        return network.refreshGossipsubMesh();
+      }
+    },
   });
   narwhalRef.current = narwhal;
 
