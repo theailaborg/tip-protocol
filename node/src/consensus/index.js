@@ -141,9 +141,17 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getNodeIds: getCommittee,
     onMissingCertsTimeout: (voteRound, missingCount) => {
       if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
-        antiEntropyForResync.triggerSnapshotResync(voteRound, missingCount).catch(err => {
-          log.warn(`Bullshark.onMissingCertsTimeout: snapshot resync failed: ${err.message}`);
-        });
+        // Stagger resync by node_id so all nodes don't simultaneously enter
+        // snapshot-install when BULLSHARK_DEFER_MS fires cluster-wide (e.g.
+        // all 4 non-paused nodes waiting on the same paused node's certs).
+        const _id = nodeId || "";
+        const _h = _id.split("").reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) >>> 0, 0);
+        const _staggerMs = (_h % 4) * 3000; // 0, 3000, 6000, 9000 ms
+        setTimeout(() => {
+          antiEntropyForResync.triggerSnapshotResync(voteRound, missingCount).catch(err => {
+            log.warn(`Bullshark.onMissingCertsTimeout: snapshot resync failed: ${err.message}`);
+          });
+        }, _staggerMs);
       } else {
         log.warn(`Bullshark.onMissingCertsTimeout: anti-entropy not ready — falling back to force-commit at round ${voteRound}`);
       }

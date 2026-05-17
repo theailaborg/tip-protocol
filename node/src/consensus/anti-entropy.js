@@ -125,6 +125,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
   let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
+  // Deterministic stagger offset for _autoRecoverFromMinority scheduling.
+  // Computed once from node_id so different nodes fire at different times,
+  // preventing all 5 from entering snapshot-install simultaneously.
+  let _cachedStaggerMs = -1;
   // Gates consensus_divergence_total to fire once per incident (not once per
   // AE tick). Reset by _clearDivergenceAccumulators on recovery so the next
   // genuine divergence event still registers.
@@ -692,6 +696,21 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   }
 
   /**
+   * Returns a deterministic ms offset for this node's recovery timer.
+   * Spreads simultaneous _autoRecoverFromMinority calls across 4 slots
+   * (0 / 3 / 6 / 9 s) so only one node installs a snapshot per window.
+   */
+  function _getStaggerMs() {
+    if (_cachedStaggerMs >= 0) return _cachedStaggerMs;
+    try {
+      const myId = getSelfNodeId ? (getSelfNodeId() || "") : "";
+      const h = myId.split("").reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) >>> 0, 0);
+      _cachedStaggerMs = (h % 4) * 3000; // 0, 3000, 6000, 9000 ms
+    } catch { _cachedStaggerMs = 0; }
+    return _cachedStaggerMs;
+  }
+
+  /**
    * Trigger narwhal halt when distinct-peer disagreement reaches the BFT
    * threshold. Idempotent — narwhal.haltDueToByzantineFork early-returns
    * once already halted. Logging fires only on the threshold-crossing
@@ -726,7 +745,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         setTimeout(() => {
           _minorityRecoveryPending = false;
           _autoRecoverFromMinority(src2, atRound, srcIds2, cRoot2);
-        }, RECOVERY_DELAY_MS);
+        }, RECOVERY_DELAY_MS + _getStaggerMs());
       }
       return;
     }
@@ -761,7 +780,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         `anti-entropy: majority minority at round=${atRound} — majority of peers hold same ` +
         `alternative root. Scheduling auto-recovery from ${sourcePeerNodeId.slice(-8)} in ${RECOVERY_DELAY_MS}ms (${sourcePeerIds.length} fallback(s)).`
       );
-      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound, sourcePeerIds, consensusRoot), RECOVERY_DELAY_MS);
+      setTimeout(() => _autoRecoverFromMinority(sourcePeerNodeId, atRound, sourcePeerIds, consensusRoot), RECOVERY_DELAY_MS + _getStaggerMs());
     }
   }
 
