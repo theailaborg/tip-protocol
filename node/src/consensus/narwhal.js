@@ -709,6 +709,25 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Deduplicate — already processed this batch in this session.
     if (_peerBatches.has(batch.author_node_id)) {
       if (_peerBatches.get(batch.author_node_id).hash === batch.hash) {
+        // Re-broadcast our cached ack so the proposer's cert can reach quorum
+        // on the next retry tick even if our original ack was dropped during
+        // a gossipsub mesh reconnect.
+        const cachedAcks = _batchAcks.get(batch.hash);
+        const myAck = cachedAcks ? cachedAcks.find(a => a.acker_node_id === nodeId) : null;
+        if (myAck) {
+          try {
+            const ackBuf = encode("BatchAck", {
+              batchHash: hexToBytes(batch.hash),
+              ackerNodeId: nodeId,
+              signature: hexToBytes(myAck.signature),
+              signedAt: myAck.signed_at,
+            });
+            network.publish(network.TOPICS.CONSENSUS, ackBuf);
+            _metrics.acks_rebroadcast = (_metrics.acks_rebroadcast || 0) + 1;
+          } catch (err) {
+            log.warn(`Failed to re-broadcast ack for ${batch.hash.slice(0, 16)}: ${err.message}`);
+          }
+        }
         return;
       }
       // Different hash from same author — fall through to process normally
