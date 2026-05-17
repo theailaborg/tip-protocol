@@ -657,18 +657,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.UPDATE_ORIGIN:
         if (d.ctid && d.new_origin_code) {
           dag.updateContentOrigin(d.ctid, d.new_origin_code, CONTENT_STATUS.REGISTERED);
-          // Phase 2.3: a creator self-correcting during an open review
-          // window closes the review with state=closed_self_correct. The
-          // reviewer assignment is preserved on the row for audit; the
-          // review is no longer "open" for further reviewer action. This
-          // is the clean-exit path — no public record of "almost
-          // reviewed", no penalty beyond the existing UPDATE_ORIGIN
-          // score effect.
+          // Closing an open review by UPDATE_ORIGIN branches on the
+          // review's state at apply time:
+          //   - TRIGGERED → CLOSED_SELF_CORRECT (creator beat the
+          //     reviewer; reviewer's call was never made).
+          //   - CONFIRMED → CLOSED_ACCEPTED_PRIVATE (creator agreed
+          //     with the reviewer's finding inside the 24h
+          //     accept-private window; reviewer's call counts as
+          //     correct for accuracy purposes).
+          // Single source of truth: commit-handler decides, route
+          // handlers don't need a per-endpoint flag.
           const openReview = dag.getOpenPrescanReviewByCtid(d.ctid);
           if (openReview) {
+            const closedState = openReview.state === PRESCAN_REVIEW_STATES.CONFIRMED
+              ? PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE
+              : PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT;
             dag.savePrescanReview({
               ...openReview,
-              state: PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT,
+              state: closedState,
               decided_at_round: round,
             });
           }

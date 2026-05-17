@@ -31,6 +31,7 @@ const { createDisputeDetailsService } = require("./services/dispute-details-serv
 const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
+const { createReviewService } = require("./services/review-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -44,6 +45,7 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
+const reviewRoutes = require("./routes/reviews");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -58,6 +60,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const revocationService = createRevocationService(ctx);
   const governanceService = createGovernanceService(ctx);
   const domainService = createDomainService(ctx);
+  const reviewService = createReviewService(ctx);
 
   // ── Build Express app ──────────────────────────────────────────────────────
   const app = express();
@@ -143,6 +146,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
+  app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
