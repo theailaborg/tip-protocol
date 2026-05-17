@@ -426,6 +426,23 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _rebroadcastOwnBatch();
       _rebroadcastOwnCertificate();
 
+      // Sync paths (AE cert-fill, post-snapshot cert-fill) write certs
+      // directly to the DAG via dag.saveCertificate without going through
+      // handleIncomingCertificate, so _roundCertificates never gets updated
+      // by those paths. Reconcile here on every retry tick so a cert that
+      // arrived via sync within the last ROUND_TIMEOUT_MS is picked up
+      // before _tryAdvanceRound checks quorum.
+      try {
+        const dagCerts = dag.getCertificatesByRound(_currentRound);
+        for (const cert of dagCerts) {
+          if (!_roundCertificates.has(cert.author_node_id)) {
+            _roundCertificates.set(cert.author_node_id, cert);
+          }
+        }
+      } catch (err) {
+        log.debug(`Round ${_currentRound}: DAG cert reconcile failed: ${err.message}`);
+      }
+
       _tryCreateCertificate();
       _tryAdvanceRound();
       // Keep retrying if still stuck
@@ -1418,6 +1435,28 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     handleIncomingAck,
     handleIncomingCertificate,
     lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
+
+    /**
+     * Re-scan the DAG for certificates at the current round and update
+     * _roundCertificates, then attempt to advance. Called by anti-entropy
+     * after a gap-pull so certs deposited via the sync path (which bypasses
+     * handleIncomingCertificate) become visible to _tryAdvanceRound without
+     * waiting for the next retry tick.
+     */
+    reconcileCurrentRound: () => {
+      if (_byzantineForkHalt) return;
+      try {
+        const dagCerts = dag.getCertificatesByRound(_currentRound);
+        for (const cert of dagCerts) {
+          if (!_roundCertificates.has(cert.author_node_id)) {
+            _roundCertificates.set(cert.author_node_id, cert);
+          }
+        }
+      } catch (err) {
+        log.debug(`reconcileCurrentRound: DAG read failed: ${err.message}`);
+      }
+      _tryAdvanceRound();
+    },
 
     /**
      * Force-prune parked cert waiters below `cutoffRound`. Normally fires

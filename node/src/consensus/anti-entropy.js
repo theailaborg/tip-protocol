@@ -1044,6 +1044,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
       // Normal cert-sync gap pull succeeded (or no syncHandler wired).
       _metrics.gaps_pulled++;
+      // The gap pull writes certs to the DAG directly (sync-handler bypasses
+      // handleIncomingCertificate), so narwhal's _roundCertificates may not
+      // reflect the newly arrived certs. Reconcile immediately so a missing
+      // cert for the current stalled round triggers _tryAdvanceRound now,
+      // rather than waiting up to ROUND_TIMEOUT_MS for the next retry tick.
+      if (syncResult?.imported > 0 && narwhal && typeof narwhal.reconcileCurrentRound === "function") {
+        narwhal.reconcileCurrentRound();
+      }
       return "behind";
     }
 
