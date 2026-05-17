@@ -87,7 +87,33 @@ function createProfileService({ dag, config, submitTx }) {
     return profile;
   }
 
-  return { updateProfile, getProfile };
+  /**
+   * Convenience over updateProfile that pins reviewer_consent. Body
+   * shape: { signature, tip_id? }. Signature must cover the canonical
+   * payload that updateProfile assembles (tip_id + reviewer_consent),
+   * so the client signs the exact bytes the schema validates.
+   *
+   * Separate from updateProfile so the API surface reads cleanly
+   * ("become a reviewer") instead of forcing clients to know about
+   * the UPDATE_PROFILE tx shape.
+   */
+  function becomeReviewer(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      reviewer_consent: true,
+      signature: body && body.signature,
+    });
+  }
+
+  function stopReviewing(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      reviewer_consent: false,
+      signature: body && body.signature,
+    });
+  }
+
+  return { updateProfile, getProfile, becomeReviewer, stopReviewing };
 }
 
 module.exports = { createProfileService };

@@ -25,6 +25,7 @@ const {
   initCrypto, generateMLDSAKeypair, shake256, signBody,
 } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
+const { initScoring } = require(path.join(SRC, "scoring"));
 const { createReviewService } = require(path.join(SRC, "services", "review-service"));
 const dismissedSchema = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
 const confirmedSchema = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
@@ -72,11 +73,18 @@ function _setup() {
     registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer2"),
   });
 
+  const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
+  // Seed scores so listReviewerPool eligibility passes for any opted-in
+  // reviewer in tests that don't explicitly set their own scores.
+  const now = new Date().toISOString();
+  dag.setScore(REVIEWER_1, 900, 0, now);
+  dag.setScore(REVIEWER_2, 900, 0, now);
+
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); };
-  const service = createReviewService({ dag, submitTx });
+  const service = createReviewService({ dag, scoring, submitTx });
 
-  return { dag, service, submitted, creatorKp, reviewer1Kp, reviewer2Kp };
+  return { dag, scoring, service, submitted, creatorKp, reviewer1Kp, reviewer2Kp };
 }
 
 function _seedTriggeredReview(fx, { reviewId = "rv_t", ctid = CTID_1 } = {}) {
@@ -328,5 +336,48 @@ describe("review-service.acceptCorrection", () => {
     }));
     expect(err.status).toBe(403);
     expect(err.error).toMatch(/24-hour|window has expired/i);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// listReviewerPool
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("review-service.listReviewerPool", () => {
+
+  test("returns only identities that pass Pass 1 eligibility (sorted by tip_id)", () => {
+    const fx = _setup();
+    // _setup seeds two opted-in reviewers (REVIEWER_1, REVIEWER_2) with
+    // score=900 and no decision history → both pass Pass 1 (accuracy=1.0
+    // for no history; consent=true; not revoked).
+    const { pool, count } = fx.service.listReviewerPool();
+    expect(count).toBe(2);
+    expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_1, REVIEWER_2]);
+    expect(pool[0]).toEqual(expect.objectContaining({
+      tip_id: REVIEWER_1, region: "US", score: 900, accuracy: 1.0,
+    }));
+  });
+
+  test("excludes identities without reviewer_consent", () => {
+    const fx = _setup();
+    // CREATOR has reviewer_consent=false in _setup → not in pool.
+    const { pool } = fx.service.listReviewerPool();
+    expect(pool.find(p => p.tip_id === CREATOR)).toBeUndefined();
+  });
+
+  test("excludes revoked identities", () => {
+    const fx = _setup();
+    fx.dag.addRevocation(REVIEWER_1, TX_TYPES.REVOKE_VOLUNTARY, new Date().toISOString(), shake256("rev"));
+    const { pool, count } = fx.service.listReviewerPool();
+    expect(count).toBe(1);
+    expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
+  });
+
+  test("excludes identities below REVIEWER.MIN_SCORE", () => {
+    const fx = _setup();
+    fx.dag.setScore(REVIEWER_1, 100, 0, new Date().toISOString());
+    const { pool, count } = fx.service.listReviewerPool();
+    expect(count).toBe(1);
+    expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
   });
 });

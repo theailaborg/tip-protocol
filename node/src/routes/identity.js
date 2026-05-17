@@ -45,6 +45,18 @@ function createRouter({ identityService, profileService }) {
     res.status(202).json(profileService.updateProfile(req.params.tipId, req.body));
   }));
 
+  // Convenience aliases over the generic /profile POST. The client signs
+  // the same canonical UPDATE_PROFILE payload — these routes just pin
+  // reviewer_consent so the API reads as the intent ("become a reviewer")
+  // rather than as a generic profile mutation.
+  router.post("/identity/:tipId/become-reviewer", asyncHandler((req, res) => {
+    res.status(202).json(profileService.becomeReviewer(req.params.tipId, req.body));
+  }));
+
+  router.post("/identity/:tipId/stop-reviewing", asyncHandler((req, res) => {
+    res.status(202).json(profileService.stopReviewing(req.params.tipId, req.body));
+  }));
+
   return router;
 }
 

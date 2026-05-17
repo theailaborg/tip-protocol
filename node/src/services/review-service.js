@@ -29,11 +29,12 @@ const confirmedSchema = require("../schemas/prescan-review-confirmed");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const { schemaError } = require("../schemas/_common");
 const { withTxId } = require("./helpers");
+const { isEligibleReviewer, getReviewerAccuracy } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.review");
 
-function createReviewService({ dag, submitTx }) {
+function createReviewService({ dag, scoring, submitTx }) {
 
   function getReview(reviewId) {
     const review = dag.getPrescanReview(reviewId);
@@ -144,7 +145,36 @@ function createReviewService({ dag, submitTx }) {
     };
   }
 
-  return { getReview, dismiss, confirm, acceptCorrection };
+  /**
+   * Debug / ops projection: every identity that currently passes
+   * isEligibleReviewer (Pass 1 strict: consent + score ≥ MIN_SCORE +
+   * not revoked + accuracy ≥ 1 − MAX_OVERTURN_RATE). selectReviewer
+   * adds cascade passes on top — this view shows ONLY who would land
+   * in Pass 1 as of the current DAG state. Read-only; no DAG writes.
+   *
+   * Author-exclusion isn't applied — that's per-review, not a property
+   * of the pool. Callers comparing this to a specific review's
+   * selection should pass authorTipId to selectReviewer instead.
+   */
+  function listReviewerPool() {
+    if (!scoring) {
+      throw schemaError(500, "scoring engine not wired", "scoring_unavailable");
+    }
+    const rows = [];
+    for (const identity of dag.getAllIdentities()) {
+      if (!isEligibleReviewer(dag, scoring, identity.tip_id)) continue;
+      rows.push({
+        tip_id: identity.tip_id,
+        region: identity.region,
+        score: scoring.getScore(identity.tip_id).score,
+        accuracy: getReviewerAccuracy(dag, identity.tip_id),
+      });
+    }
+    rows.sort((a, b) => a.tip_id.localeCompare(b.tip_id));
+    return { pool: rows, count: rows.length };
+  }
+
+  return { getReview, dismiss, confirm, acceptCorrection, listReviewerPool };
 }
 
 module.exports = { createReviewService };

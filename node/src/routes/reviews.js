@@ -24,6 +24,10 @@ const { asyncHandler } = require("../middleware/error-handler");
 function createRouter({ reviewService }) {
   const router = express.Router();
 
+  router.get("/reviewers/pool", asyncHandler((req, res) => {
+    res.json(reviewService.listReviewerPool());
+  }));
+
   router.get("/reviews/:id", asyncHandler((req, res) => {
     res.json(reviewService.getReview(req.params.id));
   }));
