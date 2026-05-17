@@ -172,6 +172,44 @@ function createContentService({ dag, scoring, config, submitTx }) {
         tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid,
         author_valid: authorValid, author_revoked: dag.isRevoked(rec.author_tip_id), on_dag: true,
       },
+      review_history: _projectReviewHistory(ctid),
+      consensus: { available: false, status: "not_requested" },
+    };
+  }
+
+  /**
+   * Latest prescan-review row + counts for this ctid. content.status
+   * already covers REGISTERED / PENDING_REVIEW / DISPUTED / VERIFIED /
+   * RETRACTED — this surfaces the orthogonal "did a reviewer engage,
+   * and what did they decide?" signal so clients can render
+   * vindication ("cleared after review") vs. self-correct vs. accepted
+   * privately without recomputing from raw txs.
+   *
+   * Returns { total, latest: { ... } | null } — `latest` is null when
+   * no review has ever existed for the ctid.
+   */
+  function _projectReviewHistory(ctid) {
+    const reviews = typeof dag.getPrescanReviewsByCtid === "function"
+      ? dag.getPrescanReviewsByCtid(ctid)
+      : [];
+    if (!reviews || reviews.length === 0) {
+      return { total: 0, latest: null };
+    }
+    // getPrescanReviewsByCtid is sorted DESC by triggered_at_round.
+    const r = reviews[0];
+    return {
+      total: reviews.length,
+      latest: {
+        review_id: r.review_id,
+        state: r.state,
+        assigned_reviewer: r.assigned_reviewer,
+        triggered_at_round: r.triggered_at_round,
+        decided_at_round: r.decided_at_round,
+        confirmed_at_round: r.confirmed_at_round,
+        confirmed_at_ms: r.confirmed_at_ms,
+        decision_note: r.decision_note,
+        suggested_origin: r.suggested_origin,
+      },
     };
   }
 
