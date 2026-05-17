@@ -416,6 +416,37 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _metrics.gaps_pulled++;
       _log.info(`anti-entropy: snapshot fast-sync recovered ${peerId.slice(0, 12)} at round=${targetRound} (rows=${installed.rows_installed || 0})`);
       _clearDivergenceAccumulators();  // Bug 2: stale pre-install observations would re-trigger BYZ_FORK
+
+      // Bug B fix: post-snapshot multi-peer cert-fill.
+      // After snapshot installs, the cert DAG has only the snapshot peer's
+      // view of certs up to snapshot_round. The normal AE cert-sync runs on
+      // the next ~4s tick — during that window, bullshark can commit rounds
+      // with an incomplete historical DAG (single-peer cert view ≠ the
+      // majority's gossip-assembled DAG) and produce a divergent state root.
+      // Pulling the cert gap from ALL other peers immediately maximizes DAG
+      // completeness before the first post-snapshot anchor commit fires.
+      if (targetRound > 0 && syncHandler && typeof syncHandler.syncFromPeer === "function") {
+        let allPeerIds = [];
+        try {
+          if (network && typeof network.authorizedPeers === "function") {
+            allPeerIds = Object.keys(network.authorizedPeers());
+          }
+        } catch { /* best-effort */ }
+        const remainingPeers = allPeerIds.filter(pid => pid !== peerId);
+        if (remainingPeers.length > 0) {
+          _log.info(
+            `anti-entropy: post-snapshot multi-peer cert-fill: syncing rounds ${targetRound + 1}+ ` +
+            `from ${remainingPeers.length} additional peer(s) to maximise DAG completeness`
+          );
+          await Promise.all(
+            remainingPeers.map(pid =>
+              syncHandler.syncFromPeer(pid, { fromRound: targetRound + 1 })
+                .catch(e => _log.warn(`anti-entropy: post-snapshot cert-fill from ${pid.slice(0, 12)} failed: ${e.message}`))
+            )
+          );
+        }
+      }
+
       return "snapshot_installed";
     } catch (err) {
       _log.warn(`anti-entropy: snapshot fallback from ${peerId.slice(0, 12)} failed: ${err.message}`);
@@ -1458,11 +1489,13 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     let bestPeerId = null;
     let bestRound  = -1;
     let bestVotes  = 0;
-    for (const [, { votes, cr, libp2pPeerId }] of rootVotes.entries()) {
+    let bestRoot   = "";  // Bug A fix: track the winning root so we can verify candidates later
+    for (const [root, { votes, cr, libp2pPeerId }] of rootVotes.entries()) {
       if (votes > bestVotes || (votes === bestVotes && cr > bestRound)) {
         bestVotes  = votes;
         bestRound  = cr;
         bestPeerId = libp2pPeerId;
+        bestRoot   = root;
       }
     }
 
@@ -1514,6 +1547,20 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _snapshotResyncInFlight = false;
         return "deferred";
       }
+      // Bug A fix: verify the fresh root still matches the majority root we tallied.
+      // The _lastStatus cache is ~4s stale — a peer that was on the majority root when
+      // we tallied may have since installed a minority snapshot and drifted. Installing
+      // from such a peer propagates the wrong state and re-triggers byzantine_fork
+      // immediately after recovery. Log the mismatch and fall through to the candidate
+      // loop which fresh-verifies each peer before installing.
+      const freshRoot = String(freshPeerStatus.state_merkle_root || "");
+      if (bestRoot && freshRoot && freshRoot !== bestRoot) {
+        _log.warn(
+          `anti-entropy: triggerSnapshotResync: fresh root mismatch on primary candidate ` +
+          `${bestPeerId.slice(0, 12)} — expected ${bestRoot.slice(0, 16)} got ${freshRoot.slice(0, 16)}; ` +
+          `falling through to candidate loop for per-peer root verification`
+        );
+      }
     }
 
     let selfState = {};
@@ -1539,6 +1586,23 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     try {
       for (const candidatePeer of orderedPeerIds) {
+        // Bug A fix: verify each candidate still holds the majority root before
+        // installing. Mirrors _autoRecoverFromMinority's pattern — a peer that
+        // was at the majority root when tallied may have since installed a
+        // minority snapshot. Installing from such a peer propagates wrong state
+        // and re-triggers byzantine_fork immediately after recovery.
+        if (bestRoot) {
+          let freshCandidate = null;
+          try { freshCandidate = await queryPeer(candidatePeer); } catch { /* best-effort */ }
+          const freshCandidateRoot = String(freshCandidate?.state_merkle_root || "");
+          if (freshCandidate && freshCandidateRoot && freshCandidateRoot !== bestRoot) {
+            _log.warn(
+              `anti-entropy: triggerSnapshotResync: skipping ${candidatePeer.slice(0, 12)} — ` +
+              `root drifted from expected ${bestRoot.slice(0, 16)} to ${freshCandidateRoot.slice(0, 16)}`
+            );
+            continue;
+          }
+        }
         const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = Date.now();
