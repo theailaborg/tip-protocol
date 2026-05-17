@@ -26,7 +26,7 @@ const path = require("path");
 const fs = require("fs");
 const { computeTxId, verifyTxId } = require("../../shared/crypto");
 const { TX_TYPES } = require("../../shared/constants");
-const { SCORE } = require("../../shared/protocol-constants");
+const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
 const { subjectTipId } = require("./tx-attribution");
 const { log } = require("./logger");
 
@@ -222,6 +222,12 @@ function _canonPrescanReview(r) {
     state: r.state,
     decided_at_round: r.decided_at_round == null ? null : r.decided_at_round,
     confirmed_at_round: r.confirmed_at_round == null ? null : r.confirmed_at_round,
+    // BFT cert.timestamp ms at the moment PRESCAN_REVIEW_CONFIRMED applied
+    // — required for the h=R+24 auto-escalation trigger to compute the
+    // 24h creator-decision window deterministically. Rounds alone can't
+    // be converted to wall-clock without scanning commits; storing the
+    // cert.ts at apply time is one column and read-cheap.
+    confirmed_at_ms: r.confirmed_at_ms == null ? null : r.confirmed_at_ms,
     decision_note: r.decision_note || null,
     suggested_origin: r.suggested_origin || null,
   };
@@ -684,6 +690,7 @@ class MemoryStore {
       triggered_at_round: rec.triggered_at_round,
       decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
       confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      confirmed_at_ms: rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
       state: rec.state || "triggered",
       decision_note: rec.decision_note || null,
       suggested_origin: rec.suggested_origin || null,
@@ -714,6 +721,32 @@ class MemoryStore {
     return [...this._prescanReviews.values()]
       .filter(r => r.ctid === ctid)
       .sort((a, b) => b.triggered_at_round - a.triggered_at_round)
+      .map(r => ({ ...r }));
+  }
+  // Phase 2.5 trigger queries. Mirror the SQLite predicates in JS so the
+  // memory-store path produces the same candidate set.
+  getContentsNeedingReview(nowMs) {
+    const cutoff = nowMs - CONTENT_GRACE.FLAGGED_MS;
+    const out = [];
+    for (const c of this._content.values()) {
+      if (c.status !== "registered") continue;
+      if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
+      if (!c.override) continue;
+      const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+      if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
+      const open = this.getOpenPrescanReviewByCtid(c.ctid);
+      if (open) continue;
+      out.push({ ...c });
+    }
+    return out;
+  }
+  getReviewsNeedingAutoEscalation(nowMs) {
+    const cutoff = nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS;
+    return [...this._prescanReviews.values()]
+      .filter(r => r.state === "confirmed"
+        && r.confirmed_at_ms != null
+        && r.confirmed_at_ms <= cutoff)
+      .sort((a, b) => a.confirmed_at_ms - b.confirmed_at_ms)
       .map(r => ({ ...r }));
   }
 
@@ -1316,6 +1349,7 @@ class SQLiteStore {
         triggered_at_round   INTEGER NOT NULL,
         decided_at_round     INTEGER,                          -- when reviewer DISMISSED or CONFIRMED
         confirmed_at_round   INTEGER,                          -- set on CONFIRMED; starts creator's 24h decision window
+        confirmed_at_ms      INTEGER,                          -- cert.ts ms at CONFIRMED apply; drives h=R+24 auto-escalation
         state                TEXT NOT NULL DEFAULT 'triggered',
         decision_note        TEXT,                             -- reviewer's optional notes
         suggested_origin     TEXT                              -- on CONFIRMED: reviewer's recommended AA/AG/MX
@@ -1809,8 +1843,8 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO prescan_reviews
            (review_id, ctid, creator_tip_id, assigned_reviewer,
             triggered_at_round, decided_at_round, confirmed_at_round,
-            state, decision_note, suggested_origin)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
+            confirmed_at_ms, state, decision_note, suggested_origin)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getPrescanReview: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE review_id=?"
@@ -1825,6 +1859,29 @@ class SQLiteStore {
       ),
       getPrescanReviewsByCtid: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE ctid=? ORDER BY triggered_at_round DESC"
+      ),
+      // Phase 2.5 trigger queries. content.registered_at is an ISO string,
+      // so the comparison parses it via strftime — index on (status,
+      // prescan_tier) carries the high-selectivity prefix; the time
+      // arithmetic runs only against that filtered slice.
+      getContentsNeedingReview: this.db.prepare(
+        `SELECT c.* FROM content c
+         LEFT JOIN prescan_reviews r
+           ON r.ctid = c.ctid AND r.state IN ('triggered','confirmed')
+         WHERE c.status = 'registered'
+           AND c.prescan_tier IN ('high','critical')
+           AND c.override = 1
+           AND r.review_id IS NULL
+           AND (CAST(strftime('%s', c.registered_at) AS INTEGER) * 1000) <= ?`
+      ),
+      // Reviews in state=confirmed whose 24h creator-decision window has
+      // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
+      getReviewsNeedingAutoEscalation: this.db.prepare(
+        `SELECT * FROM prescan_reviews
+         WHERE state = 'confirmed'
+           AND confirmed_at_ms IS NOT NULL
+           AND confirmed_at_ms <= ?
+         ORDER BY confirmed_at_ms ASC`
       ),
 
       // #75 rotation_participation. UPSERT pattern (INSERT … ON CONFLICT)
@@ -2324,6 +2381,7 @@ class SQLiteStore {
       rec.triggered_at_round,
       rec.decided_at_round == null ? null : rec.decided_at_round,
       rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
       rec.state || "triggered",
       rec.decision_note || null,
       rec.suggested_origin || null,
@@ -2340,6 +2398,12 @@ class SQLiteStore {
   }
   getPrescanReviewsByCtid(ctid) {
     return this._stmts.getPrescanReviewsByCtid.all(ctid);
+  }
+  getContentsNeedingReview(nowMs) {
+    return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS);
+  }
+  getReviewsNeedingAutoEscalation(nowMs) {
+    return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
   }
 
   // #75 rotation_participation — see MemoryStore version for the contract.
@@ -2818,6 +2882,8 @@ function _buildDagHandle(store, config) {
     getOpenPrescanReviewByCtid: (ctid) => store.getOpenPrescanReviewByCtid(ctid),
     getPrescanReviewsByReviewer: (reviewerTipId) => store.getPrescanReviewsByReviewer(reviewerTipId),
     getPrescanReviewsByCtid: (ctid) => store.getPrescanReviewsByCtid(ctid),
+    getContentsNeedingReview: (nowMs) => store.getContentsNeedingReview(nowMs),
+    getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
 
     // #75 rotation participation tally
     incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),

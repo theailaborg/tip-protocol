@@ -32,6 +32,7 @@ const { createConsensusSummary } = require("./summary");
 const { createAntiEntropy } = require("./anti-entropy");
 const { createVerdictTrigger } = require("./verdict-trigger");
 const { createCleanRecordTrigger } = require("./clean-record-trigger");
+const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createTxSubmitter } = require("../services/helpers");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
@@ -116,10 +117,16 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getCommittee,
   });
 
+  const prescanReviewTrigger = createPrescanReviewTrigger({
+    dag, scoring, config,
+    submitTx: triggerSubmitter.submitTx,
+    getCommittee,
+  });
+
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({
     dag, scoring, config,
-    verdictTrigger, cleanRecordTrigger,
+    verdictTrigger, cleanRecordTrigger, prescanReviewTrigger,
   });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────

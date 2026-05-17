@@ -86,7 +86,7 @@ function _mapBusinessRuleReason(error) {
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, config, nodeId }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -218,6 +218,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         cleanRecordTrigger.checkPending(certTimestamp);
       } catch (err) {
         log.warn(`Round ${round}: post-round clean-record trigger failed: ${err.message}`);
+      }
+    }
+    if (prescanReviewTrigger && certTimestamp > 0) {
+      try {
+        prescanReviewTrigger.checkPending(certTimestamp, round);
+      } catch (err) {
+        log.warn(`Round ${round}: post-round prescan-review trigger failed: ${err.message}`);
       }
     }
 
@@ -590,9 +597,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
         // Reviewer said "AI's flag was right". Transition to state=confirmed
         // + record suggested_origin + start the creator's 24h decision
-        // window (confirmed_at_round). content.status stays PENDING_REVIEW
-        // — the creator is now deciding whether to accept-private (Option 1)
-        // or be auto-escalated to CONTENT_DISPUTED at h=R+24 (Option 2).
+        // window. confirmed_at_ms uses cert.ts so the auto-escalation
+        // trigger can compute the window deterministically across nodes.
+        // content.status stays PENDING_REVIEW — the creator is now deciding
+        // accept-private (Option 1) vs auto-escalation at h=R+24 (Option 2).
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({
@@ -600,6 +608,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             state: PRESCAN_REVIEW_STATES.CONFIRMED,
             decided_at_round: round,
             confirmed_at_round: round,
+            confirmed_at_ms: _committedCertTimestamp || null,
             decision_note: d.decision_note || null,
             suggested_origin: d.suggested_origin,
           });
@@ -742,6 +751,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.CONTENT_DISPUTED:
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.DISPUTED);
+          // Phase 2.5: if this dispute lands while a review is in
+          // state=confirmed (the creator's 24h decision window), the
+          // review is now resolved by auto-escalation. Flip its state
+          // so the trigger module won't re-escalate next round.
+          // Applies to both auto-cascade (h=R+24 system) and
+          // user-initiated disputes that arrive during the window.
+          const openReview = dag.getOpenPrescanReviewByCtid(d.ctid);
+          if (openReview && openReview.state === PRESCAN_REVIEW_STATES.CONFIRMED) {
+            dag.savePrescanReview({
+              ...openReview,
+              state: PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE,
+              decided_at_round: round,
+            });
+          }
         }
         break;
 

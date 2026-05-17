@@ -217,9 +217,13 @@ const CALIBRATION_THRESHOLDS = {
 
 const _rv = () => get().reviewer;
 const REVIEWER = {
-  get MIN_SCORE()              { return _rv().min_score; },
-  get MAX_OVERTURN_RATE()      { return _rv().max_overturn_rate; },
-  get ACCURACY_SAMPLE_SIZE()   { return _rv().accuracy_sample_size; },
+  get MIN_SCORE()                  { return _rv().min_score; },
+  get MAX_OVERTURN_RATE()          { return _rv().max_overturn_rate; },
+  get ACCURACY_SAMPLE_SIZE()       { return _rv().accuracy_sample_size; },
+  // Creator's accept-private vs auto-escalation window after a
+  // PRESCAN_REVIEW_CONFIRMED. After this elapses, the scheduler emits
+  // an auto-cascade CONTENT_DISPUTED on the creator's behalf.
+  get CREATOR_DECISION_WINDOW_MS() { return _rv().creator_decision_window_ms; },
 };
 
 const _cg = () => get().content_grace;

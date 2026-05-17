@@ -416,6 +416,7 @@ class KnexAdapter {
       t.integer("triggered_at_round").notNullable();
       t.integer("decided_at_round").nullable();
       t.integer("confirmed_at_round").nullable();
+      t.bigInteger("confirmed_at_ms").nullable();
       t.string("state", 32).notNullable().defaultTo("triggered");
       t.text("decision_note").nullable();
       t.string("suggested_origin", 8).nullable();

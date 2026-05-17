@@ -161,7 +161,8 @@
     "reviewer": {
       "min_score": 800,
       "max_overturn_rate": 0.30,
-      "accuracy_sample_size": 20
+      "accuracy_sample_size": 20,
+      "creator_decision_window_ms": 86400000
     },
     "content_grace": {
       "unflagged_ms": 86400000,

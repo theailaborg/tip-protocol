@@ -211,6 +211,10 @@ const GENESIS_PAYLOAD = Object.freeze({
       min_score: 800,
       max_overturn_rate: 0.30,
       accuracy_sample_size: 20,
+      // Creator's accept-private window after PRESCAN_REVIEW_CONFIRMED. The
+      // prescan-review trigger emits an auto-cascade CONTENT_DISPUTED once
+      // this elapses against cert.ts.
+      creator_decision_window_ms: 86400000,
     },
     content_grace: {
       // Self-correction windows. Unflagged content keeps the original 24h
