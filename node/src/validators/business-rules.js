@@ -244,6 +244,26 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
     }
   }
 
+  // Phase 3 abuse prevention — rolling per-filer rate limit. Count
+  // CONTENT_DISPUTED txs by this disputer within the trailing window
+  // (excluding auto-cascade txs, which carry node_id, not a user
+  // disputer_tip_id). A user-filed dispute that already failed
+  // validation never lands as a tx, so this count only sees committed
+  // filings — same value at CheckTx and DeliverTx.
+  const windowCutoffMs = Date.now() - DISPUTE.FILER_WINDOW_MS;
+  const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
+    .filter(t => t.data?.disputer_tip_id === disputer_tip_id
+      && !t.data?.auto
+      && new Date(t.timestamp).getTime() >= windowCutoffMs)
+    .length;
+  if (filerCount >= DISPUTE.MAX_PER_FILER_PER_WINDOW) {
+    const days = Math.round(DISPUTE.FILER_WINDOW_MS / 86_400_000);
+    return fail(
+      429,
+      `Monthly dispute filing limit reached (${DISPUTE.MAX_PER_FILER_PER_WINDOW} per ${days} days). Try again later.`,
+    );
+  }
+
   return ok();
 }
 

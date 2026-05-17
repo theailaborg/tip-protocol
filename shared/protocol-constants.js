@@ -144,6 +144,10 @@ const DISPUTE = {
   get FRIVOLOUS_PENALTY() { return _j().frivolous_dismiss_fee; }, // positive amount, code applies -
   get UPHELD_BONUS() { return _j().upheld_bonus; },
   get VINDICATION_BONUS() { return _j().vindication_bonus; },
+  // Phase 3 abuse prevention: at most N CONTENT_DISPUTED txs by a
+  // single disputer_tip_id within the trailing window. v1: 5 / 30d.
+  get MAX_PER_FILER_PER_WINDOW() { return _j().max_disputes_per_filer_per_window; },
+  get FILER_WINDOW_MS() { return _j().dispute_filer_window_ms; },
 };
 
 const JURY = {
@@ -205,21 +209,21 @@ const PRESCAN_THRESHOLDS = {
 // Read from genesis so they're consensus-aligned across the federation.
 const PRESCAN_TIER_THRESHOLDS = {
   get elevated() { return _ps().tier_thresholds.elevated; },
-  get high()     { return _ps().tier_thresholds.high; },
+  get high() { return _ps().tier_thresholds.high; },
   get critical() { return _ps().tier_thresholds.critical; },
 };
 
 // Creator-history calibration buckets (Claim Group G / FIX-03).
 const CALIBRATION_THRESHOLDS = {
   get MODERATE_MIN() { return _ps().calibration.moderate_min; },
-  get VETERAN_MIN()  { return _ps().calibration.veteran_min; },
+  get VETERAN_MIN() { return _ps().calibration.veteran_min; },
 };
 
 const _rv = () => get().reviewer;
 const REVIEWER = {
-  get MIN_SCORE()                  { return _rv().min_score; },
-  get MAX_OVERTURN_RATE()          { return _rv().max_overturn_rate; },
-  get ACCURACY_SAMPLE_SIZE()       { return _rv().accuracy_sample_size; },
+  get MIN_SCORE() { return _rv().min_score; },
+  get MAX_OVERTURN_RATE() { return _rv().max_overturn_rate; },
+  get ACCURACY_SAMPLE_SIZE() { return _rv().accuracy_sample_size; },
   // Creator's accept-private vs auto-escalation window after a
   // PRESCAN_REVIEW_CONFIRMED. After this elapses, the scheduler emits
   // an auto-cascade CONTENT_DISPUTED on the creator's behalf.
@@ -234,7 +238,7 @@ const REVIEWER = {
 const _cg = () => get().content_grace;
 const CONTENT_GRACE = {
   get UNFLAGGED_MS() { return _cg().unflagged_ms; },
-  get FLAGGED_MS()   { return _cg().flagged_ms; },
+  get FLAGGED_MS() { return _cg().flagged_ms; },
 };
 
 const _c = () => get().consensus;

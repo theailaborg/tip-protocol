@@ -116,6 +116,8 @@
       "appeal_window_hours": 48,
       "appeal_commit_hours": 72,
       "appeal_reveal_hours": 6,
+      "max_disputes_per_filer_per_window": 5,
+      "dispute_filer_window_ms": 2592000000,
       "ai_auto_dismiss_threshold": 0.3,
       "ai_auto_escalate_threshold": 0.9,
       "ai_timeout_seconds": 60
