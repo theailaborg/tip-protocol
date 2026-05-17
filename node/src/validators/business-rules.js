@@ -29,12 +29,11 @@
 
 "use strict";
 
-const { TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON } = require("../../../shared/constants");
-const { DISPUTE, APPEAL } = require("../../../shared/protocol-constants");
+const { TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS } = require("../../../shared/constants");
+const { DISPUTE, APPEAL, CONTENT_GRACE } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
-const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 // Dev-only escape hatch for the JURY vote-window time gates. Lets a developer
 // drive a live dispute through commit→reveal→verdict without waiting the full
@@ -123,7 +122,19 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   const existingUpdates = dag.getTxsByTypeAndCtid(TX_TYPES.UPDATE_ORIGIN, ctid);
   if (existingUpdates.length > 0) return fail(409, "Origin has already been updated once — no further changes allowed");
   const registeredAt = new Date(rec.registered_at).getTime();
-  if (now - registeredAt > ORIGIN_GRACE_MS) return fail(403, "24-hour grace period has expired.");
+  // Grace window branches on prescan tier + override: HIGH/CRITICAL content
+  // registered with an explicit override gets 48h (matching the time before
+  // reviewer engagement at h=48); everything else keeps the 24h window.
+  const isFlaggedWithOverride =
+    (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
+    && !!rec.override;
+  const graceMs = isFlaggedWithOverride
+    ? CONTENT_GRACE.FLAGGED_MS
+    : CONTENT_GRACE.UNFLAGGED_MS;
+  if (now - registeredAt > graceMs) {
+    const hours = Math.round(graceMs / (60 * 60 * 1000));
+    return fail(403, `${hours}-hour grace period has expired.`);
+  }
 
   const author = dag.getIdentity(author_tip_id);
   if (!author) return fail(404, "Author identity not found");
