@@ -34,14 +34,23 @@ function errorHandler(err, req, res, _next) {
 
   if (err.status && err.error) {
     const message = Array.isArray(err.error) ? err.error.join("; ") : err.error;
+    const errorBody = {
+      message,
+      code: err.code || STATUS_CODES[err.status] || "ERROR",
+      request_id: requestId,
+    };
+    // Generic `details` envelope: thrower can attach structured data
+    // (e.g. 409 prescan_override_required → details: { tier, probability },
+    // 429 rate-limited → details: { retry_after }). Single recognized
+    // pass-through key — keeps the error response shape predictable and
+    // prevents accidental field leakage from sloppy throws.
+    if (err.details && typeof err.details === "object") {
+      errorBody.details = err.details;
+    }
     res.status(err.status).json({
       ok: false,
       status: err.status,
-      error: {
-        message,
-        code: err.code || STATUS_CODES[err.status] || "ERROR",
-        request_id: requestId,
-      },
+      error: errorBody,
     });
   } else {
     log.error(`[${requestId}] ${req.method} ${req.path} — unhandled error:`, err.message || err);

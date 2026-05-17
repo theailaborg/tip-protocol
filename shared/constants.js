@@ -68,6 +68,17 @@ const PRESCAN_TIER_VALUES = Object.freeze([
   PRESCAN_TIERS.CRITICAL,
 ]);
 
+// User-facing messages returned in the registration response per tier.
+// ELEVATED is a soft signal (amber banner in UI). HIGH/CRITICAL only land
+// in the response after the 409 override flow — creator already saw the
+// blocking modal; this is reminder text in the success payload.
+const PRESCAN_NOTES = Object.freeze({
+  [PRESCAN_TIERS.LOW]: null,
+  [PRESCAN_TIERS.ELEVATED]: "Our system detected some patterns associated with AI-generated content. You can change your declaration anytime in the next 24 hours at zero penalty.",
+  [PRESCAN_TIERS.HIGH]: "Our system has HIGH confidence (90%+) this content involves AI. You have 48 hours to change your declaration at zero penalty.",
+  [PRESCAN_TIERS.CRITICAL]: "Our system has VERY HIGH confidence (98%+) this content was AI-generated. You have 48 hours to change at zero penalty. Significant penalty applies if the declaration is later overturned.",
+});
+
 // ─── Dispute reasons ────────────────────────────────────────────────────────
 // Protocol vocabulary — enum of accepted values for the `reason` field on a
 // CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
@@ -416,6 +427,7 @@ module.exports = {
   CONTENT_STATUS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
+  PRESCAN_NOTES,
   DISPUTE_REASON,
   DISPUTE_REASONS,
   CNA_VERSIONS,

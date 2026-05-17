@@ -4,14 +4,16 @@ const {
   shake256, hashContent, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_TIERS, PRESCAN_NOTES } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
-const { preScanContent } = require("./helpers");
+// Imported via the module reference (not destructured) so tests can
+// jest.spyOn(helpers, "preScanContent") to drive specific tier scenarios.
+const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
@@ -41,7 +43,35 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     const perceptHash = content ? perceptualHashText(content) : null;
     const contentHistory = { verified_oh_count: dag.getContentByAuthor(signer_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
-    const preScan = preScanContent(content || "", origin_code, contentHistory);
+    const preScan = helpers.preScanContent(content || "", origin_code, contentHistory);
+
+    // Synchronous 409 + retry flow for HIGH/CRITICAL prescan. When the
+    // calibrated tier says the content looks AI-generated and creator
+    // declared OH, require an explicit override in the request body.
+    // Clients render the spec's blocking modal and retry with
+    // override=true. Without this gate, an unaware client could
+    // silently land content as flagged with no creator confirmation.
+    // AA gets the same treatment (same human-primary claim → same gate).
+    const needsOverride =
+      (preScan.tier === PRESCAN_TIERS.HIGH || preScan.tier === PRESCAN_TIERS.CRITICAL)
+      && (origin_code === ORIGIN.OH || origin_code === ORIGIN.AA);
+    if (needsOverride && body.override !== true) {
+      throw {
+        status: 409,
+        error: `Content flagged at ${preScan.tier.toUpperCase()} confidence (${Math.round(preScan.probability * 100)}%). Retry with override=true to register as ${origin_code} anyway, or change origin_code to a more conservative label.`,
+        code: "prescan_override_required",
+        details: {
+          tier: preScan.tier,
+          raw_tier: preScan.raw_tier,
+          probability: preScan.probability,
+          // Future-proof slot for Pattern 2 (preflight + signed token).
+          // v1 always null — server runs prescan fresh on retry. When we
+          // add Pattern 2 the 409 response will carry a signed token here
+          // and the retry will skip re-prescan via token validation.
+          prescan_token: null,
+        },
+      };
+    }
 
     const registeredAt = new Date().toISOString();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
@@ -61,7 +91,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
         ctid, origin_code: canonicalPayload.origin_code,
         content_hash: contentHashFull, perceptual_hash: perceptHash,
         signature,
-        prescan_flagged: preScan.flagged, prescan_probability: preScan.probability,
+        prescan_flagged: preScan.flagged,
+        prescan_probability: preScan.probability,
+        prescan_tier: preScan.tier,
+        // True only when the creator explicitly retried with override=true
+        // after receiving the 409. needsOverride is the trigger; reaching
+        // this line means body.override was true (above check passed).
+        override: needsOverride,
 
         // ── CNA-2.2 signed canonical fields (mirror canonicalPayload
         //    so commit-handler can replay buildSigningPayload(d, d.content_hash))
@@ -93,7 +129,9 @@ function createContentService({ dag, scoring, config, submitTx }) {
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
       prescan_flagged: preScan.flagged,
-      prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
+      prescan_tier: preScan.tier,
+      prescan_probability: preScan.probability,
+      prescan_note: PRESCAN_NOTES[preScan.tier] || null,
       http_headers: {
         [HTTP_HEADERS.AUTHOR]: signer_tip_id, [HTTP_HEADERS.CONTENT]: ctid,
         [HTTP_HEADERS.ORIGIN]: ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),

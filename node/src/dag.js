@@ -2276,12 +2276,7 @@ class SQLiteStore {
   *iterateCanonicalState() {
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
-      yield { table: "identities", row: _canonIdentity({
-        ...r,
-        founding: r.founding === 1,
-        reviewer_consent: r.reviewer_consent === 1,
-        juror_consent: r.juror_consent === 1,
-      }) };
+      yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
@@ -2289,13 +2284,10 @@ class SQLiteStore {
       // Without this, JSON columns come through as strings and _canonContent's
       // Array.isArray / typeof === "object" checks fail, emitting defaults
       // and silently forking the state_merkle_root vs MemoryStore-backed nodes.
-      yield { table: "content", row: _canonContent({
-        ...this._hydrateContent(r),
-        prescan_flagged: r.prescan_flagged === 1,
-        prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
-        prescan_tier: r.prescan_tier || "low",
-        override: r.override === 1,
-      }) };
+      // Boolean/int normalization (founding, prescan_flagged, override, etc.)
+      // is handled inside _canonContent/_canonIdentity via `? 1 : 0` — works
+      // for both SQLite int (0/1) and MemoryStore bool (true/false).
+      yield { table: "content", row: _canonContent(this._hydrateContent(r)) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
