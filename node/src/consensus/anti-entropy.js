@@ -965,6 +965,22 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         return result;
       }
 
+      // Node stuck in syncing (watchdog fired) with no byzantine_fork halt and
+      // no resync in flight. Gap-pull is a no-op in syncing state — narwhal
+      // ignores incoming certs while syncing. Call exitSyncMode to return to
+      // ready so the next AE tick can pull the gap or escalate to snapshot.
+      const _joinStBehind = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
+      if (_joinStBehind === "syncing" && !_snapshotResyncInFlight) {
+        _log.warn(
+          `anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} but joinState=syncing ` +
+          `(no byz halt, no resync in flight) — calling exitSyncMode(${selfCommitted}) to escape stuck-syncing`
+        );
+        if (narwhal && typeof narwhal.exitSyncMode === "function") {
+          narwhal.exitSyncMode(selfCommitted);
+        }
+        return "behind";
+      }
+
       // We're behind. Pull the gap via existing sync protocol. fromRound
       // starts at our next-uncommitted round so we only fetch the delta.
       _log.info(`anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} by ${peerCommitted - selfCommitted} rounds — pulling gap`);
