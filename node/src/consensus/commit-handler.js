@@ -24,6 +24,7 @@ const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
+const updateProfileSchema = require("../schemas/update-profile");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -506,6 +507,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // of truth shared with computeScore replay (#38).
         break;
 
+      case TX_TYPES.UPDATE_PROFILE: {
+        // Sparse merge — only fields present on tx.data update the
+        // identity row; missing fields preserve previous value. Schema
+        // module enforces strict field set + types in verifyTx, so by
+        // the time we reach here d.<known_field> is guaranteed to be
+        // a boolean / declared type when present.
+        const current = dag.getIdentity(d.tip_id);
+        if (current) {
+          const merged = { ...current };
+          for (const field of updateProfileSchema.KNOWN_FIELD_NAMES) {
+            if (d[field] !== undefined) merged[field] = d[field];
+          }
+          dag.saveIdentity(merged);
+        }
+        break;
+      }
+
       // ── Content ───────────────────────────────────────────────────────
       case TX_TYPES.REGISTER_CONTENT:
         if (d.ctid && !dag.getContent(d.ctid)) {
@@ -838,6 +856,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // owns the canonical payload, builder, and verifier — same
         // module identity-service.register uses at API time.
         return registerIdentitySchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.UPDATE_PROFILE) {
+        // Sparse update of user-settable identity fields. The schema
+        // module owns the canonical payload (tip_id + present known
+        // fields) and signature verification against the user's own
+        // identity public key.
+        return updateProfileSchema.verifyTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.BIND_DOMAIN) {

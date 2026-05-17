@@ -3,7 +3,7 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ identityService }) {
+function createRouter({ identityService, profileService }) {
   const router = express.Router();
 
   router.post("/identity/register", asyncHandler(async (req, res) => {
@@ -29,6 +29,18 @@ function createRouter({ identityService }) {
 
   router.get("/identity/:tipId/activity", asyncHandler((req, res) => {
     res.json(identityService.getActivity(req.params.tipId, req.query));
+  }));
+
+  // ── Profile preferences (sparse update via UPDATE_PROFILE tx) ────────
+  // Single endpoint covers any user-settable identity field. v1 fields:
+  // reviewer_consent, juror_consent. Adding new preferences = extend
+  // schemas/update-profile.KNOWN_FIELDS; this endpoint stays unchanged.
+  router.get("/identity/:tipId/profile", asyncHandler((req, res) => {
+    res.json(profileService.getProfile(req.params.tipId));
+  }));
+
+  router.post("/identity/:tipId/profile", asyncHandler((req, res) => {
+    res.status(202).json(profileService.updateProfile(req.params.tipId, req.body));
   }));
 
   return router;

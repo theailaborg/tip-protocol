@@ -123,6 +123,15 @@ const SCHEMA = {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
     types: { vp_id: "string", name: "string" },
   },
+  [TX_TYPES.UPDATE_PROFILE]: {
+    // Sparse update — only `tip_id` and `signature` are structurally
+    // required. Preference field presence + types are enforced by
+    // schemas/update-profile.validateRequest at API time and
+    // verifyTx at consensus replay. At least one known preference
+    // field must be present; that check lives in the schema module.
+    required: ["tip_id", "signature"],
+    types: { tip_id: "string", signature: "string" },
+  },
   [TX_TYPES.COMMITTEE_ROTATION]: {
     // §4 + #34: chain-of-trust rotation event. Deeper validation
     // (rotation_number monotonic, sigs from previous committee, ≥2f+1
@@ -382,6 +391,17 @@ function validateBusinessRules(tx) {
       }
       break;
     }
+
+    case TX_TYPES.UPDATE_PROFILE: {
+      // TIP-ID format check; deeper structural validation (strict-schema,
+      // per-field types, at-least-one-field) lives in
+      // schemas/update-profile.validateRequest at API time and
+      // verifyTx at consensus replay.
+      if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
+        errors.push(`Invalid TIP-ID format: "${d.tip_id}". Expected: tip://id/[REGION]-[16hex]`);
+      }
+      break;
+    }
   }
 
   return errors.length ? fail(...errors) : pass();
@@ -520,6 +540,19 @@ function validateState(tx, dag) {
       // Cannot double-revoke
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`TIP-ID is already revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UPDATE_PROFILE: {
+      // Subject identity must exist + not be revoked. Deeper checks
+      // (per-field types, at-least-one-field, strict-schema) live in
+      // schemas/update-profile.verifyTx and validateRequest.
+      if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+        errors.push(`Cannot update profile: TIP-ID not found: ${d.tip_id}`);
+      }
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`Cannot update profile: TIP-ID is revoked: ${d.tip_id}`);
       }
       break;
     }
