@@ -29,7 +29,9 @@
 
 "use strict";
 
-const { TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS } = require("../../../shared/constants");
+const {
+  TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
+} = require("../../../shared/constants");
 const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 
@@ -122,24 +124,33 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   const existingUpdates = dag.getTxsByTypeAndCtid(TX_TYPES.UPDATE_ORIGIN, ctid);
   if (existingUpdates.length > 0) return fail(409, "Origin has already been updated once — no further changes allowed");
 
-  // Grace branches:
-  //   (a) After a PRESCAN_REVIEW_CONFIRMED, the creator has a fresh 24h
-  //       "accept-private" window from confirmed_at_ms. This supersedes
-  //       the from-registration window — by definition we're already
-  //       past h=48 (review only triggers there). The Phase 2.6
-  //       /reviews/:id/accept-correction endpoint runs through here.
-  //   (b) Otherwise: HIGH/CRITICAL + override gets the 48h flagged
-  //       window; everything else gets the 24h unflagged window.
+  // Grace branches (Phase 2 design):
+  //   (a) Open review in 'confirmed': creator has the 24h
+  //       accept-private window from confirmed_at_ms. The Phase 2.6
+  //       /reviews/:id/accept-correction endpoint runs through here;
+  //       commit-handler.UPDATE_ORIGIN apply flips the review to
+  //       CLOSED_ACCEPTED_PRIVATE.
+  //   (b) Open review in 'triggered': creator may still self-correct
+  //       while the reviewer is evaluating. Allowed for the duration
+  //       of the reviewer's SLA — the reviewer's own evaluation
+  //       deadline bounds this. commit-handler.UPDATE_ORIGIN apply
+  //       flips the review to CLOSED_SELF_CORRECT (Phase 2.3 hook).
+  //   (c) No open review: HIGH/CRITICAL + override gets the 48h
+  //       flagged window; everything else gets the 24h unflagged.
   const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
     ? dag.getOpenPrescanReviewByCtid(ctid)
     : null;
-  if (openReview && openReview.state === "confirmed") {
+  if (openReview && openReview.state === PRESCAN_REVIEW_STATES.CONFIRMED) {
     if (!openReview.confirmed_at_ms) {
       return fail(500, "Open review is in 'confirmed' state but missing confirmed_at_ms");
     }
     if (now - openReview.confirmed_at_ms > REVIEWER.CREATOR_DECISION_WINDOW_MS) {
       return fail(403, "24-hour creator decision window has expired");
     }
+  } else if (openReview && openReview.state === PRESCAN_REVIEW_STATES.TRIGGERED) {
+    // No additional time gate — reviewer's evaluation window provides
+    // the upper bound; the creator wanting out cleanly is always
+    // preferable to a forced public dispute.
   } else {
     const registeredAt = new Date(rec.registered_at).getTime();
     const isFlaggedWithOverride =

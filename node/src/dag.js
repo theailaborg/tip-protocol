@@ -25,7 +25,7 @@
 const path = require("path");
 const fs = require("fs");
 const { computeTxId, verifyTxId } = require("../../shared/crypto");
-const { TX_TYPES } = require("../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
 const { subjectTipId } = require("./tx-attribution");
 const { log } = require("./logger");
@@ -691,7 +691,7 @@ class MemoryStore {
       decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
       confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
       confirmed_at_ms: rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
-      state: rec.state || "triggered",
+      state: rec.state || PRESCAN_REVIEW_STATES.TRIGGERED,
       decision_note: rec.decision_note || null,
       suggested_origin: rec.suggested_origin || null,
     });
@@ -700,13 +700,14 @@ class MemoryStore {
     const rec = this._prescanReviews.get(reviewId);
     return rec ? { ...rec } : null;
   }
-  // Only one open review per CTID at a time — state='triggered' OR
-  // 'confirmed' (creator-decision window). Closed states are terminal.
+  // Only one open review per CTID at a time — TRIGGERED OR CONFIRMED
+  // (creator-decision window). Closed states are terminal.
   getOpenPrescanReviewByCtid(ctid) {
     let best = null;
     for (const r of this._prescanReviews.values()) {
       if (r.ctid !== ctid) continue;
-      if (r.state !== "triggered" && r.state !== "confirmed") continue;
+      if (r.state !== PRESCAN_REVIEW_STATES.TRIGGERED
+        && r.state !== PRESCAN_REVIEW_STATES.CONFIRMED) continue;
       if (!best || r.triggered_at_round > best.triggered_at_round) best = r;
     }
     return best ? { ...best } : null;
@@ -730,6 +731,7 @@ class MemoryStore {
     const out = [];
     for (const c of this._content.values()) {
       if (c.status !== "registered") continue;
+      if (c.origin_code !== "OH") continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
       if (!c.override) continue;
       const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
@@ -743,7 +745,7 @@ class MemoryStore {
   getReviewsNeedingAutoEscalation(nowMs) {
     const cutoff = nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS;
     return [...this._prescanReviews.values()]
-      .filter(r => r.state === "confirmed"
+      .filter(r => r.state === PRESCAN_REVIEW_STATES.CONFIRMED
         && r.confirmed_at_ms != null
         && r.confirmed_at_ms <= cutoff)
       .sort((a, b) => a.confirmed_at_ms - b.confirmed_at_ms)
@@ -1864,11 +1866,17 @@ class SQLiteStore {
       // so the comparison parses it via strftime — index on (status,
       // prescan_tier) carries the high-selectivity prefix; the time
       // arithmetic runs only against that filtered slice.
+      //
+      // origin_code = 'OH' is the "no UPDATE_ORIGIN" guard from the
+      // design doc: after a self-correction, origin_code is AA/AG/MX,
+      // so the content is no longer claiming human-only and there's
+      // nothing for the reviewer to dispute.
       getContentsNeedingReview: this.db.prepare(
         `SELECT c.* FROM content c
          LEFT JOIN prescan_reviews r
            ON r.ctid = c.ctid AND r.state IN ('triggered','confirmed')
          WHERE c.status = 'registered'
+           AND c.origin_code = 'OH'
            AND c.prescan_tier IN ('high','critical')
            AND c.override = 1
            AND r.review_id IS NULL
@@ -2382,7 +2390,7 @@ class SQLiteStore {
       rec.decided_at_round == null ? null : rec.decided_at_round,
       rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
       rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
-      rec.state || "triggered",
+      rec.state || PRESCAN_REVIEW_STATES.TRIGGERED,
       rec.decision_note || null,
       rec.suggested_origin || null,
     );
