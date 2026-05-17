@@ -209,8 +209,11 @@ class KnexAdapter {
       t.string("tip_id_type", 32).notNullable().defaultTo("personal");  // personal | organization
       t.integer("founding").notNullable().defaultTo(0);
       t.string("status", 32).notNullable().defaultTo("active");
-      t.integer("reviewer_consent").notNullable().defaultTo(0);          // opt-in for runtime reviewer pool
-      t.integer("juror_consent").notNullable().defaultTo(0);             // opt-in for jury + expert panel selection
+      // Opt-in to be selected as an adjudicator across all protocol roles
+      // (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
+      // Runtime filters at selection time decide which role a consenting
+      // user lands in (score, content category, conflict-of-interest).
+      t.integer("reviewer_consent").notNullable().defaultTo(0);
       t.string("registered_at", 64).notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
@@ -438,7 +441,6 @@ class KnexAdapter {
         ...row,
         founding: !!row.founding,
         reviewer_consent: !!row.reviewer_consent,
-        juror_consent: !!row.juror_consent,
       });
     }
 
@@ -668,7 +670,6 @@ class KnexAdapter {
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
       reviewer_consent: rec.reviewer_consent ? 1 : 0,
-      juror_consent: rec.juror_consent ? 1 : 0,
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,

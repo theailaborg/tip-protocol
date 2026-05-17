@@ -58,7 +58,6 @@ function _canonIdentity(r) {
     founding: r.founding ? 1 : 0,
     status: r.status,
     reviewer_consent: r.reviewer_consent ? 1 : 0,
-    juror_consent: r.juror_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
@@ -997,8 +996,11 @@ class SQLiteStore {
         tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
-        reviewer_consent    INTEGER NOT NULL DEFAULT 0,        -- opt-in for runtime reviewer pool selection
-        juror_consent       INTEGER NOT NULL DEFAULT 0,        -- opt-in for jury + expert panel selection (runtime filters distinguish)
+        -- Opt-in to be selected as an adjudicator across all protocol roles
+        -- (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
+        -- Runtime filters at selection time decide which role a consenting
+        -- user lands in (score, content category, conflict-of-interest).
+        reviewer_consent    INTEGER NOT NULL DEFAULT 0,
         registered_at       TEXT NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
@@ -1549,9 +1551,9 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,tip_id_type,founding,status,reviewer_consent,juror_consent,
+            verification_tier,tip_id_type,founding,status,reviewer_consent,
             registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -1865,7 +1867,6 @@ class SQLiteStore {
       rec.founding ? 1 : 0,
       rec.status || "active",
       rec.reviewer_consent ? 1 : 0,
-      rec.juror_consent ? 1 : 0,
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
@@ -1875,7 +1876,6 @@ class SQLiteStore {
       ...row,
       founding: row.founding === 1,
       reviewer_consent: row.reviewer_consent === 1,
-      juror_consent: row.juror_consent === 1,
     } : null;
   }
   getAllIdentities() {

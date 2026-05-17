@@ -2,13 +2,15 @@
  * @file tests/integration/update-profile.test.js
  * @description Sparse-update profile preferences via UPDATE_PROFILE tx.
  *
- *   - Happy paths: reviewer_consent on/off, juror_consent on/off
- *   - Sparse semantics: only present fields mutate the row; others preserve
+ *   - Happy paths: reviewer_consent on/off (single v1 field; sparse-update
+ *     semantics scaffolded for future field additions)
+ *   - Sparse: present-only fields mutate the row; unrelated identity
+ *     fields (region, public_key, etc.) preserved
  *   - Strict schema: unknown fields rejected
  *   - At-least-one rule: empty body rejected
  *   - Signature: tampered payload rejected; non-author key rejected
  *   - URL ↔ body tip_id mismatch rejected
- *   - Revoked identity rejected
+ *   - Unknown TIP-ID rejected
  *   - getProfile reflects committed state
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -71,10 +73,10 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     tip_id: tipId, region: "US",
     public_key: kp.publicKey, root_public_key: kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    // Explicit defaults — MemoryStore doesn't apply schema defaults the
-    // way SQLite does. Production identities always have these set via
+    // Explicit default — MemoryStore doesn't apply schema defaults the
+    // way SQLite does. Production identities always have this set via
     // CREATE TABLE DEFAULT 0.
-    reviewer_consent: false, juror_consent: false,
+    reviewer_consent: false,
     registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
   });
   dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
@@ -117,53 +119,15 @@ describe("profile-service.updateProfile — sparse updates", () => {
     expect(tx).toBeDefined();
     expect(tx.data.tip_id).toBe(tipId);
     expect(tx.data.reviewer_consent).toBe(true);
-    expect(tx.data.juror_consent).toBeUndefined();
 
     _commit(fx);
     const updated = fx.dag.getIdentity(tipId);
     expect(updated.reviewer_consent).toBe(true);
-    expect(updated.juror_consent).toBe(false);
-  });
-
-  test("happy path: set juror_consent=true alone, reviewer_consent unaffected", () => {
-    const fx = _setup();
-    const { tipId, kp } = _seedUser(fx, "user-2");
-
-    fx.profileService.updateProfile(tipId,
-      _buildSignedBody(tipId, kp.privateKey, { juror_consent: true }));
-    _commit(fx);
-
-    const updated = fx.dag.getIdentity(tipId);
-    expect(updated.juror_consent).toBe(true);
-    expect(updated.reviewer_consent).toBe(false);
-  });
-
-  test("sparse: second update mutates only specified field, preserving the other", () => {
-    const fx = _setup();
-    const { tipId, kp } = _seedUser(fx, "user-3");
-
-    // First update: both true
-    fx.profileService.updateProfile(tipId,
-      _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true, juror_consent: true }));
-    _commit(fx);
-
-    let id = fx.dag.getIdentity(tipId);
-    expect(id.reviewer_consent).toBe(true);
-    expect(id.juror_consent).toBe(true);
-
-    // Second update: only flip juror_consent off; reviewer_consent must stay true
-    fx.profileService.updateProfile(tipId,
-      _buildSignedBody(tipId, kp.privateKey, { juror_consent: false }));
-    _commit(fx);
-
-    id = fx.dag.getIdentity(tipId);
-    expect(id.reviewer_consent).toBe(true);  // preserved
-    expect(id.juror_consent).toBe(false);    // updated
   });
 
   test("can toggle off: explicit false update mutates field", () => {
     const fx = _setup();
-    const { tipId, kp } = _seedUser(fx, "user-4");
+    const { tipId, kp } = _seedUser(fx, "user-2");
 
     fx.profileService.updateProfile(tipId,
       _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true }));
@@ -174,6 +138,29 @@ describe("profile-service.updateProfile — sparse updates", () => {
       _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: false }));
     _commit(fx);
     expect(fx.dag.getIdentity(tipId).reviewer_consent).toBe(false);
+  });
+
+  test("sparse: update doesn't mutate unrelated identity fields", () => {
+    // Sparse-update semantics: only KNOWN_FIELDS are merged. Other
+    // identity columns (region, public_key, vp_id, verification_tier,
+    // etc.) must be preserved verbatim.
+    const fx = _setup();
+    const { tipId, kp } = _seedUser(fx, "user-3");
+
+    const before = fx.dag.getIdentity(tipId);
+    const beforePublicKey = before.public_key;
+    const beforeRegion = before.region;
+    const beforeVpId = before.vp_id;
+
+    fx.profileService.updateProfile(tipId,
+      _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true }));
+    _commit(fx);
+
+    const after = fx.dag.getIdentity(tipId);
+    expect(after.reviewer_consent).toBe(true);
+    expect(after.public_key).toBe(beforePublicKey);
+    expect(after.region).toBe(beforeRegion);
+    expect(after.vp_id).toBe(beforeVpId);
   });
 });
 
@@ -261,7 +248,6 @@ describe("profile-service.getProfile", () => {
     expect(profile).toEqual({
       tip_id: tipId,
       reviewer_consent: false,
-      juror_consent: false,
     });
   });
 
@@ -269,12 +255,11 @@ describe("profile-service.getProfile", () => {
     const fx = _setup();
     const { tipId, kp } = _seedUser(fx, "user-getafter");
     fx.profileService.updateProfile(tipId,
-      _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true, juror_consent: true }));
+      _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true }));
     _commit(fx);
 
     const profile = fx.profileService.getProfile(tipId);
     expect(profile.reviewer_consent).toBe(true);
-    expect(profile.juror_consent).toBe(true);
   });
 
   test("rejects unknown TIP-ID", () => {

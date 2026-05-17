@@ -16,8 +16,11 @@
  * mutations via a generic tx type.
  *
  * v1 known fields:
- *   reviewer_consent  boolean  — opt-in for protocol-review reviewer pool
- *   juror_consent     boolean  — opt-in for jury + expert panel selection
+ *   reviewer_consent  boolean  — opt-in to be selected as adjudicator across
+ *                                ALL protocol roles (Protocol Review reviewer,
+ *                                Stage 2 jury, Stage 3 expert panel). Runtime
+ *                                filters at selection time decide which role
+ *                                a consenting user lands in for a given case.
  *
  * Signature scope: the user's own ML-DSA-65 key signs the canonical
  * payload. No VP attestation needed — this is purely the user mutating
@@ -42,7 +45,6 @@ const TX_TYPE = TX_TYPES.UPDATE_PROFILE;
 // payload determinism (canonicalJson sorts keys anyway, but explicit
 // ordering keeps reviewer + future-developer mental models aligned).
 const KNOWN_FIELDS = Object.freeze({
-  juror_consent: { type: "boolean" },
   reviewer_consent: { type: "boolean" },
 });
 

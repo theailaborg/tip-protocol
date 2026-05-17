@@ -32,9 +32,11 @@ function createRouter({ identityService, profileService }) {
   }));
 
   // ── Profile preferences (sparse update via UPDATE_PROFILE tx) ────────
-  // Single endpoint covers any user-settable identity field. v1 fields:
-  // reviewer_consent, juror_consent. Adding new preferences = extend
-  // schemas/update-profile.KNOWN_FIELDS; this endpoint stays unchanged.
+  // Single endpoint covers any user-settable identity field. v1 has one
+  // field: reviewer_consent (opt-in to be selected as an adjudicator
+  // across review / jury / expert panels). Adding new preferences =
+  // extend schemas/update-profile.KNOWN_FIELDS; this endpoint stays
+  // unchanged.
   router.get("/identity/:tipId/profile", asyncHandler((req, res) => {
     res.json(profileService.getProfile(req.params.tipId));
   }));
