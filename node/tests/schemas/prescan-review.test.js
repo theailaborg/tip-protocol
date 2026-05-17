@@ -24,14 +24,15 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const {
-  initCrypto, generateMLDSAKeypair, shake256, signTransaction, computeTxId,
+  initCrypto, generateMLDSAKeypair, shake256, signTransaction, signBody, computeTxId,
 } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const dismissedSchema = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
 const confirmedSchema = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require(path.join(SHARED, "constants"));
+const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
+const { TX_TYPES, PRESCAN_REVIEW_STATES, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -295,5 +296,112 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
       reviewerKp: fx.reviewer2Kp,
     })]);
     expect(fx.dag.getPrescanReview("rv_c3").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 2.3 — status transition rewire
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 1. REGISTER_CONTENT no longer flips status to PENDING_REVIEW on prescan_flagged
+//    — registration always lands as REGISTERED (green badge). The amber flip
+//    happens only when PRESCAN_REVIEW_TRIGGERED fires at h=48.
+// 2. PRESCAN_REVIEW_TRIGGERED flips content.status → PENDING_REVIEW.
+// 3. PRESCAN_REVIEW_DISMISSED restores content.status → REGISTERED.
+// 4. UPDATE_ORIGIN closes any open review with state=closed_self_correct.
+
+describe("Phase 2.3 — content status transitions", () => {
+
+  test("REGISTER_CONTENT with prescan_flagged=true still lands as REGISTERED", () => {
+    const fx = _setup();
+    const newCtid = "tip://c/OH-22222222222222-0002";
+    const data = {
+      ctid: newCtid,
+      origin_code: "OH",
+      content_hash: "ef".repeat(32),
+      signer_tip_id: CREATOR,
+      prescan_flagged: true,
+      prescan_tier: "high",
+      prescan_probability: 0.95,
+      override: true,
+    };
+    // Use nodeKp because CREATOR's public_key was seeded as nodeKp.publicKey
+    data.authors = [{ key_mode: "attribution", role: "byline", signed: false,
+                      tip_id: CREATOR, tip_id_type: "personal" }];
+    data.attribution_mode = "self";
+    data.extras = {};
+    data.registered_urls = [];
+    data.cna_version = contentRegisterSchema.CURRENT_CNA_VERSION;
+    const payload = contentRegisterSchema.buildSigningPayload(data, data.content_hash);
+    data.signature = contentRegisterSchema.sign(payload, fx.nodeKp.privateKey);
+    const txBody = {
+      tx_type: TX_TYPES.REGISTER_CONTENT,
+      timestamp: new Date().toISOString(),
+      prev: fx.dag.getRecentPrev(),
+      data,
+    };
+    txBody.tx_id = computeTxId(txBody);
+    const tx = signTransaction(txBody, fx.nodeKp.privateKey);
+
+    fx.commit([tx]);
+    const content = fx.dag.getContent(newCtid);
+    expect(content).not.toBeNull();
+    expect(content.status).toBe(CONTENT_STATUS.REGISTERED);
+    expect(content.prescan_flagged).toBe(true);
+    expect(content.prescan_tier).toBe("high");
+  });
+
+  test("PRESCAN_REVIEW_TRIGGERED flips content.status to PENDING_REVIEW; DISMISSED restores REGISTERED", () => {
+    const fx = _setup();
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.REGISTERED);
+
+    fx.commit([_buildTriggeredTx(fx, { review_id: "rv_p23_a" })]);
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+
+    fx.commit([_buildDismissedTx(fx, { review_id: "rv_p23_a" })]);
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.REGISTERED);
+    expect(fx.dag.getPrescanReview("rv_p23_a").state).toBe(PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+  });
+
+  test("UPDATE_ORIGIN during an open review closes it with state=closed_self_correct", () => {
+    const fx = _setup();
+    // Re-seed content with a fresh registered_at so the 48h grace window
+    // is still open at commit time. Otherwise canUpdateOrigin rejects the
+    // tx and the close-review side effect never runs.
+    const seeded = fx.dag.getContent(CTID_1);
+    fx.dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
+
+    fx.commit([_buildTriggeredTx(fx, { review_id: "rv_p23_b" })]);
+    expect(fx.dag.getPrescanReview("rv_p23_b").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+
+    // Creator submits UPDATE_ORIGIN. CREATOR.public_key was seeded as
+    // nodeKp.publicKey, so nodeKp.privateKey produces a valid body sig.
+    const body = { author_tip_id: CREATOR, new_origin_code: "AG" };
+    const updateData = {
+      ctid: CTID_1,
+      old_origin_code: "OH",
+      new_origin_code: "AG",
+      author_tip_id: CREATOR,
+      signature: signBody(body, fx.nodeKp.privateKey),
+    };
+    const updateTx = {
+      tx_type: TX_TYPES.UPDATE_ORIGIN,
+      timestamp: new Date().toISOString(),
+      prev: fx.dag.getRecentPrev(),
+      data: updateData,
+    };
+    updateTx.tx_id = computeTxId(updateTx);
+
+    fx.commit([updateTx]);
+
+    const content = fx.dag.getContent(CTID_1);
+    expect(content.origin_code).toBe("AG");
+    expect(content.status).toBe(CONTENT_STATUS.REGISTERED);
+
+    const review = fx.dag.getPrescanReview("rv_p23_b");
+    expect(review.state).toBe(PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT);
+    expect(review.decided_at_round).toBeGreaterThan(0);
+    expect(fx.dag.getOpenPrescanReviewByCtid(CTID_1)).toBeNull();
   });
 });

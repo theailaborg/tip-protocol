@@ -18,7 +18,7 @@
 
 "use strict";
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -547,36 +547,42 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
       case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
         // Scheduler-emitted; signature already validated. Create the
-        // prescan_reviews row with state=triggered + reviewer assignment.
-        // Content.status flip to PENDING_REVIEW is handled in Phase 2.3.
-        // Idempotent: if a review already exists for this review_id,
-        // savePrescanReview replaces it (same row carries the assignment
-        // forward — no duplicate trigger occurs because the scheduler
-        // checks getOpenPrescanReviewByCtid before emitting).
+        // prescan_reviews row with state=triggered + reviewer assignment,
+        // and flip content.status REGISTERED → PENDING_REVIEW (amber
+        // badge goes live now, not at registration). Idempotent: if a
+        // review already exists for this review_id, savePrescanReview
+        // replaces it; updateContentStatus is a no-op when status is
+        // already PENDING_REVIEW.
         dag.savePrescanReview({
           review_id: d.review_id,
           ctid: d.ctid,
           creator_tip_id: d.creator_tip_id,
           assigned_reviewer: d.assigned_reviewer_tip_id,
           triggered_at_round: d.triggered_at_round,
-          state: "triggered",
+          state: PRESCAN_REVIEW_STATES.TRIGGERED,
         });
+        if (dag.getContent(d.ctid)) {
+          dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
+        }
         break;
       }
 
       case TX_TYPES.PRESCAN_REVIEW_DISMISSED: {
         // Reviewer said "AI's flag was wrong". Close the review and
-        // (Phase 2.3) restore content.status to REGISTERED. Schema
-        // module enforced that the review is in state=triggered and
-        // assigned to this reviewer.
+        // restore content.status to REGISTERED — green badge comes back,
+        // no public dispute, no penalty. Schema module enforced that the
+        // review is in state=triggered and assigned to this reviewer.
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({
             ...review,
-            state: "closed_dismissed",
+            state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
             decided_at_round: round,
             decision_note: d.decision_note || null,
           });
+          if (dag.getContent(review.ctid)) {
+            dag.updateContentStatus(review.ctid, CONTENT_STATUS.REGISTERED);
+          }
         }
         break;
       }
@@ -584,13 +590,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
         // Reviewer said "AI's flag was right". Transition to state=confirmed
         // + record suggested_origin + start the creator's 24h decision
-        // window (confirmed_at_round). Auto-escalation to CONTENT_DISPUTED
-        // is handled by a scheduler in Phase 2.3.
+        // window (confirmed_at_round). content.status stays PENDING_REVIEW
+        // — the creator is now deciding whether to accept-private (Option 1)
+        // or be auto-escalated to CONTENT_DISPUTED at h=R+24 (Option 2).
         const review = dag.getPrescanReview(d.review_id);
         if (review) {
           dag.savePrescanReview({
             ...review,
-            state: "confirmed",
+            state: PRESCAN_REVIEW_STATES.CONFIRMED,
             decided_at_round: round,
             confirmed_at_round: round,
             decision_note: d.decision_note || null,
@@ -622,7 +629,11 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             attribution_mode: d.attribution_mode || "self",
             extras: (d.extras && typeof d.extras === "object" && !Array.isArray(d.extras)) ? d.extras : {},
             cna_version: d.cna_version,
-            status: d.prescan_flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED,
+            // Phase 2.3: registration always lands as REGISTERED (green
+            // badge). For HIGH/CRITICAL tier + override, the creator has
+            // a 48h self-correction window; PENDING_REVIEW status is
+            // applied only when PRESCAN_REVIEW_TRIGGERED fires at h=48.
+            status: CONTENT_STATUS.REGISTERED,
             prescan_flagged: !!d.prescan_flagged,
             prescan_probability: typeof d.prescan_probability === "number" ? d.prescan_probability : 0,
             prescan_tier: d.prescan_tier || "low",
@@ -637,6 +648,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.UPDATE_ORIGIN:
         if (d.ctid && d.new_origin_code) {
           dag.updateContentOrigin(d.ctid, d.new_origin_code, CONTENT_STATUS.REGISTERED);
+          // Phase 2.3: a creator self-correcting during an open review
+          // window closes the review with state=closed_self_correct. The
+          // reviewer assignment is preserved on the row for audit; the
+          // review is no longer "open" for further reviewer action. This
+          // is the clean-exit path — no public record of "almost
+          // reviewed", no penalty beyond the existing UPDATE_ORIGIN
+          // score effect.
+          const openReview = dag.getOpenPrescanReviewByCtid(d.ctid);
+          if (openReview) {
+            dag.savePrescanReview({
+              ...openReview,
+              state: PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT,
+              decided_at_round: round,
+            });
+          }
         }
         break;
 
