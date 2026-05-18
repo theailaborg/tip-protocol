@@ -300,6 +300,77 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PRESCAN_REVIEW_RECUSED — reviewer bows out, content goes back to REGISTERED
+// for re-trigger on the next round.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("PRESCAN_REVIEW_RECUSED — reviewer bows out", () => {
+  const recusedSchema = require(path.join(SRC, "schemas", "prescan-review-recused"));
+
+  function _buildRecusedTx(fx, opts) {
+    const reviewerKp = opts.reviewerKp || fx.reviewer1Kp;
+    const reviewerTipId = opts.reviewer_tip_id || REVIEWER_1;
+    const payload = recusedSchema.buildSigningPayload({
+      review_id: opts.review_id,
+      reviewer_tip_id: reviewerTipId,
+      recusal_reason: opts.recusal_reason || null,
+    });
+    const signature = recusedSchema.sign(payload, reviewerKp.privateKey);
+    const data = {
+      review_id: opts.review_id,
+      reviewer_tip_id: reviewerTipId,
+      recusal_reason: opts.recusal_reason || null,
+      signature,
+    };
+    const txBody = {
+      tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
+      timestamp: new Date().toISOString(),
+      prev: fx.dag.getRecentPrev(),
+      data,
+    };
+    txBody.tx_id = computeTxId(txBody);
+    return txBody;
+  }
+
+  test("transitions state to RECUSED and flips content.status back to REGISTERED", () => {
+    const fx = _setup();
+    fx.commit([_buildTriggeredTx(fx, { review_id: "rv_rec1" })]);
+    expect(fx.dag.getPrescanReview("rv_rec1").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+
+    fx.commit([_buildRecusedTx(fx, { review_id: "rv_rec1", recusal_reason: "schedule conflict" })]);
+    const review = fx.dag.getPrescanReview("rv_rec1");
+    expect(review.state).toBe(PRESCAN_REVIEW_STATES.RECUSED);
+    expect(review.decision_note).toBe("schedule conflict");
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.REGISTERED);
+    // RECUSED is not an "open" state — trigger can re-pick this CTID next round.
+    expect(fx.dag.getOpenPrescanReviewByCtid(CTID_1)).toBeNull();
+  });
+
+  test("rejects when signed by non-assigned reviewer", () => {
+    const fx = _setup();
+    fx.commit([_buildTriggeredTx(fx, { review_id: "rv_rec2" })]);
+    const tx = _buildRecusedTx(fx, {
+      review_id: "rv_rec2",
+      reviewer_tip_id: REVIEWER_2,
+      reviewerKp: fx.reviewer2Kp,
+    });
+    fx.commit([tx]);
+    expect(fx.dag.getPrescanReview("rv_rec2").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+  });
+
+  test("rejects recusal after a decision has been made (state=CLOSED_DISMISSED)", () => {
+    const fx = _setup();
+    fx.commit([_buildTriggeredTx(fx, { review_id: "rv_rec3" })]);
+    fx.commit([_buildDismissedTx(fx, { review_id: "rv_rec3" })]);
+    expect(fx.dag.getPrescanReview("rv_rec3").state).toBe(PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+
+    fx.commit([_buildRecusedTx(fx, { review_id: "rv_rec3" })]);
+    expect(fx.dag.getPrescanReview("rv_rec3").state).toBe(PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Phase 2.3 — status transition rewire
 // ═══════════════════════════════════════════════════════════════════════════
 //

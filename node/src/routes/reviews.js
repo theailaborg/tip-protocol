@@ -40,6 +40,10 @@ function createRouter({ reviewService }) {
     res.status(202).json(reviewService.confirm(req.params.id, req.body));
   }));
 
+  router.post("/reviews/:id/recuse", asyncHandler((req, res) => {
+    res.status(202).json(reviewService.recuse(req.params.id, req.body));
+  }));
+
   router.post("/reviews/:id/accept-correction", asyncHandler((req, res) => {
     res.status(202).json(reviewService.acceptCorrection(req.params.id, req.body));
   }));

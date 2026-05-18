@@ -266,6 +266,78 @@ describe("review-service.confirm", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// recuse
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("review-service.recuse", () => {
+  const recusedSchema = require(path.join(SRC, "schemas", "prescan-review-recused"));
+
+  test("submits PRESCAN_REVIEW_RECUSED on happy path", () => {
+    const fx = _setup();
+    _seedTriggeredReview(fx, { reviewId: "rv_r1" });
+    const payload = recusedSchema.buildSigningPayload({
+      review_id: "rv_r1", reviewer_tip_id: REVIEWER_1, recusal_reason: "conflict of interest",
+    });
+    const signature = recusedSchema.sign(payload, fx.reviewer1Kp.privateKey);
+
+    const out = fx.service.recuse("rv_r1", {
+      reviewer_tip_id: REVIEWER_1, recusal_reason: "conflict of interest", signature,
+    });
+    expect(fx.submitted.length).toBe(1);
+    expect(fx.submitted[0].tx_type).toBe(TX_TYPES.PRESCAN_REVIEW_RECUSED);
+    expect(fx.submitted[0].data.review_id).toBe("rv_r1");
+    expect(fx.submitted[0].data.recusal_reason).toBe("conflict of interest");
+    expect(out.confirmation).toBe("proposed");
+  });
+
+  test("rejects when signed by non-assigned reviewer", () => {
+    const fx = _setup();
+    _seedTriggeredReview(fx, { reviewId: "rv_r2" });
+    const payload = recusedSchema.buildSigningPayload({
+      review_id: "rv_r2", reviewer_tip_id: REVIEWER_2,
+    });
+    const signature = recusedSchema.sign(payload, fx.reviewer2Kp.privateKey);
+    const err = _throws(() => fx.service.recuse("rv_r2", {
+      reviewer_tip_id: REVIEWER_2, signature,
+    }));
+    expect(err.code).toBe("reviewer_not_assigned");
+    expect(err.status).toBe(403);
+  });
+
+  test("rejects when review is already terminal (cannot recuse after deciding)", () => {
+    const fx = _setup();
+    fx.dag.savePrescanReview({
+      review_id: "rv_r3", ctid: CTID_1, creator_tip_id: CREATOR,
+      assigned_reviewer: REVIEWER_1, triggered_at_round: 1, decided_at_round: 2,
+      state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+    });
+    const payload = recusedSchema.buildSigningPayload({
+      review_id: "rv_r3", reviewer_tip_id: REVIEWER_1,
+    });
+    const signature = recusedSchema.sign(payload, fx.reviewer1Kp.privateKey);
+    const err = _throws(() => fx.service.recuse("rv_r3", {
+      reviewer_tip_id: REVIEWER_1, signature,
+    }));
+    expect(err.code).toBe("review_state_invalid");
+    expect(err.status).toBe(409);
+  });
+
+  test("rejects when review is CONFIRMED (decision already made)", () => {
+    const fx = _setup();
+    _seedConfirmedReview(fx, { reviewId: "rv_r4" });
+    const payload = recusedSchema.buildSigningPayload({
+      review_id: "rv_r4", reviewer_tip_id: REVIEWER_1,
+    });
+    const signature = recusedSchema.sign(payload, fx.reviewer1Kp.privateKey);
+    const err = _throws(() => fx.service.recuse("rv_r4", {
+      reviewer_tip_id: REVIEWER_1, signature,
+    }));
+    expect(err.code).toBe("review_state_invalid");
+    expect(err.status).toBe(409);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // acceptCorrection
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -27,6 +27,7 @@ const { REVIEWER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
+const recusedSchema   = require("../schemas/prescan-review-recused");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const { schemaError } = require("../schemas/_common");
 const { withTxId } = require("./helpers");
@@ -117,6 +118,35 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
   }
 
+  function recuse(reviewId, body) {
+    const safeBody = { ...(body || {}), review_id: reviewId };
+    recusedSchema.validateRequest(safeBody, { dag });
+
+    const reviewer = dag.getIdentity(safeBody.reviewer_tip_id);
+    const payload = recusedSchema.buildSigningPayload(safeBody);
+    if (!recusedSchema.verifySignature(payload, safeBody.signature, reviewer.public_key)) {
+      throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
+    }
+
+    const tx = withTxId({
+      tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
+      timestamp: new Date().toISOString(),
+      prev: dag.getRecentPrev(),
+      data: {
+        review_id: reviewId,
+        reviewer_tip_id: safeBody.reviewer_tip_id,
+        recusal_reason: safeBody.recusal_reason ?? null,
+        signature: safeBody.signature,
+      },
+    });
+    const validation = validateTransaction(tx, dag, {});
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+
+    submitTx(tx);
+    log.info(`Review recused: ${reviewId} by ${safeBody.reviewer_tip_id}`);
+    return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
+  }
+
   function acceptCorrection(reviewId, body) {
     const { review, content, new_origin_code } =
       acceptCorrectionSchema.validateRequest(reviewId, body, { dag });
@@ -196,7 +226,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { pool: rows, count: rows.length };
   }
 
-  return { getReview, dismiss, confirm, acceptCorrection, listReviewerPool };
+  return { getReview, dismiss, confirm, recuse, acceptCorrection, listReviewerPool };
 }
 
 module.exports = { createReviewService };

@@ -28,6 +28,7 @@ const updateProfileSchema = require("../schemas/update-profile");
 const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
+const prescanReviewRecusedSchema   = require("../schemas/prescan-review-recused");
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -594,6 +595,30 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
       }
 
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+        // Reviewer bowed out of the case. Close the review with
+        // state=RECUSED and flip content.status back to REGISTERED so
+        // the prescan-review-trigger re-picks-up this content on the
+        // next round and emits a fresh PRESCAN_REVIEW_TRIGGERED with
+        // a new assignment. The original assigned_reviewer stays on
+        // the row for audit; getOpenPrescanReviewByCtid won't return
+        // it (RECUSED is a closed state), so the trigger's "no open
+        // review" predicate passes.
+        const review = dag.getPrescanReview(d.review_id);
+        if (review) {
+          dag.savePrescanReview({
+            ...review,
+            state: PRESCAN_REVIEW_STATES.RECUSED,
+            decided_at_round: round,
+            decision_note: d.recusal_reason || null,
+          });
+          if (dag.getContent(review.ctid)) {
+            dag.updateContentStatus(review.ctid, CONTENT_STATUS.REGISTERED);
+          }
+        }
+        break;
+      }
+
       case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
         // Reviewer said "AI's flag was right". Transition to state=confirmed
         // + record suggested_origin + start the creator's 24h decision
@@ -1014,6 +1039,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // Reviewer's "AI was right" decision. Same signature pattern as
         // dismissed; canonical payload also carries the suggested_origin.
         return prescanReviewConfirmedSchema.verifyTx(tx, dag).ok;
+      }
+
+      if (tt === TX_TYPES.PRESCAN_REVIEW_RECUSED) {
+        // Reviewer bowing out — same reviewer-signed pattern as
+        // DISMISSED. Schema gates state=TRIGGERED (can't recuse after
+        // a decision).
+        return prescanReviewRecusedSchema.verifyTx(tx, dag).ok;
       }
 
       if (tt === TX_TYPES.BIND_DOMAIN) {
