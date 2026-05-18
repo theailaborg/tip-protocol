@@ -55,9 +55,6 @@ const {
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
 const PC = require("../shared/protocol-constants");
-// seed.js regenerates GENESIS_TX_SIGNATURE and GENESIS_VP_TX_SIGNATURE, so it
-// must bypass the startup check that would otherwise block loading genesis.js.
-process.env.SKIP_GENESIS_VERIFY = "1";
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
