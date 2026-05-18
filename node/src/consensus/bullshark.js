@@ -60,12 +60,18 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
   // Track last committed round to avoid re-processing
   let _lastCommittedRound = 0;
+
+  // Parked anchor commit: when _walkAnchoredCertChain detects missing parent
+  // certs, we defer the commit rather than producing a truncated (wrong) causal
+  // history. Cleared when the missing certs arrive (via onCertSaved) or when
+  // the retry timer expires (fall back to best-effort commit with what we have).
+  let _pendingAnchorCommit = null; // { voteRound, anchorCert, missingHashes, timer }
 
   // Bullshark counters — cumulative over process lifetime.
   const _metrics = {
@@ -81,6 +87,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     // builds + submits a COMMITTEE_ROTATION tx. Pairs with the dag-level
     // committee_history row count to compute success rate.
     committee_rotation_proposals: 0,
+    anchors_deferred_incomplete_dag: 0,  // anchor walks that parked due to missing parent certs
+    anchors_unblocked_by_cert: 0,        // parked anchors that resumed after missing cert arrived
+    bft_time_violations: 0,              // anchors skipped for BFT-time monotonicity violations
   };
 
   // Monotonic commit sequence number (§15). One per successful anchor
@@ -174,7 +183,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
   /**
    * Check if the leader's certificate from the propose round is committed.
    */
-  function _checkAnchorCommit(voteRound) {
+  function _checkAnchorCommit(voteRound, { force = false } = {}) {
     const proposeRound = voteRound - 1;
     const leader = _getLeader(proposeRound);
     if (!leader) {
@@ -251,7 +260,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     const certTs = leaderCert.timestamp;
     const floor = _lastAnchorTimestamp || CONSENSUS.BFT_TIME_GENESIS_MS;
     if (!Number.isInteger(certTs) || certTs <= floor) {
-      _metrics.bft_time_violations = (_metrics.bft_time_violations || 0) + 1;
+      _metrics.bft_time_violations++;
       log.error(
         `BFT-Time monotonicity violation at round ${voteRound}: ` +
         `anchor cert.timestamp=${certTs} (leader=${leader}), floor=${floor} ` +
@@ -303,7 +312,60 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     // any node walked it. After fix A, every node that processes the same
     // cert set arrives at bit-identical RP rows.
     const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
-    const anchoredCerts = _walkAnchoredCertChain(leaderCert);
+    const { certs: anchoredCerts, missingHashes } = _walkAnchoredCertChain(leaderCert);
+
+    // Option A — DAG completeness gate. If any parent certs are missing, park
+    // this anchor commit instead of producing a truncated causal history.
+    // A truncated walk produces a different tx set than peers → byzantine_fork.
+    // Anti-entropy will pull the missing certs; onCertSaved unblocks us
+    // immediately when they arrive. Fallback timer commits best-effort after
+    // BULLSHARK_DEFER_MS to prevent liveness stall if certs were GC'd by peers.
+    // force=true skips re-parking — used by the timeout fallback to prevent
+    // an infinite defer→timeout→defer loop when missing certs are GC'd by peers.
+    if (missingHashes.size > 0 && !_pendingAnchorCommit && !force) {
+      _metrics.anchors_deferred_incomplete_dag++;
+      const DEFER_MS = CONSENSUS.BULLSHARK_DEFER_MS || 4000;
+      log.warn(
+        `Round ${voteRound}: anchor DAG incomplete — ${missingHashes.size} parent cert(s) missing. ` +
+        `Parking commit for up to ${DEFER_MS}ms for anti-entropy to fill gaps.`
+      );
+      const timer = setTimeout(() => {
+        if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound === voteRound) {
+          const stillMissing = _pendingAnchorCommit.missingHashes.size;
+          // The missing certs were never produced (node was paused) — AE can't
+          // pull what doesn't exist. Force-committing with a truncated cert set
+          // produces a different tx set than honest peers → byzantine_fork halt.
+          // Trigger a snapshot resync instead so we pull the correct committed
+          // state from a peer rather than writing divergent state locally.
+          if (stillMissing > 0 && typeof onMissingCertsTimeout === "function") {
+            log.warn(
+              `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
+              `missing — triggering snapshot resync instead of force-committing divergent state`
+            );
+            _pendingAnchorCommit = null;
+            onMissingCertsTimeout(voteRound, stillMissing);
+          } else {
+            log.warn(`Round ${voteRound}: deferred anchor timed out — committing with available certs (${stillMissing} still missing)`);
+            _pendingAnchorCommit = null;
+            _checkAnchorCommit(voteRound, { force: true });
+          }
+        }
+      }, DEFER_MS);
+      _pendingAnchorCommit = { voteRound, anchorCert: leaderCert, missingHashes, timer };
+      return;
+    }
+
+    // Timed-out retry or complete walk: clear parking state if this is the retry.
+    if (_pendingAnchorCommit && _pendingAnchorCommit.voteRound === voteRound) {
+      clearTimeout(_pendingAnchorCommit.timer);
+      _pendingAnchorCommit = null;
+    }
+
+    // Mark collected certs as ordered now (complete walk or forced commit).
+    for (const cert of anchoredCerts) {
+      _orderedCertHashes.add(cert.hash);
+    }
+
     if (dag.incrementRotationParticipation) {
       try {
         for (const cert of anchoredCerts) {
@@ -857,6 +919,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     const toVisit = [anchorCert];
     const visited = new Set();
     const collectedCerts = [];
+    const missingHashes = new Set();
 
     while (toVisit.length > 0) {
       const cert = toVisit.shift();
@@ -865,17 +928,32 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
 
       if (!_orderedCertHashes.has(cert.hash)) {
         collectedCerts.push(cert);
-        _orderedCertHashes.add(cert.hash);
+        // Don't mark in _orderedCertHashes yet when there are missing parents —
+        // we may need to re-walk from scratch once they arrive.
       }
 
       for (const parentHash of (cert.parent_hashes || [])) {
         if (visited.has(parentHash)) continue;
         try {
           const parentCert = dag.getCertificate(parentHash);
-          if (parentCert) toVisit.push(parentCert);
+          if (parentCert) {
+            toVisit.push(parentCert);
+          } else {
+            // Parent not locally available — record as missing.
+            // Don't silently truncate; the caller decides whether to defer.
+            missingHashes.add(parentHash);
+          }
         } catch (err) {
           log.warn(`Failed to read parent cert ${parentHash.slice(0, 16)}: ${err.message}`);
         }
+      }
+    }
+
+    // Only mark ordered if DAG is complete — prevents partial walks from
+    // poisoning the set and blocking a future complete walk.
+    if (missingHashes.size === 0) {
+      for (const cert of collectedCerts) {
+        _orderedCertHashes.add(cert.hash);
       }
     }
 
@@ -884,7 +962,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
       return a.author_node_id.localeCompare(b.author_node_id);
     });
 
-    return collectedCerts;
+    return { certs: collectedCerts, missingHashes };
   }
 
   /**
@@ -935,8 +1013,30 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
     }
   }
 
+  /**
+   * Called by narwhal whenever a certificate is persisted to the DAG.
+   * If there is a parked anchor commit waiting on this cert hash, remove
+   * it from the missing set and immediately retry the commit if complete.
+   */
+  function onCertSaved(certHash) {
+    if (!_pendingAnchorCommit) return;
+    if (!_pendingAnchorCommit.missingHashes.has(certHash)) return;
+    _pendingAnchorCommit.missingHashes.delete(certHash);
+    if (_pendingAnchorCommit.missingHashes.size === 0) {
+      const { voteRound, timer } = _pendingAnchorCommit;
+      clearTimeout(timer);
+      _pendingAnchorCommit = null;
+      _metrics.anchors_unblocked_by_cert++;
+      log.info(`Round ${voteRound}: all missing parent certs arrived — retrying anchor commit`);
+      try { _checkAnchorCommit(voteRound); } catch (err) {
+        log.error(`Round ${voteRound}: retry after cert arrival failed: ${err.message}`);
+      }
+    }
+  }
+
   return {
     onRoundComplete,
+    onCertSaved,
     tryRotationProposal,
 
     /** #68 — multi-sig rotation coordinator (null in legacy/test mode) */
@@ -984,6 +1084,50 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer }) {
       }
       log.info(`Bullshark: consensus_index advanced to ${_consensusIndex} (from snapshot peer)`);
       return _consensusIndex;
+    },
+
+    /**
+     * Reset the BFT-time monotonicity floor after a snapshot install.
+     * Partial commits from deferred anchor timeouts can advance the floor
+     * ahead of the snapshot's actual last anchor timestamp, causing every
+     * subsequent anchor to fail the monotonicity check. Re-reading from
+     * dag.getLatestCommit() restores the correct floor.
+     */
+    resetBftTimeFloor() {
+      try {
+        const latestCommit = dag.getLatestCommit ? dag.getLatestCommit() : null;
+        if (latestCommit && latestCommit.cert_timestamp) {
+          const ts = Number(latestCommit.cert_timestamp) || 0;
+          if (ts !== _lastAnchorTimestamp) {
+            log.notice(`Bullshark: BFT-time floor reset ${_lastAnchorTimestamp} → ${ts} (post-snapshot)`);
+            _lastAnchorTimestamp = ts;
+          }
+        }
+      } catch { /* best-effort */ }
+    },
+
+    /**
+     * Cancel any pending deferred anchor commit on snapshot install.
+     * After a snapshot, the pre-pause deferred timer is stale: the cert it
+     * was waiting for was either covered by the snapshot (no need to commit
+     * again) or is from a round where the DAG is incomplete (commits with
+     * missing certs would diverge from peers). Cancelling forces Bullshark
+     * to re-evaluate from the snapshot's cert DAG on the next onRoundComplete.
+     */
+    cancelPendingCommit(snapshotRound) {
+      if (_pendingAnchorCommit) {
+        log.notice(
+          `Bullshark: cancelling pending commit at round ${_pendingAnchorCommit.voteRound} ` +
+          `(snapshot installed to round ${snapshotRound})`
+        );
+        clearTimeout(_pendingAnchorCommit.timer);
+        _pendingAnchorCommit = null;
+      }
+      // Advance _lastCommittedRound to the snapshot boundary so Bullshark
+      // does not re-commit anchor waves already covered by the snapshot.
+      if (snapshotRound > _lastCommittedRound) {
+        _lastCommittedRound = snapshotRound;
+      }
     },
 
     /** Stats for monitoring */

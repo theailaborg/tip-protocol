@@ -78,7 +78,7 @@ const SNAPSHOT_PROTOCOL = NETWORK.SNAPSHOT_PROTOCOL;
  * @param {Function} options.isAuthorizedPeer  (peerIdString) => boolean
  * @returns {Object}
  */
-function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null }) {
+function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, bullshark = null, narwhal = null, onSnapshotInstalled = null }) {
   // §4 + #34: counters surfaced via stats() for /metrics.
   // chain_walk_failures increments every time _verifyRotationChain throws —
   // either rotations_full_root mismatch or any of the chain-of-trust
@@ -88,6 +88,23 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   const _metrics = {
     chain_walk_failures: 0,
   };
+
+  // ── Install-once guard ───────────────────────────────────────────────────
+  // When a node resumes after a long pause it reconnects to all peers
+  // simultaneously. Each reconnection triggers onPeerAuthorized → peer-sync
+  // → requestSnapshotFromPeer in parallel. Without this guard all N snapshots
+  // install concurrently and the last DB write wins — which may have a
+  // different tx count, corrupting state_merkle_root and causing permanent
+  // AE divergence. The guard makes installs first-wins within one sync cycle;
+  // resetInstallState() is called by anti-entropy whenever enterSyncMode()
+  // fires so the guard resets for the next needed resync.
+  let _snapInstalled = false;
+  let _snapInstallInProgress = false;
+
+  function resetInstallState() {
+    _snapInstalled = false;
+    _snapInstallInProgress = false;
+  }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
@@ -160,6 +177,21 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
 
     const minRound = Number(request.minRound || 0);
+
+    // Bug 4: refuse to serve while our own snapshot install is in progress. The
+    // install pipeline calls dag.clearCanonicalState() then rebuilds the in-memory
+    // mirror row-by-row. During that window iterateCanonicalState() returns partial
+    // data whose SHAKE-256 root diverges from the latest commit row's state_merkle_root
+    // (which was written at the PREVIOUS commit). A joiner that receives this
+    // inconsistent snapshot will compute a mismatched root, fail install, or — worse —
+    // install silently inconsistent state and diverge from honest peers.
+    if (_snapInstallInProgress) {
+      const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
+      await stream.sink([_frame(errHeader)]);
+      log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
+      return;
+    }
+
     const latest = dag.getLatestCommit ? dag.getLatestCommit() : null;
 
     if (!latest || latest.round < minRound) {
@@ -265,10 +297,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // anchors × 2 rounds/anchor at our wave cadence) plus VOTES_RETENTION
     // for late-batch tolerance. For testnet INTERVAL_COMMITS=100 that's
     // 200 rounds + ~5 horizon — generous for active-round catch-up.
-    const ROUNDS_PER_ANCHOR_APPROX = 2;
-    const certWindowK = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * ROUNDS_PER_ANCHOR_APPROX;
-    const certWindowHorizon = CONSENSUS.VOTES_RETENTION_ROUNDS;
-    const certFromRound = Math.max(1, peerCommittedRound - certWindowK - certWindowHorizon);
+    // Ship every cert within GC_DEPTH so the receiver can BFS any anchor
+    // in the window without hitting missing-hash deferred-commit loops.
+    // The prior 205-round window (INTERVAL_COMMITS×2 + VOTES_RETENTION) was
+    // narrower than GC_DEPTH (500), leaving rounds [R-500, R-205] absent
+    // from the snapshot — post-install BFS walked into that gap and triggered
+    // the same deferred-commit/forced-partial-commit divergence we fixed elsewhere.
+    const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     try {
       await stream.sink((async function* () {
@@ -400,10 +435,25 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   async function requestSnapshotFromPeer(peerId, { minRound = 0, requesterNodeId = "" } = {}) {
     if (!network) throw new Error("snapshot: no network node");
 
+    // First-wins guard: if another install already completed or is in progress
+    // this sync cycle, skip — the winning install's state is authoritative.
+    if (_snapInstalled) {
+      log.debug(`Snapshot: skipping request from ${peerId.slice(0, 12)} — already installed this sync cycle`);
+      return null;
+    }
+    if (_snapInstallInProgress) {
+      log.debug(`Snapshot: skipping request from ${peerId.slice(0, 12)} — install already in progress`);
+      return null;
+    }
+    _snapInstallInProgress = true;
+
     log.info(`Snapshot: requesting from ${peerId.slice(0, 12)}... (min_round=${minRound})`);
 
-    const stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
+    // openStream is inside the try so any connection failure clears
+    // _snapInstallInProgress via the catch below instead of leaking it.
+    let stream;
     try {
+      stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
@@ -718,6 +768,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         narwhal.markSnapshotInstalled(snapshotRound, peerCommittedRound);
       }
 
+      // Notify bullshark synchronously, immediately after narwhal state transition,
+      // so cancelPendingCommit + resetBftTimeFloor fire before any AE tick can
+      // re-detect a deferred commit or BFT-time violation.
+      if (typeof onSnapshotInstalled === "function") {
+        try {
+          onSnapshotInstalled(peerCommittedRound);
+        } catch (err) {
+          log.error(`Snapshot: onSnapshotInstalled callback failed: ${err.message} — node may experience BFT-time violations or stale pending commits until restart`);
+        }
+      }
+
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
@@ -748,9 +809,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         rotations_full_root: derivedRotations,
         certs_full_root: derivedCerts,
       };
+    } catch (err) {
+      _snapInstallInProgress = false;
+      throw err;
     } finally {
-      try { stream.close(); } catch { /* ignore */ }
+      if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
+    _snapInstalled = true;
+    _snapInstallInProgress = false;
   }
 
   function _installSnapshot(header, queues) {
@@ -773,6 +839,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
     return dag.runInTransaction(() => {
+      // Wipe the 7 canonical-state tables before installing the peer's rows.
+      // Without this, extra rows from this node's divergent history survive
+      // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
+      // never overwrites dedup_registry at all), so computeStateMerkleRoot
+      // returns the wrong root after install and the catching_up watchdog
+      // loops forever.
+      dag.clearCanonicalState();
+
       let stateN = 0;
       for (const { table, row } of queues.stateRows) {
         _installOneRow(table, row);
@@ -793,12 +867,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       // §4 + #34: install committee_history rotations. Already verified
       // up the call chain (rotations_full_root match + chain-of-trust
-      // walk). saveCommitteeRotation is INSERT OR IGNORE so re-running
-      // an install is idempotent — the bootstrap rotation 0 from initDAG
-      // and the snapshot's rotation 0 should be byte-identical (same
-      // genesis founding_node), so no conflict. Subsequent rotations
-      // land cleanly because the local DB had none beyond rotation 0
-      // before this install.
+      // walk). Clear existing rows first so INSERT OR IGNORE can't
+      // silently skip a corrected rotation for a rotation_number that
+      // already exists locally from a divergent history (e.g. after a
+      // byzantine_fork where different nodes committed different
+      // COMMITTEE_ROTATION txs at the same rotation_number).
+      if (typeof dag.clearCommitteeHistory === "function") {
+        dag.clearCommitteeHistory();
+      }
       let rotationN = 0;
       const rotations = queues.rotations || [];
       for (const r of rotations) {
@@ -1104,6 +1180,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   return {
     registerProtocol,
     requestSnapshotFromPeer,
+    resetInstallState,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics } }),

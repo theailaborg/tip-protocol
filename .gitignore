@@ -181,21 +181,31 @@ browser-extension
 genesis-data/seed.db
 genesis-data/seed.db-shm
 genesis-data/seed.db-wal
+docs/
 node2-env/
 node3-env/
 node4-env/
+node5-env/
+
 
 # Local-only documentation
 BFT_TIME_TESTING.md
 CONSENSUS_TESTING.md
+COMMITTEE_ROTATION_TESTING.md
 DAG_EXPLAINED.md
 INFRA_PLANNING.md
 LOCALDEV.md
 PRODUCTION.md
 docker-compose.local.yml
+CMDS_LOGS.md
+ISSUE_WE_HAVE.md
+TIP_Protocol_Overview.md
 
 scripts/mariadb-init.sql
 scripts/mssql-entrypoint.sh
 scripts/mssql-init.sql
 scripts/oracle-init.sql
+scripts/oracle-init.sh
 scripts/postgres-init.sql
+# Added by code-review-graph
+.code-review-graph/

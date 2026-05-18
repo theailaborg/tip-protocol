@@ -1,16 +1,14 @@
 /**
  * @file tests/consensus/narwhal-ack-filter.test.js
- * @description Defense-layer test: narwhal must REFUSE to ack a batch from
- * a peer whose state our latest AE poll observed as divergent.
+ * @description Defense-layer test: narwhal must REFUSE to ack batches from
+ * divergent peers, but only once the cluster-wide divergent-peer count has
+ * reached the BFT threshold (f+1). Below threshold, acks proceed to preserve
+ * liveness — a single divergent peer (e.g. a lagging rejoiner) must not
+ * deplete quorum margin when combined with any other disconnection.
  *
  * Pairs with the threshold halt in narwhal-tri-state.test.js:
  *   - threshold halt protects us when WE'RE the divergent minority
- *   - ack-filter protects us when THEY'RE divergent (whether from a local
- *     bug or active byzantine code that ignores halt logic)
- *
- * The two layers reach the same outcome (no quorum certs containing wrong
- * state) by complementary mechanisms — declarative halt vs emergent
- * absence-of-acks.
+ *   - ack-filter protects us when THEY'RE divergent at threshold level
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -64,24 +62,34 @@ beforeEach(() => {
 
 const SELF_ID = "tip://node/self";
 const PEER_B_ID = "tip://node/peerB";
+const PEER_C_ID = "tip://node/peerC";
 
-function buildNarwhal({ isPeerDivergent } = {}) {
+function buildNarwhal({ isPeerDivergent, divergentPeers, committee } = {}) {
   const selfKp = generateMLDSAKeypair();
   const peerBKp = generateMLDSAKeypair();
+  const peerCKp = generateMLDSAKeypair();
   const dag = initDAG({ dbPath: ":memory:" });
-  for (const [id, name, kp] of [[SELF_ID, "self", selfKp], [PEER_B_ID, "peerB", peerBKp]]) {
+  for (const [id, name, kp] of [
+    [SELF_ID, "self", selfKp],
+    [PEER_B_ID, "peerB", peerBKp],
+    [PEER_C_ID, "peerC", peerCKp],
+  ]) {
     dag.saveNode({
       node_id: id, name, public_key: kp.publicKey,
       status: "active", registered_at: "2026-01-01T00:00:00.000Z",
     });
   }
 
+  const activeCommittee = committee || [SELF_ID, PEER_B_ID];
   const mempool = createMempool({ dag });
   const published = [];
   const network = {
     TOPICS: { MEMPOOL: "tip/mempool", CERTIFICATES: "tip/certificates", CONSENSUS: "tip/consensus" },
     publish: (topic, buf) => { published.push({ topic, len: buf?.length || 0 }); },
-    authorizedPeers: () => ({ [PEER_B_ID]: { publicKey: peerBKp.publicKey } }),
+    authorizedPeers: () => ({
+      [PEER_B_ID]: { publicKey: peerBKp.publicKey },
+      [PEER_C_ID]: { publicKey: peerCKp.publicKey },
+    }),
   };
 
   const narwhal = createNarwhal({
@@ -94,14 +102,15 @@ function buildNarwhal({ isPeerDivergent } = {}) {
       const n = dag.getNode(nodeId);
       return n ? n.public_key : null;
     },
-    getNodeCount: () => 2,
-    getCommittee: () => [SELF_ID, PEER_B_ID],
+    getNodeCount: () => activeCommittee.length,
+    getCommittee: () => activeCommittee,
     onCommit: () => { },
     onCertSaved: () => { },
     isPeerDivergent,
+    divergentPeers,
   });
 
-  return { narwhal, dag, network, published, peerBKp };
+  return { narwhal, dag, network, published, peerBKp, peerCKp };
 }
 
 function makePeerBatchBytes({ round, peerKp, peerId, txs = [] }) {
@@ -130,8 +139,34 @@ describe("narwhal ack-filter — refuse acks to divergent peers", () => {
     fx.narwhal.stop();
   });
 
-  test("isPeerDivergent returns true for the batch author → no ack, warn + metric fire", () => {
-    const fx = buildNarwhal({ isPeerDivergent: (id) => id === PEER_B_ID });
+  test("single divergent peer below threshold — ack proceeds (liveness preserved)", () => {
+    // n=2 → bftHaltThreshold=2; only 1 divergent peer → below threshold → ack must proceed.
+    // A lagging rejoiner must not be refused when it would deplete quorum margin.
+    const fx = buildNarwhal({
+      isPeerDivergent: (id) => id === PEER_B_ID,
+      divergentPeers: () => [PEER_B_ID],   // 1 divergent, threshold=2
+    });
+    fx.narwhal.start();
+    fx.narwhal.exitSyncMode(99);
+
+    fx.narwhal.handleIncomingBatch(makePeerBatchBytes({
+      round: 100, peerKp: fx.peerBKp, peerId: PEER_B_ID,
+    }));
+
+    expect(refusalWarnCount()).toBe(0);
+    expect(fx.narwhal.stats().metrics.acks_refused_divergent_peer || 0).toBe(0);
+    expect(fx.published.some(p => p.topic === "tip/consensus")).toBe(true);
+    fx.narwhal.stop();
+  });
+
+  test("divergent-peer count at BFT threshold → ack refused, warn + metric fire", () => {
+    // n=3 → bftHaltThreshold=2; 2 divergent peers hits threshold → refuse acks to divergent authors.
+    const committee3 = [SELF_ID, PEER_B_ID, PEER_C_ID];
+    const fx = buildNarwhal({
+      isPeerDivergent: (id) => id === PEER_B_ID || id === PEER_C_ID,
+      divergentPeers: () => [PEER_B_ID, PEER_C_ID],   // 2 divergent = threshold
+      committee: committee3,
+    });
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(99);
 
@@ -141,7 +176,6 @@ describe("narwhal ack-filter — refuse acks to divergent peers", () => {
 
     expect(refusalWarnCount()).toBe(1);
     expect(fx.narwhal.stats().metrics.acks_refused_divergent_peer).toBe(1);
-    // No ack published on CONSENSUS topic.
     expect(fx.published.some(p => p.topic === "tip/consensus")).toBe(false);
     fx.narwhal.stop();
   });
@@ -161,10 +195,14 @@ describe("narwhal ack-filter — refuse acks to divergent peers", () => {
     fx.narwhal.stop();
   });
 
-  test("filter is per-peer — divergent author refused, non-divergent author acked", () => {
+  test("filter is per-peer — only divergent author refused at threshold, non-divergent author acked", () => {
+    // n=3, 2 divergent peers = threshold=2 → PEER_B (divergent) refused, non-divergent would be acked.
+    const committee3 = [SELF_ID, PEER_B_ID, PEER_C_ID];
     let calls = 0;
     const fx = buildNarwhal({
-      isPeerDivergent: (id) => { calls++; return id === PEER_B_ID; },
+      isPeerDivergent: (id) => { calls++; return id === PEER_B_ID || id === PEER_C_ID; },
+      divergentPeers: () => [PEER_B_ID, PEER_C_ID],
+      committee: committee3,
     });
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(99);
@@ -179,7 +217,14 @@ describe("narwhal ack-filter — refuse acks to divergent peers", () => {
   });
 
   test("seen-vote IS still recorded even when ack is refused (don't forget what we saw)", () => {
-    const fx = buildNarwhal({ isPeerDivergent: (id) => id === PEER_B_ID });
+    // n=3, threshold met → ack refused, but seen-vote must still be recorded.
+    // Equivocation detection must not be bypassed for divergent peers.
+    const committee3 = [SELF_ID, PEER_B_ID, PEER_C_ID];
+    const fx = buildNarwhal({
+      isPeerDivergent: (id) => id === PEER_B_ID || id === PEER_C_ID,
+      divergentPeers: () => [PEER_B_ID, PEER_C_ID],
+      committee: committee3,
+    });
     fx.narwhal.start();
     fx.narwhal.exitSyncMode(99);
 
@@ -188,10 +233,6 @@ describe("narwhal ack-filter — refuse acks to divergent peers", () => {
     });
     fx.narwhal.handleIncomingBatch(batchBytes);
 
-    // Equivocation table records the batch hash for (round, author) so a
-    // subsequent batch from the same peer at the same round with different
-    // content is rejected as equivocation. Refusing to ack must not skip
-    // this record — otherwise a divergent peer could equivocate freely.
     const seen = fx.dag.getSeenVote(100, PEER_B_ID);
     expect(seen).not.toBeNull();
     expect(typeof seen.batch_hash).toBe("string");

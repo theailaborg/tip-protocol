@@ -470,6 +470,17 @@ class MemoryStore {
   getNode(nodeId) { return this._nodes.get(nodeId) || null; }
   getAllNodes() { return [...this._nodes.values()]; }
 
+  clearCanonicalState() {
+    this._identities.clear();
+    this._content.clear();
+    this._scores.clear();
+    this._dedup.clear();
+    if (this._dedupCreated) this._dedupCreated.clear();
+    this._revocations.clear();
+    this._vps.clear();
+    this._nodes.clear();
+  }
+
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
   saveCertificate(cert) { this._certs.set(cert.hash, { ...cert }); }
   getCertificate(hash) { return this._certs.get(hash) || null; }
@@ -635,6 +646,12 @@ class MemoryStore {
     }
     return best ? { ...best, committee: [...best.committee], signer_node_ids: [...best.signer_node_ids], signatures: [...best.signatures] } : null;
   }
+  // Clear all committee_history rows. Called by snapshot install before
+  // re-installing the sender's rotation chain, so INSERT OR IGNORE can't
+  // silently skip a corrected rotation for a rotation_number that this node
+  // already had (from a divergent history after a byzantine_fork).
+  clearCommitteeHistory() { this._committeeHistory.clear(); }
+
   // Streaming iterator over the entire chain in rotation_number order.
   // Used by snapshot sender (ship every rotation) and chain-of-trust walker.
   *getRotationsFromGenesis() {
@@ -2170,6 +2187,9 @@ class SQLiteStore {
       yield this._parseRotation(row);
     }
   }
+  clearCommitteeHistory() {
+    this.db.prepare("DELETE FROM committee_history").run();
+  }
   // #75 rotation_participation — see MemoryStore version for the contract.
   incrementRotationParticipation(nodeId, rotationNumber) {
     this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
@@ -2284,6 +2304,18 @@ class SQLiteStore {
     }
     // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
     // version for rationale. RP ships in its own snapshot stream below.
+  }
+
+  clearCanonicalState() {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM identities").run();
+      this.db.prepare("DELETE FROM content").run();
+      this.db.prepare("DELETE FROM scores").run();
+      this.db.prepare("DELETE FROM dedup_registry").run();
+      this.db.prepare("DELETE FROM revocations").run();
+      this.db.prepare("DELETE FROM verification_providers").run();
+      this.db.prepare("DELETE FROM nodes").run();
+    })();
   }
 
   // RP-snapshot iterator — see MemoryStore.iterateRotationParticipationForSnapshot.
@@ -2550,6 +2582,7 @@ function _buildDagHandle(store, config) {
     // Streaming iterator over all derived-state tables in deterministic
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: () => store.iterateCanonicalState(),
+    clearCanonicalState: () => store.clearCanonicalState(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
@@ -2623,6 +2656,7 @@ function _buildDagHandle(store, config) {
     // getRotationsFromGenesis: streaming iterator in rotation_number order;
     //   used by snapshot sender + chain-of-trust walker.
     saveCommitteeRotation: (rec) => store.saveCommitteeRotation(rec),
+    clearCommitteeHistory: () => store.clearCommitteeHistory(),
     getCommitteeRotation: (rotationNumber) => store.getCommitteeRotation(rotationNumber),
     getLatestRotation: () => store.getLatestRotation(),
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),

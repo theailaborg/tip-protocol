@@ -181,6 +181,7 @@ function narwhalSection(s) {
     counter("tip_narwhal_equivocation_refused_total", "§1 equivocation attempts refused (vote-digest mismatch)", nm.equivocation_refused),
     counter("tip_narwhal_fast_forwards_total", "Round fast-forwards triggered by higher-round batch", nm.fast_forwards),
     counter("tip_narwhal_retries_total", "Retry broadcasts of own batch/cert while stuck", nm.retries),
+    counter("tip_narwhal_acks_rebroadcast_total", "Cached acks re-broadcast on duplicate batch arrival (dropped-ack recovery)", nm.acks_rebroadcast),
   ].join("\n");
 }
 

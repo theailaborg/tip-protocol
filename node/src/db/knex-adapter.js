@@ -432,10 +432,25 @@ class KnexAdapter {
       this.mirror._identities.set(row.tip_id, { ...row, founding: !!row.founding });
     }
 
-    // Content
+    // Content — JSON-encoded columns (authors, extras, registered_urls) must be
+    // decoded on read; the mirror expects arrays/objects, not JSON strings.
+    const _decodeJson = (s, fallback) => {
+      if (typeof s !== "string" || !s.length) return fallback;
+      try { return JSON.parse(s); } catch { return fallback; }
+    };
     const contentRows = await this.knex("content").select("*");
     for (const row of contentRows) {
-      const mapped = { ...row, ctid: row.tip_ctid, prescan_flagged: !!row.prescan_flagged };
+      const urls    = _decodeJson(row.registered_urls, []);
+      const authors = _decodeJson(row.authors, []);
+      const extras  = _decodeJson(row.extras, {});
+      const mapped = {
+        ...row,
+        ctid: row.tip_ctid,
+        prescan_flagged: !!row.prescan_flagged,
+        registered_urls: Array.isArray(urls)   ? urls    : [],
+        authors:         Array.isArray(authors) ? authors : [],
+        extras:          (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
+      };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
     }
@@ -571,10 +586,12 @@ class KnexAdapter {
       .catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
 
-  // Oracle and SQL Server don't support Knex's .onConflict(). Use INSERT + catch
-  // duplicate-key error instead. For Oracle: ORA-00001. For mssql: error number
-  // 2627/2601 or "Cannot insert duplicate key" in message.
-  _dbInsert(table, pkCols, row, onConflict) {
+  // Oracle and SQL Server don't support Knex's .onConflict(). For 'merge' we
+  // use UPDATE-first: if the row already exists update it directly (no race);
+  // only INSERT when the UPDATE affects 0 rows. If a concurrent writer sneaks
+  // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
+  // a second UPDATE so our value still wins.
+  async _dbInsert(table, pkCols, row, onConflict) {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -591,21 +608,32 @@ class KnexAdapter {
         throw err;
       });
     }
-    // Oracle / mssql path: INSERT, catch duplicate-key error
-    return this.knex(table).insert(row).catch(async err => {
-      if (!_isDuplicateKeyError(err)) throw err;
-      if (onConflict === "merge") {
-        const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
-        const nonPk = Object.keys(row).filter(k => !pks.includes(k));
-        if (nonPk.length > 0) {
-          const updates = {};
-          nonPk.forEach(k => { updates[k] = row[k]; });
-          let q = this.knex(table);
-          pks.forEach(pk => { q = q.where(pk, row[pk]); });
-          return q.update(updates);
+    // Oracle / mssql path: UPDATE-first for merge, INSERT+ignore for ignore
+    if (onConflict === "merge") {
+      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+      const nonPk = Object.keys(row).filter(k => !pks.includes(k));
+      if (nonPk.length > 0) {
+        const updates = {};
+        nonPk.forEach(k => { updates[k] = row[k]; });
+        let q = this.knex(table);
+        pks.forEach(pk => { q = q.where(pk, row[pk]); });
+        const affected = await q.update(updates);
+        if (affected === 0) {
+          await this.knex(table).insert(row).catch(async err => {
+            if (!_isDuplicateKeyError(err)) throw err;
+            // Concurrent writer inserted between our 0-row UPDATE and INSERT;
+            // re-apply our update so our value wins.
+            let q2 = this.knex(table);
+            pks.forEach(pk => { q2 = q2.where(pk, row[pk]); });
+            return q2.update(updates);
+          });
         }
+        return;
       }
-      // 'ignore' or no non-PK columns to update: swallow the duplicate
+    }
+    // 'ignore' or no non-PK columns to update: INSERT and swallow duplicate
+    return this.knex(table).insert(row).catch(err => {
+      if (!_isDuplicateKeyError(err)) throw err;
     });
   }
 
@@ -758,6 +786,21 @@ class KnexAdapter {
 
   *iterateCanonicalState() { yield* this.mirror.iterateCanonicalState(); }
 
+  clearCanonicalState() {
+    this.mirror.clearCanonicalState();
+    // Fire DB deletes before snapshot rows arrive. Mirror is the authoritative
+    // source for computeStateMerkleRoot; DB cleanup is for restart persistence.
+    Promise.all([
+      this.knex("identities").delete(),
+      this.knex("content").delete(),
+      this.knex("scores").delete(),
+      this.knex("dedup_registry").delete(),
+      this.knex("revocations").delete(),
+      this.knex("verification_providers").delete(),
+      this.knex("nodes").delete(),
+    ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
+  }
+
   // ── Revocations ────────────────────────────────────────────────────────────
 
   addRevocation(id, type, ts, txId) {
@@ -869,13 +912,17 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
-  getCertificate(hash) { return this.mirror.getCertificate(hash); }
-  getCertificatesByRound(round) { return this.mirror.getCertificatesByRound(round); }
-  getCertificateByAuthorRound(a, r) { return this.mirror.getCertificateByAuthorRound(a, r); }
-  getLatestRound() { return this.mirror.getLatestRound(); }
-  getEarliestCertRound() { return this.mirror.getEarliestCertRound(); }
-  getCertificatesFromRound(from) { return this.mirror.getCertificatesFromRound(from); }
-  certificateCount() { return this.mirror.certificateCount(); }
+  getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
+  getCertificatesByRound(round)           { return this.mirror.getCertificatesByRound(round); }
+  getCertificateByAuthorRound(a, r)       { return this.mirror.getCertificateByAuthorRound(a, r); }
+  getLatestRound()                        { return this.mirror.getLatestRound(); }
+  getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
+  getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
+  // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
+  // the SQLiteStore generator. Delegates to the in-memory mirror, which has
+  // the full cert window post-_hydrate.
+  *iterateCertsByRoundRange(from, to)     { yield* this.mirror.iterateCertsByRoundRange(from, to); }
+  certificateCount()                      { return this.mirror.certificateCount(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
@@ -921,11 +968,6 @@ class KnexAdapter {
   getConsensusMeta(key) { return this.mirror.getConsensusMeta(key); }
 
   *iterateAllCommitsExcept(latestRound) { yield* this.mirror.iterateAllCommitsExcept(latestRound); }
-
-  // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
-  // the SQLiteStore generator. Delegates to the in-memory mirror, which has
-  // the full cert window post-_hydrate.
-  *iterateCertsByRoundRange(fromRound, toRound) { yield* this.mirror.iterateCertsByRoundRange(fromRound, toRound); }
 
   // ── Equivocation defense ──────────────────────────────────────────────────
 
@@ -1068,6 +1110,14 @@ class KnexAdapter {
   getLatestRotation() { return this.mirror.getLatestRotation(); }
   getCommitteeAtRound(r) { return this.mirror.getCommitteeAtRound(r); }
   *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
+  clearCommitteeHistory() {
+    this.mirror.clearCommitteeHistory();
+    // Fire DB delete before snapshot rotations arrive (same pattern as
+    // clearCanonicalState). Mirror is authoritative for reads; DB cleanup
+    // ensures persistence survives a restart after snapshot install.
+    this.knex("committee_history").delete()
+      .catch(err => this.log.warn(`clearCommitteeHistory DB flush failed: ${err.message}`));
+  }
 
   // ── Rotation participation ─────────────────────────────────────────────────
 

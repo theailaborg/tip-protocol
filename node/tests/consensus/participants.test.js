@@ -200,19 +200,25 @@ describe("computeNextRotationCommittee — participation-based admission", () =>
     expect(ids).toContain(FOUNDING_NODE_ID);
   });
 
-  test("late joiner with count < threshold is NOT admitted", () => {
+  test("late joiner with count < threshold is NOT admitted (multi-node finishing rotation)", () => {
     const dag = _setup();
-    _seedNodes(dag, ["tip://node/late"]);
-
-    _seedParticipation(dag, 0, {
+    _seedNodes(dag, ["tip://node/late", "tip://node/other"]);
+    // Use a multi-node finishing rotation — bootstrap exception does not fire.
+    _seedRotation(dag, {
+      rotation_number: 1, effective_round: 100,
+      committee: [FOUNDING_NODE_ID, "tip://node/late", "tip://node/other"],
+    });
+    _seedParticipation(dag, 1, {
       [FOUNDING_NODE_ID]: 100,
       "tip://node/late": 50,  // below 70% threshold
+      "tip://node/other": 80,
     });
 
-    const next = computeNextRotationCommittee(dag, 0);
+    const next = computeNextRotationCommittee(dag, 1);
     const ids = next.map(m => m.node_id);
     expect(ids).not.toContain("tip://node/late");
     expect(ids).toContain(FOUNDING_NODE_ID);  // genesis always in
+    expect(ids).toContain("tip://node/other"); // above threshold
   });
 
   test("late joiner with exactly threshold count is admitted (boundary inclusive)", () => {
@@ -267,18 +273,27 @@ describe("computeNextRotationCommittee — participation-based admission", () =>
     expect(x.public_key).toBe(shake256("tip://node/x"));
   });
 
-  test("excludes non-genesis nodes that have NO participation row", () => {
+  test("excludes non-genesis nodes that have NO participation row (multi-node finishing rotation)", () => {
     // peer-352 protection at rotation granularity: if a node didn't
     // participate AT ALL during the rotation, no row exists in
     // rotation_participation, so it's not admitted.
+    // Requires a multi-node finishing rotation — bootstrap exception must not fire.
     const dag = _setup();
-    _seedNodes(dag, ["tip://node/silent"]);
-    _seedParticipation(dag, 0, { [FOUNDING_NODE_ID]: 100 });
+    _seedNodes(dag, ["tip://node/silent", "tip://node/active"]);
+    _seedRotation(dag, {
+      rotation_number: 1, effective_round: 100,
+      committee: [FOUNDING_NODE_ID, "tip://node/silent", "tip://node/active"],
+    });
+    _seedParticipation(dag, 1, {
+      [FOUNDING_NODE_ID]: 100,
+      "tip://node/active": 80,
+    });
     // tip://node/silent has zero participation rows
 
-    const next = computeNextRotationCommittee(dag, 0);
+    const next = computeNextRotationCommittee(dag, 1);
     const ids = next.map(m => m.node_id);
     expect(ids).not.toContain("tip://node/silent");
+    expect(ids).toContain("tip://node/active");
   });
 });
 
@@ -311,18 +326,69 @@ describe("rotation-period derivation — deterministic across nodes", () => {
     const dagB = _setup();
     for (const dag of [dagA, dagB]) {
       _seedNodes(dag, ["tip://node/a", "tip://node/b"]);
-      _seedParticipation(dag, 0, {
+      // Use a multi-node finishing rotation — bootstrap exception must not fire.
+      _seedRotation(dag, {
+        rotation_number: 1, effective_round: 100,
+        committee: [FOUNDING_NODE_ID, "tip://node/a", "tip://node/b"],
+      });
+      _seedParticipation(dag, 1, {
         [FOUNDING_NODE_ID]: 100,
         "tip://node/a": 80,
         "tip://node/b": 50,  // below threshold
       });
     }
 
-    const a = computeNextRotationCommittee(dagA, 0);
-    const b = computeNextRotationCommittee(dagB, 0);
+    const a = computeNextRotationCommittee(dagA, 1);
+    const b = computeNextRotationCommittee(dagB, 1);
     expect(a.map(m => m.node_id)).toEqual(b.map(m => m.node_id));
     // Both admit founding + a (above threshold), exclude b (below)
     expect(a.map(m => m.node_id)).toEqual([FOUNDING_NODE_ID, "tip://node/a"].sort());
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bootstrap exception — solo-mode finishing rotation admits all registered
+// ═══════════════════════════════════════════════════════════════════════════
+describe("computeNextRotationCommittee — bootstrap exception (solo finishing rotation)", () => {
+  test("solo finishing rotation admits all registered+active nodes regardless of participation", () => {
+    // initDAG seeds rotation 0 with committee=[founding_node] (size=1).
+    // No participation is possible in solo mode because solo anchor walks
+    // only visit the single leader's cert chain. Bootstrap exception fires
+    // when _finishingSize === 1, admitting all registered+active nodes so
+    // the cluster can expand beyond single-node mode.
+    const dag = _setup();
+    _seedNodes(dag, ["tip://node/new1", "tip://node/new2"]);
+    // rotation 0 committee=[founding_node] is already written by initDAG.
+    // No participation seeded for any of the new nodes.
+
+    const next = computeNextRotationCommittee(dag, 0);
+    const ids = next.map(m => m.node_id);
+    expect(ids).toContain(FOUNDING_NODE_ID);
+    expect(ids).toContain("tip://node/new1");
+    expect(ids).toContain("tip://node/new2");
+  });
+
+  test("multi-node finishing rotation does NOT trigger bootstrap exception", () => {
+    // A 3-member finishing rotation should apply normal threshold logic,
+    // not admit all registered nodes.
+    const dag = _setup();
+    _seedNodes(dag, ["tip://node/a", "tip://node/b", "tip://node/silent"]);
+    _seedRotation(dag, {
+      rotation_number: 1, effective_round: 100,
+      committee: [FOUNDING_NODE_ID, "tip://node/a", "tip://node/b"],
+    });
+    _seedParticipation(dag, 1, {
+      [FOUNDING_NODE_ID]: 100,
+      "tip://node/a": 80,
+      // tip://node/b and tip://node/silent have zero participation
+    });
+
+    const next = computeNextRotationCommittee(dag, 1);
+    const ids = next.map(m => m.node_id);
+    expect(ids).toContain(FOUNDING_NODE_ID);
+    expect(ids).toContain("tip://node/a");
+    expect(ids).not.toContain("tip://node/b");
+    expect(ids).not.toContain("tip://node/silent");
   });
 });
 
