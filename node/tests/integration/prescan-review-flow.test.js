@@ -436,4 +436,89 @@ describe("prescan-review end-to-end flow", () => {
     expect(finalReview.state).toBe(PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE);
     expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.DISPUTED);
   });
+
+  test("register flagged → trigger fires → reviewer goes silent → SLA expires → auto-recuse → fresh trigger picks a new reviewer", () => {
+    const fx = _setup();
+
+    // Anchor: registered_at = h=0; trigger window starts at h=48; SLA
+    // expires at h=48 + AUTO_RECUSE_AGE_MS (so we need
+    // registered_at = now − FLAGGED_MS − AUTO_RECUSE_AGE_MS − safety).
+    const safety = 5 * 60_000;
+    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - REVIEWER.AUTO_RECUSE_AGE_MS - safety;
+    fx.seedContent(registeredAtMs);
+
+    // ── Round 1: cert.ts = h=48. Trigger fires + lands.
+    const triggerTs1 = registeredAtMs + CONTENT_GRACE.FLAGGED_MS + 1000;
+    fx.commit([], triggerTs1);
+    const firstTrigger = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED);
+    expect(firstTrigger).toBeDefined();
+    const firstReviewId = firstTrigger.data.review_id;
+    const firstAssignee = firstTrigger.data.assigned_reviewer_tip_id;
+
+    fx.submitted.length = 0;
+    fx.commit([firstTrigger], triggerTs1);
+    const r1 = fx.dag.getOpenPrescanReviewByCtid(CTID);
+    expect(r1.review_id).toBe(firstReviewId);
+    expect(r1.state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(r1.triggered_at_ms).toBe(triggerTs1);
+    expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+
+    // ── Reviewer goes silent. Tick the trigger past the SLA. Same
+    // round-leader emits a node-signed auto-recuse.
+    const slaExpiryTs = triggerTs1 + REVIEWER.AUTO_RECUSE_AGE_MS + 1000;
+    fx.submitted.length = 0;
+    fx.commit([], slaExpiryTs);
+    const autoRecuseTx = fx.submitted.find(t =>
+      t.tx_type === TX_TYPES.PRESCAN_REVIEW_RECUSED && t.data?.auto === true);
+    expect(autoRecuseTx).toBeDefined();
+    expect(autoRecuseTx.data.review_id).toBe(firstReviewId);
+    expect(autoRecuseTx.data.recusal_reason).toBe("sla_expired");
+    expect(autoRecuseTx.data.node_id).toBe(NODE_ID);
+
+    // ── Commit the auto-recuse. Review row flips to RECUSED, content
+    // goes back to REGISTERED (re-trigger primer).
+    fx.submitted.length = 0;
+    fx.commit([autoRecuseTx], slaExpiryTs);
+    const recusedReview = fx.dag.getPrescanReview(firstReviewId);
+    expect(recusedReview.state).toBe(PRESCAN_REVIEW_STATES.RECUSED);
+    expect(recusedReview.decision_note).toBe("sla_expired");
+    expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.REGISTERED);
+    expect(fx.dag.getOpenPrescanReviewByCtid(CTID)).toBeNull();
+
+    // ── Same trigger tick (or any later one) — _emitDueReviews now
+    // re-picks the ctid. New round → new shake256 seed → fresh
+    // review_id + (deterministically) potentially-different reviewer.
+    // The recused row stays on the DAG; the new TRIGGERED replaces
+    // it as the open one.
+    fx.submitted.length = 0;
+    fx.commit([], slaExpiryTs + 1000);
+    const secondTrigger = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED);
+    expect(secondTrigger).toBeDefined();
+    expect(secondTrigger.data.review_id).not.toBe(firstReviewId);
+    expect(secondTrigger.data.ctid).toBe(CTID);
+    // Pool only has one eligible reviewer in this _setup, so the new
+    // assignee equals the previous one — that's expected and harmless:
+    // selectReviewer's accuracy gate doesn't penalize recusal. A
+    // larger pool would produce a different shuffle. What we care
+    // about here is that the re-trigger fires at all.
+    expect(secondTrigger.data.assigned_reviewer_tip_id).toBe(firstAssignee);
+
+    fx.submitted.length = 0;
+    fx.commit([secondTrigger], slaExpiryTs + 1000);
+    const r2 = fx.dag.getOpenPrescanReviewByCtid(CTID);
+    expect(r2).not.toBeNull();
+    expect(r2.review_id).toBe(secondTrigger.data.review_id);
+    expect(r2.state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+
+    // Audit: history table has BOTH reviews — the recused one and the
+    // fresh one. Latest is the new TRIGGERED.
+    const history = fx.dag.getPrescanReviewsByCtid(CTID);
+    expect(history.length).toBe(2);
+    const states = history.map(r => r.state).sort();
+    expect(states).toEqual([
+      PRESCAN_REVIEW_STATES.RECUSED,
+      PRESCAN_REVIEW_STATES.TRIGGERED,
+    ].sort());
+  });
 });
