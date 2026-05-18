@@ -228,6 +228,12 @@ const GENESIS_PAYLOAD = Object.freeze({
       // dispute pipeline's OH→AA range (-10..-30). Stored as the signed
       // delta directly so the call site does not negate.
       accept_correction_score_delta: -10,
+      // Age threshold for the dashboard self-correction warning. Once
+      // flagged content is older than this (and still REGISTERED, not
+      // self-corrected, not yet review-triggered), the
+      // content_flagged_for_review notification surfaces on the
+      // creator's /v1/users/:tip_id/dashboard.
+      creator_warning_age_ms: 86400000,
     },
     content_grace: {
       // Self-correction windows. Unflagged content keeps the original 24h

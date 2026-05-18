@@ -233,6 +233,10 @@ const REVIEWER = {
   // dispute pipeline's OH→AA range so accepting privately is strictly
   // cheaper than letting auto-escalation run.
   get ACCEPT_CORRECTION_SCORE_DELTA() { return _rv().accept_correction_score_delta; },
+  // Age threshold (ms since registered_at) at which the creator-facing
+  // "your flagged content is approaching review" notification surfaces
+  // on the dashboard. Halfway through the 48h flagged grace by default.
+  get CREATOR_WARNING_AGE_MS() { return _rv().creator_warning_age_ms; },
 };
 
 const _cg = () => get().content_grace;

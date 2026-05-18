@@ -2,11 +2,11 @@
 
 const { shake256, verifyBodySignature } = require("../../../shared/crypto");
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS, PRESCAN_TIERS,
   DISPUTE_REASON, DISPUTE_REASONS,
   DISPUTE_SHORT_ID_LEN, DISPUTE_EPISODE_TX_TYPES, DISPUTE_EVENT_PRIORITY,
 } = require("../../../shared/constants");
-const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER } = require("../../../shared/protocol-constants");
+const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { selectJury, selectExperts } = require("../jury");
@@ -1017,6 +1017,55 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             outcome,
             score_impact: scoreImpact,
             resolved_at: result.timestamp,
+          },
+        });
+      }
+    }
+
+    // ── content_flagged_for_review ───────────────────────────────────────
+    // Creator-facing warning that flagged content is approaching the
+    // h=48 PRESCAN_REVIEW_TRIGGERED mark. Surfaces once content age
+    // crosses REVIEWER.CREATOR_WARNING_AGE_MS and stays visible until
+    // the trigger fires (content.status → PENDING_REVIEW takes over the
+    // dashboard messaging). Off-DAG, derived from current state — no
+    // notification table.
+    if (typeof dag.getContentByAuthor === "function") {
+      for (const c of dag.getContentByAuthor(tipId)) {
+        if (c.status !== CONTENT_STATUS.REGISTERED) continue;
+        if (c.origin_code !== ORIGIN.OH) continue;
+        if (c.prescan_tier !== PRESCAN_TIERS.HIGH && c.prescan_tier !== PRESCAN_TIERS.CRITICAL) continue;
+        if (!c.override) continue;
+
+        const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+        if (!Number.isFinite(registeredMs)) continue;
+        const ageMs = now - registeredMs;
+        if (ageMs < REVIEWER.CREATOR_WARNING_AGE_MS) continue;
+        if (ageMs >= CONTENT_GRACE.FLAGGED_MS) continue; // past h=48, trigger handles it
+
+        const remainingMs = CONTENT_GRACE.FLAGGED_MS - ageMs;
+        const remainingHours = Math.max(1, Math.round(remainingMs / 3600000));
+        const deadlineISO = new Date(registeredMs + CONTENT_GRACE.FLAGGED_MS).toISOString();
+        items.push({
+          id: `content_flagged_for_review:${c.ctid}`,
+          type: "content_flagged_for_review",
+          priority: "high",
+          title: `Your content was flagged. ${remainingHours}h left to self-correct.`,
+          summary: `${_ctidLabel(c.ctid)} is flagged as ${c.prescan_tier} (probability ${c.prescan_probability}). Update the origin to AA / AG / MX before review opens, or wait for a reviewer to assess.`,
+          role: "author",
+          ctid: c.ctid,
+          dispute_id: null,
+          deadline: deadlineISO,
+          action: {
+            kind: "update_origin",
+            label: "Update origin",
+            href: `/content/${encodeURIComponent(c.ctid)}/update-origin`,
+          },
+          metadata: {
+            prescan_tier: c.prescan_tier,
+            prescan_probability: c.prescan_probability,
+            declared_origin: c.origin_code,
+            registered_at: c.registered_at,
+            hours_remaining: remainingHours,
           },
         });
       }
