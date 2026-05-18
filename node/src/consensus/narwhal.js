@@ -31,7 +31,7 @@ const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
   createCertificate, verifyCertificate,
-  computeQuorum,
+  computeQuorum, bftHaltThreshold,
 } = require("./certificate");
 const {
   serializeBatch, deserializeBatch,
@@ -62,10 +62,11 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers, onMeshRefresh }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
+  const _onMeshRefresh = typeof onMeshRefresh === "function" ? onMeshRefresh : null;
   // Rate-limit the producer-pause notify. _beginRound retries every 50ms
   // while paused; the upstream consumer (bullshark rotation proposer)
   // doesn't need that frequency. 1.5s matches the rotation-coord
@@ -93,6 +94,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _catchUpTarget = 0;
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
+  // Counts every retry tick (round-timer expiry + each _scheduleRetry fire).
+  // Drives two self-healing tiers: mesh re-graft at 3, direct-stream bypass at 6+.
+  // Reset to 0 on every round advance so tiers are per-stuck-round, not cumulative.
+  let _retryCount = 0;
+  // Counts consecutive rounds where we produced a tx-bearing batch but received
+  // 0 peer acks (batch was orphaned). Covers the fast-forward code path where
+  // _retryCount never reaches 3 because peers at higher rounds push us forward
+  // before the retry loop fires. Reset when we successfully form our own cert.
+  let _consecutiveOrphanedBatches = 0;
   let _nextRoundTimer = null;                       // inter-round scheduler
 
   // Per-round state
@@ -375,8 +385,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         }
         _tryAdvanceRound();
 
-        // If still stuck, schedule periodic retry
+        // If still stuck, enter the retry loop.
         if (_running && _roundCertificates.size < _getQuorum()) {
+          _retryCount++;
           _scheduleRetry();
         }
       }, CONSENSUS.ROUND_TIMEOUT_MS);
@@ -384,7 +395,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   }
 
   /**
-   * Periodic retry when round can't advance (e.g. waiting for peers).
+   * Periodic retry when the round is stuck below quorum.
+   *
+   * GossipSub is best-effort — on each retry, re-broadcast whatever we already
+   * have so peers that missed the original publish can still collect it.
+   * Receivers dedup on message hash, so re-publishing is a no-op for peers
+   * that already have it.
    */
   function _scheduleRetry() {
     if (_retryTimer || !_running) return;
@@ -393,13 +409,39 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (!_running) return;
 
       _metrics.retries++;
-      // GossipSub is best-effort — a dropped batch or cert means this round
-      // can never reach quorum. On each retry, re-broadcast whatever we
-      // already have so peers that missed the original publish can still
-      // collect it. Receivers dedup on message hash, so re-publishing to
-      // peers that already got the message is a no-op.
+      _retryCount++;
+
+      // Tier 1 self-heal: after 3 stuck-round retries (~6s), force a gossipsub
+      // mesh refresh. Clears stale directed edges where specific peers stopped
+      // delivering acks through the mesh (Issue #13 sub_quorum halt pattern).
+      if (_retryCount === 3 && _onMeshRefresh) {
+        log.warn(`Round ${_currentRound}: retry #3 — refreshing gossipsub mesh to clear stale edges`);
+        try {
+          Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
+        } catch (e) {
+          log.warn(`Mesh refresh error: ${e.message}`);
+        }
+      }
+
       _rebroadcastOwnBatch();
       _rebroadcastOwnCertificate();
+
+      // Sync paths (AE cert-fill, post-snapshot cert-fill) write certs
+      // directly to the DAG via dag.saveCertificate without going through
+      // handleIncomingCertificate, so _roundCertificates never gets updated
+      // by those paths. Reconcile here on every retry tick so a cert that
+      // arrived via sync within the last ROUND_TIMEOUT_MS is picked up
+      // before _tryAdvanceRound checks quorum.
+      try {
+        const dagCerts = dag.getCertificatesByRound(_currentRound);
+        for (const cert of dagCerts) {
+          if (!_roundCertificates.has(cert.author_node_id)) {
+            _roundCertificates.set(cert.author_node_id, cert);
+          }
+        }
+      } catch (err) {
+        log.debug(`Round ${_currentRound}: DAG cert reconcile failed: ${err.message}`);
+      }
 
       _tryCreateCertificate();
       _tryAdvanceRound();
@@ -461,12 +503,33 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         }
         _metrics.my_batches_orphaned++;
         log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
+
+        // Tier 1b: track consecutive tx-batch orphans. Covers the fast-forward
+        // path where _retryCount never reaches 3 (peers at higher rounds push
+        // us forward before the retry loop fires). After 3 straight orphaned
+        // rounds, peers are likely not receiving our batch publications at all
+        // — stale gossipsub mesh edge. Refresh to clear it (Issue #13).
+        if (_joinState === "ready") {
+          _consecutiveOrphanedBatches++;
+          if (_consecutiveOrphanedBatches >= 3 && _onMeshRefresh) {
+            log.warn(`Round ${_myBatch.round}: ${_consecutiveOrphanedBatches} consecutive orphaned tx-batches — refreshing gossipsub mesh to clear stale edges`);
+            _consecutiveOrphanedBatches = 0;
+            try {
+              Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
+            } catch (e) {
+              log.warn(`Mesh refresh error: ${e.message}`);
+            }
+          }
+        }
       }
       // Empty batches at vote rounds advancing without cert is normal
       // (peer certs arrive faster than ack quorum on our self-emitted
       // empty batch). Don't bump my_batches_orphaned for them — would
       // drown the signal we actually care about (orphaned tx-bearing
       // batches).
+    } else {
+      // Cert was created or no batch this round — reset the orphan streak.
+      _consecutiveOrphanedBatches = 0;
     }
     _myBatch = null;
     _peerBatches.clear();
@@ -474,6 +537,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _roundCertificates.clear();
     _myCertificateCreated = false;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    _retryCount = 0;
   }
 
   // ── Batch handling ──────────────────────────────────────────────────────
@@ -659,8 +723,33 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       // but non-identical signature; both are equally valid attestations).
     }
 
-    // Deduplicate
-    if (_peerBatches.has(batch.author_node_id)) return;
+    // Deduplicate — already processed this batch in this session.
+    if (_peerBatches.has(batch.author_node_id)) {
+      if (_peerBatches.get(batch.author_node_id).hash === batch.hash) {
+        // Re-broadcast our cached ack so the proposer's cert can reach quorum
+        // on the next retry tick even if our original ack was dropped during
+        // a gossipsub mesh reconnect.
+        const cachedAcks = _batchAcks.get(batch.hash);
+        const myAck = cachedAcks ? cachedAcks.find(a => a.acker_node_id === nodeId) : null;
+        if (myAck) {
+          try {
+            const ackBuf = encode("BatchAck", {
+              batchHash: hexToBytes(batch.hash),
+              ackerNodeId: nodeId,
+              signature: hexToBytes(myAck.signature),
+              signedAt: myAck.signed_at,
+            });
+            network.publish(network.TOPICS.CONSENSUS, ackBuf);
+            _metrics.acks_rebroadcast = (_metrics.acks_rebroadcast || 0) + 1;
+          } catch (err) {
+            log.warn(`Failed to re-broadcast ack for ${batch.hash.slice(0, 16)}: ${err.message}`);
+          }
+        }
+        return;
+      }
+      // Different hash from same author — fall through to process normally
+      // (equivocation check above already passed; edge case from DB write failure).
+    }
 
     _peerBatches.set(batch.author_node_id, batch);
     _metrics.batches_received++;
@@ -716,9 +805,19 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       && typeof isPeerDivergent === "function"
       && isPeerDivergent(batch.author_node_id)
     ) {
-      _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
-      log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — state divergence at last AE poll`);
-      return;
+      // Only refuse acks once the cluster has reached the BFT divergence threshold
+      // (f+1 peers). A single divergent peer can be a lagging rejoiner — refusing
+      // it depletes quorum margin and causes liveness failure when combined with
+      // any other disconnection. Safety is preserved by _maybeHalt in anti-entropy,
+      // which fires haltDueToByzantineFork at the same threshold.
+      const dCount = typeof divergentPeers === "function" ? divergentPeers().length : 0;
+      const threshold = bftHaltThreshold(_getCommittee().length);
+      if (dCount >= threshold) {
+        _metrics.acks_refused_divergent_peer = (_metrics.acks_refused_divergent_peer || 0) + 1;
+        log.warn(`Round ${_currentRound}: refusing ack to ${batch.author_node_id} — ${dCount}/${threshold} divergent peers at last AE poll`);
+        return;
+      }
+      log.debug(`Round ${_currentRound}: ack-filter: ${batch.author_node_id.slice(-8)} is divergent but ${dCount}/${threshold} below threshold — ack proceeds`);
     }
 
     // Send ack — signed_at carries this node's wall-clock at sign time and
@@ -726,7 +825,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const ack = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
     _recordAck(batch.hash, ack);
 
-    // Broadcast ack on CONSENSUS topic
     try {
       const ackBuf = encode("BatchAck", {
         batchHash: hexToBytes(batch.hash),
@@ -1283,6 +1381,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _syncEnteredAt = 0;
     _catchingUpEnteredAt = 0;
     _catchUpTarget = 0;
+    // Reset the halt-detector timestamp so the node gets a fresh grace window
+    // after sync recovery. Without this, _lastRoundAdvanceAt reflects the
+    // pre-halt epoch (potentially 30+ min stale) and computeHaltStatus fires
+    // sub_quorum immediately on the first _isConsensusHalted() call after exit.
+    _lastRoundAdvanceAt = Date.now();
     _stopWatchdog();
     if (_running) _scheduleNextRound(0);
   }
@@ -1332,6 +1435,28 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     handleIncomingAck,
     handleIncomingCertificate,
     lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
+
+    /**
+     * Re-scan the DAG for certificates at the current round and update
+     * _roundCertificates, then attempt to advance. Called by anti-entropy
+     * after a gap-pull so certs deposited via the sync path (which bypasses
+     * handleIncomingCertificate) become visible to _tryAdvanceRound without
+     * waiting for the next retry tick.
+     */
+    reconcileCurrentRound: () => {
+      if (_byzantineForkHalt) return;
+      try {
+        const dagCerts = dag.getCertificatesByRound(_currentRound);
+        for (const cert of dagCerts) {
+          if (!_roundCertificates.has(cert.author_node_id)) {
+            _roundCertificates.set(cert.author_node_id, cert);
+          }
+        }
+      } catch (err) {
+        log.debug(`reconcileCurrentRound: DAG read failed: ${err.message}`);
+      }
+      _tryAdvanceRound();
+    },
 
     /**
      * Force-prune parked cert waiters below `cutoffRound`. Normally fires

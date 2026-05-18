@@ -78,6 +78,8 @@ const TOPICS = Object.freeze({
 // the existing TCP/QUIC connection between authorized peers — no mesh, no
 // scoring, no topic warmth required.
 const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
+// Direct-stream fallback for batch delivery when gossipsub mesh edges are stale.
+// After node reconnections, specific directed edges in the gossipsub mesh can
 
 /**
  * Create and start a libp2p network node.
@@ -386,6 +388,20 @@ async function createNetworkNode(options = {}) {
 
     broadcastToAuthorized,
     ROTATION_COORD_PROTOCOL,
+
+    /**
+     * Drop and rejoin all gossipsub consensus topics, forcing the mesh to
+     * rebuild fresh edges. Called by Narwhal when a round is stuck for ~6s
+     * (retry #3) to clear stale directed-delivery failures (Issue #13).
+     */
+    async refreshGossipsubMesh() {
+      const topics = [TOPICS.CERTIFICATES, TOPICS.MEMPOOL, TOPICS.CONSENSUS];
+      for (const topic of topics) {
+        pubsub.unsubscribe(topic);
+        pubsub.subscribe(topic);
+      }
+      log.info("Gossipsub mesh refreshed: dropped + rejoined all consensus topics");
+    },
 
     async stop() {
       rateLimiter.stop();

@@ -19,6 +19,7 @@
  *   --p2p-port 4101              libp2p port for the new node (default: api-port + 1)
  *   --public-ip 127.0.0.1        Publicly-reachable IP (default: 127.0.0.1)
  *   --db-name tip_node2          Per-node DB name override (optional; defaults to DB_NAME from env)
+ *   --db-user tip_node2          Per-node DB user override (optional; Oracle nodes need tip_node2/3/4)
  *
  * Output layout:
  *   generated_nodes/<slug>-<short-tip-id>/
@@ -83,6 +84,8 @@ const apiPort = parseInt(getArg("--port", "4100"), 10);   // API port for the ne
 const p2pPort = parseInt(getArg("--p2p-port", String(apiPort + 1)), 10);   // libp2p port; convention is API+1
 const publicIp = getArg("--public-ip", "127.0.0.1");      // override for prod / cloud deployments
 const dbNameOverride = getArg("--db-name", null);         // per-node DB name (optional)
+const dbUserOverride = getArg("--db-user", null);         // per-node DB user (optional; needed for Oracle)
+const forceHalted = args.includes("--force");              // allow registration against a halted node
 
 /** Slugify a display name into a filesystem-safe identifier. */
 function slugify(s) {
@@ -90,7 +93,7 @@ function slugify(s) {
 }
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
-function post(url, body) {
+function post(url, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const lib = parsed.protocol === "https:" ? https : http;
@@ -100,7 +103,7 @@ function post(url, body) {
       port: parsed.port,
       path: parsed.pathname,
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload), ...extraHeaders },
     }, (res) => {
       let data = "";
       res.on("data", c => data += c);
@@ -164,8 +167,15 @@ async function main() {
   try {
     health = await get(`${nodeUrl}/health`);
     const healthData = health.data || health;
-    if (healthData.status !== "ok") throw new Error(`Node unhealthy: ${healthData.status}`);
-    ok(`Node healthy — DAG: ${healthData.dag_count} txs`);
+    if (healthData.status !== "ok") {
+      if (forceHalted && healthData.status === "halted") {
+        info(`Node halted (--force) — tx will queue until peers join. DAG: ${healthData.dag_count} txs`);
+      } else {
+        throw new Error(`Node unhealthy: ${healthData.status}`);
+      }
+    } else {
+      ok(`Node healthy — DAG: ${healthData.dag_count} txs`);
+    }
   } catch (err) {
     fail(`Cannot reach node: ${err.message}`);
     process.exit(1);
@@ -200,10 +210,11 @@ async function main() {
   info("Registering node...");
   let result;
   try {
+    const postHeaders = forceHalted ? { "x-bootstrap-force": "1" } : {};
     const response = await post(`${nodeUrl}/v1/node/register`, {
       ...registrationFields,
       council_signature: councilSignature,
-    });
+    }, postHeaders);
     result = response.data || response;
     ok(`Node registered: ${result.node_id}`);
     label("Name", result.name);
@@ -271,13 +282,13 @@ async function main() {
   // Collect DB settings from the current environment (loaded by dotenv above).
   // DB_NAME may be overridden per-node via --db-name; all other settings are
   // inherited from the seed node's environment so the new node uses the same DB.
-  const dbDriver = process.env.DB_DRIVER || "";
-  const dbHost = process.env.DB_HOST || "";
-  const dbPort = process.env.DB_PORT || "";
-  const dbName = dbNameOverride || process.env.DB_NAME || "";
-  const dbUser = process.env.DB_USER || "";
-  const dbPassword = process.env.DB_PASSWORD || "";
-  const dbSsl = process.env.DB_SSL || "";
+  const dbDriver   = process.env.DB_DRIVER   || "";
+  const dbHost     = process.env.DB_HOST      || "";
+  const dbPort     = process.env.DB_PORT      || "";
+  const dbName     = dbNameOverride || process.env.DB_NAME || "";
+  const dbUser     = dbUserOverride || process.env.DB_USER || "";
+  const dbPassword = process.env.DB_PASSWORD  || "";
+  const dbSsl      = process.env.DB_SSL       || "";
   const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
   const dbPoolMin = process.env.DB_POOL_MIN || "";
   const dbPoolMax = process.env.DB_POOL_MAX || "";

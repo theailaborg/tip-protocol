@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    federation: "tip-local"
+
+scrape_configs:
+  - job_name: "tip-federation"
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets:
+          - "node1:4000"
+          - "node2:4100"
+          - "node3:4200"
+          - "node4:4300"
+          - "node5:4400"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: [ "localhost:9090" ]

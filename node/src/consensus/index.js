@@ -146,6 +146,23 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    onMissingCertsTimeout: (voteRound, missingCount) => {
+      if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
+        // Stagger resync by node_id so all nodes don't simultaneously enter
+        // snapshot-install when BULLSHARK_DEFER_MS fires cluster-wide (e.g.
+        // all 4 non-paused nodes waiting on the same paused node's certs).
+        const _id = nodeId || "";
+        const _h = _id.split("").reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) >>> 0, 0);
+        const _staggerMs = (_h % 4) * 3000; // 0, 3000, 6000, 9000 ms
+        setTimeout(() => {
+          antiEntropyForResync.triggerSnapshotResync(voteRound, missingCount).catch(err => {
+            log.warn(`Bullshark.onMissingCertsTimeout: snapshot resync failed: ${err.message}`);
+          });
+        }, _staggerMs);
+      } else {
+        log.warn(`Bullshark.onMissingCertsTimeout: anti-entropy not ready — falling back to force-commit at round ${voteRound}`);
+      }
+    },
     // BFT-Time — bullshark passes the anchor cert's timestamp (median of
     // acks.signed_at, deterministic across nodes) so commit-handler can
     // use it as the canonical wall-clock for derived state, audit logs,
@@ -200,7 +217,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // ack time, but AE is constructed AFTER narwhal (it takes narwhal as a
   // dep). Closure-over-let resolves the cycle: the function is called on
   // each batch arrival, by which point the let has been assigned.
+  // Same pattern used for bullshark → AE: bullshark's onMissingCertsTimeout
+  // calls antiEntropyForResync.triggerSnapshotResync() after antiEntropy is
+  // assigned (deferred anchor timer fires seconds later, never at create-time).
   let antiEntropyForFiltering = null;
+  let antiEntropyForResync = null;
 
   const narwhal = createNarwhal({
     dag, mempool, network, config,
@@ -209,8 +230,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getCommittee,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
     // Rebuild Merkle tree whenever ANY cert is saved (own, peer, or synced),
-    // so the root always reflects canonical DAG state.
-    onCertSaved: (cert) => syncHandler.onCertificateCommitted(cert.hash),
+    // so the root always reflects canonical DAG state. Also notify bullshark
+    // so it can unblock any parked anchor commit waiting on this cert hash
+    // (Option A — DAG completeness gate).
+    onCertSaved: (cert) => {
+      syncHandler.onCertificateCommitted(cert.hash);
+      if (bullshark && typeof bullshark.onCertSaved === "function") {
+        bullshark.onCertSaved(cert.hash);
+      }
+    },
     // Producer-pause notifier — breaks the deadlock where rotation tx
     // never lands because no rounds advance because rotation tx is
     // missing. Bullshark.tryRotationProposal re-checks DAG and forces
@@ -237,6 +265,19 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       try { return antiEntropyForFiltering ? antiEntropyForFiltering.peerJoinState(peerNodeId) : "ready"; }
       catch { return "ready"; }
     },
+    divergentPeers: () => {
+      try { return antiEntropyForFiltering ? antiEntropyForFiltering.divergentPeers() : []; }
+      catch { return []; }
+    },
+    // Tier-1 sub_quorum self-heal: after 3 consecutive stuck retries (~6s),
+    // narwhal drops + rejoins all gossipsub topics so stale directed mesh edges
+    // are rebuilt fresh. Fixes Issue #13 where specific peer acks stopped
+    // delivering through degraded mesh edges without any node being down.
+    onMeshRefresh: () => {
+      if (network && typeof network.refreshGossipsubMesh === "function") {
+        return network.refreshGossipsubMesh();
+      }
+    },
   });
   narwhalRef.current = narwhal;
 
@@ -245,7 +286,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // uses this to advance its own committed_round counter past the
   // snapshot anchor when the network's been idle, so anti-entropy
   // doesn't false-positive a "behind" gap and loop.
-  const snapshotHandler = createSnapshotHandler({ dag, network, isAuthorizedPeer, bullshark, narwhal });
+  const snapshotHandler = createSnapshotHandler({
+    dag, network, isAuthorizedPeer, bullshark, narwhal,
+    // Called synchronously inside snapshot-handler, right after narwhal.markSnapshotInstalled,
+    // so cancelPendingCommit + resetBftTimeFloor fire before any anti-entropy tick
+    // can re-detect a stale deferred commit or BFT-time violation (SI-2 / CI-1).
+    // peerCommittedRound (not snapshotRound) is passed so _lastCommittedRound
+    // advances to the true peer head (SI-5).
+    onSnapshotInstalled: (peerCommittedRound) => {
+      if (bullshark) {
+        if (typeof bullshark.cancelPendingCommit === "function") {
+          bullshark.cancelPendingCommit(peerCommittedRound || 0);
+        }
+        if (typeof bullshark.resetBftTimeFloor === "function") {
+          bullshark.resetBftTimeFloor();
+        }
+      }
+    },
+  });
 
   // Periodic heartbeat summary — emits one INFO line per interval with
   // deltas, stays silent during true idle. Per-round events are debug-level.
@@ -291,8 +349,18 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       })(),
       cert_merkle_root: syncHandler.merkleRoot(),
     }),
+    // Bug 3: cancel any deferred anchor timer on snapshot install failure.
+    // On success, onSnapshotInstalled (in snapshotHandler) calls cancelPendingCommit.
+    // On failure, nothing did — the stale timer could fire later and trigger another
+    // resync→install→fail loop or commit partial state.
+    cancelPendingCommit: (round) => {
+      if (bullshark && typeof bullshark.cancelPendingCommit === "function") {
+        bullshark.cancelPendingCommit(round || 0);
+      }
+    },
   });
   antiEntropyForFiltering = antiEntropy;
+  antiEntropyForResync = antiEntropy;
 
   // ── Wire network events ────────────────────────────────────────────────
 

@@ -277,6 +277,14 @@ const CONSENSUS = {
   get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
   get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
+  // How long bullshark parks a deferred anchor waiting for missing parent certs
+  // before triggering snapshot resync. Must be >> gossipsub mesh rebuild time
+  // (~10-15s after a reconnect) so transiently missing certs (gossip-lag, not
+  // genuinely gone) have time to arrive before the timer fires. A 15-20s pause
+  // creates cert gaps that gossipsub fills in ~25-30s post-reconnect; 60s gives
+  // comfortable headroom. Only genuinely GC'd certs (50-60s+ pauses) will still
+  // be missing at 60s and require a snapshot resync.
+  get BULLSHARK_DEFER_MS() { return _c().bullshark_defer_ms ?? 60000; },
   get SYNC_DIVERGENCE_GRACE_MS() { return _c().sync_divergence_grace_ms ?? 30000; },
   get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return _c().rotation_coord_rebroadcast_interval_ms ?? 1500; },
   get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
