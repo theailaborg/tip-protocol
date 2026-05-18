@@ -55,6 +55,9 @@ const {
 
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
 const PC = require("../shared/protocol-constants");
+// seed.js regenerates GENESIS_TX_SIGNATURE and GENESIS_VP_TX_SIGNATURE, so it
+// must bypass the startup check that would otherwise block loading genesis.js.
+process.env.SKIP_GENESIS_VERIFY = "1";
 const {
   GENESIS_TX_ID,
   GENESIS_TIMESTAMP,
@@ -1210,6 +1213,37 @@ async function main() {
     // clears require.cache so the genesis hash computed in Step 3 below
     // sees the full payload (founding_vp + genesis_ring_keys + founding_node).
     const seedNode = await registerSeedNode(vpKeypair);
+
+    // Step 2c: Re-embed bootstrap tx signatures now that founding_node is set.
+    // embedFoundingVPKey() signed over GENESIS_PAYLOAD before founding_node was
+    // embedded, so GENESIS_TX_SIGNATURE / GENESIS_VP_TX_SIGNATURE would be stale
+    // at node startup. Re-sign over the complete payload here.
+    {
+      const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
+      Object.keys(require.cache).forEach(key => { if (key.includes("genesis")) delete require.cache[key]; });
+      const freshGenesis = require("../node/src/genesis");
+      const SIG_DET = { deterministic: true };
+      const genesisTxSig = mldsaSign(canonicalTx(freshGenesis.GENESIS_TX), vpKeypair.privateKey, SIG_DET);
+      const vpTxBody = {
+        tx_type: "VP_REGISTERED",
+        timestamp: freshGenesis.GENESIS_TIMESTAMP,
+        prev: [freshGenesis.GENESIS_TX_ID, freshGenesis.GENESIS_TX_ID],
+        data: {
+          vp_id:             freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
+          name:              freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
+          jurisdiction:      freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction,
+          jurisdiction_tier: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction_tier,
+          public_key:        vpKeypair.publicKey,
+        },
+      };
+      const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey, SIG_DET);
+      let gSrc = fs.readFileSync(genesisJsFile, "utf8");
+      gSrc = gSrc.replace(/GENESIS_TX_SIGNATURE\s*=\s*"[^"]*"/, `GENESIS_TX_SIGNATURE = "${genesisTxSig}"`);
+      gSrc = gSrc.replace(/GENESIS_VP_TX_SIGNATURE\s*=\s*"[^"]*"/, `GENESIS_VP_TX_SIGNATURE = "${vpTxSig}"`);
+      fs.writeFileSync(genesisJsFile, gSrc);
+      Object.keys(require.cache).forEach(key => { if (key.includes("genesis")) delete require.cache[key]; });
+      ok("Bootstrap tx signatures re-embedded after founding_node update");
+    }
 
     // Step 3: Mint genesis block (signed by founding VP key) — DEFERRED to
     // after seed-node embedding so the hash + signature cover the complete
