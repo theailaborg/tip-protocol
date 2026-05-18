@@ -567,6 +567,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           creator_tip_id: d.creator_tip_id,
           assigned_reviewer: d.assigned_reviewer_tip_id,
           triggered_at_round: d.triggered_at_round,
+          triggered_at_ms: _committedCertTimestamp || null,
           state: PRESCAN_REVIEW_STATES.TRIGGERED,
         });
         if (dag.getContent(d.ctid)) {

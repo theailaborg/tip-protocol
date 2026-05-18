@@ -26,6 +26,7 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
+const { mldsaVerify, canonicalTx } = require("../../../shared/crypto");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_RECUSED;
@@ -42,17 +43,20 @@ function resolveReviewer(reviewerTipId, dag) {
 }
 
 /**
- * Gate: review exists, reviewer is the assigned one, and state is
- * TRIGGERED (the only state from which recusal makes sense — once a
- * decision is made, there's nothing left to recuse from). Shared
- * between API time and consensus replay.
+ * Gate: review exists and state is TRIGGERED (the only state from
+ * which recusal makes sense — once a decision is made, there's
+ * nothing left to recuse from). For user-initiated recusal (auto !=
+ * true) the signer MUST be the assigned reviewer; the node-signed
+ * auto path skips that check because the trigger module emits on
+ * behalf of an inactive assignee. Shared between API time and
+ * consensus replay.
  */
-function resolveReview(reviewId, reviewerTipId, dag) {
+function resolveReview(reviewId, reviewerTipId, dag, { auto = false } = {}) {
   const review = dag.getPrescanReview(reviewId);
   if (!review) {
     throw schemaError(404, `Review not found: ${reviewId}`, "review_not_found");
   }
-  if (review.assigned_reviewer !== reviewerTipId) {
+  if (!auto && review.assigned_reviewer !== reviewerTipId) {
     throw schemaError(403, "Only the assigned reviewer can recuse from this review", "reviewer_not_assigned");
   }
   if (review.state !== PRESCAN_REVIEW_STATES.TRIGGERED) {
@@ -117,14 +121,46 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
+  if (!d.review_id) {
+    return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
+  }
+
+  // Node-signed auto-recuse — emitted by prescan-review-trigger when
+  // the assigned reviewer's AUTO_RECUSE_AGE_MS elapses without a
+  // decision. Same shape as CONTENT_DISPUTED auto-cascade (data.auto +
+  // data.node_id, tx.signature at top level over canonicalTx).
+  if (d.auto) {
+    if (!d.node_id) {
+      return { ok: false, status: 400, error: "node_id missing on auto-recuse", code: "node_id_missing" };
+    }
+    if (typeof tx.signature !== "string" || tx.signature.length === 0) {
+      return { ok: false, status: 400, error: "tx.signature missing on auto-recuse", code: "signature_missing" };
+    }
+    const node = dag.getNode(d.node_id);
+    if (!node) {
+      return { ok: false, status: 412, error: `Node not registered: ${d.node_id}`, code: "node_not_registered" };
+    }
+    if (node.status !== "active") {
+      return { ok: false, status: 403, error: `Node not active: ${d.node_id}`, code: "node_inactive" };
+    }
+    try {
+      resolveReview(d.review_id, null, dag, { auto: true });
+    } catch (err) {
+      if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
+      throw err;
+    }
+    if (!mldsaVerify(canonicalTx(tx), tx.signature, node.public_key)) {
+      return { ok: false, status: 403, error: "Node signature verification failed", code: "signature_invalid" };
+    }
+    return { ok: true };
+  }
+
+  // Reviewer-signed manual recuse (the original path).
   if (typeof d.signature !== "string") {
     return { ok: false, status: 400, error: "signature missing on tx", code: "signature_missing" };
   }
   if (!d.reviewer_tip_id) {
     return { ok: false, status: 400, error: "reviewer_tip_id missing", code: "reviewer_tip_id_missing" };
-  }
-  if (!d.review_id) {
-    return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
   }
 
   let reviewer;

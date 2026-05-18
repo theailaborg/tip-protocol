@@ -1022,6 +1022,49 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       }
     }
 
+    // ── review_assignment_pending ────────────────────────────────────────
+    // Reviewer-facing reminder for open TRIGGERED assignments. Surfaces
+    // the assigned_reviewer's outstanding cases with hours remaining
+    // until REVIEWER.AUTO_RECUSE_AGE_MS triggers the system-emitted
+    // recuse. Once the reviewer dismisses / confirms / recuses (or the
+    // auto-recuse fires), the review row leaves TRIGGERED state and the
+    // item disappears.
+    if (typeof dag.getPrescanReviewsByReviewer === "function") {
+      const myReviews = dag.getPrescanReviewsByReviewer(tipId) || [];
+      for (const r of myReviews) {
+        if (r.state !== "triggered") continue;
+        if (r.triggered_at_ms == null) continue;
+        const deadlineMs = r.triggered_at_ms + REVIEWER.AUTO_RECUSE_AGE_MS;
+        const remainingMs = deadlineMs - now;
+        const hoursRemaining = Math.max(0, Math.round(remainingMs / 3600000));
+        const overdue = remainingMs <= 0;
+        items.push({
+          id: `review_assignment_pending:${r.review_id}`,
+          type: "review_assignment_pending",
+          priority: overdue ? "urgent" : (hoursRemaining <= 6 ? "urgent" : "high"),
+          title: overdue
+            ? `Review assignment past SLA — auto-recuse imminent`
+            : `Review assignment open — ${hoursRemaining}h to decide or recuse`,
+          summary: `${_ctidLabel(r.ctid)} is awaiting your decision. Dismiss, confirm, or recuse before the assignment auto-recuses and reassigns.`,
+          role: "reviewer",
+          ctid: r.ctid,
+          dispute_id: null,
+          deadline: new Date(deadlineMs).toISOString(),
+          action: {
+            kind: "view_review",
+            label: "Open review",
+            href: `/reviews/${r.review_id}`,
+          },
+          metadata: {
+            review_id: r.review_id,
+            creator_tip_id: r.creator_tip_id,
+            triggered_at_ms: r.triggered_at_ms,
+            hours_remaining: hoursRemaining,
+          },
+        });
+      }
+    }
+
     // ── content_flagged_for_review ───────────────────────────────────────
     // Creator-facing warning that flagged content is approaching the
     // h=48 PRESCAN_REVIEW_TRIGGERED mark. Surfaces once content age

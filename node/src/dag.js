@@ -219,6 +219,10 @@ function _canonPrescanReview(r) {
     creator_tip_id: r.creator_tip_id,
     assigned_reviewer: r.assigned_reviewer || null,
     triggered_at_round: r.triggered_at_round,
+    // BFT cert.timestamp ms at the moment PRESCAN_REVIEW_TRIGGERED applied.
+    // Drives the reviewer-SLA auto-recuse trigger — same deterministic-
+    // clock pattern as confirmed_at_ms below.
+    triggered_at_ms: r.triggered_at_ms == null ? null : r.triggered_at_ms,
     state: r.state,
     decided_at_round: r.decided_at_round == null ? null : r.decided_at_round,
     confirmed_at_round: r.confirmed_at_round == null ? null : r.confirmed_at_round,
@@ -688,6 +692,7 @@ class MemoryStore {
       creator_tip_id: rec.creator_tip_id,
       assigned_reviewer: rec.assigned_reviewer || null,
       triggered_at_round: rec.triggered_at_round,
+      triggered_at_ms: rec.triggered_at_ms == null ? null : rec.triggered_at_ms,
       decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
       confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
       confirmed_at_ms: rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
@@ -749,6 +754,15 @@ class MemoryStore {
         && r.confirmed_at_ms != null
         && r.confirmed_at_ms <= cutoff)
       .sort((a, b) => a.confirmed_at_ms - b.confirmed_at_ms)
+      .map(r => ({ ...r }));
+  }
+  getReviewsNeedingAutoRecuse(nowMs) {
+    const cutoff = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS;
+    return [...this._prescanReviews.values()]
+      .filter(r => r.state === PRESCAN_REVIEW_STATES.TRIGGERED
+        && r.triggered_at_ms != null
+        && r.triggered_at_ms <= cutoff)
+      .sort((a, b) => a.triggered_at_ms - b.triggered_at_ms)
       .map(r => ({ ...r }));
   }
 
@@ -1349,6 +1363,7 @@ class SQLiteStore {
         creator_tip_id       TEXT NOT NULL,
         assigned_reviewer    TEXT,                            -- NULL until REVIEW_TRIGGERED commits with the assignment
         triggered_at_round   INTEGER NOT NULL,
+        triggered_at_ms      INTEGER,                          -- cert.ts ms at TRIGGERED apply; drives reviewer SLA auto-recuse
         decided_at_round     INTEGER,                          -- when reviewer DISMISSED or CONFIRMED
         confirmed_at_round   INTEGER,                          -- set on CONFIRMED; starts creator's 24h decision window
         confirmed_at_ms      INTEGER,                          -- cert.ts ms at CONFIRMED apply; drives h=R+24 auto-escalation
@@ -1844,9 +1859,10 @@ class SQLiteStore {
       savePrescanReview: this.db.prepare(
         `INSERT OR REPLACE INTO prescan_reviews
            (review_id, ctid, creator_tip_id, assigned_reviewer,
-            triggered_at_round, decided_at_round, confirmed_at_round,
+            triggered_at_round, triggered_at_ms,
+            decided_at_round, confirmed_at_round,
             confirmed_at_ms, state, decision_note, suggested_origin)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getPrescanReview: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE review_id=?"
@@ -1890,6 +1906,16 @@ class SQLiteStore {
            AND confirmed_at_ms IS NOT NULL
            AND confirmed_at_ms <= ?
          ORDER BY confirmed_at_ms ASC`
+      ),
+      // Reviews in state=triggered whose reviewer SLA has elapsed —
+      // candidates for node-emitted auto-recuse. triggered_at_ms is set
+      // on TRIGGERED apply from cert.ts.
+      getReviewsNeedingAutoRecuse: this.db.prepare(
+        `SELECT * FROM prescan_reviews
+         WHERE state = 'triggered'
+           AND triggered_at_ms IS NOT NULL
+           AND triggered_at_ms <= ?
+         ORDER BY triggered_at_ms ASC`
       ),
 
       // #75 rotation_participation. UPSERT pattern (INSERT … ON CONFLICT)
@@ -2387,6 +2413,7 @@ class SQLiteStore {
       rec.creator_tip_id,
       rec.assigned_reviewer || null,
       rec.triggered_at_round,
+      rec.triggered_at_ms == null ? null : rec.triggered_at_ms,
       rec.decided_at_round == null ? null : rec.decided_at_round,
       rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
       rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
@@ -2412,6 +2439,9 @@ class SQLiteStore {
   }
   getReviewsNeedingAutoEscalation(nowMs) {
     return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
+  }
+  getReviewsNeedingAutoRecuse(nowMs) {
+    return this._stmts.getReviewsNeedingAutoRecuse.all(nowMs - REVIEWER.AUTO_RECUSE_AGE_MS);
   }
 
   // #75 rotation_participation — see MemoryStore version for the contract.
@@ -2892,6 +2922,7 @@ function _buildDagHandle(store, config) {
     getPrescanReviewsByCtid: (ctid) => store.getPrescanReviewsByCtid(ctid),
     getContentsNeedingReview: (nowMs) => store.getContentsNeedingReview(nowMs),
     getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
+    getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
 
     // #75 rotation participation tally
     incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),

@@ -234,6 +234,13 @@ const GENESIS_PAYLOAD = Object.freeze({
       // content_flagged_for_review notification surfaces on the
       // creator's /v1/users/:tip_id/dashboard.
       creator_warning_age_ms: 86400000,
+      // Age (ms since PRESCAN_REVIEW_TRIGGERED's cert.ts) at which the
+      // prescan-review-trigger emits a node-signed auto-recuse on
+      // behalf of an inactive assigned reviewer. Same mechanism as
+      // h=R+24 auto-escalation: deterministic clock (cert.ts), round-
+      // modulo leader gate, content.status flip-back triggers
+      // re-assignment.
+      auto_recuse_age_ms: 172800000,
     },
     content_grace: {
       // Self-correction windows. Unflagged content keeps the original 24h

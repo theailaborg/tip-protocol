@@ -237,6 +237,12 @@ const REVIEWER = {
   // "your flagged content is approaching review" notification surfaces
   // on the dashboard. Halfway through the 48h flagged grace by default.
   get CREATOR_WARNING_AGE_MS() { return _rv().creator_warning_age_ms; },
+  // Age (ms since the assignment's cert.ts) at which auto-recuse
+  // fires on behalf of an inactive assigned reviewer. The trigger
+  // emits a node-signed PRESCAN_REVIEW_RECUSED past this threshold;
+  // content.status flips back to REGISTERED and the next round's
+  // trigger picks a fresh reviewer.
+  get AUTO_RECUSE_AGE_MS() { return _rv().auto_recuse_age_ms; },
 };
 
 const _cg = () => get().content_grace;

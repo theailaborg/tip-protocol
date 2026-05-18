@@ -414,6 +414,7 @@ class KnexAdapter {
       _id(t, "creator_tip_id").notNullable();
       _id(t, "assigned_reviewer").nullable();
       t.integer("triggered_at_round").notNullable();
+      t.bigInteger("triggered_at_ms").nullable();
       t.integer("decided_at_round").nullable();
       t.integer("confirmed_at_round").nullable();
       t.bigInteger("confirmed_at_ms").nullable();

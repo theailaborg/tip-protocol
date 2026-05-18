@@ -80,6 +80,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
 
     _emitDueReviews(certTimestamp, round);
     _emitAutoEscalations(certTimestamp, round);
+    _emitAutoRecusals(certTimestamp, round);
   }
 
   function _emitDueReviews(certTimestamp, round) {
@@ -192,6 +193,57 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         node_id: _myNodeId,
         source_review_id: reviewId,
         suggested_origin: suggestedOrigin || null,
+      },
+    };
+    txBody.tx_id = computeTxId(txBody);
+    return signTransaction(txBody, _nodePrivateKey);
+  }
+
+  /**
+   * Reviewer-SLA auto-recuse — for each TRIGGERED review whose
+   * triggered_at_ms is older than REVIEWER.AUTO_RECUSE_AGE_MS,
+   * emit a node-signed PRESCAN_REVIEW_RECUSED. Commit-handler's
+   * apply flips review.state to RECUSED and content.status back
+   * to REGISTERED; the next round's _emitDueReviews then re-picks
+   * the content and emits a fresh PRESCAN_REVIEW_TRIGGERED with a
+   * new (deterministic) assignment.
+   */
+  function _emitAutoRecusals(certTimestamp, round) {
+    let reviews;
+    try {
+      reviews = dag.getReviewsNeedingAutoRecuse(certTimestamp);
+    } catch (err) {
+      log.warn(`getReviewsNeedingAutoRecuse failed: ${err.message}`);
+      return;
+    }
+    if (!reviews || reviews.length === 0) return;
+
+    for (const review of reviews) {
+      try {
+        const tx = _buildAutoRecuseTx({ reviewId: review.review_id });
+        try {
+          submitTx(tx);
+          log.info(`Auto-recuse proposed for review_id=${review.review_id} (assigned=${review.assigned_reviewer})`);
+        } catch (err) {
+          const reason = err?.error || err?.message || String(err);
+          log.debug(`Auto-recuse submission deferred for ${review.review_id}: ${reason}`);
+        }
+      } catch (err) {
+        log.warn(`Auto-recuse failed for ${review.review_id}: ${err.message}`);
+      }
+    }
+  }
+
+  function _buildAutoRecuseTx({ reviewId }) {
+    const txBody = {
+      tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
+      timestamp: new Date().toISOString(),
+      prev: dag.getRecentPrev(),
+      data: {
+        review_id: reviewId,
+        auto: true,
+        node_id: _myNodeId,
+        recusal_reason: "sla_expired",
       },
     };
     txBody.tx_id = computeTxId(txBody);

@@ -148,8 +148,13 @@ const SCHEMA = {
     types: { review_id: "string", reviewer_tip_id: "string", signature: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
-    required: ["review_id", "reviewer_tip_id", "signature"],
-    types: { review_id: "string", reviewer_tip_id: "string", signature: "string" },
+    // review_id is always required. reviewer_tip_id + signature are
+    // user-recuse only; node-emitted auto-recuse (data.auto = true)
+    // carries node_id + uses tx.signature at the top level instead.
+    // The schema module's verifyTx branches on data.auto and enforces
+    // the right fields per path.
+    required: ["review_id"],
+    types: { review_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: {
     required: ["review_id", "reviewer_tip_id", "suggested_origin", "signature"],

@@ -166,7 +166,8 @@
       "accuracy_sample_size": 20,
       "creator_decision_window_ms": 86400000,
       "accept_correction_score_delta": -10,
-      "creator_warning_age_ms": 86400000
+      "creator_warning_age_ms": 86400000,
+      "auto_recuse_age_ms": 172800000
     },
     "content_grace": {
       "unflagged_ms": 86400000,
