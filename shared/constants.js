@@ -72,11 +72,16 @@ const PRESCAN_TIER_VALUES = Object.freeze([
 // ELEVATED is a soft signal (amber banner in UI). HIGH/CRITICAL only land
 // in the response after the 409 override flow — creator already saw the
 // blocking modal; this is reminder text in the success payload.
+// Tier-specific prescan messages. HIGH/CRITICAL messages assume the
+// creator has already accepted the override (registration would have
+// been blocked otherwise) — so they frame the 48h as a *reconsideration
+// period before an independent reviewer engages*, not a free do-over.
+// The reviewer step is named explicitly so the timeline is unambiguous.
 const PRESCAN_NOTES = Object.freeze({
   [PRESCAN_TIERS.LOW]: null,
   [PRESCAN_TIERS.ELEVATED]: "Our system detected some patterns associated with AI-generated content. You can change your declaration anytime in the next 24 hours at zero penalty.",
-  [PRESCAN_TIERS.HIGH]: "Our system has HIGH confidence (90%+) this content involves AI. You have 48 hours to change your declaration at zero penalty.",
-  [PRESCAN_TIERS.CRITICAL]: "Our system has VERY HIGH confidence (98%+) this content was AI-generated. You have 48 hours to change at zero penalty. Significant penalty applies if the declaration is later overturned.",
+  [PRESCAN_TIERS.HIGH]: "You overrode our HIGH-confidence (90%+) AI assessment and registered as OH. You have 48 hours to reconsider — an independent reviewer will examine this content after that. Updating your origin during this window has zero penalty.",
+  [PRESCAN_TIERS.CRITICAL]: "You acknowledged our VERY HIGH confidence (98%+) AI assessment and registered as OH. You have 48 hours to reconsider — an independent reviewer will examine this content after that. Updating your origin during this window has zero penalty; if the reviewer later confirms AI involvement, a significant penalty applies.",
 });
 
 // ─── Prescan-review state ──────────────────────────────────────────────────
