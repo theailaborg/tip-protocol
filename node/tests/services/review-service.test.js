@@ -490,3 +490,136 @@ describe("review-service.listReviewerPool", () => {
     expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dispute — creator's Option 2: manually escalate a CONFIRMED review
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("review-service.dispute", () => {
+
+  function _signEscalation(creatorKp, { author_tip_id, ctid, review_id }) {
+    return signBody({ author_tip_id, ctid, review_id }, creatorKp.privateKey);
+  }
+
+  test("emits node-signed CONTENT_DISPUTED with auto:true + escalation audit fields, plus JURY_SUMMONS for each juror", () => {
+    const fx = _setup();
+    _seedConfirmedReview(fx, { reviewId: "rv_esc1", suggestedOrigin: "AG" });
+    _seedContent(fx);
+
+    const signature = _signEscalation(fx.creatorKp, {
+      author_tip_id: CREATOR, ctid: CTID_1, review_id: "rv_esc1",
+    });
+    const out = fx.service.dispute("rv_esc1", {
+      author_tip_id: CREATOR, ctid: CTID_1, signature,
+    });
+
+    expect(out.confirmation).toBe("proposed");
+    const tx = fx.submitted.find(t => t.tx_type === TX_TYPES.CONTENT_DISPUTED);
+    expect(tx).toBeDefined();
+    expect(tx.data.ctid).toBe(CTID_1);
+    expect(tx.data.auto).toBe(true);
+    expect(tx.data.source_review_id).toBe("rv_esc1");
+    expect(tx.data.suggested_origin).toBe("AG");
+    expect(tx.data.escalated_by_tip_id).toBe(CREATOR);
+    expect(tx.data.escalation_signature).toBe(signature);
+    expect(tx.data.reason).toBe("creator_disagrees_with_reviewer");
+    expect(tx.data.declared_origin).toBe("OH");
+    expect(tx.data.claimed_origin).toBe("AG");
+    expect(typeof tx.signature).toBe("string");
+    expect(tx.data.node_id).toBeDefined();
+
+    // Jury summons batched atomically with the dispute. Without this,
+    // the dispute lands but never resolves — no jurors are notified, no
+    // verdict timer starts, reviewer never gets paid / penalized.
+    const summons = fx.submitted.filter(t => t.tx_type === TX_TYPES.JURY_SUMMONS);
+    expect(summons.length).toBeGreaterThan(0);
+    expect(out.jurors_count).toBe(summons.length);
+    // Reviewer (de-facto disputer) is excluded from the jury pool.
+    for (const s of summons) {
+      expect(s.data.juror_tip_id).not.toBe(REVIEWER_1);
+      // Creator is also excluded (selectJury hard-filter)
+      expect(s.data.juror_tip_id).not.toBe(CREATOR);
+      // Each summons references the dispute tx
+      expect(s.data.dispute_tx_id).toBe(tx.tx_id);
+      expect(s.data.ctid).toBe(CTID_1);
+      expect(typeof s.data.commit_deadline).toBe("string");
+      expect(typeof s.data.reveal_deadline).toBe("string");
+    }
+  });
+
+  test("rejects when caller is not the review's creator (403 not_creator)", () => {
+    const fx = _setup();
+    _seedConfirmedReview(fx, { reviewId: "rv_esc2" });
+    _seedContent(fx);
+
+    const signature = _signEscalation(fx.reviewer2Kp, {
+      author_tip_id: REVIEWER_2, ctid: CTID_1, review_id: "rv_esc2",
+    });
+    const err = _throws(() => fx.service.dispute("rv_esc2", {
+      author_tip_id: REVIEWER_2, ctid: CTID_1, signature,
+    }));
+    expect(err).not.toBeNull();
+    expect(err.status).toBe(403);
+    expect(err.code).toBe("not_creator");
+  });
+
+  test("rejects when review is not in 'confirmed' state (409 review_state_invalid)", () => {
+    const fx = _setup();
+    _seedTriggeredReview(fx, { reviewId: "rv_esc3" }); // state=triggered
+    _seedContent(fx);
+
+    const signature = _signEscalation(fx.creatorKp, {
+      author_tip_id: CREATOR, ctid: CTID_1, review_id: "rv_esc3",
+    });
+    const err = _throws(() => fx.service.dispute("rv_esc3", {
+      author_tip_id: CREATOR, ctid: CTID_1, signature,
+    }));
+    expect(err.status).toBe(409);
+    expect(err.code).toBe("review_state_invalid");
+  });
+
+  test("rejects when body.ctid does not match review.ctid (400 ctid_mismatch)", () => {
+    const fx = _setup();
+    _seedConfirmedReview(fx, { reviewId: "rv_esc4" });
+    _seedContent(fx);
+
+    const wrongCtid = "tip://c/OH-99999999999999-9999";
+    const signature = _signEscalation(fx.creatorKp, {
+      author_tip_id: CREATOR, ctid: wrongCtid, review_id: "rv_esc4",
+    });
+    const err = _throws(() => fx.service.dispute("rv_esc4", {
+      author_tip_id: CREATOR, ctid: wrongCtid, signature,
+    }));
+    expect(err.status).toBe(400);
+    expect(err.code).toBe("ctid_mismatch");
+  });
+
+  test("rejects when signature does not verify (403 signature_invalid)", () => {
+    const fx = _setup();
+    _seedConfirmedReview(fx, { reviewId: "rv_esc5" });
+    _seedContent(fx);
+
+    // Sign with REVIEWER_2's key but submit as CREATOR.
+    const signature = _signEscalation(fx.reviewer2Kp, {
+      author_tip_id: CREATOR, ctid: CTID_1, review_id: "rv_esc5",
+    });
+    const err = _throws(() => fx.service.dispute("rv_esc5", {
+      author_tip_id: CREATOR, ctid: CTID_1, signature,
+    }));
+    expect(err.status).toBe(403);
+    expect(err.code).toBe("signature_invalid");
+  });
+
+  test("rejects when review does not exist (404 review_not_found)", () => {
+    const fx = _setup();
+    _seedContent(fx);
+    const signature = _signEscalation(fx.creatorKp, {
+      author_tip_id: CREATOR, ctid: CTID_1, review_id: "rv_missing",
+    });
+    const err = _throws(() => fx.service.dispute("rv_missing", {
+      author_tip_id: CREATOR, ctid: CTID_1, signature,
+    }));
+    expect(err.status).toBe(404);
+    expect(err.code).toBe("review_not_found");
+  });
+});

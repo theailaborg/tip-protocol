@@ -23,14 +23,16 @@
 "use strict";
 
 const { TX_TYPES } = require("../../../shared/constants");
-const { REVIEWER } = require("../../../shared/protocol-constants");
+const { REVIEWER, JURY } = require("../../../shared/protocol-constants");
+const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
 const recusedSchema   = require("../schemas/prescan-review-recused");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
+const disputeSchema   = require("../schemas/prescan-review-dispute");
 const { schemaError } = require("../schemas/_common");
-const { withTxId } = require("./helpers");
+const { withTxId, nodeSignedAuto } = require("./helpers");
 const { isEligibleReviewer, getReviewerAccuracy } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
 
@@ -233,6 +235,104 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
   }
 
   /**
+   * Creator's Option 2 — manually escalate a CONFIRMED prescan-review
+   * to a public dispute, before the h=R+24 auto-escalation trigger
+   * would fire. Semantically a fast-forward of the auto-escalation
+   * path: produces a CONTENT_DISPUTED tx with `auto: true` +
+   * `source_review_id` (same shape the auto trigger emits), plus
+   * `escalated_by_tip_id` + `escalation_signature` as audit fields
+   * proving the creator authorised the early escalation.
+   *
+   * Economics are identical to auto-escalation: the assigned reviewer
+   * is the de-facto disputer (paid via the escalated_review linkage at
+   * Stage-2 verdict time in jury.buildAdjudicationBatch). The creator
+   * stakes no DISPUTER_STAKE — they're not the formal disputer, just
+   * the party that flipped the timer to "now".
+   */
+  function dispute(reviewId, body) {
+    const { review, content } = disputeSchema.validateRequest(reviewId, body, { dag });
+
+    const timestamp = new Date().toISOString();
+    const disputeTx = nodeSignedAuto({
+      tx_type: TX_TYPES.CONTENT_DISPUTED,
+      timestamp,
+      prev: dag.getRecentPrev(),
+      data: {
+        ctid: review.ctid,
+        reason: "creator_disagrees_with_reviewer",
+        auto: true,
+        source_review_id: review.review_id,
+        suggested_origin: review.suggested_origin || null,
+        // Audit fields — proves the creator authorised this manual
+        // fast-forward. consensus replay re-verifies the signature
+        // against escalated_by_tip_id's public key (see tx-validator).
+        escalated_by_tip_id: body.author_tip_id,
+        escalation_signature: body.signature,
+        // Mirror the standard dispute fields so jury / dashboard
+        // queries that read declared/claimed don't have to special-case
+        // the auto path.
+        declared_origin: content.origin_code,
+        claimed_origin: review.suggested_origin || null,
+        pre_dispute_status: content.status,
+        author_tip_id: review.creator_tip_id,
+      },
+    }, config);
+
+    // Stage-2 jury selection + summons — same shape dispute-service
+    // emits for a normal user-filed dispute. The reviewer is excluded
+    // from the candidate pool (they're the de-facto disputer; selecting
+    // them would be a conflict of interest). selectJury already excludes
+    // the author + revoked + org identities; we pass the reviewer's
+    // tip_id as `disputerTipId` to extend the same exclusion to them.
+    const jury = selectJury(
+      dag, scoring,
+      disputeTx.tx_id,
+      review.creator_tip_id,        // authorTipId
+      review.assigned_reviewer,     // disputerTipId (de-facto)
+    );
+    if (jury.insufficient) {
+      log.warn(`Manual escalation jury: insufficient jurors for ${review.ctid} (${jury.jurors.length}/${JURY.SIZE})`);
+    }
+
+    const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
+    const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+
+    const batch = [disputeTx];
+    for (const jurorTipId of jury.jurors) {
+      const summonsTx = nodeSignedAuto({
+        tx_type: TX_TYPES.JURY_SUMMONS,
+        timestamp: new Date().toISOString(),
+        prev: dag.getRecentPrev(),
+        data: {
+          ctid: review.ctid,
+          dispute_tx_id: disputeTx.tx_id,
+          juror_tip_id: jurorTipId,
+          stake: JURY.JUROR_STAKE,
+          seed: jury.seed,
+          identity_count: jury.identityCount,
+          commit_deadline: commitDeadline,
+          reveal_deadline: revealDeadline,
+        },
+      }, config);
+      batch.push(summonsTx);
+    }
+
+    submitBatch(batch);
+    log.info(`Review manually escalated to dispute: ${reviewId} by ${body.author_tip_id} (${batch.length} txs, ${jury.jurors.length} jurors)`);
+    return {
+      review_id: reviewId,
+      ctid: review.ctid,
+      tx_id: disputeTx.tx_id,
+      jurors: jury.jurors,
+      jurors_count: jury.jurors.length,
+      jurors_insufficient: jury.insufficient,
+      commit_deadline: commitDeadline,
+      reveal_deadline: revealDeadline,
+      confirmation: "proposed",
+    };
+  }
+
+  /**
    * Debug / ops projection: every identity that currently passes
    * isEligibleReviewer (Pass 1 strict: consent + score ≥ MIN_SCORE +
    * not revoked + accuracy ≥ 1 − MAX_OVERTURN_RATE). selectReviewer
@@ -261,7 +361,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { pool: rows, count: rows.length };
   }
 
-  return { getReview, dismiss, confirm, recuse, acceptCorrection, listReviewerPool };
+  return { getReview, dismiss, confirm, recuse, acceptCorrection, dispute, listReviewerPool };
 }
 
 module.exports = { createReviewService };

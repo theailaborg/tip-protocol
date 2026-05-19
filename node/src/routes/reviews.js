@@ -48,6 +48,14 @@ function createRouter({ reviewService }) {
     res.status(202).json(reviewService.acceptCorrection(req.params.id, req.body));
   }));
 
+  // Creator's Option 2: manually escalate a CONFIRMED review to a
+  // public dispute, ahead of the h=R+24 auto-escalation. Same tx
+  // shape as auto-escalation; reviewer is paid via the escalated_review
+  // linkage at Stage-2 verdict time. See schemas/prescan-review-dispute.
+  router.post("/reviews/:id/dispute", asyncHandler((req, res) => {
+    res.status(202).json(reviewService.dispute(req.params.id, req.body));
+  }));
+
   return router;
 }
 

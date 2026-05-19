@@ -1089,7 +1089,28 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (d.auto) {
           const node = dag.getNode(d.node_id);
           if (!node || !tx.signature) return false;
-          return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
+          if (!mldsaVerify(canonicalTx(tx), tx.signature, node.public_key)) return false;
+          // Creator-initiated manual escalation (Option 2 from a
+          // CONFIRMED prescan-review): the node signs the tx envelope
+          // and the creator's escalation_signature is embedded as
+          // proof-of-intent. Verify it against the creator's identity
+          // pubkey over { author_tip_id, ctid, review_id } — same
+          // SIGNED_FIELDS the schema enforced at API time. System
+          // auto-escalations (no escalated_by_tip_id) skip this branch.
+          if (d.escalated_by_tip_id) {
+            const escalator = dag.getIdentity(d.escalated_by_tip_id);
+            if (!escalator || !d.escalation_signature) return false;
+            const sigBody = {
+              author_tip_id: d.escalated_by_tip_id,
+              ctid: d.ctid,
+              review_id: d.source_review_id,
+            };
+            if (!verifyBodySignature(sigBody, d.escalation_signature, escalator.public_key,
+                ["author_tip_id", "ctid", "review_id"])) {
+              return false;
+            }
+          }
+          return true;
         }
         const disputer = dag.getIdentity(d.disputer_tip_id);
         if (!disputer || !d.signature) return false;
