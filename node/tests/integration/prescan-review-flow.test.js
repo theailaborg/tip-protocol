@@ -206,7 +206,7 @@ describe("prescan-review end-to-end flow", () => {
     const scoreBefore = fx.scoring.getScore(CREATOR).score;
 
     const updateSig = signBody(
-      { author_tip_id: CREATOR, new_origin_code: "AG" },
+      { author_tip_id: CREATOR, ctid: CTID, new_origin_code: "AG" },
       fx.creatorKp.privateKey,
     );
     fx.reviewService.acceptCorrection(reviewId, {
@@ -285,7 +285,7 @@ describe("prescan-review end-to-end flow", () => {
     // Creator updates the origin. Phase 1: 48h grace for flagged
     // content lets this through without penalty.
     const updateSig = signBody(
-      { author_tip_id: CREATOR, new_origin_code: "AG" },
+      { author_tip_id: CREATOR, ctid: CTID, new_origin_code: "AG" },
       fx.creatorKp.privateKey,
     );
     // No review row exists yet, so we drive UPDATE_ORIGIN directly via
@@ -359,7 +359,7 @@ describe("prescan-review end-to-end flow", () => {
     // Phase 2.3: commit-handler.UPDATE_ORIGIN apply flips the open
     // TRIGGERED review to CLOSED_SELF_CORRECT.
     const updateSig = signBody(
-      { author_tip_id: CREATOR, new_origin_code: "AG" },
+      { author_tip_id: CREATOR, ctid: CTID, new_origin_code: "AG" },
       fx.creatorKp.privateKey,
     );
     const { withTxId } = require(path.join(SRC, "services", "helpers"));

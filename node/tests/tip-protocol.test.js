@@ -1284,7 +1284,7 @@ describe("Semantic Dedup", () => {
   afterAll(() => { if (sdDag) sdDag.close(); });
 
   test("9.1 First verify succeeds with correct delta and caps", async () => {
-    const fields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
+    const fields = { verifier_tip_id: sdVerifierId, ctid: sdCtid, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
@@ -1301,7 +1301,7 @@ describe("Semantic Dedup", () => {
   });
 
   test("9.2 Duplicate verify returns 409", async () => {
-    const fields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
+    const fields = { verifier_tip_id: sdVerifierId, ctid: sdCtid, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(sdCtid)}/verify`)
       .send({ ...fields, signature: signBody(fields, sdVerifierPriv) });
@@ -1338,7 +1338,7 @@ describe("Semantic Dedup", () => {
     // Daily remaining = 5 - 3 = 2
 
     // Verifier 1: wants +3 but daily cap limits to +2
-    const f1 = { verifier_tip_id: verifiers[0].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const f1 = { verifier_tip_id: verifiers[0].tipId, ctid: capCtid, verdict: "ORIGIN_CONFIRMED" };
     const r1 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f1, signature: signBody(f1, verifiers[0].priv) });
@@ -1348,7 +1348,7 @@ describe("Semantic Dedup", () => {
     expect(r1.body.data.caps.daily.used).toBe(5); // 3 + 2 = 5 (full)
 
     // Verifier 2: +0 (daily cap hit)
-    const f2 = { verifier_tip_id: verifiers[1].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const f2 = { verifier_tip_id: verifiers[1].tipId, ctid: capCtid, verdict: "ORIGIN_CONFIRMED" };
     const r2 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f2, signature: signBody(f2, verifiers[1].priv) });
@@ -1357,7 +1357,7 @@ describe("Semantic Dedup", () => {
     expect(r2.body.data.caps.daily.used).toBe(5); // still 5, no increase
 
     // Verifier 3: +0 (daily cap still hit)
-    const f3 = { verifier_tip_id: verifiers[2].tipId, verdict: "ORIGIN_CONFIRMED" };
+    const f3 = { verifier_tip_id: verifiers[2].tipId, ctid: capCtid, verdict: "ORIGIN_CONFIRMED" };
     const r3 = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(capCtid)}/verify`)
       .send({ ...f3, signature: signBody(f3, verifiers[2].priv) });
@@ -1410,7 +1410,7 @@ describe("Semantic Dedup", () => {
     expect(ctRes.body.data.status).toBe("registered");
 
     // Update origin from OH to AA
-    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
+    const fields = { author_tip_id: sdTipId, ctid: updateCtid, new_origin_code: ORIGIN.AA };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(updateCtid)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
@@ -1485,7 +1485,7 @@ describe("Semantic Dedup", () => {
     const ctid98 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid98, "disputed");
 
-    const vFields = { verifier_tip_id: sdVerifierId, verdict: "ORIGIN_CONFIRMED" };
+    const vFields = { verifier_tip_id: sdVerifierId, ctid: ctid98, verdict: "ORIGIN_CONFIRMED" };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid98)}/verify`)
       .send({ ...vFields, signature: signBody(vFields, sdVerifierPriv) });
@@ -1501,7 +1501,7 @@ describe("Semantic Dedup", () => {
     const ctid99 = ctRes.body.data.ctid;
     sdDag.updateContentStatus(ctid99, "disputed");
 
-    const fields = { author_tip_id: sdTipId, new_origin_code: ORIGIN.AA };
+    const fields = { author_tip_id: sdTipId, ctid: ctid99, new_origin_code: ORIGIN.AA };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(ctid99)}/update-origin`)
       .send({ ...fields, signature: signBody(fields, sdAuthorPriv) });
@@ -1840,7 +1840,7 @@ describe("Semantic Dedup", () => {
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: rc }));
     const rCtid = ctRes.body.data.ctid;
 
-    const retractFields = { author_tip_id: sdTipId };
+    const retractFields = { author_tip_id: sdTipId, ctid: rCtid };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(rCtid)}/retract`)
       .send({ ...retractFields, signature: signBody(retractFields, sdAuthorPriv) });
@@ -1860,7 +1860,7 @@ describe("Semantic Dedup", () => {
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: nc }));
     const nCtid = ctRes.body.data.ctid;
 
-    const retractFields = { author_tip_id: sdVerifierId };
+    const retractFields = { author_tip_id: sdVerifierId, ctid: nCtid };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(nCtid)}/retract`)
       .send({ ...retractFields, signature: signBody(retractFields, sdVerifierPriv) });
@@ -1876,7 +1876,7 @@ describe("Semantic Dedup", () => {
     const dCtid = ctRes.body.data.ctid;
 
     // First retraction
-    const rf = { author_tip_id: sdTipId };
+    const rf = { author_tip_id: sdTipId, ctid: dCtid };
     await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/retract`)
       .send({ ...rf, signature: signBody(rf, sdAuthorPriv) });
 

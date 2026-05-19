@@ -448,7 +448,10 @@ describe("Phase 2.3 — content status transitions", () => {
 
     // Creator submits UPDATE_ORIGIN. CREATOR.public_key was seeded as
     // nodeKp.publicKey, so nodeKp.privateKey produces a valid body sig.
-    const body = { author_tip_id: CREATOR, new_origin_code: "AG" };
+    // Signed canonical payload binds the action to a specific ctid
+    // (replay protection — captured signatures cannot be re-used
+    // against another ctid the same author owns).
+    const body = { author_tip_id: CREATOR, ctid: CTID_1, new_origin_code: "AG" };
     const updateData = {
       ctid: CTID_1,
       old_origin_code: "OH",

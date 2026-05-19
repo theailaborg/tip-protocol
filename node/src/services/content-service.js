@@ -213,8 +213,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
 
-    const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
-    if (!verifyBodySignature(body, signature, verifier.public_key, VERIFY_FIELDS)) {
+    // Bind the signature to the specific ctid being acted on. The
+    // ctid lives in the URL; we inject it into the body before
+    // verification so a captured signature can't be replayed against
+    // a different ctid owned by the same verifier.
+    const VERIFY_FIELDS = ["verifier_tip_id", "ctid", "verdict"];
+    const verifyPayload = { ...body, ctid };
+    if (!verifyBodySignature(verifyPayload, signature, verifier.public_key, VERIFY_FIELDS)) {
       throw schemaError(403, "Verifier signature verification failed", "signature_invalid");
     }
 
@@ -284,8 +289,11 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
-    const UPDATE_FIELDS = ["author_tip_id", "new_origin_code"];
-    if (!verifyBodySignature(body, signature, author.public_key, UPDATE_FIELDS)) {
+    // Bind the signature to the specific ctid being acted on (replay
+    // protection — see verify() above for the same pattern).
+    const UPDATE_FIELDS = ["author_tip_id", "ctid", "new_origin_code"];
+    const updatePayload = { ...body, ctid };
+    if (!verifyBodySignature(updatePayload, signature, author.public_key, UPDATE_FIELDS)) {
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
@@ -308,7 +316,10 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
-    if (!verifyBodySignature(body, signature, author.public_key, ["author_tip_id"])) {
+    // Bind the signature to the specific ctid being retracted (replay
+    // protection — see verify() above for the same pattern).
+    const retractPayload = { ...body, ctid };
+    if (!verifyBodySignature(retractPayload, signature, author.public_key, ["author_tip_id", "ctid"])) {
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 

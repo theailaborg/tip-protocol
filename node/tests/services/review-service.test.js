@@ -343,8 +343,11 @@ describe("review-service.recuse", () => {
 
 describe("review-service.acceptCorrection", () => {
 
-  function _signUpdate(creatorKp, { author_tip_id, new_origin_code }) {
-    return signBody({ author_tip_id, new_origin_code }, creatorKp.privateKey);
+  // Signed canonical payload includes ctid (replay protection). ctid
+  // defaults to CTID_1 because every test in this block uses that
+  // single content row; callers can override when needed.
+  function _signUpdate(creatorKp, { author_tip_id, ctid = CTID_1, new_origin_code }) {
+    return signBody({ author_tip_id, ctid, new_origin_code }, creatorKp.privateKey);
   }
 
   test("emits UPDATE_ORIGIN + SCORE_UPDATE batch with new_origin_code from body", () => {

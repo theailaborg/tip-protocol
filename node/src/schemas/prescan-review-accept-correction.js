@@ -34,7 +34,12 @@ const rules = require("../validators/business-rules");
 // must therefore land on the same set. OH (human-only) is excluded.
 const VALID_NEW_ORIGINS = Object.freeze([ORIGIN.AA, ORIGIN.AG, ORIGIN.MX]);
 
-const SIGNED_FIELDS = Object.freeze(["author_tip_id", "new_origin_code"]);
+// Signed canonical payload binds the ack to a specific ctid (review.ctid
+// here, since the URL carries review_id rather than the ctid directly).
+// Without ctid in the signature, a captured `author_tip_id +
+// new_origin_code` pair could be replayed against any other CONFIRMED
+// review the same creator owns.
+const SIGNED_FIELDS = Object.freeze(["author_tip_id", "ctid", "new_origin_code"]);
 
 /**
  * Resolve the review and gate it to state=CONFIRMED (the only state in
@@ -112,10 +117,12 @@ function validateRequest(reviewId, body, deps) {
   );
   if (!r.valid) throw schemaError(r.error.status, r.error.message, r.error.code);
 
-  // Signature — creator signed { author_tip_id, new_origin_code }
+  // Signature — creator signed { author_tip_id, ctid, new_origin_code }.
+  // ctid comes from the resolved review, not the request body, so a
+  // client can't trick the verifier by sending a different ctid in body.
   const author = dag.getIdentity(body.author_tip_id);
   if (!author) throw schemaError(404, "Author identity not found", "author_not_registered");
-  const sigBody = { author_tip_id: body.author_tip_id, new_origin_code };
+  const sigBody = { author_tip_id: body.author_tip_id, ctid: review.ctid, new_origin_code };
   if (!verifyBodySignature(sigBody, body.signature, author.public_key, SIGNED_FIELDS)) {
     throw schemaError(403, "Author signature verification failed", "signature_invalid");
   }

@@ -1061,22 +1061,28 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return bindDomainSchema.verifyUnbindTx(tx, dag).ok;
       }
 
+      // Signed canonical payload for these three tx types binds the
+      // action to a specific ctid (replay protection — captured
+      // signatures can't be re-used against another ctid the same
+      // actor owns). Must match the field lists used by the API
+      // endpoints in services/content-service.js + the accept-
+      // correction schema, or txs valid at submit time fail replay.
       if (tt === TX_TYPES.CONTENT_VERIFIED) {
         const verifier = dag.getIdentity(d.verifier_tip_id);
         if (!verifier || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, verifier.public_key, ["verifier_tip_id", "verdict"]);
+        return verifyBodySignature(d, d.signature, verifier.public_key, ["verifier_tip_id", "ctid", "verdict"]);
       }
 
       if (tt === TX_TYPES.UPDATE_ORIGIN) {
         const author = dag.getIdentity(d.author_tip_id);
         if (!author || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "new_origin_code"]);
+        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "ctid", "new_origin_code"]);
       }
 
       if (tt === TX_TYPES.CONTENT_RETRACTED) {
         const author = dag.getIdentity(d.author_tip_id);
         if (!author || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id"]);
+        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "ctid"]);
       }
 
       if (tt === TX_TYPES.CONTENT_DISPUTED) {
