@@ -1,17 +1,20 @@
 /**
  * @file tests/services/dashboard-content-flagged.test.js
- * @description Phase 2.7 — content_flagged_for_review notification on
- * the creator's dashboard. Derived from DAG state inside
+ * @description Flagged-content notifications on the creator's
+ * dashboard. Three states derived from DAG state inside
  * getUserDashboard; no separate notifications table.
  *
+ *   content_flagged_for_review         h=0 → h=48, no review yet
+ *   content_under_review               TRIGGERED — reviewer evaluating
+ *   prescan_review_decision_required   CONFIRMED — creator has 24h
+ *
  * Coverage:
- *   - Surfaces once age crosses REVIEWER.CREATOR_WARNING_AGE_MS
- *   - Hidden before the warning age (no premature alarm)
- *   - Hidden after h=48 (trigger takes over via status=PENDING_REVIEW)
+ *   - All HIGH/CRITICAL OH content shows from h=0 (no warning-age delay,
+ *     no override-flag gate — silent-registration compatible)
+ *   - Hidden after h=48 *unless* a review is open (B/C take over)
  *   - Hidden when creator self-corrected (origin_code != OH)
  *   - Hidden for content owned by a different tipId
- *   - hours_remaining + deadline reflect the FLAGGED_MS window from
- *     registered_at, not from "now"
+ *   - Transitions A → B (TRIGGERED) → C (CONFIRMED) reflect review state
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -87,12 +90,18 @@ function _seedFlagged(dag, opts = {}) {
 function _flaggedItem(dashboard) {
   return dashboard.items.find(i => i.type === "content_flagged_for_review");
 }
+function _underReviewItem(dashboard) {
+  return dashboard.items.find(i => i.type === "content_under_review");
+}
+function _decisionRequiredItem(dashboard) {
+  return dashboard.items.find(i => i.type === "prescan_review_decision_required");
+}
 
-describe("dashboard — content_flagged_for_review", () => {
+describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
-  test("surfaces once age crosses REVIEWER.CREATOR_WARNING_AGE_MS", () => {
+  test("surfaces immediately on registration (no warning-age delay)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - REVIEWER.CREATOR_WARNING_AGE_MS - 60_000;
+    const registeredAtMs = Date.now() - 60_000; // a minute old — would have been hidden before
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -103,25 +112,21 @@ describe("dashboard — content_flagged_for_review", () => {
     expect(item.action.kind).toBe("update_origin");
     expect(item.metadata.prescan_tier).toBe("high");
     expect(item.metadata.hours_remaining).toBeGreaterThan(0);
-    expect(item.metadata.hours_remaining).toBeLessThanOrEqual(24);
     expect(item.deadline).toBe(new Date(registeredAtMs + CONTENT_GRACE.FLAGGED_MS).toISOString());
   });
 
-  test("hidden before the warning age", () => {
+  test("surfaces regardless of `override` flag (silent-registration default is override=false)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000; // a minute old
-    _seedFlagged(fx.dag, { registeredAtMs });
+    const registeredAtMs = Date.now() - 60_000;
+    _seedFlagged(fx.dag, { registeredAtMs, override: false });
 
     const out = fx.service.getUserDashboard(CREATOR);
-    expect(_flaggedItem(out)).toBeUndefined();
+    expect(_flaggedItem(out)).toBeDefined();
   });
 
-  test("hidden after h=48 (PRESCAN_REVIEW_TRIGGERED takes over)", () => {
+  test("hidden after h=48 when no review is open yet (trigger imminent)", () => {
     const fx = _setup();
     const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
-    // status would be PENDING_REVIEW after the trigger applies. But
-    // even with status=REGISTERED, the age-past-FLAGGED_MS gate hides
-    // it — the trigger emits with its own messaging path.
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -130,42 +135,97 @@ describe("dashboard — content_flagged_for_review", () => {
 
   test("hidden when creator already self-corrected (origin_code != OH)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - REVIEWER.CREATOR_WARNING_AGE_MS - 60_000;
+    const registeredAtMs = Date.now() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs, origin_code: "AG" });
 
     const out = fx.service.getUserDashboard(CREATOR);
     expect(_flaggedItem(out)).toBeUndefined();
-  });
-
-  test("hidden when content has been status-flipped to PENDING_REVIEW", () => {
-    const fx = _setup();
-    const registeredAtMs = Date.now() - REVIEWER.CREATOR_WARNING_AGE_MS - 60_000;
-    _seedFlagged(fx.dag, { registeredAtMs, status: CONTENT_STATUS.PENDING_REVIEW });
-
-    const out = fx.service.getUserDashboard(CREATOR);
-    expect(_flaggedItem(out)).toBeUndefined();
+    expect(_underReviewItem(out)).toBeUndefined();
+    expect(_decisionRequiredItem(out)).toBeUndefined();
   });
 
   test("not shown to a non-author", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - REVIEWER.CREATOR_WARNING_AGE_MS - 60_000;
+    const registeredAtMs = Date.now() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(OTHER);
     expect(_flaggedItem(out)).toBeUndefined();
   });
 
-  test("hidden for non-flagged content (prescan_tier=low or no override)", () => {
+  test("hidden for low-tier content (not subject to review)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - REVIEWER.CREATOR_WARNING_AGE_MS - 60_000;
-    // Low tier — not subject to review
+    const registeredAtMs = Date.now() - 60_000;
     _seedFlagged(fx.dag, { ctid: "tip://c/OH-low000000000000-0001", registeredAtMs, prescan_tier: "low", override: false });
-    // High tier without override — creator didn't accept the AI prescan
-    // (registration would have been blocked by the 409); shouldn't happen,
-    // but defensively hidden
-    _seedFlagged(fx.dag, { ctid: "tip://c/OH-noover0000000-0001", registeredAtMs, override: false });
 
     const out = fx.service.getUserDashboard(CREATOR);
     expect(out.items.filter(i => i.type === "content_flagged_for_review")).toEqual([]);
+  });
+});
+
+describe("dashboard — content_under_review (TRIGGERED)", () => {
+
+  test("surfaces when a TRIGGERED review row exists; replaces content_flagged_for_review", () => {
+    const fx = _setup();
+    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 60_000;
+    _seedFlagged(fx.dag, { registeredAtMs, status: CONTENT_STATUS.PENDING_REVIEW });
+    fx.dag.savePrescanReview({
+      review_id: "rv_triggered_1",
+      ctid: CTID,
+      creator_tip_id: CREATOR,
+      assigned_reviewer: "tip://id/US-reviewer000000",
+      triggered_at_round: 100,
+      triggered_at_ms: registeredAtMs + CONTENT_GRACE.FLAGGED_MS,
+      state: "triggered",
+    });
+
+    const out = fx.service.getUserDashboard(CREATOR);
+    expect(_flaggedItem(out)).toBeUndefined();
+    const item = _underReviewItem(out);
+    expect(item).toBeDefined();
+    expect(item.ctid).toBe(CTID);
+    expect(item.priority).toBe("high");
+    expect(item.action.kind).toBe("update_origin");
+    expect(item.metadata.review_id).toBe("rv_triggered_1");
+    expect(item.metadata.review_state).toBe("triggered");
+    expect(item.metadata.prescan_tier).toBe("high");
+    expect(item.metadata.assigned_reviewer).toBe("tip://id/US-reviewer000000");
+  });
+});
+
+describe("dashboard — prescan_review_decision_required (CONFIRMED)", () => {
+
+  test("surfaces when a CONFIRMED review row exists; carries 24h deadline + suggested_origin", () => {
+    const fx = _setup();
+    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 3600000;
+    const confirmedAtMs = Date.now() - 60_000;
+    _seedFlagged(fx.dag, { registeredAtMs, status: CONTENT_STATUS.PENDING_REVIEW });
+    fx.dag.savePrescanReview({
+      review_id: "rv_confirmed_1",
+      ctid: CTID,
+      creator_tip_id: CREATOR,
+      assigned_reviewer: "tip://id/US-reviewer000000",
+      triggered_at_round: 100,
+      triggered_at_ms: registeredAtMs + CONTENT_GRACE.FLAGGED_MS,
+      decided_at_round: 105,
+      confirmed_at_round: 105,
+      confirmed_at_ms: confirmedAtMs,
+      state: "confirmed",
+      suggested_origin: "AA",
+      decision_note: "Looks like LLM output to me.",
+    });
+
+    const out = fx.service.getUserDashboard(CREATOR);
+    expect(_flaggedItem(out)).toBeUndefined();
+    expect(_underReviewItem(out)).toBeUndefined();
+    const item = _decisionRequiredItem(out);
+    expect(item).toBeDefined();
+    expect(item.ctid).toBe(CTID);
+    expect(item.priority).toBe("high");
+    expect(item.action.kind).toBe("review_decision");
+    expect(item.metadata.review_state).toBe("confirmed");
+    expect(item.metadata.suggested_origin).toBe("AA");
+    expect(item.metadata.confirmed_at_ms).toBe(confirmedAtMs);
+    expect(item.metadata.decision_window_ends_at).toBe(new Date(confirmedAtMs + REVIEWER.CREATOR_DECISION_WINDOW_MS).toISOString());
   });
 });
