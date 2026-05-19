@@ -68,20 +68,54 @@ const PRESCAN_TIER_VALUES = Object.freeze([
   PRESCAN_TIERS.CRITICAL,
 ]);
 
-// User-facing messages returned in the registration response per tier.
-// ELEVATED is a soft signal (amber banner in UI). HIGH/CRITICAL only land
-// in the response after the 409 override flow — creator already saw the
-// blocking modal; this is reminder text in the success payload.
-// Tier-specific prescan messages. HIGH/CRITICAL messages assume the
-// creator has already accepted the override (registration would have
-// been blocked otherwise) — so they frame the 48h as a *reconsideration
-// period before an independent reviewer engages*, not a free do-over.
-// The reviewer step is named explicitly so the timeline is unambiguous.
+// Short, neutral one-liner returned in the registration response per tier.
+// Intended as a fallback for *non-UI consumers* (CLI, plugin authors,
+// third-party integrations) — the rich post-registration warning copy
+// belongs to the FE, which composes it from the structured `prescan`
+// descriptor returned alongside this field (tier, probability,
+// decision_window_ends_at, actions_available, etc.). See
+// my-notes/POST_REGISTRATION_FLOW.md for the FE-owned copy contract.
 const PRESCAN_NOTES = Object.freeze({
   [PRESCAN_TIERS.LOW]: null,
-  [PRESCAN_TIERS.ELEVATED]: "Our system detected some patterns associated with AI-generated content. You can change your declaration anytime in the next 24 hours at zero penalty.",
-  [PRESCAN_TIERS.HIGH]: "You overrode our HIGH-confidence (90%+) AI assessment and registered as OH. You have 48 hours to reconsider — an independent reviewer will examine this content after that. Updating your origin during this window has zero penalty.",
-  [PRESCAN_TIERS.CRITICAL]: "You acknowledged our VERY HIGH confidence (98%+) AI assessment and registered as OH. You have 48 hours to reconsider — an independent reviewer will examine this content after that. Updating your origin during this window has zero penalty; if the reviewer later confirms AI involvement, a significant penalty applies.",
+  [PRESCAN_TIERS.ELEVATED]: "AI-pattern signals detected; updating the origin within the decision window has zero penalty.",
+  [PRESCAN_TIERS.HIGH]: "AI flagged this content at HIGH confidence. Either keep your declaration (an independent reviewer will examine it after the decision window) or update the origin in-window at zero penalty.",
+  [PRESCAN_TIERS.CRITICAL]: "AI flagged this content at VERY HIGH confidence. Either keep your declaration (an independent reviewer will examine it after the decision window) or update the origin in-window at zero penalty. Reviewer-confirmed AI involvement carries a significant penalty.",
+});
+
+// Confidence-label enum returned in the structured `prescan` descriptor.
+// Aliases the tier with the more human-readable "very_high" for CRITICAL.
+// Stable contract — FE keys its i18n strings off these values.
+const CONFIDENCE_LABELS = Object.freeze({
+  [PRESCAN_TIERS.LOW]:      "low",
+  [PRESCAN_TIERS.ELEVATED]: "elevated",
+  [PRESCAN_TIERS.HIGH]:     "high",
+  [PRESCAN_TIERS.CRITICAL]: "very_high",
+});
+
+// Allowed values in `prescan.actions_available`. The FE decides which
+// buttons to render based on what the backend says is permitted for
+// this tier + state. Backend-owned source of truth so a future protocol
+// change (e.g., removing "retract" at a certain tier) propagates without
+// a coordinated FE deploy.
+const PRESCAN_ACTIONS = Object.freeze({
+  KEEP:          "keep",
+  CHANGE_ORIGIN: "change_origin",
+  RETRACT:       "retract",
+});
+
+// Allowed values in `prescan.consequence_if_confirmed`. Drives the
+// severity badge on the FE.
+const PRESCAN_CONSEQUENCES = Object.freeze({
+  NONE:                 "none",
+  PENALTY:              "penalty",
+  SIGNIFICANT_PENALTY:  "significant_penalty",
+});
+
+// Allowed values in `prescan.next_step_if_kept`. Tells the FE what
+// happens when the creator does nothing during the decision window.
+const PRESCAN_NEXT_STEPS = Object.freeze({
+  NONE:                                     "none",
+  INDEPENDENT_REVIEWER_AT_WINDOW_END:       "independent_reviewer_at_window_end",
 });
 
 // ─── Prescan-review state ──────────────────────────────────────────────────
@@ -464,6 +498,10 @@ module.exports = {
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,
+  CONFIDENCE_LABELS,
+  PRESCAN_ACTIONS,
+  PRESCAN_CONSEQUENCES,
+  PRESCAN_NEXT_STEPS,
   PRESCAN_REVIEW_STATES,
   PRESCAN_REVIEW_STATE_VALUES,
   DISPUTE_REASON,

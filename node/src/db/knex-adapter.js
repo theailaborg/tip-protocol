@@ -410,7 +410,11 @@ class KnexAdapter {
     // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
     await ensure("prescan_reviews", t => {
       t.string("review_id", 128).primary();
-      _id(t, "ctid").notNullable();
+      // tip_ctid (not "ctid") — PostgreSQL reserves "ctid" as a system
+      // column on every table, so naming a user column "ctid" causes
+      // CREATE TABLE to fail. Same workaround as the `content` table:
+      // store as tip_ctid in the DB, map back to ctid on hydrate / save.
+      _id(t, "tip_ctid").notNullable();
       _id(t, "creator_tip_id").notNullable();
       _id(t, "assigned_reviewer").nullable();
       t.integer("triggered_at_round").notNullable();
@@ -421,7 +425,7 @@ class KnexAdapter {
       t.string("state", 32).notNullable().defaultTo("triggered");
       t.text("decision_note").nullable();
       t.string("suggested_origin", 8).nullable();
-      t.index("ctid", "idx_prescan_reviews_ctid");
+      t.index("tip_ctid", "idx_prescan_reviews_ctid");
       t.index("state", "idx_prescan_reviews_state");
       t.index("assigned_reviewer", "idx_prescan_reviews_reviewer");
     });
@@ -602,18 +606,21 @@ class KnexAdapter {
       this.mirror._rotationParticipation.set(`${row.node_id}|${row.rotation_number}`, row.count);
     }
 
-    // Prescan reviews
+    // Prescan reviews. tip_ctid → ctid translation on hydrate (same
+    // pattern as the content table — see _ensureSchema comment).
     const prRows = await this.knex("prescan_reviews").select("*");
     if (!this.mirror._prescanReviews) this.mirror._prescanReviews = new Map();
     for (const row of prRows) {
       this.mirror._prescanReviews.set(row.review_id, {
         review_id: row.review_id,
-        ctid: row.ctid,
+        ctid: row.tip_ctid,
         creator_tip_id: row.creator_tip_id,
         assigned_reviewer: row.assigned_reviewer || null,
         triggered_at_round: row.triggered_at_round,
+        triggered_at_ms: row.triggered_at_ms == null ? null : Number(row.triggered_at_ms),
         decided_at_round: row.decided_at_round == null ? null : row.decided_at_round,
         confirmed_at_round: row.confirmed_at_round == null ? null : row.confirmed_at_round,
+        confirmed_at_ms: row.confirmed_at_ms == null ? null : Number(row.confirmed_at_ms),
         state: row.state,
         decision_note: row.decision_note || null,
         suggested_origin: row.suggested_origin || null,
@@ -1178,14 +1185,17 @@ class KnexAdapter {
 
   savePrescanReview(rec) {
     this.mirror.savePrescanReview(rec);
+    // ctid → tip_ctid on save (PostgreSQL system-column collision).
     const row = {
       review_id: rec.review_id,
-      ctid: rec.ctid,
+      tip_ctid: rec.ctid,
       creator_tip_id: rec.creator_tip_id,
       assigned_reviewer: rec.assigned_reviewer || null,
       triggered_at_round: rec.triggered_at_round,
+      triggered_at_ms: rec.triggered_at_ms == null ? null : rec.triggered_at_ms,
       decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
       confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      confirmed_at_ms: rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
       state: rec.state || "triggered",
       decision_note: rec.decision_note || null,
       suggested_origin: rec.suggested_origin || null,

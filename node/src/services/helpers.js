@@ -7,8 +7,14 @@ const {
   PRESCAN_THRESHOLDS,
   PRESCAN_TIER_THRESHOLDS,
   CALIBRATION_THRESHOLDS,
+  CONTENT_GRACE,
+  REVIEWER,
 } = require("../../../shared/protocol-constants");
-const { ORIGIN, PRESCAN_TIERS } = require("../../../shared/constants");
+const {
+  ORIGIN, PRESCAN_TIERS,
+  CONFIDENCE_LABELS, PRESCAN_ACTIONS,
+  PRESCAN_CONSEQUENCES, PRESCAN_NEXT_STEPS,
+} = require("../../../shared/constants");
 const { log } = require("../logger");
 
 /**
@@ -88,6 +94,30 @@ function adjustTier(rawTier, creatorHistory) {
 const PRESCAN_ELIGIBLE_ORIGINS = new Set([ORIGIN.OH, ORIGIN.AA]);
 
 /**
+ * Dev-only: read TIP_DEV_FORCE_PRESCAN_TIER and return a forced tier
+ * for prescan-eligible origins. Returns null in production, or when
+ * the env is unset / invalid, or when the origin isn't eligible.
+ *
+ * Accepted values (case-insensitive):
+ *   "high" | "HIGH"           — always returns HIGH
+ *   "critical" | "CRITICAL"   — always returns CRITICAL
+ *   "random"                  — coin-flip HIGH or CRITICAL per call
+ */
+function _devForcedPrescanTier(originCode) {
+  if (process.env.NODE_ENV === "production") return null;
+  if (!PRESCAN_ELIGIBLE_ORIGINS.has(originCode)) return null;
+  const raw = process.env.TIP_DEV_FORCE_PRESCAN_TIER;
+  if (!raw) return null;
+  const v = String(raw).toLowerCase();
+  if (v === "high") return PRESCAN_TIERS.HIGH;
+  if (v === "critical") return PRESCAN_TIERS.CRITICAL;
+  if (v === "random") {
+    return Math.random() < 0.5 ? PRESCAN_TIERS.HIGH : PRESCAN_TIERS.CRITICAL;
+  }
+  return null;
+}
+
+/**
  * AI pre-scan for content origin mismatch detection.
  *
  * Runs for OH and AA origin codes (both claim human-primary authorship).
@@ -109,6 +139,25 @@ function preScanContent(content, originCode, creatorHistory, contentType = null)
       probability: 0,
       raw_tier: PRESCAN_TIERS.LOW,
       tier: PRESCAN_TIERS.LOW,
+    };
+  }
+
+  // Dev-only override for UI testing of the prescan-review flow. Set
+  // TIP_DEV_FORCE_PRESCAN_TIER to one of: "high" | "critical" | "random"
+  // (random = 50/50 HIGH/CRITICAL coin flip). Production paths are
+  // unaffected — env is read every call so a quick `export` toggles it
+  // without restarting. Same shape as TIP_DEV_BYPASS_VOTE_WINDOWS:
+  // gated on NODE_ENV !== "production" so production deployments
+  // physically can't honour it even if the env leaks in.
+  const forced = _devForcedPrescanTier(originCode);
+  if (forced) {
+    return {
+      flagged: true,
+      probability: forced === PRESCAN_TIERS.CRITICAL ? 0.99 : 0.93,
+      raw_tier: forced,
+      tier: forced,
+      threshold: 0.7,
+      forced_by_dev_env: true,
     };
   }
 
@@ -204,6 +253,82 @@ function createTxSubmitter(consensusRef) {
   return { submitTx, submitBatch };
 }
 
+/**
+ * Build the structured `prescan` descriptor returned alongside content
+ * registration / resolution responses. Backend-owned source of truth for
+ * what the FE needs to render the post-registration warning UX:
+ *
+ *   - tier / confidence_label / probability / flagged   — what the AI said
+ *   - decision_window_ms + decision_window_ends_at      — timer for the
+ *       creator's free-correction window. Driven by the actual
+ *       CONTENT_GRACE constants so a protocol change propagates without
+ *       any FE deploy.
+ *   - actions_available[]                                — which buttons
+ *       to render (keep / change_origin / retract). Backend-owned so a
+ *       future tier-specific change (e.g., disable retract at CRITICAL)
+ *       is a constants edit, not a FE deploy.
+ *   - consequence_if_confirmed                           — severity hint
+ *       for the warning badge (none / penalty / significant_penalty).
+ *   - next_step_if_kept                                  — what happens
+ *       if the creator does nothing during the window.
+ *   - post_confirm_decision_window_ms + reviewer_sla_ms  — pre-loaded
+ *       timing constants so the FE timer at the *next* state (post-
+ *       CONFIRMED 24h window, reviewer SLA) is also live, not hardcoded.
+ *
+ * Detailed user-facing prose lives in the FE (i18n string tables keyed
+ * off these structured fields). See my-notes/POST_REGISTRATION_FLOW.md.
+ *
+ * @param {Object} preScan       Output of preScanContent().
+ * @param {string} originCode    The declared origin (OH / AA / AG / MX).
+ * @param {string} registeredAt  ISO timestamp of registration.
+ * @returns {Object} structured descriptor (see fields above).
+ */
+function buildPrescanDescriptor({ preScan, originCode, registeredAt }) {
+  const tier = preScan?.tier || PRESCAN_TIERS.LOW;
+  const base = {
+    tier,
+    confidence_label: CONFIDENCE_LABELS[tier] || tier,
+    probability: typeof preScan?.probability === "number" ? preScan.probability : 0,
+    flagged: !!preScan?.flagged,
+  };
+
+  // LOW — nothing more to surface; the FE shouldn't render any banner.
+  if (tier === PRESCAN_TIERS.LOW) return base;
+
+  const registeredMs = registeredAt ? new Date(registeredAt).getTime() : Date.now();
+
+  // ELEVATED — soft 24h window, no reviewer step downstream. Retract
+  // isn't surfaced because the soft tier alone isn't a reason to pull
+  // content; the creator can still retract via the normal action,
+  // but the descriptor doesn't suggest it.
+  if (tier === PRESCAN_TIERS.ELEVATED) {
+    const ms = CONTENT_GRACE.UNFLAGGED_MS;
+    return {
+      ...base,
+      decision_window_ms: ms,
+      decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+      actions_available: [PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN],
+      consequence_if_confirmed: PRESCAN_CONSEQUENCES.NONE,
+      next_step_if_kept: PRESCAN_NEXT_STEPS.NONE,
+    };
+  }
+
+  // HIGH / CRITICAL — 48h window then reviewer.
+  const ms = CONTENT_GRACE.FLAGGED_MS;
+  return {
+    ...base,
+    decision_window_ms: ms,
+    decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+    actions_available: [PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN, PRESCAN_ACTIONS.RETRACT],
+    consequence_if_confirmed: tier === PRESCAN_TIERS.CRITICAL
+      ? PRESCAN_CONSEQUENCES.SIGNIFICANT_PENALTY
+      : PRESCAN_CONSEQUENCES.PENALTY,
+    next_step_if_kept: PRESCAN_NEXT_STEPS.INDEPENDENT_REVIEWER_AT_WINDOW_END,
+    post_confirm_decision_window_ms: REVIEWER.CREATOR_DECISION_WINDOW_MS,
+    reviewer_sla_ms: REVIEWER.AUTO_RECUSE_AGE_MS,
+  };
+}
+
 module.exports = {
   withTxId,
   nodeSignedAuto,
@@ -212,4 +337,5 @@ module.exports = {
   computeRawTier,
   getTierThresholds,
   adjustTier,
+  buildPrescanDescriptor,
 };
