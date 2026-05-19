@@ -24,7 +24,7 @@
 "use strict";
 
 const { shake256 } = require("../../shared/crypto");
-const { TX_TYPES, VERDICT, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { TX_TYPES, VERDICT, PRESCAN_REVIEW_STATES, TIP_ID_TYPES } = require("../../shared/constants");
 const { REVIEWER, JURY } = require("../../shared/protocol-constants");
 
 /**
@@ -112,6 +112,16 @@ function isEligibleReviewer(dag, scoring, tipId, { authorTipId } = {}) {
   const identity = dag.getIdentity(tipId);
   if (!identity) return false;
 
+  // Organization identities never adjudicate. Reviewer / juror / expert
+  // roles require a human judgment call ("does this look AI-generated?",
+  // "did this dispute have merit?"); orgs are entities (companies, AI
+  // tools, services) and the protocol explicitly excludes them from
+  // any adjudication seat. tip_id_type defaults to "personal" for any
+  // pre-tip_id_type-field identity (back-compat default applied at the
+  // DB level), so missing values are treated as personal.
+  const tipIdType = identity.tip_id_type || TIP_ID_TYPES.PERSONAL;
+  if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
+
   const consent = identity.reviewer_consent;
   if (consent !== true && consent !== 1) return false;
 
@@ -184,6 +194,9 @@ function selectReviewer(dag, scoring, { reviewId, ctid, round, authorTipId }) {
 function _passesHardFilters(dag, identity, authorTipId) {
   if (!identity || !identity.tip_id) return false;
   if (authorTipId && identity.tip_id === authorTipId) return false;
+  // Orgs are never eligible for adjudication — see isEligibleReviewer.
+  const tipIdType = identity.tip_id_type || TIP_ID_TYPES.PERSONAL;
+  if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
   const consent = identity.reviewer_consent;
   if (consent !== true && consent !== 1) return false;
   if (typeof dag.isRevoked === "function" && dag.isRevoked(identity.tip_id)) return false;

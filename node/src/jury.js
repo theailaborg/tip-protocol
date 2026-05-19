@@ -12,7 +12,7 @@
 "use strict";
 
 const { shake256 } = require("../../shared/crypto");
-const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
@@ -167,8 +167,10 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
   // Deterministic seed: dispute tx (unpredictable) + identity count (verifiable set size)
   const seed = shake256(`${disputeTxId}:${identityCount}`);
 
-  // HARD-EXCLUDE filter: never include the author, the disputer, or any
-  // revoked identity — those are security invariants, not preferences.
+  // HARD-EXCLUDE filter: never include the author, the disputer, any
+  // revoked identity, or any organization. Orgs are entities (companies,
+  // AI tools, services) — adjudication seats (juror / expert / reviewer)
+  // are reserved for personal identities making a human judgment call.
   // Score and geographic-diversity are SOFT preferences applied inside
   // _pickWithGeoCap (Pass 1 strict, Passes 2-3 progressively relaxed).
   // Sort by tip_id for determinism across nodes before shuffling.
@@ -176,6 +178,8 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
       if (dag.isRevoked(id.tip_id)) return false;
+      const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
+      if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
@@ -218,13 +222,17 @@ function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, cti
     )
     : new Set();
 
-  // Hard excludes — author, disputer, revoked, prior-stage jurors.
+  // Hard excludes — author, disputer, revoked, prior-stage jurors,
+  // organizations. Adjudication seats are reserved for personal
+  // identities (see selectJury for the same rationale).
   // Score + geo-diversity are soft preferences relaxed by _pickWithGeoCap.
   const candidates = allIdentities
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
       if (priorJurors.has(id.tip_id)) return false;
       if (dag.isRevoked(id.tip_id)) return false;
+      const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
+      if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))

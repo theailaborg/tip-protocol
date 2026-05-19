@@ -35,7 +35,7 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, TIP_ID_TYPES } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.UPDATE_PROFILE;
 
@@ -116,7 +116,23 @@ function validateRequest(body, deps) {
     );
   }
 
-  resolveSubject(body.tip_id, deps.dag);
+  const subject = resolveSubject(body.tip_id, deps.dag);
+
+  // Organization identities cannot opt into adjudication roles. Reject
+  // at the schema gate so the state can never end up with an org's
+  // reviewer_consent=1 (matches the filter in selectJury / selectExperts /
+  // reviewer-selection). Personal identities are the only legitimate
+  // judgment-makers in the protocol.
+  if (presentFields.includes("reviewer_consent") && body.reviewer_consent === true) {
+    const subjectType = subject.tip_id_type || TIP_ID_TYPES.PERSONAL;
+    if (subjectType !== TIP_ID_TYPES.PERSONAL) {
+      throw schemaError(
+        403,
+        `Organization identities cannot opt into adjudication roles (tip_id_type: ${subjectType})`,
+        "tip_id_type_not_personal",
+      );
+    }
+  }
 }
 
 /**

@@ -1207,6 +1207,13 @@ class KnexAdapter {
   getOpenPrescanReviewByCtid(ctid) { return this.mirror.getOpenPrescanReviewByCtid(ctid); }
   getPrescanReviewsByReviewer(tipId) { return this.mirror.getPrescanReviewsByReviewer(tipId); }
   getPrescanReviewsByCtid(ctid) { return this.mirror.getPrescanReviewsByCtid(ctid); }
+  // Trigger-facing scan methods — read from the in-memory mirror.
+  // The mirror is canonical for these (the trigger runs at every
+  // round-end and needs O(1) read access); SQL-side equivalents
+  // would be redundant.
+  getContentsNeedingReview(nowMs) { return this.mirror.getContentsNeedingReview(nowMs); }
+  getReviewsNeedingAutoEscalation(nowMs) { return this.mirror.getReviewsNeedingAutoEscalation(nowMs); }
+  getReviewsNeedingAutoRecuse(nowMs) { return this.mirror.getReviewsNeedingAutoRecuse(nowMs); }
 
   // ── Rotation participation ─────────────────────────────────────────────────
 
