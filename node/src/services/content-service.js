@@ -102,6 +102,12 @@ function createContentService({ dag, scoring, config, submitTx }) {
     // knows to expect async finalization.
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
+      // origin_code at registration is the original (ctid prefix
+      // encodes it). origin_changed is always false here — present
+      // for symmetry with the resolve() response shape so the FE
+      // can branch on a single field on both paths.
+      original_origin_code: origin_code,
+      origin_changed: false,
       content_hash: contentHashFull, signer_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
@@ -140,9 +146,20 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
     const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
 
+    // The ctid embeds the original origin_code at registration time
+    // (see crypto.generateCTID). That's an immutable record of what
+    // the creator first declared, even after UPDATE_ORIGIN rewrites
+    // the row's origin_code. The FE uses `origin_changed` to suppress
+    // the prescan warning banner and disable the change-origin CTA.
+    const ctidOriginMatch = typeof rec.ctid === "string" ? rec.ctid.match(/^tip:\/\/c\/([A-Z]+)-/) : null;
+    const originalOriginCode = ctidOriginMatch ? ctidOriginMatch[1] : null;
+    const originChanged = !!originalOriginCode && originalOriginCode !== rec.origin_code;
+
     return {
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      original_origin_code: originalOriginCode,
+      origin_changed: originChanged,
       author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
@@ -161,6 +178,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
         },
         originCode: rec.origin_code,
         registeredAt: rec.registered_at,
+        originChanged,
       }),
       prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
       consensus: { available: false, status: "not_requested" },

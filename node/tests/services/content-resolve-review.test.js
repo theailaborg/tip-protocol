@@ -163,4 +163,31 @@ describe("content-service.resolve — review_history + consensus", () => {
     expect(out.status).toBe(CONTENT_STATUS.DISPUTED);
     expect(out.review_history.latest.state).toBe(PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE);
   });
+
+  test("origin unchanged → original_origin_code=ctid prefix, origin_changed=false, change_origin in actions", () => {
+    const fx = _setup();
+    _seedContent(fx.dag, { origin_code: "OH" });
+    const out = fx.service.resolve(CTID);
+    expect(out.original_origin_code).toBe("OH");
+    expect(out.origin_changed).toBe(false);
+    expect(out.prescan.actions_available).toContain("change_origin");
+    expect(out.prescan.next_step_if_kept).toBe("independent_reviewer_at_window_end");
+  });
+
+  test("origin changed (OH → AA) → origin_changed=true, change_origin removed from actions, next_step_if_kept=none", () => {
+    const fx = _setup();
+    // Seed at OH then mutate as the UPDATE_ORIGIN flow would (commit-handler
+    // path is exercised end-to-end in the integration suite; this unit test
+    // covers the resolve() projection logic in isolation).
+    _seedContent(fx.dag, { origin_code: "AA" });
+    const out = fx.service.resolve(CTID);
+    expect(out.original_origin_code).toBe("OH");
+    expect(out.origin_code).toBe("AA");
+    expect(out.origin_changed).toBe(true);
+    expect(out.prescan.actions_available).not.toContain("change_origin");
+    expect(out.prescan.actions_available).toContain("keep");
+    expect(out.prescan.actions_available).toContain("retract");
+    // No reviewer step pending — the trigger SQL excludes non-OH rows.
+    expect(out.prescan.next_step_if_kept).toBe("none");
+  });
 });

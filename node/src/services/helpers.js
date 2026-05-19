@@ -278,12 +278,17 @@ function createTxSubmitter(consensusRef) {
  * Detailed user-facing prose lives in the FE (i18n string tables keyed
  * off these structured fields). See my-notes/POST_REGISTRATION_FLOW.md.
  *
- * @param {Object} preScan       Output of preScanContent().
- * @param {string} originCode    The declared origin (OH / AA / AG / MX).
- * @param {string} registeredAt  ISO timestamp of registration.
+ * @param {Object} preScan         Output of preScanContent().
+ * @param {string} originCode      The declared origin (OH / AA / AG / MX).
+ * @param {string} registeredAt    ISO timestamp of registration.
+ * @param {boolean} [originChanged]  True if the creator has already
+ *                                 updated the origin since registration —
+ *                                 we drop CHANGE_ORIGIN from
+ *                                 actions_available and the FE should
+ *                                 suppress the prescan warning banner.
  * @returns {Object} structured descriptor (see fields above).
  */
-function buildPrescanDescriptor({ preScan, originCode, registeredAt }) {
+function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChanged = false }) {
   const tier = preScan?.tier || PRESCAN_TIERS.LOW;
   const base = {
     tier,
@@ -297,6 +302,15 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt }) {
 
   const registeredMs = registeredAt ? new Date(registeredAt).getTime() : Date.now();
 
+  // Helper — once the creator has already self-corrected, change_origin
+  // is no longer a meaningful action (you can keep updating origins, but
+  // for the prescan warning UX it's resolved). Retract is still allowed
+  // because it's the protocol-level "withdraw content entirely" exit.
+  const buildActions = (full) => {
+    if (!originChanged) return full;
+    return full.filter(a => a !== PRESCAN_ACTIONS.CHANGE_ORIGIN);
+  };
+
   // ELEVATED — soft 24h window, no reviewer step downstream. Retract
   // isn't surfaced because the soft tier alone isn't a reason to pull
   // content; the creator can still retract via the normal action,
@@ -307,7 +321,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt }) {
       ...base,
       decision_window_ms: ms,
       decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
-      actions_available: [PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN],
+      actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN]),
       consequence_if_confirmed: PRESCAN_CONSEQUENCES.NONE,
       next_step_if_kept: PRESCAN_NEXT_STEPS.NONE,
     };
@@ -319,11 +333,17 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt }) {
     ...base,
     decision_window_ms: ms,
     decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
-    actions_available: [PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN, PRESCAN_ACTIONS.RETRACT],
+    actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN, PRESCAN_ACTIONS.RETRACT]),
     consequence_if_confirmed: tier === PRESCAN_TIERS.CRITICAL
       ? PRESCAN_CONSEQUENCES.SIGNIFICANT_PENALTY
       : PRESCAN_CONSEQUENCES.PENALTY,
-    next_step_if_kept: PRESCAN_NEXT_STEPS.INDEPENDENT_REVIEWER_AT_WINDOW_END,
+    // When the creator has already self-corrected, the trigger SQL
+    // filter excludes the row (origin_code != 'OH'). Reflect that
+    // explicitly so the FE doesn't promise a reviewer step that won't
+    // happen.
+    next_step_if_kept: originChanged
+      ? PRESCAN_NEXT_STEPS.NONE
+      : PRESCAN_NEXT_STEPS.INDEPENDENT_REVIEWER_AT_WINDOW_END,
     post_confirm_decision_window_ms: REVIEWER.CREATOR_DECISION_WINDOW_MS,
     reviewer_sla_ms: REVIEWER.AUTO_RECUSE_AGE_MS,
   };
