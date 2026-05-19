@@ -180,11 +180,14 @@ describe("review-service.dismiss", () => {
     const out = fx.service.dismiss("rv_d", {
       reviewer_tip_id: REVIEWER_1, decision_note: "human voice", signature,
     });
-    expect(fx.submitted.length).toBe(1);
-    expect(fx.submitted[0].tx_type).toBe(TX_TYPES.PRESCAN_REVIEW_DISMISSED);
-    expect(fx.submitted[0].data.review_id).toBe("rv_d");
-    expect(fx.submitted[0].data.decision_note).toBe("human voice");
+    const dismissTx = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_DISMISSED);
+    expect(dismissTx).toBeDefined();
+    expect(dismissTx.data.review_id).toBe("rv_d");
+    expect(dismissTx.data.decision_note).toBe("human voice");
     expect(out.confirmation).toBe("proposed");
+    // Reviewer score effects of dismiss are covered in
+    // tests/scoring/reviewer-payment.test.js — this test still owns
+    // the dismiss-tx shape contract.
   });
 
   test("rejects when signed by non-assigned reviewer", () => {
@@ -360,21 +363,23 @@ describe("review-service.acceptCorrection", () => {
     const out = fx.service.acceptCorrection("rv_acc1", {
       author_tip_id: CREATOR, new_origin_code: "AG", signature,
     });
-    expect(fx.submitted.length).toBe(2);
 
     const updateTx = fx.submitted.find(t => t.tx_type === TX_TYPES.UPDATE_ORIGIN);
     expect(updateTx).toBeDefined();
     expect(updateTx.data.new_origin_code).toBe("AG");
     expect(updateTx.data.author_tip_id).toBe(CREATOR);
 
-    const scoreTx = fx.submitted.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
-    expect(scoreTx).toBeDefined();
-    expect(scoreTx.data.tip_id).toBe(CREATOR);
-    expect(scoreTx.data.delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);
-    expect(scoreTx.data.delta).toBeLessThan(0);
-    expect(scoreTx.data.reason).toBe("accept_correction:rv_acc1");
-    expect(scoreTx.data.ctid).toBe(CTID_1);
-    expect(scoreTx.data.related_tx_id).toBe(updateTx.tx_id);
+    // This test owns the creator-penalty assertion only — the reviewer's
+    // paired bonus is exercised in tests/scoring/reviewer-payment.test.js.
+    const creatorScoreTx = fx.submitted.find(
+      t => t.tx_type === TX_TYPES.SCORE_UPDATE && t.data.tip_id === CREATOR,
+    );
+    expect(creatorScoreTx).toBeDefined();
+    expect(creatorScoreTx.data.delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);
+    expect(creatorScoreTx.data.delta).toBeLessThan(0);
+    expect(creatorScoreTx.data.reason).toBe("accept_correction:rv_acc1");
+    expect(creatorScoreTx.data.ctid).toBe(CTID_1);
+    expect(creatorScoreTx.data.related_tx_id).toBe(updateTx.tx_id);
 
     expect(out.new_origin_code).toBe("AG");
     expect(out.score_delta).toBe(REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA);

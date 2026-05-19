@@ -241,6 +241,15 @@ const GENESIS_PAYLOAD = Object.freeze({
       // modulo leader gate, content.status flip-back triggers
       // re-assignment.
       auto_recuse_age_ms: 172800000,
+      // Reward for completing review work correctly. Paid as a bonus
+      // ON TOP of the disputer-equivalent settlement when the reviewer's
+      // CONFIRM aligns with the eventual dispute verdict, AND paid alone
+      // when the case closes without a public dispute (DISMISS or
+      // creator-accepted-private). On overturn the reviewer takes the
+      // full DISPUTE.DISPUTER_STAKE forfeit — they're treated as the
+      // de-facto disputer of the case they CONFIRMED. See
+      // docs/DISPUTE_SCORING.md "Pre-scan reviewer" section.
+      reviewer_correct_bonus: 5,
     },
     content_grace: {
       // Self-correction windows. Unflagged content keeps the original 24h

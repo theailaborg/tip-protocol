@@ -69,9 +69,11 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
     }
 
+    const review = dag.getPrescanReview(reviewId);
+    const timestamp = new Date().toISOString();
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
-      timestamp: new Date().toISOString(),
+      timestamp,
       prev: dag.getRecentPrev(),
       data: {
         review_id: reviewId,
@@ -83,9 +85,26 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
-    submitTx(tx);
-    log.info(`Review dismissed: ${reviewId} by ${safeBody.reviewer_tip_id}`);
-    return { review_id: reviewId, tx_id: tx.tx_id, confirmation: "proposed" };
+    // Single-channel rule: the reviewer's "case closed cleanly" bonus
+    // (+REVIEWER.CORRECT_BONUS) rides alongside the DISMISSED record
+    // in the same batch. No public dispute will follow a DISMISS, so
+    // the reward settles immediately — no Stage-2 verdict path to wait
+    // on. Penalty path is symmetric only for CONFIRM (see jury.js
+    // ADJUDICATION_RESULT batch).
+    const scoreTx = scoring.buildScoreUpdateTx({
+      tipId: safeBody.reviewer_tip_id,
+      delta: REVIEWER.CORRECT_BONUS,
+      reason: `review_dismissed:${reviewId}`,
+      ctid: review?.ctid || null,
+      relatedTxId: tx.tx_id,
+      timestamp,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+
+    submitBatch([tx, scoreTx]);
+    log.info(`Review dismissed: ${reviewId} by ${safeBody.reviewer_tip_id} (+${REVIEWER.CORRECT_BONUS})`);
+    return { review_id: reviewId, tx_id: tx.tx_id, score_tx_id: scoreTx.tx_id, confirmation: "proposed" };
   }
 
   function confirm(reviewId, body) {
@@ -171,7 +190,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     // — Option 1 is strictly cheaper than letting auto-escalation run
     // the dispute pipeline (OH→AA range -10..-30) but is not free, so
     // the reviewer-was-right outcome carries economic weight.
-    const scoreTx = scoring.buildScoreUpdateTx({
+    const creatorScoreTx = scoring.buildScoreUpdateTx({
       tipId: body.author_tip_id,
       delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
       reason: `accept_correction:${reviewId}`,
@@ -182,8 +201,22 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       config,
     });
 
-    submitBatch([updateTx, scoreTx]);
-    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (delta=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA})`);
+    // Reviewer's "case closed without dispute" bonus. The creator
+    // accepting the CONFIRM is the reviewer's call being validated —
+    // settles immediately, no Stage-2 path needed.
+    const reviewerScoreTx = scoring.buildScoreUpdateTx({
+      tipId: review.assigned_reviewer,
+      delta: REVIEWER.CORRECT_BONUS,
+      reason: `review_accepted_private:${reviewId}`,
+      ctid: review.ctid,
+      relatedTxId: updateTx.tx_id,
+      timestamp,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+
+    submitBatch([updateTx, creatorScoreTx, reviewerScoreTx]);
+    log.info(`Accept-correction proposed: review=${reviewId} ctid=${review.ctid} ${content.origin_code} → ${new_origin_code} (creator=${REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA}, reviewer=+${REVIEWER.CORRECT_BONUS})`);
 
     return {
       review_id: reviewId,
@@ -191,8 +224,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       old_origin_code: content.origin_code,
       new_origin_code,
       score_delta: REVIEWER.ACCEPT_CORRECTION_SCORE_DELTA,
+      reviewer_bonus: REVIEWER.CORRECT_BONUS,
       tx_id: updateTx.tx_id,
-      score_tx_id: scoreTx.tx_id,
+      score_tx_id: creatorScoreTx.tx_id,
+      reviewer_score_tx_id: reviewerScoreTx.tx_id,
       confirmation: "proposed",
     };
   }

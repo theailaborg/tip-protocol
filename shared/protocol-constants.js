@@ -243,6 +243,11 @@ const REVIEWER = {
   // content.status flips back to REGISTERED and the next round's
   // trigger picks a fresh reviewer.
   get AUTO_RECUSE_AGE_MS() { return _rv().auto_recuse_age_ms; },
+  // Bonus paid to the reviewer for completing review work correctly.
+  // Stacks on top of DISPUTE.UPHELD_BONUS when their CONFIRM holds up
+  // through Stage-2 (or Stage-3 reversal). Paid alone when the case
+  // closes without a public dispute (DISMISS or accept-private).
+  get CORRECT_BONUS() { return _rv().reviewer_correct_bonus; },
 };
 
 const _cg = () => get().content_grace;

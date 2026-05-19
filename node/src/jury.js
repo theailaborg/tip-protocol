@@ -13,7 +13,7 @@
 
 const { shake256 } = require("../../shared/crypto");
 const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES } = require("../../shared/constants");
-const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
+const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
 
@@ -528,6 +528,52 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     // DISMISSED: no disputer event — filing-time stake deduction is the forfeit.
   }
 
+  // ── Pre-scan reviewer outcome (Stage-2) ─────────────────────────────────
+  // If this dispute came out of a CONFIRMED prescan-review (either
+  // creator filed after R+0 or auto-escalation fired at h=R+24), the
+  // reviewer is treated as the de-facto disputer of the case — their
+  // CONFIRM is functionally the dispute filing. Payment matrix:
+  //
+  //   UPHELD             → +UPHELD_BONUS + CORRECT_BONUS  (reviewer
+  //                        right, jury agreed; no stake refund because
+  //                        the reviewer never staked)
+  //   CONSERVATIVE_LABEL → +CORRECT_BONUS                  (neutral
+  //                        verdict — reviewer's call was directionally
+  //                        right but jury picked a milder remedy)
+  //   DISMISSED          → -DISPUTER_STAKE                 (full
+  //                        disputer-equivalent loss; the reviewer's
+  //                        CONFIRM was wrong and the jury overturned it)
+  //
+  // Reversal on Stage-3 appeal — see buildAppealBatch's reviewer block:
+  // if Stage-3 flips Stage-2, the Stage-2 reviewer settlement is reversed
+  // and a fresh Stage-3-based settlement is applied (same pattern as
+  // disputer/author reversal).
+  const escalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+    ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+    : null;
+  if (escalatedReview && escalatedReview.assigned_reviewer) {
+    const reviewerTipId = escalatedReview.assigned_reviewer;
+    let reviewerDelta = 0;
+    let reviewerReason = null;
+    if (verdict === VERDICT.UPHELD) {
+      reviewerDelta = DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS;
+      reviewerReason = `review_won:${escalatedReview.review_id}`;
+    } else if (verdict === VERDICT.CONSERVATIVE_LABEL) {
+      reviewerDelta = REVIEWER.CORRECT_BONUS;
+      reviewerReason = `review_conservative:${escalatedReview.review_id}`;
+    } else if (verdict === VERDICT.DISMISSED) {
+      reviewerDelta = -DISPUTE.DISPUTER_STAKE;
+      reviewerReason = `review_overturned:${escalatedReview.review_id}`;
+    }
+    if (reviewerDelta !== 0) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: reviewerTipId, delta: reviewerDelta,
+        reason: reviewerReason, ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    }
+  }
+
   // Author vindication on DISMISSED. Spec (TIP_Scoring_v2 Reputation §):
   // a creator whose content the jury exonerates earns
   // DISPUTE.VINDICATION_BONUS — the only path that credits the author
@@ -751,6 +797,51 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         }));
       }
     }
+
+    // ── Pre-scan reviewer reversal (Stage-3 overturn) ─────────────────────
+    // If this dispute came out of a CONFIRMED prescan-review, the
+    // Stage-2 batch paid the reviewer based on the Stage-2 verdict.
+    // On overturn, that payment is no longer correct — reverse it and
+    // apply a fresh Stage-3-based payment. Same pattern as the
+    // disputer / author reversals above.
+    const escalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+      ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+      : null;
+    if (escalatedReview && escalatedReview.assigned_reviewer) {
+      const reviewerTipId = escalatedReview.assigned_reviewer;
+      // Stage-2 paid based on stage2Verdict; compute the reverse.
+      let stage2ReviewerDelta = 0;
+      if (stage2Verdict === VERDICT.UPHELD)            stage2ReviewerDelta = DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS;
+      else if (stage2Verdict === VERDICT.CONSERVATIVE_LABEL) stage2ReviewerDelta = REVIEWER.CORRECT_BONUS;
+      else if (stage2Verdict === VERDICT.DISMISSED)    stage2ReviewerDelta = -DISPUTE.DISPUTER_STAKE;
+      if (stage2ReviewerDelta !== 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: reviewerTipId, delta: -stage2ReviewerDelta,
+          reason: `Appeal overturned: Stage 2 reviewer settlement reversed on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+      // Apply fresh Stage-3-based payment.
+      let stage3ReviewerDelta = 0;
+      let stage3ReviewerReason = null;
+      if (verdict === VERDICT.UPHELD) {
+        stage3ReviewerDelta = DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS;
+        stage3ReviewerReason = `review_won_on_appeal:${escalatedReview.review_id}`;
+      } else if (verdict === VERDICT.CONSERVATIVE_LABEL) {
+        stage3ReviewerDelta = REVIEWER.CORRECT_BONUS;
+        stage3ReviewerReason = `review_conservative_on_appeal:${escalatedReview.review_id}`;
+      } else if (verdict === VERDICT.DISMISSED) {
+        stage3ReviewerDelta = -DISPUTE.DISPUTER_STAKE;
+        stage3ReviewerReason = `review_overturned_on_appeal:${escalatedReview.review_id}`;
+      }
+      if (stage3ReviewerDelta !== 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: reviewerTipId, delta: stage3ReviewerDelta,
+          reason: stage3ReviewerReason, ctid, relatedTxId: resultTx.tx_id,
+          timestamp, getRecentPrev, config,
+        }));
+      }
+    }
   }
   // Not overturned: no settlement event for the appellant. The
   // filing-time stake deduction (in dispute-service.fileAppeal) is the
@@ -790,6 +881,37 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     }
     // DISMISSED on NO_QUORUM: stake stays forfeited (no event), matches
     // standard DISMISSED handling.
+
+    // ── Pre-scan reviewer (NO_QUORUM → Stage-3 first authoritative
+    // verdict) ─────────────────────────────────────────────────────────────
+    // Stage-2 NO_QUORUM emitted no reviewer payment. Stage-3 is the
+    // first verdict, so apply the same settlement matrix as a fresh
+    // Stage-2 would have.
+    const noQuorumEscalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+      ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+      : null;
+    if (noQuorumEscalatedReview && noQuorumEscalatedReview.assigned_reviewer) {
+      const reviewerTipId = noQuorumEscalatedReview.assigned_reviewer;
+      let reviewerDelta = 0;
+      let reviewerReason = null;
+      if (verdict === VERDICT.UPHELD) {
+        reviewerDelta = DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS;
+        reviewerReason = `review_won_no_quorum:${noQuorumEscalatedReview.review_id}`;
+      } else if (verdict === VERDICT.CONSERVATIVE_LABEL) {
+        reviewerDelta = REVIEWER.CORRECT_BONUS;
+        reviewerReason = `review_conservative_no_quorum:${noQuorumEscalatedReview.review_id}`;
+      } else if (verdict === VERDICT.DISMISSED) {
+        reviewerDelta = -DISPUTE.DISPUTER_STAKE;
+        reviewerReason = `review_overturned_no_quorum:${noQuorumEscalatedReview.review_id}`;
+      }
+      if (reviewerDelta !== 0) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: reviewerTipId, delta: reviewerDelta,
+          reason: reviewerReason, ctid, relatedTxId: resultTx.tx_id,
+          timestamp, getRecentPrev, config,
+        }));
+      }
+    }
   }
 
   // ── Expert score effects ──────────────────────────────────────────────────
