@@ -100,10 +100,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // fires so the guard resets for the next needed resync.
   let _snapInstalled = false;
   let _snapInstallInProgress = false;
+  // Set to true only during the synchronous DB-write phase of _installSnapshot
+  // (dag.clearCanonicalState + row rebuild inside runInTransaction). Separate
+  // from _snapInstallInProgress so majority peers with stable canonical state
+  // can serve multiple minority nodes concurrently (ISSUE_47 Option C).
+  let _snapServing = false;
 
   function resetInstallState() {
     _snapInstalled = false;
     _snapInstallInProgress = false;
+    _snapServing = false;
   }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
@@ -178,14 +184,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     const minRound = Number(request.minRound || 0);
 
-    // Bug 4: refuse to serve while our own snapshot install is in progress. The
-    // install pipeline calls dag.clearCanonicalState() then rebuilds the in-memory
-    // mirror row-by-row. During that window iterateCanonicalState() returns partial
-    // data whose SHAKE-256 root diverges from the latest commit row's state_merkle_root
-    // (which was written at the PREVIOUS commit). A joiner that receives this
-    // inconsistent snapshot will compute a mismatched root, fail install, or — worse —
-    // install silently inconsistent state and diverge from honest peers.
-    if (_snapInstallInProgress) {
+    // ISSUE_47 Option C: decline to serve only while _snapServing is true — i.e.,
+    // during the synchronous DB-write phase of our own install (clearCanonicalState +
+    // row rebuild). That is the only window where iterateCanonicalState() returns
+    // partial data. _snapInstallInProgress (client receive-path flag) is NOT checked
+    // here so stable majority peers can serve multiple minority nodes concurrently even
+    // if they themselves installed a snapshot in a prior recovery cycle.
+    if (_snapServing) {
       const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
       await stream.sink([_frame(errHeader)]);
       log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
@@ -779,6 +784,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
       }
 
+      _snapInstalled = true;
+      _snapInstallInProgress = false;
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
@@ -811,12 +818,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       };
     } catch (err) {
       _snapInstallInProgress = false;
+      _snapServing = false;
       throw err;
     } finally {
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
-    _snapInstalled = true;
-    _snapInstallInProgress = false;
   }
 
   function _installSnapshot(header, queues) {
@@ -838,132 +844,137 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //   3. Pre-snapshot commits (#49 — every commit row except the
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
-    return dag.runInTransaction(() => {
-      // Wipe the 7 canonical-state tables before installing the peer's rows.
-      // Without this, extra rows from this node's divergent history survive
-      // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
-      // never overwrites dedup_registry at all), so computeStateMerkleRoot
-      // returns the wrong root after install and the catching_up watchdog
-      // loops forever.
-      dag.clearCanonicalState();
+    _snapServing = true;
+    try {
+      return dag.runInTransaction(() => {
+        // Wipe the 7 canonical-state tables before installing the peer's rows.
+        // Without this, extra rows from this node's divergent history survive
+        // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
+        // never overwrites dedup_registry at all), so computeStateMerkleRoot
+        // returns the wrong root after install and the catching_up watchdog
+        // loops forever.
+        dag.clearCanonicalState();
 
-      let stateN = 0;
-      for (const { table, row } of queues.stateRows) {
-        _installOneRow(table, row);
-        stateN++;
-      }
+        let stateN = 0;
+        for (const { table, row } of queues.stateRows) {
+          _installOneRow(table, row);
+          stateN++;
+        }
 
-      let txN = 0;
-      for (const tx of queues.txs) {
-        dag.addTx(tx);
-        txN++;
-      }
+        let txN = 0;
+        for (const tx of queues.txs) {
+          dag.addTx(tx);
+          txN++;
+        }
 
-      let commitN = 0;
-      for (const c of queues.commits) {
-        dag.saveCommit(c);
-        commitN++;
-      }
+        let commitN = 0;
+        for (const c of queues.commits) {
+          dag.saveCommit(c);
+          commitN++;
+        }
 
-      // §4 + #34: install committee_history rotations. Already verified
-      // up the call chain (rotations_full_root match + chain-of-trust
-      // walk). Clear existing rows first so INSERT OR IGNORE can't
-      // silently skip a corrected rotation for a rotation_number that
-      // already exists locally from a divergent history (e.g. after a
-      // byzantine_fork where different nodes committed different
-      // COMMITTEE_ROTATION txs at the same rotation_number).
-      if (typeof dag.clearCommitteeHistory === "function") {
-        dag.clearCommitteeHistory();
-      }
-      let rotationN = 0;
-      const rotations = queues.rotations || [];
-      for (const r of rotations) {
-        dag.saveCommitteeRotation({
-          ...r,
-          // canonRotation strips committed_at — restore a deterministic
-          // value here so the row passes its NOT NULL constraint. We use
-          // the rotation's effective_round-derived label (informational
-          // only — not in the canonical hash, not in chain-of-trust).
-          committed_at: r.committed_at || `installed-from-snapshot:rotation-${r.rotation_number}`,
+        // §4 + #34: install committee_history rotations. Already verified
+        // up the call chain (rotations_full_root match + chain-of-trust
+        // walk). Clear existing rows first so INSERT OR IGNORE can't
+        // silently skip a corrected rotation for a rotation_number that
+        // already exists locally from a divergent history (e.g. after a
+        // byzantine_fork where different nodes committed different
+        // COMMITTEE_ROTATION txs at the same rotation_number).
+        if (typeof dag.clearCommitteeHistory === "function") {
+          dag.clearCommitteeHistory();
+        }
+        let rotationN = 0;
+        const rotations = queues.rotations || [];
+        for (const r of rotations) {
+          dag.saveCommitteeRotation({
+            ...r,
+            // canonRotation strips committed_at — restore a deterministic
+            // value here so the row passes its NOT NULL constraint. We use
+            // the rotation's effective_round-derived label (informational
+            // only — not in the canonical hash, not in chain-of-trust).
+            committed_at: r.committed_at || `installed-from-snapshot:rotation-${r.rotation_number}`,
+          });
+          rotationN++;
+        }
+
+        // §69: install recent certs. Already verified upstream via
+        // certs_full_root match. saveCertificate is INSERT OR IGNORE on
+        // (hash) so a cert that arrives twice (e.g., rebroadcast post-
+        // install) is a no-op. Order doesn't matter for storage but
+        // sender ships in (round, author) order, which we preserve.
+        let certN = 0;
+        const certs = queues.certs || [];
+        for (const c of certs) {
+          dag.saveCertificate(c);
+          certN++;
+        }
+
+        // #75 RP install — Phase F. For every rotation_number that the snapshot
+        // ships, wipe the joiner's local rows for that rotation FIRST so any
+        // (node_id, rotation) keys absent in the snapshot become absent locally
+        // too (otherwise stale rows leak). Then write the snapshot's rows.
+        let rpN = 0;
+        const rpRows = queues.rp || [];
+        if (rpRows.length > 0
+          && typeof dag.deleteRotationParticipationByRotation === "function"
+          && typeof dag.setRotationParticipation === "function") {
+          const rotationsInSnapshot = new Set();
+          for (const r of rpRows) {
+            if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);
+          }
+          for (const rotation of rotationsInSnapshot) {
+            dag.deleteRotationParticipationByRotation(rotation);
+          }
+          for (const r of rpRows) {
+            if (!r || r.node_id == null || r.rotation_number == null) continue;
+            dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.count) || 0);
+            rpN++;
+          }
+        }
+
+        // Header's commit row — the round whose state_merkle_root we just
+        // verified against 2f+1 acks. Convert header bytes-fields back to
+        // the hex/string shape dag.saveCommit expects.
+        // BFT-Time fields — coerce protobuf int64 (Long) → plain Number for
+        // each ack's signed_at and the cert.timestamp. Already validated
+        // upstream via the ack signature quorum check (we wouldn't be here
+        // otherwise).
+        const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
+        const headerAckSignedAts = (header.ackSignedAts || []).map(_toInt);
+        const headerCertTimestamp = _toInt(header.certTimestamp);
+
+        // #50: persist the header's anchor_batch_hash on the joiner so the
+        // latest commit row stays self-contained for any future snapshot
+        // serve. Without this, once the underlying anchor cert is GC'd the
+        // serve-time fallback at `_buildHeader` returns null and snapshot
+        // serving from this node fails. Phase C commits already carry the
+        // field via canonCommit; this closes the gap for the header row.
+        const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
+          ? bytesToHex(header.anchorBatchHash)
+          : null;
+
+        dag.saveCommit({
+          round: Number(header.round),
+          anchor_cert_hash: bytesToHex(header.anchorCertHash),
+          anchor_batch_hash: headerAnchorBatchHash,
+          leader_node_id: header.leaderNodeId,
+          committee: header.committee || [],
+          support_count: Number(header.supportCount || 0),
+          consensus_index: Number(header.consensusIndex || 0),
+          committed_at: header.committedAt,
+          state_merkle_root: bytesToHex(header.stateMerkleRoot),
+          txs_merkle_root: bytesToHex(header.txsMerkleRoot),
+          ack_signer_ids: header.ackSignerIds || [],
+          ack_signatures: (header.ackSignatures || []).map(bytesToHex),
+          ack_signed_ats: headerAckSignedAts,
+          cert_timestamp: headerCertTimestamp,
         });
-        rotationN++;
-      }
 
-      // §69: install recent certs. Already verified upstream via
-      // certs_full_root match. saveCertificate is INSERT OR IGNORE on
-      // (hash) so a cert that arrives twice (e.g., rebroadcast post-
-      // install) is a no-op. Order doesn't matter for storage but
-      // sender ships in (round, author) order, which we preserve.
-      let certN = 0;
-      const certs = queues.certs || [];
-      for (const c of certs) {
-        dag.saveCertificate(c);
-        certN++;
-      }
-
-      // #75 RP install — Phase F. For every rotation_number that the snapshot
-      // ships, wipe the joiner's local rows for that rotation FIRST so any
-      // (node_id, rotation) keys absent in the snapshot become absent locally
-      // too (otherwise stale rows leak). Then write the snapshot's rows.
-      let rpN = 0;
-      const rpRows = queues.rp || [];
-      if (rpRows.length > 0
-        && typeof dag.deleteRotationParticipationByRotation === "function"
-        && typeof dag.setRotationParticipation === "function") {
-        const rotationsInSnapshot = new Set();
-        for (const r of rpRows) {
-          if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);
-        }
-        for (const rotation of rotationsInSnapshot) {
-          dag.deleteRotationParticipationByRotation(rotation);
-        }
-        for (const r of rpRows) {
-          if (!r || r.node_id == null || r.rotation_number == null) continue;
-          dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.count) || 0);
-          rpN++;
-        }
-      }
-
-      // Header's commit row — the round whose state_merkle_root we just
-      // verified against 2f+1 acks. Convert header bytes-fields back to
-      // the hex/string shape dag.saveCommit expects.
-      // BFT-Time fields — coerce protobuf int64 (Long) → plain Number for
-      // each ack's signed_at and the cert.timestamp. Already validated
-      // upstream via the ack signature quorum check (we wouldn't be here
-      // otherwise).
-      const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
-      const headerAckSignedAts = (header.ackSignedAts || []).map(_toInt);
-      const headerCertTimestamp = _toInt(header.certTimestamp);
-
-      // #50: persist the header's anchor_batch_hash on the joiner so the
-      // latest commit row stays self-contained for any future snapshot
-      // serve. Without this, once the underlying anchor cert is GC'd the
-      // serve-time fallback at `_buildHeader` returns null and snapshot
-      // serving from this node fails. Phase C commits already carry the
-      // field via canonCommit; this closes the gap for the header row.
-      const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
-        ? bytesToHex(header.anchorBatchHash)
-        : null;
-
-      dag.saveCommit({
-        round: Number(header.round),
-        anchor_cert_hash: bytesToHex(header.anchorCertHash),
-        anchor_batch_hash: headerAnchorBatchHash,
-        leader_node_id: header.leaderNodeId,
-        committee: header.committee || [],
-        support_count: Number(header.supportCount || 0),
-        consensus_index: Number(header.consensusIndex || 0),
-        committed_at: header.committedAt,
-        state_merkle_root: bytesToHex(header.stateMerkleRoot),
-        txs_merkle_root: bytesToHex(header.txsMerkleRoot),
-        ack_signer_ids: header.ackSignerIds || [],
-        ack_signatures: (header.ackSignatures || []).map(bytesToHex),
-        ack_signed_ats: headerAckSignedAts,
-        cert_timestamp: headerCertTimestamp,
+        return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
       });
-
-      return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
-    });
+    } finally {
+      _snapServing = false;
+    }
   }
 
   /**

@@ -62,11 +62,10 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers, onMeshRefresh }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
-  const _onMeshRefresh = typeof onMeshRefresh === "function" ? onMeshRefresh : null;
   // Rate-limit the producer-pause notify. _beginRound retries every 50ms
   // while paused; the upstream consumer (bullshark rotation proposer)
   // doesn't need that frequency. 1.5s matches the rotation-coord
@@ -95,14 +94,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   let _roundTimer = null;                           // per-round liveness timeout
   let _retryTimer = null;                           // retry while stuck below quorum
   // Counts every retry tick (round-timer expiry + each _scheduleRetry fire).
-  // Drives two self-healing tiers: mesh re-graft at 3, direct-stream bypass at 6+.
-  // Reset to 0 on every round advance so tiers are per-stuck-round, not cumulative.
+  // Reset to 0 on every round advance so retries are per-stuck-round, not cumulative.
   let _retryCount = 0;
-  // Counts consecutive rounds where we produced a tx-bearing batch but received
-  // 0 peer acks (batch was orphaned). Covers the fast-forward code path where
-  // _retryCount never reaches 3 because peers at higher rounds push us forward
-  // before the retry loop fires. Reset when we successfully form our own cert.
-  let _consecutiveOrphanedBatches = 0;
   let _nextRoundTimer = null;                       // inter-round scheduler
 
   // Per-round state
@@ -146,6 +139,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // look-back window (VOTES_RETENTION_ROUNDS). Pre-fix these were
     // silently dropped — losing peer txs whenever local round outran
     // gossip delivery by ≥1 round. Post-fix they're ack'd normally.
+    acks_sent_direct: 0,
+    acks_sent_fallback: 0,
     batches_acked_late: 0,
     // #64: batches arriving from beyond the look-back horizon. These
     // ARE refused — equivocation defense table is pruned beyond the
@@ -411,19 +406,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _metrics.retries++;
       _retryCount++;
 
-      // Tier 1 self-heal: after 3 stuck-round retries (~6s), force a gossipsub
-      // mesh refresh. Clears stale directed edges where specific peers stopped
-      // delivering acks through the mesh (Issue #13 sub_quorum halt pattern).
-      if (_retryCount === 3 && _onMeshRefresh) {
-        log.warn(`Round ${_currentRound}: retry #3 — refreshing gossipsub mesh to clear stale edges`);
-        try {
-          Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
-        } catch (e) {
-          log.warn(`Mesh refresh error: ${e.message}`);
-        }
-      }
-
-      _rebroadcastOwnBatch();
+      // #48: request cached acks from missing peers; falls back to batch rebroadcast
+      _requestMissingAcks().catch(err => log.debug(`_requestMissingAcks: ${err.message}`));
       _rebroadcastOwnCertificate();
 
       // Sync paths (AE cert-fill, post-snapshot cert-fill) write certs
@@ -461,6 +445,33 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     } catch (err) {
       log.warn(`Round ${_currentRound}: batch re-broadcast failed: ${err.message}`);
     }
+  }
+
+  // Ask each missing-acker peer for their cached ack via the lightweight
+  // ack-request protocol (#48). Falls back to full batch rebroadcast for any
+  // peer that doesn't have a cached ack (they never received the original batch).
+  async function _requestMissingAcks() {
+    if (!_myBatch || typeof network.sendAckRequest !== "function") {
+      _rebroadcastOwnBatch();
+      return;
+    }
+    const batchHashHex = _myBatch.hash;
+    const committee = _getCommittee(_currentRound);
+    const ackedSet = new Set((_batchAcks.get(batchHashHex) || []).map(a => a.acker_node_id));
+    const missing = committee.filter(id => id !== nodeId && !ackedSet.has(id));
+    if (missing.length === 0) return;
+
+    let needsFallback = false;
+    await Promise.all(missing.map(async (ackerNodeId) => {
+      const ackBuf = await network.sendAckRequest(batchHashHex, ackerNodeId);
+      if (ackBuf) {
+        try { handleIncomingAck(ackBuf); }
+        catch (err) { log.debug(`Failed to handle cached ack from ${ackerNodeId.slice(-8)}: ${err.message}`); }
+      } else {
+        needsFallback = true;
+      }
+    }));
+    if (needsFallback) _rebroadcastOwnBatch();
   }
 
   function _rebroadcastOwnCertificate() {
@@ -503,33 +514,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         }
         _metrics.my_batches_orphaned++;
         log.warn(`Round ${_myBatch.round} advanced without certifying my own batch — front-requeued ${requeued}/${orphanedTxs.length} txs to mempool`);
-
-        // Tier 1b: track consecutive tx-batch orphans. Covers the fast-forward
-        // path where _retryCount never reaches 3 (peers at higher rounds push
-        // us forward before the retry loop fires). After 3 straight orphaned
-        // rounds, peers are likely not receiving our batch publications at all
-        // — stale gossipsub mesh edge. Refresh to clear it (Issue #13).
-        if (_joinState === "ready") {
-          _consecutiveOrphanedBatches++;
-          if (_consecutiveOrphanedBatches >= 3 && _onMeshRefresh) {
-            log.warn(`Round ${_myBatch.round}: ${_consecutiveOrphanedBatches} consecutive orphaned tx-batches — refreshing gossipsub mesh to clear stale edges`);
-            _consecutiveOrphanedBatches = 0;
-            try {
-              Promise.resolve(_onMeshRefresh()).catch(e => log.warn(`Mesh refresh error: ${e.message}`));
-            } catch (e) {
-              log.warn(`Mesh refresh error: ${e.message}`);
-            }
-          }
-        }
       }
       // Empty batches at vote rounds advancing without cert is normal
       // (peer certs arrive faster than ack quorum on our self-emitted
       // empty batch). Don't bump my_batches_orphaned for them — would
       // drown the signal we actually care about (orphaned tx-bearing
       // batches).
-    } else {
-      // Cert was created or no batch this round — reset the orphan streak.
-      _consecutiveOrphanedBatches = 0;
     }
     _myBatch = null;
     _peerBatches.clear();
@@ -726,9 +716,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Deduplicate — already processed this batch in this session.
     if (_peerBatches.has(batch.author_node_id)) {
       if (_peerBatches.get(batch.author_node_id).hash === batch.hash) {
-        // Re-broadcast our cached ack so the proposer's cert can reach quorum
-        // on the next retry tick even if our original ack was dropped during
-        // a gossipsub mesh reconnect.
+        // Re-send our cached ack to the batch author via direct stream so the
+        // cert can reach quorum. Fires when the author re-broadcasts their batch
+        // on a retry tick (implicit retry path — #46).
         const cachedAcks = _batchAcks.get(batch.hash);
         const myAck = cachedAcks ? cachedAcks.find(a => a.acker_node_id === nodeId) : null;
         if (myAck) {
@@ -739,10 +729,16 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
               signature: hexToBytes(myAck.signature),
               signedAt: myAck.signed_at,
             });
-            network.publish(network.TOPICS.CONSENSUS, ackBuf);
+            if (typeof network.sendAckDirect === "function") {
+              network.sendAckDirect(ackBuf, batch.author_node_id)
+                .then(ok => { if (!ok) network.publish(network.TOPICS.CONSENSUS, ackBuf); })
+                .catch(() => network.publish(network.TOPICS.CONSENSUS, ackBuf));
+            } else {
+              network.publish(network.TOPICS.CONSENSUS, ackBuf);
+            }
             _metrics.acks_rebroadcast = (_metrics.acks_rebroadcast || 0) + 1;
           } catch (err) {
-            log.warn(`Failed to re-broadcast ack for ${batch.hash.slice(0, 16)}: ${err.message}`);
+            log.warn(`Failed to re-send ack for ${batch.hash.slice(0, 16)}: ${err.message}`);
           }
         }
         return;
@@ -832,9 +828,23 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         signature: hexToBytes(ack.signature),
         signedAt: ack.signed_at,
       });
-      network.publish(network.TOPICS.CONSENSUS, ackBuf);
+      if (typeof network.sendAckDirect === "function") {
+        network.sendAckDirect(ackBuf, batch.author_node_id).then(ok => {
+          if (ok) {
+            _metrics.acks_sent_direct++;
+          } else {
+            _metrics.acks_sent_fallback++;
+            network.publish(network.TOPICS.CONSENSUS, ackBuf);
+          }
+        }).catch(() => {
+          _metrics.acks_sent_fallback++;
+          network.publish(network.TOPICS.CONSENSUS, ackBuf);
+        });
+      } else {
+        network.publish(network.TOPICS.CONSENSUS, ackBuf);
+      }
     } catch (err) {
-      log.warn(`Failed to broadcast ack for batch ${batch.hash.slice(0, 16)}: ${err.message}`);
+      log.warn(`Failed to send ack for batch ${batch.hash.slice(0, 16)}: ${err.message}`);
     }
 
     log.debug(`Round ${_currentRound}: received batch from ${batch.author_node_id} (${(batch.txs || []).length} txs)`);
@@ -1433,6 +1443,20 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     byzantineForkHalt,
     handleIncomingBatch,
     handleIncomingAck,
+    getCachedAckBuf(batchHashHex, ackerNodeId) {
+      const acks = _batchAcks.get(batchHashHex);
+      if (!acks) return null;
+      const myAck = acks.find(a => a.acker_node_id === ackerNodeId);
+      if (!myAck) return null;
+      try {
+        return encode("BatchAck", {
+          batchHash: hexToBytes(batchHashHex),
+          ackerNodeId,
+          signature: hexToBytes(myAck.signature),
+          signedAt: myAck.signed_at,
+        });
+      } catch { return null; }
+    },
     handleIncomingCertificate,
     lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
 

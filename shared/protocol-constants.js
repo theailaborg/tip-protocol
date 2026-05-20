@@ -291,6 +291,17 @@ const CONSENSUS = {
   get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
   get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
   get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
+  // Snapshot-install collision retry: when two minority nodes race into
+  // byzantine_fork recovery, the second may hit a peer that's busy serving
+  // the first. Retry the SAME peer this many times with this delay before
+  // giving up and moving to the next candidate. See anti-entropy.js (#47).
+  get SNAPSHOT_BUSY_RETRY_MS() { return _c().snapshot_busy_retry_ms ?? 5000; },
+  get SNAPSHOT_BUSY_RETRY_ATTEMPTS() { return _c().snapshot_busy_retry_attempts ?? 1; },
+  // Per-call deadline for direct ack stream send (#46) and ack-request
+  // round-trip (#48). Caps a slow / hung peer from blocking the local
+  // stuck-round retry path. Used in network/node.js sendAckDirect +
+  // sendAckRequest.
+  get ACK_STREAM_TIMEOUT_MS() { return _c().ack_stream_timeout_ms ?? 3000; },
   // How long bullshark parks a deferred anchor waiting for missing parent certs
   // before triggering snapshot resync. Must be >> gossipsub mesh rebuild time
   // (~10-15s after a reconnect) so transiently missing certs (gossip-lag, not

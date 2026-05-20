@@ -182,6 +182,8 @@ function narwhalSection(s) {
     counter("tip_narwhal_fast_forwards_total", "Round fast-forwards triggered by higher-round batch", nm.fast_forwards),
     counter("tip_narwhal_retries_total", "Retry broadcasts of own batch/cert while stuck", nm.retries),
     counter("tip_narwhal_acks_rebroadcast_total", "Cached acks re-broadcast on duplicate batch arrival (dropped-ack recovery)", nm.acks_rebroadcast),
+    counter("tip_narwhal_acks_sent_direct_total", "BatchAcks delivered via direct libp2p stream (#46 structural fix)", nm.acks_sent_direct),
+    counter("tip_narwhal_acks_sent_fallback_total", "BatchAcks that fell back to gossipsub after direct-stream failure", nm.acks_sent_fallback),
   ].join("\n");
 }
 

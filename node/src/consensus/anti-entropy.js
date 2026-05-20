@@ -135,6 +135,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   let _divergenceActive = false;
   const _cancelPendingCommit = typeof cancelPendingCommitCb === "function" ? cancelPendingCommitCb : null;
   const SNAPSHOT_RESYNC_COOLDOWN_MS = CONSENSUS.SNAPSHOT_RESYNC_COOLDOWN_MS || 60000;
+  // Snapshot-install collision retry knobs (#47). When two minority nodes
+  // race into byzantine_fork recovery, the second may hit the busy peer
+  // mid-install. Retry the same peer a bounded number of times before
+  // moving on.
+  const SNAPSHOT_BUSY_RETRY_MS = CONSENSUS.SNAPSHOT_BUSY_RETRY_MS || 5000;
+  const SNAPSHOT_BUSY_RETRY_ATTEMPTS = CONSENSUS.SNAPSHOT_BUSY_RETRY_ATTEMPTS || 1;
 
   let _timer = null;
   let _running = false;
@@ -898,10 +904,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           }
         }
         _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
-        const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        let attempt = 0;
+        while (result === "snapshot_failed" && attempt < SNAPSHOT_BUSY_RETRY_ATTEMPTS) {
+          attempt++;
+          _log.warn(`anti-entropy: auto-recovery: ${libp2pPeerId.slice(0, 12)} busy — retrying in ${SNAPSHOT_BUSY_RETRY_MS}ms (attempt ${attempt}/${SNAPSHOT_BUSY_RETRY_ATTEMPTS})`);
+          await new Promise(r => setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
+          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        }
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = Date.now();
-          _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}, resuming consensus`);
+          const retryNote = attempt > 0 ? ` (after ${attempt} retry/retries)` : "";
+          _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}${retryNote}, resuming consensus`);
           return;
         }
         _log.warn(`anti-entropy: auto-recovery: snapshot from ${libp2pPeerId.slice(0, 12)} returned '${result}' — trying next peer`);
