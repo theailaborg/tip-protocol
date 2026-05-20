@@ -29,12 +29,13 @@
 
 "use strict";
 
-const { TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON } = require("../../../shared/constants");
-const { DISPUTE, APPEAL } = require("../../../shared/protocol-constants");
+const {
+  TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
+} = require("../../../shared/constants");
+const { DISPUTE, APPEAL, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
-const ORIGIN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 // Dev-only escape hatch for the JURY vote-window time gates. Lets a developer
 // drive a live dispute through commit→reveal→verdict without waiting the full
@@ -122,8 +123,54 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   }
   const existingUpdates = dag.getTxsByTypeAndCtid(TX_TYPES.UPDATE_ORIGIN, ctid);
   if (existingUpdates.length > 0) return fail(409, "Origin has already been updated once — no further changes allowed");
-  const registeredAt = new Date(rec.registered_at).getTime();
-  if (now - registeredAt > ORIGIN_GRACE_MS) return fail(403, "24-hour grace period has expired.");
+
+  // Grace branches (Phase 2 design):
+  //   (a) Open review in 'confirmed': creator has the 24h
+  //       accept-private window from confirmed_at_ms. The
+  //       /reviews/:id/accept-correction endpoint runs through here;
+  //       commit-handler.UPDATE_ORIGIN apply flips the review to
+  //       CLOSED_ACCEPTED_PRIVATE. Direct UPDATE_ORIGIN calls land
+  //       here too — they go through the accept-correction batch
+  //       at commit time.
+  //   (b) Open review in 'triggered': REJECTED. The 48h pre-review
+  //       window was the creator's chance to self-correct; once the
+  //       reviewer is engaged, the case is in their hands and the
+  //       creator must wait for the DISMISS / CONFIRM call. Letting
+  //       the creator bail out mid-review wastes reviewer effort and
+  //       lets a savvy creator dodge an unfavourable reviewer
+  //       assignment by abandoning at h=49 for free. Retract still
+  //       works at this stage (it's withdrawal, not a same-content
+  //       fix) — see canRetract, which doesn't gate on review state.
+  //   (c) No open review: HIGH/CRITICAL + override gets the 48h
+  //       flagged window; everything else gets the 24h unflagged.
+  const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
+    ? dag.getOpenPrescanReviewByCtid(ctid)
+    : null;
+  if (openReview && openReview.state === PRESCAN_REVIEW_STATES.CONFIRMED) {
+    if (!openReview.confirmed_at_ms) {
+      return fail(500, "Open review is in 'confirmed' state but missing confirmed_at_ms");
+    }
+    if (now - openReview.confirmed_at_ms > REVIEWER.CREATOR_DECISION_WINDOW_MS) {
+      return fail(403, "24-hour creator decision window has expired");
+    }
+  } else if (openReview && openReview.state === PRESCAN_REVIEW_STATES.TRIGGERED) {
+    return fail(
+      403,
+      "Cannot update origin while a reviewer is evaluating this content. Wait for the reviewer's decision.",
+    );
+  } else {
+    const registeredAt = new Date(rec.registered_at).getTime();
+    const isFlaggedWithOverride =
+      (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
+      && !!rec.override;
+    const graceMs = isFlaggedWithOverride
+      ? CONTENT_GRACE.FLAGGED_MS
+      : CONTENT_GRACE.UNFLAGGED_MS;
+    if (now - registeredAt > graceMs) {
+      const hours = Math.round(graceMs / (60 * 60 * 1000));
+      return fail(403, `${hours}-hour grace period has expired.`);
+    }
+  }
 
   const author = dag.getIdentity(author_tip_id);
   if (!author) return fail(404, "Author identity not found");
@@ -138,6 +185,23 @@ function canRetract(dag, { ctid, author_tip_id }) {
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can retract");
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(409, "Content is already retracted");
   if (rec.status === CONTENT_STATUS.DISPUTED) return fail(403, "Cannot retract content that is under dispute");
+
+  // Same lockout as canUpdateOrigin during open review: once the
+  // reviewer is engaged the case is in their hands, and the creator
+  // can't exit unilaterally — even via retract. RECUSED state is
+  // not "open" here (getOpenPrescanReviewByCtid only matches
+  // TRIGGERED + CONFIRMED), but the prescan-review-trigger re-fires
+  // in the very next round after a RECUSED, so the creator never has
+  // a meaningful "no reviewer assigned" window to act in.
+  const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
+    ? dag.getOpenPrescanReviewByCtid(ctid)
+    : null;
+  if (openReview) {
+    return fail(
+      403,
+      "Cannot retract while a reviewer is evaluating this content. Wait for the reviewer's decision.",
+    );
+  }
 
   const author = dag.getIdentity(author_tip_id);
   if (!author) return fail(404, "Author identity not found");
@@ -202,6 +266,26 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
     if (collision) {
       return fail(409, "evidence_hash already used by another dispute — vary the evidence body to produce a unique hash");
     }
+  }
+
+  // Phase 3 abuse prevention — rolling per-filer rate limit. Count
+  // CONTENT_DISPUTED txs by this disputer within the trailing window
+  // (excluding auto-cascade txs, which carry node_id, not a user
+  // disputer_tip_id). A user-filed dispute that already failed
+  // validation never lands as a tx, so this count only sees committed
+  // filings — same value at CheckTx and DeliverTx.
+  const windowCutoffMs = Date.now() - DISPUTE.FILER_WINDOW_MS;
+  const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
+    .filter(t => t.data?.disputer_tip_id === disputer_tip_id
+      && !t.data?.auto
+      && new Date(t.timestamp).getTime() >= windowCutoffMs)
+    .length;
+  if (filerCount >= DISPUTE.MAX_PER_FILER_PER_WINDOW) {
+    const days = Math.round(DISPUTE.FILER_WINDOW_MS / 86_400_000);
+    return fail(
+      429,
+      `Monthly dispute filing limit reached (${DISPUTE.MAX_PER_FILER_PER_WINDOW} per ${days} days). Try again later.`,
+    );
   }
 
   return ok();

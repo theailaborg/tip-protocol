@@ -12,8 +12,8 @@
 "use strict";
 
 const { shake256 } = require("../../shared/crypto");
-const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS } = require("../../shared/constants");
-const { JURY, APPEAL, DISPUTE } = require("../../shared/protocol-constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES } = require("../../shared/constants");
+const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
 
@@ -167,8 +167,10 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
   // Deterministic seed: dispute tx (unpredictable) + identity count (verifiable set size)
   const seed = shake256(`${disputeTxId}:${identityCount}`);
 
-  // HARD-EXCLUDE filter: never include the author, the disputer, or any
-  // revoked identity — those are security invariants, not preferences.
+  // HARD-EXCLUDE filter: never include the author, the disputer, any
+  // revoked identity, or any organization. Orgs are entities (companies,
+  // AI tools, services) — adjudication seats (juror / expert / reviewer)
+  // are reserved for personal identities making a human judgment call.
   // Score and geographic-diversity are SOFT preferences applied inside
   // _pickWithGeoCap (Pass 1 strict, Passes 2-3 progressively relaxed).
   // Sort by tip_id for determinism across nodes before shuffling.
@@ -176,6 +178,8 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
       if (dag.isRevoked(id.tip_id)) return false;
+      const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
+      if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
@@ -218,13 +222,17 @@ function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, cti
     )
     : new Set();
 
-  // Hard excludes — author, disputer, revoked, prior-stage jurors.
+  // Hard excludes — author, disputer, revoked, prior-stage jurors,
+  // organizations. Adjudication seats are reserved for personal
+  // identities (see selectJury for the same rationale).
   // Score + geo-diversity are soft preferences relaxed by _pickWithGeoCap.
   const candidates = allIdentities
     .filter(id => {
       if (id.tip_id === authorTipId || id.tip_id === disputerTipId) return false;
       if (priorJurors.has(id.tip_id)) return false;
       if (dag.isRevoked(id.tip_id)) return false;
+      const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
+      if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
@@ -520,6 +528,41 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     // DISMISSED: no disputer event — filing-time stake deduction is the forfeit.
   }
 
+  // ── Pre-scan reviewer CORRECT_BONUS overlay (Stage-2) ───────────────────
+  // When this dispute came out of a CONFIRMED prescan-review, the
+  // reviewer (= disputer_tip_id on the escalation tx) already gets the
+  // standard disputer settlement above:
+  //
+  //   UPHELD             +stake (15) + UPHELD_BONUS (5) = +20
+  //   CONSERVATIVE_LABEL +stake (15)                    = +15
+  //   DISMISSED          0  (filing-time -15 stays forfeited)
+  //
+  // On top of that we add CORRECT_BONUS for the review work itself —
+  // the reviewer did extra labour (the prescan-review decision) before
+  // the dispute path even fired, so they earn an additional small
+  // bonus when the verdict validates their CONFIRM. No overlay on
+  // DISMISSED — the disputer settlement's stake forfeiture already
+  // captures the "wrong call" penalty.
+  //
+  // Lifetime net per outcome (filing-time stake + Stage-2 batch + bonus):
+  //   UPHELD             -15 + 20 + 5 = +10
+  //   CONSERVATIVE_LABEL -15 + 15 + 5 = +5
+  //   DISMISSED          -15 +  0 + 0 = -15
+  const escalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+    ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+    : null;
+  if (escalatedReview && escalatedReview.assigned_reviewer
+      && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
+      && REVIEWER.CORRECT_BONUS > 0) {
+    txs.push(scoring.buildScoreUpdateTx({
+      tipId: escalatedReview.assigned_reviewer,
+      delta: REVIEWER.CORRECT_BONUS,
+      reason: `review_correct_bonus:${escalatedReview.review_id}`,
+      ctid, relatedTxId: resultTx.tx_id,
+      timestamp, getRecentPrev, config,
+    }));
+  }
+
   // Author vindication on DISMISSED. Spec (TIP_Scoring_v2 Reputation §):
   // a creator whose content the jury exonerates earns
   // DISPUTE.VINDICATION_BONUS — the only path that credits the author
@@ -743,6 +786,38 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         }));
       }
     }
+
+    // ── Pre-scan reviewer CORRECT_BONUS reversal/re-application (Stage-3) ─
+    // The reviewer is the disputer (disputer_tip_id on the escalation
+    // tx) — their stake refund / bonus / forfeit is already reversed
+    // and re-applied by the disputer-overturn block above. The only
+    // thing left for us is the CORRECT_BONUS overlay: reverse what
+    // Stage-2 paid (if anything) and apply what Stage-3 says.
+    //
+    // Stage-2 paid CORRECT_BONUS on UPHELD or CONSERVATIVE_LABEL.
+    // DISMISSED paid nothing extra.
+    const escalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+      ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+      : null;
+    if (escalatedReview && escalatedReview.assigned_reviewer && REVIEWER.CORRECT_BONUS > 0) {
+      const reviewerTipId = escalatedReview.assigned_reviewer;
+      const stage2PaidBonus = stage2Verdict === VERDICT.UPHELD || stage2Verdict === VERDICT.CONSERVATIVE_LABEL;
+      const stage3PaysBonus = verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL;
+      if (stage2PaidBonus) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: reviewerTipId, delta: -REVIEWER.CORRECT_BONUS,
+          reason: `Appeal overturned: Stage 2 review_correct_bonus reversed on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+      if (stage3PaysBonus) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: reviewerTipId, delta: REVIEWER.CORRECT_BONUS,
+          reason: `review_correct_bonus_on_appeal:${escalatedReview.review_id}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+    }
   }
   // Not overturned: no settlement event for the appellant. The
   // filing-time stake deduction (in dispute-service.fileAppeal) is the
@@ -782,6 +857,27 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     }
     // DISMISSED on NO_QUORUM: stake stays forfeited (no event), matches
     // standard DISMISSED handling.
+
+    // ── Pre-scan reviewer CORRECT_BONUS (NO_QUORUM → Stage-3 first
+    // authoritative verdict) ──────────────────────────────────────────────
+    // Stage-2 NO_QUORUM paid the disputer nothing (stake stayed locked).
+    // The Stage-3 settlement above handles the disputer (= reviewer)
+    // stake refund / bonus. We only add the CORRECT_BONUS overlay for
+    // the review work when Stage-3 lands on UPHELD or CONSERVATIVE_LABEL.
+    const noQuorumEscalatedReview = typeof dag.getPrescanReviewsByCtid === "function"
+      ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
+      : null;
+    if (noQuorumEscalatedReview && noQuorumEscalatedReview.assigned_reviewer
+        && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
+        && REVIEWER.CORRECT_BONUS > 0) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: noQuorumEscalatedReview.assigned_reviewer,
+        delta: REVIEWER.CORRECT_BONUS,
+        reason: `review_correct_bonus_no_quorum:${noQuorumEscalatedReview.review_id}`,
+        ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    }
   }
 
   // ── Expert score effects ──────────────────────────────────────────────────

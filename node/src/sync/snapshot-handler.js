@@ -908,8 +908,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       let rpN = 0;
       const rpRows = queues.rp || [];
       if (rpRows.length > 0
-          && typeof dag.deleteRotationParticipationByRotation === "function"
-          && typeof dag.setRotationParticipation === "function") {
+        && typeof dag.deleteRotationParticipationByRotation === "function"
+        && typeof dag.setRotationParticipation === "function") {
         const rotationsInSnapshot = new Set();
         for (const r of rpRows) {
           if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);

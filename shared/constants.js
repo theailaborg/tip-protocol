@@ -48,6 +48,97 @@ const CONTENT_STATUS = Object.freeze({
   RETRACTED: "retracted",
 });
 
+// ─── Prescan tiers ──────────────────────────────────────────────────────────
+// Vocabulary enum for the 4-tier categorical model. Threshold values that
+// decide which probability falls into which tier live in genesis under
+// `prescan.tier_thresholds` (accessed via PRESCAN_TIER_THRESHOLDS from
+// shared/protocol-constants.js) — same pattern as the existing
+// PRESCAN_THRESHOLDS legacy field.
+const PRESCAN_TIERS = Object.freeze({
+  LOW: "low",
+  ELEVATED: "elevated",
+  HIGH: "high",
+  CRITICAL: "critical",
+});
+
+const PRESCAN_TIER_VALUES = Object.freeze([
+  PRESCAN_TIERS.LOW,
+  PRESCAN_TIERS.ELEVATED,
+  PRESCAN_TIERS.HIGH,
+  PRESCAN_TIERS.CRITICAL,
+]);
+
+// Short, neutral one-liner returned in the registration response per tier.
+// Intended as a fallback for *non-UI consumers* (CLI, plugin authors,
+// third-party integrations) — the rich post-registration warning copy
+// belongs to the FE, which composes it from the structured `prescan`
+// descriptor returned alongside this field (tier, probability,
+// decision_window_ends_at, actions_available, etc.). See
+// my-notes/POST_REGISTRATION_FLOW.md for the FE-owned copy contract.
+const PRESCAN_NOTES = Object.freeze({
+  [PRESCAN_TIERS.LOW]: null,
+  [PRESCAN_TIERS.ELEVATED]: "AI-pattern signals detected; updating the origin within the decision window has zero penalty.",
+  [PRESCAN_TIERS.HIGH]: "AI flagged this content at HIGH confidence. Either keep your declaration (an independent reviewer will examine it after the decision window) or update the origin in-window at zero penalty.",
+  [PRESCAN_TIERS.CRITICAL]: "AI flagged this content at VERY HIGH confidence. Either keep your declaration (an independent reviewer will examine it after the decision window) or update the origin in-window at zero penalty. Reviewer-confirmed AI involvement carries a significant penalty.",
+});
+
+// Confidence-label enum returned in the structured `prescan` descriptor.
+// Aliases the tier with the more human-readable "very_high" for CRITICAL.
+// Stable contract — FE keys its i18n strings off these values.
+const CONFIDENCE_LABELS = Object.freeze({
+  [PRESCAN_TIERS.LOW]:      "low",
+  [PRESCAN_TIERS.ELEVATED]: "elevated",
+  [PRESCAN_TIERS.HIGH]:     "high",
+  [PRESCAN_TIERS.CRITICAL]: "very_high",
+});
+
+// Allowed values in `prescan.actions_available`. The FE decides which
+// buttons to render based on what the backend says is permitted for
+// this tier + state. Backend-owned source of truth so a future protocol
+// change (e.g., removing "retract" at a certain tier) propagates without
+// a coordinated FE deploy.
+const PRESCAN_ACTIONS = Object.freeze({
+  KEEP:          "keep",
+  CHANGE_ORIGIN: "change_origin",
+  RETRACT:       "retract",
+});
+
+// Allowed values in `prescan.consequence_if_confirmed`. Drives the
+// severity badge on the FE.
+const PRESCAN_CONSEQUENCES = Object.freeze({
+  NONE:                 "none",
+  PENALTY:              "penalty",
+  SIGNIFICANT_PENALTY:  "significant_penalty",
+});
+
+// Allowed values in `prescan.next_step_if_kept`. Tells the FE what
+// happens when the creator does nothing during the decision window.
+const PRESCAN_NEXT_STEPS = Object.freeze({
+  NONE:                                     "none",
+  INDEPENDENT_REVIEWER_AT_WINDOW_END:       "independent_reviewer_at_window_end",
+});
+
+// ─── Prescan-review state ──────────────────────────────────────────────────
+// Lifecycle states for a `prescan_reviews` row. State machine:
+//
+//   triggered → (creator self-corrects via UPDATE_ORIGIN)    → closed_self_correct
+//   triggered → reviewer DISMISSES (AI's flag was wrong)     → closed_dismissed
+//   triggered → reviewer CONFIRMS (AI's flag was right)      → confirmed
+//   confirmed → (creator accepts correction privately)       → closed_accepted_private
+//   confirmed → (24h elapses without creator action)         → escalated_to_dispute
+//   triggered → assigned reviewer recuses                    → recused
+const PRESCAN_REVIEW_STATES = Object.freeze({
+  TRIGGERED: "triggered",                              // reviewer assigned, awaiting decision
+  CLOSED_SELF_CORRECT: "closed_self_correct",          // creator updated origin within window
+  CLOSED_DISMISSED: "closed_dismissed",                // reviewer said "AI's flag was wrong"
+  CONFIRMED: "confirmed",                              // reviewer said "AI's flag was right"; creator decision window open
+  CLOSED_ACCEPTED_PRIVATE: "closed_accepted_private",  // creator accepted correction privately
+  ESCALATED_TO_DISPUTE: "escalated_to_dispute",        // auto-escalated to CONTENT_DISPUTED after creator window
+  RECUSED: "recused",                                  // reviewer recused; reassigned (terminal for this review_id slot)
+});
+
+const PRESCAN_REVIEW_STATE_VALUES = Object.freeze(Object.values(PRESCAN_REVIEW_STATES));
+
 // ─── Dispute reasons ────────────────────────────────────────────────────────
 // Protocol vocabulary — enum of accepted values for the `reason` field on a
 // CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
@@ -191,7 +282,17 @@ const TX_TYPES = Object.freeze({
   // Identity
   REGISTER_IDENTITY: "REGISTER_IDENTITY",
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
+  UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
+  // Prescan review pipeline — human reviewer auditing whether the AI
+  // prescan's HIGH/CRITICAL flag was correct. Single-reviewer gate
+  // between prescan flag and public CONTENT_DISPUTED. On DAG for
+  // federation consistency; UI policy filters dismissed reviews from
+  // public surfaces.
+  PRESCAN_REVIEW_TRIGGERED: "PRESCAN_REVIEW_TRIGGERED",
+  PRESCAN_REVIEW_DISMISSED: "PRESCAN_REVIEW_DISMISSED",
+  PRESCAN_REVIEW_CONFIRMED: "PRESCAN_REVIEW_CONFIRMED",
+  PRESCAN_REVIEW_RECUSED:   "PRESCAN_REVIEW_RECUSED",
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
@@ -394,6 +495,15 @@ module.exports = {
   JURY_VOTES,
   VERDICT,
   CONTENT_STATUS,
+  PRESCAN_TIERS,
+  PRESCAN_TIER_VALUES,
+  PRESCAN_NOTES,
+  CONFIDENCE_LABELS,
+  PRESCAN_ACTIONS,
+  PRESCAN_CONSEQUENCES,
+  PRESCAN_NEXT_STEPS,
+  PRESCAN_REVIEW_STATES,
+  PRESCAN_REVIEW_STATE_VALUES,
   DISPUTE_REASON,
   DISPUTE_REASONS,
   CNA_VERSIONS,

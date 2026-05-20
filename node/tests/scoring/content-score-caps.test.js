@@ -89,7 +89,7 @@ function _seedContent(dag, ctid, authorTipId, origin = ORIGIN.OH) {
 }
 
 function _verifyOnce(contentService, ctid, verifierKp, verifierTipId) {
-  const sig = signBody({ verifier_tip_id: verifierTipId, verdict: "ORIGIN_CONFIRMED" }, verifierKp.privateKey);
+  const sig = signBody({ verifier_tip_id: verifierTipId, ctid, verdict: "ORIGIN_CONFIRMED" }, verifierKp.privateKey);
   return contentService.verify(ctid, { verifier_tip_id: verifierTipId, verdict: "ORIGIN_CONFIRMED", signature: sig });
 }
 

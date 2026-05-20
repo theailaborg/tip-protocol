@@ -19,6 +19,7 @@ spec changed or the genesis is misconfigured.
 | `MAJORITY_BONUS` | **3** | Juror/expert majority-vote reward |
 | `MINORITY_PENALTY` | **10** | Juror/expert minority-vote forfeit |
 | `NO_SHOW_PENALTY` | **10** | Summoned but didn't reveal |
+| `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
 
 **Author penalty (UPHELD only)** — depends on the origin pair and the
 author's prior offense_count:
@@ -169,6 +170,118 @@ all-revealers, no-show -10.
 
 ---
 
+## Pre-scan reviewer
+
+When a CONFIRMED prescan-review escalates to a public dispute (either
+the creator clicks "Dispute publicly" via `POST /v1/reviews/:id/dispute`
+or the h=R+24 auto-escalation fires), the **assigned reviewer is set
+as `disputer_tip_id`** on the CONTENT_DISPUTED tx. They are the formal
+disputer of the case — their CONFIRM was the dispute claim, so they
+own the disputer seat and ride the standard stake-on-file disputer
+economics. Same rule as a normal user-filed dispute: `-DISPUTER_STAKE`
+is deducted at filing time (paired SCORE_UPDATE alongside CONTENT_DISPUTED),
+refunded on UPHELD / CONSERVATIVE_LABEL, forfeited on DISMISSED.
+
+A small `REVIEWER.CORRECT_BONUS` (+5) overlay credits the review work
+on top, when the verdict validates the reviewer's CONFIRM.
+
+### Closed-path emissions (no public dispute fired)
+
+| Reviewer action | Outcome | Δ this batch | Reason string |
+|---|---|---:|---|
+| DISMISS | reviewer says AI was wrong; case closes | **+5** | `review_dismissed:<review_id>` |
+| CONFIRM → creator accepts privately | creator agreed with the call | **+5** | `review_accepted_private:<review_id>` |
+
+Paired with the originating tx in the same batch (single-channel rule):
+the DISMISS batch is `[PRESCAN_REVIEW_DISMISSED, SCORE_UPDATE]`; the
+accept-private batch is `[UPDATE_ORIGIN, SCORE_UPDATE(creator −10),
+SCORE_UPDATE(reviewer +5)]`.
+
+### Escalation-time emission (paired with CONTENT_DISPUTED)
+
+When the creator clicks "Dispute publicly" (or auto-escalation fires
+at h=R+24), the reviewer's stake is deducted in the same batch as the
+dispute tx:
+
+| Stage | Reviewer Δ | Reason string |
+|---|---:|---|
+| Filing | **−15** | `Dispute filing stake on <ctid>` |
+
+### Verdict-driven emissions (Stage-2)
+
+Standard disputer settlement fires on `disputer_tip_id = reviewer`,
+plus a CORRECT_BONUS overlay when the verdict goes the reviewer's way:
+
+| Stage-2 verdict | Disputer settlement (already-existing path) | CORRECT_BONUS overlay | Lifetime net (incl. −15 filing) |
+|---|---:|---:|---:|
+| UPHELD | **+20** (refund 15 + bonus 5) | **+5** | **+10** |
+| CONSERVATIVE_LABEL | **+15** (refund only) | **+5** | **+5** |
+| DISMISSED | **0** (stake stays forfeited) | 0 | **−15** |
+
+Reason strings: standard disputer reasons (`Dispute upheld on …`,
+`Dispute conservative-label on …`) for the disputer settlement;
+`review_correct_bonus:<review_id>` for the overlay.
+
+### Verdict-driven emissions (Stage-3 overturn)
+
+Stage-3 reuses the existing disputer-overturn machinery; my overlay
+adds CORRECT_BONUS reversal + re-application:
+
+| Stage-2 → Stage-3 | Disputer reversal | CORRECT_BONUS overlay (reverse + fresh) |
+|---|---:|---|
+| UPHELD → DISMISSED | **−20** (reverse +20) | reverse Stage-2 +5 = **−5**, no fresh |
+| DISMISSED → UPHELD | **+20** (fresh, Stage-2 paid 0) | no reverse, fresh = **+5** |
+| UPHELD → UPHELD (confirm) | 0 | 0 |
+| DISMISSED → DISMISSED (confirm) | 0 | 0 |
+
+Reason strings for the overlay: `Appeal overturned: Stage 2
+review_correct_bonus reversed on <ctid>` (reversal),
+`review_correct_bonus_on_appeal:<review_id>` (fresh).
+
+The reviewer (= disputer) also happens to be the appellant when the
+losing party of Stage-2 appeals. In that case the standard appellant
+economics (filing-time `-APPELLANT_STAKE`, overturn `+25 + 10` bonus)
+ride on top — already covered by the disputer / appellant scoring
+tests, not duplicated in reviewer-payment tests.
+
+### Verdict-driven emissions (NO_QUORUM → Stage-3 first verdict)
+
+Stage-2 NO_QUORUM paid nothing (disputer stake stayed locked). Stage-3
+is the first authoritative verdict, so the standard disputer settlement
+fires then for the reviewer, plus CORRECT_BONUS overlay:
+
+| Stage-3 verdict on NO_QUORUM | Disputer settlement | CORRECT_BONUS overlay |
+|---|---:|---:|
+| UPHELD | **+20** (refund + bonus) | **+5** |
+| CONSERVATIVE_LABEL | **+15** (refund only) | **+5** |
+| DISMISSED | **0** (stake stays forfeited) | 0 |
+
+CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`.
+
+### Reviewer skin-in-the-game summary (lifetime nets)
+
+| Reviewer journey | Cumulative Δ |
+|---|---:|
+| DISMISS, no later dispute | **+5** |
+| CONFIRM → accept-private | **+5** |
+| CONFIRM → dispute UPHELD (Stage-2 final) | **+10** |
+| CONFIRM → dispute CONSERVATIVE_LABEL (Stage-2 final) | **+5** |
+| CONFIRM → dispute DISMISSED (Stage-2 final) | **−15** |
+| CONFIRM → Stage-2 UPHELD → Stage-3 overturn DISMISSED | **−15** (filing −15 + Stage-2 +25 + Stage-3 −25) |
+| CONFIRM → Stage-2 DISMISSED → Stage-3 overturn UPHELD | **+10** (filing −15 + Stage-3 +25 ; appellant economics separate) |
+| CONFIRM → Stage-2 NO_QUORUM → Stage-3 UPHELD | **+10** |
+| CONFIRM → Stage-2 NO_QUORUM → Stage-3 DISMISSED | **−15** |
+
+### Eligibility gate (separate from rewards)
+
+Across all rewards, the reviewer's running accuracy ratio is tracked.
+If overturn rate exceeds `REVIEWER.MAX_OVERTURN_RATE` (0.30) over the
+last `ACCURACY_SAMPLE_SIZE` (20) decisions, the runtime selector
+silently excludes them from future pools until accuracy recovers. No
+revocation tx is needed — eligibility is a pure function of DAG state.
+
+---
+
 ## Two bonuses at +5 — they are NOT the same thing
 
 Three bonuses live in the same numeric ballpark but reward different
@@ -179,6 +292,7 @@ behaviours:
 | `UPHELD_BONUS` (+5) | Disputer wins Stage-2 | Disputer | Once, on Stage-2 UPHELD |
 | `VINDICATION_BONUS` (+5) | Author's content cleared | Author | Once per resolution: Stage-2 DISMISSED, or Stage-3 overturn UPHELD→DISMISSED. Retracted on later overturn. |
 | `OVERTURN_BONUS` (+10) | Appellant won the appeal (anyone) | Appellant | Once, on Stage-3 overturn |
+| `REVIEWER.CORRECT_BONUS` (+5) | Pre-scan reviewer's call validated | Reviewer | DISMISS commit; accept-private commit; Stage-2 verdict (added on top of `UPHELD_BONUS` or alone for CONSERVATIVE_LABEL); reversed on Stage-3 overturn. |
 
 `UPHELD_BONUS` and `VINDICATION_BONUS` never fire on the same party
 in the same step (one rewards disputers, the other rewards authors).

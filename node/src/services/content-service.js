@@ -4,14 +4,16 @@ const {
   shake256, hashContent, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
-const { withTxId } = require("./helpers");
-const { preScanContent } = require("./helpers");
+const { withTxId, buildPrescanDescriptor } = require("./helpers");
+// Imported via the module reference (not destructured) so tests can
+// jest.spyOn(helpers, "preScanContent") to drive specific tier scenarios.
+const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
@@ -41,8 +43,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     const perceptHash = content ? perceptualHashText(content) : null;
     const contentHistory = { verified_oh_count: dag.getContentByAuthor(signer_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
-    const preScan = preScanContent(content || "", origin_code, contentHistory);
+    const preScan = helpers.preScanContent(content || "", origin_code, contentHistory);
 
+    // Silent registration: HIGH/CRITICAL-tier OH/AA content is accepted
+    // without a blocking gate. The post-registration `/content/:ctid`
+    // response carries prescan_tier + prescan_note so clients can warn
+    // the creator. If they don't self-correct within the 48h window the
+    // h=48 PRESCAN_REVIEW_TRIGGERED trigger hands the call to a reviewer.
     const registeredAt = new Date().toISOString();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
@@ -61,7 +68,15 @@ function createContentService({ dag, scoring, config, submitTx }) {
         ctid, origin_code: canonicalPayload.origin_code,
         content_hash: contentHashFull, perceptual_hash: perceptHash,
         signature,
-        prescan_flagged: preScan.flagged, prescan_probability: preScan.probability,
+        prescan_flagged: preScan.flagged,
+        prescan_probability: preScan.probability,
+        prescan_tier: preScan.tier,
+        // Passthrough — clients MAY send override=true as an explicit
+        // ack-of-warning signal. Defaults to false when omitted; not
+        // gated, so registration succeeds either way. The field is kept
+        // on the tx row for now while the post-registration warning UX
+        // is being validated end-to-end.
+        override: !!body.override,
 
         // ── CNA-2.2 signed canonical fields (mirror canonicalPayload
         //    so commit-handler can replay buildSigningPayload(d, d.content_hash))
@@ -87,13 +102,22 @@ function createContentService({ dag, scoring, config, submitTx }) {
     // knows to expect async finalization.
     return {
       ctid, origin_code, origin_label: ORIGIN_LABELS[origin_code],
+      // origin_code at registration is the original (ctid prefix
+      // encodes it). origin_changed is always false here — present
+      // for symmetry with the resolve() response shape so the FE
+      // can branch on a single field on both paths.
+      original_origin_code: origin_code,
+      origin_changed: false,
       content_hash: contentHashFull, signer_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
       prescan_flagged: preScan.flagged,
-      prescan_note: preScan.flagged ? "Content flagged by AI pre-scan. You have 24 hours to change the origin code at zero penalty." : null,
+      prescan_tier: preScan.tier,
+      prescan_probability: preScan.probability,
+      prescan_note: PRESCAN_NOTES[preScan.tier] || null,
+      prescan: buildPrescanDescriptor({ preScan, originCode: origin_code, registeredAt }),
       http_headers: {
         [HTTP_HEADERS.AUTHOR]: signer_tip_id, [HTTP_HEADERS.CONTENT]: ctid,
         [HTTP_HEADERS.ORIGIN]: ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
@@ -122,9 +146,20 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
     const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
 
+    // The ctid embeds the original origin_code at registration time
+    // (see crypto.generateCTID). That's an immutable record of what
+    // the creator first declared, even after UPDATE_ORIGIN rewrites
+    // the row's origin_code. The FE uses `origin_changed` to suppress
+    // the prescan warning banner and disable the change-origin CTA.
+    const ctidOriginMatch = typeof rec.ctid === "string" ? rec.ctid.match(/^tip:\/\/c\/([A-Z]+)-/) : null;
+    const originalOriginCode = ctidOriginMatch ? ctidOriginMatch[1] : null;
+    const originChanged = !!originalOriginCode && originalOriginCode !== rec.origin_code;
+
     return {
       ...rec,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      original_origin_code: originalOriginCode,
+      origin_changed: originChanged,
       author_name: (author && author.creator_name) || null,
       author_score: scoring.getScore(rec.author_tip_id).score,
       author_tier: scoring.getScore(rec.author_tip_id).tier.name,
@@ -134,7 +169,68 @@ function createContentService({ dag, scoring, config, submitTx }) {
         tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid,
         author_valid: authorValid, author_revoked: dag.isRevoked(rec.author_tip_id), on_dag: true,
       },
+      review_history: _projectReviewHistory(ctid),
+      appeal_pending: _isAppealPending(ctid),
+      prescan: buildPrescanDescriptor({
+        preScan: {
+          tier: rec.prescan_tier,
+          probability: rec.prescan_probability,
+          flagged: rec.prescan_flagged,
+        },
+        originCode: rec.origin_code,
+        registeredAt: rec.registered_at,
+        originChanged,
+      }),
+      prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
+      consensus: { available: false, status: "not_requested" },
     };
+  }
+
+  /**
+   * Latest prescan-review row + counts for this ctid. content.status
+   * already covers REGISTERED / PENDING_REVIEW / DISPUTED / VERIFIED /
+   * RETRACTED — this surfaces the orthogonal "did a reviewer engage,
+   * and what did they decide?" signal so clients can render
+   * vindication ("cleared after review") vs. self-correct vs. accepted
+   * privately without recomputing from raw txs.
+   *
+   * Returns { total, latest: { ... } | null } — `latest` is null when
+   * no review has ever existed for the ctid.
+   */
+  function _projectReviewHistory(ctid) {
+    const reviews = typeof dag.getPrescanReviewsByCtid === "function"
+      ? dag.getPrescanReviewsByCtid(ctid)
+      : [];
+    if (!reviews || reviews.length === 0) {
+      return { total: 0, latest: null };
+    }
+    // getPrescanReviewsByCtid is sorted DESC by triggered_at_round.
+    const r = reviews[0];
+    return {
+      total: reviews.length,
+      latest: {
+        review_id: r.review_id,
+        state: r.state,
+        assigned_reviewer: r.assigned_reviewer,
+        triggered_at_round: r.triggered_at_round,
+        decided_at_round: r.decided_at_round,
+        confirmed_at_round: r.confirmed_at_round,
+        confirmed_at_ms: r.confirmed_at_ms,
+        decision_note: r.decision_note,
+        suggested_origin: r.suggested_origin,
+      },
+    };
+  }
+
+  // Surface "appeal pending" as a separate signal from content.status so
+  // the FE can render a Stage-3-in-progress badge without us mutating the
+  // canonical status away from what Stage-2 already bound. True when an
+  // APPEAL_FILED tx exists for this ctid without a matching APPEAL_RESULT.
+  function _isAppealPending(ctid) {
+    const filed = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, ctid);
+    if (!filed || filed.length === 0) return false;
+    const resolved = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, ctid);
+    return filed.length > resolved.length;
   }
 
   function verify(ctid, body) {
@@ -147,8 +243,13 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const verifier = dag.getIdentity(verifier_tip_id);
 
-    const VERIFY_FIELDS = ["verifier_tip_id", "verdict"];
-    if (!verifyBodySignature(body, signature, verifier.public_key, VERIFY_FIELDS)) {
+    // Bind the signature to the specific ctid being acted on. The
+    // ctid lives in the URL; we inject it into the body before
+    // verification so a captured signature can't be replayed against
+    // a different ctid owned by the same verifier.
+    const VERIFY_FIELDS = ["verifier_tip_id", "ctid", "verdict"];
+    const verifyPayload = { ...body, ctid };
+    if (!verifyBodySignature(verifyPayload, signature, verifier.public_key, VERIFY_FIELDS)) {
       throw schemaError(403, "Verifier signature verification failed", "signature_invalid");
     }
 
@@ -218,8 +319,11 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
-    const UPDATE_FIELDS = ["author_tip_id", "new_origin_code"];
-    if (!verifyBodySignature(body, signature, author.public_key, UPDATE_FIELDS)) {
+    // Bind the signature to the specific ctid being acted on (replay
+    // protection — see verify() above for the same pattern).
+    const UPDATE_FIELDS = ["author_tip_id", "ctid", "new_origin_code"];
+    const updatePayload = { ...body, ctid };
+    if (!verifyBodySignature(updatePayload, signature, author.public_key, UPDATE_FIELDS)) {
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
@@ -242,7 +346,10 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const rec = dag.getContent(ctid);
     const author = dag.getIdentity(author_tip_id);
 
-    if (!verifyBodySignature(body, signature, author.public_key, ["author_tip_id"])) {
+    // Bind the signature to the specific ctid being retracted (replay
+    // protection — see verify() above for the same pattern).
+    const retractPayload = { ...body, ctid };
+    if (!verifyBodySignature(retractPayload, signature, author.public_key, ["author_tip_id", "ctid"])) {
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 

@@ -2,11 +2,12 @@
 
 const { shake256, verifyBodySignature } = require("../../../shared/crypto");
 const {
-  TX_TYPES, ORIGIN, ORIGIN_LABELS, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS,
+  TX_TYPES, ORIGIN, ORIGIN_LABELS, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS, PRESCAN_TIERS,
+  PRESCAN_REVIEW_STATES,
   DISPUTE_REASON, DISPUTE_REASONS,
   DISPUTE_SHORT_ID_LEN, DISPUTE_EPISODE_TX_TYPES, DISPUTE_EVENT_PRIORITY,
 } = require("../../../shared/constants");
-const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER } = require("../../../shared/protocol-constants");
+const { DISPUTE, JURY, APPEAL, AI_CLASSIFIER, CONTENT_GRACE, REVIEWER } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { selectJury, selectExperts } = require("../jury");
@@ -1017,6 +1018,189 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             outcome,
             score_impact: scoreImpact,
             resolved_at: result.timestamp,
+          },
+        });
+      }
+    }
+
+    // ── review_assignment_pending ────────────────────────────────────────
+    // Reviewer-facing reminder for open TRIGGERED assignments. Surfaces
+    // the assigned_reviewer's outstanding cases with hours remaining
+    // until REVIEWER.AUTO_RECUSE_AGE_MS triggers the system-emitted
+    // recuse. Once the reviewer dismisses / confirms / recuses (or the
+    // auto-recuse fires), the review row leaves TRIGGERED state and the
+    // item disappears.
+    if (typeof dag.getPrescanReviewsByReviewer === "function") {
+      const myReviews = dag.getPrescanReviewsByReviewer(tipId) || [];
+      for (const r of myReviews) {
+        if (r.state !== "triggered") continue;
+        if (r.triggered_at_ms == null) continue;
+        const deadlineMs = r.triggered_at_ms + REVIEWER.AUTO_RECUSE_AGE_MS;
+        const remainingMs = deadlineMs - now;
+        const hoursRemaining = Math.max(0, Math.round(remainingMs / 3600000));
+        const overdue = remainingMs <= 0;
+        items.push({
+          id: `review_assignment_pending:${r.review_id}`,
+          type: "review_assignment_pending",
+          priority: overdue ? "urgent" : (hoursRemaining <= 6 ? "urgent" : "high"),
+          title: overdue
+            ? `Review assignment past SLA — auto-recuse imminent`
+            : `Review assignment open — ${hoursRemaining}h to decide or recuse`,
+          summary: `${_ctidLabel(r.ctid)} is awaiting your decision. Dismiss, confirm, or recuse before the assignment auto-recuses and reassigns.`,
+          role: "reviewer",
+          ctid: r.ctid,
+          dispute_id: null,
+          deadline: new Date(deadlineMs).toISOString(),
+          action: {
+            kind: "view_review",
+            label: "Open review",
+            href: `/reviews/${r.review_id}`,
+          },
+          metadata: {
+            review_id: r.review_id,
+            creator_tip_id: r.creator_tip_id,
+            triggered_at_ms: r.triggered_at_ms,
+            hours_remaining: hoursRemaining,
+          },
+        });
+      }
+    }
+
+    // ── Flagged-content notifications (3 phases) ─────────────────────────
+    // Three creator-facing states are surfaced as separate notification
+    // types so the FE can render distinct copy / actions for each:
+    //
+    //   A. content_flagged_for_review          (h=0 → h=48, no review yet)
+    //   B. content_under_review                (TRIGGERED — reviewer evaluating)
+    //   C. prescan_review_decision_required    (CONFIRMED — creator has 24h)
+    //
+    // All three derive from current DAG state — no notification table.
+    // A flagged content row transitions through them as its prescan_review
+    // row advances; the FE renders whichever is currently emitted.
+    if (typeof dag.getContentByAuthor === "function") {
+      for (const c of dag.getContentByAuthor(tipId)) {
+        // Pre-filter — only HIGH/CRITICAL OH content of this author is
+        // a candidate for any of the three notifications.
+        if (c.origin_code !== ORIGIN.OH) continue;
+        if (c.prescan_tier !== PRESCAN_TIERS.HIGH && c.prescan_tier !== PRESCAN_TIERS.CRITICAL) continue;
+
+        const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+        if (!Number.isFinite(registeredMs)) continue;
+
+        const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
+          ? dag.getOpenPrescanReviewByCtid(c.ctid)
+          : null;
+
+        // ── C. prescan_review_decision_required (CONFIRMED) ─────────────
+        // Reviewer agreed with the AI. Creator has 24h to accept the
+        // suggested correction privately or file a public dispute.
+        if (openReview && openReview.state === PRESCAN_REVIEW_STATES.CONFIRMED) {
+          const confirmedAtMs = openReview.confirmed_at_ms || now;
+          const decisionDeadlineMs = confirmedAtMs + REVIEWER.CREATOR_DECISION_WINDOW_MS;
+          const remainingMs = Math.max(0, decisionDeadlineMs - now);
+          const remainingHours = Math.max(0, Math.round(remainingMs / 3600000));
+          items.push({
+            id: `prescan_review_decision_required:${c.ctid}`,
+            type: "prescan_review_decision_required",
+            priority: "high",
+            title: remainingMs > 0
+              ? `Reviewer confirmed the AI flag — ${remainingHours}h to respond.`
+              : `Reviewer confirmed the AI flag — decision window elapsed.`,
+            summary: `${_ctidLabel(c.ctid)}: an independent reviewer agreed with the ${c.prescan_tier.toUpperCase()} AI assessment${openReview.suggested_origin ? ` and suggested ${openReview.suggested_origin}` : ""}. Accept the correction privately (-10 reputation) or escalate to a public dispute.`,
+            role: "author",
+            ctid: c.ctid,
+            dispute_id: null,
+            deadline: new Date(decisionDeadlineMs).toISOString(),
+            action: {
+              kind: "review_decision",
+              label: "Respond to reviewer",
+              href: `/reviews/${openReview.review_id}`,
+            },
+            metadata: {
+              review_id: openReview.review_id,
+              review_state: openReview.state,
+              prescan_tier: c.prescan_tier,
+              prescan_probability: c.prescan_probability,
+              declared_origin: c.origin_code,
+              suggested_origin: openReview.suggested_origin || null,
+              decision_note: openReview.decision_note || null,
+              confirmed_at_ms: confirmedAtMs,
+              decision_window_ends_at: new Date(decisionDeadlineMs).toISOString(),
+              hours_remaining: remainingHours,
+            },
+          });
+          continue;
+        }
+
+        // ── B. content_under_review (TRIGGERED) ─────────────────────────
+        // Reviewer assigned and evaluating. Creator can still self-correct
+        // (closes the review as CLOSED_SELF_CORRECT). No hard deadline
+        // exposed here — the reviewer SLA bounds it server-side.
+        if (openReview && openReview.state === PRESCAN_REVIEW_STATES.TRIGGERED) {
+          items.push({
+            id: `content_under_review:${c.ctid}`,
+            type: "content_under_review",
+            priority: "high",
+            title: `Independent reviewer is examining your content.`,
+            summary: `${_ctidLabel(c.ctid)}: a reviewer was assigned at ${new Date(openReview.triggered_at_ms || registeredMs + CONTENT_GRACE.FLAGGED_MS).toISOString()}. You can still update the origin at zero penalty until they decide.`,
+            role: "author",
+            ctid: c.ctid,
+            dispute_id: null,
+            deadline: null,
+            action: {
+              kind: "update_origin",
+              label: "Update origin",
+              href: `/content/${encodeURIComponent(c.ctid)}/update-origin`,
+            },
+            metadata: {
+              review_id: openReview.review_id,
+              review_state: openReview.state,
+              prescan_tier: c.prescan_tier,
+              prescan_probability: c.prescan_probability,
+              declared_origin: c.origin_code,
+              registered_at: c.registered_at,
+              triggered_at_ms: openReview.triggered_at_ms || null,
+              assigned_reviewer: openReview.assigned_reviewer || null,
+            },
+          });
+          continue;
+        }
+
+        // ── A. content_flagged_for_review (no review yet) ───────────────
+        // Pre-h=48 reconsideration window. Surfaces from h=0 onwards —
+        // the FE renders this as the primary "your content was flagged"
+        // notification on the dashboard, mirroring the post-registration
+        // warning banner. Hidden once content age passes h=48 (the
+        // trigger fires, B/C take over) or the creator self-corrects.
+        if (c.status !== CONTENT_STATUS.REGISTERED) continue;
+        const ageMs = now - registeredMs;
+        if (ageMs >= CONTENT_GRACE.FLAGGED_MS) continue;
+
+        const remainingMs = Math.max(0, CONTENT_GRACE.FLAGGED_MS - ageMs);
+        const remainingHours = Math.max(1, Math.round(remainingMs / 3600000));
+        const deadlineISO = new Date(registeredMs + CONTENT_GRACE.FLAGGED_MS).toISOString();
+        items.push({
+          id: `content_flagged_for_review:${c.ctid}`,
+          type: "content_flagged_for_review",
+          priority: "high",
+          title: `${remainingHours}h to reconsider — reviewer engages after that.`,
+          summary: `${_ctidLabel(c.ctid)} was flagged at ${c.prescan_tier.toUpperCase()} AI confidence (${Math.round((c.prescan_probability || 0) * 100)}%). Update the origin to AA / AG / MX during this window for a clean exit, or do nothing and an independent reviewer will examine it at h=48.`,
+          role: "author",
+          ctid: c.ctid,
+          dispute_id: null,
+          deadline: deadlineISO,
+          action: {
+            kind: "update_origin",
+            label: "Update origin",
+            href: `/content/${encodeURIComponent(c.ctid)}/update-origin`,
+          },
+          metadata: {
+            prescan_tier: c.prescan_tier,
+            prescan_probability: c.prescan_probability,
+            declared_origin: c.origin_code,
+            registered_at: c.registered_at,
+            hours_remaining: remainingHours,
+            decision_window_ends_at: deadlineISO,
           },
         });
       }

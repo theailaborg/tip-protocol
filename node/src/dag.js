@@ -25,8 +25,8 @@
 const path = require("path");
 const fs = require("fs");
 const { computeTxId, verifyTxId } = require("../../shared/crypto");
-const { TX_TYPES } = require("../../shared/constants");
-const { SCORE } = require("../../shared/protocol-constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
 const { subjectTipId } = require("./tx-attribution");
 const { log } = require("./logger");
 
@@ -57,6 +57,7 @@ function _canonIdentity(r) {
     tip_id_type: r.tip_id_type || "personal",
     founding: r.founding ? 1 : 0,
     status: r.status,
+    reviewer_consent: r.reviewer_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
@@ -85,6 +86,9 @@ function _canonContent(r) {
     cna_version: r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
+    prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
+    prescan_tier: r.prescan_tier || "low",
+    override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
     tx_id: r.tx_id || null,
@@ -202,6 +206,37 @@ function _canonNode(r) {
 // indexes, same order). Genesis rotation 0 has prev_rotation=null and
 // no signers/signatures (hardcoded trust anchor — joiner verifies it
 // matches local genesis.founding_node before extending trust).
+// Canonical projection for the `prescan_reviews` table — participates in
+// state_merkle_root. A prescan-review represents a single instance of the
+// human-reviewing-AI-flag pipeline that gates between prescan HIGH/CRITICAL
+// flag and public CONTENT_DISPUTED. Decision fields (assigned_reviewer,
+// decided_at_round, confirmed_at_round, decision_note, suggested_origin)
+// may be null while the review is in flight.
+function _canonPrescanReview(r) {
+  return {
+    review_id: r.review_id,
+    ctid: r.ctid,
+    creator_tip_id: r.creator_tip_id,
+    assigned_reviewer: r.assigned_reviewer || null,
+    triggered_at_round: r.triggered_at_round,
+    // BFT cert.timestamp ms at the moment PRESCAN_REVIEW_TRIGGERED applied.
+    // Drives the reviewer-SLA auto-recuse trigger — same deterministic-
+    // clock pattern as confirmed_at_ms below.
+    triggered_at_ms: r.triggered_at_ms == null ? null : r.triggered_at_ms,
+    state: r.state,
+    decided_at_round: r.decided_at_round == null ? null : r.decided_at_round,
+    confirmed_at_round: r.confirmed_at_round == null ? null : r.confirmed_at_round,
+    // BFT cert.timestamp ms at the moment PRESCAN_REVIEW_CONFIRMED applied
+    // — required for the h=R+24 auto-escalation trigger to compute the
+    // 24h creator-decision window deterministically. Rounds alone can't
+    // be converted to wall-clock without scanning commits; storing the
+    // cert.ts at apply time is one column and read-cheap.
+    confirmed_at_ms: r.confirmed_at_ms == null ? null : r.confirmed_at_ms,
+    decision_note: r.decision_note || null,
+    suggested_origin: r.suggested_origin || null,
+  };
+}
+
 function _canonCommitteeRotation(r) {
   const committee = Array.isArray(r.committee)
     ? r.committee
@@ -240,6 +275,7 @@ class MemoryStore {
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
     this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
+    this._prescanReviews = new Map();  // review_id -> review record (human reviewing AI prescan flag)
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
@@ -661,6 +697,100 @@ class MemoryStore {
     }
   }
 
+  // ── Prescan reviews ─────────────────────────────────────────────────
+  // INSERT OR REPLACE semantics — the same review_id walks through its
+  // state machine (triggered → confirmed → closed_accepted_private etc.)
+  // via successive saves. Caller normalizes all preserved fields each
+  // call (no partial-update semantics here).
+  savePrescanReview(rec) {
+    this._prescanReviews.set(rec.review_id, {
+      review_id: rec.review_id,
+      ctid: rec.ctid,
+      creator_tip_id: rec.creator_tip_id,
+      assigned_reviewer: rec.assigned_reviewer || null,
+      triggered_at_round: rec.triggered_at_round,
+      triggered_at_ms: rec.triggered_at_ms == null ? null : rec.triggered_at_ms,
+      decided_at_round: rec.decided_at_round == null ? null : rec.decided_at_round,
+      confirmed_at_round: rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      confirmed_at_ms: rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
+      state: rec.state || PRESCAN_REVIEW_STATES.TRIGGERED,
+      decision_note: rec.decision_note || null,
+      suggested_origin: rec.suggested_origin || null,
+    });
+  }
+  getPrescanReview(reviewId) {
+    const rec = this._prescanReviews.get(reviewId);
+    return rec ? { ...rec } : null;
+  }
+  // Only one open review per CTID at a time — TRIGGERED OR CONFIRMED
+  // (creator-decision window). Closed states are terminal.
+  getOpenPrescanReviewByCtid(ctid) {
+    let best = null;
+    for (const r of this._prescanReviews.values()) {
+      if (r.ctid !== ctid) continue;
+      if (r.state !== PRESCAN_REVIEW_STATES.TRIGGERED
+        && r.state !== PRESCAN_REVIEW_STATES.CONFIRMED) continue;
+      if (!best || r.triggered_at_round > best.triggered_at_round) best = r;
+    }
+    return best ? { ...best } : null;
+  }
+  getPrescanReviewsByReviewer(reviewerTipId) {
+    return [...this._prescanReviews.values()]
+      .filter(r => r.assigned_reviewer === reviewerTipId)
+      .sort((a, b) => b.triggered_at_round - a.triggered_at_round)
+      .map(r => ({ ...r }));
+  }
+  getPrescanReviewsByCtid(ctid) {
+    return [...this._prescanReviews.values()]
+      .filter(r => r.ctid === ctid)
+      .sort((a, b) => b.triggered_at_round - a.triggered_at_round)
+      .map(r => ({ ...r }));
+  }
+  // Phase 2.5 trigger queries. Mirror the SQLite predicates in JS so the
+  // memory-store path produces the same candidate set.
+  //
+  // Re-trigger gate: skip any ctid that already has a non-recused
+  // prior review. The earlier predicate only looked for TRIGGERED /
+  // CONFIRMED (open states) — that let CLOSED_* + ESCALATED_TO_DISPUTE
+  // through, causing the trigger to fire again on every round after a
+  // DISMISS/accept/etc., spawning a fresh reviewer + extra +5 bonus
+  // every round. RECUSED is the only terminal state that intentionally
+  // re-triggers (we need a new reviewer to take the case).
+  getContentsNeedingReview(nowMs) {
+    const cutoff = nowMs - CONTENT_GRACE.FLAGGED_MS;
+    const out = [];
+    for (const c of this._content.values()) {
+      if (c.status !== "registered") continue;
+      if (c.origin_code !== "OH") continue;
+      if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
+      const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+      if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
+      const prior = [...this._prescanReviews.values()].filter(r =>
+        r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
+      if (prior.length > 0) continue;
+      out.push({ ...c });
+    }
+    return out;
+  }
+  getReviewsNeedingAutoEscalation(nowMs) {
+    const cutoff = nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS;
+    return [...this._prescanReviews.values()]
+      .filter(r => r.state === PRESCAN_REVIEW_STATES.CONFIRMED
+        && r.confirmed_at_ms != null
+        && r.confirmed_at_ms <= cutoff)
+      .sort((a, b) => a.confirmed_at_ms - b.confirmed_at_ms)
+      .map(r => ({ ...r }));
+  }
+  getReviewsNeedingAutoRecuse(nowMs) {
+    const cutoff = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS;
+    return [...this._prescanReviews.values()]
+      .filter(r => r.state === PRESCAN_REVIEW_STATES.TRIGGERED
+        && r.triggered_at_ms != null
+        && r.triggered_at_ms <= cutoff)
+      .sort((a, b) => a.triggered_at_ms - b.triggered_at_ms)
+      .map(r => ({ ...r }));
+  }
+
   // ── #75 rotation_participation accessors ─────────────────────────────
   // Counter per (node_id, rotation_number). Incremented on every Bullshark
   // anchor commit by bullshark.js (one increment for the leader, one per
@@ -765,6 +895,10 @@ class MemoryStore {
     for (const r of [...this._nodes.values()]
       .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    for (const r of [...this._prescanReviews.values()]
+      .sort((a, b) => a.review_id.localeCompare(b.review_id))) {
+      yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
     }
     // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
     // RP is real-time counter state that flickers as anchor walks process certs;
@@ -1009,6 +1143,11 @@ class SQLiteStore {
         tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
+        -- Opt-in to be selected as an adjudicator across all protocol roles
+        -- (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
+        -- Runtime filters at selection time decide which role a consenting
+        -- user lands in (score, content category, conflict-of-interest).
+        reviewer_consent    INTEGER NOT NULL DEFAULT 0,
         registered_at       TEXT NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
@@ -1033,6 +1172,9 @@ class SQLiteStore {
         dispute_count       INTEGER NOT NULL DEFAULT 0,
         verification_count  INTEGER NOT NULL DEFAULT 0,
         prescan_flagged     INTEGER NOT NULL DEFAULT 0,
+        prescan_probability REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
+        prescan_tier        TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
+        override            INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
         registered_at       TEXT NOT NULL,
         registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
         tx_id               TEXT
@@ -1232,6 +1374,31 @@ class SQLiteStore {
         created_at         INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
+
+      -- ── Prescan Reviews ─────────────────────────────────────────────
+      -- Tracks human-reviewing-AI-flag instances. A row is created at h=48
+      -- for HIGH/CRITICAL-flagged content the creator didn't self-correct.
+      -- The state machine carries the review to a terminal outcome
+      -- (closed_dismissed / closed_accepted_private / escalated_to_dispute
+      -- / closed_self_correct). On DAG for federation consistency — any
+      -- node selecting reviewers or surfacing badge state must agree.
+      CREATE TABLE IF NOT EXISTS prescan_reviews (
+        review_id            TEXT PRIMARY KEY,
+        ctid                 TEXT NOT NULL,
+        creator_tip_id       TEXT NOT NULL,
+        assigned_reviewer    TEXT,                            -- NULL until REVIEW_TRIGGERED commits with the assignment
+        triggered_at_round   INTEGER NOT NULL,
+        triggered_at_ms      INTEGER,                          -- cert.ts ms at TRIGGERED apply; drives reviewer SLA auto-recuse
+        decided_at_round     INTEGER,                          -- when reviewer DISMISSED or CONFIRMED
+        confirmed_at_round   INTEGER,                          -- set on CONFIRMED; starts creator's 24h decision window
+        confirmed_at_ms      INTEGER,                          -- cert.ts ms at CONFIRMED apply; drives h=R+24 auto-escalation
+        state                TEXT NOT NULL DEFAULT 'triggered',
+        decision_note        TEXT,                             -- reviewer's optional notes
+        suggested_origin     TEXT                              -- on CONFIRMED: reviewer's recommended AA/AG/MX
+      );
+      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_ctid ON prescan_reviews(ctid);
+      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_state ON prescan_reviews(state);
+      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_reviewer ON prescan_reviews(assigned_reviewer);
 
       -- ── #75 Rotation participation tally ───────────────────────────
       -- Per-author counter of "appearances in Bullshark anchors during
@@ -1556,8 +1723,9 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,public_key,root_public_key,vp_id,
-            verification_tier,tip_id_type,founding,status,registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+            verification_tier,tip_id_type,founding,status,reviewer_consent,
+            registered_at,creator_name,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
       getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
@@ -1566,8 +1734,9 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO content
            (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
-            status,prescan_flagged,registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            status,prescan_flagged,prescan_probability,prescan_tier,override,
+            registered_at,registered_urls,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -1707,6 +1876,75 @@ class SQLiteStore {
       ),
       getRotationsFromGenesis: this.db.prepare(
         "SELECT * FROM committee_history ORDER BY rotation_number ASC"
+      ),
+
+      // Prescan-review accessors. INSERT OR REPLACE so the same row can
+      // walk through its state machine (triggered → confirmed →
+      // closed_accepted_private etc.) via successive saves.
+      savePrescanReview: this.db.prepare(
+        `INSERT OR REPLACE INTO prescan_reviews
+           (review_id, ctid, creator_tip_id, assigned_reviewer,
+            triggered_at_round, triggered_at_ms,
+            decided_at_round, confirmed_at_round,
+            confirmed_at_ms, state, decision_note, suggested_origin)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      ),
+      getPrescanReview: this.db.prepare(
+        "SELECT * FROM prescan_reviews WHERE review_id=?"
+      ),
+      // Only one open review per CTID at a time — state='triggered' OR
+      // 'confirmed' (creator-decision window). Closed states are terminal.
+      getOpenPrescanReviewByCtid: this.db.prepare(
+        "SELECT * FROM prescan_reviews WHERE ctid=? AND state IN ('triggered','confirmed') ORDER BY triggered_at_round DESC LIMIT 1"
+      ),
+      getPrescanReviewsByReviewer: this.db.prepare(
+        "SELECT * FROM prescan_reviews WHERE assigned_reviewer=? ORDER BY triggered_at_round DESC"
+      ),
+      getPrescanReviewsByCtid: this.db.prepare(
+        "SELECT * FROM prescan_reviews WHERE ctid=? ORDER BY triggered_at_round DESC"
+      ),
+      // Phase 2.5 trigger queries. content.registered_at is an ISO string,
+      // so the comparison parses it via strftime — index on (status,
+      // prescan_tier) carries the high-selectivity prefix; the time
+      // arithmetic runs only against that filtered slice.
+      //
+      // origin_code = 'OH' is the "no UPDATE_ORIGIN" guard from the
+      // design doc: after a self-correction, origin_code is AA/AG/MX,
+      // so the content is no longer claiming human-only and there's
+      // nothing for the reviewer to dispute.
+      // The JOIN must include EVERY non-recused prior review state —
+      // not just the open ones — so the trigger doesn't re-fire after
+      // a DISMISS / accept-private / self-correct / dispute escalation
+      // closes the case. RECUSED is the only terminal state that
+      // intentionally re-triggers (new reviewer needed).
+      getContentsNeedingReview: this.db.prepare(
+        `SELECT c.* FROM content c
+         LEFT JOIN prescan_reviews r
+           ON r.ctid = c.ctid AND r.state != 'recused'
+         WHERE c.status = 'registered'
+           AND c.origin_code = 'OH'
+           AND c.prescan_tier IN ('high','critical')
+           AND r.review_id IS NULL
+           AND (CAST(strftime('%s', c.registered_at) AS INTEGER) * 1000) <= ?`
+      ),
+      // Reviews in state=confirmed whose 24h creator-decision window has
+      // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
+      getReviewsNeedingAutoEscalation: this.db.prepare(
+        `SELECT * FROM prescan_reviews
+         WHERE state = 'confirmed'
+           AND confirmed_at_ms IS NOT NULL
+           AND confirmed_at_ms <= ?
+         ORDER BY confirmed_at_ms ASC`
+      ),
+      // Reviews in state=triggered whose reviewer SLA has elapsed —
+      // candidates for node-emitted auto-recuse. triggered_at_ms is set
+      // on TRIGGERED apply from cert.ts.
+      getReviewsNeedingAutoRecuse: this.db.prepare(
+        `SELECT * FROM prescan_reviews
+         WHERE state = 'triggered'
+           AND triggered_at_ms IS NOT NULL
+           AND triggered_at_ms <= ?
+         ORDER BY triggered_at_ms ASC`
       ),
 
       // #75 rotation_participation. UPSERT pattern (INSERT … ON CONFLICT)
@@ -1869,12 +2107,17 @@ class SQLiteStore {
       rec.tip_id_type || "personal",
       rec.founding ? 1 : 0,
       rec.status || "active",
+      rec.reviewer_consent ? 1 : 0,
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
   getIdentity(id) {
     const row = this._stmts.getIdentity.get(id);
-    return row ? { ...row, founding: row.founding === 1 } : null;
+    return row ? {
+      ...row,
+      founding: row.founding === 1,
+      reviewer_consent: row.reviewer_consent === 1,
+    } : null;
   }
   getAllIdentities() {
     return this._stmts.getAllIdentities.all().map(r => ({ ...r, founding: r.founding === 1 }));
@@ -1898,6 +2141,9 @@ class SQLiteStore {
       rec.cna_version,
       rec.status || "registered",
       rec.prescan_flagged ? 1 : 0,
+      typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
+      rec.prescan_tier || "low",
+      rec.override ? 1 : 0,
       rec.registered_at, JSON.stringify(urls), rec.tx_id || null
     );
   }
@@ -2190,6 +2436,46 @@ class SQLiteStore {
   clearCommitteeHistory() {
     this.db.prepare("DELETE FROM committee_history").run();
   }
+
+  // ── Prescan reviews ─────────────────────────────────────────────────────
+  savePrescanReview(rec) {
+    this._stmts.savePrescanReview.run(
+      rec.review_id,
+      rec.ctid,
+      rec.creator_tip_id,
+      rec.assigned_reviewer || null,
+      rec.triggered_at_round,
+      rec.triggered_at_ms == null ? null : rec.triggered_at_ms,
+      rec.decided_at_round == null ? null : rec.decided_at_round,
+      rec.confirmed_at_round == null ? null : rec.confirmed_at_round,
+      rec.confirmed_at_ms == null ? null : rec.confirmed_at_ms,
+      rec.state || PRESCAN_REVIEW_STATES.TRIGGERED,
+      rec.decision_note || null,
+      rec.suggested_origin || null,
+    );
+  }
+  getPrescanReview(reviewId) {
+    return this._stmts.getPrescanReview.get(reviewId) || null;
+  }
+  getOpenPrescanReviewByCtid(ctid) {
+    return this._stmts.getOpenPrescanReviewByCtid.get(ctid) || null;
+  }
+  getPrescanReviewsByReviewer(reviewerTipId) {
+    return this._stmts.getPrescanReviewsByReviewer.all(reviewerTipId);
+  }
+  getPrescanReviewsByCtid(ctid) {
+    return this._stmts.getPrescanReviewsByCtid.all(ctid);
+  }
+  getContentsNeedingReview(nowMs) {
+    return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS);
+  }
+  getReviewsNeedingAutoEscalation(nowMs) {
+    return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
+  }
+  getReviewsNeedingAutoRecuse(nowMs) {
+    return this._stmts.getReviewsNeedingAutoRecuse.all(nowMs - REVIEWER.AUTO_RECUSE_AGE_MS);
+  }
+
   // #75 rotation_participation — see MemoryStore version for the contract.
   incrementRotationParticipation(nodeId, rotationNumber) {
     this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
@@ -2274,7 +2560,7 @@ class SQLiteStore {
   *iterateCanonicalState() {
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
-      yield { table: "identities", row: _canonIdentity({ ...r, founding: r.founding === 1 }) };
+      yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
@@ -2282,7 +2568,10 @@ class SQLiteStore {
       // Without this, JSON columns come through as strings and _canonContent's
       // Array.isArray / typeof === "object" checks fail, emitting defaults
       // and silently forking the state_merkle_root vs MemoryStore-backed nodes.
-      yield { table: "content", row: _canonContent({ ...this._hydrateContent(r), prescan_flagged: r.prescan_flagged === 1 }) };
+      // Boolean/int normalization (founding, prescan_flagged, override, etc.)
+      // is handled inside _canonContent/_canonIdentity via `? 1 : 0` — works
+      // for both SQLite int (0/1) and MemoryStore bool (true/false).
+      yield { table: "content", row: _canonContent(this._hydrateContent(r)) };
     }
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
@@ -2301,6 +2590,9 @@ class SQLiteStore {
     }
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
       yield { table: "nodes", row: _canonNode(r) };
+    }
+    for (const r of db.prepare("SELECT * FROM prescan_reviews ORDER BY review_id").iterate()) {
+      yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
     }
     // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
     // version for rationale. RP ships in its own snapshot stream below.
@@ -2661,6 +2953,22 @@ function _buildDagHandle(store, config) {
     getLatestRotation: () => store.getLatestRotation(),
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
     getRotationsFromGenesis: () => store.getRotationsFromGenesis(),
+
+    // ── Prescan reviews (Phase 2 — human reviewing AI prescan flag) ─────
+    // savePrescanReview: INSERT OR REPLACE. The same review_id walks through
+    //   its state machine (triggered → confirmed → closed_*) via successive
+    //   saves; commit-handler is the sole writer.
+    // getOpenPrescanReviewByCtid: returns the in-flight review for a CTID
+    //   (state ∈ {triggered, confirmed}); used by self-correction closure
+    //   hook in UPDATE_ORIGIN and by reviewer-decision validators.
+    savePrescanReview: (rec) => store.savePrescanReview(rec),
+    getPrescanReview: (reviewId) => store.getPrescanReview(reviewId),
+    getOpenPrescanReviewByCtid: (ctid) => store.getOpenPrescanReviewByCtid(ctid),
+    getPrescanReviewsByReviewer: (reviewerTipId) => store.getPrescanReviewsByReviewer(reviewerTipId),
+    getPrescanReviewsByCtid: (ctid) => store.getPrescanReviewsByCtid(ctid),
+    getContentsNeedingReview: (nowMs) => store.getContentsNeedingReview(nowMs),
+    getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
+    getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
 
     // #75 rotation participation tally
     incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),
