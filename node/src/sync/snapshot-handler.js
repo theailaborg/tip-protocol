@@ -100,10 +100,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // fires so the guard resets for the next needed resync.
   let _snapInstalled = false;
   let _snapInstallInProgress = false;
+  // Set to true only during the synchronous DB-write phase of _installSnapshot
+  // (dag.clearCanonicalState + row rebuild inside runInTransaction). Separate
+  // from _snapInstallInProgress so majority peers with stable canonical state
+  // can serve multiple minority nodes concurrently (ISSUE_47 Option C).
+  let _snapServing = false;
 
   function resetInstallState() {
     _snapInstalled = false;
     _snapInstallInProgress = false;
+    _snapServing = false;
   }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
@@ -178,14 +184,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
     const minRound = Number(request.minRound || 0);
 
-    // Bug 4: refuse to serve while our own snapshot install is in progress. The
-    // install pipeline calls dag.clearCanonicalState() then rebuilds the in-memory
-    // mirror row-by-row. During that window iterateCanonicalState() returns partial
-    // data whose SHAKE-256 root diverges from the latest commit row's state_merkle_root
-    // (which was written at the PREVIOUS commit). A joiner that receives this
-    // inconsistent snapshot will compute a mismatched root, fail install, or — worse —
-    // install silently inconsistent state and diverge from honest peers.
-    if (_snapInstallInProgress) {
+    // ISSUE_47 Option C: decline to serve only while _snapServing is true — i.e.,
+    // during the synchronous DB-write phase of our own install (clearCanonicalState +
+    // row rebuild). That is the only window where iterateCanonicalState() returns
+    // partial data. _snapInstallInProgress (client receive-path flag) is NOT checked
+    // here so stable majority peers can serve multiple minority nodes concurrently even
+    // if they themselves installed a snapshot in a prior recovery cycle.
+    if (_snapServing) {
       const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
       await stream.sink([_frame(errHeader)]);
       log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
@@ -779,6 +784,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         }
       }
 
+      _snapInstalled = true;
+      _snapInstallInProgress = false;
       return {
         round: Number(header.round),
         consensus_index: Number(header.consensusIndex || 0),
@@ -811,12 +818,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       };
     } catch (err) {
       _snapInstallInProgress = false;
+      _snapServing = false;
       throw err;
     } finally {
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
-    _snapInstalled = true;
-    _snapInstallInProgress = false;
   }
 
   function _installSnapshot(header, queues) {
@@ -838,7 +844,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //   3. Pre-snapshot commits (#49 — every commit row except the
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
-    return dag.runInTransaction(() => {
+    _snapServing = true;
+    const _result = dag.runInTransaction(() => {
       // Wipe the 7 canonical-state tables before installing the peer's rows.
       // Without this, extra rows from this node's divergent history survive
       // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
@@ -964,6 +971,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
       return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
     });
+    _snapServing = false;
+    return _result;
   }
 
   /**
