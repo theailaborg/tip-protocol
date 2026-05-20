@@ -284,23 +284,31 @@ function adjudicationDelta(data, currentOffenseCount) {
   if (verdict === VERDICT.CONSERVATIVE_LABEL) return 0; // AG declared as OH — never penalised
   if (verdict !== VERDICT.UPHELD) return 0;             // unknown verdict — no penalty
 
+  // Per-pair offense escalation. Each pair's [1st, 2nd, 3rd+] tuple lives
+  // in genesis (`penalties.oh_as_ag / oh_as_aa / aa_as_ag`); we read the
+  // index that matches the offense count. Preserves severity scaling on
+  // repeat offenses — a repeat AA→AG offender no longer gets the OH→AG
+  // escalation (-200/-350) applied to them.
+
   // Most serious: declared OH, confirmed AG
   if (declared_origin === ORIGIN.OH && confirmed_origin === ORIGIN.AG) {
-    if (currentOffenseCount >= 2) return SCORE_EVENTS.MISMATCH_3RD_OFFENSE.delta;
-    if (currentOffenseCount >= 1) return SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta;
+    if (currentOffenseCount >= 2) return SCORE_EVENTS.OH_CONFIRMED_AG_3RD.delta;
+    if (currentOffenseCount >= 1) return SCORE_EVENTS.OH_CONFIRMED_AG_2ND.delta;
     return SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta;
   }
 
   // Declared OH, confirmed AA
   if (declared_origin === ORIGIN.OH && confirmed_origin === ORIGIN.AA) {
-    if (currentOffenseCount >= 1) return SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta;
-    return SCORE_EVENTS.OH_CONFIRMED_AA.delta;
+    if (currentOffenseCount >= 2) return SCORE_EVENTS.OH_CONFIRMED_AA_3RD.delta;
+    if (currentOffenseCount >= 1) return SCORE_EVENTS.OH_CONFIRMED_AA_2ND.delta;
+    return SCORE_EVENTS.OH_CONFIRMED_AA_1ST.delta;
   }
 
   // Declared AA, confirmed AG
   if (declared_origin === ORIGIN.AA && confirmed_origin === ORIGIN.AG) {
-    if (currentOffenseCount >= 1) return SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta;
-    return SCORE_EVENTS.AA_CONFIRMED_AG.delta;
+    if (currentOffenseCount >= 2) return SCORE_EVENTS.AA_CONFIRMED_AG_3RD.delta;
+    if (currentOffenseCount >= 1) return SCORE_EVENTS.AA_CONFIRMED_AG_2ND.delta;
+    return SCORE_EVENTS.AA_CONFIRMED_AG_1ST.delta;
   }
 
   // Factual falsehood (separate from origin)

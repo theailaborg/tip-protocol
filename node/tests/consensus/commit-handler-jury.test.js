@@ -405,6 +405,201 @@ describe("commit-handler APPEAL_RESULT: content-state effects", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 4b. Post-resolution status: PENDING_REVIEW must not be replayed verbatim
+//
+// When a prescan review was open at escalation time, pre_dispute_status
+// captures PENDING_REVIEW. Once the dispute resolves in the author's favor
+// the review row is terminal (ESCALATED_TO_DISPUTE) — restoring
+// PENDING_REVIEW would leave the UI showing "Under Review" forever even
+// though no reviewer is waiting. The dispute outcome positively cleared
+// the content → VERIFIED.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("commit-handler post-resolution status: pre_dispute_status=PENDING_REVIEW", () => {
+  function _adjTxWithPreReview(fx, ctid, verdict) {
+    return _signByNode(fx, 0, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp: "2026-01-03T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid, verdict, declared_origin: "OH", confirmed_origin: null,
+        author_tip_id: "tip://id/author", author_score_delta: 0,
+        pre_dispute_status: CONTENT_STATUS.PENDING_REVIEW,
+        match_count: 2, mismatch_count: 1, abstain_count: 0,
+      },
+    });
+  }
+
+  function _appealTxWithPreReview(fx, ctid, opts) {
+    return _signByNode(fx, 0, {
+      tx_type: TX_TYPES.APPEAL_RESULT,
+      timestamp: "2026-01-04T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid,
+        verdict: opts.verdict,
+        overturned: opts.overturned,
+        stage2_verdict: opts.stage2_verdict,
+        declared_origin: opts.declared_origin || "OH",
+        confirmed_origin: opts.confirmed_origin || null,
+        pre_dispute_status: CONTENT_STATUS.PENDING_REVIEW,
+        original_author_delta: 0, overturn_author_delta: 0,
+        match_count: 2, mismatch_count: 1, abstain_count: 0,
+      },
+    });
+  }
+
+  test("ADJUDICATION_RESULT DISMISSED with pre_dispute_status=PENDING_REVIEW → VERIFIED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _adjTxWithPreReview(fx, fx.ctid, VERDICT.DISMISSED);
+    fx.handler.commitOrderedTxs([tx], 100);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.VERIFIED);
+  });
+
+  test("ADJUDICATION_RESULT CONSERVATIVE_LABEL with pre_dispute_status=PENDING_REVIEW → VERIFIED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _adjTxWithPreReview(fx, fx.ctid, VERDICT.CONSERVATIVE_LABEL);
+    fx.handler.commitOrderedTxs([tx], 100);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.VERIFIED);
+  });
+
+  test("APPEAL_RESULT overturn UPHELD→DISMISSED with pre_dispute_status=PENDING_REVIEW → VERIFIED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentOrigin(fx.ctid, "AG", CONTENT_STATUS.VERIFIED);  // simulate stage2 UPHELD
+
+    const tx = _appealTxWithPreReview(fx, fx.ctid, {
+      verdict: VERDICT.DISMISSED, overturned: true,
+      stage2_verdict: VERDICT.UPHELD, declared_origin: "OH",
+    });
+    fx.handler.commitOrderedTxs([tx], 200);
+
+    const c = fx.dag.getContent(fx.ctid);
+    expect(c.origin_code).toBe("OH");
+    expect(c.status).toBe(CONTENT_STATUS.VERIFIED);
+  });
+
+  test("APPEAL_RESULT CONFIRM DISMISSED with pre_dispute_status=PENDING_REVIEW → VERIFIED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _appealTxWithPreReview(fx, fx.ctid, {
+      verdict: VERDICT.DISMISSED, overturned: false,
+      stage2_verdict: VERDICT.DISMISSED, declared_origin: "OH",
+    });
+    fx.handler.commitOrderedTxs([tx], 200);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.VERIFIED);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4c. Non-resolution paths — content.status liveness
+//
+// "Nobody voted" / "deadline crossed without enough reveals" outcomes:
+//   - Stage-2 NO_QUORUM is emitted but does NOT mutate content.status —
+//     content stays `disputed` while Stage-3 auto-escalation runs.
+//   - Stage-3 defaulted DISMISSED (insufficient experts) lands the same
+//     as a real DISMISSED — _postResolutionStatus applies, so a review-
+//     escalated dispute resolves cleanly to VERIFIED even with zero votes.
+// Together with verdict-trigger's heap-driven retry, this guarantees the
+// content cannot remain in `disputed` indefinitely.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("commit-handler non-resolution paths: status liveness", () => {
+  test("ADJUDICATION_RESULT NO_QUORUM does not mutate content.status (stays disputed)", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _signByNode(fx, 0, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp: "2026-01-03T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid: fx.ctid, verdict: VERDICT.NO_QUORUM,
+        declared_origin: "OH", confirmed_origin: null,
+        author_tip_id: "tip://id/author", author_score_delta: 0,
+        pre_dispute_status: CONTENT_STATUS.PENDING_REVIEW,
+        match_count: 0, mismatch_count: 0, abstain_count: 0,
+      },
+    });
+    fx.handler.commitOrderedTxs([tx], 100);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.DISPUTED);
+  });
+
+  test("APPEAL_RESULT defaulted DISMISSED (no expert reveals) with pre=REGISTERED → REGISTERED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _signByNode(fx, 0, {
+      tx_type: TX_TYPES.APPEAL_RESULT,
+      timestamp: "2026-01-04T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid: fx.ctid,
+        verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
+        stage2_verdict: VERDICT.NO_QUORUM,
+        declared_origin: "OH", confirmed_origin: null,
+        pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        original_author_delta: 0, overturn_author_delta: 0,
+        match_count: 0, mismatch_count: 0, abstain_count: 0,
+      },
+    });
+    fx.handler.commitOrderedTxs([tx], 200);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.REGISTERED);
+  });
+
+  test("APPEAL_RESULT defaulted DISMISSED (no expert reveals) with pre=PENDING_REVIEW → VERIFIED", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _signByNode(fx, 0, {
+      tx_type: TX_TYPES.APPEAL_RESULT,
+      timestamp: "2026-01-04T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid: fx.ctid,
+        verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
+        stage2_verdict: VERDICT.NO_QUORUM,
+        declared_origin: "OH", confirmed_origin: null,
+        pre_dispute_status: CONTENT_STATUS.PENDING_REVIEW,
+        original_author_delta: 0, overturn_author_delta: 0,
+        match_count: 0, mismatch_count: 0, abstain_count: 0,
+      },
+    });
+    fx.handler.commitOrderedTxs([tx], 200);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.VERIFIED);
+  });
+
+  test("ADJUDICATION_RESULT with unknown verdict does not mutate content.status", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    const tx = _signByNode(fx, 0, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp: "2026-01-03T00:00:00.000Z",
+      prev: [],
+      data: {
+        ctid: fx.ctid, verdict: "UNKNOWN_FUTURE_VERDICT",
+        declared_origin: "OH", confirmed_origin: null,
+        author_tip_id: "tip://id/author", author_score_delta: 0,
+        pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        match_count: 0, mismatch_count: 0, abstain_count: 0,
+      },
+    });
+    fx.handler.commitOrderedTxs([tx], 100);
+
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.DISPUTED);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 5. JURY_VOTE_REVEAL window enforcement (#13 third guard)
 // ═══════════════════════════════════════════════════════════════════════════
 describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {

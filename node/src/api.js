@@ -25,11 +25,13 @@ const { createTxSubmitter } = require("./services/helpers");
 // Services
 const { createIdentityService } = require("./services/identity-service");
 const { createContentService } = require("./services/content-service");
+const { createProfileService } = require("./services/profile-service");
 const { createDisputeService } = require("./services/dispute-service");
 const { createDisputeDetailsService } = require("./services/dispute-details-service");
 const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
+const { createReviewService } = require("./services/review-service");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -43,6 +45,7 @@ const revocationRoutes = require("./routes/revocation");
 const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
+const reviewRoutes = require("./routes/reviews");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
@@ -51,11 +54,13 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
   const contentService = createContentService(ctx);
+  const profileService = createProfileService(ctx);
   const disputeDetailsService = createDisputeDetailsService(ctx);
   const disputeService = createDisputeService({ ...ctx, disputeDetailsService });
   const revocationService = createRevocationService(ctx);
   const governanceService = createGovernanceService(ctx);
   const domainService = createDomainService(ctx);
+  const reviewService = createReviewService(ctx);
 
   // ── Build Express app ──────────────────────────────────────────────────────
   const app = express();
@@ -134,13 +139,14 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
-  app.use(API_VERSION, identityRoutes.createRouter({ identityService }));
+  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService }));
   app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
   app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
   app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));
   app.use(API_VERSION, revocationRoutes.createRouter({ revocationService }));
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
+  app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────

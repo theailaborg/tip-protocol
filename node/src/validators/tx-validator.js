@@ -125,6 +125,46 @@ const SCHEMA = {
     required: ["vp_id", "name", "jurisdiction_tier", "public_key"],
     types: { vp_id: "string", name: "string" },
   },
+  [TX_TYPES.UPDATE_PROFILE]: {
+    // Sparse update — only `tip_id` and `signature` are structurally
+    // required. Preference field presence + types are enforced by
+    // schemas/update-profile.validateRequest at API time and
+    // verifyTx at consensus replay. At least one known preference
+    // field must be present; that check lives in the schema module.
+    required: ["tip_id", "signature"],
+    types: { tip_id: "string", signature: "string" },
+  },
+  [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: {
+    // Node-emitted system tx. Signature lives at tx.signature, not on
+    // tx.data — so structure check covers only data fields. Deeper
+    // validation in schemas/prescan-review-triggered.verifyTx.
+    required: ["review_id", "ctid", "creator_tip_id", "assigned_reviewer_tip_id", "node_id", "triggered_at_round"],
+    types: {
+      review_id: "string", ctid: "string", creator_tip_id: "string",
+      assigned_reviewer_tip_id: "string", node_id: "string",
+      triggered_at_round: "number",
+    },
+  },
+  [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: {
+    required: ["review_id", "reviewer_tip_id", "signature"],
+    types: { review_id: "string", reviewer_tip_id: "string", signature: "string" },
+  },
+  [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
+    // review_id is always required. reviewer_tip_id + signature are
+    // user-recuse only; node-emitted auto-recuse (data.auto = true)
+    // carries node_id + uses tx.signature at the top level instead.
+    // The schema module's verifyTx branches on data.auto and enforces
+    // the right fields per path.
+    required: ["review_id"],
+    types: { review_id: "string" },
+  },
+  [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: {
+    required: ["review_id", "reviewer_tip_id", "suggested_origin", "signature"],
+    types: {
+      review_id: "string", reviewer_tip_id: "string",
+      suggested_origin: "string", signature: "string",
+    },
+  },
   [TX_TYPES.COMMITTEE_ROTATION]: {
     // §4 + #34: chain-of-trust rotation event. Deeper validation
     // (rotation_number monotonic, sigs from previous committee, ≥2f+1
@@ -396,6 +436,43 @@ function validateBusinessRules(tx, dag = null) {
       }
       break;
     }
+
+    case TX_TYPES.UPDATE_PROFILE: {
+      // TIP-ID format check; deeper structural validation (strict-schema,
+      // per-field types, at-least-one-field) lives in
+      // schemas/update-profile.validateRequest at API time and
+      // verifyTx at consensus replay.
+      if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
+        errors.push(`Invalid TIP-ID format: "${d.tip_id}". Expected: tip://id/[REGION]-[16hex]`);
+      }
+      break;
+    }
+
+    case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
+    case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+    case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+      // Format checks for ids present on each. Existence + state-machine
+      // gating happens in the per-tx schema module's verifyTx.
+      if (d.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}$/.test(d.ctid)) {
+        errors.push(`Invalid CTID format: "${d.ctid}"`);
+      }
+      if (d.creator_tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.creator_tip_id)) {
+        errors.push(`Invalid creator_tip_id format: "${d.creator_tip_id}"`);
+      }
+      if (d.reviewer_tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.reviewer_tip_id)) {
+        errors.push(`Invalid reviewer_tip_id format: "${d.reviewer_tip_id}"`);
+      }
+      if (d.assigned_reviewer_tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.assigned_reviewer_tip_id)) {
+        errors.push(`Invalid assigned_reviewer_tip_id format: "${d.assigned_reviewer_tip_id}"`);
+      }
+      if (tx.tx_type === TX_TYPES.PRESCAN_REVIEW_CONFIRMED
+        && d.suggested_origin
+        && !["AA", "AG", "MX"].includes(d.suggested_origin)) {
+        errors.push(`Invalid suggested_origin: "${d.suggested_origin}". Must be one of: AA, AG, MX`);
+      }
+      break;
+    }
   }
 
   return errors.length ? fail(...errors) : pass();
@@ -534,6 +611,49 @@ function validateState(tx, dag) {
       // Cannot double-revoke
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`TIP-ID is already revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UPDATE_PROFILE: {
+      // Subject identity must exist + not be revoked. Deeper checks
+      // (per-field types, at-least-one-field, strict-schema) live in
+      // schemas/update-profile.verifyTx and validateRequest.
+      if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+        errors.push(`Cannot update profile: TIP-ID not found: ${d.tip_id}`);
+      }
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`Cannot update profile: TIP-ID is revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
+      // Content must exist. Creator + reviewer existence checked in the
+      // schema's verifyTx; node-existence + signature also there.
+      if (d.ctid && !dag.getContent(d.ctid)) {
+        errors.push(`Cannot trigger review: content not found: ${d.ctid}`);
+      }
+      // No duplicate open review per CTID (scheduler guards this too,
+      // but consensus-replay must enforce). A nodes that emits a second
+      // trigger after another node already triggered is byzantine.
+      if (d.ctid) {
+        const existing = dag.getOpenPrescanReviewByCtid(d.ctid);
+        if (existing && existing.review_id !== d.review_id) {
+          errors.push(`Cannot trigger review: an open review already exists for ${d.ctid} (review_id=${existing.review_id})`);
+        }
+      }
+      break;
+    }
+
+    case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+    case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+      // Review existence + reviewer-assignment + state checks live in
+      // schemas/prescan-review-*.resolveReview. This layer only does
+      // identity-existence sanity.
+      if (d.reviewer_tip_id && !dag.getIdentity(d.reviewer_tip_id)) {
+        errors.push(`Reviewer TIP-ID not found: ${d.reviewer_tip_id}`);
       }
       break;
     }

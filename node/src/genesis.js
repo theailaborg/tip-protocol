@@ -158,6 +158,13 @@ const GENESIS_PAYLOAD = Object.freeze({
       appeal_window_hours: 48,
       appeal_commit_hours: 72,
       appeal_reveal_hours: 6,
+      // Phase 3 abuse prevention — rolling per-filer rate limit. A
+      // disputer can file at most N disputes within the trailing
+      // window. v1 picks 5 / 30 days (per spec §5.4). Window is in ms
+      // to match the rest of the time constants; the predicate counts
+      // CONTENT_DISPUTED txs by disputer_tip_id within now-window.
+      max_disputes_per_filer_per_window: 5,
+      dispute_filer_window_ms: 2592000000,
       // AI classifier
       ai_auto_dismiss_threshold: 0.30,
       ai_auto_escalate_threshold: 0.90,
@@ -191,6 +198,67 @@ const GENESIS_PAYLOAD = Object.freeze({
       legal: 0.93,
       floor: 0.80,
       ceiling: 0.94,
+      // 4-tier categorical model — fixed cutoffs for v1; per-content-type
+      // overrides come in v2 when categorization wires in.
+      tier_thresholds: {
+        elevated: 0.70,
+        high: 0.90,
+        critical: 0.98,
+      },
+      // Creator-history calibration (Claim Group G / FIX-03). Veterans with
+      // clean track records get a one-tier-down adjustment. Never shifts 2
+      // tiers — prevents "build clean history then post AI as OH" gaming.
+      calibration: {
+        moderate_min: 50,
+        veteran_min: 200,
+      },
+    },
+    reviewer: {
+      // Runtime eligibility gates for reviewer pool. No REGISTER_REVIEWER tx —
+      // selection is a pure function of identity state + DAG history,
+      // mirroring jury selection.
+      min_score: 800,
+      max_overturn_rate: 0.30,
+      accuracy_sample_size: 20,
+      // Creator's accept-private window after PRESCAN_REVIEW_CONFIRMED. The
+      // prescan-review trigger emits an auto-cascade CONTENT_DISPUTED once
+      // this elapses against cert.ts.
+      creator_decision_window_ms: 86400000,
+      // Score delta applied to the creator when they accept the reviewer's
+      // correction privately (Option 1). Negative — accepting the
+      // CONFIRMED finding still carries a small penalty, smaller than the
+      // dispute pipeline's OH→AA range (-10..-30). Stored as the signed
+      // delta directly so the call site does not negate.
+      accept_correction_score_delta: -10,
+      // Age threshold for the dashboard self-correction warning. Once
+      // flagged content is older than this (and still REGISTERED, not
+      // self-corrected, not yet review-triggered), the
+      // content_flagged_for_review notification surfaces on the
+      // creator's /v1/users/:tip_id/dashboard.
+      creator_warning_age_ms: 86400000,
+      // Age (ms since PRESCAN_REVIEW_TRIGGERED's cert.ts) at which the
+      // prescan-review-trigger emits a node-signed auto-recuse on
+      // behalf of an inactive assigned reviewer. Same mechanism as
+      // h=R+24 auto-escalation: deterministic clock (cert.ts), round-
+      // modulo leader gate, content.status flip-back triggers
+      // re-assignment.
+      auto_recuse_age_ms: 172800000,
+      // Reward for completing review work correctly. Paid as a bonus
+      // ON TOP of the disputer-equivalent settlement when the reviewer's
+      // CONFIRM aligns with the eventual dispute verdict, AND paid alone
+      // when the case closes without a public dispute (DISMISS or
+      // creator-accepted-private). On overturn the reviewer takes the
+      // full DISPUTE.DISPUTER_STAKE forfeit — they're treated as the
+      // de-facto disputer of the case they CONFIRMED. See
+      // docs/DISPUTE_SCORING.md "Pre-scan reviewer" section.
+      reviewer_correct_bonus: 5,
+    },
+    content_grace: {
+      // Self-correction windows. Unflagged content keeps the original 24h
+      // window; HIGH/CRITICAL prescan-flagged content with override gets 48h,
+      // matching the time before reviewer engagement at h=48.
+      unflagged_ms: 86400000,    // 24h
+      flagged_ms: 172800000,     // 48h
     },
     consensus: {
       round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round

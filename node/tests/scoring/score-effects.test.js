@@ -264,21 +264,25 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
   test("OH declared, AG confirmed: 1st = -100, 2nd = -200, 3rd+ = -350", () => {
     const data = { verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" };
     expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta);
-    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta);
-    expect(adjudicationDelta(data, 2)).toBe(SCORE_EVENTS.MISMATCH_3RD_OFFENSE.delta);
-    expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.MISMATCH_3RD_OFFENSE.delta);
+    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_2ND.delta);
+    expect(adjudicationDelta(data, 2)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_3RD.delta);
+    expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_3RD.delta);
   });
 
-  test("OH declared, AA confirmed: 1st = -40, 2nd+ = -200 (2nd-offense ladder)", () => {
+  test("OH declared, AA confirmed: 1st = -40, 2nd = -80, 3rd+ = -160 (per-pair ladder)", () => {
     const data = { verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" };
-    expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA.delta);
-    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta);
+    expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_1ST.delta);
+    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_2ND.delta);
+    expect(adjudicationDelta(data, 2)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_3RD.delta);
+    expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_3RD.delta);
   });
 
-  test("AA declared, AG confirmed: 1st = -25, 2nd+ = -200", () => {
+  test("AA declared, AG confirmed: 1st = -25, 2nd = -50, 3rd+ = -100 (per-pair ladder)", () => {
     const data = { verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" };
-    expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG.delta);
-    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.MISMATCH_2ND_OFFENSE.delta);
+    expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_1ST.delta);
+    expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_2ND.delta);
+    expect(adjudicationDelta(data, 2)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_3RD.delta);
+    expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_3RD.delta);
   });
 
   test("FACTUAL_FALSEHOOD: minor (default) = -75, major = -300", () => {
@@ -291,6 +295,63 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
   test("UPHELD with unrecognised origin pair (e.g. AA→AA) → 0", () => {
     const data = { verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AA" };
     expect(adjudicationDelta(data, 0)).toBe(0);
+  });
+
+  // ─── Per-pair escalation: numeric pin + anti-regression ─────────────────
+  //
+  // Locks in the exact genesis values so a silent change to the `penalties`
+  // block (or a regression back to the old universal `MISMATCH_2ND_OFFENSE`
+  // ladder) trips here instead of corrupting scores in prod. The constants
+  // are read from genesis at runtime — these assertions check the actually-
+  // wired values, not aliased lookups.
+  test("per-pair penalties — exact numeric values from genesis", () => {
+    // OH→AG ladder
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 0)).toBe(-100);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 1)).toBe(-200);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 2)).toBe(-350);
+    // OH→AA ladder — was -200/-350 under the universal scheme, must be -80/-160
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 0)).toBe(-40);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 1)).toBe(-80);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 2)).toBe(-160);
+    // AA→AG ladder — was -200/-350 under the universal scheme, must be -50/-100
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 0)).toBe(-25);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 1)).toBe(-50);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 2)).toBe(-100);
+  });
+
+  test("per-pair escalation preserves severity scaling at 2nd offense (anti-regression)", () => {
+    // The bug we fixed: 2nd-offense AA→AG, OH→AA, and OH→AG all returned -200
+    // because they all bound to `oh_as_ag[1]`. After the fix, they must be
+    // distinct values that preserve the 1st-offense severity ordering.
+    const ohAg2nd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 1);
+    const ohAa2nd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 1);
+    const aaAg2nd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 1);
+
+    expect(ohAg2nd).not.toBe(ohAa2nd);
+    expect(ohAg2nd).not.toBe(aaAg2nd);
+    expect(ohAa2nd).not.toBe(aaAg2nd);
+    // Severity ordering: OH→AG (worst) < OH→AA < AA→AG (mildest)
+    expect(ohAg2nd).toBeLessThan(ohAa2nd);
+    expect(ohAa2nd).toBeLessThan(aaAg2nd);
+  });
+
+  test("per-pair escalation preserves severity scaling at 3rd offense", () => {
+    const ohAg3rd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 2);
+    const ohAa3rd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 2);
+    const aaAg3rd = adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 2);
+
+    expect(ohAg3rd).toBeLessThan(ohAa3rd);
+    expect(ohAa3rd).toBeLessThan(aaAg3rd);
+  });
+
+  test("offense ladder is monotonic within each pair (later offense ≤ earlier)", () => {
+    for (const [d, c] of [["OH", "AG"], ["OH", "AA"], ["AA", "AG"]]) {
+      const first = adjudicationDelta({ verdict: "UPHELD", declared_origin: d, confirmed_origin: c }, 0);
+      const second = adjudicationDelta({ verdict: "UPHELD", declared_origin: d, confirmed_origin: c }, 1);
+      const third = adjudicationDelta({ verdict: "UPHELD", declared_origin: d, confirmed_origin: c }, 2);
+      expect(second).toBeLessThanOrEqual(first);
+      expect(third).toBeLessThanOrEqual(second);
+    }
   });
 });
 

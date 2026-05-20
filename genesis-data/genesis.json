@@ -116,6 +116,8 @@
       "appeal_window_hours": 48,
       "appeal_commit_hours": 72,
       "appeal_reveal_hours": 6,
+      "max_disputes_per_filer_per_window": 5,
+      "dispute_filer_window_ms": 2592000000,
       "ai_auto_dismiss_threshold": 0.3,
       "ai_auto_escalate_threshold": 0.9,
       "ai_timeout_seconds": 60
@@ -147,7 +149,30 @@
       "academic": 0.92,
       "legal": 0.93,
       "floor": 0.8,
-      "ceiling": 0.94
+      "ceiling": 0.94,
+      "tier_thresholds": {
+        "elevated": 0.70,
+        "high": 0.90,
+        "critical": 0.98
+      },
+      "calibration": {
+        "moderate_min": 50,
+        "veteran_min": 200
+      }
+    },
+    "reviewer": {
+      "min_score": 800,
+      "max_overturn_rate": 0.30,
+      "accuracy_sample_size": 20,
+      "creator_decision_window_ms": 86400000,
+      "accept_correction_score_delta": -10,
+      "creator_warning_age_ms": 86400000,
+      "auto_recuse_age_ms": 172800000,
+      "reviewer_correct_bonus": 5
+    },
+    "content_grace": {
+      "unflagged_ms": 86400000,
+      "flagged_ms": 172800000
     },
     "consensus": {
       "round_timeout_ms": 2000,

@@ -144,6 +144,10 @@ const DISPUTE = {
   get FRIVOLOUS_PENALTY() { return _j().frivolous_dismiss_fee; }, // positive amount, code applies -
   get UPHELD_BONUS() { return _j().upheld_bonus; },
   get VINDICATION_BONUS() { return _j().vindication_bonus; },
+  // Phase 3 abuse prevention: at most N CONTENT_DISPUTED txs by a
+  // single disputer_tip_id within the trailing window. v1: 5 / 30d.
+  get MAX_PER_FILER_PER_WINDOW() { return _j().max_disputes_per_filer_per_window; },
+  get FILER_WINDOW_MS() { return _j().dispute_filer_window_ms; },
 };
 
 const JURY = {
@@ -180,15 +184,24 @@ const AI_CLASSIFIER = {
   get TIMEOUT_SECONDS() { return _j().ai_timeout_seconds; },
 };
 
+// Per-pair offense escalation. Each genesis array is [1st, 2nd, 3rd+] —
+// first-offense penalties are severity-scaled (OH→AG worst, AA→AG mildest),
+// and repeat offenses preserve that scaling instead of collapsing onto the
+// OH→AG ladder. Prior `MISMATCH_2ND_OFFENSE` / `_3RD_OFFENSE` aliases (both
+// reading `oh_as_ag`) over-penalised repeat AA→AG / OH→AA offenders.
 const SCORE_EVENTS = {
   // Penalties — genesis stores negative values directly
   get CONTENT_RETRACTION() { return { delta: _p().retraction }; },
   get DEVICE_COMPROMISE_PENDING() { return { delta: _p().device_compromise }; },
   get OH_CONFIRMED_AG_1ST() { return { delta: _p().oh_as_ag[0] }; },
-  get MISMATCH_2ND_OFFENSE() { return { delta: _p().oh_as_ag[1] }; },
-  get MISMATCH_3RD_OFFENSE() { return { delta: _p().oh_as_ag[2] }; },
-  get OH_CONFIRMED_AA() { return { delta: _p().oh_as_aa[0] }; },
-  get AA_CONFIRMED_AG() { return { delta: _p().aa_as_ag[0] }; },
+  get OH_CONFIRMED_AG_2ND() { return { delta: _p().oh_as_ag[1] }; },
+  get OH_CONFIRMED_AG_3RD() { return { delta: _p().oh_as_ag[2] }; },
+  get OH_CONFIRMED_AA_1ST() { return { delta: _p().oh_as_aa[0] }; },
+  get OH_CONFIRMED_AA_2ND() { return { delta: _p().oh_as_aa[1] }; },
+  get OH_CONFIRMED_AA_3RD() { return { delta: _p().oh_as_aa[2] }; },
+  get AA_CONFIRMED_AG_1ST() { return { delta: _p().aa_as_ag[0] }; },
+  get AA_CONFIRMED_AG_2ND() { return { delta: _p().aa_as_ag[1] }; },
+  get AA_CONFIRMED_AG_3RD() { return { delta: _p().aa_as_ag[2] }; },
   get FACTUAL_FALSEHOOD_MINOR() { return { delta: _p().minor_falsehood }; },
   get FACTUAL_FALSEHOOD_MAJOR() { return { delta: _p().major_falsehood }; },
   // Bonuses — positive values
@@ -199,6 +212,57 @@ const PRESCAN_THRESHOLDS = {
   get default() { return _ps().default; },
   get floor() { return _ps().floor; },
   get ceiling() { return _ps().ceiling; },
+};
+
+// 4-tier categorical thresholds for the spec's Content Verification flow.
+// Read from genesis so they're consensus-aligned across the federation.
+const PRESCAN_TIER_THRESHOLDS = {
+  get elevated() { return _ps().tier_thresholds.elevated; },
+  get high() { return _ps().tier_thresholds.high; },
+  get critical() { return _ps().tier_thresholds.critical; },
+};
+
+// Creator-history calibration buckets (Claim Group G / FIX-03).
+const CALIBRATION_THRESHOLDS = {
+  get MODERATE_MIN() { return _ps().calibration.moderate_min; },
+  get VETERAN_MIN() { return _ps().calibration.veteran_min; },
+};
+
+const _rv = () => get().reviewer;
+const REVIEWER = {
+  get MIN_SCORE() { return _rv().min_score; },
+  get MAX_OVERTURN_RATE() { return _rv().max_overturn_rate; },
+  get ACCURACY_SAMPLE_SIZE() { return _rv().accuracy_sample_size; },
+  // Creator's accept-private vs auto-escalation window after a
+  // PRESCAN_REVIEW_CONFIRMED. After this elapses, the scheduler emits
+  // an auto-cascade CONTENT_DISPUTED on the creator's behalf.
+  get CREATOR_DECISION_WINDOW_MS() { return _rv().creator_decision_window_ms; },
+  // Signed delta applied to the creator's score on accept-correction.
+  // Negative — Option 1 still carries a small penalty; smaller than the
+  // dispute pipeline's OH→AA range so accepting privately is strictly
+  // cheaper than letting auto-escalation run.
+  get ACCEPT_CORRECTION_SCORE_DELTA() { return _rv().accept_correction_score_delta; },
+  // Age threshold (ms since registered_at) at which the creator-facing
+  // "your flagged content is approaching review" notification surfaces
+  // on the dashboard. Halfway through the 48h flagged grace by default.
+  get CREATOR_WARNING_AGE_MS() { return _rv().creator_warning_age_ms; },
+  // Age (ms since the assignment's cert.ts) at which auto-recuse
+  // fires on behalf of an inactive assigned reviewer. The trigger
+  // emits a node-signed PRESCAN_REVIEW_RECUSED past this threshold;
+  // content.status flips back to REGISTERED and the next round's
+  // trigger picks a fresh reviewer.
+  get AUTO_RECUSE_AGE_MS() { return _rv().auto_recuse_age_ms; },
+  // Bonus paid to the reviewer for completing review work correctly.
+  // Stacks on top of DISPUTE.UPHELD_BONUS when their CONFIRM holds up
+  // through Stage-2 (or Stage-3 reversal). Paid alone when the case
+  // closes without a public dispute (DISMISS or accept-private).
+  get CORRECT_BONUS() { return _rv().reviewer_correct_bonus; },
+};
+
+const _cg = () => get().content_grace;
+const CONTENT_GRACE = {
+  get UNFLAGGED_MS() { return _cg().unflagged_ms; },
+  get FLAGGED_MS() { return _cg().flagged_ms; },
 };
 
 const _c = () => get().consensus;
@@ -329,5 +393,7 @@ module.exports = {
   init, get, isInitialized, _resetForTesting,
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
-  PRESCAN_THRESHOLDS, CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
+  PRESCAN_THRESHOLDS, PRESCAN_TIER_THRESHOLDS, CALIBRATION_THRESHOLDS,
+  REVIEWER, CONTENT_GRACE,
+  CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
 };
