@@ -23,7 +23,7 @@ require("dotenv").config({ path: process.env.DOTENV_PATH || ".env" });
 // Any subsequent require chain (api → routes → services → consensus → ...)
 // is free to reference constants lazily inside function bodies.
 const PC = require("../../shared/protocol-constants");
-const { getGenesisPayload } = require("./genesis");
+const { getGenesisPayload, verifyGenesisSignature, verifyGenesisVPSignature } = require("./genesis");
 PC.init(getGenesisPayload().protocol_constants);
 
 const http = require("http");
@@ -64,6 +64,8 @@ process.on("unhandledRejection", (reason) => {
 
 async function main() {
   await initCrypto();
+  verifyGenesisSignature();
+  verifyGenesisVPSignature();
   const config = loadConfig();
 
   // Load or generate node signing keypair

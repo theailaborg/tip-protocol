@@ -200,7 +200,7 @@ docker-compose.local.yml
 CMDS_LOGS.md
 ISSUE_WE_HAVE.md
 TIP_Protocol_Overview.md
-
+.worktrees
 scripts/mariadb-init.sql
 scripts/mssql-entrypoint.sh
 scripts/mssql-init.sql
