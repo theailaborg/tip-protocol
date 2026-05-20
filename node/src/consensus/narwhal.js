@@ -406,7 +406,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _metrics.retries++;
       _retryCount++;
 
-      _rebroadcastOwnBatch();
+      // #48: request cached acks from missing peers; falls back to batch rebroadcast
+      _requestMissingAcks().catch(err => log.debug(`_requestMissingAcks: ${err.message}`));
       _rebroadcastOwnCertificate();
 
       // Sync paths (AE cert-fill, post-snapshot cert-fill) write certs
@@ -444,6 +445,32 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     } catch (err) {
       log.warn(`Round ${_currentRound}: batch re-broadcast failed: ${err.message}`);
     }
+  }
+
+  // Ask each missing-acker peer for their cached ack via the lightweight
+  // ack-request protocol (#48). Falls back to full batch rebroadcast for any
+  // peer that doesn't have a cached ack (they never received the original batch).
+  async function _requestMissingAcks() {
+    if (!_myBatch || typeof network.sendAckRequest !== "function") {
+      _rebroadcastOwnBatch();
+      return;
+    }
+    const batchHashHex = _myBatch.hash;
+    const committee = _getCommittee(_currentRound);
+    const ackedSet = new Set((_batchAcks.get(batchHashHex) || []).map(a => a.acker_node_id));
+    const missing = committee.filter(id => id !== nodeId && !ackedSet.has(id));
+    if (missing.length === 0) return;
+
+    let needsFallback = false;
+    await Promise.all(missing.map(async (ackerNodeId) => {
+      const ackBuf = await network.sendAckRequest(batchHashHex, ackerNodeId);
+      if (ackBuf) {
+        try { handleIncomingAck(ackBuf); } catch { /* ignore */ }
+      } else {
+        needsFallback = true;
+      }
+    }));
+    if (needsFallback) _rebroadcastOwnBatch();
   }
 
   function _rebroadcastOwnCertificate() {
@@ -1415,6 +1442,20 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     byzantineForkHalt,
     handleIncomingBatch,
     handleIncomingAck,
+    getCachedAckBuf(batchHashHex, ackerNodeId) {
+      const acks = _batchAcks.get(batchHashHex);
+      if (!acks) return null;
+      const myAck = acks.find(a => a.acker_node_id === ackerNodeId);
+      if (!myAck) return null;
+      try {
+        return encode("BatchAck", {
+          batchHash: hexToBytes(batchHashHex),
+          ackerNodeId,
+          signature: hexToBytes(myAck.signature),
+          signedAt: myAck.signed_at,
+        });
+      } catch { return null; }
+    },
     handleIncomingCertificate,
     lastRoundAdvanceAt: () => _lastRoundAdvanceAt,
 

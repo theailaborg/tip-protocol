@@ -419,6 +419,32 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
           }
         });
       }
+      // #48: explicit ack-request handler — requester asks for this node's
+      // cached ack for a specific batch. Responds with the encoded BatchAck
+      // bytes or an empty buffer if not cached.
+      if (network && network.CONSENSUS_ACK_REQUEST_PROTOCOL) {
+        await network.handle(network.CONSENSUS_ACK_REQUEST_PROTOCOL, async ({ stream, connection }) => {
+          const peerId = connection?.remotePeer?.toString();
+          if (!isAuthorizedPeer(peerId)) {
+            log.warn(`Rejected ack-request from unauthorized peer ${peerId?.slice(0, 12)}`);
+            try { stream.close(); } catch { /* ignore */ }
+            return;
+          }
+          try {
+            const chunks = [];
+            for await (const chunk of stream.source) {
+              chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+            }
+            const batchHashHex = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))).toString("utf8");
+            const ackBuf = narwhal.getCachedAckBuf(batchHashHex, nodeId);
+            await stream.sink([ackBuf || Buffer.alloc(0)]);
+          } catch (err) {
+            log.debug(`Ack-request stream failed from ${peerId?.slice(0, 12)}: ${err.message}`);
+          } finally {
+            try { stream.close(); } catch { /* ignore */ }
+          }
+        });
+      }
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();

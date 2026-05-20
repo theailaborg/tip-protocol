@@ -86,6 +86,11 @@ const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
 // surface as stream errors, not silent stalls. Batches + certs stay on gossipsub
 // (multi-recipient, gossipsub fanout is the right primitive for broadcast).
 const CONSENSUS_ACK_PROTOCOL = "/tip/consensus-ack/1.0.0";
+// Explicit ack-request protocol (#48): A asks B for B's cached ack for a
+// specific batch without re-broadcasting the whole batch. Single round-trip:
+// A writes batchHashHex → B looks up its cached ack → B writes ackBuf (or
+// empty if not cached). ~1 KB per exchange vs potentially MBs for batch rebroadcast.
+const CONSENSUS_ACK_REQUEST_PROTOCOL = "/tip/consensus-ack-request/1.0.0";
 
 /**
  * Create and start a libp2p network node.
@@ -351,6 +356,38 @@ async function createNetworkNode(options = {}) {
     }
   }
 
+  // Request a specific ack from a peer (#48). A opens a stream to B, writes
+  // the batchHashHex (UTF-8), B responds with the encoded BatchAck bytes if
+  // cached or an empty buffer if not. Returns the ack Buffer or null.
+  async function sendAckRequest(batchHashHex, ackerNodeId) {
+    let targetPeerId = null;
+    for (const [peerId, tipNodeId] of _authorizedPeers) {
+      if (tipNodeId === ackerNodeId) { targetPeerId = peerId; break; }
+    }
+    if (!targetPeerId) return null;
+    let stream = null;
+    let timer = null;
+    try {
+      timer = setTimeout(() => {
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+      }, 3000);
+      stream = await node.dialProtocol(peerIdFromString(targetPeerId), CONSENSUS_ACK_REQUEST_PROTOCOL);
+      await stream.sink([Buffer.from(batchHashHex, "utf8")]);
+      const chunks = [];
+      for await (const chunk of stream.source) {
+        chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+      }
+      const response = Buffer.concat(chunks);
+      return response.length > 0 ? response : null;
+    } catch (err) {
+      log.debug(`sendAckRequest to ${ackerNodeId.slice(-8)} failed: ${err.message}`);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      try { if (stream) stream.close(); } catch { /* ignore */ }
+    }
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
   return {
     /** The underlying libp2p node */
@@ -423,8 +460,10 @@ async function createNetworkNode(options = {}) {
 
     broadcastToAuthorized,
     sendAckDirect,
+    sendAckRequest,
     ROTATION_COORD_PROTOCOL,
     CONSENSUS_ACK_PROTOCOL,
+    CONSENSUS_ACK_REQUEST_PROTOCOL,
 
     async stop() {
       rateLimiter.stop();
