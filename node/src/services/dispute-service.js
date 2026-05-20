@@ -596,22 +596,8 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const now = Date.now();
 
     const allDisputes = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED);
-
-    // `filed_by_me` includes the de-facto-disputer path too. Manual /
-    // auto escalations (from a CONFIRMED prescan-review) carry no
-    // formal `disputer_tip_id` — the reviewer who CONFIRMED is the
-    // economic disputer (their reputation rides on the Stage-2 verdict
-    // per jury.buildAdjudicationBatch). Follow the source_review_id
-    // linkage to surface those disputes to the reviewer too.
-    const isMyEscalatedReview = (disputeTx) => {
-      const rid = disputeTx.data?.source_review_id;
-      if (!rid || typeof dag.getPrescanReview !== "function") return false;
-      const review = dag.getPrescanReview(rid);
-      return !!(review && review.assigned_reviewer === tipId);
-    };
-
     const filed_by_me = allDisputes
-      .filter(t => t.data?.disputer_tip_id === tipId || isMyEscalatedReview(t))
+      .filter(t => t.data?.disputer_tip_id === tipId)
       .map(t => summarizeDispute(t, collectEpisodeEvents(t), now));
     const against_me = allDisputes
       .filter(t => t.data?.author_tip_id === tipId)

@@ -172,12 +172,18 @@ all-revealers, no-show -10.
 
 ## Pre-scan reviewer
 
-The Phase-5 pre-scan reviewer is treated as the de-facto disputer of
-any case that escalates from a CONFIRMED prescan-review. Their CONFIRM
-is functionally a stake-on-the-line dispute filing on the system's
-behalf, so they ride the disputer's settlement matrix at Stage-2 plus a
-fixed `REVIEWER.CORRECT_BONUS` for the review work itself. They never
-stake explicitly, so a win pays only the bonus (no refund line).
+When a CONFIRMED prescan-review escalates to a public dispute (either
+the creator clicks "Dispute publicly" via `POST /v1/reviews/:id/dispute`
+or the h=R+24 auto-escalation fires), the **assigned reviewer is set
+as `disputer_tip_id`** on the CONTENT_DISPUTED tx. They are the formal
+disputer of the case — their CONFIRM was the dispute claim, so they
+own the disputer seat and ride the standard stake-on-file disputer
+economics. Same rule as a normal user-filed dispute: `-DISPUTER_STAKE`
+is deducted at filing time (paired SCORE_UPDATE alongside CONTENT_DISPUTED),
+refunded on UPHELD / CONSERVATIVE_LABEL, forfeited on DISMISSED.
+
+A small `REVIEWER.CORRECT_BONUS` (+5) overlay credits the review work
+on top, when the verdict validates the reviewer's CONFIRM.
 
 ### Closed-path emissions (no public dispute fired)
 
@@ -191,47 +197,68 @@ the DISMISS batch is `[PRESCAN_REVIEW_DISMISSED, SCORE_UPDATE]`; the
 accept-private batch is `[UPDATE_ORIGIN, SCORE_UPDATE(creator −10),
 SCORE_UPDATE(reviewer +5)]`.
 
+### Escalation-time emission (paired with CONTENT_DISPUTED)
+
+When the creator clicks "Dispute publicly" (or auto-escalation fires
+at h=R+24), the reviewer's stake is deducted in the same batch as the
+dispute tx:
+
+| Stage | Reviewer Δ | Reason string |
+|---|---:|---|
+| Filing | **−15** | `Dispute filing stake on <ctid>` |
+
 ### Verdict-driven emissions (Stage-2)
 
-Applies when a dispute reaches Stage-2 verdict and the ctid had a
-prior `prescan_reviews` row with state = `escalated_to_dispute`.
+Standard disputer settlement fires on `disputer_tip_id = reviewer`,
+plus a CORRECT_BONUS overlay when the verdict goes the reviewer's way:
 
-| Stage-2 verdict | Reviewer Δ | Composition | Reason string |
-|---|---:|---|---|
-| UPHELD | **+10** | `UPHELD_BONUS` (5) + `CORRECT_BONUS` (5) | `review_won:<review_id>` |
-| CONSERVATIVE_LABEL | **+5** | `CORRECT_BONUS` only | `review_conservative:<review_id>` |
-| DISMISSED | **−15** | `−DISPUTER_STAKE` (full overturn cost) | `review_overturned:<review_id>` |
+| Stage-2 verdict | Disputer settlement (already-existing path) | CORRECT_BONUS overlay | Lifetime net (incl. −15 filing) |
+|---|---:|---:|---:|
+| UPHELD | **+20** (refund 15 + bonus 5) | **+5** | **+10** |
+| CONSERVATIVE_LABEL | **+15** (refund only) | **+5** | **+5** |
+| DISMISSED | **0** (stake stays forfeited) | 0 | **−15** |
+
+Reason strings: standard disputer reasons (`Dispute upheld on …`,
+`Dispute conservative-label on …`) for the disputer settlement;
+`review_correct_bonus:<review_id>` for the overlay.
 
 ### Verdict-driven emissions (Stage-3 overturn)
 
-If Stage-3 flips the Stage-2 verdict, the appeal batch reverses the
-Stage-2 reviewer settlement and applies a fresh Stage-3-based one.
-Mirrors the disputer / author reversal pattern.
+Stage-3 reuses the existing disputer-overturn machinery; my overlay
+adds CORRECT_BONUS reversal + re-application:
 
-| Stage-2 → Stage-3 | Reversal Δ | Fresh Δ | Net |
-|---|---:|---:|---:|
-| UPHELD → DISMISSED | **−10** (reverse +10) | **−15** | **−25** from start |
-| DISMISSED → UPHELD | **+15** (reverse −15) | **+10** | **+25** from start |
-| UPHELD → UPHELD (confirm) | 0 | 0 | Stage-2 +10 stands |
-| DISMISSED → DISMISSED (confirm) | 0 | 0 | Stage-2 −15 stands |
+| Stage-2 → Stage-3 | Disputer reversal | CORRECT_BONUS overlay (reverse + fresh) |
+|---|---:|---|
+| UPHELD → DISMISSED | **−20** (reverse +20) | reverse Stage-2 +5 = **−5**, no fresh |
+| DISMISSED → UPHELD | **+20** (fresh, Stage-2 paid 0) | no reverse, fresh = **+5** |
+| UPHELD → UPHELD (confirm) | 0 | 0 |
+| DISMISSED → DISMISSED (confirm) | 0 | 0 |
 
-Reason strings for the Stage-3 batch:
-`Appeal overturned: Stage 2 reviewer settlement reversed on <ctid>` (reversal)
-`review_won_on_appeal:<review_id>` / `review_conservative_on_appeal:<review_id>` / `review_overturned_on_appeal:<review_id>` (fresh).
+Reason strings for the overlay: `Appeal overturned: Stage 2
+review_correct_bonus reversed on <ctid>` (reversal),
+`review_correct_bonus_on_appeal:<review_id>` (fresh).
+
+The reviewer (= disputer) also happens to be the appellant when the
+losing party of Stage-2 appeals. In that case the standard appellant
+economics (filing-time `-APPELLANT_STAKE`, overturn `+25 + 10` bonus)
+ride on top — already covered by the disputer / appellant scoring
+tests, not duplicated in reviewer-payment tests.
 
 ### Verdict-driven emissions (NO_QUORUM → Stage-3 first verdict)
 
-Stage-2 NO_QUORUM emits no reviewer payment. Stage-3 is the first
-authoritative verdict, so the full Stage-2 matrix is applied at
-Stage-3 time:
+Stage-2 NO_QUORUM paid nothing (disputer stake stayed locked). Stage-3
+is the first authoritative verdict, so the standard disputer settlement
+fires then for the reviewer, plus CORRECT_BONUS overlay:
 
-| Stage-3 verdict on NO_QUORUM | Reviewer Δ | Reason string |
-|---|---:|---|
-| UPHELD | **+10** | `review_won_no_quorum:<review_id>` |
-| CONSERVATIVE_LABEL | **+5** | `review_conservative_no_quorum:<review_id>` |
-| DISMISSED | **−15** | `review_overturned_no_quorum:<review_id>` |
+| Stage-3 verdict on NO_QUORUM | Disputer settlement | CORRECT_BONUS overlay |
+|---|---:|---:|
+| UPHELD | **+20** (refund + bonus) | **+5** |
+| CONSERVATIVE_LABEL | **+15** (refund only) | **+5** |
+| DISMISSED | **0** (stake stays forfeited) | 0 |
 
-### Reviewer skin-in-the-game summary
+CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`.
+
+### Reviewer skin-in-the-game summary (lifetime nets)
 
 | Reviewer journey | Cumulative Δ |
 |---|---:|
@@ -240,8 +267,8 @@ Stage-3 time:
 | CONFIRM → dispute UPHELD (Stage-2 final) | **+10** |
 | CONFIRM → dispute CONSERVATIVE_LABEL (Stage-2 final) | **+5** |
 | CONFIRM → dispute DISMISSED (Stage-2 final) | **−15** |
-| CONFIRM → Stage-2 UPHELD → Stage-3 overturn DISMISSED | **−15** (+10 then −25) |
-| CONFIRM → Stage-2 DISMISSED → Stage-3 overturn UPHELD | **+10** (−15 then +25) |
+| CONFIRM → Stage-2 UPHELD → Stage-3 overturn DISMISSED | **−15** (filing −15 + Stage-2 +25 + Stage-3 −25) |
+| CONFIRM → Stage-2 DISMISSED → Stage-3 overturn UPHELD | **+10** (filing −15 + Stage-3 +25 ; appellant economics separate) |
 | CONFIRM → Stage-2 NO_QUORUM → Stage-3 UPHELD | **+10** |
 | CONFIRM → Stage-2 NO_QUORUM → Stage-3 DISMISSED | **−15** |
 

@@ -23,7 +23,7 @@
 "use strict";
 
 const { TX_TYPES } = require("../../../shared/constants");
-const { REVIEWER, JURY } = require("../../../shared/protocol-constants");
+const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
@@ -239,15 +239,19 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
    * to a public dispute, before the h=R+24 auto-escalation trigger
    * would fire. Semantically a fast-forward of the auto-escalation
    * path: produces a CONTENT_DISPUTED tx with `auto: true` +
-   * `source_review_id` (same shape the auto trigger emits), plus
-   * `escalated_by_tip_id` + `escalation_signature` as audit fields
-   * proving the creator authorised the early escalation.
+   * `source_review_id`, plus `escalated_by_tip_id` +
+   * `escalation_signature` as audit fields proving the creator
+   * authorised the early escalation.
    *
-   * Economics are identical to auto-escalation: the assigned reviewer
-   * is the de-facto disputer (paid via the escalated_review linkage at
-   * Stage-2 verdict time in jury.buildAdjudicationBatch). The creator
-   * stakes no DISPUTER_STAKE — they're not the formal disputer, just
-   * the party that flipped the timer to "now".
+   * The reviewer (review.assigned_reviewer) is the formal disputer on
+   * the tx: their CONFIRM was the dispute claim, so they own the
+   * disputer seat — same dispute-stake economics as any user-filed
+   * dispute. The creator triggers the escalation but doesn't stake;
+   * the reviewer's `-DISPUTER_STAKE` is paired with the dispute tx in
+   * the same batch (single-channel rule). On Stage-2 verdict the
+   * existing jury settlement code handles refund/bonus/forfeit for
+   * disputerTipId automatically; a small CORRECT_BONUS overlay
+   * (jury.buildAdjudicationBatch) recognises the review work on top.
    */
   function dispute(reviewId, body) {
     const { review, content } = disputeSchema.validateRequest(reviewId, body, { dag });
@@ -261,34 +265,52 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         ctid: review.ctid,
         reason: "creator_disagrees_with_reviewer",
         auto: true,
+        // The reviewer is the formal disputer — their CONFIRM is the
+        // dispute claim. Same stake-on-file pattern as a user-filed
+        // dispute: deducted upfront below, refunded on UPHELD /
+        // CONSERVATIVE_LABEL, forfeited on DISMISSED.
+        disputer_tip_id: review.assigned_reviewer,
         source_review_id: review.review_id,
         suggested_origin: review.suggested_origin || null,
         // Audit fields — proves the creator authorised this manual
-        // fast-forward. consensus replay re-verifies the signature
-        // against escalated_by_tip_id's public key (see tx-validator).
+        // fast-forward (vs. h=R+24 system auto-escalation). consensus
+        // replay re-verifies escalation_signature against
+        // escalated_by_tip_id's public key (see commit-handler).
         escalated_by_tip_id: body.author_tip_id,
         escalation_signature: body.signature,
         // Mirror the standard dispute fields so jury / dashboard
-        // queries that read declared/claimed don't have to special-case
-        // the auto path.
+        // queries that read declared/claimed don't have to special-case.
         declared_origin: content.origin_code,
         claimed_origin: review.suggested_origin || null,
         pre_dispute_status: content.status,
         author_tip_id: review.creator_tip_id,
+        stake: DISPUTE.DISPUTER_STAKE,
       },
     }, config);
 
-    // Stage-2 jury selection + summons — same shape dispute-service
-    // emits for a normal user-filed dispute. The reviewer is excluded
-    // from the candidate pool (they're the de-facto disputer; selecting
-    // them would be a conflict of interest). selectJury already excludes
-    // the author + revoked + org identities; we pass the reviewer's
-    // tip_id as `disputerTipId` to extend the same exclusion to them.
+    // Reviewer's filing-time stake (escrow). Mirrors what
+    // dispute-service.fileDispute does for a user-filed dispute —
+    // jury batch later refunds on UPHELD / CONSERVATIVE_LABEL or
+    // forfeits on DISMISSED.
+    const stakeTx = scoring.buildScoreUpdateTx({
+      tipId: review.assigned_reviewer,
+      delta: -DISPUTE.DISPUTER_STAKE,
+      reason: `Dispute filing stake on ${review.ctid}`,
+      ctid: review.ctid,
+      relatedTxId: disputeTx.tx_id,
+      timestamp,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+
+    // Stage-2 jury selection + summons. selectJury hard-excludes the
+    // author + the disputer (now the reviewer, via the disputer_tip_id
+    // field on the tx) + revoked + organizations.
     const jury = selectJury(
       dag, scoring,
       disputeTx.tx_id,
       review.creator_tip_id,        // authorTipId
-      review.assigned_reviewer,     // disputerTipId (de-facto)
+      review.assigned_reviewer,     // disputerTipId (now formal on tx too)
     );
     if (jury.insufficient) {
       log.warn(`Manual escalation jury: insufficient jurors for ${review.ctid} (${jury.jurors.length}/${JURY.SIZE})`);
@@ -297,7 +319,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
     const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
 
-    const batch = [disputeTx];
+    const batch = [disputeTx, stakeTx];
     for (const jurorTipId of jury.jurors) {
       const summonsTx = nodeSignedAuto({
         tx_type: TX_TYPES.JURY_SUMMONS,
@@ -318,7 +340,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     }
 
     submitBatch(batch);
-    log.info(`Review manually escalated to dispute: ${reviewId} by ${body.author_tip_id} (${batch.length} txs, ${jury.jurors.length} jurors)`);
+    log.info(`Review manually escalated to dispute: ${reviewId} by ${body.author_tip_id} (${batch.length} txs, ${jury.jurors.length} jurors, reviewer ${review.assigned_reviewer} staked -${DISPUTE.DISPUTER_STAKE})`);
     return {
       review_id: reviewId,
       ctid: review.ctid,

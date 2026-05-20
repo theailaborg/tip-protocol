@@ -85,14 +85,23 @@ function _seedIdentity(dag, tipId, score = 750) {
 /**
  * Seed a full dispute fixture optionally preceded by a CONFIRMED
  * prescan-review escalation. Returns identifiers + summons array.
+ *
+ * When `withReviewerEscalation: true`, the dispute is modelled as the
+ * creator-initiated escalation flow: `disputer_tip_id = reviewer`
+ * (the reviewer is the formal disputer, riding the standard
+ * disputer-settlement economics) + `auto: true` + `source_review_id`.
  */
 function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG } = {}) {
   const authorTipId = "tip://id/author";
-  const disputerTipId = "tip://id/disputer";
   const reviewerTipId = "tip://id/reviewer";
+  // When NOT modelling an escalated review, fall back to a third-party
+  // disputer (regression-guard scenario for the non-escalation path).
+  const fallbackDisputerTipId = "tip://id/disputer";
   _seedIdentity(dag, authorTipId, 600);
-  _seedIdentity(dag, disputerTipId, 800);
   _seedIdentity(dag, reviewerTipId, 800);
+  if (!withReviewerEscalation) _seedIdentity(dag, fallbackDisputerTipId, 800);
+  // On the escalation path, the reviewer IS the disputer.
+  const disputerTipId = withReviewerEscalation ? reviewerTipId : fallbackDisputerTipId;
 
   dag.saveContent({
     ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
@@ -117,6 +126,9 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
       claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
       author_tip_id: authorTipId, pre_dispute_status: CONTENT_STATUS.REGISTERED,
       stake: DISPUTE.DISPUTER_STAKE,
+      ...(withReviewerEscalation
+        ? { auto: true, source_review_id: REVIEW_ID }
+        : {}),
     },
   });
 
@@ -295,7 +307,19 @@ describe("acceptCorrection → reviewer paired bonus", () => {
 
 describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to dispute)", () => {
 
-  test("UPHELD → reviewer gets +UPHELD_BONUS + CORRECT_BONUS", () => {
+  // The reviewer is set as `disputer_tip_id` on the escalation tx, so
+  // they ride the standard disputer-settlement economics. On top of
+  // that, a CORRECT_BONUS overlay credits them for the review work
+  // itself (UPHELD / CONSERVATIVE_LABEL only).
+  //
+  // Lifetime net per outcome (incl. filing-time -15 stake, charged
+  // in review-service.dispute — NOT in the buildAdjudicationBatch
+  // batch under test here):
+  //   UPHELD             -15 + 15 + 5 + 5 = +10
+  //   CONSERVATIVE_LABEL -15 + 15     + 5 = +5
+  //   DISMISSED          -15 +  0     + 0 = -15
+
+  test("UPHELD → reviewer gets standard disputer +stake+bonus (+20) AND CORRECT_BONUS overlay (+5)", () => {
     const fx = _setup();
     const ids = _seedDispute(fx.dag);
     const reveals = _buildReveals(ids.jurors, [
@@ -307,19 +331,22 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
     expect(out.verdict).toBe(VERDICT.UPHELD);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS);
-    expect(reviewerSU[0].data.delta).toBe(10);
-    expect(reviewerSU[0].data.reason).toBe(`review_won:${REVIEW_ID}`);
-    expect(reviewerSU[0].data.ctid).toBe(CTID);
+    // 2 events expected: disputer settlement + CORRECT_BONUS overlay.
+    expect(reviewerSU).toHaveLength(2);
+    const settlement = reviewerSU.find(t => t.data.delta === DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS);
+    expect(settlement).toBeDefined();
+    expect(settlement.data.delta).toBe(20);
+    const overlay = reviewerSU.find(t => t.data.delta === REVIEWER.CORRECT_BONUS);
+    expect(overlay).toBeDefined();
+    expect(overlay.data.delta).toBe(5);
+    expect(overlay.data.reason).toBe(`review_correct_bonus:${REVIEW_ID}`);
   });
 
-  test("CONSERVATIVE_LABEL → reviewer gets +CORRECT_BONUS only", () => {
+  test("CONSERVATIVE_LABEL → reviewer gets stake refund (+15) AND CORRECT_BONUS overlay (+5)", () => {
     const fx = _setup();
     const ids = _seedDispute(fx.dag, {
       declaredOrigin: ORIGIN.AG, claimedOrigin: ORIGIN.OH,
     });
-    // 5 MISMATCH + confirmed_origin = OH → CONSERVATIVE_LABEL (AG declared, OH confirmed)
     const reveals = ids.jurors.slice(0, 7).map((j, i) => ({
       tx_id: shake256(`r-cl-${i}`), tx_type: TX_TYPES.JURY_VOTE_REVEAL,
       timestamp: "2026-04-02T00:00:00.000Z",
@@ -334,13 +361,17 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
     expect(out.verdict).toBe(VERDICT.CONSERVATIVE_LABEL);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(REVIEWER.CORRECT_BONUS);
-    expect(reviewerSU[0].data.delta).toBe(5);
-    expect(reviewerSU[0].data.reason).toBe(`review_conservative:${REVIEW_ID}`);
+    expect(reviewerSU).toHaveLength(2);
+    const refund = reviewerSU.find(t => t.data.delta === DISPUTE.DISPUTER_STAKE);
+    expect(refund).toBeDefined();
+    expect(refund.data.delta).toBe(15);
+    const overlay = reviewerSU.find(t => t.data.delta === REVIEWER.CORRECT_BONUS);
+    expect(overlay).toBeDefined();
+    expect(overlay.data.delta).toBe(5);
+    expect(overlay.data.reason).toBe(`review_correct_bonus:${REVIEW_ID}`);
   });
 
-  test("DISMISSED → reviewer takes -DISPUTER_STAKE (full overturn cost)", () => {
+  test("DISMISSED → no Stage-2 reviewer events (filing-time -15 stake forfeit is the penalty)", () => {
     const fx = _setup();
     const ids = _seedDispute(fx.dag);
     const reveals = _buildReveals(ids.jurors, [
@@ -351,14 +382,14 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
     const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
     expect(out.verdict).toBe(VERDICT.DISMISSED);
 
+    // No Stage-2 batch events — the stake stays forfeited (already
+    // deducted at filing time by review-service.dispute). No
+    // CORRECT_BONUS overlay on DISMISSED either.
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(-DISPUTE.DISPUTER_STAKE);
-    expect(reviewerSU[0].data.delta).toBe(-15);
-    expect(reviewerSU[0].data.reason).toBe(`review_overturned:${REVIEW_ID}`);
+    expect(reviewerSU).toHaveLength(0);
   });
 
-  test("no prior CONFIRMED prescan_review → no reviewer payment (regression guard)", () => {
+  test("no prior CONFIRMED prescan_review → fallback disputer settlement only (no CORRECT_BONUS overlay)", () => {
     const fx = _setup();
     const ids = _seedDispute(fx.dag, { withReviewerEscalation: false });
     const reveals = _buildReveals(ids.jurors, [
@@ -369,12 +400,14 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
     const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
     expect(out.verdict).toBe(VERDICT.UPHELD);
 
-    // No prescan_review row → reviewer is not even seeded as a tip_id
-    // that could receive a SCORE_UPDATE. Filter all SCORE_UPDATE txs and
-    // confirm none target a "reviewer" identity.
-    const allSUs = out.txs.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
-    const reviewerSUs = allSUs.filter(t => t.data?.reason?.startsWith("review_"));
-    expect(reviewerSUs).toHaveLength(0);
+    // The fallback disputer (different identity from the reviewer)
+    // gets the standard +20 settlement. No CORRECT_BONUS overlay
+    // because there's no escalated_review row linked.
+    const overlayMatches = out.txs.filter(
+      t => t.tx_type === TX_TYPES.SCORE_UPDATE
+        && (t.data?.reason || "").includes("review_correct_bonus"),
+    );
+    expect(overlayMatches).toHaveLength(0);
   });
 });
 
@@ -382,8 +415,8 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
 
 describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
 
-  function _seedAppealFixture(dag, stage2Verdict, { declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG } = {}) {
-    const ids = _seedDispute(dag, { declaredOrigin, claimedOrigin });
+  function _seedAppealFixture(dag, stage2Verdict, { declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG, withReviewerEscalation = true } = {}) {
+    const ids = _seedDispute(dag, { declaredOrigin, claimedOrigin, withReviewerEscalation });
 
     const adjudicationTx = _addTx(dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
@@ -437,7 +470,7 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
     }));
   }
 
-  test("Stage-2 UPHELD → Stage-3 DISMISSED: reverse +10, apply -15 fresh", () => {
+  test("Stage-2 UPHELD → Stage-3 DISMISSED: standard disputer reversal + CORRECT_BONUS reversal", () => {
     const fx = _setup();
     const ids = _seedAppealFixture(fx.dag, VERDICT.UPHELD);
     const reveals = _buildExpertReveals(ids.experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH]);
@@ -446,20 +479,24 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
     expect(out.verdict).toBe(VERDICT.DISMISSED);
     expect(out.overturned).toBe(true);
 
+    // The reviewer (= disputer_tip_id) sees two reviewer-specific events:
+    //   1. Standard disputer-stake/bonus reversal from the disputer-
+    //      overturn block (-stake - bonus = -20).
+    //   2. CORRECT_BONUS overlay reversal (-5) from our new overlay
+    //      reversal — Stage-2 had paid the bonus (UPHELD).
+    // Stage-3 DISMISSED pays nothing fresh.
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    // Expected: -(+10) reversal + (-15) fresh = two events.
     expect(reviewerSU).toHaveLength(2);
-    const reversal = reviewerSU.find(t => t.data.reason.includes("reversed"));
-    expect(reversal).toBeDefined();
-    expect(reversal.data.delta).toBe(-(DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS));
-    expect(reversal.data.delta).toBe(-10);
-    const fresh = reviewerSU.find(t => t.data.reason === `review_overturned_on_appeal:${REVIEW_ID}`);
-    expect(fresh).toBeDefined();
-    expect(fresh.data.delta).toBe(-DISPUTE.DISPUTER_STAKE);
-    expect(fresh.data.delta).toBe(-15);
+    const disputerReversal = reviewerSU.find(t => t.data.delta === -(DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS));
+    expect(disputerReversal).toBeDefined();
+    expect(disputerReversal.data.delta).toBe(-20);
+    const bonusReversal = reviewerSU.find(t => t.data.reason.includes("review_correct_bonus reversed"));
+    expect(bonusReversal).toBeDefined();
+    expect(bonusReversal.data.delta).toBe(-REVIEWER.CORRECT_BONUS);
+    expect(bonusReversal.data.delta).toBe(-5);
   });
 
-  test("Stage-2 DISMISSED → Stage-3 UPHELD: reverse -15, apply +10 fresh", () => {
+  test("Stage-2 DISMISSED → Stage-3 UPHELD: standard fresh disputer settlement + fresh CORRECT_BONUS", () => {
     const fx = _setup();
     const ids = _seedAppealFixture(fx.dag, VERDICT.DISMISSED);
     const reveals = _buildExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH]);
@@ -468,16 +505,23 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
     expect(out.verdict).toBe(VERDICT.UPHELD);
     expect(out.overturned).toBe(true);
 
+    // The reviewer (= disputer) gets at least these two events from
+    // the parts of the batch this test owns:
+    //   1. Disputer-overturn settlement: +stake+UPHELD_BONUS = +20.
+    //   2. CORRECT_BONUS overlay (fresh on UPHELD): +5.
+    // (The reviewer also happens to be the appellant in this fixture
+    // — they're the Stage-2 loser — so the existing appellant block
+    // adds +APPELLANT_STAKE+OVERTURN_BONUS. That's covered by the
+    // appellant economics tests in tests/scoring/dispute-stake-economy
+    // and is not the focus of this reviewer-payment test.)
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(2);
-    const reversal = reviewerSU.find(t => t.data.reason.includes("reversed"));
-    expect(reversal).toBeDefined();
-    expect(reversal.data.delta).toBe(DISPUTE.DISPUTER_STAKE);
-    expect(reversal.data.delta).toBe(15);
-    const fresh = reviewerSU.find(t => t.data.reason === `review_won_on_appeal:${REVIEW_ID}`);
-    expect(fresh).toBeDefined();
-    expect(fresh.data.delta).toBe(DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS);
-    expect(fresh.data.delta).toBe(10);
+    const settlement = reviewerSU.find(t => t.data.delta === DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS);
+    expect(settlement).toBeDefined();
+    expect(settlement.data.delta).toBe(20);
+    const overlay = reviewerSU.find(t => t.data.reason === `review_correct_bonus_on_appeal:${REVIEW_ID}`);
+    expect(overlay).toBeDefined();
+    expect(overlay.data.delta).toBe(REVIEWER.CORRECT_BONUS);
+    expect(overlay.data.delta).toBe(5);
   });
 
   test("Stage-2 UPHELD → Stage-3 UPHELD (confirm, not overturn) → no reviewer events", () => {
@@ -504,30 +548,26 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
     expect(out.overturned).toBe(false);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    // No new event — Stage-2 reviewer payment (-15) stands.
     expect(reviewerSU).toHaveLength(0);
   });
 
-  test("Stage-3 overturn with NO prior CONFIRMED review → no reviewer event (regression)", () => {
+  test("Stage-3 overturn with NO escalated review → no CORRECT_BONUS overlay events (regression)", () => {
     const fx = _setup();
-    // _seedAppealFixture seeds the prescan_review by default — we
-    // need to clear it. Reuse the helper then delete the row.
-    const ids = _seedAppealFixture(fx.dag, VERDICT.UPHELD);
-    // Remove the escalated review row to simulate a dispute filed
-    // without a prior prescan-review chain.
-    fx.dag.savePrescanReview({
-      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: ids.authorTipId,
-      assigned_reviewer: ids.reviewerTipId, triggered_at_round: 1,
-      state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,  // not "escalated_to_dispute"
-    });
+    // Seed without the escalated_review state — simulates a normal
+    // third-party dispute being appealed.
+    const ids = _seedAppealFixture(fx.dag, VERDICT.UPHELD, { withReviewerEscalation: false });
     const reveals = _buildExpertReveals(ids.experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH]);
 
     const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
     expect(out.verdict).toBe(VERDICT.DISMISSED);
     expect(out.overturned).toBe(true);
 
-    const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(0);
+    // No CORRECT_BONUS events should be present (no escalated_review row).
+    const overlayMatches = out.txs.filter(
+      t => t.tx_type === TX_TYPES.SCORE_UPDATE
+        && (t.data?.reason || "").includes("review_correct_bonus"),
+    );
+    expect(overlayMatches).toHaveLength(0);
   });
 });
 
@@ -593,7 +633,7 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     }));
   }
 
-  test("NO_QUORUM → Stage-3 UPHELD: reviewer gets +UPHELD_BONUS + CORRECT_BONUS (no Stage-2 reversal needed)", () => {
+  test("NO_QUORUM → Stage-3 UPHELD: standard disputer settlement (+20) + CORRECT_BONUS overlay (+5)", () => {
     const fx = _setup();
     const ids = _seedNoQuorumAppeal(fx.dag);
     const reveals = _buildExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH]);
@@ -602,13 +642,17 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     expect(out.verdict).toBe(VERDICT.UPHELD);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(DISPUTE.UPHELD_BONUS + REVIEWER.CORRECT_BONUS);
-    expect(reviewerSU[0].data.delta).toBe(10);
-    expect(reviewerSU[0].data.reason).toBe(`review_won_no_quorum:${REVIEW_ID}`);
+    expect(reviewerSU).toHaveLength(2);
+    const settlement = reviewerSU.find(t => t.data.delta === DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS);
+    expect(settlement).toBeDefined();
+    expect(settlement.data.delta).toBe(20);
+    const overlay = reviewerSU.find(t => t.data.delta === REVIEWER.CORRECT_BONUS);
+    expect(overlay).toBeDefined();
+    expect(overlay.data.delta).toBe(5);
+    expect(overlay.data.reason).toBe(`review_correct_bonus_no_quorum:${REVIEW_ID}`);
   });
 
-  test("NO_QUORUM → Stage-3 CONSERVATIVE_LABEL: reviewer gets +CORRECT_BONUS only", () => {
+  test("NO_QUORUM → Stage-3 CONSERVATIVE_LABEL: stake refund (+15) + CORRECT_BONUS overlay (+5)", () => {
     const fx = _setup();
     const ids = _seedNoQuorumAppeal(fx.dag, {
       declaredOrigin: ORIGIN.AG, claimedOrigin: ORIGIN.OH,
@@ -627,13 +671,17 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     expect(out.verdict).toBe(VERDICT.CONSERVATIVE_LABEL);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(REVIEWER.CORRECT_BONUS);
-    expect(reviewerSU[0].data.delta).toBe(5);
-    expect(reviewerSU[0].data.reason).toBe(`review_conservative_no_quorum:${REVIEW_ID}`);
+    expect(reviewerSU).toHaveLength(2);
+    const refund = reviewerSU.find(t => t.data.delta === DISPUTE.DISPUTER_STAKE);
+    expect(refund).toBeDefined();
+    expect(refund.data.delta).toBe(15);
+    const overlay = reviewerSU.find(t => t.data.delta === REVIEWER.CORRECT_BONUS);
+    expect(overlay).toBeDefined();
+    expect(overlay.data.delta).toBe(5);
+    expect(overlay.data.reason).toBe(`review_correct_bonus_no_quorum:${REVIEW_ID}`);
   });
 
-  test("NO_QUORUM → Stage-3 DISMISSED: reviewer takes -DISPUTER_STAKE", () => {
+  test("NO_QUORUM → Stage-3 DISMISSED: no Stage-3 batch events for reviewer (stake stays forfeited)", () => {
     const fx = _setup();
     const ids = _seedNoQuorumAppeal(fx.dag);
     const reveals = _buildExpertReveals(ids.experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH]);
@@ -642,9 +690,6 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     expect(out.verdict).toBe(VERDICT.DISMISSED);
 
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.reviewerTipId);
-    expect(reviewerSU).toHaveLength(1);
-    expect(reviewerSU[0].data.delta).toBe(-DISPUTE.DISPUTER_STAKE);
-    expect(reviewerSU[0].data.delta).toBe(-15);
-    expect(reviewerSU[0].data.reason).toBe(`review_overturned_no_quorum:${REVIEW_ID}`);
+    expect(reviewerSU).toHaveLength(0);
   });
 });
