@@ -126,15 +126,21 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
 
   // Grace branches (Phase 2 design):
   //   (a) Open review in 'confirmed': creator has the 24h
-  //       accept-private window from confirmed_at_ms. The Phase 2.6
+  //       accept-private window from confirmed_at_ms. The
   //       /reviews/:id/accept-correction endpoint runs through here;
   //       commit-handler.UPDATE_ORIGIN apply flips the review to
-  //       CLOSED_ACCEPTED_PRIVATE.
-  //   (b) Open review in 'triggered': creator may still self-correct
-  //       while the reviewer is evaluating. Allowed for the duration
-  //       of the reviewer's SLA — the reviewer's own evaluation
-  //       deadline bounds this. commit-handler.UPDATE_ORIGIN apply
-  //       flips the review to CLOSED_SELF_CORRECT (Phase 2.3 hook).
+  //       CLOSED_ACCEPTED_PRIVATE. Direct UPDATE_ORIGIN calls land
+  //       here too — they go through the accept-correction batch
+  //       at commit time.
+  //   (b) Open review in 'triggered': REJECTED. The 48h pre-review
+  //       window was the creator's chance to self-correct; once the
+  //       reviewer is engaged, the case is in their hands and the
+  //       creator must wait for the DISMISS / CONFIRM call. Letting
+  //       the creator bail out mid-review wastes reviewer effort and
+  //       lets a savvy creator dodge an unfavourable reviewer
+  //       assignment by abandoning at h=49 for free. Retract still
+  //       works at this stage (it's withdrawal, not a same-content
+  //       fix) — see canRetract, which doesn't gate on review state.
   //   (c) No open review: HIGH/CRITICAL + override gets the 48h
   //       flagged window; everything else gets the 24h unflagged.
   const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
@@ -148,9 +154,10 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
       return fail(403, "24-hour creator decision window has expired");
     }
   } else if (openReview && openReview.state === PRESCAN_REVIEW_STATES.TRIGGERED) {
-    // No additional time gate — reviewer's evaluation window provides
-    // the upper bound; the creator wanting out cleanly is always
-    // preferable to a forced public dispute.
+    return fail(
+      403,
+      "Cannot update origin while a reviewer is evaluating this content. Wait for the reviewer's decision.",
+    );
   } else {
     const registeredAt = new Date(rec.registered_at).getTime();
     const isFlaggedWithOverride =
@@ -178,6 +185,23 @@ function canRetract(dag, { ctid, author_tip_id }) {
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can retract");
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(409, "Content is already retracted");
   if (rec.status === CONTENT_STATUS.DISPUTED) return fail(403, "Cannot retract content that is under dispute");
+
+  // Same lockout as canUpdateOrigin during open review: once the
+  // reviewer is engaged the case is in their hands, and the creator
+  // can't exit unilaterally — even via retract. RECUSED state is
+  // not "open" here (getOpenPrescanReviewByCtid only matches
+  // TRIGGERED + CONFIRMED), but the prescan-review-trigger re-fires
+  // in the very next round after a RECUSED, so the creator never has
+  // a meaningful "no reviewer assigned" window to act in.
+  const openReview = typeof dag.getOpenPrescanReviewByCtid === "function"
+    ? dag.getOpenPrescanReviewByCtid(ctid)
+    : null;
+  if (openReview) {
+    return fail(
+      403,
+      "Cannot retract while a reviewer is evaluating this content. Wait for the reviewer's decision.",
+    );
+  }
 
   const author = dag.getIdentity(author_tip_id);
   if (!author) return fail(404, "Author identity not found");

@@ -331,7 +331,7 @@ describe("prescan-review end-to-end flow", () => {
     expect(triggered).toBeUndefined();
   });
 
-  test("register flagged → trigger fires → creator self-corrects BEFORE reviewer decides → review closes with CLOSED_SELF_CORRECT", () => {
+  test("register flagged → trigger fires → creator's UPDATE_ORIGIN attempt during TRIGGERED is REJECTED (case is in reviewer's hands)", () => {
     const fx = _setup();
 
     const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
@@ -347,41 +347,25 @@ describe("prescan-review end-to-end flow", () => {
     const reviewId = fx.dag.getOpenPrescanReviewByCtid(CTID).review_id;
     expect(fx.dag.getPrescanReview(reviewId).state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
 
-    // Creator beats the reviewer to it — submits UPDATE_ORIGIN while
-    // the review is still in TRIGGERED. canUpdateOrigin allows this
-    // (content.status === PENDING_REVIEW is permitted; no open
-    // CONFIRMED review yet, so the from-registration grace still
-    // applies and we're inside the 48h window because triggerTs is
-    // ~5min past h=48 — still inside 48h grace? Actually past it.
-    // The path that lets this through: PENDING_REVIEW is allowed by
-    // the status guard; the trigger doesn't FALSE-positive on grace
-    // because the open review's CONFIRMED branch hasn't activated).
-    // Phase 2.3: commit-handler.UPDATE_ORIGIN apply flips the open
-    // TRIGGERED review to CLOSED_SELF_CORRECT.
-    const updateSig = signBody(
-      { author_tip_id: CREATOR, ctid: CTID, new_origin_code: "AG" },
-      fx.creatorKp.privateKey,
+    // The creator's 48h reconsideration window expired when the
+    // trigger fired. Once a reviewer is engaged, UPDATE_ORIGIN is
+    // rejected — the creator must wait for DISMISS or CONFIRM, and
+    // can only update via the accept-correction path (which costs
+    // -10) once the reviewer is in CONFIRMED state.
+    const rules = require(path.join(SRC, "validators", "business-rules"));
+    const result = rules.canUpdateOrigin(
+      fx.dag,
+      { ctid: CTID, author_tip_id: CREATOR, new_origin_code: "AG" },
+      { now: Date.now() },
     );
-    const { withTxId } = require(path.join(SRC, "services", "helpers"));
-    const updateTx = withTxId({
-      tx_type: TX_TYPES.UPDATE_ORIGIN,
-      timestamp: new Date().toISOString(),
-      prev: fx.dag.getRecentPrev(),
-      data: {
-        ctid: CTID,
-        old_origin_code: "OH",
-        new_origin_code: "AG",
-        author_tip_id: CREATOR,
-        signature: updateSig,
-      },
-    });
-    fx.submitted.length = 0;
-    fx.commit([updateTx], triggerTs + 60_000);
+    expect(result.valid).toBe(false);
+    expect(result.error.status).toBe(403);
+    expect(result.error.message).toMatch(/while a reviewer is evaluating/i);
 
-    const finalReview = fx.dag.getPrescanReview(reviewId);
-    expect(finalReview.state).toBe(PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT);
-    expect(fx.dag.getContent(CTID).origin_code).toBe("AG");
-    expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.REGISTERED);
+    // State unchanged — review still TRIGGERED, content still flagged OH.
+    expect(fx.dag.getPrescanReview(reviewId).state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(fx.dag.getContent(CTID).origin_code).toBe("OH");
+    expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
   });
 
   test("register flagged → reviewer confirm → creator does nothing → h=R+24 auto-escalates to CONTENT_DISPUTED", () => {

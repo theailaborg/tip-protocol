@@ -434,11 +434,11 @@ describe("Phase 2.3 — content status transitions", () => {
     expect(fx.dag.getPrescanReview("rv_p23_a").state).toBe(PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
   });
 
-  test("UPDATE_ORIGIN during an open review closes it with state=closed_self_correct", () => {
+  test("UPDATE_ORIGIN is REJECTED while a review is in TRIGGERED state (creator's 48h window has passed)", () => {
     const fx = _setup();
-    // Re-seed content with a fresh registered_at so the 48h grace window
-    // is still open at commit time. Otherwise canUpdateOrigin rejects the
-    // tx and the close-review side effect never runs.
+    // Fresh registered_at to rule out the grace-window branch of the
+    // rejection — we want canUpdateOrigin to reject solely on the
+    // "open TRIGGERED review" branch.
     const seeded = fx.dag.getContent(CTID_1);
     fx.dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
 
@@ -446,36 +446,21 @@ describe("Phase 2.3 — content status transitions", () => {
     expect(fx.dag.getPrescanReview("rv_p23_b").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
     expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
 
-    // Creator submits UPDATE_ORIGIN. CREATOR.public_key was seeded as
-    // nodeKp.publicKey, so nodeKp.privateKey produces a valid body sig.
-    // Signed canonical payload binds the action to a specific ctid
-    // (replay protection — captured signatures cannot be re-used
-    // against another ctid the same author owns).
-    const body = { author_tip_id: CREATOR, ctid: CTID_1, new_origin_code: "AG" };
-    const updateData = {
-      ctid: CTID_1,
-      old_origin_code: "OH",
-      new_origin_code: "AG",
-      author_tip_id: CREATOR,
-      signature: signBody(body, fx.nodeKp.privateKey),
-    };
-    const updateTx = {
-      tx_type: TX_TYPES.UPDATE_ORIGIN,
-      timestamp: new Date().toISOString(),
-      prev: fx.dag.getRecentPrev(),
-      data: updateData,
-    };
-    updateTx.tx_id = computeTxId(updateTx);
+    // canUpdateOrigin should reject — reviewer is engaged, creator's
+    // 48h window has passed. The case is in the reviewer's hands.
+    const rules = require(path.join(SRC, "validators", "business-rules"));
+    const result = rules.canUpdateOrigin(
+      fx.dag,
+      { ctid: CTID_1, author_tip_id: CREATOR, new_origin_code: "AG" },
+      { now: Date.now() },
+    );
+    expect(result.valid).toBe(false);
+    expect(result.error.status).toBe(403);
+    expect(result.error.message).toMatch(/while a reviewer is evaluating/i);
 
-    fx.commit([updateTx]);
-
-    const content = fx.dag.getContent(CTID_1);
-    expect(content.origin_code).toBe("AG");
-    expect(content.status).toBe(CONTENT_STATUS.REGISTERED);
-
-    const review = fx.dag.getPrescanReview("rv_p23_b");
-    expect(review.state).toBe(PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT);
-    expect(review.decided_at_round).toBeGreaterThan(0);
-    expect(fx.dag.getOpenPrescanReviewByCtid(CTID_1)).toBeNull();
+    // Review and content state unchanged.
+    expect(fx.dag.getPrescanReview("rv_p23_b").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
+    expect(fx.dag.getContent(CTID_1).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+    expect(fx.dag.getContent(CTID_1).origin_code).toBe("OH");
   });
 });

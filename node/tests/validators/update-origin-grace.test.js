@@ -204,4 +204,69 @@ describe("canUpdateOrigin — grace window dispatch", () => {
       expect(result.error.message).toMatch(/24-hour/);
     });
   });
+
+  describe("open review lockout — creator can't update or retract while reviewer is engaged", () => {
+
+    const CTID = "tip://c/OH-revlockout1234-aa49";
+
+    function _seedWithOpenReview(state) {
+      const { dag } = _setup();
+      _seedContent(dag, {
+        ctid: CTID, tier: PRESCAN_TIERS.HIGH,
+        probability: 0.92, flagged: true, override: true,
+      });
+      // Override registered_at to "now" so the 48h grace-window branch
+      // wouldn't reject by itself — the only failure path under test
+      // here is the open-review gate.
+      const seeded = dag.getContent(CTID);
+      dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
+      dag.savePrescanReview({
+        review_id: "rv_open", ctid: CTID, creator_tip_id: AUTHOR_ID,
+        assigned_reviewer: "tip://id/US-rrrrrrrrrrrrrrrr",
+        triggered_at_round: 1,
+        confirmed_at_round: state === "confirmed" ? 2 : null,
+        confirmed_at_ms: state === "confirmed" ? Date.now() : null,
+        state,
+      });
+      return dag;
+    }
+
+    test("canUpdateOrigin rejected while review is TRIGGERED — '...while a reviewer is evaluating...'", () => {
+      const dag = _seedWithOpenReview("triggered");
+      const result = rules.canUpdateOrigin(dag, args(CTID), { now: Date.now() });
+      expect(result.valid).toBe(false);
+      expect(result.error.status).toBe(403);
+      expect(result.error.message).toMatch(/while a reviewer is evaluating/i);
+    });
+
+    test("canRetract rejected while review is TRIGGERED — '...while a reviewer is evaluating...'", () => {
+      const dag = _seedWithOpenReview("triggered");
+      const result = rules.canRetract(dag, { ctid: CTID, author_tip_id: AUTHOR_ID });
+      expect(result.valid).toBe(false);
+      expect(result.error.status).toBe(403);
+      expect(result.error.message).toMatch(/while a reviewer is evaluating/i);
+    });
+
+    test("canRetract rejected while review is CONFIRMED", () => {
+      const dag = _seedWithOpenReview("confirmed");
+      const result = rules.canRetract(dag, { ctid: CTID, author_tip_id: AUTHOR_ID });
+      expect(result.valid).toBe(false);
+      expect(result.error.status).toBe(403);
+    });
+
+    test("canRetract allowed after review terminates in CLOSED_DISMISSED", () => {
+      const dag = _seedWithOpenReview("closed_dismissed");
+      const result = rules.canRetract(dag, { ctid: CTID, author_tip_id: AUTHOR_ID });
+      expect(result.valid).toBe(true);
+    });
+
+    test("canRetract allowed while review is in transient RECUSED state (next-round re-trigger hasn't fired yet)", () => {
+      // RECUSED is not "open" per getOpenPrescanReviewByCtid, which
+      // matches TRIGGERED + CONFIRMED only. The next-round trigger
+      // will create a fresh TRIGGERED row that re-locks retract.
+      const dag = _seedWithOpenReview("recused");
+      const result = rules.canRetract(dag, { ctid: CTID, author_tip_id: AUTHOR_ID });
+      expect(result.valid).toBe(true);
+    });
+  });
 });
