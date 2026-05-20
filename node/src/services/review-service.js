@@ -22,21 +22,51 @@
 
 "use strict";
 
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
 const dismissedSchema = require("../schemas/prescan-review-dismissed");
 const confirmedSchema = require("../schemas/prescan-review-confirmed");
-const recusedSchema   = require("../schemas/prescan-review-recused");
+const recusedSchema = require("../schemas/prescan-review-recused");
 const acceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
-const disputeSchema   = require("../schemas/prescan-review-dispute");
+const disputeSchema = require("../schemas/prescan-review-dispute");
 const { schemaError } = require("../schemas/_common");
 const { withTxId, nodeSignedAuto } = require("./helpers");
 const { isEligibleReviewer, getReviewerAccuracy } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.review");
+
+const OUTCOME_LABELS = Object.freeze({
+  [PRESCAN_REVIEW_STATES.TRIGGERED]: "PENDING",
+  [PRESCAN_REVIEW_STATES.CONFIRMED]: "AWAITING_CREATOR_DECISION",
+  [PRESCAN_REVIEW_STATES.CLOSED_DISMISSED]: "DISMISSED",
+  [PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE]: "ACCEPTED_PRIVATE",
+  [PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT]: "SELF_CORRECTED",
+  [PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE]: "ESCALATED",
+  [PRESCAN_REVIEW_STATES.RECUSED]: "RECUSED",
+});
+
+// Score-history → review attribution. Two paths:
+//   1. review-tagged reasons embed the review_id directly (review_dismissed:pr_…,
+//      review_accepted_private:pr_…, review_correct_bonus[*]:pr_…) — match by
+//      substring.
+//   2. dispute-lifecycle reasons name the ctid but not the review_id ("Dispute
+//      filing stake on tip://c/…", "Dispute upheld on tip://c/…", "Appeal
+//      overturned: Stage 2 settlement reversed on tip://c/…"). Only an
+//      ESCALATED review can legitimately own these, and we time-bound by the
+//      next review's triggered_at so consecutive disputes on the same ctid
+//      don't bleed across rows.
+function _matchesReview(historyEntry, review, winStartMs, winEndMs, isEscalated) {
+  const reason = historyEntry.reason || "";
+  if (reason.includes(review.review_id)) return true;
+  if (!isEscalated) return false;
+  if (!reason.includes(review.ctid)) return false;
+  if (!/^(Dispute|Appeal)\b/.test(reason)) return false;
+  const ts = new Date(historyEntry.timestamp).getTime();
+  return ts >= winStartMs && ts < winEndMs;
+}
 
 function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
@@ -354,6 +384,93 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     };
   }
 
+  function listReviewsByReviewer(reviewerTipId) {
+    if (!dag.getIdentity(reviewerTipId)) {
+      throw schemaError(404, `Identity not found: ${reviewerTipId}`, "identity_not_found");
+    }
+    const reviews = dag.getPrescanReviewsByReviewer(reviewerTipId) || [];
+    if (reviews.length === 0) {
+      return { reviewer_tip_id: reviewerTipId, count: 0, reviews: [] };
+    }
+
+    const scoreHistory = scoring ? (scoring.computeScore(reviewerTipId).history || []) : [];
+
+    // Per-review attribution windows: bound each review's dispute-lifecycle
+    // deltas by [this.triggered_at_ms, next.triggered_at_ms) so an earlier
+    // ESCALATED on the same ctid doesn't capture a later dispute's events.
+    const byTimeAsc = [...reviews].sort((a, b) =>
+      (a.triggered_at_ms ?? 0) - (b.triggered_at_ms ?? 0)
+    );
+
+    const projected = byTimeAsc.map((review, ix) => {
+      const next = byTimeAsc[ix + 1];
+      const winStartMs = review.triggered_at_ms ?? 0;
+      const winEndMs = next?.triggered_at_ms ?? Number.POSITIVE_INFINITY;
+
+      const isEscalated = review.state === PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE;
+      const score_deltas = scoreHistory
+        .filter(h => _matchesReview(h, review, winStartMs, winEndMs, isEscalated))
+        .map(h => ({
+          tx_id: h.tx_id, delta: h.delta, score_after: h.score_after,
+          reason: h.reason, timestamp: h.timestamp,
+        }));
+      const net_score_impact = score_deltas.reduce((s, d) => s + d.delta, 0);
+
+      const dispute = isEscalated
+        ? _projectDispute(review, reviewerTipId, winStartMs, winEndMs)
+        : null;
+
+      return {
+        review_id: review.review_id,
+        ctid: review.ctid,
+        creator_tip_id: review.creator_tip_id,
+        state: review.state,
+        outcome: OUTCOME_LABELS[review.state] || review.state.toUpperCase(),
+        triggered_at_round: review.triggered_at_round,
+        triggered_at_ms: review.triggered_at_ms,
+        decided_at_round: review.decided_at_round,
+        confirmed_at_round: review.confirmed_at_round,
+        confirmed_at_ms: review.confirmed_at_ms,
+        decision_note: review.decision_note,
+        suggested_origin: review.suggested_origin,
+        dispute,
+        score_deltas,
+        net_score_impact,
+      };
+    });
+
+    projected.reverse();
+    return { reviewer_tip_id: reviewerTipId, count: projected.length, reviews: projected };
+  }
+
+  function _projectDispute(review, reviewerTipId, winStartMs, winEndMs) {
+    const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, review.ctid)
+      .filter(t => t.data?.disputer_tip_id === reviewerTipId)
+      .filter(t => {
+        const ts = new Date(t.timestamp).getTime();
+        return ts >= winStartMs && ts < winEndMs;
+      })
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const disputeTx = disputeTxs[0];
+    if (!disputeTx) return null;
+
+    const after = (tx) => tx.timestamp > disputeTx.timestamp && new Date(tx.timestamp).getTime() < winEndMs;
+    const adjudication = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, review.ctid)
+      .filter(after).sort((a, b) => a.timestamp.localeCompare(b.timestamp))[0];
+    const appeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, review.ctid)
+      .filter(after).sort((a, b) => a.timestamp.localeCompare(b.timestamp))[0];
+
+    return {
+      dispute_tx_id: disputeTx.tx_id,
+      filed_at: disputeTx.timestamp,
+      stage2_verdict: adjudication?.data?.verdict ?? null,
+      stage2_resolved_at: adjudication?.timestamp ?? null,
+      stage3_verdict: appeal?.data?.verdict ?? null,
+      stage3_overturned: appeal?.data?.overturned ?? null,
+      stage3_resolved_at: appeal?.timestamp ?? null,
+    };
+  }
+
   /**
    * Debug / ops projection: every identity that currently passes
    * isEligibleReviewer (Pass 1 strict: consent + score ≥ MIN_SCORE +
@@ -383,7 +500,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     return { pool: rows, count: rows.length };
   }
 
-  return { getReview, dismiss, confirm, recuse, acceptCorrection, dispute, listReviewerPool };
+  return { getReview, dismiss, confirm, recuse, acceptCorrection, dispute, listReviewerPool, listReviewsByReviewer };
 }
 
 module.exports = { createReviewService };

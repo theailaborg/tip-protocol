@@ -28,6 +28,10 @@ function createRouter({ reviewService }) {
     res.json(reviewService.listReviewerPool());
   }));
 
+  router.get("/identity/:tipId/reviews", asyncHandler((req, res) => {
+    res.json(reviewService.listReviewsByReviewer(req.params.tipId));
+  }));
+
   router.get("/reviews/:id", asyncHandler((req, res) => {
     res.json(reviewService.getReview(req.params.id));
   }));
