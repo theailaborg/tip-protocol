@@ -216,25 +216,34 @@ class ScoringEngine:
         if verdict != "UPHELD":
             return 0, f"Adjudication: unknown verdict={verdict}"
 
+        # Per-pair offense escalation. Each pair has its own [1st, 2nd, 3rd+]
+        # ladder in genesis — read the matching pair's array index. Preserves
+        # severity scaling on repeat offenses (the old universal ladder
+        # collapsed every pair onto oh_as_ag, over-penalising lesser mismatches).
+
         # OH declared, AG confirmed — most serious
         if declared == Origin.OH and confirmed == Origin.AG:
             if current_offense_count >= 2:
-                return ScoreEvent.MISMATCH_3RD_OFFENSE, "3rd+ OH→AG mismatch: account suspended"
+                return ScoreEvent.OH_CONFIRMED_AG_3RD, "3rd+ OH→AG mismatch: account suspended"
             if current_offense_count >= 1:
-                return ScoreEvent.MISMATCH_2ND_OFFENSE, "2nd OH→AG mismatch: account flagged"
+                return ScoreEvent.OH_CONFIRMED_AG_2ND, "2nd OH→AG mismatch: account flagged"
             return ScoreEvent.OH_CONFIRMED_AG_1ST, "1st OH→AG mismatch: warning"
 
         # OH declared, AA confirmed
         if declared == Origin.OH and confirmed == Origin.AA:
+            if current_offense_count >= 2:
+                return ScoreEvent.OH_CONFIRMED_AA_3RD, "3rd+ mismatch: OH declared, AA confirmed"
             if current_offense_count >= 1:
-                return ScoreEvent.MISMATCH_2ND_OFFENSE, "2nd mismatch: OH declared, AA confirmed"
-            return ScoreEvent.OH_CONFIRMED_AA, "OH declared, AI-Assisted confirmed"
+                return ScoreEvent.OH_CONFIRMED_AA_2ND, "2nd mismatch: OH declared, AA confirmed"
+            return ScoreEvent.OH_CONFIRMED_AA_1ST, "OH declared, AI-Assisted confirmed"
 
         # AA declared, AG confirmed
         if declared == Origin.AA and confirmed == Origin.AG:
+            if current_offense_count >= 2:
+                return ScoreEvent.AA_CONFIRMED_AG_3RD, "3rd+ mismatch: AA declared, AG confirmed"
             if current_offense_count >= 1:
-                return ScoreEvent.MISMATCH_2ND_OFFENSE, "2nd mismatch: AA declared, AG confirmed"
-            return ScoreEvent.AA_CONFIRMED_AG, "AA declared, AI-Generated confirmed"
+                return ScoreEvent.AA_CONFIRMED_AG_2ND, "2nd mismatch: AA declared, AG confirmed"
+            return ScoreEvent.AA_CONFIRMED_AG_1ST, "AA declared, AI-Generated confirmed"
 
         # Factual falsehood
         if data.get("type") == "FACTUAL_FALSEHOOD":

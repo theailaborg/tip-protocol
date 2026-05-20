@@ -21,18 +21,20 @@ spec changed or the genesis is misconfigured.
 | `NO_SHOW_PENALTY` | **10** | Summoned but didn't reveal |
 | `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
 
-**Author penalty (UPHELD only)** — depends on the origin pair and the
-author's prior offense_count:
+**Author penalty (UPHELD only)** — per-pair escalation `base × [1, 2, 3]`
+per spec (TIP_Trust_Scoring §6 Asymmetric Penalty Structure):
 
-| Origin pair | 1st offense | 2nd | 3rd+ |
+| Origin pair | 1st offense | 2nd (2× base) | 3rd+ (3× base) |
 |---|---:|---:|---:|
-| OH → AG | -100 | -200 | -350 |
-| OH → AA | -40 | -200 | -200 |
-| AA → AG | -25 | -200 | -200 |
+| OH → AG | -100 | -200 | -300 |
+| OH → AA | -40 | -80 | -120 |
+| AA → AG | -25 | -50 | -75 |
 | anything else | 0 | 0 | 0 |
 
-`CONSERVATIVE_LABEL` (e.g. AG → OH) and `DISMISSED` always = 0
-penalty.
+First-offense severity scaling is preserved at repeat offenses — a
+repeat AA→AG offender gets the AA→AG ladder, not the (harsher)
+OH→AG ladder. `CONSERVATIVE_LABEL` (e.g. AG → OH) and `DISMISSED`
+always = 0 penalty.
 
 ---
 
