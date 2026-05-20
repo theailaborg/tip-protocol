@@ -154,6 +154,54 @@ describe("dag.getContentsNeedingReview", () => {
     expect(fx.dag.getContentsNeedingReview(nowMs)).toEqual([]);
   });
 
+  test("excludes content whose latest prescan_review is in a non-recused terminal state (no re-trigger after dismiss / accept / escalate)", () => {
+    // Regression guard for the re-trigger loop: after a reviewer
+    // DISMISSes (review.state=closed_dismissed), content.status flips
+    // back to REGISTERED — all the original trigger conditions are
+    // still true (OH + critical + override + age>flagged_ms). The
+    // trigger's JOIN must include EVERY non-recused review state so
+    // it doesn't fire a fresh reviewer assignment on every round.
+    const fx = _setup();
+    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
+
+    const TERMINAL_STATES = [
+      PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+      PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE,
+      PRESCAN_REVIEW_STATES.CLOSED_SELF_CORRECT,
+      PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE,
+    ];
+    for (const state of TERMINAL_STATES) {
+      const fresh = _setup();
+      const ctidForState = `tip://c/OH-${state.replace(/_/g, "").padEnd(14, "0").slice(0, 14)}-0001`;
+      fresh.seedFlaggedContent({ ctid: ctidForState, registeredAtMs: oldMs });
+      fresh.dag.savePrescanReview({
+        review_id: `rv_term_${state}`, ctid: ctidForState, creator_tip_id: CREATOR,
+        assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
+        decided_at_round: 2,
+        state,
+      });
+      expect(fresh.dag.getContentsNeedingReview(nowMs)).toEqual([]);
+    }
+  });
+
+  test("re-triggers when latest review is in RECUSED state (need to assign new reviewer)", () => {
+    const fx = _setup();
+    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
+    fx.seedFlaggedContent({ ctid: CTID_1, registeredAtMs: oldMs });
+    fx.dag.savePrescanReview({
+      review_id: "rv_recused", ctid: CTID_1, creator_tip_id: CREATOR,
+      assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
+      decided_at_round: 2,
+      state: PRESCAN_REVIEW_STATES.RECUSED,
+    });
+    // Only-recused history → re-trigger is exactly the intended path.
+    const out = fx.dag.getContentsNeedingReview(nowMs);
+    expect(out).toHaveLength(1);
+    expect(out[0].ctid).toBe(CTID_1);
+  });
+
   test("excludes low/elevated tier and non-override content", () => {
     const fx = _setup();
     const nowMs = Date.parse("2026-03-01T00:00:00.000Z");

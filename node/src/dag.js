@@ -748,6 +748,14 @@ class MemoryStore {
   }
   // Phase 2.5 trigger queries. Mirror the SQLite predicates in JS so the
   // memory-store path produces the same candidate set.
+  //
+  // Re-trigger gate: skip any ctid that already has a non-recused
+  // prior review. The earlier predicate only looked for TRIGGERED /
+  // CONFIRMED (open states) — that let CLOSED_* + ESCALATED_TO_DISPUTE
+  // through, causing the trigger to fire again on every round after a
+  // DISMISS/accept/etc., spawning a fresh reviewer + extra +5 bonus
+  // every round. RECUSED is the only terminal state that intentionally
+  // re-triggers (we need a new reviewer to take the case).
   getContentsNeedingReview(nowMs) {
     const cutoff = nowMs - CONTENT_GRACE.FLAGGED_MS;
     const out = [];
@@ -758,8 +766,9 @@ class MemoryStore {
       if (!c.override) continue;
       const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
       if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
-      const open = this.getOpenPrescanReviewByCtid(c.ctid);
-      if (open) continue;
+      const prior = [...this._prescanReviews.values()].filter(r =>
+        r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
+      if (prior.length > 0) continue;
       out.push({ ...c });
     }
     return out;
@@ -1904,10 +1913,15 @@ class SQLiteStore {
       // design doc: after a self-correction, origin_code is AA/AG/MX,
       // so the content is no longer claiming human-only and there's
       // nothing for the reviewer to dispute.
+      // The JOIN must include EVERY non-recused prior review state —
+      // not just the open ones — so the trigger doesn't re-fire after
+      // a DISMISS / accept-private / self-correct / dispute escalation
+      // closes the case. RECUSED is the only terminal state that
+      // intentionally re-triggers (new reviewer needed).
       getContentsNeedingReview: this.db.prepare(
         `SELECT c.* FROM content c
          LEFT JOIN prescan_reviews r
-           ON r.ctid = c.ctid AND r.state IN ('triggered','confirmed')
+           ON r.ctid = c.ctid AND r.state != 'recused'
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
            AND c.prescan_tier IN ('high','critical')
