@@ -898,11 +898,24 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           }
         }
         _log.notice(`anti-entropy: auto-recovery: syncing snapshot from ${libp2pPeerId.slice(0, 12)}`);
-        const result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+        let result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
         if (result === "snapshot_installed") {
           _lastAutoRecoveryAt = Date.now();
           _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}, resuming consensus`);
           return;
+        }
+        // Peer busy (concurrent snapshot install in progress) — wait 5s and retry
+        // once before moving on. Handles the race where two minority nodes fire
+        // recovery simultaneously and collide on the same majority peer.
+        if (result === "snapshot_failed") {
+          _log.warn(`anti-entropy: auto-recovery: ${libp2pPeerId.slice(0, 12)} busy — retrying in 5s`);
+          await new Promise(r => setTimeout(r, 5000));
+          result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
+          if (result === "snapshot_installed") {
+            _lastAutoRecoveryAt = Date.now();
+            _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)} (retry), resuming consensus`);
+            return;
+          }
         }
         _log.warn(`anti-entropy: auto-recovery: snapshot from ${libp2pPeerId.slice(0, 12)} returned '${result}' — trying next peer`);
       }
