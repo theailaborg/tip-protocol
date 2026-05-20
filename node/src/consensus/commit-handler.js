@@ -36,6 +36,21 @@ const { getLogger } = require("../logger");
 
 const log = getLogger("tip.commit");
 
+// Post-resolution content status for "author wins" verdicts (Stage-2
+// DISMISSED / CONSERVATIVE_LABEL and Stage-3 overturn UPHELD→DISMISSED).
+// If the dispute was filed while a prescan review was open, pre_dispute_status
+// captured PENDING_REVIEW — but that review row is now terminal
+// (ESCALATED_TO_DISPUTE) and no reviewer is waiting. The dispute answered
+// the review's question conclusively in the author's favor, so the content
+// is positively cleared → VERIFIED. For any other prior state we replay
+// the pre-dispute status verbatim.
+function _postResolutionStatus(preDisputeStatus) {
+  if (preDisputeStatus === CONTENT_STATUS.PENDING_REVIEW) {
+    return CONTENT_STATUS.VERIFIED;
+  }
+  return preDisputeStatus || CONTENT_STATUS.REGISTERED;
+}
+
 /**
  * Map a business-rule failure message to the most specific reason code.
  *
@@ -804,7 +819,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.ADJUDICATION_RESULT:
         if (d.ctid) {
           if (d.verdict === VERDICT.DISMISSED || d.verdict === VERDICT.CONSERVATIVE_LABEL) {
-            dag.updateContentStatus(d.ctid, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
+            dag.updateContentStatus(d.ctid, _postResolutionStatus(d.pre_dispute_status));
           } else if (d.verdict === VERDICT.UPHELD && d.confirmed_origin) {
             dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
           }
@@ -824,7 +839,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             if (d.stage2_verdict === VERDICT.UPHELD && d.declared_origin) {
               // Stage 2 said UPHELD; experts say DISMISSED → restore original
               // origin + pre-dispute status.
-              dag.updateContentOrigin(d.ctid, d.declared_origin, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
+              dag.updateContentOrigin(d.ctid, d.declared_origin, _postResolutionStatus(d.pre_dispute_status));
             } else if (d.stage2_verdict === VERDICT.DISMISSED && d.confirmed_origin) {
               // Stage 2 said DISMISSED; experts say UPHELD → set verified
               // with the experts' confirmed origin.
@@ -835,7 +850,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             if (d.verdict === VERDICT.UPHELD && d.confirmed_origin) {
               dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
             } else if (d.verdict === VERDICT.DISMISSED) {
-              dag.updateContentStatus(d.ctid, d.pre_dispute_status || CONTENT_STATUS.REGISTERED);
+              dag.updateContentStatus(d.ctid, _postResolutionStatus(d.pre_dispute_status));
             }
           }
         }

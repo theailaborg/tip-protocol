@@ -159,7 +159,7 @@ function juryKeyPath(jurorTipId) {
 
 function loadKey(jurorTipId) {
   const p = juryKeyPath(jurorTipId);
-  if (!fs.existsSync(p)) throw new Error(`no key file for ${jurorTipId} (expected ${p})`);
+  if (!fs.existsSync(p)) return null;            // caller skips with a warning — not all jurors are temp-seeded
   const env = JSON.parse(fs.readFileSync(p, "utf8"));
   if (!env.public_key || !env.private_key) throw new Error(`malformed key file: ${p}`);
   return { publicKey: env.public_key, privateKey: env.private_key, name: env.name };
@@ -241,6 +241,7 @@ async function doCommit(args, block) {
   for (const p of planned) {
     if (p.alreadyOnChain) { skipped++; continue; }
     const key = loadKey(p.juror_tip_id);
+    if (!key) { skipped++; console.log(`    ? ${p.creator_name || p.juror_tip_id} no key file — skipping`); continue; }
     const fields = { juror_tip_id: p.juror_tip_id, commitment: p.commitment };
     const signature = signBody(fields, key.privateKey);
     const url = `${args.nodeUrl}/v1/content/${encodeURIComponent(args.ctid)}/${routeBase}/commit`;
@@ -275,6 +276,7 @@ async function doReveal(args, block, disputeCase) {
     if (j.status !== "committed") { console.log(`    - ${j.creator_name} not in committed state (status=${j.status}) — skipping`); skipped++; continue; }
 
     const key = loadKey(j.juror_tip_id);
+    if (!key) { missing++; console.log(`    ? ${j.creator_name || j.juror_tip_id} no key file — cannot reveal`); continue; }
     const isMismatch = sec.vote === VOTE.MISMATCH;
     const fields = isMismatch
       ? { juror_tip_id: j.juror_tip_id, vote: sec.vote, salt: sec.salt, confirmed_origin: confirmedOrigin }

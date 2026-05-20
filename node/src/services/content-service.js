@@ -170,6 +170,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
         author_valid: authorValid, author_revoked: dag.isRevoked(rec.author_tip_id), on_dag: true,
       },
       review_history: _projectReviewHistory(ctid),
+      appeal_pending: _isAppealPending(ctid),
       prescan: buildPrescanDescriptor({
         preScan: {
           tier: rec.prescan_tier,
@@ -219,6 +220,17 @@ function createContentService({ dag, scoring, config, submitTx }) {
         suggested_origin: r.suggested_origin,
       },
     };
+  }
+
+  // Surface "appeal pending" as a separate signal from content.status so
+  // the FE can render a Stage-3-in-progress badge without us mutating the
+  // canonical status away from what Stage-2 already bound. True when an
+  // APPEAL_FILED tx exists for this ctid without a matching APPEAL_RESULT.
+  function _isAppealPending(ctid) {
+    const filed = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, ctid);
+    if (!filed || filed.length === 0) return false;
+    const resolved = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, ctid);
+    return filed.length > resolved.length;
   }
 
   function verify(ctid, body) {

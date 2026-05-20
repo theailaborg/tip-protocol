@@ -763,7 +763,6 @@ class MemoryStore {
       if (c.status !== "registered") continue;
       if (c.origin_code !== "OH") continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
-      if (!c.override) continue;
       const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
       if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
@@ -1925,7 +1924,6 @@ class SQLiteStore {
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
            AND c.prescan_tier IN ('high','critical')
-           AND c.override = 1
            AND r.review_id IS NULL
            AND (CAST(strftime('%s', c.registered_at) AS INTEGER) * 1000) <= ?`
       ),
