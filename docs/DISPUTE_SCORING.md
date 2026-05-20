@@ -328,3 +328,66 @@ deltas ride alongside the verdict tx in the verdict batch. The score
 engine replays deterministically by walking just the `SCORE_UPDATE`
 txs filtered by subject, and the live-mirror cache always matches the
 replay.
+
+---
+
+## Design decision — no stake from volunteer judgment roles
+
+The TIP_Trust_Scoring spec (§10.3–10.5) describes a staking model for
+the reviewer / juror / expert roles (10 / 10 / 15 points held at
+acceptance, refunded on a good outcome). **We deliberately do NOT
+implement this.** Volunteer judgment roles earn or lose at verdict
+time only — no upfront stake, no escrow.
+
+What this means in practice:
+
+| Role | Spec (informational) | Implementation |
+|---|---|---|
+| Juror | stake 10 at summons | no debit; just `+3` majority / `-10` minority / `-10` no-show at verdict |
+| Expert | stake 15 at summons | no debit; same `+3 / -10 / -10` pattern |
+| Reviewer (review work) | stake 10 at accept | no debit; `+5 REVIEWER.CORRECT_BONUS` on closed paths only |
+
+The `stake` field on `JURY_SUMMONS.data` and the genesis
+`jury_stake: 10` value still exist as informational labels, but no
+`SCORE_UPDATE` is emitted off them — they will not be wired up. New
+contributors who see those fields should not assume they're enforced.
+
+**Why we kept disputer / appellant stakes.** Filing roles
+(disputer −15, appellant −25) DO get debited at filing time — those
+stakes exist as anti-spam pressure on dispute submission, which is a
+different problem than rewarding volunteer judgment work. When a
+reviewer escalates a CONFIRMED review to a public dispute, they
+become the formal disputer and the standard −15 disputer stake
+applies (reviewer-as-disputer pattern). That is intentional and
+remains in place.
+
+The net economics for jurors / experts are equivalent to the spec
+in both terminal states (`+3` on win matches "stake refunded + 3
+bonus", `-10` on no-show matches "stake forfeited"). Only the
+in-flight visibility differs — with our model, the participant's
+score is unchanged while voting; with the spec, it would be locked
+−10. The simpler model wins.
+
+---
+
+## Spec features we are NOT implementing
+
+The TIP_Trust_Scoring docx describes additional features beyond
+what's wired today. The following are explicitly on hold and may
+never ship — listed here so future contributors don't try to add
+them piecemeal:
+
+| Spec feature | Why on hold |
+|---|---|
+| Reviewer / juror / expert staking | See "no stake from volunteer judgment roles" above. |
+| Milestone bonuses (e.g. +15 / +30 / +50 at 10 / 50 / 200 accurate reviews; Silver / Gold / Diamond badges) | Reward inflation without clear protocol-level purpose. Reputation already accumulates via correct decisions. |
+| Stage-3 Expert stake (15) | Same reasoning as juror stake — not enforced; remove from spec. |
+| Retroactive DISMISS penalty (reviewer dismisses a case, a later user-filed dispute UPHOLDS mislabeling → −10 to the reviewer) | Requires tracking reviewer history across unrelated disputes. Complexity outweighs the marginal accuracy gain; eligibility gate (overturn rate ≤ 30%) already handles bad reviewers. |
+| 90-day clean-record reset (offense_count → 0 after 90 days with no new offenses) | Genesis has `clean_period_bonus: 10` but the offense-reset semantics aren't wired. Considered but deferred until we have telemetry on real offense distributions. |
+| Community Verifier scoring (5-point stake per hash-check verification, +1 reward) | **Possibly in scope.** Not built yet; if implemented, would land as a separate `COMMUNITY_VERIFY` flow with its own stake/reward channel. Tracking decision deferred. |
+
+If a future contributor wants to revisit any of these, they should
+open a dedicated issue with a concrete motivation (production data,
+abuse pattern, or stakeholder ask) — not "the spec says so." The
+spec was written before we observed actual usage; the scope we
+shipped is the live target.

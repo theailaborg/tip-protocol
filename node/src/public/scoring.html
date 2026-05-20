@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>TIP Protocol — How scoring works</title>
+  <style>
+    :root {
+      --bg: #fbfaf7;
+      --fg: #1c1c1e;
+      --muted: #6b6b73;
+      --line: #e6e3da;
+      --pos: #1a8a5c;
+      --neg: #b03030;
+      --warn: #b67a00;
+      --tier-ht: #1a8a5c;
+      --tier-t:  #2563a8;
+      --tier-v:  #a88b15;
+      --tier-c:  #c07318;
+      --tier-n:  #c53030;
+      --code: #f3efe6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15161a;
+        --fg: #e8e8ed;
+        --muted: #9a9aa3;
+        --line: #2c2d33;
+        --code: #1d1e23;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+    main { max-width: 780px; margin: 0 auto; padding: 48px 24px 96px; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 32px; }
+    header .eyebrow {
+      font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    h1 { font-size: 32px; line-height: 1.15; margin: 0 0 12px; font-weight: 600; }
+    h2 { font-size: 22px; margin: 48px 0 16px; font-weight: 600; }
+    h3 { font-size: 17px; margin: 28px 0 10px; font-weight: 600; }
+    p, li { color: var(--fg); }
+    p.lede { font-size: 18px; color: var(--muted); margin-top: 0; }
+    .muted { color: var(--muted); }
+    code, kbd {
+      background: var(--code); padding: 1px 6px; border-radius: 4px;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    ul { padding-left: 20px; }
+    li { margin: 6px 0; }
+    table {
+      border-collapse: collapse; width: 100%; margin: 12px 0 24px;
+      font-size: 14.5px;
+    }
+    th, td {
+      text-align: left; padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pos { color: var(--pos); font-weight: 600; }
+    .neg { color: var(--neg); font-weight: 600; }
+    .warn { color: var(--warn); font-weight: 600; }
+    .tier-badge {
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      font-size: 13px; font-weight: 600; color: #fff;
+    }
+    .tier-ht { background: var(--tier-ht); }
+    .tier-t  { background: var(--tier-t); }
+    .tier-v  { background: var(--tier-v); }
+    .tier-c  { background: var(--tier-c); }
+    .tier-n  { background: var(--tier-n); }
+    .callout {
+      background: var(--code); border-left: 3px solid var(--tier-t);
+      padding: 14px 18px; border-radius: 4px; margin: 20px 0;
+      font-size: 15px;
+    }
+    .grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+      margin: 16px 0 24px;
+    }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px;
+    }
+    .card h3 { margin-top: 0; }
+    footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+
+<header>
+  <div class="eyebrow">TIP Protocol</div>
+  <h1>How scoring works</h1>
+  <p class="lede">A plain-English guide for users and contributors.</p>
+</header>
+
+<h2>The basics</h2>
+<ul>
+  <li>Every new identity starts at <strong>500 points</strong>.</li>
+  <li>Score range: <strong>0 to 1000</strong>.</li>
+  <li>Your score is computed deterministically from every transaction touching your TIP-ID — every node in the network arrives at the same number from the same history.</li>
+</ul>
+
+<h3>Trust tiers</h3>
+<table>
+  <thead><tr><th>Tier</th><th class="num">Score range</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tier-badge tier-ht">Highly Trusted</span></td><td class="num">850 – 1000</td><td>Eligible to serve on appeal expert panels.</td></tr>
+    <tr><td><span class="tier-badge tier-t">Trusted</span></td><td class="num">650 – 849</td><td>Eligible to serve on dispute juries.</td></tr>
+    <tr><td><span class="tier-badge tier-v">Verified</span></td><td class="num">400 – 649</td><td>Can file disputes and verify content.</td></tr>
+    <tr><td><span class="tier-badge tier-c">Caution</span></td><td class="num">200 – 399</td><td>Reduced privileges; recent issues on record.</td></tr>
+    <tr><td><span class="tier-badge tier-n">Not Trusted</span></td><td class="num">0 – 199</td><td>Heavy restrictions; many strikes accumulated.</td></tr>
+  </tbody>
+</table>
+
+<h2>What earns you points</h2>
+<div class="grid">
+  <div class="card">
+    <h3>As a creator</h3>
+    <ul>
+      <li>Each verification on your content: <span class="pos">+2 to +5</span></li>
+      <li>Your content is cleared by a dispute (vindication): <span class="pos">+5</span></li>
+      <li>90-day clean record bonus: <span class="pos">+10</span></li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>As a reviewer / juror / expert</h3>
+    <ul>
+      <li>Reviewer makes a correct call: <span class="pos">+5</span></li>
+      <li>Juror or expert votes with the majority: <span class="pos">+3</span></li>
+      <li>Disputer or appellant wins their case: stake refunded + bonus (see below)</li>
+    </ul>
+  </div>
+</div>
+
+<h2>What costs you points</h2>
+<div class="grid">
+  <div class="card">
+    <h3>As a creator</h3>
+    <ul>
+      <li>Voluntarily retract your content: <span class="neg">-50</span></li>
+      <li>Accept a reviewer's correction privately: <span class="neg">-10</span></li>
+      <li>Lose a dispute (mislabeling confirmed): see mislabeling table</li>
+      <li>Lose an appeal you filed: appeal stake stays forfeited</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>As a participant</h3>
+    <ul>
+      <li>File a dispute: <span class="neg">-15</span> held as stake; refunded only if you win</li>
+      <li>File an appeal: <span class="neg">-25</span> held as stake; refunded only if you win</li>
+      <li>Juror or expert votes against the majority: <span class="neg">-10</span></li>
+      <li>Summoned but didn't vote (no-show): <span class="neg">-10</span></li>
+    </ul>
+  </div>
+</div>
+
+<h2>Mislabeling penalties</h2>
+<p>If you declare your content's origin incorrectly and a dispute confirms the mislabeling, the penalty depends on <strong>how serious the misdeclaration was</strong> and <strong>how many prior offenses you have</strong>.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>You declared</th>
+      <th>It actually was</th>
+      <th class="num">1st offense</th>
+      <th class="num">2nd</th>
+      <th class="num">3rd+</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Original Human (OH)</td><td>AI-Generated (AG)</td><td class="num neg">-100</td><td class="num neg">-200</td><td class="num neg">-300</td></tr>
+    <tr><td>Original Human (OH)</td><td>AI-Assisted (AA)</td><td class="num neg">-40</td><td class="num neg">-80</td><td class="num neg">-120</td></tr>
+    <tr><td>AI-Assisted (AA)</td><td>AI-Generated (AG)</td><td class="num neg">-25</td><td class="num neg">-50</td><td class="num neg">-75</td></tr>
+    <tr><td colspan="2"><em>Over-labeling</em> (e.g. AA→OH, AG→OH)</td><td class="num pos" colspan="3">0 — no penalty, encouraged</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  Over-declaring AI involvement is always <strong>free</strong>. Saying "AI-Assisted" when it was actually all-human costs nothing — we want creators to default toward caution. Penalties only apply when you <em>under</em>-declare and the call gets confirmed by a jury.
+</div>
+
+<h2>Stakes &amp; bonuses cheat sheet</h2>
+<table>
+  <thead><tr><th>Event</th><th class="num">Δ score</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>File a dispute</td><td class="num neg">-15</td><td>Held as stake. Refunded if you win.</td></tr>
+    <tr><td>Win the dispute (Stage-2 UPHELD)</td><td class="num pos">+20</td><td>Stake (15) refunded + UPHELD_BONUS (+5).</td></tr>
+    <tr><td>File an appeal</td><td class="num neg">-25</td><td>Held as stake. Refunded if you overturn.</td></tr>
+    <tr><td>Win the appeal (overturn)</td><td class="num pos">+35</td><td>Stake (25) refunded + OVERTURN_BONUS (+10).</td></tr>
+    <tr><td>Your content is cleared (vindication)</td><td class="num pos">+5</td><td>Once per resolution. Retracted if a later overturn reverses it.</td></tr>
+    <tr><td>Reviewer makes a correct call</td><td class="num pos">+5</td><td>On DISMISS or accept-private.</td></tr>
+    <tr><td>Juror / expert majority vote</td><td class="num pos">+3</td><td>Per case.</td></tr>
+    <tr><td>Juror / expert minority vote</td><td class="num neg">-10</td><td>Per case.</td></tr>
+    <tr><td>Summoned but didn't vote</td><td class="num neg">-10</td><td>Per case.</td></tr>
+    <tr><td>Verification (you verify someone's content)</td><td class="num pos">+2 to +5</td><td>+5 if your score is ≥ 800.</td></tr>
+  </tbody>
+</table>
+
+<h2>Walk-throughs</h2>
+
+<h3>You publish OH content, someone disputes it, jury sides with you</h3>
+<p class="muted">Outcome: dispute DISMISSED.</p>
+<ul>
+  <li>Your score: <span class="pos">+5</span> (vindication bonus).</li>
+  <li>Disputer's score: <span class="neg">-15</span> (filing stake stays forfeited — they were wrong).</li>
+</ul>
+
+<h3>You publish OH content, someone disputes it, jury upholds the dispute</h3>
+<p class="muted">First offense, declared OH but actually AI-Assisted.</p>
+<ul>
+  <li>Your score: <span class="neg">-40</span> (1st-offense OH→AA penalty).</li>
+  <li>Your content's origin label gets corrected to AA.</li>
+  <li>Disputer's score: <span class="pos">+20</span> (stake refund + UPHELD_BONUS).</li>
+  <li>Jurors who voted MISMATCH: <span class="pos">+3</span> each.</li>
+</ul>
+
+<h3>You appeal a dispute you lost, and the experts overturn it</h3>
+<ul>
+  <li>Stage-2 -40 penalty reversed: <span class="pos">+40</span>.</li>
+  <li>Appeal stake refunded + bonus: <span class="pos">+35</span>.</li>
+  <li>Vindication bonus: <span class="pos">+5</span>.</li>
+  <li>You paid -25 to file the appeal, so net from the appeal alone: <span class="pos">+15</span>. Plus the -40 reversal = your score returns to where it was before the original dispute, plus +15 in bonuses.</li>
+</ul>
+
+<h2>Why these numbers?</h2>
+<ul>
+  <li><strong>Honest creators stay safe.</strong> Over-labeling is free. Penalties only fire on confirmed under-declaration.</li>
+  <li><strong>Mislabeling is expensive.</strong> A first offense for OH-as-AG (the worst kind) costs -100. Repeat offenses scale up.</li>
+  <li><strong>Frivolous disputes are discouraged.</strong> The -15 stake means you only file when you actually believe the content is mislabeled.</li>
+  <li><strong>Reviewers and jurors are rewarded for good work, not punished for trying.</strong> No upfront stake — only the verdict-time +3/-10 settlement.</li>
+  <li><strong>Severity scaling is preserved across repeat offenses.</strong> A repeat AA→AG offender doesn't get the OH→AG penalty applied to them.</li>
+</ul>
+
+<h2>What's NOT scored (and why)</h2>
+<p>If you've seen our internal spec doc and wonder why certain things aren't here — these are deliberate choices we made during implementation:</p>
+<ul>
+  <li><strong>No stake from jurors, experts, or reviewers.</strong> The spec said each role should stake points up front, refunded if their decision held up. We removed that. They earn at verdict time (<span class="pos">+3</span> majority / <span class="pos">+5</span> correct call) or lose (<span class="neg">-10</span> minority, <span class="neg">-10</span> no-show). Cleaner, same final economics, no in-flight escrow to track. <em>Disputers and appellants still stake — that's anti-spam pressure on filing, a different problem.</em></li>
+  <li><strong>No milestone bonuses.</strong> "+15 at 10 reviews, +30 at 50, badges at 200" — we decided reputation already accumulates naturally from correct decisions. No separate streak rewards.</li>
+  <li><strong>No retroactive DISMISS penalty.</strong> If a reviewer dismisses a case and a separate later dispute proves it was actually mislabeling, we don't go back and dock them. The eligibility gate (overturn rate ≤ 30%) handles consistently-bad reviewers automatically.</li>
+  <li><strong>No 90-day clean-record reset (yet).</strong> Your offense count doesn't decay to zero after 90 clean days — it stays. We're holding on this until we see real offense-distribution data in production.</li>
+  <li><strong>Community Verifier scoring</strong> (clicking the badge to vouch for content) — not built yet. Possibly in scope later; not committed.</li>
+</ul>
+
+<h2>Where to learn more</h2>
+<ul>
+  <li><a href="/v1/health">/v1/health</a> — node status, peer count, current round.</li>
+  <li><a href="/v1/constants">/v1/constants</a> — every protocol constant as the node sees it. The numbers on this page come from there.</li>
+  <li><code>docs/DISPUTE_SCORING.md</code> — the engineering reference with every edge case, replay-determinism guarantee, and the full list of deliberately-not-implemented spec features.</li>
+</ul>
+
+<footer>
+  Served by this TIP Protocol node. Numbers shown reflect the protocol constants compiled into this build — if a value here looks off, the live constants endpoint is authoritative.
+</footer>
+
+</main>
+</body>
+</html>

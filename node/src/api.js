@@ -71,6 +71,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Static files (before auth/rate-limit)
   app.use("/v1/zk", express.static(path.resolve(__dirname, "../../circuits")));
   app.use("/download", express.static(path.resolve(__dirname, "../../browser-extension")));
+  app.get("/scoring", (req, res) => res.sendFile(path.resolve(__dirname, "public/scoring.html")));
 
   // Middleware
   app.use(requestId);
