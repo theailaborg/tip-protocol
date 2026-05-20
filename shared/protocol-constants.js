@@ -184,15 +184,24 @@ const AI_CLASSIFIER = {
   get TIMEOUT_SECONDS() { return _j().ai_timeout_seconds; },
 };
 
+// Per-pair offense escalation. Each genesis array is [1st, 2nd, 3rd+] —
+// first-offense penalties are severity-scaled (OH→AG worst, AA→AG mildest),
+// and repeat offenses preserve that scaling instead of collapsing onto the
+// OH→AG ladder. Prior `MISMATCH_2ND_OFFENSE` / `_3RD_OFFENSE` aliases (both
+// reading `oh_as_ag`) over-penalised repeat AA→AG / OH→AA offenders.
 const SCORE_EVENTS = {
   // Penalties — genesis stores negative values directly
   get CONTENT_RETRACTION() { return { delta: _p().retraction }; },
   get DEVICE_COMPROMISE_PENDING() { return { delta: _p().device_compromise }; },
   get OH_CONFIRMED_AG_1ST() { return { delta: _p().oh_as_ag[0] }; },
-  get MISMATCH_2ND_OFFENSE() { return { delta: _p().oh_as_ag[1] }; },
-  get MISMATCH_3RD_OFFENSE() { return { delta: _p().oh_as_ag[2] }; },
-  get OH_CONFIRMED_AA() { return { delta: _p().oh_as_aa[0] }; },
-  get AA_CONFIRMED_AG() { return { delta: _p().aa_as_ag[0] }; },
+  get OH_CONFIRMED_AG_2ND() { return { delta: _p().oh_as_ag[1] }; },
+  get OH_CONFIRMED_AG_3RD() { return { delta: _p().oh_as_ag[2] }; },
+  get OH_CONFIRMED_AA_1ST() { return { delta: _p().oh_as_aa[0] }; },
+  get OH_CONFIRMED_AA_2ND() { return { delta: _p().oh_as_aa[1] }; },
+  get OH_CONFIRMED_AA_3RD() { return { delta: _p().oh_as_aa[2] }; },
+  get AA_CONFIRMED_AG_1ST() { return { delta: _p().aa_as_ag[0] }; },
+  get AA_CONFIRMED_AG_2ND() { return { delta: _p().aa_as_ag[1] }; },
+  get AA_CONFIRMED_AG_3RD() { return { delta: _p().aa_as_ag[2] }; },
   get FACTUAL_FALSEHOOD_MINOR() { return { delta: _p().minor_falsehood }; },
   get FACTUAL_FALSEHOOD_MAJOR() { return { delta: _p().major_falsehood }; },
   // Bonuses — positive values
