@@ -369,6 +369,67 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     log.warn("No network node — consensus running in local-only mode");
   }
 
+  // ── Direct-stream protocol handlers (#46, #48) ─────────────────────────
+
+  // Incoming BatchAck messages from batch authors arrive as one-shot streams
+  // instead of gossipsub CONSENSUS topic messages. Closes the sub_quorum
+  // halt class where a lost gossip mesh edge dropped acks silently (#13).
+  // Auth-check uses the same isAuthorizedPeer gate as every other stream
+  // protocol; payload is the raw BatchAck encoding (unchanged wire shape).
+  async function _registerAckReceiver() {
+    if (!network || !network.CONSENSUS_ACK_PROTOCOL) return;
+    await network.handle(network.CONSENSUS_ACK_PROTOCOL, async ({ stream, connection }) => {
+      const peerId = connection?.remotePeer?.toString();
+      if (!isAuthorizedPeer(peerId)) {
+        log.warn(`Rejected ack stream from unauthorized peer ${peerId?.slice(0, 12)}`);
+        try { stream.close(); } catch { /* ignore */ }
+        return;
+      }
+      try {
+        const chunks = [];
+        for await (const chunk of stream.source) {
+          chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+        }
+        const data = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c)));
+        narwhal.handleIncomingAck(data);
+      } catch (err) {
+        log.debug(`Ack stream read failed from ${peerId?.slice(0, 12)}: ${err.message}`);
+      } finally {
+        try { stream.close(); } catch { /* ignore */ }
+      }
+    });
+  }
+
+  // Explicit ack-request handler — requester asks for this node's cached ack
+  // for a specific batch (identified by hex hash). Responds with the encoded
+  // BatchAck bytes or an empty buffer if not cached. Used by the per-stuck-
+  // round retry path in narwhal to recover from a missed ack without
+  // rebroadcasting the entire batch (#48).
+  async function _registerAckRequestHandler() {
+    if (!network || !network.CONSENSUS_ACK_REQUEST_PROTOCOL) return;
+    await network.handle(network.CONSENSUS_ACK_REQUEST_PROTOCOL, async ({ stream, connection }) => {
+      const peerId = connection?.remotePeer?.toString();
+      if (!isAuthorizedPeer(peerId)) {
+        log.warn(`Rejected ack-request from unauthorized peer ${peerId?.slice(0, 12)}`);
+        try { stream.close(); } catch { /* ignore */ }
+        return;
+      }
+      try {
+        const chunks = [];
+        for await (const chunk of stream.source) {
+          chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+        }
+        const batchHashHex = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))).toString("utf8");
+        const ackBuf = narwhal.getCachedAckBuf(batchHashHex, nodeId);
+        await stream.sink([ackBuf || Buffer.alloc(0)]);
+      } catch (err) {
+        log.debug(`Ack-request stream failed from ${peerId?.slice(0, 12)}: ${err.message}`);
+      } finally {
+        try { stream.close(); } catch { /* ignore */ }
+      }
+    });
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
 
   const consensus = {
@@ -393,58 +454,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await antiEntropy.start();
       const coord = bullshark.rotationCoordinator?.();
       if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
-      // #46: register direct-stream ack receiver. Incoming BatchAck messages
-      // from batch authors are now delivered as one-shot streams instead of
-      // gossipsub CONSENSUS topic messages. Auth-check uses the same
-      // isAuthorizedPeer gate as every other stream protocol.
-      if (network && network.CONSENSUS_ACK_PROTOCOL) {
-        await network.handle(network.CONSENSUS_ACK_PROTOCOL, async ({ stream, connection }) => {
-          const peerId = connection?.remotePeer?.toString();
-          if (!isAuthorizedPeer(peerId)) {
-            log.warn(`Rejected ack stream from unauthorized peer ${peerId?.slice(0, 12)}`);
-            try { stream.close(); } catch { /* ignore */ }
-            return;
-          }
-          try {
-            const chunks = [];
-            for await (const chunk of stream.source) {
-              chunks.push(chunk.subarray ? chunk.subarray() : chunk);
-            }
-            const data = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c)));
-            narwhal.handleIncomingAck(data);
-          } catch (err) {
-            log.debug(`Ack stream read failed from ${peerId?.slice(0, 12)}: ${err.message}`);
-          } finally {
-            try { stream.close(); } catch { /* ignore */ }
-          }
-        });
-      }
-      // #48: explicit ack-request handler — requester asks for this node's
-      // cached ack for a specific batch. Responds with the encoded BatchAck
-      // bytes or an empty buffer if not cached.
-      if (network && network.CONSENSUS_ACK_REQUEST_PROTOCOL) {
-        await network.handle(network.CONSENSUS_ACK_REQUEST_PROTOCOL, async ({ stream, connection }) => {
-          const peerId = connection?.remotePeer?.toString();
-          if (!isAuthorizedPeer(peerId)) {
-            log.warn(`Rejected ack-request from unauthorized peer ${peerId?.slice(0, 12)}`);
-            try { stream.close(); } catch { /* ignore */ }
-            return;
-          }
-          try {
-            const chunks = [];
-            for await (const chunk of stream.source) {
-              chunks.push(chunk.subarray ? chunk.subarray() : chunk);
-            }
-            const batchHashHex = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))).toString("utf8");
-            const ackBuf = narwhal.getCachedAckBuf(batchHashHex, nodeId);
-            await stream.sink([ackBuf || Buffer.alloc(0)]);
-          } catch (err) {
-            log.debug(`Ack-request stream failed from ${peerId?.slice(0, 12)}: ${err.message}`);
-          } finally {
-            try { stream.close(); } catch { /* ignore */ }
-          }
-        });
-      }
+      await _registerAckReceiver();
+      await _registerAckRequestHandler();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
