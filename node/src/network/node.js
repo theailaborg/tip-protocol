@@ -343,7 +343,7 @@ async function createNetworkNode(options = {}) {
     try {
       timer = setTimeout(() => {
         try { if (stream) stream.close(); } catch { /* ignore */ }
-      }, 3000);
+      }, CONSENSUS.ACK_STREAM_TIMEOUT_MS);
       stream = await node.dialProtocol(peerIdFromString(targetPeerId), CONSENSUS_ACK_PROTOCOL);
       await stream.sink([ackBuf]);
       return true;
@@ -370,7 +370,7 @@ async function createNetworkNode(options = {}) {
     try {
       timer = setTimeout(() => {
         try { if (stream) stream.close(); } catch { /* ignore */ }
-      }, 3000);
+      }, CONSENSUS.ACK_STREAM_TIMEOUT_MS);
       stream = await node.dialProtocol(peerIdFromString(targetPeerId), CONSENSUS_ACK_REQUEST_PROTOCOL);
       await stream.sink([Buffer.from(batchHashHex, "utf8")]);
       const chunks = [];

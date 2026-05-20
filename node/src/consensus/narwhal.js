@@ -465,7 +465,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     await Promise.all(missing.map(async (ackerNodeId) => {
       const ackBuf = await network.sendAckRequest(batchHashHex, ackerNodeId);
       if (ackBuf) {
-        try { handleIncomingAck(ackBuf); } catch { /* ignore */ }
+        try { handleIncomingAck(ackBuf); }
+        catch (err) { log.debug(`Failed to handle cached ack from ${ackerNodeId.slice(-8)}: ${err.message}`); }
       } else {
         needsFallback = true;
       }
