@@ -261,7 +261,7 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
     expect(adjudicationDelta({ verdict: "BANANA" }, 0)).toBe(0);
   });
 
-  test("OH declared, AG confirmed: 1st = -100, 2nd = -200, 3rd+ = -350", () => {
+  test("OH declared, AG confirmed: 1st = -100, 2nd = -200, 3rd+ = -300", () => {
     const data = { verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" };
     expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta);
     expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_2ND.delta);
@@ -269,7 +269,7 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
     expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.OH_CONFIRMED_AG_3RD.delta);
   });
 
-  test("OH declared, AA confirmed: 1st = -40, 2nd = -80, 3rd+ = -160 (per-pair ladder)", () => {
+  test("OH declared, AA confirmed: 1st = -40, 2nd = -80, 3rd+ = -120 (per-pair ladder)", () => {
     const data = { verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" };
     expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_1ST.delta);
     expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_2ND.delta);
@@ -277,7 +277,7 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
     expect(adjudicationDelta(data, 5)).toBe(SCORE_EVENTS.OH_CONFIRMED_AA_3RD.delta);
   });
 
-  test("AA declared, AG confirmed: 1st = -25, 2nd = -50, 3rd+ = -100 (per-pair ladder)", () => {
+  test("AA declared, AG confirmed: 1st = -25, 2nd = -50, 3rd+ = -75 (per-pair ladder)", () => {
     const data = { verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" };
     expect(adjudicationDelta(data, 0)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_1ST.delta);
     expect(adjudicationDelta(data, 1)).toBe(SCORE_EVENTS.AA_CONFIRMED_AG_2ND.delta);
@@ -308,15 +308,15 @@ describe("adjudicationDelta — offense-tier penalty table", () => {
     // OH→AG ladder
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 0)).toBe(-100);
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 1)).toBe(-200);
-    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 2)).toBe(-350);
-    // OH→AA ladder — was -200/-350 under the universal scheme, must be -80/-160
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG" }, 2)).toBe(-300);
+    // OH→AA ladder — per-pair: 1× / 2× / 3× of -40
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 0)).toBe(-40);
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 1)).toBe(-80);
-    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 2)).toBe(-160);
-    // AA→AG ladder — was -200/-350 under the universal scheme, must be -50/-100
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AA" }, 2)).toBe(-120);
+    // AA→AG ladder — per-pair: 1× / 2× / 3× of -25
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 0)).toBe(-25);
     expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 1)).toBe(-50);
-    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 2)).toBe(-100);
+    expect(adjudicationDelta({ verdict: "UPHELD", declared_origin: "AA", confirmed_origin: "AG" }, 2)).toBe(-75);
   });
 
   test("per-pair escalation preserves severity scaling at 2nd offense (anti-regression)", () => {

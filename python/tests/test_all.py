@@ -773,7 +773,12 @@ def test_constants() -> None:
     check("ScoreEvent.INITIAL == 500",               ScoreEvent.INITIAL_NO_ATTESTATION == 500)
     check("ScoreEvent.INITIAL_ATTESTED == 550",       ScoreEvent.INITIAL_WITH_ATTESTATION == 550)
     check("ScoreEvent.OH_AG_1ST == -100",             ScoreEvent.OH_CONFIRMED_AG_1ST == -100)
-    check("ScoreEvent.MISMATCH_3RD == -350",          ScoreEvent.MISMATCH_3RD_OFFENSE == -350)
+    check("ScoreEvent.OH_AG_2ND == -200",             ScoreEvent.OH_CONFIRMED_AG_2ND == -200)
+    check("ScoreEvent.OH_AG_3RD == -300 (spec 3x)",   ScoreEvent.OH_CONFIRMED_AG_3RD == -300)
+    check("ScoreEvent.OH_AA_2ND == -80 (per-pair)",   ScoreEvent.OH_CONFIRMED_AA_2ND == -80)
+    check("ScoreEvent.OH_AA_3RD == -120",             ScoreEvent.OH_CONFIRMED_AA_3RD == -120)
+    check("ScoreEvent.AA_AG_2ND == -50",              ScoreEvent.AA_CONFIRMED_AG_2ND == -50)
+    check("ScoreEvent.AA_AG_3RD == -75",              ScoreEvent.AA_CONFIRMED_AG_3RD == -75)
     check("ScoreEvent.AG_CONSERVATIVE == 0",          ScoreEvent.AG_CONSERVATIVE == 0)
     check("ScoreEvent.JUROR_MIN_SCORE == 700",        ScoreEvent.JUROR_MIN_SCORE == 700)
 

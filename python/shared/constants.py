@@ -182,13 +182,20 @@ class ScoreEvent:
     JUROR_MONTHLY_MAX        = 20
     JUROR_MIN_SCORE          = 700
 
-    # Penalty deltas
+    # Penalty deltas — per-pair offense escalation [1st, 2nd, 3rd+] per spec
+    # (TIP_Trust_Scoring §6 base x [1, 2, 3]). Prior universal-ladder
+    # aliases collapsed every pair onto oh_as_ag and over-penalised repeat
+    # AA→AG / OH→AA offenders.
     OH_CONFIRMED_AG_1ST      = -100
-    OH_CONFIRMED_AA          = -40
-    AA_CONFIRMED_AG          = -25
+    OH_CONFIRMED_AG_2ND      = -200
+    OH_CONFIRMED_AG_3RD      = -300
+    OH_CONFIRMED_AA_1ST      = -40
+    OH_CONFIRMED_AA_2ND      = -80
+    OH_CONFIRMED_AA_3RD      = -120
+    AA_CONFIRMED_AG_1ST      = -25
+    AA_CONFIRMED_AG_2ND      = -50
+    AA_CONFIRMED_AG_3RD      = -75
     AG_CONSERVATIVE          = 0    # no penalty
-    MISMATCH_2ND_OFFENSE     = -200
-    MISMATCH_3RD_OFFENSE     = -350
     FACTUAL_FALSEHOOD_MINOR  = -75
     FACTUAL_FALSEHOOD_MAJOR  = -300
     DEVICE_COMPROMISE        = -15

@@ -31,7 +31,7 @@ _DEFAULT_PROTOCOL_CONSTANTS = {
     "content": {"registration_credit": 2, "verification_credit": 1, "oh_cap": 200, "aa_cap": 100, "ag_cap": 100, "mx_cap": 100, "per_content_lifetime_cap": 5},
     "reputation": {"clean_period_days": 90, "clean_period_bonus": 10, "dispute_cleared_bonus": 5},
     "longevity": {"tiers": [{"months": 6, "points": 15}, {"months": 12, "points": 30}, {"months": 24, "points": 45}, {"months": 36, "points": 60}, {"months": 60, "points": 70}]},
-    "penalties": {"oh_as_ag": [-100, -200, -350], "oh_as_aa": [-40, -80, -160], "aa_as_ag": [-25, -50, -100], "minor_falsehood": -75, "major_falsehood": -300, "retraction": -50, "device_compromise": -15, "lost_dispute_stake": -15, "lost_jury_stake": -10, "lost_appeal_stake": -25, "appeal_restore_percent": 50},
+    "penalties": {"oh_as_ag": [-100, -200, -300], "oh_as_aa": [-40, -80, -120], "aa_as_ag": [-25, -50, -75], "minor_falsehood": -75, "major_falsehood": -300, "retraction": -50, "device_compromise": -15, "lost_dispute_stake": -15, "lost_jury_stake": -10, "lost_appeal_stake": -25, "appeal_restore_percent": 50},
     "jury": {"dispute_stake": 15, "dispute_filing_min_score": 400, "jury_stake": 10, "jury_size": 7, "jury_min_score": 700, "jury_majority_bonus": 3, "jury_commit_hours": 72, "jury_reveal_hours": 6, "jury_min_reveals": 5, "jury_majority_vote": 3, "jury_minority_penalty": -10, "jury_no_show_penalty": -10, "jury_max_same_country": 3, "jury_cooldown_days": 7, "expert_panel_size": 3, "expert_min_score": 850, "expert_min_votes": 2, "appeal_stake": 25, "appeal_win_bonus": 10, "appeal_window_hours": 48, "appeal_commit_hours": 72, "appeal_reveal_hours": 6, "frivolous_dismiss_fee": 5, "ai_auto_dismiss_threshold": 0.30, "ai_auto_escalate_threshold": 0.90, "ai_timeout_seconds": 60, "vindication_bonus": 5, "upheld_bonus": 5},
     "tiers": {"highly_trusted": 850, "trusted": 650, "verified": 400, "caution": 200},
     "verify_caps": {"per_content": 5, "per_day": 5, "per_month": 30, "base_delta": 2, "high_trust_delta": 3, "high_trust_min": 800},
@@ -195,16 +195,28 @@ class _ScoreEventsAccessor:
     def CONTENT_RETRACTION(self): return _p().retraction
     @property
     def DEVICE_COMPROMISE_PENDING(self): return _p().device_compromise
+    # Per-pair offense escalation [1st, 2nd, 3rd+] per spec
+    # (TIP_Trust_Scoring §6 — base x [1, 2, 3]). Prior universal-ladder
+    # aliases (MISMATCH_2ND/3RD_OFFENSE all reading oh_as_ag) over-penalised
+    # repeat AA→AG / OH→AA offenders; replaced with per-pair lookups.
     @property
     def OH_CONFIRMED_AG_1ST(self): return _p().oh_as_ag[0]
     @property
-    def MISMATCH_2ND_OFFENSE(self): return _p().oh_as_ag[1]
+    def OH_CONFIRMED_AG_2ND(self): return _p().oh_as_ag[1]
     @property
-    def MISMATCH_3RD_OFFENSE(self): return _p().oh_as_ag[2]
+    def OH_CONFIRMED_AG_3RD(self): return _p().oh_as_ag[2]
     @property
-    def OH_CONFIRMED_AA(self): return _p().oh_as_aa[0]
+    def OH_CONFIRMED_AA_1ST(self): return _p().oh_as_aa[0]
     @property
-    def AA_CONFIRMED_AG(self): return _p().aa_as_ag[0]
+    def OH_CONFIRMED_AA_2ND(self): return _p().oh_as_aa[1]
+    @property
+    def OH_CONFIRMED_AA_3RD(self): return _p().oh_as_aa[2]
+    @property
+    def AA_CONFIRMED_AG_1ST(self): return _p().aa_as_ag[0]
+    @property
+    def AA_CONFIRMED_AG_2ND(self): return _p().aa_as_ag[1]
+    @property
+    def AA_CONFIRMED_AG_3RD(self): return _p().aa_as_ag[2]
     @property
     def FACTUAL_FALSEHOOD_MINOR(self): return _p().minor_falsehood
     @property
