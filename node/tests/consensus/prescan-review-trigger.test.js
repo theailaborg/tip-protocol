@@ -202,12 +202,12 @@ describe("dag.getContentsNeedingReview", () => {
     expect(out[0].ctid).toBe(CTID_1);
   });
 
-  test("excludes low/elevated tier and non-override content", () => {
+  test("excludes low/elevated tier; includes high/critical regardless of override", () => {
     const fx = _setup();
     const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
 
-    // low tier (excluded)
+    // low tier (excluded — never reviewed)
     fx.dag.saveContent({
       ctid: "tip://c/OH-ll1111ll1111ll-0001", origin_code: "OH",
       content_hash: "cd".repeat(32), perceptual_hash: null,
@@ -218,7 +218,9 @@ describe("dag.getContentsNeedingReview", () => {
       override: false, registered_at: new Date(oldMs).toISOString(),
       registered_urls: [], tx_id: shake256("c:low"),
     });
-    // high tier but no override (excluded — creator never asked for the 48h window)
+    // high tier without override — included. The override gate at registration
+    // was dropped; the trigger now fires for every HIGH/CRITICAL OH content
+    // past the 48h grace, regardless of the (now-optional) override flag.
     fx.dag.saveContent({
       ctid: "tip://c/OH-nooverridenoover-0001", origin_code: "OH",
       content_hash: "ef".repeat(32), perceptual_hash: null,
@@ -229,7 +231,9 @@ describe("dag.getContentsNeedingReview", () => {
       override: false, registered_at: new Date(oldMs).toISOString(),
       registered_urls: [], tx_id: shake256("c:no-override"),
     });
-    expect(fx.dag.getContentsNeedingReview(nowMs)).toEqual([]);
+    const out = fx.dag.getContentsNeedingReview(nowMs);
+    expect(out).toHaveLength(1);
+    expect(out[0].ctid).toBe("tip://c/OH-nooverridenoover-0001");
   });
 });
 
