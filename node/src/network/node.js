@@ -78,8 +78,14 @@ const TOPICS = Object.freeze({
 // the existing TCP/QUIC connection between authorized peers — no mesh, no
 // scoring, no topic warmth required.
 const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
-// Direct-stream fallback for batch delivery when gossipsub mesh edges are stale.
-// After node reconnections, specific directed edges in the gossipsub mesh can
+// Direct-stream protocol for BatchAck delivery (Issue #46 structural fix).
+// Acks are point-to-point — only the batch author needs them — so gossipsub
+// fanout is pure overhead and stale mesh edges cause silent drops (Issue #13).
+// Each ack is sent as a one-shot stream to the author's libp2p peer ID over
+// the existing authenticated connection. TCP delivery is deterministic: drops
+// surface as stream errors, not silent stalls. Batches + certs stay on gossipsub
+// (multi-recipient, gossipsub fanout is the right primitive for broadcast).
+const CONSENSUS_ACK_PROTOCOL = "/tip/consensus-ack/1.0.0";
 
 /**
  * Create and start a libp2p network node.
@@ -316,6 +322,35 @@ async function createNetworkNode(options = {}) {
     }));
   }
 
+  // Send a single BatchAck directly to the batch author via a one-shot libp2p
+  // stream. Returns true on successful delivery, false on any failure (caller
+  // falls back to gossipsub). Only dials peers already in _authorizedPeers —
+  // same auth model as broadcastToAuthorized. 3s timeout covers hung TCP
+  // connections while keeping the fast path (authorized peer online) sub-ms.
+  async function sendAckDirect(ackBuf, authorNodeId) {
+    let targetPeerId = null;
+    for (const [peerId, tipNodeId] of _authorizedPeers) {
+      if (tipNodeId === authorNodeId) { targetPeerId = peerId; break; }
+    }
+    if (!targetPeerId) return false;
+    let stream = null;
+    let timer = null;
+    try {
+      timer = setTimeout(() => {
+        try { if (stream) stream.close(); } catch { /* ignore */ }
+      }, 3000);
+      stream = await node.dialProtocol(peerIdFromString(targetPeerId), CONSENSUS_ACK_PROTOCOL);
+      await stream.sink([ackBuf]);
+      return true;
+    } catch (err) {
+      log.debug(`sendAckDirect to ${authorNodeId.slice(-8)} failed: ${err.message}`);
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+      try { if (stream) stream.close(); } catch { /* ignore */ }
+    }
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
   return {
     /** The underlying libp2p node */
@@ -387,21 +422,9 @@ async function createNetworkNode(options = {}) {
     },
 
     broadcastToAuthorized,
+    sendAckDirect,
     ROTATION_COORD_PROTOCOL,
-
-    /**
-     * Drop and rejoin all gossipsub consensus topics, forcing the mesh to
-     * rebuild fresh edges. Called by Narwhal when a round is stuck for ~6s
-     * (retry #3) to clear stale directed-delivery failures (Issue #13).
-     */
-    async refreshGossipsubMesh() {
-      const topics = [TOPICS.CERTIFICATES, TOPICS.MEMPOOL, TOPICS.CONSENSUS];
-      for (const topic of topics) {
-        pubsub.unsubscribe(topic);
-        pubsub.subscribe(topic);
-      }
-      log.info("Gossipsub mesh refreshed: dropped + rejoined all consensus topics");
-    },
+    CONSENSUS_ACK_PROTOCOL,
 
     async stop() {
       rateLimiter.stop();
@@ -416,4 +439,4 @@ async function createNetworkNode(options = {}) {
   };
 }
 
-module.exports = { createNetworkNode, TOPICS };
+module.exports = { createNetworkNode, TOPICS, CONSENSUS_ACK_PROTOCOL };

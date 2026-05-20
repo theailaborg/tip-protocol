@@ -269,15 +269,6 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       try { return antiEntropyForFiltering ? antiEntropyForFiltering.divergentPeers() : []; }
       catch { return []; }
     },
-    // Tier-1 sub_quorum self-heal: after 3 consecutive stuck retries (~6s),
-    // narwhal drops + rejoins all gossipsub topics so stale directed mesh edges
-    // are rebuilt fresh. Fixes Issue #13 where specific peer acks stopped
-    // delivering through degraded mesh edges without any node being down.
-    onMeshRefresh: () => {
-      if (network && typeof network.refreshGossipsubMesh === "function") {
-        return network.refreshGossipsubMesh();
-      }
-    },
   });
   narwhalRef.current = narwhal;
 
@@ -402,6 +393,32 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await antiEntropy.start();
       const coord = bullshark.rotationCoordinator?.();
       if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
+      // #46: register direct-stream ack receiver. Incoming BatchAck messages
+      // from batch authors are now delivered as one-shot streams instead of
+      // gossipsub CONSENSUS topic messages. Auth-check uses the same
+      // isAuthorizedPeer gate as every other stream protocol.
+      if (network && network.CONSENSUS_ACK_PROTOCOL) {
+        await network.handle(network.CONSENSUS_ACK_PROTOCOL, async ({ stream, connection }) => {
+          const peerId = connection?.remotePeer?.toString();
+          if (!isAuthorizedPeer(peerId)) {
+            log.warn(`Rejected ack stream from unauthorized peer ${peerId?.slice(0, 12)}`);
+            try { stream.close(); } catch { /* ignore */ }
+            return;
+          }
+          try {
+            const chunks = [];
+            for await (const chunk of stream.source) {
+              chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+            }
+            const data = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c)));
+            narwhal.handleIncomingAck(data);
+          } catch (err) {
+            log.debug(`Ack stream read failed from ${peerId?.slice(0, 12)}: ${err.message}`);
+          } finally {
+            try { stream.close(); } catch { /* ignore */ }
+          }
+        });
+      }
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
