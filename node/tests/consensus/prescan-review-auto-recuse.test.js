@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -79,7 +81,7 @@ function _setup() {
     nodePrivateKey: nodeKp.privateKey,
   };
   const scoring = initScoring(dag, config);
-  dag.setScore(REVIEWER_1, 900, 0, Date.now());
+  dag.setScore(REVIEWER_1, 900, 0, nowMs());
 
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); };
@@ -119,7 +121,7 @@ describe("PRESCAN_REVIEW_TRIGGERED — triggered_at_ms persistence", () => {
 
   test("commit-handler sets triggered_at_ms from cert.ts", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedFlaggedContent(registeredAtMs);
 
     const triggerCertMs = registeredAtMs + CONTENT_GRACE.FLAGGED_MS + 1000;
@@ -218,7 +220,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
   test("commit-handler applies auto-recuse → review=RECUSED, content.status=REGISTERED", () => {
     const fx = _setup();
     // Seed an old TRIGGERED review with content row backing it
-    const baseMs = Date.now() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
+    const baseMs = nowMs() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.seedFlaggedContent(baseMs - CONTENT_GRACE.FLAGGED_MS);
     fx.dag.updateContentStatus(CTID, CONTENT_STATUS.PENDING_REVIEW);
     fx.dag.savePrescanReview({
@@ -228,8 +230,8 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
       state: PRESCAN_REVIEW_STATES.TRIGGERED,
     });
 
-    const nowMs = Date.now();
-    fx.prescanReviewTrigger.checkPending(nowMs, 1);
+    const now = nowMs();
+    fx.prescanReviewTrigger.checkPending(now, 1);
     const tx = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_RECUSED);
     expect(tx).toBeDefined();
 

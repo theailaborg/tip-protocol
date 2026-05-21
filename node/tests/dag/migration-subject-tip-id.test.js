@@ -26,6 +26,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -42,7 +44,7 @@ beforeAll(async () => {
 
 // Drop in a tmpfile path; cleaned up on test exit.
 function _tmpDbPath() {
-  return path.join(os.tmpdir(), `tip-mig-subj-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-mig-subj-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function _cleanup(dbPath) {

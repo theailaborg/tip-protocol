@@ -27,6 +27,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -172,7 +174,7 @@ describe("#44 consensus_index — increments on every anchor commit (idle-networ
 
 describe("#44 consensus_index — persistence via consensus_meta", () => {
   test("counter survives DB close + reopen with exact value (idle case)", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       const bullshark = setupBullshark(dag);
@@ -196,7 +198,7 @@ describe("#44 consensus_index — persistence via consensus_meta", () => {
   });
 
   test("counter survives restart with mixed tx-bearing + idle history", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       const bullshark = setupBullshark(dag);
@@ -230,7 +232,7 @@ describe("#44 consensus_index — persistence via consensus_meta", () => {
     // may temporarily under-report on idle until next tx-bearing commit
     // re-anchors it via consensus_meta — that's acceptable, and exact
     // accuracy resumes from the next anchor.
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-legacy-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       registerNode(dag);

@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -394,7 +396,7 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
   // evidence_hash uniqueness rule doesn't trip across the eligibility
   // matrix tests.
   function _disputeBodyOnly({ disputerTipId, disputerKp, claimed_origin }) {
-    const payload = _validPayload(`origin-matrix-${claimed_origin}-${Date.now()}-${Math.random()}`);
+    const payload = _validPayload(`origin-matrix-${claimed_origin}-${nowMs()}-${Math.random()}`);
     return _buildDisputeBody({ disputerTipId, disputerKp, payload, claimed_origin });
   }
 

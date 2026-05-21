@@ -35,6 +35,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -96,7 +98,7 @@ describe("mempool.addFront — happy path", () => {
 
     // A was orphaned from a stale-batch round and is being requeued.
     // It must drain before B and C even though it's added last.
-    const r = mempool.addFront(makeTx("A"), Date.now() - 10_000);
+    const r = mempool.addFront(makeTx("A"), nowMs() - 10_000);
     expect(r).toEqual({ added: true });
 
     expect(ids(mempool.drain(10))).toEqual(["A", "B", "C"]);
@@ -107,7 +109,7 @@ describe("mempool.addFront — happy path", () => {
     const mempool = createMempool(dag);
     const before = mempool.stats().counters.received_total;
 
-    expect(mempool.addFront(makeTx("X"), Date.now())).toEqual({ added: true });
+    expect(mempool.addFront(makeTx("X"), nowMs())).toEqual({ added: true });
     expect(mempool.stats().counters.received_total).toBe(before + 1);
     expect(mempool.size()).toBe(1);
   });
@@ -120,7 +122,7 @@ describe("mempool.addFront — happy path", () => {
     // Tx was originally received 5s ago; if addFront resets the clock,
     // it would survive the next drain() eviction sweep and starve newer
     // arrivals. Old timestamp must persist so eviction triggers.
-    mempool.addFront(makeTx("OLD"), Date.now() - 5000);
+    mempool.addFront(makeTx("OLD"), nowMs() - 5000);
     mempool.add(makeTx("NEW"));
 
     // drain() runs _evictStale first; the 5s-old front entry must be
@@ -167,7 +169,7 @@ describe("mempool.addFront — rejection paths", () => {
     mempool.add(makeTx("DUP"));
 
     const rejectedBefore = mempool.stats().counters.rejected_total;
-    const r = mempool.addFront(makeTx("DUP"), Date.now() - 1000);
+    const r = mempool.addFront(makeTx("DUP"), nowMs() - 1000);
 
     expect(r).toEqual({ added: false, reason: "duplicate" });
     // Not a "rejected_total" event — duplicates are common after partial
@@ -183,7 +185,7 @@ describe("mempool.addFront — rejection paths", () => {
     mempool.add(makeTx("A"));
     mempool.add(makeTx("B"));
 
-    const r = mempool.addFront(makeTx("C"), Date.now());
+    const r = mempool.addFront(makeTx("C"), nowMs());
     expect(r).toEqual({ added: false, reason: "mempool_full" });
     expect(mempool.stats().counters.rejected_total).toBe(1);
     expect(mempool.size()).toBe(2);
@@ -194,7 +196,7 @@ describe("mempool.addFront — rejection paths", () => {
 // 4. Multi-tx orphan-requeue under reverse-iteration
 //    Mirrors the actual call-site pattern in narwhal._resetRoundState:
 //      for (let i = orphanedTxs.length - 1; i >= 0; i--) {
-//        mempool.addFront(orphanedTxs[i], Date.now());
+//        mempool.addFront(orphanedTxs[i], nowMs());
 //      }
 //    After reverse-iteration the orphaned batch must drain in its
 //    ORIGINAL order (T0, T1, T2, ...), ahead of any newer arrivals.
@@ -213,7 +215,7 @@ describe("mempool.addFront — orphan-batch requeue (reverse-iteration pattern f
     // Orphaned batch (in submit order) — requeue caller-side reverse loop.
     const orphaned = [makeTx("OLD1"), makeTx("OLD2"), makeTx("OLD3")];
     for (let i = orphaned.length - 1; i >= 0; i--) {
-      const r = mempool.addFront(orphaned[i], Date.now());
+      const r = mempool.addFront(orphaned[i], nowMs());
       expect(r).toEqual({ added: true });
     }
 
@@ -226,7 +228,7 @@ describe("mempool.addFront — orphan-batch requeue (reverse-iteration pattern f
     const mempool = createMempool(dag);
 
     const orphaned = [makeTx("T0"), makeTx("T1"), makeTx("T2"), makeTx("T3")];
-    for (let i = orphaned.length - 1; i >= 0; i--) mempool.addFront(orphaned[i], Date.now());
+    for (let i = orphaned.length - 1; i >= 0; i--) mempool.addFront(orphaned[i], nowMs());
 
     expect(ids(mempool.drain(10))).toEqual(["T0", "T1", "T2", "T3"]);
   });
@@ -243,7 +245,7 @@ describe("mempool.addFront — side effects (callback, persistence)", () => {
     const seen = [];
     mempool.onTxAdded((tx) => seen.push(tx.tx_id));
 
-    mempool.addFront(makeTx("WAKE"), Date.now());
+    mempool.addFront(makeTx("WAKE"), nowMs());
     expect(seen).toEqual(["WAKE"]);
   });
 
@@ -254,8 +256,8 @@ describe("mempool.addFront — side effects (callback, persistence)", () => {
     const seen = [];
     mempool.onTxAdded((tx) => seen.push(tx.tx_id));
 
-    mempool.addFront(makeTx("X"), Date.now());      // duplicate
-    mempool.addFront(makeTx("FULL"), Date.now());   // mempool_full
+    mempool.addFront(makeTx("X"), nowMs());      // duplicate
+    mempool.addFront(makeTx("FULL"), nowMs());   // mempool_full
     expect(seen).toEqual([]);
   });
 
@@ -263,7 +265,7 @@ describe("mempool.addFront — side effects (callback, persistence)", () => {
     const dag = initDAG({ dbPath: ":memory:" });
     const mempool1 = createMempool(dag);
     mempool1.add(makeTx("B"));
-    mempool1.addFront(makeTx("A"), Date.now() - 5000);
+    mempool1.addFront(makeTx("A"), nowMs() - 5000);
 
     // Simulate restart — second mempool instance restores from the same
     // dag. Order of restore is whatever the dag returns; for SQLite-backed
@@ -286,7 +288,7 @@ describe("mempool.addFront — side effects (callback, persistence)", () => {
     };
     const mempool = createMempool(flakeyDag);
 
-    expect(mempool.addFront(makeTx("RESCUE"), Date.now())).toEqual({ added: true });
+    expect(mempool.addFront(makeTx("RESCUE"), nowMs())).toEqual({ added: true });
     expect(mempool.size()).toBe(1);
     expect(ids(mempool.drain(10))).toEqual(["RESCUE"]);
   });
@@ -326,7 +328,7 @@ describe("mempool — tx_rejections wiring on mempool_full", () => {
     const mempool = createMempool(dag, { maxSize: 1, nodeId: "tip://node/test" });
     mempool.add(makeTx("FIRST"));
 
-    const r = mempool.addFront(makeTx("ORPHAN"), Date.now() - 5000);
+    const r = mempool.addFront(makeTx("ORPHAN"), nowMs() - 5000);
     expect(r).toEqual({ added: false, reason: "mempool_full" });
 
     const row = dag.getTxRejection("ORPHAN");
@@ -379,8 +381,8 @@ describe("mempool — tx_rejections wiring on TTL eviction", () => {
     const fresh  = makeTx("FRESH",   { tx_type: "REGISTER_IDENTITY" });
 
     // Both planted with receivedAt 5s in the past — well past 1s TTL.
-    mempool.addFront(stale1, Date.now() - 5000);
-    mempool.addFront(stale2, Date.now() - 5000);
+    mempool.addFront(stale1, nowMs() - 5000);
+    mempool.addFront(stale2, nowMs() - 5000);
     mempool.add(fresh);
 
     // drain() runs _evictStale on entry. Stale entries are removed and
@@ -414,7 +416,7 @@ describe("mempool — tx_rejections wiring on TTL eviction", () => {
     const mempool = createMempool(dag, { maxTxAgeSec: 1, nodeId: "tip://node/test" });
 
     const stale = makeTx("AGED");
-    mempool.addFront(stale, Date.now() - 5000);
+    mempool.addFront(stale, nowMs() - 5000);
 
     expect(mempool.getAll()).toEqual([]);  // evicted out from under getAll
     expect(dag.getTxRejection("AGED").reason).toBe(TX_REJECTION_REASON.MEMPOOL_TTL_EXPIRED);

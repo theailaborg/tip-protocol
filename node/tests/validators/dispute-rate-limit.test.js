@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -52,8 +54,8 @@ function _setup() {
   }
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
   // Filer score must be >= MIN_SCORE_TO_DISPUTE; author score is irrelevant.
-  dag.setScore(FILER, 900, 0, Date.now());
-  dag.setScore(AUTHOR, 700, 0, Date.now());
+  dag.setScore(FILER, 900, 0, nowMs());
+  dag.setScore(AUTHOR, 700, 0, nowMs());
   return { dag, scoring };
 }
 
@@ -67,7 +69,7 @@ function _seedContent(dag, ctid) {
     status: CONTENT_STATUS.REGISTERED,
     prescan_flagged: false, prescan_probability: 0.1, prescan_tier: "low",
     override: false,
-    registered_at: Date.now(),
+    registered_at: nowMs(),
     registered_urls: [], tx_id: shake256(`c:${ctid}`),
   });
 }
@@ -94,7 +96,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
 
     // Seed MAX_PER_FILER_PER_WINDOW - 1 prior disputes by FILER, all
     // recent (within the window).
-    const now = Date.now();
+    const now = nowMs();
     for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW - 1; i++) {
       _addDisputeTx(fx.dag, {
         ctid: `tip://c/OH-prior${i.toString().padStart(8, "0")}-0001`,
@@ -114,7 +116,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     const ctid = "tip://c/OH-dddddddddddddd-0001";
     _seedContent(fx.dag, ctid);
 
-    const now = Date.now();
+    const now = nowMs();
     for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW; i++) {
       _addDisputeTx(fx.dag, {
         ctid: `tip://c/OH-priorL${i.toString().padStart(7, "0")}-0001`,
@@ -136,7 +138,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     _seedContent(fx.dag, ctid);
 
     // All N prior disputes are older than the window → should not count.
-    const tooOldMs = Date.now() - DISPUTE.FILER_WINDOW_MS - 60_000;
+    const tooOldMs = nowMs() - DISPUTE.FILER_WINDOW_MS - 60_000;
     for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW; i++) {
       _addDisputeTx(fx.dag, {
         ctid: `tip://c/OH-old${i.toString().padStart(10, "0")}-0001`,
@@ -157,7 +159,7 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     // Seed (limit) auto-cascade disputes (e.g. REVOKE_VP cascade,
     // h=R+24 auto-escalation). These are system-issued — node_id, no
     // disputer_tip_id. Must not block a real user's first filing.
-    const now = Date.now();
+    const now = nowMs();
     for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW + 2; i++) {
       _addDisputeTx(fx.dag, {
         ctid: `tip://c/OH-auto${i.toString().padStart(9, "0")}-0001`,
@@ -180,12 +182,12 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
       registered_at: 1767225600000, tx_id: shake256("other"),
     });
-    fx.dag.setScore(OTHER, 900, 0, Date.now());
+    fx.dag.setScore(OTHER, 900, 0, nowMs());
 
     const ctid = "tip://c/OH-ggggggggggggg1-0001";
     _seedContent(fx.dag, ctid);
 
-    const now = Date.now();
+    const now = nowMs();
     for (let i = 0; i < DISPUTE.MAX_PER_FILER_PER_WINDOW; i++) {
       _addDisputeTx(fx.dag, {
         ctid: `tip://c/OH-other${i.toString().padStart(8, "0")}-0001`,

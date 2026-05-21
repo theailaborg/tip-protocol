@@ -29,6 +29,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -51,7 +53,7 @@ beforeAll(async () => {
 const SCENARIOS = [
   ["MemoryStore (in-memory)", () => initDAG({ dbPath: ":memory:" })],
   ["SQLiteStore (real DB)", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-rej-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-rej-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     const dag = initDAG({ dbPath });
     return { dag, _cleanup: () => { try { fs.unlinkSync(dbPath); } catch { /* ignore */ } } };
   }],

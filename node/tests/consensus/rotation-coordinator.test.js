@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -523,7 +525,7 @@ describe("#68 rotation coordinator", () => {
     // proposal+sigs to reach their own quorum and carve out (live observed
     // 2026-05-04 rotation 13 halt: fast submitter went silent in 1.2 s,
     // lagging peers stuck at 2/4 sigs forever).
-    coord._state().get(2).submittedAt = Date.now();
+    coord._state().get(2).submittedAt = nowMs();
     const before2 = network._published.length;
     coord._rebroadcastTick();
     expect(network._published.length).toBe(before2 + 2); // proposal + B's sig
@@ -627,7 +629,7 @@ describe("#68 rotation coordinator", () => {
     expect(coord._state().get(2).submittedAt).not.toBeNull();
 
     // Backdate submittedAt past deadlineMs * 2 so pruneExpired drops it.
-    coord._state().get(2).submittedAt = Date.now() - 11_000; // deadlineMs=5000 → *2=10000
+    coord._state().get(2).submittedAt = nowMs() - 11_000; // deadlineMs=5000 → *2=10000
     coord.pruneExpired();
     expect(coord._state().has(2)).toBe(false);
     coord.stop();
@@ -688,8 +690,8 @@ describe("#68 rotation coordinator", () => {
     const txFromNodeA = buildRotationTx(dagStateA, proposal, signer_node_ids, signatures);
     // Sleep a bit between calls (different wall-clock) — pre-#81 this
     // alone produced different tx_ids.
-    const before = Date.now();
-    while (Date.now() - before < 5) { /* spin briefly */ }
+    const before = nowMs();
+    while (nowMs() - before < 5) { /* spin briefly */ }
     const txFromNodeB = buildRotationTx(dagStateB, proposal, signer_node_ids, signatures);
 
     // Critical assertion: tx_id must be IDENTICAL despite different local

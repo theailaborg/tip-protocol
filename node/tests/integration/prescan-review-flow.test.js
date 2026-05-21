@@ -29,6 +29,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -144,11 +146,11 @@ describe("prescan-review end-to-end flow", () => {
 
     // ── Step 1: content registered. Phase 2.3: status lands as
     // REGISTERED, NOT PENDING_REVIEW.
-    // canUpdateOrigin uses Date.now() (wall clock) at API call; cert
+    // canUpdateOrigin uses nowMs() (wall clock) at API call; cert
     // timestamps drive the consensus-time checks. Anchor the timeline to
     // a point shortly before real now so wall-clock and simulated time
     // agree across the whole flow.
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedContent(registeredAtMs);
     expect(fx.dag.getContent(CTID).status).toBe(CONTENT_STATUS.REGISTERED);
 
@@ -235,11 +237,11 @@ describe("prescan-review end-to-end flow", () => {
   test("register flagged → h=48 trigger → reviewer dismisses → green badge restored", () => {
     const fx = _setup();
 
-    // canUpdateOrigin uses Date.now() (wall clock) at API call; cert
+    // canUpdateOrigin uses nowMs() (wall clock) at API call; cert
     // timestamps drive the consensus-time checks. Anchor the timeline to
     // a point shortly before real now so wall-clock and simulated time
     // agree across the whole flow.
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedContent(registeredAtMs);
 
     const triggerTs = registeredAtMs + CONTENT_GRACE.FLAGGED_MS + 1000;
@@ -279,7 +281,7 @@ describe("prescan-review end-to-end flow", () => {
 
     // Content registered just minutes ago — still well inside the 48h
     // creator self-correction window.
-    const registeredAtMs = Date.now() - 30 * 60_000; // 30 minutes old
+    const registeredAtMs = nowMs() - 30 * 60_000; // 30 minutes old
     fx.seedContent(registeredAtMs);
 
     // Creator updates the origin. Phase 1: 48h grace for flagged
@@ -294,7 +296,7 @@ describe("prescan-review end-to-end flow", () => {
     const { withTxId } = require(path.join(SRC, "services", "helpers"));
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data: {
         ctid: CTID,
@@ -306,7 +308,7 @@ describe("prescan-review end-to-end flow", () => {
     });
 
     fx.submitted.length = 0;
-    fx.commit([updateTx], Date.now());
+    fx.commit([updateTx], nowMs());
 
     // Content origin updated, status stays REGISTERED (green badge).
     expect(fx.dag.getContent(CTID).origin_code).toBe("AG");
@@ -334,7 +336,7 @@ describe("prescan-review end-to-end flow", () => {
   test("register flagged → trigger fires → creator's UPDATE_ORIGIN attempt during TRIGGERED is REJECTED (case is in reviewer's hands)", () => {
     const fx = _setup();
 
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedContent(registeredAtMs);
 
     // Trigger fires + lands. Review now in TRIGGERED, content
@@ -356,7 +358,7 @@ describe("prescan-review end-to-end flow", () => {
     const result = rules.canUpdateOrigin(
       fx.dag,
       { ctid: CTID, author_tip_id: CREATOR, new_origin_code: "AG" },
-      { now: Date.now() },
+      { now: nowMs() },
     );
     expect(result.valid).toBe(false);
     expect(result.error.status).toBe(403);
@@ -371,11 +373,11 @@ describe("prescan-review end-to-end flow", () => {
   test("register flagged → reviewer confirm → creator does nothing → h=R+24 auto-escalates to CONTENT_DISPUTED", () => {
     const fx = _setup();
 
-    // canUpdateOrigin uses Date.now() (wall clock) at API call; cert
+    // canUpdateOrigin uses nowMs() (wall clock) at API call; cert
     // timestamps drive the consensus-time checks. Anchor the timeline to
     // a point shortly before real now so wall-clock and simulated time
     // agree across the whole flow.
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedContent(registeredAtMs);
 
     // Drive: trigger → confirm → wait past 24h.
@@ -428,7 +430,7 @@ describe("prescan-review end-to-end flow", () => {
     // expires at h=48 + AUTO_RECUSE_AGE_MS (so we need
     // registered_at = now − FLAGGED_MS − AUTO_RECUSE_AGE_MS − safety).
     const safety = 5 * 60_000;
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - REVIEWER.AUTO_RECUSE_AGE_MS - safety;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - REVIEWER.AUTO_RECUSE_AGE_MS - safety;
     fx.seedContent(registeredAtMs);
 
     // ── Round 1: cert.ts = h=48. Trigger fires + lands.

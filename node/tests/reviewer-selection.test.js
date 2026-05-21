@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../shared");
 const SRC = path.resolve(__dirname, "../src");
@@ -71,7 +73,7 @@ function _setup({ seedScores } = {}) {
   // Default score-cache: well above REVIEWER.MIN_SCORE (800)
   const scores = seedScores || { [AUTHOR]: 900, [REV_A]: 900, [REV_B]: 900, [REV_C]: 900, [REV_D]: 900 };
   for (const [tipId, score] of Object.entries(scores)) {
-    dag.setScore(tipId, score, 0, Date.now());
+    dag.setScore(tipId, score, 0, nowMs());
   }
 
   return { dag, scoring };
@@ -109,7 +111,7 @@ describe("isEligibleReviewer — base filters", () => {
 
   test("revoked identity → not eligible", () => {
     const { dag, scoring } = _setup();
-    dag.addRevocation(REV_A, TX_TYPES.REVOKE_VOLUNTARY, Date.now(), shake256("rev:a"));
+    dag.addRevocation(REV_A, TX_TYPES.REVOKE_VOLUNTARY, nowMs(), shake256("rev:a"));
     expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(false);
   });
 
@@ -270,7 +272,7 @@ describe("selectReviewer", () => {
     const { dag, scoring } = _setup();
     // Revoke all three opted-in reviewers (REV_D wasn't opted in to start)
     for (const tipId of [REV_A, REV_B, REV_C]) {
-      dag.addRevocation(tipId, TX_TYPES.REVOKE_VOLUNTARY, Date.now(), shake256(`rev:${tipId}`));
+      dag.addRevocation(tipId, TX_TYPES.REVOKE_VOLUNTARY, nowMs(), shake256(`rev:${tipId}`));
     }
     const r = selectReviewer(dag, scoring, {
       reviewId: "rv_d4", ctid: CTID, round: 1, authorTipId: AUTHOR,
@@ -346,7 +348,8 @@ function _seedAdjudicationVerdict(dag, ctid, verdict) {
   // then compute. A monotonic nonce keeps tx_ids unique across calls.
   const body = {
     tx_type: TX_TYPES.ADJUDICATION_RESULT,
-    timestamp: new Date(2026, 0, ++_adjCounter).toISOString(),
+    // 2026-01-01 UTC + N days. Monotonic counter for unique tx_ids.
+    timestamp: 1767225600000 + (++_adjCounter) * 86_400_000,
     prev: [],
     data: { ctid, verdict, declared_origin: "OH" },
   };

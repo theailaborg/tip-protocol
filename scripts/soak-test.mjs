@@ -37,6 +37,7 @@
  */
 
 import { exec } from 'child_process';
+import { nowMs, nowIso, toIso } from "../shared/time.js";
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -72,10 +73,10 @@ const NODE_NAME = { 4000: 'node1', 4100: 'node2', 4200: 'node3', 4300: 'node4', 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms)      { return new Promise(r => setTimeout(r, ms)); }
-function ts()           { return new Date().toISOString().slice(11, 19); }
+function ts()           { return nowIso().slice(11, 19); }
 function pad(v, w)      { return String(v ?? '?').padStart(w, ' '); }
 function elapsed(startMs) {
-  const s = Math.floor((Date.now() - startMs) / 1000);
+  const s = Math.floor((nowMs() - startMs) / 1000);
   return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
 }
 
@@ -142,7 +143,7 @@ for (const port of ALL_PORTS) {
     byzantine_fork_halt: null,
     reachable: false,
     lastSeenRound: 0,
-    lastRoundChangeAt: Date.now(),
+    lastRoundChangeAt: nowMs(),
   };
 }
 
@@ -216,19 +217,19 @@ async function pollNode(port) {
   // ── Round-stall detection ─────────────────────────────────────────────────
   if (ns.round > ns.lastSeenRound) {
     ns.lastSeenRound    = ns.round;
-    ns.lastRoundChangeAt = Date.now();
+    ns.lastRoundChangeAt = nowMs();
   }
 
   // ── Halt event tracking ────────────────────────────────────────────────────
   if (ns.halted && !activeHalts[port]) {
-    activeHalts[port] = { at: Date.now(), reason: ns.halt_reason };
-    haltEvents.push({ port, at: Date.now(), reason: ns.halt_reason });
+    activeHalts[port] = { at: nowMs(), reason: ns.halt_reason };
+    haltEvents.push({ port, at: nowMs(), reason: ns.halt_reason });
     console.log(`\n[${ts()}] ⚠  HALT detected on ${NODE_NAME[port]} — reason="${ns.halt_reason}" round=${ns.round}`);
   }
   if (!ns.halted && activeHalts[port]) {
-    const elapsed_ms = Date.now() - activeHalts[port].at;
+    const elapsed_ms = nowMs() - activeHalts[port].at;
     const last = haltEvents.findLast(e => e.port === port && !e.recoveredAt);
-    if (last) last.recoveredAt = Date.now();
+    if (last) last.recoveredAt = nowMs();
     console.log(`\n[${ts()}] ✓  RECOVERED ${NODE_NAME[port]} after ${(elapsed_ms / 1000).toFixed(1)}s`);
     delete activeHalts[port];
   }
@@ -239,7 +240,7 @@ function checkStalls() {
   for (const port of ALL_PORTS) {
     const ns = nodeState[port];
     if (!ns.reachable) continue;
-    const staleMs = Date.now() - ns.lastRoundChangeAt;
+    const staleMs = nowMs() - ns.lastRoundChangeAt;
     if (staleMs > STALL_TIMEOUT_MS && ns.join_state === 'ready' && !ns.halted) {
       const msg = `STALL: ${NODE_NAME[port]} round=${ns.round} has not advanced in ${(staleMs/1000).toFixed(0)}s`;
       if (!warnings.some(w => w.msg === msg)) {
@@ -298,11 +299,11 @@ async function chaosLoop(endAt) {
   console.log(`[${ts()}] Chaos: warming up ${(warmup/1000).toFixed(0)}s before first pause`);
   await sleep(warmup);
 
-  while (Date.now() < endAt) {
+  while (nowMs() < endAt) {
     const waitMs  = rand(MIN_WAIT_MS, MAX_WAIT_MS);
     const pauseMs = rand(MIN_PAUSE_MS, MAX_PAUSE_MS);
-    await sleep(Math.min(waitMs, endAt - Date.now()));
-    if (Date.now() >= endAt) break;
+    await sleep(Math.min(waitMs, endAt - nowMs()));
+    if (nowMs() >= endAt) break;
 
     // Skip if any node already halted — chaos during halt risks state divergence.
     const anyHalted = ALL_PORTS.some(p => nodeState[p].halted);
@@ -328,7 +329,7 @@ async function txLoop(endAt, vpId, vp) {
     return;
   }
   let seq = parseInt(process.env.START_SEQ || '50000', 10);
-  while (Date.now() < endAt) {
+  while (nowMs() < endAt) {
     const port  = ALL_PORTS[seq % ALL_PORTS.length];
     // Same dedup format as tx-flood.mjs (20-char zero-padded decimal).
     // Prefix with 'sk' to avoid collision with flood runs that start at 0.
@@ -389,7 +390,7 @@ function finalVerdict() {
   // 3. No node stalled for > STALL_TIMEOUT_MS at end
   const stalledNow = ALL_PORTS.filter(p => {
     const ns = nodeState[p];
-    return ns.reachable && !ns.halted && (Date.now() - ns.lastRoundChangeAt) > STALL_TIMEOUT_MS;
+    return ns.reachable && !ns.halted && (nowMs() - ns.lastRoundChangeAt) > STALL_TIMEOUT_MS;
   });
   checks.push({
     name: `No round stalls > ${STALL_TIMEOUT_MS/1000}s at end`,
@@ -483,7 +484,7 @@ async function main() {
   }
 
   console.log('═'.repeat(70));
-  console.log(`SOAK TEST  started ${new Date().toISOString()}`);
+  console.log(`SOAK TEST  started ${nowIso()}`);
   console.log('═'.repeat(70));
   console.log(`  Duration:     ${SOAK_DURATION_MS / 1000}s`);
   console.log(`  Chaos:        ${NO_CHAOS ? 'disabled' : `pause ${MIN_PAUSE_MS/1000}–${MAX_PAUSE_MS/1000}s every ${MIN_WAIT_MS/1000}–${MAX_WAIT_MS/1000}s`}`);
@@ -500,8 +501,8 @@ async function main() {
     startRounds[port] = nodeState[port].round;
     for (const port2 of ALL_PORTS) prevAcksRefused[port2] = nodeState[port2].acks_refused;
   }
-  printTable(Date.now());
-  const startMs = Date.now();
+  printTable(nowMs());
+  const startMs = nowMs();
   const endAt   = startMs + SOAK_DURATION_MS;
 
   // Print table every 30s

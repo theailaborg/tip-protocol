@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -288,7 +290,7 @@ describe("narwhal tri-state join FSM", () => {
       try {
         const calls = [];
         const fx = buildNarwhalAtMissingRotationEpoch({
-          onProducerPaused: () => calls.push(Date.now()),
+          onProducerPaused: () => calls.push(nowMs()),
         });
         fx.narwhal.start();
         // First _beginRound + retry loop — should fire callback once.

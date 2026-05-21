@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -77,7 +79,7 @@ function _setup() {
   });
 
   const scoring = initScoring(dag, { nodeId: NODE_ID });
-  dag.setScore(REVIEWER_1, 900, 0, Date.now());
+  dag.setScore(REVIEWER_1, 900, 0, nowMs());
 
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID,
@@ -99,7 +101,7 @@ function _setup() {
   function commit(txs, certTimestamp) {
     round++;
     commitHandler.commitOrderedTxs(txs, round, {
-      certTimestamp: certTimestamp || Date.now(),
+      certTimestamp: certTimestamp || nowMs(),
     });
     return round;
   }

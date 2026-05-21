@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -39,7 +41,7 @@ beforeAll(async () => {
 });
 
 function _tmpDbPath() {
-  return path.join(os.tmpdir(), `tip-cot-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-cot-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function _cleanup(dbPath) {
@@ -62,7 +64,7 @@ function _rotation(rotationNumber, effectiveRound, committee, opts = {}) {
       effective_round: effectiveRound,
       committee,
     })),
-    committed_at: opts.committed_at || Date.now(),
+    committed_at: opts.committed_at || nowMs(),
   };
 }
 

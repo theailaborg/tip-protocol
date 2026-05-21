@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SRC = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -81,7 +83,7 @@ function peerStatus({
   txs_merkle_root = "ddeeff",
   cert_merkle_root = "112233",
   join_state = "ready",
-  checked_at = Date.now(),
+  checked_at = nowMs(),
 } = {}) {
   return { node_id, round, committed_round, consensus_index, state_merkle_root, txs_merkle_root, cert_merkle_root, join_state, checked_at };
 }
@@ -493,9 +495,9 @@ describe("queryPeer (client)", () => {
       log: silentLog(),
     });
 
-    const started = Date.now();
+    const started = nowMs();
     const status = await ae.queryPeer("peer-id");
-    const elapsed = Date.now() - started;
+    const elapsed = nowMs() - started;
 
     expect(status).toBeNull();
     expect(ae.stats().metrics.peer_rpc_timeouts).toBe(1);
@@ -798,14 +800,14 @@ describe("start/stop", () => {
     // Fire all probes in parallel (mirrors what _runOnce does now) and
     // check timing + completion together.
     const selfS = selfState({ committed_round: 10, state_merkle_root: "aabbcc" });
-    const startedAt = Date.now();
+    const startedAt = nowMs();
 
     await Promise.all(Object.keys(authorized).map(async (peerId) => {
       const status = await ae.queryPeer(peerId);
       if (status) await ae.checkAndReconcile(peerId, status, selfS);
     }));
 
-    const elapsed = Date.now() - startedAt;
+    const elapsed = nowMs() - startedAt;
 
     // All 4 peers cached.
     const s = ae.getStatus();
@@ -1276,7 +1278,7 @@ describe("byzantine-fork halt", () => {
       byzantineForkHalt: () => (halt ? { ...halt } : null),
       haltDueToByzantineFork: (args) => {
         haltCalls.push(args);
-        if (!halt) halt = { ...args, since: Date.now() };
+        if (!halt) halt = { ...args, since: nowMs() };
       },
       _haltCalls: haltCalls,
     };
@@ -1348,7 +1350,7 @@ describe("byzantine-fork halt", () => {
   test("already-halted narwhal → AE does NOT re-call halt (idempotent)", async () => {
     const narwhal = fakeNarwhal({
       committee: 4,
-      alreadyHalted: { reason: "manual halt", atRound: 5, peerNodeId: "tip://node/X", since: Date.now() },
+      alreadyHalted: { reason: "manual halt", atRound: 5, peerNodeId: "tip://node/X", since: nowMs() },
     });
     const ae = createAntiEntropy({
       network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,

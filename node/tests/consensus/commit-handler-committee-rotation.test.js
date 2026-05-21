@@ -26,6 +26,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -49,7 +51,7 @@ beforeAll(async () => {
 const NODE_ID = "tip://node/test-driver";
 
 function _tmpDbPath() {
-  return path.join(os.tmpdir(), `tip-cot-handler-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-cot-handler-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function _cleanup(dbPath) {

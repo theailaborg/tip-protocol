@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -63,7 +65,7 @@ function _setup() {
   let round = 0;
   const commitSubmitted = () => {
     round++;
-    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: Date.now() });
+    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: nowMs() });
   };
   return { dag, scoring, profileService, commitSubmitted, submitted };
 }

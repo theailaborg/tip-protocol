@@ -21,6 +21,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -104,7 +106,7 @@ describe("clean-record-trigger: day-boundary fast path", () => {
     // from the trigger day. The prefix is stable; the suffix (the day's
     // ISO date) makes the (tip_id, ctid, reason) dedup naturally per
     // window, so a user can collect again in the next 90-day epoch.
-    const expectedDay = new Date(20000 * MS_PER_DAY).toISOString().slice(0, 10);
+    const expectedDay = toIso(20000 * MS_PER_DAY).slice(0, 10);
     expect(fx.submitted[0][0].data.reason).toBe(`clean_record_bonus:${expectedDay}`);
     expect(fx.submitted[0][0].data.delta).toBe(REPUTATION.CLEAN_PERIOD_BONUS);
   });

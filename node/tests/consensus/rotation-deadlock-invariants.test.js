@@ -27,6 +27,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -174,7 +176,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
     // Mirror commit-handler-committee-rotation.test.js fixture: on-disk DB,
     // replace bootstrap rotation 0 with a test committee whose private keys
     // we control, so rotation 1 sigs verify against rotation 0's pubkeys.
-    const dbPath = path.join(os.tmpdir(), `tip-rd-inv-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-rd-inv-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     let dag = initDAG({ dbPath });
     dag.close();
 

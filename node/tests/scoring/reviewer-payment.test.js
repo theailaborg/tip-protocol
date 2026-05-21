@@ -26,6 +26,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -113,7 +115,7 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
     dag.savePrescanReview({
       review_id: REVIEW_ID, ctid: CTID, creator_tip_id: authorTipId,
       assigned_reviewer: reviewerTipId, triggered_at_round: 1,
-      decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: Date.now(),
+      decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: nowMs(),
       state: PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE,
       suggested_origin: claimedOrigin, decision_note: "looks like AI",
     });
@@ -262,7 +264,7 @@ describe("acceptCorrection → reviewer paired bonus", () => {
     fx.dag.savePrescanReview({
       review_id: REVIEW_ID, ctid: CTID, creator_tip_id: creatorTipId,
       assigned_reviewer: reviewerTipId, triggered_at_round: 1,
-      decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: Date.now(),
+      decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: nowMs(),
       state: PRESCAN_REVIEW_STATES.CONFIRMED, suggested_origin: "AG",
     });
 

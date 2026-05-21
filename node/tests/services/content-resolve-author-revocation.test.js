@@ -15,6 +15,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -43,7 +45,7 @@ function _setup() {
     registered_at: 1767225600000, tx_id: shake256("author"),
   });
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(AUTHOR, 700, 0, Date.now());
+  dag.setScore(AUTHOR, 700, 0, nowMs());
 
   dag.saveContent({
     ctid: CTID, origin_code: "OH",

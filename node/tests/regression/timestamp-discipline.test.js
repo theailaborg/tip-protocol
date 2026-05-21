@@ -41,26 +41,21 @@ const { initDAG } = require("../../src/dag");
 
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const NODE_SRC = path.join(REPO_ROOT, "node", "src");
+const NODE_TESTS = path.join(REPO_ROOT, "node", "tests");
 const SHARED_DIR = path.join(REPO_ROOT, "shared");
 const SCRIPTS_DIR = path.join(REPO_ROOT, "scripts");
 
 // shared/time.js IS the timestamp helper module — it's the one place
-// raw JS Date APIs are allowed.
-//
-// scripts/ is in scope because seed.js produces canonical chain bytes
-// (genesis identities + tx timestamps that feed into GENESIS_TX_SIGNATURE
-// verification). Dev-only operational tooling that doesn't touch chain
-// state is explicitly allowed below.
+// raw JS Date APIs are allowed. Everything else — including dev-only
+// scripts and CLI tooling — must route through nowMs / nowIso /
+// nowPlusMs / toIso / fromIso so cross-language byte-determinism and
+// audit-format consistency hold uniformly.
 const SOURCE_ALLOWLIST = new Set([
+  // The timestamp helper module itself.
   path.join(SHARED_DIR, "time.js"),
-  // Dev-only operational scripts — never produce chain-canonical bytes.
-  // They use Date.* for log timestamps, entropy seeds, or local poll loops.
-  // Add new entries here ONLY when the script is genuinely off the
-  // chain-production path; chain-critical scripts (seed.js,
-  // test-bootstrap-gate.js) MUST stay outside this allowlist.
-  path.join(SCRIPTS_DIR, "zk-setup.js"),
-  path.join(SCRIPTS_DIR, "drive-jury.js"),
-  path.join(SCRIPTS_DIR, "seed-temp-users.js"),
+  // The regression test file's regex patterns and assertion strings
+  // contain the forbidden tokens by necessity (it's scanning for them).
+  __filename,
 ]);
 
 // Patterns that must not appear in production source. Each entry has a
@@ -75,15 +70,16 @@ const FORBIDDEN_SOURCE_PATTERNS = [
   { name: "Date.now", regex: /\bDate\.now\b/ },
 ];
 
-// Walk a directory and yield every .js file. Skips node_modules and
-// hidden directories so the scan stays within first-party code.
+// Walk a directory and yield every JS-family file (.js + .mjs + .cjs).
+// Skips node_modules and hidden directories so the scan stays within
+// first-party code.
 function _walkJsFiles(root, out = []) {
   if (!fs.existsSync(root)) return out;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
     const p = path.join(root, entry.name);
     if (entry.isDirectory()) _walkJsFiles(p, out);
-    else if (entry.isFile() && p.endsWith(".js")) out.push(p);
+    else if (entry.isFile() && (p.endsWith(".js") || p.endsWith(".mjs") || p.endsWith(".cjs"))) out.push(p);
   }
   return out;
 }
@@ -120,6 +116,7 @@ const TIMESTAMP_NAME_EXEMPT = (col) =>
 describe("timestamp discipline — production source routes through shared/time.js", () => {
   const sourceFiles = [
     ..._walkJsFiles(NODE_SRC),
+    ..._walkJsFiles(NODE_TESTS),
     ..._walkJsFiles(SHARED_DIR),
     ..._walkJsFiles(SCRIPTS_DIR),
   ];

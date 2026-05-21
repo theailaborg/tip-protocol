@@ -15,6 +15,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -52,8 +54,8 @@ function _setup() {
     registered_at: 1767225600000, tx_id: shake256("reviewer"),
   });
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(CREATOR, 700, 0, Date.now());
-  dag.setScore(REVIEWER, 900, 0, Date.now());
+  dag.setScore(CREATOR, 700, 0, nowMs());
+  dag.setScore(REVIEWER, 900, 0, nowMs());
 
   const service = createContentService({
     dag, scoring, config: { mediaLimits: {} }, submitTx: () => {},
@@ -70,7 +72,7 @@ function _seedContent(dag, { status = CONTENT_STATUS.REGISTERED, origin_code = "
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
     status,
     prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high", override: true,
-    registered_at: Date.now(),
+    registered_at: nowMs(),
     registered_urls: [], tx_id: shake256(`c:${CTID}`),
   });
 }
@@ -121,7 +123,7 @@ describe("content-service.resolve — review_history + consensus", () => {
   test("confirmed (creator deciding) → content.status=PENDING_REVIEW + latest.state=CONFIRMED + suggested_origin", () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.PENDING_REVIEW });
-    const confirmedAtMs = Date.now();
+    const confirmedAtMs = nowMs();
     fx.dag.savePrescanReview({
       review_id: "rv_c", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER, triggered_at_round: 1,
@@ -141,7 +143,7 @@ describe("content-service.resolve — review_history + consensus", () => {
     fx.dag.savePrescanReview({
       review_id: "rv_ap", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER, triggered_at_round: 1,
-      decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: Date.now() - 3600_000,
+      decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: nowMs() - 3600_000,
       state: PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE, suggested_origin: "AG",
     });
     const out = fx.service.resolve(CTID);
@@ -156,7 +158,7 @@ describe("content-service.resolve — review_history + consensus", () => {
     fx.dag.savePrescanReview({
       review_id: "rv_e", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER, triggered_at_round: 1,
-      decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: Date.now() - 25 * 3600_000,
+      decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: nowMs() - 25 * 3600_000,
       state: PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE, suggested_origin: "AG",
     });
     const out = fx.service.resolve(CTID);

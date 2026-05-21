@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -110,8 +112,8 @@ function _summonsTx(dag, ctid, jurorTipId, opts = {}) {
       dispute_tx_id: opts.dispute_tx_id,
       juror_tip_id: jurorTipId,
       stake: 10, seed: "seed", identity_count: 4,
-      commit_deadline: opts.commit_deadline || Date.now() + 60 * 60 * 1000,
-      reveal_deadline: opts.reveal_deadline || Date.now() + 2 * 60 * 60 * 1000,
+      commit_deadline: opts.commit_deadline || nowMs() + 60 * 60 * 1000,
+      reveal_deadline: opts.reveal_deadline || nowMs() + 2 * 60 * 60 * 1000,
       is_appeal: !!opts.is_appeal,
       node_id: NODE_ID,
     },
@@ -197,8 +199,8 @@ describe("listDisputesForTipId", () => {
     const fx = _setup();
     _seedContent(fx.dag, "tip://c/x");
     const d = _fileDispute(fx.dag, "tip://c/x");
-    const past = Date.now() - 60 * 1000;
-    const future = Date.now() + 60 * 60 * 1000;
+    const past = nowMs() - 60 * 1000;
+    const future = nowMs() + 60 * 60 * 1000;
     _summonsTx(fx.dag, "tip://c/x", JUROR_A, {
       dispute_tx_id: d.tx_id,
       commit_deadline: past,
@@ -224,7 +226,7 @@ describe("listDisputesForTipId", () => {
     const ctid = "tip://c/x";
     _seedContent(fx.dag, ctid);
     _fileDispute(fx.dag, ctid);
-    const recentVerdict = Date.now() - 60 * 1000;
+    const recentVerdict = nowMs() - 60 * 1000;
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       timestamp: recentVerdict,
@@ -247,7 +249,7 @@ describe("listDisputesForTipId", () => {
     _fileDispute(fx.dag, ctid);
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: Date.now() - 60 * 1000,
+      timestamp: nowMs() - 60 * 1000,
       data: { ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH", author_tip_id: AUTHOR, node_id: NODE_ID },
     });
 
@@ -267,12 +269,12 @@ describe("listDisputesForTipId", () => {
     _fileDispute(fx.dag, ctid);
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: Date.now() - 60 * 1000,
+      timestamp: nowMs() - 60 * 1000,
       data: { ctid, verdict: VERDICT.UPHELD, declared_origin: "OH", author_tip_id: AUTHOR, node_id: NODE_ID },
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: Date.now() - 30 * 1000,
+      timestamp: nowMs() - 30 * 1000,
       data: { ctid, appellant_tip_id: AUTHOR, signature: "00", stage2_verdict: VERDICT.UPHELD, stake: 100 },
     });
 
@@ -326,8 +328,8 @@ describe("getDisputeById", () => {
     _seedContent(fx.dag, ctid);
     const d = _fileDispute(fx.dag, ctid);
 
-    const futureCommit = Date.now() + 60 * 60 * 1000;
-    const futureReveal = Date.now() + 2 * 60 * 60 * 1000;
+    const futureCommit = nowMs() + 60 * 60 * 1000;
+    const futureReveal = nowMs() + 2 * 60 * 60 * 1000;
     _summonsTx(fx.dag, ctid, JUROR_A, { dispute_tx_id: d.tx_id, commit_deadline: futureCommit, reveal_deadline: futureReveal });
     expect(fx.service.getDisputeById(d.tx_id).status).toBe("commit_phase");
 

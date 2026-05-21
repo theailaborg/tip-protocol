@@ -16,6 +16,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -233,7 +235,8 @@ function buildCommittedDag({
     for (let i = 0; i < seedTxs; i++) {
       const txBody = {
         tx_type: "REGISTER_CONTENT",
-        timestamp: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+        // 2026-01-01 UTC + i seconds. Monotonic per-loop counter for unique tx_ids.
+        timestamp: 1767225600000 + i * 1000,
         prev: [...chain],
         data: {
           ctid: `tip://content/seed-${i}`,

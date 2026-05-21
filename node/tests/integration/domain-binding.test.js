@@ -23,7 +23,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256 } = require(path.join(SHARED, "crypto"));
-const { nowMs } = require(path.join(SHARED, "time"));
+const { nowMs, nowIso, toIso } = require(path.join(SHARED, "time"));
 const {
   TIP_ID_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_HEALTHY_EXPIRY_MS,
 } = require(path.join(SHARED, "constants"));
@@ -44,7 +44,7 @@ function stubVerifier(outcome = "ok") {
     verify: jest.fn(async (method, domain, tipId) => {
       if (outcome === "ok") {
         return {
-          verified: true, method, verified_at: Date.now(),
+          verified: true, method, verified_at: nowMs(),
           evidence: { url: null, body: null, txt: [`tip-id=${tipId}`] },
           error: null,
         };
@@ -87,7 +87,7 @@ function setup({ verifier } = {}) {
   // Commit submitted txs through the real commit-handler so derived state
   // (domain_bindings row) lands the same way it would in production.
   const commitSubmitted = (round = 1) =>
-    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: Date.now() });
+    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: nowMs() });
 
   return { dag, domainService, submitted, commitSubmitted, nodeKp };
 }
@@ -120,7 +120,7 @@ function seedPersonalIdentity(dag, tipId, kp) {
 
 function buildSignedClaim({ tipId, privKey, domain, method = "auto" }) {
   // Anchor `claimed_at` 60s in the past so it stays before the verifier
-  // mock's `verified_at: Date.now()`. Real clients use the
+  // mock's `verified_at: nowMs()`. Real clients use the
   // current wall clock; a fixed future date here would trip tx-validator's
   // `verified_at must not precede claimed_at` check on slow CI hosts.
   const claimed_at = nowMs() - 60_000;
@@ -346,8 +346,8 @@ describe("v2 prep — expires_at, consecutive_failures, read-time expiry", () =>
     expect(binding.expires_at).toBeDefined();
     expect(binding.consecutive_failures).toBe(0);
 
-    const expectedExpiryMs = Date.parse(verifyOut.verified_at) + DOMAIN_HEALTHY_EXPIRY_MS;
-    expect(Date.parse(binding.expires_at)).toBe(expectedExpiryMs);
+    const expectedExpiryMs = verifyOut.verified_at + DOMAIN_HEALTHY_EXPIRY_MS;
+    expect(binding.expires_at).toBe(expectedExpiryMs);
   });
 
   test("GET /v1/domain/:domain surfaces expires_at, days_until_expiry, consecutive_failures", async () => {

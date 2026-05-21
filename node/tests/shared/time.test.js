@@ -121,7 +121,7 @@ describe("isValidMs", () => {
   });
 
   test("catches the seconds-as-ms unit mix-up", () => {
-    // Math.floor(Date.now() / 1000) — a common Unix idiom — passed where
+    // Math.floor(nowMs() / 1000) — a common Unix idiom — passed where
     // ms was expected. The 10-digit value is multiple orders of magnitude
     // below the 13-digit ms floor for 2025.
     expect(isValidMs(1750000000)).toBe(false);   // ~Jun 2025 in seconds

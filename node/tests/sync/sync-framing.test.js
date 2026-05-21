@@ -20,6 +20,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -448,9 +450,9 @@ describe("§19 sync handler — framed wire format", () => {
     const clientNet = { handle: () => { }, openStream: async () => hangingStream };
     const clientSync = createSyncHandler({ dag: clientDag, network: clientNet });
 
-    const started = Date.now();
+    const started = nowMs();
     const result = await clientSync.syncFromPeer("peer", { fromRound: 1, totalTimeoutMs: 200 });
-    const elapsed = Date.now() - started;
+    const elapsed = nowMs() - started;
 
     expect(result.imported).toBe(0);
     expect(elapsed).toBeGreaterThanOrEqual(180);

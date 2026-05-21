@@ -14,6 +14,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const express = require("express");
 const request = require("supertest");
@@ -49,11 +51,11 @@ describe("GET /v1/sync-status", () => {
         state_merkle_root: "aabbcc",
       },
       peers: [
-        { node_id: "tip://node/A", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: Date.now() },
-        { node_id: "tip://node/B", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: Date.now() },
+        { node_id: "tip://node/A", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: nowMs() },
+        { node_id: "tip://node/B", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: nowMs() },
       ],
       in_sync: true,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
     };
     const app = makeApp({ consensus: { current: { getSyncStatus: () => syncStatus } } });
 
@@ -92,11 +94,11 @@ describe("GET /v1/sync-status", () => {
     const syncStatus = {
       self: { node_id: "tip://node/self", round: 10, committed_round: 10, consensus_index: 5, state_merkle_root: "aabbcc" },
       peers: [
-        { node_id: "tip://node/A", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: Date.now() },
-        { node_id: "tip://node/B", round: 10, committed_round: 10, state_merkle_root: "ffffff", in_sync: false, checked_at: Date.now() },
+        { node_id: "tip://node/A", round: 10, committed_round: 10, state_merkle_root: "aabbcc", in_sync: true, checked_at: nowMs() },
+        { node_id: "tip://node/B", round: 10, committed_round: 10, state_merkle_root: "ffffff", in_sync: false, checked_at: nowMs() },
       ],
       in_sync: false,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
     };
     const app = makeApp({ consensus: { current: { getSyncStatus: () => syncStatus } } });
 
@@ -111,7 +113,7 @@ describe("GET /v1/sync-status", () => {
       self: { node_id: "tip://node/self", round: 0, committed_round: 0, consensus_index: 0, state_merkle_root: "" },
       peers: [],
       in_sync: false,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
     };
     const app = makeApp({ consensus: { current: { getSyncStatus: () => syncStatus } } });
 

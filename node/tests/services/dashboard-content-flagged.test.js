@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -54,8 +56,8 @@ function _setup() {
     });
   }
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(CREATOR, 700, 0, Date.now());
-  dag.setScore(OTHER, 700, 0, Date.now());
+  dag.setScore(CREATOR, 700, 0, nowMs());
+  dag.setScore(OTHER, 700, 0, nowMs());
 
   const service = createDisputeService({
     dag, scoring, config: { nodeId: "tip://node/n1" },
@@ -101,7 +103,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("surfaces immediately on registration (no warning-age delay)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000; // a minute old — would have been hidden before
+    const registeredAtMs = nowMs() - 60_000; // a minute old — would have been hidden before
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -117,7 +119,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("surfaces regardless of `override` flag (silent-registration default is override=false)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000;
+    const registeredAtMs = nowMs() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs, override: false });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -126,7 +128,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("hidden after h=48 when no review is open yet (trigger imminent)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -135,7 +137,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("hidden when creator already self-corrected (origin_code != OH)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000;
+    const registeredAtMs = nowMs() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs, origin_code: "AG" });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -146,7 +148,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("not shown to a non-author", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000;
+    const registeredAtMs = nowMs() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs });
 
     const out = fx.service.getUserDashboard(OTHER);
@@ -155,7 +157,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
 
   test("hidden for low-tier content (not subject to review)", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - 60_000;
+    const registeredAtMs = nowMs() - 60_000;
     _seedFlagged(fx.dag, { ctid: "tip://c/OH-low000000000000-0001", registeredAtMs, prescan_tier: "low", override: false });
 
     const out = fx.service.getUserDashboard(CREATOR);
@@ -167,7 +169,7 @@ describe("dashboard — content_under_review (TRIGGERED)", () => {
 
   test("surfaces when a TRIGGERED review row exists; replaces content_flagged_for_review", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs, status: CONTENT_STATUS.PENDING_REVIEW });
     fx.dag.savePrescanReview({
       review_id: "rv_triggered_1",
@@ -197,8 +199,8 @@ describe("dashboard — prescan_review_decision_required (CONFIRMED)", () => {
 
   test("surfaces when a CONFIRMED review row exists; carries 24h deadline + suggested_origin", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 3600000;
-    const confirmedAtMs = Date.now() - 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 3600000;
+    const confirmedAtMs = nowMs() - 60_000;
     _seedFlagged(fx.dag, { registeredAtMs, status: CONTENT_STATUS.PENDING_REVIEW });
     fx.dag.savePrescanReview({
       review_id: "rv_confirmed_1",

@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -100,7 +102,7 @@ function _setup() {
   let round = 0;
   const commit = (txs) => {
     round++;
-    commitHandler.commitOrderedTxs(txs, round, { certTimestamp: Date.now() });
+    commitHandler.commitOrderedTxs(txs, round, { certTimestamp: nowMs() });
     return round;
   };
   return { dag, commit, nodeKp, reviewer1Kp, reviewer2Kp };
@@ -117,7 +119,7 @@ function _buildTriggeredTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
-    timestamp: Date.now(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -142,7 +144,7 @@ function _buildDismissedTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
-    timestamp: Date.now(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -169,7 +171,7 @@ function _buildConfirmedTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-    timestamp: Date.now(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -271,7 +273,7 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
     // buildSigningPayload throws on OH — build the tx manually with bad data
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data: {
         review_id: "rv_c2",
@@ -324,7 +326,7 @@ describe("PRESCAN_REVIEW_RECUSED — reviewer bows out", () => {
     };
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
     };
@@ -407,7 +409,7 @@ describe("Phase 2.3 — content status transitions", () => {
     data.signature = contentRegisterSchema.sign(payload, fx.nodeKp.privateKey);
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: Date.now(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
     };
@@ -440,7 +442,7 @@ describe("Phase 2.3 — content status transitions", () => {
     // rejection — we want canUpdateOrigin to reject solely on the
     // "open TRIGGERED review" branch.
     const seeded = fx.dag.getContent(CTID_1);
-    fx.dag.saveContent({ ...seeded, registered_at: Date.now() });
+    fx.dag.saveContent({ ...seeded, registered_at: nowMs() });
 
     fx.commit([_buildTriggeredTx(fx, { review_id: "rv_p23_b" })]);
     expect(fx.dag.getPrescanReview("rv_p23_b").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
@@ -452,7 +454,7 @@ describe("Phase 2.3 — content status transitions", () => {
     const result = rules.canUpdateOrigin(
       fx.dag,
       { ctid: CTID_1, author_tip_id: CREATOR, new_origin_code: "AG" },
-      { now: Date.now() },
+      { now: nowMs() },
     );
     expect(result.valid).toBe(false);
     expect(result.error.status).toBe(403);

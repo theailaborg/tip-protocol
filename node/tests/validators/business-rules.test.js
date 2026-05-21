@@ -17,6 +17,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -341,7 +343,7 @@ describe("canCommitVote", () => {
     const dag = _seedDag();
     const r = rules.canCommitVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
-    }, { now: Date.now() });
+    }, { now: nowMs() });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/not summoned/i);
   });
@@ -523,7 +525,7 @@ describe("canCommitteeRotation", () => {
     const os = require("os");
     const fs = require("fs");
     const Database = require("better-sqlite3");
-    const dbPath = path.join(os.tmpdir(), `tip-cot-rules-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cot-rules-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 
     let dag = initDAG({ dbPath });
     dag.close();

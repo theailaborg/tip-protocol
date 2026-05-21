@@ -17,6 +17,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -94,7 +96,7 @@ describe("state_merkle_root", () => {
     // a mixed-store network forks silently on the first commit.
     const fs = require("fs");
     const os = require("os");
-    const dbPath = path.join(os.tmpdir(), `tip-state-root-parity-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-state-root-parity-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 
     let sqliteDag, memDag;
     try {
