@@ -101,8 +101,14 @@ function createRouter({ dag, scoring, config, consensus, network }) {
   });
 
   router.get("/constants", (req, res) => {
+    // PC.get() returns the deep-frozen genesis-anchored constants. The
+    // boundary timestamp middleware mutates response bodies in place
+    // (ms → ISO on the way out); a frozen body would crash at the
+    // first assignment. Deep-clone the plain-data tree so the
+    // middleware can rewrite *_ms timestamps without touching the
+    // canonical instance.
     res.json({
-      ...PC.get(),
+      ...JSON.parse(JSON.stringify(PC.get())),
       media_limits: config.mediaLimits,
     });
   });

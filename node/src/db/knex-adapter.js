@@ -709,6 +709,7 @@ class KnexAdapter {
       prev: JSON.stringify(tx.prev || []),
       signature: tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("transactions", "tx_id", row, "ignore"));
   }
@@ -972,6 +973,7 @@ class KnexAdapter {
       parent_hashes: JSON.stringify(cert.parent_hashes || []),
       signature: cert.signature,
       timestamp: Number(cert.timestamp || 0),
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
@@ -1015,6 +1017,7 @@ class KnexAdapter {
       ack_signed_ats: JSON.stringify(rec.ack_signed_ats || []),
       cert_timestamp: Number(rec.cert_timestamp || 0),
       anchor_batch_hash: rec.anchor_batch_hash || null,
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
@@ -1038,7 +1041,7 @@ class KnexAdapter {
   recordSeenVote(round, author, batchHash) {
     const isNew = this.mirror.recordSeenVote(round, author, batchHash);
     if (isNew) {
-      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash }, "ignore"));
+      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash, created_at: nowMs() }, "ignore"));
     }
     return isNew;
   }
@@ -1059,6 +1062,7 @@ class KnexAdapter {
       tx_id: tx.tx_id,
       tx_data: JSON.stringify(tx),
       subject_tip_id: subjectTipId(tx) || null,
+      received_at: nowMs(),
     }, "ignore"));
   }
 

@@ -28,7 +28,19 @@
 
 "use strict";
 
-const { nowMs } = require("../shared/time");
+const { nowMs, fromIso, isValidMs } = require("../shared/time");
+
+// API responses come through the boundary middleware which formats ms → ISO.
+// Seed.js writes seed-output.json + caches into local state — for the
+// project-wide ms convention we coerce back to integer ms before persisting.
+function _coerceMs(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    try { return fromIso(v); } catch { return null; }
+  }
+  return null;
+}
 
 try { require("dotenv").config(); } catch { /* dotenv optional */ }
 
@@ -765,7 +777,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       private_key: keypair.privateKey,  // Stored in seed output — replace with real keys in production
       founding: true,
       score: regResult.score || 550,
-      registered_at: regResult.registered_at,
+      registered_at: _coerceMs(regResult.registered_at),
     };
 
     identities.push(identity);

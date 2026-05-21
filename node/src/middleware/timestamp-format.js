@@ -8,19 +8,35 @@
  * This middleware is the single conversion seam:
  *
  *   - Outgoing (response): walks the JSON body before serialising and
- *     converts any allow-listed integer field to ISO 8601 via toIso().
- *     Strings already in ISO form pass through unchanged — useful while
- *     the internal write sites migrate file-by-file.
+ *     converts a field iff its key matches the TIP timestamp naming
+ *     pattern AND its value is a plausible epoch-ms integer
+ *     (`isValidMs`). Strings already in ISO form, nulls, and
+ *     non-ms numbers pass through unchanged.
  *
- *   - Incoming (request): walks req.body and converts any allow-listed
- *     ISO 8601 string field to integer ms via fromIso(). Numeric fields
- *     pass through unchanged so callers may submit either form.
+ *   - Incoming (request): walks req.body and converts a field iff its
+ *     key matches the pattern AND its value is a strict-ISO 8601
+ *     string (the canonical form `toIso()` produces). Numeric values
+ *     pass through; malformed / non-canonical strings stay as-is for
+ *     the downstream validator to reject with its own error.
  *
- * The allow-list is the explicit set of TIP wire-shape timestamp field
- * names. Adding a new timestamp field requires adding its name here —
- * the safest default (don't touch unknown fields) prevents accidental
- * munging of unrelated `*_at`-suffixed string columns (e.g. a future
- * `referenced_at` URL fragment).
+ * Field detection is pattern-based rather than an explicit allow-list.
+ * The pattern (`TIMESTAMP_PATTERN`) covers the TIP naming conventions:
+ * `*_at`, `*_at_ms`, camelCase `*At`, `*_deadline`, `*_since`, plus
+ * exact names `timestamp` / `cert_timestamp` / `at`. False positives
+ * are guarded by two layers:
+ *
+ *   1. `TIMESTAMP_EXCLUDE` removes pattern-matching non-timestamp
+ *      names (`*_at_round` round counters, `ack_signed_ats` array of
+ *      timestamps).
+ *   2. The value-shape check on each direction (isValidMs out,
+ *      STRICT_ISO_RE in) means a non-timestamp value held under a
+ *      timestamp-shaped key is a pass-through, not a corruption.
+ *
+ * Convention-as-contract: name your wire timestamp `*_at` / `*At` and
+ * the middleware handles it. This eliminates the recurring "added a
+ * field, forgot to update the allow-list, integer ms leaks to clients"
+ * bug class that surfaced repeatedly during UAT (lastRoundAdvanceAt,
+ * decision_window_ends_at, node_seen_at, ...).
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -30,28 +46,40 @@
 
 const { toIso, fromIso, isValidMs } = require("../../../shared/time");
 
-// Every field name that carries a TIP timestamp value on the wire.
-// Keep alphabetical for grep-ability; add new names here, not at
-// individual call sites. Round counters (`triggered_at_round` etc.)
-// are intentionally excluded — they're integers but not timestamps.
-const TIMESTAMP_FIELDS = new Set([
-  "cert_timestamp",
-  "claimed_at",
-  "committed_at",
-  "confirmed_at",
-  "confirmed_at_ms",
-  "created_at",
-  "decided_at",
-  "expires_at",
-  "received_at",
-  "registered_at",
-  "revoked_at",
-  "signed_at",
-  "timestamp",
-  "triggered_at",
-  "verified_at",
-  "verified_since",
-]);
+// Any field name following TIP timestamp conventions.
+//   .+_at            snake_case suffix:   registered_at, node_seen_at,
+//                                         decision_window_ends_at, ...
+//   .+_ms            ms-suffixed:         bft_time_genesis_ms,
+//                                         confirmed_at_ms, rejected_at_ms.
+//                                         Many `_ms` fields are durations
+//                                         (timeout / window / interval),
+//                                         but those are sub-MS_FLOOR
+//                                         small integers and the
+//                                         isValidMs gate skips them.
+//   .+[a-z]At        camelCase suffix:    lastAdvanceAt, rotationAt,
+//                                         lastRoundAdvanceAt
+//   .+_deadline      filing_deadline, commit_deadline, reveal_deadline
+//   .+_since         verified_since
+//   timestamp        tx.timestamp, cert.timestamp
+//   cert_timestamp   explicit (no `_at` suffix)
+//   at               short form used by /v1/dag/tx/:txId/outcome
+const TIMESTAMP_PATTERN = /^(.+_at|.+_ms|.+[a-z]At|.+_deadline|.+_since|timestamp|cert_timestamp|at)$/;
+
+// Pattern-matching names that are NOT timestamps.
+//   *_at_round      round counters — small integers, not epoch ms
+//   ack_signed_ats  plural: array of signed_at values
+const TIMESTAMP_EXCLUDE = /(_at_round$|^ack_signed_ats$)/;
+
+// Strict ISO 8601 — only the canonical form `toIso()` produces. Rejects
+// date-only ("2026-03-15"), US-style ("03/15/2026"), and anything that
+// `new Date()` would parse loosely. Keeping the round-trip
+// `toIso(fromIso(s)) === s` invariant requires this strictness on the
+// incoming side; otherwise non-canonical input silently coerces.
+const STRICT_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
+
+function _isTimestampField(key) {
+  return TIMESTAMP_PATTERN.test(key) && !TIMESTAMP_EXCLUDE.test(key);
+}
 
 // Walk an arbitrary JSON-shaped value, mutating timestamp fields in
 // place. Mutation rather than copy because response bodies can be
@@ -65,30 +93,32 @@ function _walk(node, transform) {
   }
   for (const key of Object.keys(node)) {
     const val = node[key];
-    if (TIMESTAMP_FIELDS.has(key)) {
+    if (_isTimestampField(key)) {
       const replaced = transform(val);
       if (replaced !== undefined) node[key] = replaced;
-    } else if (val !== null && typeof val === "object") {
+    }
+    if (val !== null && typeof val === "object") {
       _walk(val, transform);
     }
   }
 }
 
-// Response side: integer ms → ISO. Already-ISO strings, nulls, and
-// undefined values pass through (let the existing surface stay during
-// the migration). Throws-on-implausibility surfaces via toIso's own
-// guard rather than being swallowed here — a stack trace on a bad
-// boundary value is preferable to a silently-corrupt response.
+// Response side: integer ms → ISO. Only plausible epoch-ms integers
+// convert (isValidMs gate); strings (already-ISO), nulls, non-ms
+// numbers, and undefined all pass through. This value gate is what
+// makes pattern-based key detection safe — e.g. a key named `at`
+// holding a node-id string is left untouched.
 function _msToIso(v) {
   if (typeof v === "number" && isValidMs(v)) return toIso(v);
   return undefined;
 }
 
-// Request side: ISO string → integer ms. Already-ms numbers pass
-// through. Empty / null / non-string values are left for the
-// downstream validator to reject with its own error message.
+// Request side: strict-ISO string → integer ms. Non-canonical strings
+// (date-only, locale formats, trailing garbage) pass through for the
+// downstream validator to reject. Already-ms numbers pass through
+// unchanged so callers may submit either form.
 function _isoToMs(v) {
-  if (typeof v === "string" && v.length > 0) {
+  if (typeof v === "string" && STRICT_ISO_RE.test(v)) {
     try { return fromIso(v); }
     catch { return undefined; }
   }
@@ -130,5 +160,8 @@ const timestampFormat = createTimestampFormat();
 module.exports = {
   timestampFormat,
   createTimestampFormat,
-  TIMESTAMP_FIELDS, // exported for tests + the future grep-based CI guardrail
+  TIMESTAMP_PATTERN,
+  TIMESTAMP_EXCLUDE,
+  STRICT_ISO_RE,
+  isTimestampField: _isTimestampField,
 };

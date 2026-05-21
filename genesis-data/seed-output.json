@@ -1,7 +1,7 @@
 {
   "v": 2,
   "seed_version": "2.0.0",
-  "created_at": "2026-05-21T10:12:41.076Z",
+  "created_at": 1779387477407,
   "environment": "development",
   "genesis": {
     "hash": "55574a389a86bfc2ceb6178527666f28dfe984fdb2174d2268d797f565d9c67c",
@@ -39,7 +39,7 @@
       "vp_tag": "primary-vp",
       "founding": true,
       "score": 550,
-      "registered_at": "2026-05-21T10:12:41.000Z",
+      "registered_at": 1779387477319,
       "creator_name": "The AI Lab Intelligence Unobscured, Inc."
     },
     {
@@ -52,7 +52,7 @@
       "vp_tag": "primary-vp",
       "founding": true,
       "score": 550,
-      "registered_at": "2026-05-21T10:12:41.006Z"
+      "registered_at": 1779387477327
     },
     {
       "tag": "cofounder-tushar",
@@ -64,7 +64,7 @@
       "vp_tag": "primary-vp",
       "founding": true,
       "score": 550,
-      "registered_at": "2026-05-21T10:12:41.018Z"
+      "registered_at": 1779387477334
     },
     {
       "tag": "cofounder-vishal",
@@ -76,7 +76,7 @@
       "vp_tag": "primary-vp",
       "founding": true,
       "score": 550,
-      "registered_at": "2026-05-21T10:12:41.030Z"
+      "registered_at": 1779387477358
     }
   ],
   "sample_content": [

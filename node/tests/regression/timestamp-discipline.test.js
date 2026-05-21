@@ -371,3 +371,173 @@ describe("timestamp schema invariants — cross-store drift", () => {
     expect(missingInSqlite).toEqual([]);
   });
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. API-boundary discipline — no epoch-ms integers leak to clients
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Catches the regression class that surfaced during UAT: a route or service
+// adds a new timestamp-shaped field, but the boundary middleware doesn't
+// recognise its key name, so the integer ms leaks to clients instead of
+// being converted to ISO 8601.
+//
+// The current middleware uses pattern + value-shape detection, so:
+//   - any *_at / *At / *_deadline / *_since / `at` / `timestamp` key carrying
+//     a valid epoch-ms integer converts to ISO.
+//   - any field NOT matching the pattern (e.g. a hypothetical `rejectedTime`
+//     instead of `rejected_at`) does NOT convert, and would leak.
+//
+// This test drives synthetic response shapes — modeled on real endpoint
+// outputs (UAT-observed) plus a "future fields" fuzz — through the
+// middleware and asserts the post-middleware tree contains zero values in
+// the plausible epoch-ms range.
+
+const { createTimestampFormat } = require("../../src/middleware/timestamp-format");
+const { MS_FLOOR_2025_01_01_UTC, nowMs } = require("../../../shared/time");
+
+// Upper bound for "plausible epoch ms" — year 2603, leaves headroom but
+// trips on the seconds-as-ms class of bugs and on any future code that
+// produces a wall-clock ms by mistake. Below this floor: counters,
+// durations, byte-counts (all safe to be integers).
+const MS_UPPER = 2e13;
+
+function _walkLeaves(node, cb, pathParts = []) {
+  if (node === null || node === undefined) return;
+  if (Array.isArray(node)) {
+    node.forEach((item, i) => _walkLeaves(item, cb, [...pathParts, `[${i}]`]));
+    return;
+  }
+  if (typeof node === "object") {
+    for (const key of Object.keys(node)) _walkLeaves(node[key], cb, [...pathParts, key]);
+    return;
+  }
+  cb(node, pathParts);
+}
+
+// Drive `body` through outgoing middleware (which is what api.js mounts on
+// every response) and return the post-conversion body.
+function _throughOutgoing(body) {
+  const mw = createTimestampFormat({ outgoing: true, incoming: false });
+  let captured = null;
+  const res = { json(b) { captured = b; return res; } };
+  mw({ body: {} }, res, () => {});
+  res.json(body);
+  return captured;
+}
+
+describe("timestamp discipline — API-boundary outgoing conversion", () => {
+  const NOW = nowMs();
+
+  // Each fixture mirrors a real read-endpoint response shape (names taken
+  // from UAT scan + a sweep of node/src/routes/*.js). If any of these leak
+  // an integer ms, the middleware pattern is incomplete.
+  const FIXTURES = [
+    {
+      name: "/health (consensus subtree)",
+      body: {
+        consensus: {
+          narwhal: { lastRoundAdvanceAt: NOW, round: 42, lastBatchHash: "abc" },
+          halt: { lastAdvanceAt: NOW, halted: false, reason: null },
+        },
+      },
+    },
+    {
+      name: "/v1/stats (mixed timestamps + counters)",
+      body: {
+        consensus: { narwhal: { lastRoundAdvanceAt: NOW, lastRoundAdvanceAtRound: 100 } },
+        tx_counts: { committed: 12345, pending: 7 },
+      },
+    },
+    {
+      name: "/v1/content/:ctid",
+      body: {
+        ctid: "tip://ct/abc",
+        registered_at: NOW,
+        node_seen_at: NOW + 1,
+        prescan: {
+          decision_window_ends_at: NOW + 172_800_000,
+          filing_deadline: NOW + 86_400_000,
+          status: "open",
+        },
+      },
+    },
+    {
+      name: "/v1/dag/tx/:txId/outcome (short-form `at`)",
+      body: { tx_id: "tip://tx/xyz", status: "committed", at: NOW, tx_type: "REGISTER_CONTENT" },
+    },
+    {
+      name: "/v1/dag/state-root",
+      body: {
+        round: 50,
+        state_merkle_root: "deadbeef",
+        txs_merkle_root: "cafebabe",
+        cert_timestamp: NOW,
+        committed_at: NOW + 1,
+      },
+    },
+    {
+      name: "rejection record (rejected_at_ms + rejected_at_round)",
+      body: {
+        tx_id: "tip://tx/r",
+        status: "rejected",
+        at: NOW,
+        rejected_at_round: 99,  // round counter — must NOT convert
+      },
+    },
+    {
+      name: "deeply-nested list (paginated dispute feed)",
+      body: {
+        items: [
+          { dispute_id: "d1", filed_at: NOW, decided_at: NOW + 1, filing_deadline: NOW + 2 },
+          { dispute_id: "d2", filed_at: NOW + 3, decided_at: null,    filing_deadline: NOW + 4 },
+        ],
+        meta: { generated_at: NOW + 5 },
+      },
+    },
+  ];
+
+  for (const fx of FIXTURES) {
+    test(`${fx.name} — no epoch-ms leaks after middleware`, () => {
+      const out = _throughOutgoing(fx.body);
+      const leaks = [];
+      _walkLeaves(out, (v, p) => {
+        if (typeof v === "number" && Number.isInteger(v) && v >= MS_FLOOR_2025_01_01_UTC && v <= MS_UPPER) {
+          leaks.push(`  ${p.join(".")} = ${v}  (integer in epoch-ms range, not converted to ISO)`);
+        }
+      });
+      if (leaks.length > 0) {
+        throw new Error(
+          `Boundary middleware failed to convert ${leaks.length} field(s) to ISO:\n` +
+          leaks.join("\n") +
+          `\n\nAdd the key name to TIMESTAMP_PATTERN in node/src/middleware/timestamp-format.js, ` +
+          `or rename the field to follow the *_at / *At / *_deadline / *_since convention.`,
+        );
+      }
+      expect(leaks).toEqual([]);
+    });
+  }
+
+  test("round counters in the same response stay as integers", () => {
+    const out = _throughOutgoing({
+      tx_id: "tip://tx/a",
+      at: NOW,                          // converts
+      rejected_at_round: 42,            // does NOT convert (excluded)
+      triggered_at_round: 7,            // does NOT convert (excluded)
+    });
+    expect(typeof out.at).toBe("string");                  // ISO
+    expect(out.rejected_at_round).toBe(42);                // intact
+    expect(out.triggered_at_round).toBe(7);                // intact
+  });
+
+  test("ack_signed_ats array stays as raw ms (excluded by name)", () => {
+    const out = _throughOutgoing({
+      cert_id: "tip://cert/c",
+      ack_signed_ats: [NOW, NOW + 1, NOW + 2],
+    });
+    // Excluded keys preserve raw ms — consumers know they need to
+    // format the array contents themselves.
+    expect(Array.isArray(out.ack_signed_ats)).toBe(true);
+    expect(out.ack_signed_ats).toEqual([NOW, NOW + 1, NOW + 2]);
+  });
+});
