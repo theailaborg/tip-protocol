@@ -292,6 +292,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         if (typeof bullshark.resetBftTimeFloor === "function") {
           bullshark.resetBftTimeFloor();
         }
+        // A snapshot may have been built from a different DAG view than any
+        // in-flight rotation proposal, causing payload_hash divergence across
+        // nodes and silent proposal merge failures. Clearing here lets all
+        // nodes re-propose from a fresh, consistent DAG after the snapshot
+        // settles — fixing the rotation-47-class deadlock (SI-6).
+        const coord = bullshark.rotationCoordinator?.();
+        if (coord && typeof coord.resetInflight === "function") {
+          coord.resetInflight();
+        }
       }
     },
   });

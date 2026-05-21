@@ -478,6 +478,20 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     if (_hasOpenInFlight() === false) _stopRebroadcast();
   }
 
+  /**
+   * Discard ALL in-flight aggregation state and stop the re-broadcast timer.
+   * Must be called whenever a snapshot is installed: the snapshot may have
+   * been built from a different DAG view than the in-flight proposal, so
+   * payload_hashes diverge and proposals from peers are silently dropped.
+   * Clearing here lets every node re-propose from a fresh, consistent DAG
+   * after the snapshot settles.
+   */
+  function resetInflight() {
+    _stopRebroadcast();
+    _inFlight.clear();
+    log.notice("rotation-coord: in-flight state cleared after snapshot install");
+  }
+
   // Periodic re-broadcast of open inflights. Defends against gossipsub mesh
   // dropping bursty rotation-coord traffic — proposals + accumulated sigs
   // are re-sent every REBROADCAST_INTERVAL_MS until the rotation submits or
@@ -584,6 +598,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     handleIncoming,
     registerProtocol,
     pruneExpired,
+    resetInflight,
     hasOpenInflight,
     stop,
     // Test-only introspection.
