@@ -23,6 +23,7 @@
 "use strict";
 
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { nowMs, nowPlusMs } = require("../../../shared/time");
 const { REVIEWER, JURY, DISPUTE } = require("../../../shared/protocol-constants");
 const { selectJury } = require("../jury");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -64,7 +65,7 @@ function _matchesReview(historyEntry, review, winStartMs, winEndMs, isEscalated)
   if (!isEscalated) return false;
   if (!reason.includes(review.ctid)) return false;
   if (!/^(Dispute|Appeal)\b/.test(reason)) return false;
-  const ts = new Date(historyEntry.timestamp).getTime();
+  const ts = historyEntry.timestamp;
   return ts >= winStartMs && ts < winEndMs;
 }
 
@@ -102,7 +103,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     }
 
     const review = dag.getPrescanReview(reviewId);
-    const timestamp = new Date().toISOString();
+    const timestamp = nowMs();
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
       timestamp,
@@ -151,7 +152,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: dag.getRecentPrev(),
       data: {
         review_id: reviewId,
@@ -181,7 +182,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
 
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: dag.getRecentPrev(),
       data: {
         review_id: reviewId,
@@ -202,7 +203,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const { review, content, new_origin_code } =
       acceptCorrectionSchema.validateRequest(reviewId, body, { dag });
 
-    const timestamp = new Date().toISOString();
+    const timestamp = nowMs();
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
       timestamp,
@@ -286,7 +287,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
   function dispute(reviewId, body) {
     const { review, content } = disputeSchema.validateRequest(reviewId, body, { dag });
 
-    const timestamp = new Date().toISOString();
+    const timestamp = nowMs();
     const disputeTx = nodeSignedAuto({
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp,
@@ -346,14 +347,14 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       log.warn(`Manual escalation jury: insufficient jurors for ${review.ctid} (${jury.jurors.length}/${JURY.SIZE})`);
     }
 
-    const commitDeadline = new Date(Date.now() + JURY.COMMIT_WINDOW_HOURS * 3600000).toISOString();
-    const revealDeadline = new Date(Date.now() + (JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+    const commitDeadline = nowPlusMs(JURY.COMMIT_WINDOW_HOURS * 3600000);
+    const revealDeadline = nowPlusMs((JURY.COMMIT_WINDOW_HOURS + JURY.REVEAL_WINDOW_HOURS) * 3600000);
 
     const batch = [disputeTx, stakeTx];
     for (const jurorTipId of jury.jurors) {
       const summonsTx = nodeSignedAuto({
         tx_type: TX_TYPES.JURY_SUMMONS,
-        timestamp: new Date().toISOString(),
+        timestamp: nowMs(),
         prev: dag.getRecentPrev(),
         data: {
           ctid: review.ctid,
@@ -447,14 +448,14 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, review.ctid)
       .filter(t => t.data?.disputer_tip_id === reviewerTipId)
       .filter(t => {
-        const ts = new Date(t.timestamp).getTime();
+        const ts = t.timestamp;
         return ts >= winStartMs && ts < winEndMs;
       })
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const disputeTx = disputeTxs[0];
     if (!disputeTx) return null;
 
-    const after = (tx) => tx.timestamp > disputeTx.timestamp && new Date(tx.timestamp).getTime() < winEndMs;
+    const after = (tx) => tx.timestamp > disputeTx.timestamp && tx.timestamp < winEndMs;
     const adjudication = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, review.ctid)
       .filter(after).sort((a, b) => a.timestamp.localeCompare(b.timestamp))[0];
     const appeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_RESULT, review.ctid)

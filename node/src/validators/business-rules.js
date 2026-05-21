@@ -176,7 +176,7 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
       "Cannot update origin while a reviewer is evaluating this content. Wait for the reviewer's decision.",
     );
   } else {
-    const registeredAt = new Date(rec.registered_at).getTime();
+    const registeredAt = rec.registered_at;
     const isFlaggedWithOverride =
       (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
       && !!rec.override;
@@ -295,7 +295,7 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
     .filter(t => t.data?.disputer_tip_id === disputer_tip_id
       && !t.data?.auto
-      && new Date(t.timestamp).getTime() >= windowCutoffMs)
+      && t.timestamp >= windowCutoffMs)
     .length;
   if (filerCount >= DISPUTE.MAX_PER_FILER_PER_WINDOW) {
     const days = Math.round(DISPUTE.FILER_WINDOW_MS / 86_400_000);

@@ -239,7 +239,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       throw schemaError(404, `No binding for domain ${normalized}`, "domain_not_found");
     }
 
-    const expiresMs = binding.expires_at ? Date.parse(binding.expires_at) : NaN;
+    const expiresMs = binding.expires_at ? binding.expires_at : NaN;
     const nowMs = Date.now();
     const isExpired = Number.isFinite(expiresMs) && nowMs > expiresMs;
     const status = binding.binding_state === "revoked"

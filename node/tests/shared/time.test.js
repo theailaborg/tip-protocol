@@ -14,13 +14,39 @@
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
-const { nowMs, nowIso, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC } = require(path.join(SHARED, "time"));
+const { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC } = require(path.join(SHARED, "time"));
 
 describe("nowMs", () => {
   test("returns an integer in the plausible 2025+ range", () => {
     const v = nowMs();
     expect(Number.isInteger(v)).toBe(true);
     expect(v).toBeGreaterThanOrEqual(MS_FLOOR_2025_01_01_UTC);
+  });
+});
+
+describe("nowPlusMs", () => {
+  test("adds the offset to nowMs() and returns ms", () => {
+    const before = nowMs();
+    const deadline = nowPlusMs(3600000); // 1h
+    const after = nowMs();
+    expect(deadline).toBeGreaterThanOrEqual(before + 3600000);
+    expect(deadline).toBeLessThanOrEqual(after + 3600000);
+  });
+
+  test("handles zero offset (deadline == nowMs)", () => {
+    const before = nowMs();
+    const d = nowPlusMs(0);
+    const after = nowMs();
+    expect(d).toBeGreaterThanOrEqual(before);
+    expect(d).toBeLessThanOrEqual(after);
+  });
+
+  test("rejects non-finite offsets", () => {
+    expect(() => nowPlusMs(NaN)).toThrow(TypeError);
+    expect(() => nowPlusMs(Infinity)).toThrow(TypeError);
+    expect(() => nowPlusMs("3600000")).toThrow(TypeError);
+    expect(() => nowPlusMs(null)).toThrow(TypeError);
+    expect(() => nowPlusMs(undefined)).toThrow(TypeError);
   });
 });
 

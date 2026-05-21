@@ -197,7 +197,7 @@ function validateStructure(tx) {
   }
 
   // Timestamp must be a valid ISO string
-  const ts = Date.parse(tx.timestamp);
+  const ts = tx.timestamp;
   if (isNaN(ts)) errors.push(`timestamp is not a valid ISO date: ${tx.timestamp}`);
 
   // Must not be in the future (allow 60s clock skew)
@@ -383,8 +383,8 @@ function validateBusinessRules(tx, dag = null) {
       // ISO8601 + logical ordering. The node observes proof at verified_at
       // AFTER the user signed at claimed_at — reversed order indicates
       // either a clock skew exploit or a malformed tx.
-      const claimedMs = d.claimed_at ? Date.parse(d.claimed_at) : NaN;
-      const verifiedMs = d.verified_at ? Date.parse(d.verified_at) : NaN;
+      const claimedMs = d.claimed_at ? d.claimed_at : NaN;
+      const verifiedMs = d.verified_at ? d.verified_at : NaN;
       if (d.claimed_at && Number.isNaN(claimedMs)) {
         errors.push(`claimed_at must be an ISO8601 timestamp`);
       }
@@ -407,7 +407,7 @@ function validateBusinessRules(tx, dag = null) {
       if (d.reason && !DOMAIN_UNBIND_REASON_VALUES.includes(d.reason)) {
         errors.push(`reason must be one of: ${DOMAIN_UNBIND_REASON_VALUES.join(", ")}`);
       }
-      if (d.revoked_at && Number.isNaN(Date.parse(d.revoked_at))) {
+      if (d.revoked_at && Number.isNaN(d.revoked_at)) {
         errors.push(`revoked_at must be an ISO8601 timestamp`);
       }
       break;

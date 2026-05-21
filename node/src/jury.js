@@ -36,11 +36,11 @@ function _filterRevealsByDeadline(reveals, summons) {
   if (!summons || summons.length === 0) return reveals;
   const revealDeadline = summons[0]?.data?.reveal_deadline;
   if (!revealDeadline) return reveals;
-  const deadlineMs = new Date(revealDeadline).getTime();
+  const deadlineMs = revealDeadline;
   if (!Number.isFinite(deadlineMs)) return reveals;
   return reveals.filter(r => {
     if (!r?.timestamp) return false;
-    const t = new Date(r.timestamp).getTime();
+    const t = r.timestamp;
     return Number.isFinite(t) && t <= deadlineMs;
   });
 }

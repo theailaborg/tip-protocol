@@ -764,7 +764,7 @@ class MemoryStore {
       if (c.status !== "registered") continue;
       if (c.origin_code !== "OH") continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
-      const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+      const registeredMs = c.registered_at ? c.registered_at : NaN;
       if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
         r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
@@ -3219,7 +3219,7 @@ function _writeGenesisBlock(store, config) {
     if (member.dedup_hash) {
       // Genesis bootstrap — created_at derived from the genesis timestamp
       // (same on every node that ships the same genesis). Deterministic.
-      store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
+      store.addDedupHash(member.dedup_hash, Math.floor(GENESIS_TIMESTAMP / 1000));
     }
     // Genesis seed score — `score.initial_identity` from genesis (per
     // spec, all identities start at the same baseline; founding members

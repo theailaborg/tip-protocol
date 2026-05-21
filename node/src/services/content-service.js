@@ -4,6 +4,7 @@ const {
   shake256, hashContent, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -50,7 +51,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
     // response carries prescan_tier + prescan_note so clients can warn
     // the creator. If they don't self-correct within the 48h window the
     // h=48 PRESCAN_REVIEW_TRIGGERED trigger hands the call to a reviewer.
-    const registeredAt = new Date().toISOString();
+    const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
     const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
@@ -292,7 +293,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
       Math.max(0, VERIFY_CAPS.PER_DAY - dailyDeltaSum),
       Math.max(0, VERIFY_CAPS.PER_MONTH - monthlyDeltaSum));
 
-    const verifyTxTimestamp = new Date().toISOString();
+    const verifyTxTimestamp = nowMs();
     const verifyTxBody = {
       tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: dag.getRecentPrev(),
       data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId, signature },
@@ -349,7 +350,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
     }
 
     const updateTx = withTxId({
-      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: new Date().toISOString(), prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(), prev: dag.getRecentPrev(),
       data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id, signature },
     });
     submitTx(updateTx);
@@ -374,7 +375,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
       throw schemaError(403, "Author signature verification failed", "signature_invalid");
     }
 
-    const retractTimestamp = new Date().toISOString();
+    const retractTimestamp = nowMs();
     const retractTx = withTxId({
       tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: dag.getRecentPrev(),
       data: { ctid, author_tip_id, signature, origin_code: rec.origin_code, pre_retract_status: rec.status },

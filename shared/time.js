@@ -40,6 +40,18 @@ function nowIso() {
   return toIso(nowMs());
 }
 
+// Future deadline at nowMs() + offsetMs. Used everywhere TIP computes
+// a "commit window closes at" / "appeal filing deadline" / etc. Callers
+// pass the offset already in ms (e.g. JURY.COMMIT_WINDOW_HOURS * 3600000),
+// keeping unit-conversion at the call site. Returns plain integer ms so
+// downstream comparisons are direct integer ops.
+function nowPlusMs(offsetMs) {
+  if (!Number.isFinite(offsetMs)) {
+    throw new TypeError(`nowPlusMs: expected finite number, got ${offsetMs}`);
+  }
+  return nowMs() + offsetMs;
+}
+
 function toIso(ms) {
   if (!isValidMs(ms)) {
     throw new TypeError(`toIso: expected plausible epoch ms (integer >= 2025-01-01 UTC), got ${ms === null ? "null" : typeof ms === "number" ? ms : typeof ms}`);
@@ -71,4 +83,4 @@ function isValidMs(v) {
     && v <= Number.MAX_SAFE_INTEGER;
 }
 
-module.exports = { nowMs, nowIso, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC };
+module.exports = { nowMs, nowIso, nowPlusMs, toIso, fromIso, isValidMs, MS_FLOOR_2025_01_01_UTC };

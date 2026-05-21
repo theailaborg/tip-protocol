@@ -28,6 +28,7 @@
 "use strict";
 
 const { shake256, canonicalJson, mldsaVerify } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validate } = require("../middleware/validate");
 const { getLogger } = require("../logger");
@@ -186,7 +187,7 @@ function createDisputeDetailsService({ dag }) {
       disputer_tip_id,
       payload_json: canonical,
       signature,
-      created_at: new Date().toISOString(),
+      created_at: nowMs(),
     });
 
     log.info(`Dispute details stored: ${evidence_hash} by ${disputer_tip_id} (${canonicalBytes} bytes)`);

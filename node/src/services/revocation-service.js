@@ -1,6 +1,7 @@
 "use strict";
 
 const { verifyBodySignature } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -28,7 +29,7 @@ function createRevocationService({ dag, submitTx }) {
       throw { status: 403, error: "VP signature verification failed" };
     }
 
-    const timestamp = new Date().toISOString();
+    const timestamp = nowMs();
     const revokeTx = withTxId({
       tx_type, timestamp, prev: dag.getRecentPrev(),
       data: { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id, signature },

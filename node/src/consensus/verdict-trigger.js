@@ -68,7 +68,7 @@ function _devBypassVoteWindows() {
  */
 function _parseDeadline(iso) {
   if (typeof iso !== "string" || !iso) return 0;
-  const ms = new Date(iso).getTime();
+  const ms = iso;
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 

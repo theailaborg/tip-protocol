@@ -130,7 +130,7 @@ function validateRequest(body, deps) {
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
   }
-  if (typeof body.claimed_at !== "string" || Number.isNaN(Date.parse(body.claimed_at))) {
+  if (typeof body.claimed_at !== "string" || Number.isNaN(body.claimed_at)) {
     throw schemaError(400, "claimed_at must be an ISO8601 timestamp", "claimed_at_invalid");
   }
   const method = body.method == null ? DOMAIN_VERIFICATION_METHODS.AUTO : body.method;
@@ -178,7 +178,7 @@ function validateVerifyRequest(body, deps) {
       "not_registered",
     );
   }
-  if (Date.parse(claim.received_at) + DOMAIN_PENDING_CLAIM_TTL_MS < Date.now()) {
+  if (claim.received_at + DOMAIN_PENDING_CLAIM_TTL_MS < Date.now()) {
     throw schemaError(
       400,
       `Pending claim for ${domain} expired; please re-register`,
@@ -225,7 +225,7 @@ function buildSigningPayload(input) {
   if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) {
     throw schemaError(400, "tip_id is required", "tip_id_required");
   }
-  if (typeof input.claimed_at !== "string" || Number.isNaN(Date.parse(input.claimed_at))) {
+  if (typeof input.claimed_at !== "string" || Number.isNaN(input.claimed_at)) {
     throw schemaError(400, "claimed_at is required", "claimed_at_invalid");
   }
   const method = input.method == null ? DOMAIN_VERIFICATION_METHODS.AUTO : input.method;

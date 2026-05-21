@@ -3,6 +3,7 @@
 const {
   shake256, generateTIPID, verifyTxId,
 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
 const { SCORE } = require("../../../shared/protocol-constants");
@@ -33,7 +34,7 @@ function parseActivityQuery(query) {
 
   let before = null;
   if (query.before) {
-    const t = Date.parse(query.before);
+    const t = query.before;
     if (Number.isNaN(t)) throw { status: 400, error: "before must be a valid ISO 8601 timestamp" };
     before = new Date(t).toISOString();
   }
@@ -139,7 +140,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const proofValid = await verifyDedupProof(dedup_hash, zk_proof);
     if (!proofValid) throw schemaError(400, "ZK proof verification failed", "zk_proof_invalid");
 
-    const registeredAt = new Date().toISOString();
+    const registeredAt = nowMs();
     const founding = false;
 
     const txBody = {
@@ -282,8 +283,8 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     if (!rec) throw { status: 404, error: "TIP-ID not found" };
 
     const { limit, before, types, include } = parseActivityQuery(query);
-    const beforeMs = before ? new Date(before).getTime() : null;
-    const inWindow = (ts) => beforeMs == null || new Date(ts).getTime() < beforeMs;
+    const beforeMs = before ? before : null;
+    const inWindow = (ts) => beforeMs == null || ts < beforeMs;
     const typeAllowed = (t) => !types || types.has(t);
 
     // Collect items from each requested stream. Each item carries its
