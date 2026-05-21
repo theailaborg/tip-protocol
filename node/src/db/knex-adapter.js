@@ -871,6 +871,7 @@ class KnexAdapter {
   }
 
   isRevoked(id) { return this.mirror.isRevoked(id); }
+  getRevocation(id) { return this.mirror.getRevocation(id); }
   getRevocations(since) { return this.mirror.getRevocations(since); }
 
   // ── Domain bindings (canonical) + pending claims (local-only) ─────────────

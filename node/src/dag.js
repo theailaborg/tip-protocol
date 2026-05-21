@@ -462,6 +462,7 @@ class MemoryStore {
     if (rec) this._identities.set(tipId, { ...rec, status: "revoked" });
   }
   isRevoked(tipId) { return this._revocations.has(tipId); }
+  getRevocation(tipId) { return this._revocations.get(tipId) || null; }
   getRevocations(since) {
     const all = [...this._revocations.values()];
     return since ? all.filter(r => new Date(r.timestamp) > new Date(since)) : all;
@@ -1773,6 +1774,7 @@ class SQLiteStore {
          VALUES (?,?,?,?)`
       ),
       isRevoked: this.db.prepare("SELECT 1 FROM revocations WHERE tip_id=?"),
+      getRevoc: this.db.prepare("SELECT * FROM revocations WHERE tip_id=?"),
       revocAll: this.db.prepare("SELECT * FROM revocations ORDER BY timestamp DESC"),
       revocSince: this.db.prepare("SELECT * FROM revocations WHERE timestamp>? ORDER BY timestamp DESC"),
       revokeIdent: this.db.prepare("UPDATE identities SET status='revoked' WHERE tip_id=?"),
@@ -2242,6 +2244,7 @@ class SQLiteStore {
     this._stmts.revokeIdent.run(tipId);
   }
   isRevoked(tipId) { return !!this._stmts.isRevoked.get(tipId); }
+  getRevocation(tipId) { return this._stmts.getRevoc.get(tipId) || null; }
   getRevocations(since) {
     return since
       ? this._stmts.revocSince.all(since)
@@ -2879,6 +2882,7 @@ function _buildDagHandle(store, config) {
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
     isRevoked: (id) => store.isRevoked(id),
+    getRevocation: (id) => store.getRevocation(id),
     getRevocations: (since) => store.getRevocations(since),
 
     // ── Domain bindings (canonical) + pending claims (local-only) ────────

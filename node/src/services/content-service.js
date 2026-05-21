@@ -141,7 +141,9 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const txValid = tx ? verifyTxId(tx) : false;
     const prevValid = tx && tx.prev ? tx.prev.every(p => !!dag.getTx(p)) : false;
     const author = dag.getIdentity(rec.author_tip_id);
-    const authorValid = !!author && author.status === "active" && !dag.isRevoked(rec.author_tip_id);
+    const revocation = dag.getRevocation(rec.author_tip_id);
+    const authorValid = !!author && author.status === "active" && !revocation;
+    const authorRevocation = _buildAuthorRevocation(revocation);
 
     const verifyCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_VERIFIED, ctid).length;
     const disputeCount = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid).length;
@@ -167,7 +169,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
       dispute_count: disputeCount,
       verification: {
         tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid,
-        author_valid: authorValid, author_revoked: dag.isRevoked(rec.author_tip_id), on_dag: true,
+        author_valid: authorValid, author_revocation: authorRevocation, on_dag: true,
       },
       review_history: _projectReviewHistory(ctid),
       appeal_pending: _isAppealPending(ctid),
@@ -197,6 +199,25 @@ function createContentService({ dag, scoring, config, submitTx }) {
    * Returns { total, latest: { ... } | null } — `latest` is null when
    * no review has ever existed for the ctid.
    */
+  // Lift the per-author revocation record into a read-time descriptor
+  // for content consumers. Returns null when the author is not revoked.
+  // reason_code / evidence_hash live on the source REVOKE_* tx (kept off
+  // the canonical revocations row to avoid expanding state_merkle_root),
+  // so we join through tx_id to surface them.
+  function _buildAuthorRevocation(revocation) {
+    if (!revocation) return null;
+    const srcTx = revocation.tx_id ? dag.getTx(revocation.tx_id) : null;
+    const d = srcTx && srcTx.data ? srcTx.data : {};
+    return {
+      tx_type: revocation.tx_type,
+      reason_code: d.reason_code || null,
+      evidence_hash: d.evidence_hash || null,
+      issuing_vp_id: d.issuing_vp_id || null,
+      revoked_at: revocation.timestamp,
+      tx_id: revocation.tx_id,
+    };
+  }
+
   function _projectReviewHistory(ctid) {
     const reviews = typeof dag.getPrescanReviewsByCtid === "function"
       ? dag.getPrescanReviewsByCtid(ctid)
