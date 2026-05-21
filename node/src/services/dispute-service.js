@@ -1,7 +1,7 @@
 "use strict";
 
 const { shake256, verifyBodySignature } = require("../../../shared/crypto");
-const { nowMs, nowPlusMs } = require("../../../shared/time");
+const { nowMs, nowPlusMs, toIso } = require("../../../shared/time");
 const {
   TX_TYPES, ORIGIN, ORIGIN_LABELS, JURY_VOTES, VOTE, VERDICT, CONTENT_STATUS, PRESCAN_TIERS,
   PRESCAN_REVIEW_STATES,
@@ -672,7 +672,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         dispute_tx_id: latestDispute?.tx_id || null,
         verdict,
         verdict_at: adj.timestamp,
-        filing_deadline: new Date(verdictMs + appealWindowMs).toISOString(),
+        filing_deadline: verdictMs + appealWindowMs,
         role: isAuthor ? "author" : "disputer",
       });
     }
@@ -786,7 +786,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           type,
           priority: "info",
           title: `${role === "expert" ? "Expert" : "Jury"} vote revealed — awaiting verdict`,
-          summary: `${_ctidLabel(ctid)} reveal phase ${now > revealDeadlineMs ? "closed" : "open until " + new Date(revealDeadlineMs).toISOString()}; tally pending.`,
+          summary: `${_ctidLabel(ctid)} reveal phase ${now > revealDeadlineMs ? "closed" : "open until " + revealDeadlineMs}; tally pending.`,
           role,
           ctid,
           dispute_id: disputeId,
@@ -829,7 +829,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           type,
           priority: "info",
           title: `${role === "expert" ? "Expert" : "Jury"} vote committed — reveal opens in ${_shortRemaining(commitDeadlineMs, now)}`,
-          summary: `${_ctidLabel(ctid)}: commit phase ends at ${new Date(commitDeadlineMs).toISOString()}, reveal window then opens for ${Math.round((revealDeadlineMs - commitDeadlineMs) / 3600000)}h.`,
+          summary: `${_ctidLabel(ctid)}: commit phase ends at ${commitDeadlineMs}, reveal window then opens for ${Math.round((revealDeadlineMs - commitDeadlineMs) / 3600000)}h.`,
           role,
           ctid,
           dispute_id: disputeId,
@@ -912,7 +912,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           role,
           ctid,
           dispute_id: disputeId,
-          deadline: new Date(filingDeadlineMs).toISOString(),
+          deadline: filingDeadlineMs,
           action: disputeId ? { kind: "file_appeal", label: "File appeal", href: `/disputes/${disputeId}/appeal` } : null,
           metadata: {
             verdict,
@@ -1051,7 +1051,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           role: "reviewer",
           ctid: r.ctid,
           dispute_id: null,
-          deadline: new Date(deadlineMs).toISOString(),
+          deadline: deadlineMs,
           action: {
             kind: "view_review",
             label: "Open review",
@@ -1111,7 +1111,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             role: "author",
             ctid: c.ctid,
             dispute_id: null,
-            deadline: new Date(decisionDeadlineMs).toISOString(),
+            deadline: decisionDeadlineMs,
             action: {
               kind: "review_decision",
               label: "Respond to reviewer",
@@ -1126,7 +1126,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
               suggested_origin: openReview.suggested_origin || null,
               decision_note: openReview.decision_note || null,
               confirmed_at_ms: confirmedAtMs,
-              decision_window_ends_at: new Date(decisionDeadlineMs).toISOString(),
+              decision_window_ends_at: decisionDeadlineMs,
               hours_remaining: remainingHours,
             },
           });
@@ -1143,7 +1143,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             type: "content_under_review",
             priority: "high",
             title: `Independent reviewer is examining your content.`,
-            summary: `${_ctidLabel(c.ctid)}: a reviewer was assigned at ${new Date(openReview.triggered_at_ms || registeredMs + CONTENT_GRACE.FLAGGED_MS).toISOString()}. You can still update the origin at zero penalty until they decide.`,
+            summary: `${_ctidLabel(c.ctid)}: a reviewer was assigned at ${toIso(openReview.triggered_at_ms || registeredMs + CONTENT_GRACE.FLAGGED_MS)}. You can still update the origin at zero penalty until they decide.`,
             role: "author",
             ctid: c.ctid,
             dispute_id: null,
@@ -1179,7 +1179,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
         const remainingMs = Math.max(0, CONTENT_GRACE.FLAGGED_MS - ageMs);
         const remainingHours = Math.max(1, Math.round(remainingMs / 3600000));
-        const deadlineISO = new Date(registeredMs + CONTENT_GRACE.FLAGGED_MS).toISOString();
+        const deadlineISO = toIso(registeredMs + CONTENT_GRACE.FLAGGED_MS);
         items.push({
           id: `content_flagged_for_review:${c.ctid}`,
           type: "content_flagged_for_review",
@@ -1248,7 +1248,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     return {
       tip_id: tipId,
       creator_name: identity.creator_name || null,
-      generated_at: new Date(now).toISOString(),
+      generated_at: now,
       attention_count: attentionCount,
       items,
     };
@@ -1488,7 +1488,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         // the countdown and surfaces "Appeal window closed").
         appeal_filing_deadline: appealResult || appealFiled
           ? null
-          : new Date(adj.timestamp + APPEAL.FILING_WINDOW_HOURS * 3600000).toISOString(),
+          : adj.timestamp + APPEAL.FILING_WINDOW_HOURS * 3600000,
         // Loser-party info — drives the "Show Appeal button?" decision on
         // the FE. Same rule as /v1/disputes appealable[] and dashboard's
         // appeal_available: UPHELD → author lost; DISMISSED → disputer

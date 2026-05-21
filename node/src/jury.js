@@ -12,6 +12,7 @@
 "use strict";
 
 const { shake256 } = require("../../shared/crypto");
+const { nowMs, nowPlusMs } = require("../../shared/time");
 const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
@@ -334,7 +335,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const totalVotes = matchCount + mismatchCount + abstainCount;
   const nonAbstain = matchCount + mismatchCount;
 
-  const timestamp = new Date().toISOString();
+  const timestamp = nowMs();
   const txs = [];
   const getRecentPrev = () => dag.getRecentPrev();
 
@@ -384,8 +385,8 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     txs.push(appealTx);
 
     const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
-    const commitDeadline = new Date(Date.now() + APPEAL.COMMIT_WINDOW_HOURS * 3600000).toISOString();
-    const revealDeadline = new Date(Date.now() + (APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000).toISOString();
+    const commitDeadline = nowPlusMs(APPEAL.COMMIT_WINDOW_HOURS * 3600000);
+    const revealDeadline = nowPlusMs((APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000);
     for (const expertTipId of experts.experts) {
       txs.push(_buildSummonsTx({
         ctid, disputeTxId: appealTx.tx_id, jurorTipId: expertTipId,
@@ -611,7 +612,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const abstainCount = filteredReveals.filter(r => r.data?.vote === VOTE.ABSTAIN).length;
   const nonAbstain = matchCount + mismatchCount;
 
-  const timestamp = new Date().toISOString();
+  const timestamp = nowMs();
   const txs = [];
   const getRecentPrev = () => dag.getRecentPrev();
 

@@ -21,6 +21,7 @@
 // loads, dag.js is fully cached — no circular-dep hazard.
 const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
+const { nowMs } = require("../../../shared/time");
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 // Uses the Knex schema builder instead of raw DDL so the same code runs on
@@ -214,7 +215,7 @@ class KnexAdapter {
       // Runtime filters at selection time decide which role a consenting
       // user lands in (score, content category, conflict-of-interest).
       t.integer("reviewer_consent").notNullable().defaultTo(0);
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
       t.index("vp_id", "idx_id_vp");
@@ -241,7 +242,7 @@ class KnexAdapter {
       t.float("prescan_probability").notNullable().defaultTo(0);          // raw classifier output
       t.string("prescan_tier", 16).notNullable().defaultTo("low");        // low|elevated|high|critical
       t.integer("override").notNullable().defaultTo(0);                   // creator confirmed OH despite HIGH/CRITICAL warning
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
       t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
       _id(t, "tx_id").nullable();
       t.index("author_tip_id", "idx_content_author");
@@ -278,9 +279,9 @@ class KnexAdapter {
       _id(t, "tip_id").notNullable();
       t.string("binding_state", 32).notNullable();
       t.string("method", 16).notNullable();
-      t.string("claimed_at", 64).notNullable();
-      t.string("verified_at", 64).notNullable();
-      t.string("expires_at", 64).notNullable();
+      t.bigInteger("claimed_at").notNullable();
+      t.bigInteger("verified_at").notNullable();
+      t.bigInteger("expires_at").notNullable();
       t.integer("consecutive_failures").notNullable().defaultTo(0);
       _id(t, "node_id").notNullable();
       t.text("claim_signature").notNullable();
@@ -297,9 +298,9 @@ class KnexAdapter {
       t.string("domain", 253).primary();
       _id(t, "tip_id").notNullable();
       t.string("method", 16).notNullable();
-      t.string("claimed_at", 64).notNullable();
+      t.bigInteger("claimed_at").notNullable();
       t.text("signature").notNullable();
-      t.string("received_at", 64).notNullable();
+      t.bigInteger("received_at").notNullable();
       t.index("tip_id", "idx_pending_dom_tip_id");
     });
 
@@ -310,7 +311,7 @@ class KnexAdapter {
       t.string("jurisdiction_tier", 16).notNullable().defaultTo("green");
       t.text("public_key").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
     });
 
     await ensure("nodes", t => {
@@ -318,7 +319,7 @@ class KnexAdapter {
       t.text("name").nullable();
       t.text("public_key").notNullable();
       t.string("status", 32).notNullable().defaultTo("active");
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
     });
 
     await ensure("certificates", t => {
@@ -342,7 +343,7 @@ class KnexAdapter {
       t.text("committee").notNullable();
       t.integer("support_count").notNullable();
       t.integer("consensus_index").notNullable();
-      t.string("committed_at", 64).notNullable();
+      t.bigInteger("committed_at").notNullable();
       t.string("state_merkle_root", 128).notNullable();
       t.string("txs_merkle_root", 128).notNullable();
       t.text("ack_signer_ids").notNullable();
@@ -401,7 +402,7 @@ class KnexAdapter {
       t.text("signer_node_ids").notNullable().defaultTo("[]");
       t.text("signatures").notNullable().defaultTo("[]");
       t.text("payload_hash").nullable();
-      t.string("committed_at", 64).notNullable();
+      t.bigInteger("committed_at").notNullable();
       t.bigInteger("created_at").notNullable().defaultTo(0);
       t.index("effective_round", "idx_committee_history_round");
     });
@@ -1163,7 +1164,7 @@ class KnexAdapter {
       signer_node_ids: JSON.stringify(rec.signer_node_ids || []),
       signatures: JSON.stringify(rec.signatures || []),
       payload_hash: rec.payload_hash || null,
-      committed_at: rec.committed_at || new Date().toISOString(),
+      committed_at: rec.committed_at || nowMs(),
       created_at: Date.now(),
     };
     this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));

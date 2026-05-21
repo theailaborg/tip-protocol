@@ -46,7 +46,7 @@ function initScoring(dag, config) {
     const txs = dag.getTxsByTipId(tipId);
 
     // Sort by timestamp ascending for deterministic replay
-    txs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    txs.sort((a, b) => a.timestamp - b.timestamp);
 
     let state = initialState();
     const history = [];

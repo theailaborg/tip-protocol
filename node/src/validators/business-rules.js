@@ -319,7 +319,7 @@ function canCommitVote(dag, { ctid, juror_tip_id, is_appeal = false }, { now }) 
     return fail(403, is_appeal ? "You were not summoned as an expert for this appeal" : "You were not summoned as a juror for this dispute");
   }
 
-  const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+  const commitDeadline = summonsTxs[0].data.commit_deadline;
   if (now > commitDeadline && !_devBypassVoteWindows()) return fail(403, "Commit window has closed");
 
   const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
@@ -339,8 +339,8 @@ function canRevealVote(dag, { ctid, juror_tip_id, is_appeal = false, vote, salt 
     return fail(403, is_appeal ? "You were not summoned as an expert" : "You were not summoned as a juror");
   }
 
-  const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
-  const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
+  const commitDeadline = summonsTxs[0].data.commit_deadline;
+  const revealDeadline = summonsTxs[0].data.reveal_deadline;
   const bypass = _devBypassVoteWindows();
   if (now < commitDeadline && !bypass) return fail(403, "Reveal window has not opened yet");
   if (now > revealDeadline && !bypass) return fail(403, "Reveal window has closed");
@@ -366,7 +366,7 @@ function canFileAppeal(dag, { ctid, appellant_tip_id }, { now }) {
   const existingAppeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, ctid);
   if (existingAppeal.length) return fail(409, "Appeal already filed for this content");
 
-  const verdictTime = new Date(adjTxs[0].timestamp).getTime();
+  const verdictTime = adjTxs[0].timestamp;
   if (now - verdictTime > APPEAL.FILING_WINDOW_HOURS * 3600000) {
     return fail(403, "Appeal filing window has expired");
   }

@@ -45,6 +45,7 @@
 "use strict";
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { dialKnownPeers } = require("../network/peer-discovery");
 const { bftHaltThreshold } = require("./certificate");
@@ -1357,7 +1358,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         consensus_index: s.consensus_index,
         state_merkle_root: s.state_merkle_root,
         in_sync: inSync,
-        checked_at: new Date(s.checked_at).toISOString(),
+        checked_at: s.checked_at,
       });
     }
 
@@ -1390,7 +1391,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         distinct_peers_observed: observedAtSelf,
         filtered_peers: divergentPeers(),
       },
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
     };
   }
 

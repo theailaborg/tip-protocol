@@ -34,6 +34,7 @@ const {
   TIP_ID_TYPES, DOMAIN_VERIFICATION_METHODS, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_PENDING_CLAIM_TTL_MS,
 } = require("../../../shared/constants");
+const { nowMs, isValidMs } = require("../../../shared/time");
 
 // Domain shape: 1-63 char labels separated by dots, 1-253 total chars, no
 // trailing dot, no consecutive dots. Permissive enough for IDN xn--... and
@@ -130,8 +131,8 @@ function validateRequest(body, deps) {
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
   }
-  if (typeof body.claimed_at !== "string" || Number.isNaN(body.claimed_at)) {
-    throw schemaError(400, "claimed_at must be an ISO8601 timestamp", "claimed_at_invalid");
+  if (!isValidMs(body.claimed_at)) {
+    throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
   const method = body.method == null ? DOMAIN_VERIFICATION_METHODS.AUTO : body.method;
   if (!DOMAIN_VERIFICATION_METHOD_VALUES.includes(method)) {
@@ -178,7 +179,7 @@ function validateVerifyRequest(body, deps) {
       "not_registered",
     );
   }
-  if (claim.received_at + DOMAIN_PENDING_CLAIM_TTL_MS < Date.now()) {
+  if (claim.received_at + DOMAIN_PENDING_CLAIM_TTL_MS < nowMs()) {
     throw schemaError(
       400,
       `Pending claim for ${domain} expired; please re-register`,
@@ -225,7 +226,7 @@ function buildSigningPayload(input) {
   if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) {
     throw schemaError(400, "tip_id is required", "tip_id_required");
   }
-  if (typeof input.claimed_at !== "string" || Number.isNaN(input.claimed_at)) {
+  if (!isValidMs(input.claimed_at)) {
     throw schemaError(400, "claimed_at is required", "claimed_at_invalid");
   }
   const method = input.method == null ? DOMAIN_VERIFICATION_METHODS.AUTO : input.method;

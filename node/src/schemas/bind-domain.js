@@ -40,6 +40,7 @@ const {
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
+const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
@@ -69,11 +70,11 @@ function buildSigningPayload(input) {
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
-  if (typeof input.verified_at !== "string" || Number.isNaN(input.verified_at)) {
-    throw schemaError(400, "verified_at must be an ISO8601 timestamp", "verified_at_invalid");
+  if (!isValidMs(input.verified_at)) {
+    throw schemaError(400, "verified_at must be a valid epoch ms timestamp", "verified_at_invalid");
   }
-  if (typeof input.claimed_at !== "string" || Number.isNaN(input.claimed_at)) {
-    throw schemaError(400, "claimed_at must be an ISO8601 timestamp", "claimed_at_invalid");
+  if (!isValidMs(input.claimed_at)) {
+    throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
   if (typeof input.claim_signature !== "string" || input.claim_signature.length === 0) {
     throw schemaError(400, "claim_signature is required", "claim_signature_required");

@@ -36,7 +36,7 @@ function parseActivityQuery(query) {
   if (query.before) {
     const t = query.before;
     if (Number.isNaN(t)) throw { status: 400, error: "before must be a valid ISO 8601 timestamp" };
-    before = new Date(t).toISOString();
+    before = t;
   }
 
   let types = null;
@@ -314,7 +314,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         // (rejected_at_ms). Use the original tx timestamp when the
         // body is preserved (typical case); fall back to rejection
         // wall-clock so the entry still slots into the timeline.
-        const tx = row.tx_data || { tx_id: row.tx_id, tx_type: row.tx_type, timestamp: new Date(row.rejected_at_ms).toISOString(), data: {} };
+        const tx = row.tx_data || { tx_id: row.tx_id, tx_type: row.tx_type, timestamp: row.rejected_at_ms, data: {} };
         if (!inWindow(tx.timestamp)) continue;
         items.push(projectActivityItem(tx, tipId, "rejected", {
           reason: row.reason,
@@ -338,7 +338,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     // Same rule mirrored in MemoryStore.getTxsBySubject and the SQL
     // ORDER BY — single source of truth.
     items.sort((a, b) => {
-      const d = new Date(b.timestamp) - new Date(a.timestamp);
+      const d = b.timestamp - a.timestamp;
       if (d !== 0) return d;
       const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
       const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;

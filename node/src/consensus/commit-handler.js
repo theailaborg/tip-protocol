@@ -756,7 +756,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           // value, so the column stays merkle-consistent across nodes.
           const verifiedMs = d.verified_at;
           const expiresAt = Number.isFinite(verifiedMs)
-            ? new Date(verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS).toISOString()
+            ? verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS
             : null;
           dag.saveDomainBinding({
             domain: d.domain,
@@ -942,7 +942,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           signatures: d.signatures || [],
           payload_hash: d.payload_hash,
           committed_at: _committedCertTimestamp > 0
-            ? new Date(_committedCertTimestamp).toISOString()
+            ? _committedCertTimestamp
             : tx.timestamp,
         });
         break;

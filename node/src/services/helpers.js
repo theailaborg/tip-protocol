@@ -320,7 +320,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
     return {
       ...base,
       decision_window_ms: ms,
-      decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+      decision_window_ends_at: registeredMs + ms,
       actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN]),
       consequence_if_confirmed: PRESCAN_CONSEQUENCES.NONE,
       next_step_if_kept: PRESCAN_NEXT_STEPS.NONE,
@@ -332,7 +332,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
   return {
     ...base,
     decision_window_ms: ms,
-    decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+    decision_window_ends_at: registeredMs + ms,
     actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN, PRESCAN_ACTIONS.RETRACT]),
     consequence_if_confirmed: tier === PRESCAN_TIERS.CRITICAL
       ? PRESCAN_CONSEQUENCES.SIGNIFICANT_PENALTY

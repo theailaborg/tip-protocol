@@ -39,12 +39,15 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const { shake256, shake256Multi, generateSLHDSAKeypair, mldsaSign, mldsaVerify, computeTxId, canonicalJson, canonicalTx } = require("../../shared/crypto");
+const { nowMs, fromIso } = require("../../shared/time");
 const { TX_TYPES, PROTOCOL, ORIGIN } = require("../../shared/constants");
 const { log } = require("./logger");
 
 // ─── Genesis Block Constants ──────────────────────────────────────────────────
 // These are FIXED and must never change once the network is live.
-const GENESIS_TIMESTAMP = "2026-03-15T00:00:00.000Z"; // Network launch date
+// Integer epoch ms for 2026-03-15T00:00:00.000Z UTC — chain wall-clock
+// anchor. Every node verifies this exact value at startup.
+const GENESIS_TIMESTAMP = 1773532800000; // 2026-03-15T00:00:00.000Z UTC
 const GENESIS_CHAIN_ID = "tip-mainnet-v2";
 const GENESIS_VP_REGION = "US";
 
@@ -291,7 +294,7 @@ const GENESIS_PAYLOAD = Object.freeze({
       sync_total_timeout_ms: 30000,      // §19 framed sync: total deadline for a single syncFromPeer call. Protects a joiner against a hanging/adversarial peer that accepts the stream then writes slowly. 30s covers normal catch-up on any realistic DAG size; caller (peer-sync retry) handles the failure.
       sync_max_response_bytes: 1073741824, // §19: cumulative byte cap on a single sync response (1 GB). Per-frame cap (snapshot_max_frame_bytes=16MB) bounds individual frames; this one bounds total stream size against a peer that drip-feeds infinite small frames. Aborts the read loop.
       max_round_duration_ms: 300000,     // BFT-time bound: cert.timestamp must lie in [prev_cert.timestamp + 1, prev_cert.timestamp + max_round_duration_ms]. Caps how far time can advance per round so a colluding majority can't jump the clock to expire pending deadlines. 5 min is generous (2-3 orders of magnitude above legitimate per-round drift) and tight enough to defend against meaningful skew. Reference: Tendermint Block.Time validation uses a similar deviation bound.
-      bft_time_genesis_ms: new Date(GENESIS_TIMESTAMP).getTime(), // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. Derived deterministically from GENESIS_TIMESTAMP so there is one source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
+      bft_time_genesis_ms: GENESIS_TIMESTAMP, // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. One source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
       // ─── #75 Rotation-period model ──────────────────────────────────────
       // Committee changes only at rotation boundaries — every node hits the
       // boundary at the same `consensus_index` (Bullshark anchor count),
@@ -423,7 +426,7 @@ function buildGenesisBlock(genesisDataDir, signingKey) {
     ...GENESIS_PAYLOAD,
     genesis_hash: GENESIS_HASH,
     canonical_hash: shake256(canonicalJson(GENESIS_PAYLOAD)),
-    signed_at: new Date().toISOString(),
+    signed_at: nowMs(),
     signer_public_key: devKey.publicKey,
     // Deterministic so the auto-generated dev genesis is reproducible across
     // node restarts: same key + same hash → identical signature → identical

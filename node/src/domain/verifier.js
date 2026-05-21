@@ -46,6 +46,7 @@ const http = require("http");
 const {
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH, DOMAIN_VERIFICATION_METHODS,
 } = require("../../../shared/constants");
+const { nowMs } = require("../../../shared/time");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.domain-verifier");
@@ -102,7 +103,7 @@ function _ok(method, evidence) {
   return {
     verified: true,
     method,
-    verified_at: new Date().toISOString(),
+    verified_at: nowMs(),
     evidence,
     error: null,
   };

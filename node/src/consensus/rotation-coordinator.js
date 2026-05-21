@@ -96,7 +96,7 @@ function buildRotationTx(_dag, proposal, signer_node_ids, signatures) {
   // so the change has no impact on signature verification.
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
-    timestamp: new Date(proposal.effective_round * CONSENSUS.BATCH_WAIT_MS).toISOString(),
+    timestamp: proposal.effective_round * CONSENSUS.BATCH_WAIT_MS,
     prev: [],
     data,
   };

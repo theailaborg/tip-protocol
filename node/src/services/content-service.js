@@ -278,9 +278,9 @@ function createContentService({ dag, scoring, config, submitTx }) {
     // Caps
     const allVerifyTxs = dag.getTxsByType(TX_TYPES.CONTENT_VERIFIED);
     const authorTipId = rec.author_tip_id;
-    const now = new Date();
-    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const nowDate = new Date(nowMs());
+    const dayStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).getTime();
+    const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
 
     const contentDeltaSum = allVerifyTxs.filter(t => t.data?.ctid === ctid).reduce((s, t) => s + (t.data?.weighted_delta || 0), 0);
     const dailyDeltaSum = allVerifyTxs.filter(t => t.data?.author_tip_id === authorTipId && t.timestamp >= dayStart).reduce((s, t) => s + (t.data?.weighted_delta || 0), 0);
