@@ -36,6 +36,7 @@ services:
     environment:
       TIP_DEV_FORCE_PRESCAN_TIER: "high"
       TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
+      NODE_ENV: "development"
 
   node2:
     environment:

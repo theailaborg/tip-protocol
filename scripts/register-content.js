@@ -64,6 +64,7 @@ function parseArgs(argv) {
   const args = {
     signerTipId: null,
     pickFirst: false,
+    userIndex: 0,
     nodeUrl: "http://localhost:4000",
     content: null,
     origin: "OH",
@@ -76,6 +77,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--signer-tip-id") args.signerTipId = argv[++i];
     else if (a === "--pick-first") args.pickFirst = true;
+    else if (a === "--user-index") args.userIndex = Number(argv[++i]);
     else if (a === "--node-url") args.nodeUrl = argv[++i];
     else if (a === "--content") args.content = argv[++i];
     else if (a === "--origin") args.origin = argv[++i].toUpperCase();
@@ -86,7 +88,8 @@ function parseArgs(argv) {
     else if (a === "--help" || a === "-h") {
       console.log("usage: register-content.js [opts]");
       console.log("  --signer-tip-id TIP     tip://id/... of the content author (requires key file)");
-      console.log("  --pick-first             auto-pick the first user in temp-users-latest.json");
+      console.log("  --pick-first             auto-pick a user in temp-users-latest.json");
+      console.log("  --user-index N           which user to pick with --pick-first (0-based, default 0)");
       console.log("  --content TEXT           content body (required)");
       console.log("  --origin CODE            OH | AA | AG | MX  (default OH)");
       console.log("  --attribution-mode MODE  self | employed | hosted  (default self)");
@@ -164,11 +167,12 @@ function loadKeyForTipId(tipId) {
   return { publicKey: parsed.public_key, privateKey: parsed.private_key, name: parsed.name || tipId };
 }
 
-function pickFirstUser() {
+function pickUser(index = 0) {
   if (!fs.existsSync(LATEST_FILE)) throw new Error(`temp-users-latest.json not found — run scripts/seed-temp-users.js first`);
   const latest = JSON.parse(fs.readFileSync(LATEST_FILE, "utf8"));
   if (!latest.users || latest.users.length === 0) throw new Error("no users in temp-users-latest.json");
-  const u = latest.users[0];
+  const idx = Math.max(0, Math.min(index, latest.users.length - 1));
+  const u = latest.users[idx];
   return { tipId: u.tip_id, tipIdType: u.tip_id_type || "personal", publicKey: u.public_key, privateKey: u.private_key, name: u.creator_name || u.tip_id };
 }
 
@@ -215,7 +219,7 @@ async function main() {
   // Load signer identity + keypair.
   let signerTipId, tipIdType, privateKey, signerName;
   if (args.pickFirst) {
-    const u = pickFirstUser();
+    const u = pickUser(args.userIndex);
     signerTipId = u.tipId; tipIdType = u.tipIdType; privateKey = u.privateKey; signerName = u.name;
   } else {
     signerTipId = args.signerTipId;

@@ -48,7 +48,7 @@ function parseArgs(argv) {
   const args = {
     ctid: null,
     nodeUrl: "http://localhost:4000",
-    voteBias: "UPHELD",       // UPHELD → mostly MISMATCH, DISMISSED → mostly MATCH, RANDOM → uniform
+    voteBias: "UPHELD",       // UPHELD → mostly MISMATCH, DISMISSED → mostly MATCH, RANDOM → uniform, ABSTAIN → all abstain
     confirmedOrigin: null,    // for MISMATCH votes; defaults to the dispute's claimed_origin
     forcePhase: null,         // override auto-detected phase (COMMIT|REVEAL) — needed when validator bypass is on
     appeal: false,            // drive Stage-3 appeal experts via /appeal/{commit,reveal} instead of /jury/...
@@ -71,7 +71,7 @@ function parseArgs(argv) {
       console.log("usage: drive-jury.js --ctid <CTID> [opts]");
       console.log("  --ctid CTID              dispute target (required, e.g. tip://c/AA-...)");
       console.log("  --node-url URL           submission target (default http://localhost:4000)");
-      console.log("  --vote-bias BIAS         UPHELD | DISMISSED | RANDOM (default UPHELD)");
+      console.log("  --vote-bias BIAS         UPHELD | DISMISSED | RANDOM | ABSTAIN (default UPHELD)");
       console.log("  --confirmed-origin CODE  origin code for MISMATCH votes (default: dispute.claimed_origin)");
       console.log("  --phase COMMIT|REVEAL    force phase (override the wall-clock auto-detect — required when");
       console.log("                           the validator's TIP_DEV_BYPASS_VOTE_WINDOWS is set)");
@@ -83,7 +83,7 @@ function parseArgs(argv) {
     } else throw new Error(`unknown arg: ${a}`);
   }
   if (!args.ctid) throw new Error("--ctid is required");
-  if (!["UPHELD", "DISMISSED", "RANDOM"].includes(args.voteBias)) throw new Error("--vote-bias must be UPHELD | DISMISSED | RANDOM");
+  if (!["UPHELD", "DISMISSED", "RANDOM", "ABSTAIN"].includes(args.voteBias)) throw new Error("--vote-bias must be UPHELD | DISMISSED | RANDOM | ABSTAIN");
   if (args.confirmedOrigin && !ORIGIN_CODES.includes(args.confirmedOrigin)) throw new Error(`--confirmed-origin must be one of ${ORIGIN_CODES.join(",")}`);
   if (args.forcePhase && !["COMMIT", "REVEAL"].includes(args.forcePhase)) throw new Error("--phase must be COMMIT or REVEAL");
   return args;
@@ -136,9 +136,11 @@ async function postJson(url, body) {
 // UPHELD bias: jurors vote MISMATCH (= author's declared origin is wrong),
 // which produces an UPHELD verdict. The 1-in-7 ABSTAIN keeps the realistic
 // "not-everyone-voted-the-same-way" texture for tallying logic. DISMISSED
-// bias is the mirror image (mostly MATCH).
+// bias is the mirror image (mostly MATCH). ABSTAIN forces all jurors to abstain
+// (tests quorum failure — verdict cannot be reached).
 function pickVote(bias, idx, total) {
   if (bias === "RANDOM") return JURY_VOTES[Math.floor(Math.random() * JURY_VOTES.length)];
+  if (bias === "ABSTAIN") return VOTE.ABSTAIN;
   const oneAbstain = idx === total - 1;        // last juror abstains
   if (bias === "UPHELD") return oneAbstain ? VOTE.ABSTAIN : VOTE.MISMATCH;
   if (bias === "DISMISSED") return oneAbstain ? VOTE.ABSTAIN : VOTE.MATCH;

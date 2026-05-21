@@ -60,6 +60,7 @@ function parseArgs(argv) {
     ctid: null,
     disputerTipId: null,
     pickFirst: false,
+    userIndex: 1,              // which user to pick when --pick-first (0-based index)
     nodeUrl: "http://localhost:4000",
     reason: "origin_mismatch",
     claimedOrigin: null,       // required for origin_mismatch; defaults to AG
@@ -71,6 +72,7 @@ function parseArgs(argv) {
     if (a === "--ctid") args.ctid = argv[++i];
     else if (a === "--disputer-tip-id") args.disputerTipId = argv[++i];
     else if (a === "--pick-first") args.pickFirst = true;
+    else if (a === "--user-index") args.userIndex = Number(argv[++i]);
     else if (a === "--node-url") args.nodeUrl = argv[++i];
     else if (a === "--reason") args.reason = argv[++i];
     else if (a === "--claimed-origin") args.claimedOrigin = argv[++i].toUpperCase();
@@ -145,30 +147,25 @@ function loadKeyForTipId(tipId) {
   return { publicKey: parsed.public_key, privateKey: parsed.private_key, name: parsed.name || tipId };
 }
 
-function pickFirstUser() {
+function pickUser(index = 1) {
   if (!fs.existsSync(LATEST_FILE)) throw new Error("temp-users-latest.json not found — run scripts/seed-temp-users.js first");
   const latest = JSON.parse(fs.readFileSync(LATEST_FILE, "utf8"));
   if (!latest.users || latest.users.length === 0) throw new Error("no users in temp-users-latest.json");
-  const u = latest.users[0];
+  const idx = Math.max(0, Math.min(index, latest.users.length - 1));
+  const u = latest.users[idx];
   return { tipId: u.tip_id, publicKey: u.public_key, privateKey: u.private_key, name: u.creator_name || u.tip_id };
 }
 
 // ─── Evidence building ────────────────────────────────────────────────────────
-// The evidence payload is a plain JSON object signed by the disputer.
-// Server verifies: mldsaVerify(shake256(canonicalJson(payload)), signature, pubKey).
-// That equals signBody(payload, privateKey), so we can use signBody directly.
-function buildEvidence({ disputerTipId, ctid, reason, claimedOrigin, note, privateKey }) {
-  const payload = {
-    type: "dev_script_evidence",
-    ctid,
-    disputer_tip_id: disputerTipId,
-    reason,
-    claimed_origin: claimedOrigin || null,
-    note: note || `Filed via scripts/file-dispute.js at ${new Date().toISOString()}`,
-  };
+// payload schema (dispute-details-service): { description: string, evidence?: [{type,content}] }
+// Server recomputes: evidence_hash = shake256(canonicalJson(payload))
+// Server verifies:   mldsaVerify(evidence_hash, signature, pubKey)
+// signBody(payload, pk) = mldsaSign(shake256(canonicalJson(payload)), pk) — same operation.
+function buildEvidence({ claimedOrigin, note, privateKey }) {
+  const description = note ||
+    `Origin mismatch: content declared OH but believed to be ${claimedOrigin || "AG"}. Filed via scripts/file-dispute.js at ${new Date().toISOString()}.`;
+  const payload = { description };
   const signature = signBody(payload, privateKey);
-  // evidence_hash = shake256(canonicalJson(payload)) — precomputed locally
-  // so we can include it in the main dispute signature without a round-trip.
   const evidenceHash = shake256(canonicalJson(payload));
   return { payload, signature, evidenceHash };
 }
@@ -181,7 +178,7 @@ async function main() {
   // Load disputer keypair.
   let disputerTipId, privateKey, disputerName;
   if (args.pickFirst) {
-    const u = pickFirstUser();
+    const u = pickUser(args.userIndex);
     disputerTipId = u.tipId; privateKey = u.privateKey; disputerName = u.name;
   } else {
     disputerTipId = args.disputerTipId;
@@ -221,7 +218,6 @@ async function main() {
 
   // Build evidence (sign evidence payload first so we have the hash).
   const evidence = buildEvidence({
-    disputerTipId, ctid: args.ctid, reason: args.reason,
     claimedOrigin: args.claimedOrigin, note: args.evidenceNote, privateKey,
   });
 

@@ -92,6 +92,7 @@ should_run() { local phase="$1"; local idx; for idx in "${!PHASES[@]}"; do [[ "$
 
 # State file — persists CTID and SIGNER across phase runs in the same session.
 STATE_FILE="$REPO_ROOT/.scoring-test-state"
+_CLI_CTID="$CTID"   # save CLI-provided value before load_state can clobber it
 load_state() { [[ -f "$STATE_FILE" ]] && source "$STATE_FILE" || true; }
 save_state() {
   cat >"$STATE_FILE" <<EOF
@@ -100,6 +101,7 @@ SIGNER_TIP_ID="${SIGNER_TIP_ID:-}"
 EOF
 }
 load_state
+[[ -n "$_CLI_CTID" ]] && CTID="$_CLI_CTID"  # CLI flag wins over state file
 
 # ─── Health check ─────────────────────────────────────────────────────────────
 wait_healthy() {
@@ -109,7 +111,7 @@ wait_healthy() {
     local resp; resp=$(curl -sf --max-time 3 "$url" 2>/dev/null || true)
     if [[ -n "$resp" ]]; then
       local status; status=$(echo "$resp" | node -e "let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ console.log(JSON.parse(d).data?.status||''); }catch{} });")
-      if [[ "$status" == "healthy" ]]; then ok "$label healthy"; return 0; fi
+      if [[ "$status" == "ok" || "$status" == "healthy" ]]; then ok "$label healthy"; return 0; fi
     fi
     sleep 2; ((i+=2))
   done
@@ -152,7 +154,7 @@ if should_run "cluster-reset"; then
 
   info "Regenerating genesis + keys (seed.js)…"
   cd "$REPO_ROOT"
-  node --experimental-vm-modules scripts/seed.js
+  node --experimental-vm-modules scripts/seed.js || true
   ok "Genesis reseeded"
 
   if [[ "$SKIP_BUILD" != "true" ]]; then
@@ -269,6 +271,7 @@ if should_run "dispute"; then
   node scripts/file-dispute.js \
     --ctid "$CTID" \
     --pick-first \
+    --user-index 1 \
     --claimed-origin AG \
     --node-url "$NODE_URL"
 

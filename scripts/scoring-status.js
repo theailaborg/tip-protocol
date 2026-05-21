@@ -149,8 +149,9 @@ async function showIdentityScore(tipId, nodeUrl, jsonMode) {
   row("registered_at", identity.registered_at || "(unknown)");
 
   section("Score");
-  const score = scoreData?.score ?? null;
-  const offenses = scoreData?.offense_count ?? 0;
+  // /score omits numeric score for TIER_ONLY display mode — fall back to /history which always includes it
+  const score = scoreData?.score ?? history?.score ?? null;
+  const offenses = scoreData?.offense_count ?? history?.offense_count ?? 0;
   const lastUpdated = scoreData?.last_updated || "(no updates yet)";
   row("score", score !== null ? String(score) : "(not found)", score !== null ? C.bold : C.dim);
   row("tier", tierLabel(score));
@@ -171,6 +172,7 @@ async function showIdentityScore(tipId, nodeUrl, jsonMode) {
 
   // Score history (SCORE_UPDATE events).
   const events = Array.isArray(history) ? history
+    : Array.isArray(history?.history) ? history.history
     : Array.isArray(history?.events) ? history.events
     : [];
 
@@ -337,8 +339,11 @@ async function showContent(ctid, nodeUrl, allParties, jsonMode) {
     if (parties.size > 0) {
       section("Party Scores (snapshot)");
       const results = await Promise.all([...parties].map(async (p) => {
-        const s = await fetchOr(`${nodeUrl}/v1/identity/${encodeURIComponent(p.tipId)}/score`);
-        return { ...p, score: s?.score ?? null, offenses: s?.offense_count ?? 0 };
+        const [s, h] = await Promise.all([
+          fetchOr(`${nodeUrl}/v1/identity/${encodeURIComponent(p.tipId)}/score`),
+          fetchOr(`${nodeUrl}/v1/identity/${encodeURIComponent(p.tipId)}/history`),
+        ]);
+        return { ...p, score: s?.score ?? h?.score ?? null, offenses: s?.offense_count ?? h?.offense_count ?? 0 };
       }));
       for (const p of results) {
         const dc2 = p.score !== null
