@@ -68,13 +68,30 @@ function fail(status, message) {
 
 // ─── Identity / VP ─────────────────────────────────────────────────────────
 
-function canRegisterIdentity(dag, { dedup_hash, vp_id }) {
+function canRegisterIdentity(dag, { tip_id, dedup_hash, vp_id }) {
   const vp = dag.getVP && dag.getVP(vp_id);
   if (!vp || vp.status !== "active") {
     return fail(403, "Verification provider not found or suspended");
   }
   if (dedup_hash && dag.hasDedupHash(dedup_hash)) {
     return fail(409, "Identity already registered. Each human may hold exactly one TIP-ID.");
+  }
+  if (tip_id && dag.getIdentity && dag.getIdentity(tip_id)) {
+    return fail(409, `TIP-ID ${tip_id} already registered`);
+  }
+  return ok();
+}
+
+function canRegisterVp(dag, { vp_id }) {
+  if (vp_id && dag.getVP && dag.getVP(vp_id)) {
+    return fail(409, `Verification provider ${vp_id} already registered`);
+  }
+  return ok();
+}
+
+function canRegisterNode(dag, { node_id }) {
+  if (node_id && dag.getNode && dag.getNode(node_id)) {
+    return fail(409, `Node ${node_id} already registered`);
   }
   return ok();
 }
@@ -525,6 +542,8 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
 
 module.exports = {
   canRegisterIdentity,
+  canRegisterVp,
+  canRegisterNode,
   canRegisterContent,
   canVerify,
   canUpdateOrigin,

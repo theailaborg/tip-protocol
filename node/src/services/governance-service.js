@@ -3,6 +3,7 @@
 const { generateVPId, verifyBodySignature } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
+const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { getFoundingVP } = require("../genesis");
@@ -27,6 +28,9 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     }
 
     const vpId = generateVPId(jurisdiction, public_key);
+    const vpCheck = rules.canRegisterVp(dag, { vp_id: vpId });
+    if (!vpCheck.valid) throw { status: vpCheck.error.status, error: vpCheck.error.message };
+
     const registeredAt = new Date().toISOString();
 
     const vpTx = withTxId({
@@ -65,6 +69,9 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     }
 
     const nodeId = require("../../../shared/crypto").generateNodeId(public_key);
+    const nodeCheck = rules.canRegisterNode(dag, { node_id: nodeId });
+    if (!nodeCheck.valid) throw { status: nodeCheck.error.status, error: nodeCheck.error.message };
+
     const registeredAt = new Date().toISOString();
 
     const nodeTx = withTxId({

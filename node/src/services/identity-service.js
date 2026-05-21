@@ -115,9 +115,14 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       public_key, dedup_hash, zk_proof, vp_id, vp_signature,
     } = body;
 
-    const { valid, error } = rules.canRegisterIdentity(dag, { dedup_hash, vp_id });
+    const region = typeof body.region === "string" ? body.region.toUpperCase() : "US";
+    const tipId = generateTIPID(region, public_key);
+
+    const { valid, error } = rules.canRegisterIdentity(dag, { tip_id: tipId, dedup_hash, vp_id });
     if (!valid) {
-      const code = error.message.startsWith("Identity already") ? "DUPLICATE_IDENTITY" : error.code;
+      const code = error.message.startsWith("Identity already") || error.message.startsWith("TIP-ID")
+        ? "DUPLICATE_IDENTITY"
+        : error.code;
       throw schemaError(error.status, error.message, code);
     }
 
@@ -134,7 +139,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const proofValid = await verifyDedupProof(dedup_hash, zk_proof);
     if (!proofValid) throw schemaError(400, "ZK proof verification failed", "zk_proof_invalid");
 
-    const tipId = generateTIPID(canonicalPayload.region, public_key);
     const registeredAt = new Date().toISOString();
     const founding = false;
 

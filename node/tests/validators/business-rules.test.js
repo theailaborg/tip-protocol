@@ -87,6 +87,54 @@ describe("canRegisterIdentity", () => {
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(409);
   });
+
+  test("tip_id already registered → 409", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterIdentity(dag, {
+      tip_id: "tip://id/author", dedup_hash: "fresh-hash", vp_id: "tip://vp/v1",
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+    expect(r.error.message).toMatch(/TIP-ID .* already registered/);
+  });
+});
+
+// ─── canRegisterVp ──────────────────────────────────────────────────────────
+
+describe("canRegisterVp", () => {
+  test("free vp_id → valid", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterVp(dag, { vp_id: "tip://vp/new" });
+    expect(r.valid).toBe(true);
+  });
+
+  test("vp_id already registered → 409", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterVp(dag, { vp_id: "tip://vp/v1" });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+  });
+});
+
+// ─── canRegisterNode ────────────────────────────────────────────────────────
+
+describe("canRegisterNode", () => {
+  test("free node_id → valid", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterNode(dag, { node_id: "tip://node/fresh1111fresh22" });
+    expect(r.valid).toBe(true);
+  });
+
+  test("node_id already registered → 409", () => {
+    const dag = _seedDag();
+    dag.saveNode({
+      node_id: "tip://node/existing00001111", name: "n1", public_key: "00",
+      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    });
+    const r = rules.canRegisterNode(dag, { node_id: "tip://node/existing00001111" });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+  });
 });
 
 // ─── canRegisterContent ─────────────────────────────────────────────────────

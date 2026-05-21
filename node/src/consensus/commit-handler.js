@@ -394,7 +394,17 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     switch (tx.tx_type) {
 
       case TX_TYPES.REGISTER_IDENTITY: {
-        const r = rules.canRegisterIdentity(dag, { dedup_hash: d.dedup_hash, vp_id: d.vp_id });
+        const r = rules.canRegisterIdentity(dag, { tip_id: d.tip_id, dedup_hash: d.dedup_hash, vp_id: d.vp_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.VP_REGISTERED: {
+        const r = rules.canRegisterVp(dag, { vp_id: d.vp_id });
+        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+      }
+
+      case TX_TYPES.NODE_REGISTERED: {
+        const r = rules.canRegisterNode(dag, { node_id: d.node_id });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 
