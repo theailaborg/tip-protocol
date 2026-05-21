@@ -70,23 +70,19 @@ describe("toIso", () => {
     expect(toIso(ms)).toBe("2026-03-15T00:00:00.000Z");
   });
 
-  test("rejects implausible / pre-2025 values", () => {
-    expect(() => toIso(0)).toThrow(TypeError);
-    expect(() => toIso(1)).toThrow(TypeError);
-    expect(() => toIso(MS_FLOOR_2025_01_01_UTC - 1)).toThrow(TypeError);
+  test("formats historical / pre-2025 ms without rejection (output is permissive)", () => {
+    // Output conversion stays loose so test fixtures and legitimate historical
+    // ms values format cleanly. The ingress floor lives on isValidMs.
+    expect(toIso(0)).toBe("1970-01-01T00:00:00.000Z");
+    expect(toIso(MS_FLOOR_2025_01_01_UTC - 1)).toBe("2024-12-31T23:59:59.999Z");
   });
 
-  test("rejects non-integer / wrong-type inputs", () => {
-    expect(() => toIso(1.5)).toThrow(TypeError);
+  test("rejects non-finite / wrong-type inputs", () => {
     expect(() => toIso(NaN)).toThrow(TypeError);
     expect(() => toIso(Infinity)).toThrow(TypeError);
     expect(() => toIso("1773532800000")).toThrow(TypeError);
     expect(() => toIso(null)).toThrow(TypeError);
     expect(() => toIso(undefined)).toThrow(TypeError);
-  });
-
-  test("catches the seconds-as-ms unit mix-up", () => {
-    expect(() => toIso(1773532800)).toThrow(TypeError); // seconds, not ms
   });
 });
 

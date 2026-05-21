@@ -107,7 +107,7 @@ function _setup() {
       status: CONTENT_STATUS.REGISTERED,
       prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
       override: true,
-      registered_at: new Date(registeredAtMs).toISOString(),
+      registered_at: registeredAtMs,
       registered_urls: [], tx_id: shake256(`c:${CTID}:${registeredAtMs}`),
     });
   }
@@ -139,7 +139,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("returns TRIGGERED reviews older than REVIEWER.AUTO_RECUSE_AGE_MS; excludes fresh", () => {
     const fx = _setup();
-    const nowMs = Date.parse(1772323200000);
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     const freshMs = nowMs - 60_000;
 
@@ -162,7 +162,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("excludes non-TRIGGERED reviews (decided / recused / etc.)", () => {
     const fx = _setup();
-    const nowMs = Date.parse(1772323200000);
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
 
     fx.dag.savePrescanReview({
@@ -179,7 +179,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("emits node-signed PRESCAN_REVIEW_RECUSED once SLA elapses", () => {
     const fx = _setup();
-    const nowMs = Date.parse(1772323200000);
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.dag.savePrescanReview({
       review_id: "rv_recuse_me", ctid: CTID, creator_tip_id: CREATOR,
@@ -204,7 +204,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("does NOT emit before SLA", () => {
     const fx = _setup();
-    const nowMs = Date.parse(1772323200000);
+    const nowMs = 1772323200000;
     fx.dag.savePrescanReview({
       review_id: "rv_fresh", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,

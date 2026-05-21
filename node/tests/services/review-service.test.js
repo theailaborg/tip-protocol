@@ -135,7 +135,7 @@ function _seedContent(fx, { ctid = CTID_1, status = CONTENT_STATUS.PENDING_REVIE
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
     status, prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
     override: true,
-    registered_at: new Date(registeredAtMs).toISOString(),
+    registered_at: registeredAtMs,
     registered_urls: [], tx_id: shake256(`c:${ctid}:${registeredAtMs}`),
   });
 }

@@ -75,7 +75,7 @@ function _seedContent(dag, ctid) {
 function _addDisputeTx(dag, { ctid, disputer_tip_id, timestampMs, auto = false, node_id = null }) {
   const body = {
     tx_type: TX_TYPES.CONTENT_DISPUTED,
-    timestamp: new Date(timestampMs).toISOString(),
+    timestamp: timestampMs,
     prev: [],
     data: auto
       ? { ctid, auto: true, node_id, reason: "system_cascade" }

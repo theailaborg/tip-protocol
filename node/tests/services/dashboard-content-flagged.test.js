@@ -82,7 +82,7 @@ function _seedFlagged(dag, opts = {}) {
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
     status,
     prescan_flagged: true, prescan_probability: 0.95, prescan_tier, override,
-    registered_at: new Date(registeredAtMs).toISOString(),
+    registered_at: registeredAtMs,
     registered_urls: [], tx_id: shake256(`c:${ctid}:${registeredAtMs}`),
   });
 }
@@ -112,7 +112,7 @@ describe("dashboard — content_flagged_for_review (no review yet)", () => {
     expect(item.action.kind).toBe("update_origin");
     expect(item.metadata.prescan_tier).toBe("high");
     expect(item.metadata.hours_remaining).toBeGreaterThan(0);
-    expect(item.deadline).toBe(new Date(registeredAtMs + CONTENT_GRACE.FLAGGED_MS).toISOString());
+    expect(item.deadline).toBe(registeredAtMs + CONTENT_GRACE.FLAGGED_MS);
   });
 
   test("surfaces regardless of `override` flag (silent-registration default is override=false)", () => {
@@ -226,6 +226,6 @@ describe("dashboard — prescan_review_decision_required (CONFIRMED)", () => {
     expect(item.metadata.review_state).toBe("confirmed");
     expect(item.metadata.suggested_origin).toBe("AA");
     expect(item.metadata.confirmed_at_ms).toBe(confirmedAtMs);
-    expect(item.metadata.decision_window_ends_at).toBe(new Date(confirmedAtMs + REVIEWER.CREATOR_DECISION_WINDOW_MS).toISOString());
+    expect(item.metadata.decision_window_ends_at).toBe(confirmedAtMs + REVIEWER.CREATOR_DECISION_WINDOW_MS);
   });
 });

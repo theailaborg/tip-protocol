@@ -126,7 +126,7 @@ function _setup() {
       status: CONTENT_STATUS.REGISTERED,
       prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
       override: true,
-      registered_at: new Date(registeredAtMs).toISOString(),
+      registered_at: registeredAtMs,
       registered_urls: [], tx_id: shake256(`c:${CTID}:${registeredAtMs}`),
     });
   }

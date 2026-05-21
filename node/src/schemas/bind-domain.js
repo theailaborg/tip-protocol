@@ -194,7 +194,7 @@ function verifyTx(tx, dag) {
 //   domain     string,  required (lowercased)
 //   node_id    string,  required (emitting node)
 //   reason     string,  required (enum: see DOMAIN_UNBIND_REASONS)
-//   revoked_at string,  required (ISO8601)
+//   revoked_at number,  required (epoch ms)
 function buildUnbindSigningPayload(input) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "input must be an object", "input_invalid");
@@ -205,8 +205,8 @@ function buildUnbindSigningPayload(input) {
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
-  if (typeof input.revoked_at !== "string" || Number.isNaN(input.revoked_at)) {
-    throw schemaError(400, "revoked_at must be an ISO8601 timestamp", "revoked_at_invalid");
+  if (!isValidMs(input.revoked_at)) {
+    throw schemaError(400, "revoked_at must be a valid epoch ms timestamp", "revoked_at_invalid");
   }
   if (!DOMAIN_UNBIND_REASON_VALUES.includes(input.reason)) {
     throw schemaError(

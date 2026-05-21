@@ -53,8 +53,12 @@ function nowPlusMs(offsetMs) {
 }
 
 function toIso(ms) {
-  if (!isValidMs(ms)) {
-    throw new TypeError(`toIso: expected plausible epoch ms (integer >= 2025-01-01 UTC), got ${ms === null ? "null" : typeof ms === "number" ? ms : typeof ms}`);
+  // Output-side conversion: format any integer ms. Implausibility checks
+  // (pre-2025 floor, seconds-as-ms catcher) live on isValidMs for the
+  // ingress boundary; rejecting them here would surprise legitimate
+  // callers formatting historical / test-fixture timestamps.
+  if (!Number.isFinite(ms)) {
+    throw new TypeError(`toIso: expected finite number, got ${ms === null ? "null" : typeof ms}`);
   }
   return new Date(ms).toISOString();
 }

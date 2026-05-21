@@ -1906,10 +1906,9 @@ class SQLiteStore {
       getPrescanReviewsByCtid: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE ctid=? ORDER BY triggered_at_round DESC"
       ),
-      // Phase 2.5 trigger queries. content.registered_at is an ISO string,
-      // so the comparison parses it via strftime — index on (status,
-      // prescan_tier) carries the high-selectivity prefix; the time
-      // arithmetic runs only against that filtered slice.
+      // Phase 2.5 trigger queries. content.registered_at is integer epoch
+      // ms; index on (status, prescan_tier) carries the high-selectivity
+      // prefix and the time-window check is a direct integer comparison.
       //
       // origin_code = 'OH' is the "no UPDATE_ORIGIN" guard from the
       // design doc: after a self-correction, origin_code is AA/AG/MX,
@@ -1928,7 +1927,7 @@ class SQLiteStore {
            AND c.origin_code = 'OH'
            AND c.prescan_tier IN ('high','critical')
            AND r.review_id IS NULL
-           AND (CAST(strftime('%s', c.registered_at) AS INTEGER) * 1000) <= ?`
+           AND c.registered_at <= ?`
       ),
       // Reviews in state=confirmed whose 24h creator-decision window has
       // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
