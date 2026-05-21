@@ -20,6 +20,7 @@ const morgan = require("morgan");
 const { errorHandler } = require("./middleware/error-handler");
 const { requestId } = require("./middleware/request-id");
 const { createConsensusGate } = require("./middleware/consensus-gate");
+const { timestampFormat } = require("./middleware/timestamp-format");
 const { createTxSubmitter } = require("./services/helpers");
 
 // Services
@@ -77,6 +78,10 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(express.json({ limit: "4mb" }));
+  // Timestamp normalisation: internal code uses integer ms (see
+  // shared/time.js); external clients consume ISO 8601. Single
+  // conversion seam — applies to every /v1/ request and response.
+  app.use(timestampFormat);
   morgan.token("req-id", (req) => req.id);
   app.use(morgan("[:date[iso]] :req-id :method :url :status :response-time ms"));
 
