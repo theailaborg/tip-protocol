@@ -223,7 +223,7 @@ describe("content register — prescan tier dispatch", () => {
     expect(out.prescan.consequence_if_confirmed).toBe("significant_penalty");
     expect(out.prescan.post_confirm_decision_window_ms).toBeGreaterThan(0);
     expect(out.prescan.reviewer_sla_ms).toBeGreaterThan(0);
-    expect(typeof out.prescan.decision_window_ends_at).toBe("string");
+    expect(typeof out.prescan.decision_window_ends_at).toBe("number");
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
     expect(tx.data.override).toBe(true);
   });

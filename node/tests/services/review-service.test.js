@@ -542,8 +542,8 @@ describe("review-service.dispute", () => {
       // Each summons references the dispute tx
       expect(s.data.dispute_tx_id).toBe(tx.tx_id);
       expect(s.data.ctid).toBe(CTID_1);
-      expect(typeof s.data.commit_deadline).toBe("string");
-      expect(typeof s.data.reveal_deadline).toBe("string");
+      expect(typeof s.data.commit_deadline).toBe("number");
+      expect(typeof s.data.reveal_deadline).toBe("number");
     }
   });
 

@@ -380,18 +380,16 @@ function validateBusinessRules(tx, dag = null) {
       if (d.binding_state && d.binding_state !== "verified") {
         errors.push(`BIND_DOMAIN binding_state must be "verified"`);
       }
-      // ISO8601 + logical ordering. The node observes proof at verified_at
+      // Epoch ms + logical ordering. The node observes proof at verified_at
       // AFTER the user signed at claimed_at — reversed order indicates
       // either a clock skew exploit or a malformed tx.
-      const claimedMs = d.claimed_at ? d.claimed_at : NaN;
-      const verifiedMs = d.verified_at ? d.verified_at : NaN;
-      if (d.claimed_at && Number.isNaN(claimedMs)) {
-        errors.push(`claimed_at must be an ISO8601 timestamp`);
+      if (d.claimed_at !== undefined && !isValidMs(d.claimed_at)) {
+        errors.push(`claimed_at must be a valid epoch ms timestamp`);
       }
-      if (d.verified_at && Number.isNaN(verifiedMs)) {
-        errors.push(`verified_at must be an ISO8601 timestamp`);
+      if (d.verified_at !== undefined && !isValidMs(d.verified_at)) {
+        errors.push(`verified_at must be a valid epoch ms timestamp`);
       }
-      if (!Number.isNaN(claimedMs) && !Number.isNaN(verifiedMs) && verifiedMs < claimedMs) {
+      if (isValidMs(d.claimed_at) && isValidMs(d.verified_at) && d.verified_at < d.claimed_at) {
         errors.push(`verified_at must not precede claimed_at`);
       }
       break;
@@ -407,8 +405,8 @@ function validateBusinessRules(tx, dag = null) {
       if (d.reason && !DOMAIN_UNBIND_REASON_VALUES.includes(d.reason)) {
         errors.push(`reason must be one of: ${DOMAIN_UNBIND_REASON_VALUES.join(", ")}`);
       }
-      if (d.revoked_at && Number.isNaN(d.revoked_at)) {
-        errors.push(`revoked_at must be an ISO8601 timestamp`);
+      if (d.revoked_at !== undefined && !isValidMs(d.revoked_at)) {
+        errors.push(`revoked_at must be a valid epoch ms timestamp`);
       }
       break;
     }

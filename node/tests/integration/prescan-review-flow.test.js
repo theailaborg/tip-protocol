@@ -89,7 +89,7 @@ function _setup() {
   };
   const scoring = initScoring(dag, config);
 
-  const seedTs = new Date(1769904000000).toISOString();
+  const seedTs = 1769904000000;
   dag.setScore(REVIEWER_TIP, 900, 0, seedTs);
   dag.setScore(CREATOR, 700, 0, seedTs);
 

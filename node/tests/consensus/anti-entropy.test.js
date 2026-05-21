@@ -690,8 +690,8 @@ describe("getStatus (REST feed)", () => {
       committed_round: 48,
       consensus_index: 30,
     });
-    expect(typeof a.checked_at).toBe("string");
-    expect(a.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(typeof a.checked_at).toBe("number");
+    expect(a.checked_at).toBeGreaterThan(1735689600000); // 2025-01-01 UTC
   });
 });
 

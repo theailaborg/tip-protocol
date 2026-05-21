@@ -90,13 +90,13 @@ describe("validateBusinessRules — BIND_DOMAIN", () => {
   test("non-ISO claimed_at rejected", () => {
     const r = validateBusinessRules(_bindTx({ claimed_at: "yesterday" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/claimed_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/claimed_at must be a valid epoch ms timestamp/);
   });
 
   test("non-ISO verified_at rejected", () => {
     const r = validateBusinessRules(_bindTx({ verified_at: "tomorrow" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/verified_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/verified_at must be a valid epoch ms timestamp/);
   });
 
   test("verified_at before claimed_at rejected (logical-ordering guard)", () => {
@@ -144,7 +144,7 @@ describe("validateBusinessRules — UNBIND_DOMAIN", () => {
   test("non-ISO revoked_at rejected", () => {
     const r = validateBusinessRules(_unbindTx({ revoked_at: "right-now" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/revoked_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/revoked_at must be a valid epoch ms timestamp/);
   });
 
   test("each canonical reason accepted", () => {

@@ -892,7 +892,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             // value here so the row passes its NOT NULL constraint. We use
             // the rotation's effective_round-derived label (informational
             // only — not in the canonical hash, not in chain-of-trust).
-            committed_at: r.committed_at || `installed-from-snapshot:rotation-${r.rotation_number}`,
+            // Informational only — not in canonical hash, not in chain-of-trust.
+            // Derive a deterministic ms from effective_round so every node
+            // re-creates the same value during snapshot install.
+            committed_at: r.committed_at || (r.effective_round * 1000),
           });
           rotationN++;
         }
@@ -1229,7 +1232,7 @@ function _emptyHeader(error) {
     committee: [],
     supportCount: 0,
     consensusIndex: 0,
-    committedAt: "",
+    committedAt: 0,
     stateMerkleRoot: Buffer.alloc(0),
     txsMerkleRoot: Buffer.alloc(0),
     ackSignerIds: [],

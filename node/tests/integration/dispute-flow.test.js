@@ -203,7 +203,7 @@ function _expertSummons(dag, ctid, experts, ts = 1775347200000) {
   for (let i = 0; i < experts.length; i++) {
     out.push(_addTx(dag, {
       tx_type: TX_TYPES.JURY_SUMMONS,
-      timestamp: `${ts.slice(0, 19)}.${(i + 1).toString().padStart(3, "0")}Z`,
+      timestamp: ts + i + 1,
       data: {
         ctid, juror_tip_id: experts[i],
         is_appeal: true, stake: JURY.JUROR_STAKE,

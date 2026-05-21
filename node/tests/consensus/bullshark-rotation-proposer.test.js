@@ -61,7 +61,7 @@ const THRESHOLD = Math.ceil((INTERVAL * PCT) / 100);
 const IN_WINDOW_VOTE_ROUND = CONSENSUS.EPOCH_LENGTH_ROUNDS - 2;
 const IN_WINDOW_PROPOSE_ROUND = IN_WINDOW_VOTE_ROUND - 1;
 
-const POST_GENESIS_BASE = new Date(1775001600000).getTime();
+const POST_GENESIS_BASE = 1775001600000;
 
 function _buildCert({ round, author, hash }) {
   const ts = POST_GENESIS_BASE + round * 2000;

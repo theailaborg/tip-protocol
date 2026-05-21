@@ -716,15 +716,15 @@ describe("#68 rotation coordinator", () => {
     };
     const tx = buildRotationTx({}, proposal, ["tip://node/X"], ["00".repeat(32)]);
 
-    // Expected timestamp = ISO of (effective_round * BATCH_WAIT_MS)
+    // Expected timestamp = epoch ms of (effective_round * BATCH_WAIT_MS)
     const expectedMs = proposal.effective_round * CONSENSUS.BATCH_WAIT_MS;
-    expect(tx.timestamp).toBe(new Date(expectedMs).toISOString());
+    expect(tx.timestamp).toBe(expectedMs);
 
     // Different effective_round → different timestamp (so audit ordering
     // by tx.timestamp still reflects rotation order, just not real time)
     const tx2 = buildRotationTx({}, { ...proposal, effective_round: 2000 }, ["tip://node/X"], ["00".repeat(32)]);
     expect(tx2.timestamp).not.toBe(tx.timestamp);
-    expect(new Date(tx2.timestamp).getTime()).toBeGreaterThan(new Date(tx.timestamp).getTime());
+    expect(tx2.timestamp).toBeGreaterThan(tx.timestamp);
   });
 
   // System-tx semantic: rotation tx with empty prev passes structural

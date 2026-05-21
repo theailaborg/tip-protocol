@@ -165,7 +165,7 @@ describe("verdict-trigger: heap maintenance via onTxCommitted", () => {
     const entry = fx.trigger.pending()[0];
     expect(entry.ctid).toBe(fx.ctid);
     expect(entry.stage).toBe("jury");
-    expect(entry.deadline).toBe(new Date(1776211200000).getTime());
+    expect(entry.deadline).toBe(1776211200000);
   });
 
   test("subsequent JURY_SUMMONS for SAME (ctid, stage) does NOT add duplicate entry", () => {
@@ -305,14 +305,14 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     const fx = _setup();
     // No rehydrate, no commits → heap is empty → checkPending shouldn't
     // submit anything regardless of cert.timestamp.
-    fx.trigger.checkPending(new Date(1893456000000).getTime());
+    fx.trigger.checkPending(1893456000000);
     expect(fx.submitted.length).toBe(0);
   });
 
   test("noop when cert.timestamp is below the smallest deadline", () => {
     const fx = _setup({ revealDeadline: 1776211200000 });
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date(1775779200000).getTime());
+    fx.trigger.checkPending(1775779200000);
     expect(fx.submitted.length).toBe(0);
     expect(fx.trigger.size()).toBe(1);
   });
@@ -321,7 +321,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
 
-    fx.trigger.checkPending(new Date(1776211201000).getTime());
+    fx.trigger.checkPending(1776211201000);
 
     expect(fx.submitted.length).toBe(1);
     const batch = fx.submitted[0];
@@ -365,7 +365,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     fx.dag.addTx(appealFiled);
 
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date(1776211201000).getTime());
+    fx.trigger.checkPending(1776211201000);
 
     expect(fx.submitted.length).toBe(1);
     const batch = fx.submitted[0];
@@ -391,7 +391,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     });
     fx.dag.addTx(adj);
 
-    fx.trigger.checkPending(new Date(1776211202000).getTime());
+    fx.trigger.checkPending(1776211202000);
     expect(fx.submitted.length).toBe(0);  // skipped — already resolved
   });
 
@@ -408,7 +408,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     throwingTrigger.rehydrate();
 
     expect(() =>
-      throwingTrigger.checkPending(new Date(1776211201000).getTime())
+      throwingTrigger.checkPending(1776211201000)
     ).not.toThrow();
     expect(attempts).toBe(1);  // we DID try
     expect(throwingTrigger.size()).toBe(0);  // entry popped (won't retry until next rehydrate)
@@ -424,7 +424,7 @@ describe("verdict-trigger: defensive input handling", () => {
     const trigger = createVerdictTrigger({ dag: fx.dag, /* no jury, scoring, submitBatch */ });
     trigger.rehydrate();
     expect(trigger.size()).toBe(1);  // heap still populated
-    trigger.checkPending(new Date(1893456000000).getTime());
+    trigger.checkPending(1893456000000);
     // No submitBatch was called, but no error either. Heap untouched
     // because the function short-circuited before popping.
     expect(trigger.size()).toBe(1);
@@ -470,7 +470,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const { trigger, submitted } = _setupWithGate({
       committeeNodes: ["tip://node/n3", "tip://node/n1", "tip://node/n2"],
     });
-    trigger.checkPending(new Date(1776211201000).getTime(), 0);
+    trigger.checkPending(1776211201000, 0);
     expect(submitted.length).toBe(1);
   });
 
@@ -479,7 +479,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const { trigger, submitted } = _setupWithGate({
       committeeNodes: ["tip://node/n1", "tip://node/n2", "tip://node/n3"],
     });
-    trigger.checkPending(new Date(1776211201000).getTime(), 1);
+    trigger.checkPending(1776211201000, 1);
     expect(submitted.length).toBe(0);
     // Heap entry stays — next round's leader will pick it up.
     expect(trigger.size()).toBe(1);
@@ -489,17 +489,17 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const committee = ["tip://node/n1", "tip://node/n2", "tip://node/n3"];
     // round 0 → n1 (us, fires)
     const { trigger: t0, submitted: s0 } = _setupWithGate({ committeeNodes: committee });
-    t0.checkPending(new Date(1776211201000).getTime(), 0);
+    t0.checkPending(1776211201000, 0);
     expect(s0.length).toBe(1);
 
     // round 3 → n1 again (3 % 3 == 0 → sorted[0] = n1, fires)
     const { trigger: t3, submitted: s3 } = _setupWithGate({ committeeNodes: committee });
-    t3.checkPending(new Date(1776211201000).getTime(), 3);
+    t3.checkPending(1776211201000, 3);
     expect(s3.length).toBe(1);
 
     // round 5 → sorted[5 % 3] = sorted[2] = n3 (not us, no fire)
     const { trigger: t5, submitted: s5 } = _setupWithGate({ committeeNodes: committee });
-    t5.checkPending(new Date(1776211201000).getTime(), 5);
+    t5.checkPending(1776211201000, 5);
     expect(s5.length).toBe(0);
   });
 
@@ -507,7 +507,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     // No leader gate → trigger fires regardless.
     const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date(1776211201000).getTime(), 99);
+    fx.trigger.checkPending(1776211201000, 99);
     expect(fx.submitted.length).toBe(1);
   });
 
@@ -516,7 +516,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
       // n2 is leader for round 0, but we don't pass round → gate skipped.
       committeeNodes: ["tip://node/n2", "tip://node/n3", "tip://node/n4"],
     });
-    trigger.checkPending(new Date(1776211201000).getTime());
+    trigger.checkPending(1776211201000);
     expect(submitted.length).toBe(1);
   });
 });

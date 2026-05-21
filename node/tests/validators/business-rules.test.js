@@ -333,7 +333,7 @@ describe("canCommitVote", () => {
     _seedSummons(dag, "tip://id/juror", 1777507200000);
     const r = rules.canCommitVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
-    }, { now: new Date(1776211200000).getTime() });
+    }, { now: 1776211200000 });
     expect(r.valid).toBe(true);
   });
 
@@ -351,7 +351,7 @@ describe("canCommitVote", () => {
     _seedSummons(dag, "tip://id/juror", 1775001600000);
     const r = rules.canCommitVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
-    }, { now: new Date(1776211200000).getTime() });
+    }, { now: 1776211200000 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/Commit window has closed/);
   });
@@ -387,7 +387,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date(1776211200000).getTime(), shake256 });
+    }, { now: 1776211200000, shake256 });
     expect(r.valid).toBe(true);
   });
 
@@ -397,7 +397,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MISMATCH, salt: "saltB",
-    }, { now: new Date(1776211200000).getTime(), shake256 });
+    }, { now: 1776211200000, shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/Vote does not match commitment/);
   });
@@ -408,7 +408,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date(1773532800000).getTime(), shake256 });
+    }, { now: 1773532800000, shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/has not opened/);
   });
@@ -419,7 +419,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date(1778803200000).getTime(), shake256 });
+    }, { now: 1778803200000, shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/has closed/);
   });
