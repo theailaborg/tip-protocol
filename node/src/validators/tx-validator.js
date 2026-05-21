@@ -25,7 +25,7 @@ const {
   DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
-const { getFoundingVP, getGenesisCommittee } = require("../genesis");
+const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -251,6 +251,9 @@ function validateBusinessRules(tx, dag = null) {
     }
     if (tx.tx_type === TX_TYPES.NODE_REGISTERED && getGenesisCommittee().has(d.node_id)) {
       return fail(`NODE_REGISTERED for founding node ${d.node_id} cannot enter via gossip after round 1`);
+    }
+    if (tx.tx_type === TX_TYPES.REGISTER_IDENTITY && getGenesisRing().has(d.tip_id)) {
+      return fail(`REGISTER_IDENTITY for founding identity ${d.tip_id} cannot enter via gossip after round 1`);
     }
   }
 

@@ -7,7 +7,7 @@ const SRC    = path.resolve(__dirname, "../../src");
 const { initCrypto }   = require(SHARED + "/crypto");
 const { TX_TYPES }     = require(SHARED + "/constants");
 const { validateBusinessRules, validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
-const { getFoundingVP, getGenesisCommittee }         = require(path.join(SRC, "genesis"));
+const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require(path.join(SRC, "genesis"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -94,6 +94,45 @@ describe("bootstrap epoch guard — validateBusinessRules", () => {
       const r = validateBusinessRules(
         rulesTx(TX_TYPES.NODE_REGISTERED, { node_id: "tip://node/aaaa1111bbbb2222", name: "New Node", public_key: "dd" }),
         dagAt(2)
+      );
+      expect(r.valid).toBe(true);
+    });
+  });
+
+  describe("REGISTER_IDENTITY — founding identity", () => {
+    it("rejects founding tip_id at latestRound = 2", () => {
+      const [foundingTipId] = [...getGenesisRing()];
+      const r = validateBusinessRules(
+        rulesTx(TX_TYPES.REGISTER_IDENTITY, { tip_id: foundingTipId, vp_id: "tip://vp/x", dedup_hash: "1" }),
+        dagAt(2)
+      );
+      expect(r.valid).toBe(false);
+      expect(r.errors[0]).toMatch(/founding identity/);
+    });
+
+    it("rejects founding tip_id at latestRound = 100", () => {
+      const [foundingTipId] = [...getGenesisRing()];
+      const r = validateBusinessRules(
+        rulesTx(TX_TYPES.REGISTER_IDENTITY, { tip_id: foundingTipId, vp_id: "tip://vp/x", dedup_hash: "1" }),
+        dagAt(100)
+      );
+      expect(r.valid).toBe(false);
+      expect(r.errors[0]).toMatch(/founding identity/);
+    });
+
+    it("passes non-founding tip_id at latestRound = 2", () => {
+      const r = validateBusinessRules(
+        rulesTx(TX_TYPES.REGISTER_IDENTITY, { tip_id: "tip://id/US-deadbeefcafef00d", vp_id: "tip://vp/x", dedup_hash: "1" }),
+        dagAt(2)
+      );
+      expect(r.valid).toBe(true);
+    });
+
+    it("passes founding tip_id at latestRound = 0 (bootstrapping)", () => {
+      const [foundingTipId] = [...getGenesisRing()];
+      const r = validateBusinessRules(
+        rulesTx(TX_TYPES.REGISTER_IDENTITY, { tip_id: foundingTipId, vp_id: "tip://vp/x", dedup_hash: "1" }),
+        dagAt(0)
       );
       expect(r.valid).toBe(true);
     });

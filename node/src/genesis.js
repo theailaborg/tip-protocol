@@ -511,6 +511,25 @@ function getGenesisCommittee() {
   return ids;
 }
 
+/**
+ * Genesis-anchored founding identities — the TIP-IDs minted by the seed
+ * script and embedded in `GENESIS_PAYLOAD.genesis_ring`. These identities
+ * are materialised by `initDAG` at boot; any later `REGISTER_IDENTITY` tx
+ * carrying one of these tip_ids is a replay attempt and must be rejected
+ * by the bootstrap-epoch gate.
+ *
+ * @returns {Set<string>} TIP-IDs that are genesis-ring members
+ */
+function getGenesisRing() {
+  const ids = new Set();
+  if (Array.isArray(GENESIS_PAYLOAD.genesis_ring)) {
+    for (const tip_id of GENESIS_PAYLOAD.genesis_ring) {
+      if (typeof tip_id === "string" && tip_id) ids.add(tip_id);
+    }
+  }
+  return ids;
+}
+
 function verifyGenesisSignature() {
   const valid = mldsaVerify(
     canonicalTx(GENESIS_TX),
@@ -575,6 +594,7 @@ module.exports = {
   getFoundingVP,
   getInitialParams,
   getGenesisCommittee,
+  getGenesisRing,
   computeGenesisHash,
   verifyGenesisSignature,
   verifyGenesisVPSignature,
