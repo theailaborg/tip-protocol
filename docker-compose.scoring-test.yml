@@ -1,0 +1,58 @@
+# docker-compose.scoring-test.yml
+# DEV-ONLY compose override that injects the two env vars required for
+# end-to-end scoring pipeline testing into every node container.
+#
+# Usage — append this file to any compose command:
+#
+#   docker compose -f docker-compose.local.yml -f docker-compose.scoring-test.yml up node1 -d
+#   docker compose -f docker-compose.local.yml -f docker-compose.scoring-test.yml up node2 node3 node4 node5 -d
+#   docker compose -f docker-compose.local.yml -f docker-compose.scoring-test.yml up -d
+#
+# What each variable does:
+#
+#   TIP_DEV_FORCE_PRESCAN_TIER=high
+#     Overrides the AI classifier stub (max probability ~0.45, never reaches HIGH).
+#     Forces every OH/AA content registration into HIGH tier so it receives a
+#     PRESCAN_REVIEW_TRIGGERED after 48h and eventually enters the dispute pipeline.
+#     Values: high | critical | random
+#       high     → probability=0.93, tier=HIGH  (reviewer + penalty on CONFIRMED)
+#       critical → probability=0.99, tier=CRITICAL
+#       random   → 50/50 HIGH or CRITICAL per registration call (non-deterministic)
+#     AG/MX content is NOT affected (those origins skip prescan by design).
+#
+#   TIP_DEV_BYPASS_VOTE_WINDOWS=1
+#     Removes the 72h commit + 6h reveal + 48h appeal window requirements.
+#     VerdictTrigger fires as soon as jury quorum is reached (5/7 reveals for
+#     Stage-2, 2/3 reveals for Stage-3 appeal) instead of waiting for
+#     BFT-Time to cross the deadline.
+#     Set to "1" to enable; remove or set to anything else to disable.
+#
+# NEVER use this file in production.
+# These vars are gated by `process.env.NODE_ENV !== "production"` in helpers.js
+# and `=== "1"` checks in verdict-trigger.js / business-rules.js.
+
+services:
+  node1:
+    environment:
+      TIP_DEV_FORCE_PRESCAN_TIER: "high"
+      TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
+
+  node2:
+    environment:
+      TIP_DEV_FORCE_PRESCAN_TIER: "high"
+      TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
+
+  node3:
+    environment:
+      TIP_DEV_FORCE_PRESCAN_TIER: "high"
+      TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
+
+  node4:
+    environment:
+      TIP_DEV_FORCE_PRESCAN_TIER: "high"
+      TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
+
+  node5:
+    environment:
+      TIP_DEV_FORCE_PRESCAN_TIER: "high"
+      TIP_DEV_BYPASS_VOTE_WINDOWS: "1"
