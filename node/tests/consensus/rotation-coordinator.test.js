@@ -704,9 +704,9 @@ describe("#68 rotation coordinator", () => {
     expect(txFromNodeA.prev).toEqual([]);
   });
 
-  test("buildRotationTx timestamp is derived from effective_round, not wall-clock", () => {
+  test("buildRotationTx timestamp anchors at latest committed cert.timestamp (BFT-Time)", () => {
     const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
-    const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
+    const { GENESIS_TIMESTAMP } = require(path.join(SRC, "genesis"));
 
     const proposal = {
       rotation_number: 5,
@@ -714,17 +714,24 @@ describe("#68 rotation coordinator", () => {
       new_committee: [{ node_id: "tip://node/X", public_key: "ab".repeat(32) }],
       payload_hash: "00".repeat(32),
     };
-    const tx = buildRotationTx({}, proposal, ["tip://node/X"], ["00".repeat(32)]);
 
-    // Expected timestamp = epoch ms of (effective_round * BATCH_WAIT_MS)
-    const expectedMs = proposal.effective_round * CONSENSUS.BATCH_WAIT_MS;
-    expect(tx.timestamp).toBe(expectedMs);
+    // No commits yet → falls back to GENESIS_TIMESTAMP.
+    const emptyDag = { getLatestCommit: () => null };
+    const tx0 = buildRotationTx(emptyDag, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx0.timestamp).toBe(GENESIS_TIMESTAMP);
 
-    // Different effective_round → different timestamp (so audit ordering
-    // by tx.timestamp still reflects rotation order, just not real time)
-    const tx2 = buildRotationTx({}, { ...proposal, effective_round: 2000 }, ["tip://node/X"], ["00".repeat(32)]);
-    expect(tx2.timestamp).not.toBe(tx.timestamp);
-    expect(tx2.timestamp).toBeGreaterThan(tx.timestamp);
+    // Latest commit has cert_timestamp T → tx adopts T.
+    const T = 1780000000000;
+    const dagWithCommit = { getLatestCommit: () => ({ cert_timestamp: T }) };
+    const tx1 = buildRotationTx(dagWithCommit, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx1.timestamp).toBe(T);
+
+    // Different latest cert.timestamp → different tx.timestamp + tx_id
+    // (deterministic across nodes that see the same latest commit).
+    const dagLater = { getLatestCommit: () => ({ cert_timestamp: T + 60_000 }) };
+    const tx2 = buildRotationTx(dagLater, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx2.timestamp).toBe(T + 60_000);
+    expect(tx2.tx_id).not.toBe(tx1.tx_id);
   });
 
   // System-tx semantic: rotation tx with empty prev passes structural

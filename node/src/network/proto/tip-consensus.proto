@@ -21,7 +21,7 @@ package tip.consensus;
 message Transaction {
   string tx_id = 1;
   string tx_type = 2;
-  string timestamp = 3;
+  int64 timestamp = 3;          // epoch ms
   repeated string prev = 4;
   bytes data = 5;               // JSON-encoded tx.data as bytes
   bytes signature = 6;          // ML-DSA-65 signature over canonical tx

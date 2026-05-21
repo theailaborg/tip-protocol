@@ -1191,7 +1191,7 @@ class SQLiteStore {
         tip_id         TEXT PRIMARY KEY,
         score          INTEGER NOT NULL DEFAULT 500,
         offense_count  INTEGER NOT NULL DEFAULT 0,
-        last_updated   TEXT NOT NULL
+        last_updated   INTEGER NOT NULL
       );
 
       -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──

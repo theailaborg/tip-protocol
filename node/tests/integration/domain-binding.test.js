@@ -23,6 +23,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256 } = require(path.join(SHARED, "crypto"));
+const { nowMs } = require(path.join(SHARED, "time"));
 const {
   TIP_ID_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_HEALTHY_EXPIRY_MS,
 } = require(path.join(SHARED, "constants"));
@@ -122,7 +123,7 @@ function buildSignedClaim({ tipId, privKey, domain, method = "auto" }) {
   // mock's `verified_at: Date.now()`. Real clients use the
   // current wall clock; a fixed future date here would trip tx-validator's
   // `verified_at must not precede claimed_at` check on slow CI hosts.
-  const claimed_at = new Date(Date.now() - 60_000).toISOString();
+  const claimed_at = nowMs() - 60_000;
   const payload = registerDomainSchema.buildSigningPayload({
     claimed_at, domain, method, tip_id: tipId,
   });
@@ -382,7 +383,7 @@ describe("v2 prep — expires_at, consecutive_failures, read-time expiry", () =>
     const current = fx.dag.getDomainBinding("acmenews.com");
     fx.dag.saveDomainBinding({
       ...current,
-      expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      expires_at: nowMs() - 24 * 60 * 60 * 1000,
     });
 
     const got = fx.domainService.get("acmenews.com");

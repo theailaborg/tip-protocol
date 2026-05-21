@@ -255,7 +255,7 @@ class KnexAdapter {
       _pk(t, "tip_id");
       t.integer("score").notNullable().defaultTo(500);
       t.integer("offense_count").notNullable().defaultTo(0);
-      t.string("last_updated", 64).notNullable();
+      t.bigInteger("last_updated").notNullable();
     });
 
     await ensure("dedup_registry", t => {

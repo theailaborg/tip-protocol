@@ -459,7 +459,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const ctid = disputeTx.data.ctid;
     const startTs = disputeTx.timestamp;
     const sameCtidDisputes = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid)
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      .sort((a, b) => a.timestamp - b.timestamp);
     const myIx = sameCtidDisputes.findIndex(t => t.tx_id === disputeTx.tx_id);
     const endTs = myIx >= 0 && sameCtidDisputes[myIx + 1] ? sameCtidDisputes[myIx + 1].timestamp : null;
 
@@ -472,7 +472,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       }
     }
     return events.sort((a, b) =>
-      a.timestamp.localeCompare(b.timestamp) ||
+      (a.timestamp - b.timestamp) ||
       _eventPrio(a) - _eventPrio(b) ||
       a.tx_id.localeCompare(b.tx_id)
     );
@@ -1179,7 +1179,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
         const remainingMs = Math.max(0, CONTENT_GRACE.FLAGGED_MS - ageMs);
         const remainingHours = Math.max(1, Math.round(remainingMs / 3600000));
-        const deadlineISO = toIso(registeredMs + CONTENT_GRACE.FLAGGED_MS);
+        const deadlineMs = registeredMs + CONTENT_GRACE.FLAGGED_MS;
         items.push({
           id: `content_flagged_for_review:${c.ctid}`,
           type: "content_flagged_for_review",
@@ -1189,7 +1189,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           role: "author",
           ctid: c.ctid,
           dispute_id: null,
-          deadline: deadlineISO,
+          deadline: deadlineMs,
           action: {
             kind: "update_origin",
             label: "Update origin",
@@ -1201,7 +1201,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             declared_origin: c.origin_code,
             registered_at: c.registered_at,
             hours_remaining: remainingHours,
-            decision_window_ends_at: deadlineISO,
+            decision_window_ends_at: deadlineMs,
           },
         });
       }

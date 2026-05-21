@@ -42,6 +42,7 @@
 const { mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { GENESIS_TIMESTAMP } = require("../genesis");
 const { hexToBytes, bytesToHex } = require("../network/proto");
 const { computeQuorum } = require("./certificate");
 const { getLogger } = require("../logger");
@@ -56,13 +57,14 @@ const log = getLogger("tip.rotation-coord");
  * between the coordinator's normal aggregation path and bullshark's legacy
  * single-sig fallback path (used by tests/legacy mode without a coordinator).
  *
- * @param {object} dag      — needed for `getRecentPrev()`
+ * @param {object} dag      — read latest committed cert.timestamp (BFT-Time
+ *                            anchor for the rotation tx timestamp)
  * @param {object} proposal — { rotation_number, effective_round, new_committee, payload_hash }
  * @param {string[]} signer_node_ids   — sorted ASC
  * @param {string[]} signatures        — parallel to signer_node_ids
  * @returns {object} tx with tx_id computed
  */
-function buildRotationTx(_dag, proposal, signer_node_ids, signatures) {
+function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   const data = {
     rotation_number: proposal.rotation_number,
     effective_round: proposal.effective_round,
@@ -79,24 +81,32 @@ function buildRotationTx(_dag, proposal, signer_node_ids, signatures) {
   // committee_history.prev_rotation. It is NOT part of the user-tx prev
   // chain.
   //
-  //   timestamp: derived from proposal.effective_round (identical across
-  //              nodes; the real BFT wall-clock for the round lives in
-  //              cert.timestamp + commits.committed_at, not here)
+  //   timestamp: anchored at the latest committed cert's BFT-Time (median
+  //              of acks.signed_at). This is BOTH deterministic across
+  //              nodes (every node has committed the same certs in order)
+  //              AND a real wall-clock reading from the most recent
+  //              consensus moment — not a synthetic round-derived value.
+  //              Fallback to GENESIS_TIMESTAMP for the very first rotation
+  //              when no commits exist yet.
   //   prev:      [] — no user-tx prev refs. Anchoring to GENESIS_TX_ID
   //              would require every node to share the EXACT same genesis
   //              tx_id, which is not true in practice across DB-drifted
-  //              federations (live observed 2026-05-05: n4 had only the
-  //              old May-4 genesis row, so prev:[<new GENESIS_TX_ID>]
-  //              failed `prev reference not found in DAG`). Treating
-  //              rotation as a system tx avoids that coupling entirely.
+  //              federations. Treating rotation as a system tx avoids
+  //              that coupling entirely.
   //
   // tx-validator.js permits empty prev for the system-tx set (GENESIS,
   // COMMITTEE_ROTATION). Both timestamp and prev fall OUTSIDE the
   // chain-of-trust signature payload (`rotation:${payload_hash}:${signer}`),
   // so the change has no impact on signature verification.
+  const latestCommit = dag && typeof dag.getLatestCommit === "function"
+    ? dag.getLatestCommit()
+    : null;
+  const timestamp = (latestCommit && latestCommit.cert_timestamp)
+    ? latestCommit.cert_timestamp
+    : GENESIS_TIMESTAMP;
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
-    timestamp: proposal.effective_round * CONSENSUS.BATCH_WAIT_MS,
+    timestamp,
     prev: [],
     data,
   };
