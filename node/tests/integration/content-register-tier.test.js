@@ -46,11 +46,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -68,9 +68,9 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     tip_id: tipId, region: "US",
     public_key: kp.publicKey, root_public_key: kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 function _buildBody({ tipId, privKey, origin_code = "OH", content = "Hello from a DAG-registered publisher" }) {

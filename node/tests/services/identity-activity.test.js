@@ -49,19 +49,19 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   for (const tipId of ["tip://id/author", "tip://id/juror", "tip://id/verifier"]) {
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
@@ -89,11 +89,11 @@ describe("getActivity — broad-scope attribution (option B)", () => {
     fx.dag.saveContent({
       ctid, origin_code: "OH", content_hash: shake256("c"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.DISPUTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("c:x"),
+      registered_at: 1775001600000, tx_id: shake256("c:x"),
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.JURY_VOTE_COMMIT,
-      timestamp: "2026-04-29T00:00:00.000Z",
+      timestamp: 1777420800000,
       data: { ctid, juror_tip_id: "tip://id/juror", commitment: "abc", node_id: NODE_ID },
     });
 
@@ -113,11 +113,11 @@ describe("getActivity — broad-scope attribution (option B)", () => {
     fx.dag.saveContent({
       ctid, origin_code: "OH", content_hash: shake256("c"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("c:y"),
+      registered_at: 1775001600000, tx_id: shake256("c:y"),
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.CONTENT_VERIFIED,
-      timestamp: "2026-04-29T00:00:00.000Z",
+      timestamp: 1777420800000,
       data: { ctid, verifier_tip_id: "tip://id/verifier", weighted_delta: 3, author_tip_id: "tip://id/author" },
     });
 
@@ -137,7 +137,7 @@ describe("getActivity — ?include filter merges pending + rejected", () => {
     // 1 committed REGISTER_CONTENT
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: "2026-04-29T00:00:00.000Z",
+      timestamp: 1777420800000,
       data: { ctid: "tip://c/OH-aaaaaaaaaaaaaa-1111", origin_code: "OH",
         content_hash: shake256("c1"), signer_tip_id: tipId, signature: "00" },
     });
@@ -145,7 +145,7 @@ describe("getActivity — ?include filter merges pending + rejected", () => {
     fx.dag.saveMempoolTx({
       tx_id: "p".repeat(64),
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: "2026-04-30T01:00:00.000Z",
+      timestamp: 1777510800000,
       data: { signer_tip_id: tipId, ctid: "tip://c/OH-bbbbbbbbbbbbbb-2222" },
     });
     // 1 rejected REGISTER_IDENTITY (full body preserved for replay)
@@ -160,7 +160,7 @@ describe("getActivity — ?include filter merges pending + rejected", () => {
       tx_data: {
         tx_id: "r".repeat(64),
         tx_type: TX_TYPES.REGISTER_IDENTITY,
-        timestamp: "2026-04-30T02:00:00.000Z",
+        timestamp: 1777514400000,
         data: { tip_id: tipId, region: "US" },
       },
     });
@@ -243,14 +243,14 @@ describe("getActivity — defensive paths", () => {
 
     _addTx(fx.dag, {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: "2026-04-01T00:00:00.000Z",
+      timestamp: 1775001600000,
       data: { ctid: "tip://c/OH-cccccccccccccc-3333", origin_code: "OH",
         content_hash: shake256("c2"), signer_tip_id: tipId, signature: "00" },
     });
     fx.dag.saveMempoolTx({
       tx_id: "q".repeat(64),
       tx_type: TX_TYPES.SCORE_UPDATE,  // different type — should be filtered out
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       data: { tip_id: tipId, delta: 5, reason: "test" },
     });
 

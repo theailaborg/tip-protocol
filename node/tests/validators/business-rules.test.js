@@ -37,7 +37,7 @@ function _seedDag() {
   dag.saveVP({
     vp_id: "tip://vp/v1", name: "VP-1", jurisdiction: "US", jurisdiction_tier: "green",
     public_key: "00", root_public_key: "00", status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("vp:v1"),
+    registered_at: 1767225600000, tx_id: shake256("vp:v1"),
   });
 
   // Three identities: author, verifier, disputer
@@ -45,16 +45,16 @@ function _seedDag() {
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
       vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   // Content (status = REGISTERED)
   dag.saveContent({
     ctid: "tip://content/x", origin_code: "OH", content_hash: shake256("c1"),
     author_tip_id: "tip://id/author", status: CONTENT_STATUS.REGISTERED,
-    registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:x"),
+    registered_at: 1775001600000, tx_id: shake256("content:x"),
   });
 
   return dag;
@@ -129,7 +129,7 @@ describe("canRegisterNode", () => {
     const dag = _seedDag();
     dag.saveNode({
       node_id: "tip://node/existing00001111", name: "n1", public_key: "00",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     const r = rules.canRegisterNode(dag, { node_id: "tip://node/existing00001111" });
     expect(r.valid).toBe(false);
@@ -201,7 +201,7 @@ describe("canVerify", () => {
     dag.saveContent({
       ctid: "tip://content/r", origin_code: "OH", content_hash: shake256("r"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.RETRACTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:r"),
+      registered_at: 1775001600000, tx_id: shake256("content:r"),
     });
     const r = rules.canVerify(dag, {
       ctid: "tip://content/r", verifier_tip_id: "tip://id/verifier",
@@ -215,7 +215,7 @@ describe("canVerify", () => {
     dag.saveContent({
       ctid: "tip://content/d", origin_code: "OH", content_hash: shake256("d"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.DISPUTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:d"),
+      registered_at: 1775001600000, tx_id: shake256("content:d"),
     });
     const r = rules.canVerify(dag, {
       ctid: "tip://content/d", verifier_tip_id: "tip://id/verifier",
@@ -251,7 +251,7 @@ describe("canDispute", () => {
     dag.saveContent({
       ctid: "tip://content/d", origin_code: "OH", content_hash: shake256("d"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.DISPUTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:d"),
+      registered_at: 1775001600000, tx_id: shake256("content:d"),
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/d", disputer_tip_id: "tip://id/disputer",
@@ -280,7 +280,7 @@ describe("canDispute", () => {
       author_tip_id: "tip://id/author",
       signer_tip_id: "tip://id/disputer",
       status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:x"),
+      registered_at: 1775001600000, tx_id: shake256("content:x"),
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
@@ -300,7 +300,7 @@ describe("canDispute", () => {
         { tip_id: "tip://id/disputer", role: "contributor" },
       ],
       status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:x"),
+      registered_at: 1775001600000, tx_id: shake256("content:x"),
     });
     const r = rules.canDispute(dag, STUB_SCORING, {
       ctid: "tip://content/x", disputer_tip_id: "tip://id/disputer",
@@ -316,10 +316,10 @@ describe("canDispute", () => {
 describe("canCommitVote", () => {
   function _seedSummons(dag, jurorTipId, commitDeadline, isAppeal = false) {
     const summonsBody = {
-      tx_type: TX_TYPES.JURY_SUMMONS, timestamp: "2026-01-01T00:00:00.000Z", prev: [],
+      tx_type: TX_TYPES.JURY_SUMMONS, timestamp: 1767225600000, prev: [],
       data: {
         ctid: "tip://content/x", juror_tip_id: jurorTipId, dispute_tx_id: "d-1",
-        commit_deadline: commitDeadline, reveal_deadline: "2099-01-01T00:00:00.000Z",
+        commit_deadline: commitDeadline, reveal_deadline: 4070908800000,
         is_appeal: isAppeal, node_id: "tip://node/n1",
       },
     };
@@ -330,10 +330,10 @@ describe("canCommitVote", () => {
 
   test("summoned + within window → valid", () => {
     const dag = _seedDag();
-    _seedSummons(dag, "tip://id/juror", "2026-04-30T00:00:00.000Z");
+    _seedSummons(dag, "tip://id/juror", 1777507200000);
     const r = rules.canCommitVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
-    }, { now: new Date("2026-04-15T00:00:00Z").getTime() });
+    }, { now: new Date(1776211200000).getTime() });
     expect(r.valid).toBe(true);
   });
 
@@ -348,10 +348,10 @@ describe("canCommitVote", () => {
 
   test("commit window closed → 403", () => {
     const dag = _seedDag();
-    _seedSummons(dag, "tip://id/juror", "2026-04-01T00:00:00.000Z");
+    _seedSummons(dag, "tip://id/juror", 1775001600000);
     const r = rules.canCommitVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
-    }, { now: new Date("2026-04-15T00:00:00Z").getTime() });
+    }, { now: new Date(1776211200000).getTime() });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/Commit window has closed/);
   });
@@ -362,10 +362,10 @@ describe("canCommitVote", () => {
 describe("canRevealVote", () => {
   function _seedFlow(dag, jurorTipId, vote, salt) {
     const summonsBody = {
-      tx_type: TX_TYPES.JURY_SUMMONS, timestamp: "2026-01-01T00:00:00.000Z", prev: [],
+      tx_type: TX_TYPES.JURY_SUMMONS, timestamp: 1767225600000, prev: [],
       data: {
         ctid: "tip://content/x", juror_tip_id: jurorTipId, dispute_tx_id: "d-1",
-        commit_deadline: "2026-04-01T00:00:00.000Z", reveal_deadline: "2026-04-30T00:00:00.000Z",
+        commit_deadline: 1775001600000, reveal_deadline: 1777507200000,
         node_id: "tip://node/n1",
       },
     };
@@ -374,7 +374,7 @@ describe("canRevealVote", () => {
     dag.addTx(summonsBody);
 
     const commitBody = {
-      tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: "2026-04-01T00:00:00.000Z", prev: [],
+      tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: 1775001600000, prev: [],
       data: { ctid: "tip://content/x", juror_tip_id: jurorTipId, commitment: shake256(`${vote}:${salt}`), signature: "00" },
     };
     commitBody.tx_id = computeTxId(commitBody);
@@ -387,7 +387,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date("2026-04-15T00:00:00Z").getTime(), shake256 });
+    }, { now: new Date(1776211200000).getTime(), shake256 });
     expect(r.valid).toBe(true);
   });
 
@@ -397,7 +397,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MISMATCH, salt: "saltB",
-    }, { now: new Date("2026-04-15T00:00:00Z").getTime(), shake256 });
+    }, { now: new Date(1776211200000).getTime(), shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/Vote does not match commitment/);
   });
@@ -408,7 +408,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date("2026-03-15T00:00:00Z").getTime(), shake256 });
+    }, { now: new Date(1773532800000).getTime(), shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/has not opened/);
   });
@@ -419,7 +419,7 @@ describe("canRevealVote", () => {
     const r = rules.canRevealVote(dag, {
       ctid: "tip://content/x", juror_tip_id: "tip://id/juror", is_appeal: false,
       vote: VOTE.MATCH, salt: "saltA",
-    }, { now: new Date("2026-05-15T00:00:00Z").getTime(), shake256 });
+    }, { now: new Date(1778803200000).getTime(), shake256 });
     expect(r.valid).toBe(false);
     expect(r.error.message).toMatch(/has closed/);
   });
@@ -446,7 +446,7 @@ describe("canRetract", () => {
     dag.saveContent({
       ctid: "tip://content/r", origin_code: "OH", content_hash: shake256("r"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.RETRACTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:r"),
+      registered_at: 1775001600000, tx_id: shake256("content:r"),
     });
     const r = rules.canRetract(dag, { ctid: "tip://content/r", author_tip_id: "tip://id/author" });
     expect(r.valid).toBe(false);
@@ -458,7 +458,7 @@ describe("canRetract", () => {
     dag.saveContent({
       ctid: "tip://content/d", origin_code: "OH", content_hash: shake256("d"),
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.DISPUTED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256("content:d"),
+      registered_at: 1775001600000, tx_id: shake256("content:d"),
     });
     const r = rules.canRetract(dag, { ctid: "tip://content/d", author_tip_id: "tip://id/author" });
     expect(r.valid).toBe(false);
@@ -547,7 +547,7 @@ describe("canCommitteeRotation", () => {
       `INSERT INTO committee_history (rotation_number, effective_round, committee, prev_rotation,
                                        signer_node_ids, signatures, payload_hash, committed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, '2026-01-01T00:00:00.000Z');
+    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, 1767225600000);
     raw.close();
 
     dag = initDAG({ dbPath });

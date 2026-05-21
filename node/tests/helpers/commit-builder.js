@@ -84,7 +84,7 @@ function buildCommittedDag({
       name: `node ${i}`,
       public_key: kp.publicKey,
       status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z",
+      registered_at: 1767225600000,
     });
     committeeKeys.push({ nodeId, ...kp });
   }
@@ -101,7 +101,7 @@ function buildCommittedDag({
   // a `signed_at` integer epoch ms — a deterministic per-ack offset (1ms
   // apart) anchored 1ms past BFT_TIME_GENESIS_MS. Cert.timestamp = median
   // of these values, also deterministic and comfortably above the floor.
-  const _bftT0 = new Date("2026-03-15T00:00:01.000Z").getTime();
+  const _bftT0 = new Date(1773532801000).getTime();
   let ackSignerIds = [];
   let ackSignatures = [];
   let ackSignedAts = [];
@@ -201,7 +201,7 @@ function buildCommittedDag({
     committee,
     support_count: committeeSize,
     consensus_index: consensusIndex,
-    committed_at: "2026-01-01T00:00:00.000Z",
+    committed_at: 1767225600000,
     state_merkle_root: stateRoot,
     txs_merkle_root: txsRoot,
     ack_signer_ids: ackSignerIds,

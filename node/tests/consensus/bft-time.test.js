@@ -251,7 +251,7 @@ describe("BFT-Time: Bullshark anchor monotonicity gate", () => {
       name: NODE_NAME,
       public_key: "00",
       status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z",
+      registered_at: 1767225600000,
     });
     return dag;
   }

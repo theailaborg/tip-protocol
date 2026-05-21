@@ -53,11 +53,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -77,9 +77,9 @@ function _seedIdentity(dag, tipId, score = 750) {
   dag.saveIdentity({
     tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 /**
@@ -106,7 +106,7 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
   dag.saveContent({
     ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
     author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+    registered_at: 1767225600000, tx_id: "00",
   });
 
   if (withReviewerEscalation) {
@@ -120,7 +120,7 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
   }
 
   const disputeTx = _addTx(dag, {
-    tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: "2026-04-01T00:00:00.000Z",
+    tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: 1775001600000,
     data: {
       ctid: CTID, disputer_tip_id: disputerTipId, reason: "origin_mismatch",
       claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
@@ -144,8 +144,8 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
       data: {
         ctid: CTID, dispute_tx_id: disputeTx.tx_id, juror_tip_id: j,
         stake: JURY.JUROR_STAKE, seed: shake256("seed"), identity_count: 7,
-        commit_deadline: "2030-01-01T00:00:00.000Z",
-        reveal_deadline: "2030-01-01T00:00:00.000Z",
+        commit_deadline: 1893456000000,
+        reveal_deadline: 1893456000000,
       },
     }));
   }
@@ -156,7 +156,7 @@ function _seedDispute(dag, { withReviewerEscalation = true, declaredOrigin = ORI
 function _buildReveals(jurors, votes, confirmedOrigin = ORIGIN.AG) {
   return jurors.slice(0, votes.length).map((j, i) => ({
     tx_id: shake256(`reveal-${i}-${votes[i]}`),
-    tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-02T00:00:00.000Z",
+    tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775088000000,
     data: {
       ctid: CTID, juror_tip_id: j, vote: votes[i],
       salt: shake256(`s${i}`), confirmed_origin: confirmedOrigin,
@@ -188,13 +188,13 @@ describe("PRESCAN_REVIEW_DISMISSED → reviewer paired bonus", () => {
       public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
       reviewer_consent: true,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${reviewerTipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${reviewerTipId}`),
     });
-    fx.dag.setScore(reviewerTipId, 800, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(reviewerTipId, 800, 0, 1767225600000);
     fx.dag.saveContent({
       ctid: CTID, origin_code: ORIGIN.OH, content_hash: "00",
       author_tip_id: "tip://id/some-author", status: CONTENT_STATUS.PENDING_REVIEW,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+      registered_at: 1767225600000, tx_id: "00",
     });
     fx.dag.savePrescanReview({
       review_id: REVIEW_ID, ctid: CTID, creator_tip_id: "tip://id/some-author",
@@ -250,14 +250,14 @@ describe("acceptCorrection → reviewer paired bonus", () => {
       tip_id: creatorTipId, region: "US",
       public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${creatorTipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${creatorTipId}`),
     });
-    fx.dag.setScore(creatorTipId, 700, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(creatorTipId, 700, 0, 1767225600000);
     _seedIdentity(fx.dag, reviewerTipId, 800);
     fx.dag.saveContent({
       ctid: CTID, origin_code: ORIGIN.OH, content_hash: "00",
       author_tip_id: creatorTipId, status: CONTENT_STATUS.PENDING_REVIEW,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+      registered_at: 1767225600000, tx_id: "00",
     });
     fx.dag.savePrescanReview({
       review_id: REVIEW_ID, ctid: CTID, creator_tip_id: creatorTipId,
@@ -349,7 +349,7 @@ describe("Stage-2 verdict — reviewer settlement (CONFIRMED review escalated to
     });
     const reveals = ids.jurors.slice(0, 7).map((j, i) => ({
       tx_id: shake256(`r-cl-${i}`), tx_type: TX_TYPES.JURY_VOTE_REVEAL,
-      timestamp: "2026-04-02T00:00:00.000Z",
+      timestamp: 1775088000000,
       data: {
         ctid: CTID, juror_tip_id: j,
         vote: i < 5 ? VOTE.MISMATCH : VOTE.MATCH,
@@ -420,7 +420,7 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
 
     const adjudicationTx = _addTx(dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-03T00:00:00.000Z",
+      timestamp: 1775174400000,
       data: {
         ctid: CTID, verdict: stage2Verdict,
         declared_origin: declaredOrigin, confirmed_origin: claimedOrigin,
@@ -434,7 +434,7 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
     const appealantTipId = stage2Verdict === VERDICT.UPHELD ? ids.authorTipId : ids.disputerTipId;
     _addTx(dag, {
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: "2026-04-04T00:00:00.000Z",
+      timestamp: 1775260800000,
       data: { ctid: CTID, appellant_tip_id: appealantTipId },
     });
 
@@ -451,8 +451,8 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
           ctid: CTID, dispute_tx_id: adjudicationTx.tx_id, juror_tip_id: e,
           is_appeal: true, stake: JURY.JUROR_STAKE,
           seed: shake256("expert-seed"), identity_count: 3,
-          commit_deadline: "2030-01-01T00:00:00.000Z",
-          reveal_deadline: "2030-01-01T00:00:00.000Z",
+          commit_deadline: 1893456000000,
+          reveal_deadline: 1893456000000,
         },
       }));
     }
@@ -462,7 +462,7 @@ describe("Stage-3 appeal overturn — reviewer settlement reversal", () => {
   function _buildExpertReveals(experts, votes, confirmedOrigin = ORIGIN.AG) {
     return experts.slice(0, votes.length).map((e, i) => ({
       tx_id: shake256(`e-reveal-${i}-${votes[i]}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-05T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775347200000,
       data: {
         ctid: CTID, juror_tip_id: e, vote: votes[i], is_appeal: true,
         salt: shake256(`es${i}`), confirmed_origin: confirmedOrigin,
@@ -583,7 +583,7 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     // at Stage-2.
     const adjudicationTx = _addTx(dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-03T00:00:00.000Z",
+      timestamp: 1775174400000,
       data: {
         ctid: CTID, verdict: VERDICT.NO_QUORUM,
         declared_origin: declaredOrigin, confirmed_origin: null,
@@ -597,7 +597,7 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     // SYSTEM_AUTO_ESCALATION appellant — the node, not a real party.
     _addTx(dag, {
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: "2026-04-04T00:00:00.000Z",
+      timestamp: 1775260800000,
       data: { ctid: CTID, appellant_tip_id: "SYSTEM_AUTO_ESCALATION" },
     });
 
@@ -614,8 +614,8 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
           ctid: CTID, dispute_tx_id: adjudicationTx.tx_id, juror_tip_id: e,
           is_appeal: true, stake: JURY.JUROR_STAKE,
           seed: shake256("nq-expert-seed"), identity_count: 3,
-          commit_deadline: "2030-01-01T00:00:00.000Z",
-          reveal_deadline: "2030-01-01T00:00:00.000Z",
+          commit_deadline: 1893456000000,
+          reveal_deadline: 1893456000000,
         },
       }));
     }
@@ -625,7 +625,7 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
   function _buildExpertReveals(experts, votes, confirmedOrigin = ORIGIN.AG) {
     return experts.slice(0, votes.length).map((e, i) => ({
       tx_id: shake256(`nq-reveal-${i}-${votes[i]}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-05T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775347200000,
       data: {
         ctid: CTID, juror_tip_id: e, vote: votes[i], is_appeal: true,
         salt: shake256(`nqs${i}`), confirmed_origin: confirmedOrigin,
@@ -659,7 +659,7 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     });
     const reveals = ids.experts.slice(0, 3).map((e, i) => ({
       tx_id: shake256(`nq-cl-${i}`), tx_type: TX_TYPES.JURY_VOTE_REVEAL,
-      timestamp: "2026-04-05T00:00:00.000Z",
+      timestamp: 1775347200000,
       data: {
         ctid: CTID, juror_tip_id: e, is_appeal: true,
         vote: i < 2 ? VOTE.MISMATCH : VOTE.MATCH,

@@ -326,7 +326,7 @@ describe("commits table survives cert GC (§15 audit invariant)", () => {
       committee: ["tip://node/a1", "tip://node/b1"],
       support_count: 2,
       consensus_index: 1,
-      committed_at: "2026-04-24T00:00:00.000Z",
+      committed_at: 1776988800000,
       state_merkle_root: "staterootval",
       txs_merkle_root: "txsrootval",
       ack_signer_ids: ["tip://node/a1", "tip://node/b1"],

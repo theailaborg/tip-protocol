@@ -54,24 +54,24 @@ function _setup() {
 
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
 
   const config = {
@@ -79,7 +79,7 @@ function _setup() {
     nodePrivateKey: nodeKp.privateKey,
   };
   const scoring = initScoring(dag, config);
-  dag.setScore(REVIEWER_1, 900, 0, new Date().toISOString());
+  dag.setScore(REVIEWER_1, 900, 0, Date.now());
 
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); };
@@ -139,7 +139,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("returns TRIGGERED reviews older than REVIEWER.AUTO_RECUSE_AGE_MS; excludes fresh", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     const freshMs = nowMs - 60_000;
 
@@ -162,7 +162,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("excludes non-TRIGGERED reviews (decided / recused / etc.)", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
 
     fx.dag.savePrescanReview({
@@ -179,7 +179,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("emits node-signed PRESCAN_REVIEW_RECUSED once SLA elapses", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.dag.savePrescanReview({
       review_id: "rv_recuse_me", ctid: CTID, creator_tip_id: CREATOR,
@@ -204,7 +204,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("does NOT emit before SLA", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     fx.dag.savePrescanReview({
       review_id: "rv_fresh", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,

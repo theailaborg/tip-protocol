@@ -48,7 +48,7 @@ function _setup({ seedScores } = {}) {
 
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
 
   const identities = [
@@ -63,7 +63,7 @@ function _setup({ seedScores } = {}) {
       tip_id, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
       reviewer_consent,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tip_id}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tip_id}`),
     });
   }
 
@@ -71,7 +71,7 @@ function _setup({ seedScores } = {}) {
   // Default score-cache: well above REVIEWER.MIN_SCORE (800)
   const scores = seedScores || { [AUTHOR]: 900, [REV_A]: 900, [REV_B]: 900, [REV_C]: 900, [REV_D]: 900 };
   for (const [tipId, score] of Object.entries(scores)) {
-    dag.setScore(tipId, score, 0, new Date().toISOString());
+    dag.setScore(tipId, score, 0, Date.now());
   }
 
   return { dag, scoring };
@@ -109,7 +109,7 @@ describe("isEligibleReviewer — base filters", () => {
 
   test("revoked identity → not eligible", () => {
     const { dag, scoring } = _setup();
-    dag.addRevocation(REV_A, TX_TYPES.REVOKE_VOLUNTARY, new Date().toISOString(), shake256("rev:a"));
+    dag.addRevocation(REV_A, TX_TYPES.REVOKE_VOLUNTARY, Date.now(), shake256("rev:a"));
     expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(false);
   });
 
@@ -270,7 +270,7 @@ describe("selectReviewer", () => {
     const { dag, scoring } = _setup();
     // Revoke all three opted-in reviewers (REV_D wasn't opted in to start)
     for (const tipId of [REV_A, REV_B, REV_C]) {
-      dag.addRevocation(tipId, TX_TYPES.REVOKE_VOLUNTARY, new Date().toISOString(), shake256(`rev:${tipId}`));
+      dag.addRevocation(tipId, TX_TYPES.REVOKE_VOLUNTARY, Date.now(), shake256(`rev:${tipId}`));
     }
     const r = selectReviewer(dag, scoring, {
       reviewId: "rv_d4", ctid: CTID, round: 1, authorTipId: AUTHOR,

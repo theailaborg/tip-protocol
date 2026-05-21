@@ -56,28 +56,28 @@ function _setup() {
 
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US", public_key: nodeKp.publicKey, root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
 
   const scoring = initScoring(dag, { nodeId: NODE_ID });
-  dag.setScore(REVIEWER_1, 900, 0, new Date().toISOString());
+  dag.setScore(REVIEWER_1, 900, 0, Date.now());
 
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID,
@@ -130,7 +130,7 @@ describe("dag.getContentsNeedingReview", () => {
 
   test("returns content past CONTENT_GRACE.FLAGGED_MS; excludes fresh content", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
     const freshMs = nowMs - 1000;
 
@@ -143,7 +143,7 @@ describe("dag.getContentsNeedingReview", () => {
 
   test("excludes content with an open prescan review", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
     fx.seedFlaggedContent({ ctid: CTID_1, registeredAtMs: oldMs });
     fx.dag.savePrescanReview({
@@ -162,7 +162,7 @@ describe("dag.getContentsNeedingReview", () => {
     // trigger's JOIN must include EVERY non-recused review state so
     // it doesn't fire a fresh reviewer assignment on every round.
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
 
     const TERMINAL_STATES = [
@@ -187,7 +187,7 @@ describe("dag.getContentsNeedingReview", () => {
 
   test("re-triggers when latest review is in RECUSED state (need to assign new reviewer)", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
     fx.seedFlaggedContent({ ctid: CTID_1, registeredAtMs: oldMs });
     fx.dag.savePrescanReview({
@@ -204,7 +204,7 @@ describe("dag.getContentsNeedingReview", () => {
 
   test("excludes low/elevated tier; includes high/critical regardless of override", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     const oldMs = nowMs - CONTENT_GRACE.FLAGGED_MS - 1000;
 
     // low tier (excluded — never reviewed)
@@ -245,7 +245,7 @@ describe("prescan-review-trigger — h=48 review trigger", () => {
 
   test("fires PRESCAN_REVIEW_TRIGGERED for content past 48h", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     fx.seedFlaggedContent({ registeredAtMs: nowMs - CONTENT_GRACE.FLAGGED_MS - 1000 });
 
     fx.prescanReviewTrigger.checkPending(nowMs, 1);
@@ -261,7 +261,7 @@ describe("prescan-review-trigger — h=48 review trigger", () => {
 
   test("does NOT fire before 48h", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     fx.seedFlaggedContent({ registeredAtMs: nowMs - CONTENT_GRACE.FLAGGED_MS + 60_000 });
     fx.prescanReviewTrigger.checkPending(nowMs, 1);
     expect(fx.submitted.length).toBe(0);
@@ -269,7 +269,7 @@ describe("prescan-review-trigger — h=48 review trigger", () => {
 
   test("no double-fire once a review row exists for the ctid", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     fx.seedFlaggedContent({ registeredAtMs: nowMs - CONTENT_GRACE.FLAGGED_MS - 1000 });
 
     fx.prescanReviewTrigger.checkPending(nowMs, 1);
@@ -290,7 +290,7 @@ describe("PRESCAN_REVIEW_CONFIRMED — confirmed_at_ms persistence", () => {
 
   test("commit-handler sets confirmed_at_ms from certTimestamp", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = Date.parse(1772323200000);
     fx.seedFlaggedContent({ registeredAtMs: nowMs - CONTENT_GRACE.FLAGGED_MS - 1000 });
 
     fx.prescanReviewTrigger.checkPending(nowMs, 1);
@@ -332,7 +332,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
 
   test("emits auto-cascade CONTENT_DISPUTED once the 24h window has elapsed", () => {
     const fx = _setup();
-    const confirmedMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const confirmedMs = Date.parse(1772323200000);
     fx.dag.savePrescanReview({
       review_id: "rv_esc", ctid: CTID_1, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
@@ -367,7 +367,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
 
   test("does NOT escalate before 24h", () => {
     const fx = _setup();
-    const confirmedMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const confirmedMs = Date.parse(1772323200000);
     fx.dag.savePrescanReview({
       review_id: "rv_early", ctid: CTID_1, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
@@ -382,7 +382,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
 
   test("CONTENT_DISPUTED apply flips review.state to ESCALATED_TO_DISPUTE", () => {
     const fx = _setup();
-    const confirmedMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const confirmedMs = Date.parse(1772323200000);
     fx.dag.savePrescanReview({
       review_id: "rv_apply", ctid: CTID_1, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
@@ -413,7 +413,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
 
   test("idempotent — does not re-emit if a CONTENT_DISPUTED already exists for the ctid", () => {
     const fx = _setup();
-    const confirmedMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const confirmedMs = Date.parse(1772323200000);
     fx.dag.savePrescanReview({
       review_id: "rv_idem", ctid: CTID_1, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1, triggered_at_round: 1,

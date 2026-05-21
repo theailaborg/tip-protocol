@@ -144,7 +144,7 @@ describe("§14 snapshot round-trip", () => {
         // receiver's genesis bootstrap will NOT produce on its own.
         for (const { table, row } of dag.iterateCanonicalState()) {
           if (table !== "scores") continue;
-          dag.setScore(row.tip_id, 999, 7, "2026-04-01T00:00:00.000Z");
+          dag.setScore(row.tip_id, 999, 7, 1775001600000);
           return;
         }
       },
@@ -502,7 +502,7 @@ describe("§14/#49 snapshot full-history shipping", () => {
     // via `prev: dag.getRecentPrev()`.
     const followUp = {
       tx_type: "REGISTER_CONTENT",
-      timestamp: "2026-04-27T00:00:00.000Z",
+      timestamp: 1777248000000,
       prev: lastTwo,
       data: {
         ctid: "tip://content/follow-up",
@@ -545,7 +545,7 @@ describe("§14/#49 snapshot full-history shipping", () => {
       committee: fx.committee,
       support_count: 1,
       consensus_index: 0,
-      committed_at: "2026-01-01T00:00:00.000Z",
+      committed_at: 1767225600000,
       state_merkle_root: fx.stateRoot,
       txs_merkle_root: fx.txsRoot,
       ack_signer_ids: [],
@@ -608,7 +608,7 @@ describe("§14/#49 snapshot full-history shipping", () => {
       committee: fx.committee,
       support_count: 1,
       consensus_index: 0,
-      committed_at: "2026-01-01T00:00:00.000Z",
+      committed_at: 1767225600000,
       state_merkle_root: fx.stateRoot,
       txs_merkle_root: fx.txsRoot,
       ack_signer_ids: [],

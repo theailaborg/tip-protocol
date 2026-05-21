@@ -38,7 +38,7 @@ beforeAll(async () => {
 });
 
 const MS_PER_DAY = 86400000;
-const FIXED_TS = "2026-01-01T00:00:00.000Z";
+const FIXED_TS = 1767225600000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Fixture — DAG with N identities; some eligible, some not.

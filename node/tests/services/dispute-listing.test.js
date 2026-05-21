@@ -45,19 +45,19 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   for (const tipId of [AUTHOR, DISPUTER, JUROR_A, JUROR_B]) {
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
@@ -78,14 +78,14 @@ function _seedContent(dag, ctid, authorTipId = AUTHOR, status = CONTENT_STATUS.R
   dag.saveContent({
     ctid, origin_code: "OH", content_hash: shake256(`c:${ctid}`),
     author_tip_id: authorTipId, status,
-    registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256(`reg:${ctid}`),
+    registered_at: 1775001600000, tx_id: shake256(`reg:${ctid}`),
   });
 }
 
 function _fileDispute(dag, ctid, opts = {}) {
   return _addTx(dag, {
     tx_type: TX_TYPES.CONTENT_DISPUTED,
-    timestamp: opts.ts || "2026-04-29T00:00:00.000Z",
+    timestamp: opts.ts || 1777420800000,
     data: {
       ctid,
       disputer_tip_id: opts.disputer || DISPUTER,
@@ -104,7 +104,7 @@ function _fileDispute(dag, ctid, opts = {}) {
 function _summonsTx(dag, ctid, jurorTipId, opts = {}) {
   return _addTx(dag, {
     tx_type: TX_TYPES.JURY_SUMMONS,
-    timestamp: opts.ts || "2026-04-29T00:00:01.000Z",
+    timestamp: opts.ts || 1777420801000,
     data: {
       ctid,
       dispute_tx_id: opts.dispute_tx_id,
@@ -137,8 +137,8 @@ describe("listDisputesForTipId", () => {
     const fx = _setup();
     _seedContent(fx.dag, "tip://c/x");
     _seedContent(fx.dag, "tip://c/y");
-    const d1 = _fileDispute(fx.dag, "tip://c/x", { ts: "2026-04-29T00:00:00.000Z" });
-    const d2 = _fileDispute(fx.dag, "tip://c/y", { ts: "2026-04-29T01:00:00.000Z" });
+    const d1 = _fileDispute(fx.dag, "tip://c/x", { ts: 1777420800000 });
+    const d2 = _fileDispute(fx.dag, "tip://c/y", { ts: 1777424400000 });
 
     const out = fx.service.listDisputesForTipId(DISPUTER);
     expect(out.filed_by_me).toHaveLength(2);
@@ -180,12 +180,12 @@ describe("listDisputesForTipId", () => {
     _summonsTx(fx.dag, "tip://c/x", JUROR_A, { dispute_tx_id: d.tx_id });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.JURY_VOTE_COMMIT,
-      timestamp: "2026-04-29T00:00:02.000Z",
+      timestamp: 1777420802000,
       data: { ctid: "tip://c/x", juror_tip_id: JUROR_A, commitment: "x", signature: "00" },
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.JURY_VOTE_REVEAL,
-      timestamp: "2026-04-29T00:00:03.000Z",
+      timestamp: 1777420803000,
       data: { ctid: "tip://c/x", juror_tip_id: JUROR_A, vote: "MATCH", salt: "s", confirmed_origin: null, signature: "00" },
     });
 
@@ -206,7 +206,7 @@ describe("listDisputesForTipId", () => {
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.JURY_VOTE_COMMIT,
-      timestamp: "2026-04-29T00:00:02.000Z",
+      timestamp: 1777420802000,
       data: { ctid: "tip://c/x", juror_tip_id: JUROR_A, commitment: "x", signature: "00" },
     });
 
@@ -333,7 +333,7 @@ describe("getDisputeById", () => {
 
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       data: { ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH", author_tip_id: AUTHOR, node_id: NODE_ID },
     });
     expect(fx.service.getDisputeById(d.tx_id).status).toBe("resolved_dismissed");
@@ -346,17 +346,17 @@ describe("getDisputeById", () => {
     const d = _fileDispute(fx.dag, ctid);
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       data: { ctid, verdict: VERDICT.UPHELD, declared_origin: "OH", confirmed_origin: "AG", author_tip_id: AUTHOR, node_id: NODE_ID },
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: "2026-04-30T01:00:00.000Z",
+      timestamp: 1777510800000,
       data: { ctid, appellant_tip_id: AUTHOR, signature: "00", stage2_verdict: VERDICT.UPHELD, stake: 100 },
     });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.APPEAL_RESULT,
-      timestamp: "2026-04-30T02:00:00.000Z",
+      timestamp: 1777514400000,
       data: { ctid, verdict: VERDICT.DISMISSED, overturned: true, stage2_verdict: VERDICT.UPHELD, node_id: NODE_ID },
     });
 
@@ -372,14 +372,14 @@ describe("getDisputeById", () => {
     const fx = _setup();
     const ctid = "tip://c/x";
     _seedContent(fx.dag, ctid);
-    const d1 = _fileDispute(fx.dag, ctid, { ts: "2026-04-29T00:00:00.000Z" });
+    const d1 = _fileDispute(fx.dag, ctid, { ts: 1777420800000 });
     _addTx(fx.dag, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-29T12:00:00.000Z",
+      timestamp: 1777464000000,
       data: { ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH", author_tip_id: AUTHOR, node_id: NODE_ID },
     });
     const d2 = _fileDispute(fx.dag, ctid, {
-      ts: "2026-05-01T00:00:00.000Z",
+      ts: 1777593600000,
       disputer: JUROR_B,
     });
 
@@ -405,7 +405,7 @@ describe("getDisputeTimeline", () => {
     const d = _fileDispute(fx.dag, ctid);
     _addTx(fx.dag, {
       tx_type: TX_TYPES.AI_CLASSIFIER_RESULT,
-      timestamp: "2026-04-29T00:00:01.000Z",
+      timestamp: 1777420801000,
       data: { ctid, dispute_tx_id: d.tx_id, confidence: 0.8, routing: "escalate", node_id: NODE_ID },
     });
 

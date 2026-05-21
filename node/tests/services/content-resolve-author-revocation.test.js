@@ -35,15 +35,15 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: AUTHOR, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("author"),
+    registered_at: 1767225600000, tx_id: shake256("author"),
   });
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(AUTHOR, 700, 0, new Date().toISOString());
+  dag.setScore(AUTHOR, 700, 0, Date.now());
 
   dag.saveContent({
     ctid: CTID, origin_code: "OH",
@@ -53,7 +53,7 @@ function _setup() {
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
     status: CONTENT_STATUS.VERIFIED,
     prescan_flagged: false, prescan_probability: 0.1, prescan_tier: "low", override: false,
-    registered_at: "2026-04-01T00:00:00.000Z",
+    registered_at: 1775001600000,
     registered_urls: [], tx_id: shake256(`c:${CTID}`),
   });
 
@@ -89,7 +89,7 @@ describe("content-service.resolve — author_revocation", () => {
 
   test("REVOKE_VP → surfaces tx_type, reason_code, evidence_hash, issuing_vp_id, revoked_at", () => {
     const { dag, service } = _setup();
-    const ts = "2026-05-10T12:00:00.000Z";
+    const ts = 1778414400000;
     const txId = _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_VP, reason_code: "fraudulent_identity",
       evidence_hash: "ff".repeat(32), timestamp: ts,
@@ -110,7 +110,7 @@ describe("content-service.resolve — author_revocation", () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_VOLUNTARY, reason_code: "user_request",
-      evidence_hash: null, timestamp: "2026-05-10T12:00:00.000Z",
+      evidence_hash: null, timestamp: 1778414400000,
     });
     const out = service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
@@ -123,7 +123,7 @@ describe("content-service.resolve — author_revocation", () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_DECEASED, reason_code: "death_certificate",
-      evidence_hash: "aa".repeat(32), timestamp: "2026-05-10T12:00:00.000Z",
+      evidence_hash: "aa".repeat(32), timestamp: 1778414400000,
     });
     const out = service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
@@ -134,7 +134,7 @@ describe("content-service.resolve — author_revocation", () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_DEVICE, reason_code: "device_compromise",
-      evidence_hash: "bb".repeat(32), timestamp: "2026-05-10T12:00:00.000Z",
+      evidence_hash: "bb".repeat(32), timestamp: 1778414400000,
     });
     const out = service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
@@ -151,7 +151,7 @@ describe("dag.getRevocation", () => {
 
   test("returns the canonical row when present", () => {
     const { dag } = _setup();
-    const ts = "2026-05-10T12:00:00.000Z";
+    const ts = 1778414400000;
     const txId = _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_VP, reason_code: "x",
       evidence_hash: null, timestamp: ts,

@@ -50,11 +50,11 @@ function buildNarwhal({ onProducerPaused = null } = {}) {
   const dag = initDAG({ inMemory: true });
   dag.saveNode({
     node_id: SELF_ID, name: "self", public_key: selfKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z"
+    status: "active", registered_at: 1767225600000
   });
   dag.saveNode({
     node_id: PEER_ID, name: "peer", public_key: peerKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z"
+    status: "active", registered_at: 1767225600000
   });
 
   // Seed enough rotations to satisfy producer-pause in case any test
@@ -68,7 +68,7 @@ function buildNarwhal({ onProducerPaused = null } = {}) {
         { node_id: PEER_ID, public_key: peerKp.publicKey },
       ],
       prev_rotation: n - 1, signer_node_ids: [], signatures: [],
-      payload_hash: `r-${n}`, committed_at: "2026-01-01T00:00:00.000Z",
+      payload_hash: `r-${n}`, committed_at: 1767225600000,
     });
   }
 
@@ -347,7 +347,7 @@ describe("narwhal tri-state join FSM", () => {
           tx_type: "COMMITTEE_ROTATION",
           data: { rotation_number: 6, effective_round: 1200 },
           signature: "00".repeat(64),
-          timestamp: "2026-05-04T12:00:00.000Z",
+          timestamp: 1777896000000,
           prev: [],
         };
         const r = mp.add(fakeTx);
@@ -424,7 +424,7 @@ describe("narwhal tri-state join FSM", () => {
           tx_type: "COMMITTEE_ROTATION",
           data: { rotation_number: 6, effective_round: epochLength * 6 },
           signature: "00".repeat(64),
-          timestamp: "2026-05-04T12:00:00.000Z",
+          timestamp: 1777896000000,
           prev: [],
         };
         const r = sharedMempool.add(rotTx);

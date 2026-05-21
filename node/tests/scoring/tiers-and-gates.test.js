@@ -41,7 +41,7 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   return { dag, scoring: initScoring(dag, { nodeId: "tip://node/test" }) };
 }
@@ -50,9 +50,9 @@ function _seedIdentity(dag, tipId, score) {
   dag.saveIdentity({
     tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 // ─── Tier-threshold constants from genesis ──────────────────────────────────
@@ -114,7 +114,7 @@ describe("canDispute — score gate (>= 400)", () => {
     dag.saveContent({
       ctid, origin_code: ORIGIN.OH, content_hash: "00",
       author_tip_id: "tip://id/author", status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+      registered_at: 1767225600000, tx_id: "00",
     });
     return { tipId, ctid };
   }
@@ -154,7 +154,7 @@ describe("canDispute — score gate (>= 400)", () => {
   test("revoked TIP-ID: rejected even at score 1000", () => {
     const fx = _setup();
     const { tipId, ctid } = _seedDisputable(fx.dag, 1000);
-    fx.dag.addRevocation(tipId, "voluntary", "2026-04-01T00:00:00.000Z", "00");
+    fx.dag.addRevocation(tipId, "voluntary", 1775001600000, "00");
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
@@ -182,7 +182,7 @@ describe("isJuryEligible — score gate (>= 700) + revocation check", () => {
   test("score = 1000 but revoked: not eligible", () => {
     const fx = _setup();
     _seedIdentity(fx.dag, "tip://id/j", 1000);
-    fx.dag.addRevocation("tip://id/j", "voluntary", "2026-04-01T00:00:00.000Z", "00");
+    fx.dag.addRevocation("tip://id/j", "voluntary", 1775001600000, "00");
     expect(fx.scoring.isJuryEligible("tip://id/j")).toBe(false);
   });
 });

@@ -1310,7 +1310,7 @@ class SQLiteStore {
         committee         TEXT NOT NULL,   -- JSON sorted array of node_ids
         support_count     INTEGER NOT NULL,
         consensus_index   INTEGER NOT NULL,
-        committed_at INTEGER NOT NULL,   -- ISO8601 wall-clock
+        committed_at INTEGER NOT NULL,
         -- §14 snapshot-sync fields (two separate roots, both signed by 2f+1 committee):
         state_merkle_root TEXT NOT NULL,   -- hash over canonical derived state tables (answers "is my app state at round R correct?")
         txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
@@ -1372,7 +1372,7 @@ class SQLiteStore {
         signer_node_ids    TEXT NOT NULL DEFAULT '[]',  -- JSON sorted node_ids array
         signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
         payload_hash       TEXT,              -- hex; what each signer signed
-        committed_at INTEGER NOT NULL,     -- ISO8601 wall-clock (informational only — not in payload_hash)
+        committed_at INTEGER NOT NULL,
         created_at         INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);

@@ -53,14 +53,14 @@ beforeAll(async () => {
 // (NO_QUORUM auto-escalation) can pass `jurorCount: JURY.QUORUM - 1`
 // and tests that want a strict (ctid, stage) dedup case can pass any
 // number ≥ 2.
-function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false, withReveals = false, jurorCount = JURY.QUORUM } = {}) {
+function _setup({ revealDeadline = 1776211200000, isAppeal = false, withReveals = false, jurorCount = JURY.QUORUM } = {}) {
   const dag = initDAG({ dbPath: ":memory:" });
 
   const nodeKp = generateMLDSAKeypair();
   const NODE_ID = "tip://node/n1";
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
   const scoring = initScoring(dag, config);
@@ -78,15 +78,15 @@ function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false,
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: kp.publicKey, root_public_key: "00",
       vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   dag.saveContent({
     ctid, origin_code: "OH", content_hash: shake256("c1"),
     author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`content:${ctid}`),
+    registered_at: 1767225600000, tx_id: shake256(`content:${ctid}`),
   });
 
   // Helper: sign a node-auto tx with prev pulled from current DAG.
@@ -99,7 +99,7 @@ function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false,
 
   const disputeTx = signNodeTx({
     tx_type: TX_TYPES.CONTENT_DISPUTED,
-    timestamp: "2026-01-01T00:00:00.000Z",
+    timestamp: 1767225600000,
     prev: [],
     data: {
       ctid, disputer_tip_id: disputerTipId, reason: "origin_mismatch",
@@ -114,11 +114,11 @@ function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false,
   for (const jurorTipId of jurorTipIds) {
     const summons = signNodeTx({
       tx_type: TX_TYPES.JURY_SUMMONS,
-      timestamp: "2026-01-01T00:00:00.000Z",
+      timestamp: 1767225600000,
       prev: [],
       data: {
         ctid, dispute_tx_id: disputeTx.tx_id, juror_tip_id: jurorTipId,
-        commit_deadline: "2026-01-02T00:00:00.000Z",
+        commit_deadline: 1767312000000,
         reveal_deadline: revealDeadline,
         is_appeal: isAppeal,
       },
@@ -136,7 +136,7 @@ function _setup({ revealDeadline = "2026-04-15T00:00:00.000Z", isAppeal = false,
       data.signature = signBody(signedFields, kp.privateKey);
       const revealTx = signNodeTx({
         tx_type: TX_TYPES.JURY_VOTE_REVEAL,
-        timestamp: "2026-04-10T00:00:00.000Z",  // before reveal_deadline
+        timestamp: 1775779200000,  // before reveal_deadline
         prev: [],
         data,
       });
@@ -165,7 +165,7 @@ describe("verdict-trigger: heap maintenance via onTxCommitted", () => {
     const entry = fx.trigger.pending()[0];
     expect(entry.ctid).toBe(fx.ctid);
     expect(entry.stage).toBe("jury");
-    expect(entry.deadline).toBe(new Date("2026-04-15T00:00:00.000Z").getTime());
+    expect(entry.deadline).toBe(new Date(1776211200000).getTime());
   });
 
   test("subsequent JURY_SUMMONS for SAME (ctid, stage) does NOT add duplicate entry", () => {
@@ -181,8 +181,8 @@ describe("verdict-trigger: heap maintenance via onTxCommitted", () => {
   });
 
   test("JURY_SUMMONS for DIFFERENT stages (jury + appeal) add separate entries", () => {
-    const fxJury = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", isAppeal: false });
-    const fxAppeal = _setup({ revealDeadline: "2026-05-01T00:00:00.000Z", isAppeal: true });
+    const fxJury = _setup({ revealDeadline: 1776211200000, isAppeal: false });
+    const fxAppeal = _setup({ revealDeadline: 1777593600000, isAppeal: true });
 
     // Push jury summons + appeal summons (with same ctid in this test) into one trigger.
     const trigger = fxJury.trigger;
@@ -259,7 +259,7 @@ describe("verdict-trigger: boot rehydration", () => {
     // for realism.
     const adj = fx.signNodeTx({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-15T00:00:01.000Z",
+      timestamp: 1776211201000,
       prev: [],
       data: {
         ctid: fx.ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH",
@@ -279,7 +279,7 @@ describe("verdict-trigger: boot rehydration", () => {
     const fx = _setup();
     const appeal = fx.signNodeTx({
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: "2026-04-15T00:00:01.000Z",
+      timestamp: 1776211201000,
       prev: [],
       data: { ctid: fx.ctid, appellant_tip_id: fx.disputerTipId, stage2_verdict: VERDICT.UPHELD, stake: 0 },
     });
@@ -305,23 +305,23 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     const fx = _setup();
     // No rehydrate, no commits → heap is empty → checkPending shouldn't
     // submit anything regardless of cert.timestamp.
-    fx.trigger.checkPending(new Date("2030-01-01T00:00:00.000Z").getTime());
+    fx.trigger.checkPending(new Date(1893456000000).getTime());
     expect(fx.submitted.length).toBe(0);
   });
 
   test("noop when cert.timestamp is below the smallest deadline", () => {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z" });
+    const fx = _setup({ revealDeadline: 1776211200000 });
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date("2026-04-10T00:00:00.000Z").getTime());
+    fx.trigger.checkPending(new Date(1775779200000).getTime());
     expect(fx.submitted.length).toBe(0);
     expect(fx.trigger.size()).toBe(1);
   });
 
   test("fires verdict batch when cert.timestamp crosses the deadline", () => {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals: true });
+    const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
 
-    fx.trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime());
+    fx.trigger.checkPending(new Date(1776211201000).getTime());
 
     expect(fx.submitted.length).toBe(1);
     const batch = fx.submitted[0];
@@ -335,13 +335,13 @@ describe("verdict-trigger: checkPending (post-round)", () => {
   });
 
   test("fires APPEAL_RESULT batch for appeal-stage entries", () => {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", isAppeal: true, withReveals: true });
+    const fx = _setup({ revealDeadline: 1776211200000, isAppeal: true, withReveals: true });
 
     // Need a Stage 2 ADJUDICATION_RESULT and APPEAL_FILED in the DAG so
     // buildAppealBatch has the prior context to compute the reversal.
     const adj = fx.signNodeTx({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-12T00:00:00.000Z",
+      timestamp: 1775952000000,
       prev: [],
       data: {
         ctid: fx.ctid, verdict: VERDICT.UPHELD,
@@ -355,7 +355,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     fx.dag.addTx(adj);
     const appealFiled = fx.signNodeTx({
       tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp: "2026-04-13T00:00:00.000Z",
+      timestamp: 1776038400000,
       prev: [],
       data: {
         ctid: fx.ctid, appellant_tip_id: fx.authorTipId,
@@ -365,7 +365,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     fx.dag.addTx(appealFiled);
 
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime());
+    fx.trigger.checkPending(new Date(1776211201000).getTime());
 
     expect(fx.submitted.length).toBe(1);
     const batch = fx.submitted[0];
@@ -374,13 +374,13 @@ describe("verdict-trigger: checkPending (post-round)", () => {
   });
 
   test("idempotency — skips ctid that already has ADJUDICATION_RESULT in DAG", () => {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals: true });
+    const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
 
     // Plant a verdict in the DAG before checkPending fires.
     const adj = fx.signNodeTx({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-15T00:00:01.000Z",
+      timestamp: 1776211201000,
       prev: [],
       data: {
         ctid: fx.ctid, verdict: VERDICT.DISMISSED, declared_origin: "OH",
@@ -391,12 +391,12 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     });
     fx.dag.addTx(adj);
 
-    fx.trigger.checkPending(new Date("2026-04-15T00:00:02.000Z").getTime());
+    fx.trigger.checkPending(new Date(1776211202000).getTime());
     expect(fx.submitted.length).toBe(0);  // skipped — already resolved
   });
 
   test("submitBatch errors are non-fatal — heap entry still consumed; next round retries via rehydrate", () => {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals: true });
+    const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
 
     // Replace submitBatch with one that throws (simulates mempool full).
@@ -408,7 +408,7 @@ describe("verdict-trigger: checkPending (post-round)", () => {
     throwingTrigger.rehydrate();
 
     expect(() =>
-      throwingTrigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime())
+      throwingTrigger.checkPending(new Date(1776211201000).getTime())
     ).not.toThrow();
     expect(attempts).toBe(1);  // we DID try
     expect(throwingTrigger.size()).toBe(0);  // entry popped (won't retry until next rehydrate)
@@ -424,7 +424,7 @@ describe("verdict-trigger: defensive input handling", () => {
     const trigger = createVerdictTrigger({ dag: fx.dag, /* no jury, scoring, submitBatch */ });
     trigger.rehydrate();
     expect(trigger.size()).toBe(1);  // heap still populated
-    trigger.checkPending(new Date("2030-01-01T00:00:00.000Z").getTime());
+    trigger.checkPending(new Date(1893456000000).getTime());
     // No submitBatch was called, but no error either. Heap untouched
     // because the function short-circuited before popping.
     expect(trigger.size()).toBe(1);
@@ -450,7 +450,7 @@ describe("verdict-trigger: defensive input handling", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe("verdict-trigger: round-modulo leader gating", () => {
   function _setupWithGate({ committeeNodes, withReveals = true }) {
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals });
+    const fx = _setup({ revealDeadline: 1776211200000, withReveals });
     // Re-create trigger with a getCommittee callback returning the
     // committee we want to test against. Sort order is internal.
     const submitted = [];
@@ -470,7 +470,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const { trigger, submitted } = _setupWithGate({
       committeeNodes: ["tip://node/n3", "tip://node/n1", "tip://node/n2"],
     });
-    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 0);
+    trigger.checkPending(new Date(1776211201000).getTime(), 0);
     expect(submitted.length).toBe(1);
   });
 
@@ -479,7 +479,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const { trigger, submitted } = _setupWithGate({
       committeeNodes: ["tip://node/n1", "tip://node/n2", "tip://node/n3"],
     });
-    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 1);
+    trigger.checkPending(new Date(1776211201000).getTime(), 1);
     expect(submitted.length).toBe(0);
     // Heap entry stays — next round's leader will pick it up.
     expect(trigger.size()).toBe(1);
@@ -489,25 +489,25 @@ describe("verdict-trigger: round-modulo leader gating", () => {
     const committee = ["tip://node/n1", "tip://node/n2", "tip://node/n3"];
     // round 0 → n1 (us, fires)
     const { trigger: t0, submitted: s0 } = _setupWithGate({ committeeNodes: committee });
-    t0.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 0);
+    t0.checkPending(new Date(1776211201000).getTime(), 0);
     expect(s0.length).toBe(1);
 
     // round 3 → n1 again (3 % 3 == 0 → sorted[0] = n1, fires)
     const { trigger: t3, submitted: s3 } = _setupWithGate({ committeeNodes: committee });
-    t3.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 3);
+    t3.checkPending(new Date(1776211201000).getTime(), 3);
     expect(s3.length).toBe(1);
 
     // round 5 → sorted[5 % 3] = sorted[2] = n3 (not us, no fire)
     const { trigger: t5, submitted: s5 } = _setupWithGate({ committeeNodes: committee });
-    t5.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 5);
+    t5.checkPending(new Date(1776211201000).getTime(), 5);
     expect(s5.length).toBe(0);
   });
 
   test("no getCommittee → fires as legacy (every node)", () => {
     // No leader gate → trigger fires regardless.
-    const fx = _setup({ revealDeadline: "2026-04-15T00:00:00.000Z", withReveals: true });
+    const fx = _setup({ revealDeadline: 1776211200000, withReveals: true });
     fx.trigger.rehydrate();
-    fx.trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime(), 99);
+    fx.trigger.checkPending(new Date(1776211201000).getTime(), 99);
     expect(fx.submitted.length).toBe(1);
   });
 
@@ -516,7 +516,7 @@ describe("verdict-trigger: round-modulo leader gating", () => {
       // n2 is leader for round 0, but we don't pass round → gate skipped.
       committeeNodes: ["tip://node/n2", "tip://node/n3", "tip://node/n4"],
     });
-    trigger.checkPending(new Date("2026-04-15T00:00:01.000Z").getTime());
+    trigger.checkPending(new Date(1776211201000).getTime());
     expect(submitted.length).toBe(1);
   });
 });

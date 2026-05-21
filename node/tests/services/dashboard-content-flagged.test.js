@@ -44,18 +44,18 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   for (const tip_id of [CREATOR, OTHER]) {
     dag.saveIdentity({
       tip_id, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tip_id}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tip_id}`),
     });
   }
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(CREATOR, 700, 0, new Date().toISOString());
-  dag.setScore(OTHER, 700, 0, new Date().toISOString());
+  dag.setScore(CREATOR, 700, 0, Date.now());
+  dag.setScore(OTHER, 700, 0, Date.now());
 
   const service = createDisputeService({
     dag, scoring, config: { nodeId: "tip://node/n1" },

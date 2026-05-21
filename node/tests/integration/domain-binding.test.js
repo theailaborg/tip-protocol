@@ -43,7 +43,7 @@ function stubVerifier(outcome = "ok") {
     verify: jest.fn(async (method, domain, tipId) => {
       if (outcome === "ok") {
         return {
-          verified: true, method, verified_at: new Date().toISOString(),
+          verified: true, method, verified_at: Date.now(),
           evidence: { url: null, body: null, txt: [`tip-id=${tipId}`] },
           error: null,
         };
@@ -62,11 +62,11 @@ function setup({ verifier } = {}) {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
 
   const config = {
@@ -98,7 +98,7 @@ function seedOrgIdentity(dag, tipId, kp) {
     vp_id: VP_ID, verification_tier: "T1",
     tip_id_type: TIP_ID_TYPES.ORGANIZATION,
     founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
     tx_id: shake256(`id:${tipId}`),
     creator_name: "Acme News",
   });
@@ -111,7 +111,7 @@ function seedPersonalIdentity(dag, tipId, kp) {
     vp_id: VP_ID, verification_tier: "T1",
     tip_id_type: TIP_ID_TYPES.PERSONAL,
     founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
     tx_id: shake256(`id:${tipId}`),
     creator_name: "Some Person",
   });
@@ -119,7 +119,7 @@ function seedPersonalIdentity(dag, tipId, kp) {
 
 function buildSignedClaim({ tipId, privKey, domain, method = "auto" }) {
   // Anchor `claimed_at` 60s in the past so it stays before the verifier
-  // mock's `verified_at: new Date().toISOString()`. Real clients use the
+  // mock's `verified_at: Date.now()`. Real clients use the
   // current wall clock; a fixed future date here would trip tx-validator's
   // `verified_at must not precede claimed_at` check on slow CI hosts.
   const claimed_at = new Date(Date.now() - 60_000).toISOString();
@@ -227,8 +227,8 @@ describe("domain already bound to a different TIP-ID", () => {
       tip_id: `tip://id/US-${shake256("race-a").slice(0, 16)}`,
       binding_state: "verified",
       method: "http",
-      claimed_at: "2026-05-12T09:00:00.000Z",
-      verified_at: "2026-05-12T09:00:01.000Z",
+      claimed_at: 1778576400000,
+      verified_at: 1778576401000,
       node_id: NODE_ID,
       claim_signature: "00".repeat(8),
       binding_signature: "00".repeat(8),

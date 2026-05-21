@@ -188,7 +188,7 @@ class KnexAdapter {
       _pk(t, "tx_id");
       t.string("tx_type", 64).notNullable();
       t.text("data").notNullable();
-      t.string("timestamp", 64).notNullable();
+      t.bigInteger("timestamp").notNullable();
       t.text("prev").notNullable().defaultTo("[]");
       t.text("signature").nullable();
       _id(t, "subject_tip_id").nullable();
@@ -266,7 +266,7 @@ class KnexAdapter {
     await ensure("revocations", t => {
       _pk(t, "tip_id");
       t.string("tx_type", 64).notNullable();
-      t.string("timestamp", 64).notNullable();
+      t.bigInteger("timestamp").notNullable();
       _id(t, "tx_id").notNullable();
     });
 

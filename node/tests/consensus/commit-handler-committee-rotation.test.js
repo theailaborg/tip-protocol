@@ -92,7 +92,7 @@ function _replaceRotation0(dbPath, committee) {
       `INSERT INTO committee_history (rotation_number, effective_round, committee, prev_rotation,
                                        signer_node_ids, signatures, payload_hash, committed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, '2026-01-01T00:00:00.000Z');
+    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, 1767225600000);
   } finally {
     raw.close();
   }
@@ -131,7 +131,7 @@ function _buildRotationTx({
 
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
-    timestamp: "2026-04-30T00:00:00.000Z",
+    timestamp: 1777507200000,
     // Genesis-bridged prev so validateTransaction's "non-genesis must have
     // prev references" rule passes. genesis tx is in the DAG already from
     // bootstrap so prev-existence check resolves.
@@ -165,7 +165,7 @@ function _setup() {
   const driverKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test-driver", public_key: driverKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   // Also register each previous-committee member as a registered node
   // so general validation paths (which look up node by node_id) don't
@@ -175,7 +175,7 @@ function _setup() {
   for (const m of prevCommittee) {
     dag.saveNode({
       node_id: m.node_id, name: "test", public_key: m.public_key,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
   }
 

@@ -63,25 +63,25 @@ function _setup() {
 
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US",
     public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_TIP, region: "US",
     public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer"),
   });
 
   const config = {
@@ -89,7 +89,7 @@ function _setup() {
   };
   const scoring = initScoring(dag, config);
 
-  const seedTs = new Date("2026-02-01T00:00:00.000Z").toISOString();
+  const seedTs = new Date(1769904000000).toISOString();
   dag.setScore(REVIEWER_TIP, 900, 0, seedTs);
   dag.setScore(CREATOR, 700, 0, seedTs);
 
@@ -294,7 +294,7 @@ describe("prescan-review end-to-end flow", () => {
     const { withTxId } = require(path.join(SRC, "services", "helpers"));
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
       prev: fx.dag.getRecentPrev(),
       data: {
         ctid: CTID,

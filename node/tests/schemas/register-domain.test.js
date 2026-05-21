@@ -133,7 +133,7 @@ describe("normalizeDomain — dev-mode localhost", () => {
 
 describe("buildSigningPayload — exact 4-field canonical shape", () => {
   const minimal = (overrides = {}) => schema.buildSigningPayload({
-    claimed_at: "2026-05-12T10:00:00.000Z",
+    claimed_at: 1778580000000,
     domain: "example.com",
     method: DOMAIN_VERIFICATION_METHODS.AUTO,
     tip_id: ORG_TIP,
@@ -153,7 +153,7 @@ describe("buildSigningPayload — exact 4-field canonical shape", () => {
 
   test("method defaults to 'auto' when null", () => {
     const p = schema.buildSigningPayload({
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: null,
       tip_id: ORG_TIP,
@@ -168,7 +168,7 @@ describe("buildSigningPayload — exact 4-field canonical shape", () => {
 
   test("missing tip_id rejected", () => {
     expect(() => schema.buildSigningPayload({
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
     })).toThrow(expect.objectContaining({ status: 400, code: "tip_id_required" }));
@@ -196,7 +196,7 @@ describe("sign / verify round-trip", () => {
   test("a correctly-signed payload verifies", () => {
     const kp = generateMLDSAKeypair();
     const payload = schema.buildSigningPayload({
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
       tip_id: ORG_TIP,
@@ -208,7 +208,7 @@ describe("sign / verify round-trip", () => {
   test("tampered field breaks verification", () => {
     const kp = generateMLDSAKeypair();
     const payload = schema.buildSigningPayload({
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
       tip_id: ORG_TIP,
@@ -222,7 +222,7 @@ describe("sign / verify round-trip", () => {
     const a = generateMLDSAKeypair();
     const b = generateMLDSAKeypair();
     const payload = schema.buildSigningPayload({
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
       tip_id: ORG_TIP,
@@ -286,7 +286,7 @@ describe("validateRequest", () => {
     tip_id: ORG_TIP,
     domain: "Example.COM",
     method: "auto",
-    claimed_at: "2026-05-12T10:00:00.000Z",
+    claimed_at: 1778580000000,
     signature: "00".repeat(8),
   });
 

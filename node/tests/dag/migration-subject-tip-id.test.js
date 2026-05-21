@@ -95,13 +95,13 @@ describe("dag migration — subject_tip_id (pre-migration → migrated DB)", () 
     ).run(
       "a".repeat(64), "REGISTER_IDENTITY",
       JSON.stringify({ tip_id: "tip://id/US-1234567890abcdef", region: "US" }),
-      "2026-04-30T00:00:00.000Z", "[]", null
+      1777507200000, "[]", null
     );
     seedDb.prepare("INSERT INTO mempool (tx_id, tx_data) VALUES (?,?)").run(
       "b".repeat(64),
       JSON.stringify({
         tx_id: "b".repeat(64), tx_type: "SCORE_UPDATE",
-        timestamp: "2026-04-30T01:00:00.000Z",
+        timestamp: 1777510800000,
         data: { tip_id: "tip://id/US-fedcba9876543210", delta: 1, reason: "test" },
       })
     );

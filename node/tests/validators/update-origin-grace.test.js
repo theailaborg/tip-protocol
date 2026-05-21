@@ -31,7 +31,7 @@ beforeAll(async () => { await initCrypto(); });
 
 const VP_ID = "tip://vp/v1";
 const AUTHOR_ID = "tip://id/US-aaaaaaaaaaaaaaaa";
-const REGISTERED_AT = "2026-01-01T00:00:00.000Z";
+const REGISTERED_AT = 1767225600000;
 const REGISTERED_AT_MS = new Date(REGISTERED_AT).getTime();
 
 function _setup() {
@@ -219,7 +219,7 @@ describe("canUpdateOrigin — grace window dispatch", () => {
       // wouldn't reject by itself — the only failure path under test
       // here is the open-review gate.
       const seeded = dag.getContent(CTID);
-      dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
+      dag.saveContent({ ...seeded, registered_at: Date.now() });
       dag.savePrescanReview({
         review_id: "rv_open", ctid: CTID, creator_tip_id: AUTHOR_ID,
         assigned_reviewer: "tip://id/US-rrrrrrrrrrrrrrrr",

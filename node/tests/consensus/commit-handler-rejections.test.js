@@ -53,7 +53,7 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   // VP gets a real keypair so REGISTER_IDENTITY tests can produce a
   // valid `vp_signature` and reach the business-rule layer
@@ -62,7 +62,7 @@ function _setup() {
   dag.saveVP({
     vp_id: "tip://vp/v1", name: "vp1", jurisdiction: "US",
     jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
   });
   // Author identity gets a real keypair so REGISTER_CONTENT tests can
   // produce a valid `data.signature` and reach the business-rule layer.
@@ -71,9 +71,9 @@ function _setup() {
   dag.saveIdentity({
     tip_id: authorTipId, region: "US", public_key: authorKp.publicKey, root_public_key: "00",
     vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("id:author"),
+    registered_at: 1767225600000, tx_id: shake256("id:author"),
   });
-  dag.setScore(authorTipId, 750, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(authorTipId, 750, 0, 1767225600000);
 
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
   const scoring = initScoring(dag, config);
@@ -132,7 +132,7 @@ describe("commit-handler — structural validation failures", () => {
     // commit-handler logs warn + drops. Pre-fix: no row, user sees 404.
     const tx = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data: {
         // tip_id intentionally omitted
@@ -172,7 +172,7 @@ describe("commit-handler — signature verification failures", () => {
     const wrongKp = generateMLDSAKeypair();
     const tx = _signByNode(fx.dag, wrongKp, {
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data: {
         tip_id: fx.authorTipId,
@@ -224,7 +224,7 @@ describe("commit-handler — business-rule revalidation: identity_already_regist
     data.vp_signature = _signRegisterIdentity(fx.vpKp, data);
     const tx = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data,
     });
@@ -254,7 +254,7 @@ describe("commit-handler — business-rule revalidation: content_already_registe
     fx.dag.saveContent({
       ctid, origin_code: "OH", content_hash: shake256("c1"),
       author_tip_id: fx.authorTipId, status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`content:${ctid}`),
+      registered_at: 1767225600000, tx_id: shake256(`content:${ctid}`),
     });
 
     const data = {
@@ -266,7 +266,7 @@ describe("commit-handler — business-rule revalidation: content_already_registe
     data.signature = _signRegisterContent(fx.authorKp, data);
     const tx = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data,
     });
@@ -290,18 +290,18 @@ describe("commit-handler — business-rule revalidation: dedup loser → REVALID
     // pre-conditions it needs for derived-state application.
     fx.dag.saveContent({
       ctid, origin_code: "OH", content_hash: shake256("c"), author_tip_id: fx.authorTipId,
-      status: CONTENT_STATUS.DISPUTED, registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`c:${ctid}`),
+      status: CONTENT_STATUS.DISPUTED, registered_at: 1767225600000, tx_id: shake256(`c:${ctid}`),
     });
 
     const adj1 = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data: { ctid, declared_origin: "OH", verdict: "DISMISSED", node_id: NODE_ID },
     });
     const adj2 = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-04-30T00:00:01.000Z",  // different ts so tx_id differs
+      timestamp: 1777507201000,  // different ts so tx_id differs
       prev: [],
       data: { ctid, declared_origin: "OH", verdict: "DISMISSED", node_id: NODE_ID },
     });
@@ -347,13 +347,13 @@ describe("commit-handler — atomic transaction rollback drops all validated txs
 
     const tx1 = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data: { tip_id: fx.authorTipId, delta: 1, reason: "tx1", node_id: NODE_ID },
     });
     const tx2 = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: "2026-04-30T00:00:01.000Z",
+      timestamp: 1777507201000,
       prev: [],
       data: { tip_id: fx.authorTipId, delta: 1, reason: "tx2", node_id: NODE_ID },
     });
@@ -386,7 +386,7 @@ describe("commit-handler — committed txs do not appear in tx_rejections", () =
     const fx = _setup();
     const tx = _signByNode(fx.dag, fx.nodeKp, {
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: "2026-04-30T00:00:00.000Z",
+      timestamp: 1777507200000,
       prev: [],
       data: { tip_id: fx.authorTipId, delta: 5, reason: "happy_path", node_id: NODE_ID },
     });

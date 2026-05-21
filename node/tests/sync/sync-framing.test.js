@@ -334,7 +334,7 @@ describe("§19 sync handler — framed wire format", () => {
       {
         tx_id: "tx-001",
         tx_type: "REGISTER_IDENTITY",
-        timestamp: "2026-04-24T10:00:00.000Z",
+        timestamp: 1777024800000,
         prev: ["prev-1", "prev-2"],
         data: { region: "US", tier: "T1" },
         signature: "aabb",
@@ -342,7 +342,7 @@ describe("§19 sync handler — framed wire format", () => {
       {
         tx_id: "tx-002",
         tx_type: "REGISTER_CONTENT",
-        timestamp: "2026-04-24T10:00:01.000Z",
+        timestamp: 1777024801000,
         prev: ["tx-001"],
         data: { ctid: "tip://c/abc", origin: "OH" },
         signature: "ccdd",
@@ -350,7 +350,7 @@ describe("§19 sync handler — framed wire format", () => {
       {
         tx_id: "tx-003",
         tx_type: "VERIFY_CONTENT",
-        timestamp: "2026-04-24T10:00:02.000Z",
+        timestamp: 1777024802000,
         prev: [],
         data: {},
         signature: "eeff",

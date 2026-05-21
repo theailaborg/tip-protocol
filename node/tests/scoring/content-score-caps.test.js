@@ -46,11 +46,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
 
   const config = {
@@ -71,9 +71,9 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     tip_id: tipId, region: "US",
     public_key: kp.publicKey, root_public_key: kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 // Seed content directly into the DAG. The service's register() submits a
@@ -84,7 +84,7 @@ function _seedContent(dag, ctid, authorTipId, origin = ORIGIN.OH) {
   dag.saveContent({
     ctid, origin_code: origin, content_hash: shake256(`c:${ctid}`),
     author_tip_id: authorTipId, status: CONTENT_STATUS.REGISTERED,
-    registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256(`reg:${ctid}`),
+    registered_at: 1775001600000, tx_id: shake256(`reg:${ctid}`),
   });
 }
 

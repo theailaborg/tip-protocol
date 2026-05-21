@@ -21,7 +21,7 @@ const rulesTx = (tx_type, data = {}) => ({ tx_type, data });
 const fullGenesisTx = () => ({
   tx_type:   "GENESIS",
   tx_id:     "genesis-test-bootstrap-gate",
-  timestamp: new Date().toISOString(),
+  timestamp: Date.now(),
   data:      {},
   prev:      [],
 });

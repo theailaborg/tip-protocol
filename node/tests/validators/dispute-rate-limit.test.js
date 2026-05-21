@@ -41,19 +41,19 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   for (const tip_id of [AUTHOR, FILER]) {
     dag.saveIdentity({
       tip_id, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tip_id}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tip_id}`),
     });
   }
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
   // Filer score must be >= MIN_SCORE_TO_DISPUTE; author score is irrelevant.
-  dag.setScore(FILER, 900, 0, new Date().toISOString());
-  dag.setScore(AUTHOR, 700, 0, new Date().toISOString());
+  dag.setScore(FILER, 900, 0, Date.now());
+  dag.setScore(AUTHOR, 700, 0, Date.now());
   return { dag, scoring };
 }
 
@@ -67,7 +67,7 @@ function _seedContent(dag, ctid) {
     status: CONTENT_STATUS.REGISTERED,
     prescan_flagged: false, prescan_probability: 0.1, prescan_tier: "low",
     override: false,
-    registered_at: new Date().toISOString(),
+    registered_at: Date.now(),
     registered_urls: [], tx_id: shake256(`c:${ctid}`),
   });
 }
@@ -178,9 +178,9 @@ describe("canDispute — Phase 3 per-filer rate limit", () => {
     fx.dag.saveIdentity({
       tip_id: OTHER, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("other"),
+      registered_at: 1767225600000, tx_id: shake256("other"),
     });
-    fx.dag.setScore(OTHER, 900, 0, new Date().toISOString());
+    fx.dag.setScore(OTHER, 900, 0, Date.now());
 
     const ctid = "tip://c/OH-ggggggggggggg1-0001";
     _seedContent(fx.dag, ctid);

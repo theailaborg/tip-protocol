@@ -42,7 +42,7 @@ describe("state_merkle_root", () => {
     const before = computeStateMerkleRoot(dag);
     dag.saveNode({
       node_id: "NODE_X", name: "x", public_key: "deadbeef",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     expect(computeStateMerkleRoot(dag)).not.toBe(before);
   });
@@ -53,10 +53,10 @@ describe("state_merkle_root", () => {
       tip_id: "tip:dev:us:abc", region: "US",
       public_key: "beef", vp_id: "vp:founding",
       verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: "t1",
+      registered_at: 1767225600000, tx_id: "t1",
     });
     const before = computeStateMerkleRoot(dag);
-    dag.addRevocation("tip:dev:us:abc", "REVOKE_VOLUNTARY", "2026-02-01T00:00:00.000Z", "tx-revoke");
+    dag.addRevocation("tip:dev:us:abc", "REVOKE_VOLUNTARY", 1769904000000, "tx-revoke");
     expect(computeStateMerkleRoot(dag)).not.toBe(before);
   });
 
@@ -64,7 +64,7 @@ describe("state_merkle_root", () => {
     const dag = initDAG({ dbPath: ":memory:" });
     dag.saveNode({
       node_id: "N1", name: "n1", public_key: "abc",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     const bulk = computeStateMerkleRoot(dag);
     const b = createStateRootBuilder();
@@ -109,7 +109,7 @@ describe("state_merkle_root", () => {
             public_key: "aa", root_public_key: "bb",
             vp_id: "vp:founding", verification_tier: "T1",
             founding: false, status: "active",
-            registered_at: "2026-01-01T00:00:00.000Z", tx_id: "tx-alpha",
+            registered_at: 1767225600000, tx_id: "tx-alpha",
           };
           sqliteDag.saveIdentity(rec); memDag.saveIdentity(rec);
         },
@@ -117,7 +117,7 @@ describe("state_merkle_root", () => {
           const rec = {
             node_id: "NODE_P", name: "peer node",
             public_key: "cc", status: "active",
-            registered_at: "2026-01-01T00:00:00.000Z",
+            registered_at: 1767225600000,
           };
           sqliteDag.saveNode(rec); memDag.saveNode(rec);
         },
@@ -127,9 +127,9 @@ describe("state_merkle_root", () => {
         },
         () => {
           sqliteDag.addRevocation("tip:dev:us:alpha", "REVOKE_VOLUNTARY",
-            "2026-02-01T00:00:00.000Z", "tx-revoke");
+            1769904000000, "tx-revoke");
           memDag.addRevocation("tip:dev:us:alpha", "REVOKE_VOLUNTARY",
-            "2026-02-01T00:00:00.000Z", "tx-revoke");
+            1769904000000, "tx-revoke");
         },
       ];
       for (const w of writes) w();

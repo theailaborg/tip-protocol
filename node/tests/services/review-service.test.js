@@ -49,34 +49,34 @@ function _setup() {
 
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US",
     public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_2, region: "US",
     public_key: reviewer2Kp.publicKey, root_public_key: reviewer2Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer2"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer2"),
   });
 
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
   // Seed scores so listReviewerPool eligibility passes for any opted-in
   // reviewer in tests that don't explicitly set their own scores.
-  const now = new Date().toISOString();
+  const now = Date.now();
   dag.setScore(REVIEWER_1, 900, 0, now);
   dag.setScore(REVIEWER_2, 900, 0, now);
   dag.setScore(CREATOR, 700, 0, now);
@@ -87,7 +87,7 @@ function _setup() {
   const NODE_ID = "tip://node/n1";
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -476,7 +476,7 @@ describe("review-service.listReviewerPool", () => {
 
   test("excludes revoked identities", () => {
     const fx = _setup();
-    fx.dag.addRevocation(REVIEWER_1, TX_TYPES.REVOKE_VOLUNTARY, new Date().toISOString(), shake256("rev"));
+    fx.dag.addRevocation(REVIEWER_1, TX_TYPES.REVOKE_VOLUNTARY, Date.now(), shake256("rev"));
     const { pool, count } = fx.service.listReviewerPool();
     expect(count).toBe(1);
     expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
@@ -484,7 +484,7 @@ describe("review-service.listReviewerPool", () => {
 
   test("excludes identities below REVIEWER.MIN_SCORE", () => {
     const fx = _setup();
-    fx.dag.setScore(REVIEWER_1, 100, 0, new Date().toISOString());
+    fx.dag.setScore(REVIEWER_1, 100, 0, Date.now());
     const { pool, count } = fx.service.listReviewerPool();
     expect(count).toBe(1);
     expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);

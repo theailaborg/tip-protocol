@@ -178,7 +178,7 @@ describe.each(SCENARIOS)("dag.saveTxRejection / getTxRejection — %s", (_label,
       const tx = {
         tx_id: "tip://tx/with-body",
         tx_type: "REGISTER_IDENTITY",
-        timestamp: "2026-04-30T08:00:00.000Z",
+        timestamp: 1777536000000,
         prev: ["a", "b"],
         signature: "deadbeef",
         data: { tip_id: "tip://id/X", region: "US", nested: { k: 1 } },

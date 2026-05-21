@@ -71,7 +71,7 @@ describe("GET /v1/dag/tx/:txId/outcome", () => {
     dag.saveMempoolTx({
       tx_id: txId,
       tx_type: "REGISTER_IDENTITY",
-      timestamp: "2026-04-30T08:00:00.000Z",
+      timestamp: 1777536000000,
       data: { tip_id: "tip://id/X" },
     });
 
@@ -80,7 +80,7 @@ describe("GET /v1/dag/tx/:txId/outcome", () => {
     expect(res.body.status).toBe("pending");
     expect(res.body.tx_id).toBe(txId);
     expect(res.body.tx_type).toBe("REGISTER_IDENTITY");
-    expect(res.body.at).toBe("2026-04-30T08:00:00.000Z");
+    expect(res.body.at).toBe(1777536000000);
   });
 
   // ── Branch 3: rejected — generic ─────────────────────────────────────────

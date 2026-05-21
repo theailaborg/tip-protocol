@@ -47,8 +47,8 @@ function makeFakeDag({ identities = {}, nodes = {}, bindings = {}, revoked = new
 
 // Helper: produce a fully-signed BIND_DOMAIN tx.data shape for verifyTx tests.
 function buildBindTxData(userKp, nodeKp, overrides = {}) {
-  const claimedAt = "2026-05-12T10:00:00.000Z";
-  const verifiedAt = "2026-05-12T10:01:00.000Z";
+  const claimedAt = 1778580000000;
+  const verifiedAt = 1778580060000;
   const claim = registerDomainSchema.buildSigningPayload({
     claimed_at: claimedAt, domain: "example.com", method: "auto", tip_id: ORG_TIP,
   });
@@ -99,12 +99,12 @@ describe("buildSigningPayload — exact 8-field canonical shape", () => {
   const minimal = (overrides = {}) => bindSchema.buildSigningPayload({
     binding_state: "verified",
     claim_signature: "00".repeat(8),
-    claimed_at: "2026-05-12T10:00:00.000Z",
+    claimed_at: 1778580000000,
     domain: "example.com",
     method: "auto",
     node_id: NODE_ID,
     tip_id: ORG_TIP,
-    verified_at: "2026-05-12T10:01:00.000Z",
+    verified_at: 1778580060000,
     ...overrides,
   });
 
@@ -154,12 +154,12 @@ describe("sign / verify round-trip (node key)", () => {
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
       claim_signature: "ab".repeat(8),
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
       node_id: NODE_ID,
       tip_id: ORG_TIP,
-      verified_at: "2026-05-12T10:01:00.000Z",
+      verified_at: 1778580060000,
     });
     const sig = bindSchema.sign(payload, kp.privateKey);
     expect(bindSchema.verifySignature(payload, sig, kp.publicKey)).toBe(true);
@@ -170,12 +170,12 @@ describe("sign / verify round-trip (node key)", () => {
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
       claim_signature: "ab".repeat(8),
-      claimed_at: "2026-05-12T10:00:00.000Z",
+      claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
       node_id: NODE_ID,
       tip_id: ORG_TIP,
-      verified_at: "2026-05-12T10:01:00.000Z",
+      verified_at: 1778580060000,
     });
     const sig = bindSchema.sign(payload, kp.privateKey);
     for (const field of Object.keys(payload)) {
@@ -302,7 +302,7 @@ describe("buildUnbindSigningPayload", () => {
     domain: "example.com",
     node_id: NODE_ID,
     reason: DOMAIN_UNBIND_REASONS.VERIFICATION_LOST,
-    revoked_at: "2026-05-12T10:00:00.000Z",
+    revoked_at: 1778580000000,
     ...overrides,
   });
 
@@ -332,7 +332,7 @@ describe("verifyUnbindTx", () => {
       domain: "example.com",
       node_id: NODE_ID,
       reason: DOMAIN_UNBIND_REASONS.VERIFICATION_LOST,
-      revoked_at: "2026-05-12T10:00:00.000Z",
+      revoked_at: 1778580000000,
     });
     const sig = bindSchema.signUnbind(payload, nodeKp.privateKey);
     return { dag, data: { ...payload, unbind_signature: sig } };

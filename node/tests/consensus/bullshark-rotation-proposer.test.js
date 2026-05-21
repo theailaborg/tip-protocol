@@ -61,7 +61,7 @@ const THRESHOLD = Math.ceil((INTERVAL * PCT) / 100);
 const IN_WINDOW_VOTE_ROUND = CONSENSUS.EPOCH_LENGTH_ROUNDS - 2;
 const IN_WINDOW_PROPOSE_ROUND = IN_WINDOW_VOTE_ROUND - 1;
 
-const POST_GENESIS_BASE = new Date("2026-04-01T00:00:00.000Z").getTime();
+const POST_GENESIS_BASE = new Date(1775001600000).getTime();
 
 function _buildCert({ round, author, hash }) {
   const ts = POST_GENESIS_BASE + round * 2000;
@@ -90,7 +90,7 @@ function _setup({ withProposer = true, atBoundary = true } = {}) {
   if (!dag.getNode(FOUNDING.node_id)) {
     dag.saveNode({
       node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
   }
 
@@ -203,7 +203,7 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     // include this peer → committee grows → rotation tx fires.
     fx.dag.saveNode({
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     _seedParticipation(fx.dag, 0, {
       [FOUNDING.node_id]: INTERVAL,
@@ -249,12 +249,12 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     if (!dag.getNode(FOUNDING.node_id)) {
       dag.saveNode({
         node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+        status: "active", registered_at: 1767225600000,
       });
     }
     dag.saveNode({
       node_id: "tip://node/0-aaa", name: "a", public_key: "kA",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
 
     const submittedTxs = [];
@@ -288,12 +288,12 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     if (!dag.getNode(FOUNDING.node_id)) {
       dag.saveNode({
         node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+        status: "active", registered_at: 1767225600000,
       });
     }
     dag.saveNode({
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     // Seed participation so the boundary triggers a rotation submit.
     for (let i = 0; i < THRESHOLD; i++) {
@@ -333,7 +333,7 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     const fx = _setup({ atBoundary: true });
     fx.dag.saveNode({
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     _seedParticipation(fx.dag, 0, {
       [FOUNDING.node_id]: INTERVAL,
@@ -365,11 +365,11 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     // threshold. The no-pubkey one must be filtered out.
     fx.dag.saveNode({
       node_id: "tip://node/no-key", name: "no-key", public_key: "",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     fx.dag.saveNode({
       node_id: "tip://node/with-key", name: "with-key", public_key: "real-pubkey",
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     _seedParticipation(fx.dag, 0, {
       [FOUNDING.node_id]: INTERVAL,
@@ -507,7 +507,7 @@ describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
     if (!dag.getNode(FOUNDING.node_id)) {
       dag.saveNode({
         node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+        status: "active", registered_at: 1767225600000,
       });
     }
     const savedCommits = [];
@@ -530,7 +530,7 @@ describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
     const proposeRound = 51;
     const voteRound = 52;
     const proposeCert = _buildCert({ round: proposeRound, author: FOUNDING.node_id });
-    proposeCert.batch.txs = [{ tx_id: "fake-tx-1", tx_type: "REGISTER_IDENTITY", data: {}, prev: [], timestamp: "2026-04-01T00:00:00.000Z" }];
+    proposeCert.batch.txs = [{ tx_id: "fake-tx-1", tx_type: "REGISTER_IDENTITY", data: {}, prev: [], timestamp: 1775001600000 }];
     dag.saveCertificate(proposeCert);
 
     const voteCert = _buildCert({

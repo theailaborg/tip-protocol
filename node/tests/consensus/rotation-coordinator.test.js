@@ -64,7 +64,7 @@ function _setupDagWith(rotation0Committee) {
         name: m.node_id,
         public_key: m.public_key,
         status: "active",
-        registered_at: "2026-01-01T00:00:00.000Z",
+        registered_at: 1767225600000,
       });
     }
   }
@@ -77,7 +77,7 @@ function _setupDagWith(rotation0Committee) {
     signer_node_ids: [],
     signatures: [],
     payload_hash: "test-rotation-1",
-    committed_at: "2026-01-01T00:00:00.000Z",
+    committed_at: 1767225600000,
   });
   return dag;
 }
