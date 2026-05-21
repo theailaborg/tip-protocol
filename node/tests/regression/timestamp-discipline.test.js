@@ -42,11 +42,25 @@ const { initDAG } = require("../../src/dag");
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const NODE_SRC = path.join(REPO_ROOT, "node", "src");
 const SHARED_DIR = path.join(REPO_ROOT, "shared");
+const SCRIPTS_DIR = path.join(REPO_ROOT, "scripts");
 
 // shared/time.js IS the timestamp helper module — it's the one place
 // raw JS Date APIs are allowed.
+//
+// scripts/ is in scope because seed.js produces canonical chain bytes
+// (genesis identities + tx timestamps that feed into GENESIS_TX_SIGNATURE
+// verification). Dev-only operational tooling that doesn't touch chain
+// state is explicitly allowed below.
 const SOURCE_ALLOWLIST = new Set([
   path.join(SHARED_DIR, "time.js"),
+  // Dev-only operational scripts — never produce chain-canonical bytes.
+  // They use Date.* for log timestamps, entropy seeds, or local poll loops.
+  // Add new entries here ONLY when the script is genuinely off the
+  // chain-production path; chain-critical scripts (seed.js,
+  // test-bootstrap-gate.js) MUST stay outside this allowlist.
+  path.join(SCRIPTS_DIR, "zk-setup.js"),
+  path.join(SCRIPTS_DIR, "drive-jury.js"),
+  path.join(SCRIPTS_DIR, "seed-temp-users.js"),
 ]);
 
 // Patterns that must not appear in production source. Each entry has a
@@ -55,7 +69,10 @@ const FORBIDDEN_SOURCE_PATTERNS = [
   { name: "new Date(", regex: /new\s+Date\s*\(/ },
   { name: ".toISOString()", regex: /\.toISOString\s*\(\s*\)/ },
   { name: "Date.parse(", regex: /\bDate\.parse\s*\(/ },
-  { name: "Date.now()", regex: /\bDate\.now\s*\(\s*\)/ },
+  // Catches both call form `Date.now()` and bare reference `Date.now`
+  // (the latter used as an injectable default arg — surfaced after fixing
+  // halt-status.js where `now = Date.now` slipped past the call-form check).
+  { name: "Date.now", regex: /\bDate\.now\b/ },
 ];
 
 // Walk a directory and yield every .js file. Skips node_modules and
@@ -104,6 +121,7 @@ describe("timestamp discipline — production source routes through shared/time.
   const sourceFiles = [
     ..._walkJsFiles(NODE_SRC),
     ..._walkJsFiles(SHARED_DIR),
+    ..._walkJsFiles(SCRIPTS_DIR),
   ];
 
   for (const { name, regex } of FORBIDDEN_SOURCE_PATTERNS) {

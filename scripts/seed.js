@@ -28,6 +28,8 @@
 
 "use strict";
 
+const { nowMs } = require("../shared/time");
+
 try { require("dotenv").config(); } catch { /* dotenv optional */ }
 
 const fs = require("fs");
@@ -141,7 +143,7 @@ function writeCachedEntries(filePath, type, entries) {
   const envelope = {
     v: ENVELOPE_VERSION,
     type,
-    created_at: new Date().toISOString(),
+    created_at: nowMs(),
     security_notice: "HIGHLY SENSITIVE. Keep offline. Never commit to version control.",
     entries,
   };
@@ -237,7 +239,7 @@ async function embedFoundingVPKey() {
       id: generateVPId("US", vpKeypair.publicKey),
       public_key: vpKeypair.publicKey,
       private_key: vpKeypair.privateKey,
-      created_at: new Date().toISOString(),
+      created_at: nowMs(),
     }]);
     ok("Founding VP keypair generated and saved");
     warn("SECURITY: founding-vp-keys.json is chmod 600. NEVER commit to git.");
@@ -442,7 +444,7 @@ async function mintGenesisBlock(vpKeypair) {
     ...updatedPayload,
     genesis_hash: genesisHash,
     canonical_hash: shake256(canonicalJson(updatedPayload)),
-    signed_at: new Date().toISOString(),
+    signed_at: nowMs(),
     signer_public_key: vpKeypair.publicKey,
     signature,
     environment: "production",
@@ -492,7 +494,7 @@ function initDirectDAG() {
       id: generateNodeId(_nodeKp.publicKey),
       public_key: _nodeKp.publicKey,
       private_key: _nodeKp.privateKey,
-      created_at: new Date().toISOString(),
+      created_at: nowMs(),
       // approving_vp_tag references the matching entry in founding-vp-keys.json
       approving_vp_tag: "primary-vp",
     }]);
@@ -574,7 +576,7 @@ async function registerSeedNode(vpKeypair) {
   }
 
   const nodeId = generateNodeId(_nodeKp.publicKey);
-  const registeredAt = new Date().toISOString();
+  const registeredAt = nowMs();
   const nodeName = "The AI Lab TIP Node";
 
   const freshGenesis = require("../node/src/genesis");
@@ -673,7 +675,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       const canonicalPayload = registerIdentitySchema.buildSigningPayload(idFields);
       const vpSignature = registerIdentitySchema.sign(canonicalPayload, vpKeypair.privateKey);
 
-      const registeredAt = new Date().toISOString();
+      const registeredAt = nowMs();
       const txBody = {
         tx_type: TX_TYPES.REGISTER_IDENTITY,
         timestamp: registeredAt,
@@ -709,7 +711,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         registered_at: registeredAt,
         tx_id: tx.tx_id,
       });
-      _dag.addDedupHash(mockDedupHash, Math.floor(new Date(registeredAt).getTime() / 1000));
+      _dag.addDedupHash(mockDedupHash, Math.floor(registeredAt / 1000));
       _dag.setScore(tipId, 550, 0, registeredAt);
 
       regResult = {
@@ -745,7 +747,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           public_key: keypair.publicKey,
           private_key: keypair.privateKey,
           score: 550,
-          registered_at: new Date().toISOString(),
+          registered_at: nowMs(),
           vp_id: vpRecord.vp_id,
         };
       }
@@ -819,7 +821,7 @@ async function registerSampleContent(identities) {
     let result;
 
     if (useDirectMode) {
-      const registeredAt = new Date().toISOString();
+      const registeredAt = nowMs();
       const perceptHash = perceptualHashText(sample.content);
 
       const contentTxBody = {
@@ -1049,7 +1051,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
   const output = {
     v: 2,
     seed_version: require("../package.json").version,
-    created_at: new Date().toISOString(),
+    created_at: nowMs(),
     environment: process.env.NODE_ENV || "development",
     genesis: {
       hash: genesisBlock.genesis_hash,
@@ -1112,7 +1114,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
     vp_tag: "primary-vp",
     public_key: i.public_key,
     private_key: i.private_key,
-    created_at: i.registered_at || new Date().toISOString(),
+    created_at: i.registered_at || nowMs(),
     ...(i.creator_name ? { creator_name: i.creator_name } : {}),
   })));
   ok(`Founder keys written to: ${keysOutputFile} (chmod 600)`);
@@ -1139,7 +1141,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
       ...(identity.creator_name ? { creator_name: identity.creator_name } : {}),
       public_key: identity.public_key,
       private_key: identity.private_key,
-      created: identity.registered_at || new Date().toISOString(),
+      created: identity.registered_at || nowMs(),
     }, null, 2);
     const filePath = path.join(backupDir, toFileName(identity.tip_id));
     fs.writeFileSync(filePath, tipJson, { mode: 0o600 });
@@ -1154,7 +1156,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
     vp_id: vpRecord.vp_id,
     public_key: vpKeypair.publicKey,
     private_key: vpKeypair.privateKey,
-    created: new Date().toISOString(),
+    created: nowMs(),
   }, null, 2);
   fs.writeFileSync(path.join(backupDir, toFileName(vpRecord.vp_id)), vpBackup, { mode: 0o600 });
   ok(`  Backup: ${toFileName(vpRecord.vp_id)} — ${vpRecord.name} (VP)`);
@@ -1168,7 +1170,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
       node_id: seedNode.nodeId,
       public_key: _nodeKp.publicKey,
       private_key: _nodeKp.privateKey,
-      created: new Date().toISOString(),
+      created: nowMs(),
     }, null, 2);
     fs.writeFileSync(path.join(backupDir, toFileName(seedNode.nodeId)), nodeBackup, { mode: 0o600 });
     ok(`  Backup: ${toFileName(seedNode.nodeId)} — ${seedNode.name} (Node)`);

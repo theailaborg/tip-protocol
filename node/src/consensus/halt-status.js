@@ -54,7 +54,7 @@ const { nowMs } = require("../../../shared/time");
  * @param {Function} [opts.now]                Clock function (injectable for tests)
  * @returns {{ halted: boolean, reason: string, lastAdvanceAt: number, staleMs: number, message?: string }}
  */
-function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = Date.now } = {}) {
+function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = nowMs } = {}) {
   if (!narwhalStats || !narwhalStats.running) {
     return { halted: false, reason: "narwhal_not_started", lastAdvanceAt: 0, staleMs: 0 };
   }

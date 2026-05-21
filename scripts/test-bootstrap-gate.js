@@ -14,6 +14,8 @@
  */
 "use strict";
 
+const { nowMs, toIso } = require("../shared/time");
+
 const path = require("path");
 // Resolve from the monorepo root whether the script runs from
 // scripts/ on the host or from /app in the container.
@@ -78,7 +80,7 @@ async function main() {
   const tests = [
     {
       label: "GENESIS tx rejected after round 1",
-      tx: { tx_type: "GENESIS", tx_id: HEX64, timestamp: new Date().toISOString(), data: {}, prev: [] },
+      tx: { tx_type: "GENESIS", tx_id: HEX64, timestamp: nowMs(), data: {}, prev: [] },
       expectValid: false,
       expectMatch: /bootstrap-only/,
     },
@@ -87,7 +89,7 @@ async function main() {
       tx: {
         tx_type: TX_TYPES.VP_REGISTERED,
         tx_id:   HEX64,
-        timestamp: new Date().toISOString(),
+        timestamp: nowMs(),
         prev: [],
         data: { vp_id: foundingVpId, name: "replay", jurisdiction_tier: "green", public_key: "aabb" },
       },
@@ -99,7 +101,7 @@ async function main() {
       tx: {
         tx_type: TX_TYPES.NODE_REGISTERED,
         tx_id:   HEX64,
-        timestamp: new Date().toISOString(),
+        timestamp: nowMs(),
         prev: [],
         data: { node_id: foundingNodeId, name: "replay", public_key: "ccdd" },
       },
@@ -111,7 +113,7 @@ async function main() {
       tx: {
         tx_type: TX_TYPES.VP_REGISTERED,
         tx_id:   HEX64,
-        timestamp: new Date().toISOString(),
+        timestamp: nowMs(),
         prev: [],
         data: { vp_id: "tip://vp/US-aabbccddeeff0011", name: "New VP", jurisdiction_tier: "green", public_key: "eeff" },
       },
@@ -164,7 +166,7 @@ async function main() {
     console.log("  (none — no bootstrap-type rejections recorded yet; this is expected unless a malicious peer was active)");
   } else {
     rejections.forEach(r => {
-      const ts = new Date(Number(r.rejected_at_ms)).toISOString();
+      const ts = toIso(Number(r.rejected_at_ms));
       console.log(`  ${ts} | ${r.tx_type} | ${r.reason} | ${r.reason_detail}`);
     });
   }
