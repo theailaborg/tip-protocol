@@ -25,6 +25,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { nowMs, nowIso } = require("../../shared/time");
 
 // `notice` is a bypass tier: always printed to the console regardless of
 // TIP_CONSOLE_LEVEL. Use for rare, operator-relevant events that should be
@@ -49,7 +50,7 @@ const _rateLimited = new Map();
  * Get or create write streams for today's log folder.
  */
 function _getStreams() {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = nowIso().slice(0, 10); // YYYY-MM-DD
   if (today !== _currentDate) {
     // Close old streams
     for (const s of Object.values(_streams)) {
@@ -85,7 +86,7 @@ const _nodeTag = (() => {
 })();
 
 function _format(level, source, args) {
-  const ts = new Date().toISOString();
+  const ts = nowIso();
   const label = level.toUpperCase().padEnd(5);
   const src = source ? `[${source}] ` : "";
   const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
@@ -174,7 +175,7 @@ function getLogger(source) {
      * that would otherwise flood the log.
      */
     rateWarn(key, ttlSec, ...args) {
-      const now = Date.now();
+      const now = nowMs();
       const last = _rateLimited.get(key) || 0;
       if (now - last < ttlSec * 1000) return;
       _rateLimited.set(key, now);
