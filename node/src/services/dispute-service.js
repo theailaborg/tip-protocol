@@ -207,7 +207,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
     {
-      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: false }, { now: Date.now() });
+      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: false }, { now: nowMs() });
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
@@ -226,7 +226,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     if (confirmed_origin && !ORIGIN_CODES.includes(confirmed_origin)) throw { status: 400, error: "Invalid confirmed_origin" };
 
     {
-      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: false, vote, salt }, { now: Date.now(), shake256 });
+      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: false, vote, salt }, { now: nowMs(), shake256 });
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
@@ -347,7 +347,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const { appellant_tip_id, signature } = body;
 
     {
-      const r = rules.canFileAppeal(dag, { ctid, appellant_tip_id }, { now: Date.now() });
+      const r = rules.canFileAppeal(dag, { ctid, appellant_tip_id }, { now: nowMs() });
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid);
@@ -401,7 +401,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     validate(body, { juror_tip_id: { required: true }, commitment: { required: true }, signature: { required: true } });
 
     {
-      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: true }, { now: Date.now() });
+      const r = rules.canCommitVote(dag, { ctid, juror_tip_id, is_appeal: true }, { now: nowMs() });
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
@@ -423,7 +423,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     if (confirmed_origin && !ORIGIN[confirmed_origin]) throw { status: 400, error: "Invalid confirmed_origin" };
 
     {
-      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: true, vote, salt }, { now: Date.now(), shake256 });
+      const r = rules.canRevealVote(dag, { ctid, juror_tip_id, is_appeal: true, vote, salt }, { now: nowMs(), shake256 });
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
@@ -594,7 +594,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
   function listDisputesForTipId(tipId) {
     validate({ tip_id: tipId }, { tip_id: { required: true, type: "string", match: /^tip:\/\/id\// } });
-    const now = Date.now();
+    const now = nowMs();
 
     const allDisputes = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED);
     const filed_by_me = allDisputes
@@ -729,7 +729,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const identity = dag.getIdentity(tipId);
     if (!identity) throw { status: 404, error: "TIP-ID not found" };
 
-    const now = Date.now();
+    const now = nowMs();
     const items = [];
 
     // Pre-index final-result txs once so the summons loop and the
@@ -1298,7 +1298,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const offset = Math.max(parseInt(opts.offset, 10) || 0, 0);
     const filterStatus = opts.status || null;        // optional: resolved | committed | summoned | …
     const filterRole = opts.role || null;            // optional: juror | expert
-    const now = Date.now();
+    const now = nowMs();
 
     // Pre-index result txs once — saves a DAG scan per item.
     const adjByCtid = new Map();
@@ -1395,7 +1395,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
   function getDisputeById(disputeIdOrPrefix) {
     const disputeTx = resolveDispute(disputeIdOrPrefix);
     const events = collectEpisodeEvents(disputeTx);
-    const now = Date.now();
+    const now = nowMs();
 
     const ctid = disputeTx.data.ctid;
     const rec = dag.getContent(ctid);
@@ -1536,7 +1536,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       dispute_id: shortDisputeId(disputeTx.tx_id),
       dispute_tx_id: disputeTx.tx_id,
       ctid: disputeTx.data.ctid,
-      status: projectStatus(events, Date.now()),
+      status: projectStatus(events, nowMs()),
       timeline: buildTimeline(events),
     };
   }

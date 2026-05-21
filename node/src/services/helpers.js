@@ -1,5 +1,7 @@
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const {
   signTransaction, computeTxId,
 } = require("../../../shared/crypto");
@@ -300,7 +302,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
   // LOW — nothing more to surface; the FE shouldn't render any banner.
   if (tier === PRESCAN_TIERS.LOW) return base;
 
-  const registeredMs = registeredAt ? registeredAt : Date.now();
+  const registeredMs = registeredAt ? registeredAt : nowMs();
 
   // Helper — once the creator has already self-corrected, change_origin
   // is no longer a meaningful action (you can keep updating origins, but

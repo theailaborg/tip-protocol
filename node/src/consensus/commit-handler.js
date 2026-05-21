@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -125,7 +127,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    *                                     ms). Deterministic across nodes. Currently flowed
    *                                     through unused — Commit 3 will use it as the trigger
    *                                     clock for post-round verdict logic and clean-record
-   *                                     bonus eligibility, replacing scheduler-driven Date.now().
+   *                                     bonus eligibility, replacing scheduler-driven nowMs().
    * @returns {{ committed: number, dropped: number }}
    */
   function commitOrderedTxs(orderedTxs, round, opts = {}) {

@@ -26,6 +26,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const {
   createBatch, verifyBatch,
@@ -185,7 +187,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // Grace period for the halt detector — without this, a freshly-booted
     // node would report "halted" for the first few seconds before any
     // round completes.
-    _lastRoundAdvanceAt = Date.now();
+    _lastRoundAdvanceAt = nowMs();
 
     log.notice(`Narwhal started at round ${_currentRound} (committee: ${_getCommittee().length}, registered: ${getNodeCount()}, quorum: ${_getQuorum()})`);
 
@@ -242,7 +244,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       reason: reason || "unspecified byzantine-fork divergence",
       atRound: atRound != null ? atRound : _currentRound,
       peerNodeId: peerNodeId || "unknown",
-      since: Date.now(),
+      since: nowMs(),
     };
     log.error(`HALT (byzantine_fork): ${_byzantineForkHalt.reason}`);
   }
@@ -292,7 +294,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       if (!_carveOutRotationTx) {
         log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
         if (_onProducerPaused) {
-          const now = Date.now();
+          const now = nowMs();
           if (now - _lastProducerPausedAt > 1500) {
             _lastProducerPausedAt = now;
             try { _onProducerPaused(_currentRound, targetRotation); }
@@ -358,7 +360,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // (BFT Time) — every ack from every node carries the acker's wall-clock
     // at sign time. The cert author later derives cert.timestamp as the
     // median of all 2f+1 signed_at values.
-    _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, Date.now(), privateKey));
+    _recordAck(_myBatch.hash, createBatchAck(_myBatch.hash, nodeId, nowMs(), privateKey));
 
     // Try certificate immediately (works in single-node mode where quorum=1)
     // In single-node, this will create cert + advance round synchronously.
@@ -509,7 +511,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         // batch ends up at the front of the queue (each addFront
         // prepends — last addFront becomes the new head).
         for (let i = orphanedTxs.length - 1; i >= 0; i--) {
-          const r = mempool.addFront(orphanedTxs[i], Date.now());
+          const r = mempool.addFront(orphanedTxs[i], nowMs());
           if (r && r.added) requeued++;
         }
         _metrics.my_batches_orphaned++;
@@ -818,7 +820,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     // Send ack — signed_at carries this node's wall-clock at sign time and
     // is bound into the signature scope (BFT Time).
-    const ack = createBatchAck(batch.hash, nodeId, Date.now(), privateKey);
+    const ack = createBatchAck(batch.hash, nodeId, nowMs(), privateKey);
     _recordAck(batch.hash, ack);
 
     try {
@@ -1249,7 +1251,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     if (_roundCertificates.size < quorum) return;
 
     _metrics.rounds_advanced++;
-    _lastRoundAdvanceAt = Date.now();
+    _lastRoundAdvanceAt = nowMs();
     log.debug(`Round ${_currentRound}: advancing (${_roundCertificates.size}/${_getCommittee().length} certificates)`);
 
     // Clear timers
@@ -1323,7 +1325,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
   function enterSyncMode() {
     _joinState = "syncing";
-    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+    if (_syncEnteredAt === 0) _syncEnteredAt = nowMs();
     _catchingUpEnteredAt = 0;
     _catchUpTarget = 0;
     log.notice("Entering sync mode — suppressing round production");
@@ -1348,7 +1350,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     }
     _joinState = "catching_up";
     _syncEnteredAt = 0;
-    _catchingUpEnteredAt = Date.now();
+    _catchingUpEnteredAt = nowMs();
     _catchUpTarget = Math.max(0, peerCommittedRound || round);
     log.notice(`Snapshot installed at round ${round}; catching up to peer head ${_catchUpTarget}`);
     _startWatchdog();
@@ -1395,7 +1397,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // after sync recovery. Without this, _lastRoundAdvanceAt reflects the
     // pre-halt epoch (potentially 30+ min stale) and computeHaltStatus fires
     // sub_quorum immediately on the first _isConsensusHalted() call after exit.
-    _lastRoundAdvanceAt = Date.now();
+    _lastRoundAdvanceAt = nowMs();
     _stopWatchdog();
     if (_running) _scheduleNextRound(0);
   }
@@ -1413,13 +1415,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _watchdogCheck() {
     if (!_running || _joinState === "ready") { _stopWatchdog(); return; }
     if (_joinState !== "catching_up" || _catchingUpEnteredAt === 0) return;
-    const elapsed = Date.now() - _catchingUpEnteredAt;
+    const elapsed = nowMs() - _catchingUpEnteredAt;
     if (elapsed <= STUCK_CATCHING_UP_MS) return;
     log.warn(`Watchdog: catching_up stalled ${Math.floor(elapsed / 1000)}s (target=${_catchUpTarget}, dag=${dag.getLatestRound()}) — reverting to syncing for fresh snapshot`);
     _joinState = "syncing";
     _catchingUpEnteredAt = 0;
     _catchUpTarget = 0;
-    if (_syncEnteredAt === 0) _syncEnteredAt = Date.now();
+    if (_syncEnteredAt === 0) _syncEnteredAt = nowMs();
   }
 
   function joinState() { return _joinState; }

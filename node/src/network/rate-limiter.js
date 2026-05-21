@@ -12,6 +12,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 
 /**
@@ -27,7 +29,7 @@ function createRateLimiter() {
    * @returns {boolean} true if allowed, false if rate limited
    */
   function check(peerId) {
-    const now = Date.now();
+    const now = nowMs();
     let entry = _counts.get(peerId);
     if (!entry || now >= entry.resetAt) {
       entry = { count: 0, resetAt: now + 1000 };
@@ -39,7 +41,7 @@ function createRateLimiter() {
 
   // Cleanup stale entries every 30 seconds
   const _cleanup = setInterval(() => {
-    const now = Date.now();
+    const now = nowMs();
     for (const [id, entry] of _counts) {
       if (now >= entry.resetAt + 5000) _counts.delete(id);
     }

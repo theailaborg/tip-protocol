@@ -6,7 +6,7 @@
  * Two callers, identical predicate:
  *
  *   API service (CheckTx role):
- *     const r = rules.canVerify(dag, args, { now: Date.now() });
+ *     const r = rules.canVerify(dag, args, { now: nowMs() });
  *     if (!r.valid) throw r.error;            // 4xx response
  *
  *   commit-handler (DeliverTx role):
@@ -14,7 +14,7 @@
  *     if (!r.valid) { log.warn(r.error.message); drop; return; }
  *
  * `now` is the only difference between the two call sites:
- *   - API time uses local wall-clock (Date.now()) — fine for early
+ *   - API time uses local wall-clock (nowMs()) — fine for early
  *     rejection.
  *   - Commit time uses `cert.timestamp` (BFT-Time median of acks) so the
  *     accept/reject decision is identical on every node.
@@ -28,6 +28,8 @@
  */
 
 "use strict";
+
+const { nowMs } = require("../../../shared/time");
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
@@ -291,7 +293,7 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   // disputer_tip_id). A user-filed dispute that already failed
   // validation never lands as a tx, so this count only sees committed
   // filings — same value at CheckTx and DeliverTx.
-  const windowCutoffMs = Date.now() - DISPUTE.FILER_WINDOW_MS;
+  const windowCutoffMs = nowMs() - DISPUTE.FILER_WINDOW_MS;
   const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
     .filter(t => t.data?.disputer_tip_id === disputer_tip_id
       && !t.data?.auto

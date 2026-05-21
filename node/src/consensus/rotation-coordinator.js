@@ -39,6 +39,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
@@ -214,7 +216,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
       prevCommittee: new Set(prevCommitteeNodeIds),
       prevPubkeys: new Map(Object.entries(prevPubkeys || {})),
       submittedAt: null,
-      deadline: Date.now() + deadlineMs,
+      deadline: nowMs() + deadlineMs,
     });
 
     _broadcast(_encodeProposal(proposal));
@@ -331,7 +333,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
         prevCommittee: new Set(prevCommitteeNodeIds),
         prevPubkeys,
         submittedAt: null,
-        deadline: Date.now() + deadlineMs,
+        deadline: nowMs() + deadlineMs,
       });
     } else {
       const inflight = _inFlight.get(rotation_number);
@@ -433,7 +435,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
       log.error(`Rotation ${rotation_number}: tx build failed — ${err.message}`);
       return;
     }
-    inflight.submittedAt = Date.now();
+    inflight.submittedAt = nowMs();
 
     try {
       const r = submitTx(tx);
@@ -464,7 +466,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
    * 0–1 entries.
    */
   function pruneExpired() {
-    const now = Date.now();
+    const now = nowMs();
     for (const [rotation, inflight] of _inFlight) {
       if (inflight.submittedAt != null && now - inflight.submittedAt > deadlineMs * 2) {
         _inFlight.delete(rotation); // long-submitted; safe to forget
@@ -500,7 +502,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
   }
 
   function _rebroadcastTick() {
-    const now = Date.now();
+    const now = nowMs();
     let anyAlive = false;
     for (const [rotation, inflight] of _inFlight) {
       // Keep broadcasting submitted entries too — peers below quorum still
@@ -574,7 +576,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     const inflight = _inFlight.get(rotation_number);
     if (!inflight) return false;
     if (inflight.submittedAt == null) return true;          // still aggregating
-    return Date.now() - inflight.submittedAt < deadlineMs;  // submitted, awaiting commit
+    return nowMs() - inflight.submittedAt < deadlineMs;  // submitted, awaiting commit
   }
 
   return {

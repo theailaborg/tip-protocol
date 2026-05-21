@@ -478,7 +478,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       // Only advance committed round AFTER successful processing.
       // If onOrderedTxs throws, we don't advance — will retry next round.
       // Pass cert.timestamp so commit-handler / downstream derived-state
-      // logic uses the BFT consensus clock, not local Date.now().
+      // logic uses the BFT consensus clock, not local nowMs().
       // Return value: { committed, dropped } — see #73 below.
       const applyResult = onOrderedTxs
         ? onOrderedTxs(orderedTxs, voteRound, certTs)

@@ -44,7 +44,7 @@ try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 //
 // Every column of each table IS included. This is only safe because every
 // field is populated from tx data (tx.timestamp, tx.tx_id, tx.data.*) —
-// never from Date.now() / unixepoch() / other local-clock sources.
+// never from nowMs() / unixepoch() / other local-clock sources.
 // See setScore() and addDedupHash() for the determinism contract.
 function _canonIdentity(r) {
   return {
@@ -443,7 +443,7 @@ class MemoryStore {
 
   // ── Dedup registry ────────────────────────────────────────────────────────
   // `createdAt` is the unix-seconds timestamp of the tx that introduced this
-  // dedup hash (derived from tx.timestamp). Deterministic — never Date.now().
+  // dedup hash (derived from tx.timestamp). Deterministic — never nowMs().
   addDedupHash(hash, createdAt) {
     if (createdAt == null) {
       throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
@@ -981,7 +981,7 @@ class MemoryStore {
       tx_id: rec.tx_id,
       reason: rec.reason,
       reason_detail: rec.reason_detail || null,
-      rejected_at_ms: rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now(),
+      rejected_at_ms: rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs(),
       rejected_at_round: rec.rejected_at_round != null ? rec.rejected_at_round : null,
       dropper_node_id: rec.dropper_node_id,
       tx_type: rec.tx_type || null,
@@ -1124,7 +1124,7 @@ class SQLiteStore {
         prev           TEXT NOT NULL DEFAULT '[]',
         signature      TEXT,
         subject_tip_id TEXT,
-        created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
       CREATE INDEX IF NOT EXISTS idx_txs_ts         ON transactions(timestamp);
@@ -1196,7 +1196,7 @@ class SQLiteStore {
 
       -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──
       -- created_at is unix-seconds from tx.timestamp (the REGISTER_IDENTITY tx
-      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch())
+      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch() * 1000)
       -- value — that would read the local clock and break the state_merkle_root.
       CREATE TABLE IF NOT EXISTS dedup_registry (
         dedup_hash  TEXT PRIMARY KEY,
@@ -1291,7 +1291,7 @@ class SQLiteStore {
         -- network with 0-timestamp certs would halt at the next anchor (correct
         -- behavior — flags an upgrade boundary instead of silently mis-ordering).
         timestamp       INTEGER NOT NULL DEFAULT 0,
-        created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
       CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
@@ -1337,7 +1337,7 @@ class SQLiteStore {
         -- gc_depth rounds. Joiner uses this to reconstruct the
         -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
         anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
-        created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
 
@@ -1373,7 +1373,7 @@ class SQLiteStore {
         signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
         payload_hash       TEXT,              -- hex; what each signer signed
         committed_at INTEGER NOT NULL,
-        created_at         INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at         INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
 
@@ -1451,7 +1451,7 @@ class SQLiteStore {
         round       INTEGER NOT NULL,
         author      TEXT NOT NULL,
         batch_hash  TEXT NOT NULL,
-        created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
         PRIMARY KEY (round, author)
       );
       CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
@@ -1464,7 +1464,7 @@ class SQLiteStore {
         tx_id           TEXT PRIMARY KEY,
         tx_data         TEXT NOT NULL,
         subject_tip_id  TEXT,
-        received_at     INTEGER NOT NULL DEFAULT (unixepoch())
+        received_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       -- idx_mempool_subject created unconditionally below the ALTER block.
 
@@ -2669,7 +2669,7 @@ class SQLiteStore {
   // observation wins. Returns true if a new row was inserted, false if
   // a row for this tx_id already existed.
   saveTxRejection(rec) {
-    const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now();
+    const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs();
     // tx_data is stored as JSON text. Callers usually pass the tx
     // object; tolerate a pre-stringified value too so a future drop
     // site that already has bytes in hand can pass them through.

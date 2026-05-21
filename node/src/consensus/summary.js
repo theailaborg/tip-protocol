@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.consensus");
@@ -40,7 +42,7 @@ function createConsensusSummary({ narwhal, bullshark, intervalMs }) {
     const n = narwhal.stats();
     const b = bullshark.stats();
     return {
-      ts: Date.now(),
+      ts: nowMs(),
       round: n.round,
       mempoolSize: n.mempoolSize,
       participants: n.activeParticipants,

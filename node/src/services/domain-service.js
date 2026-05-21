@@ -241,15 +241,15 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     }
 
     const expiresMs = binding.expires_at ? binding.expires_at : NaN;
-    const nowMs = Date.now();
-    const isExpired = Number.isFinite(expiresMs) && nowMs > expiresMs;
+    const now = nowMs();
+    const isExpired = Number.isFinite(expiresMs) && now > expiresMs;
     const status = binding.binding_state === "revoked"
       ? "revoked"
       : isExpired
         ? DOMAIN_BINDING_STATUS.UNVERIFIED
         : binding.binding_state;
     const daysUntilExpiry = Number.isFinite(expiresMs)
-      ? Math.ceil((expiresMs - nowMs) / (24 * 60 * 60 * 1000))
+      ? Math.ceil((expiresMs - now) / (24 * 60 * 60 * 1000))
       : null;
 
     return {

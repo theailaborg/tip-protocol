@@ -446,7 +446,7 @@ class KnexAdapter {
       _id(t, "disputer_tip_id").notNullable();
       t.text("payload_json").notNullable();
       t.text("signature").notNullable();
-      t.string("created_at", 64).notNullable();
+      t.bigInteger("created_at").notNullable();
     });
   }
 
@@ -1090,7 +1090,7 @@ class KnexAdapter {
   saveTxRejection(rec) {
     const inserted = this.mirror.saveTxRejection(rec);
     if (inserted) {
-      const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now();
+      const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs();
       const txData = rec.tx_data == null ? null
         : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
       const subj = rec.tx_data && typeof rec.tx_data === "object" ? subjectTipId(rec.tx_data) : null;
@@ -1165,7 +1165,7 @@ class KnexAdapter {
       signatures: JSON.stringify(rec.signatures || []),
       payload_hash: rec.payload_hash || null,
       committed_at: rec.committed_at || nowMs(),
-      created_at: Date.now(),
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
   }

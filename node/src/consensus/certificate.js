@@ -12,6 +12,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { shake256, mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
 const { getLogger } = require("../logger");
 
@@ -84,7 +86,7 @@ function verifyBatch(batch, publicKey) {
  *
  * @param {string} batchHash
  * @param {string} ackerNodeId
- * @param {number} signedAt    Integer epoch ms (Date.now())
+ * @param {number} signedAt    Integer epoch ms (nowMs())
  * @returns {string}
  */
 function _ackSignPayload(batchHash, ackerNodeId, signedAt) {

@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { TX_REJECTION_REASON } = require("../../../shared/constants");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -62,7 +64,7 @@ function createMempool(dag, options = {}) {
       const persisted = dag.getMempoolTxs();
       for (const tx of persisted) {
         if (tx && tx.tx_id) {
-          _pending.set(tx.tx_id, { tx, receivedAt: Date.now() });
+          _pending.set(tx.tx_id, { tx, receivedAt: nowMs() });
         }
       }
       if (persisted.length > 0) {
@@ -97,7 +99,7 @@ function createMempool(dag, options = {}) {
       return { added: false, reason: "mempool_full" };
     }
 
-    _pending.set(tx.tx_id, { tx, receivedAt: Date.now() });
+    _pending.set(tx.tx_id, { tx, receivedAt: nowMs() });
     _counters.received_total++;
 
     // Persist to disk
@@ -216,7 +218,7 @@ function createMempool(dag, options = {}) {
    * Cleans both memory and disk.
    */
   function _evictStale() {
-    const cutoff = Date.now() - (maxTxAgeSec * 1000);
+    const cutoff = nowMs() - (maxTxAgeSec * 1000);
     const evicted = [];  // [{ txId, tx }] — keep the body for tx_rejections
     for (const [txId, entry] of _pending) {
       if (entry.receivedAt < cutoff) {
@@ -253,7 +255,7 @@ function createMempool(dag, options = {}) {
   function stats() {
     let oldestAge = null;
     for (const entry of _pending.values()) {
-      const age = (Date.now() - entry.receivedAt) / 1000;
+      const age = (nowMs() - entry.receivedAt) / 1000;
       if (oldestAge === null || age > oldestAge) oldestAge = age;
     }
     return {
@@ -317,7 +319,7 @@ function createMempool(dag, options = {}) {
     // semantics for `drain()`. JS Maps don't expose a prepend; pivoting
     // through a fresh Map is the standard pattern.
     const restored = new Map();
-    restored.set(tx.tx_id, { tx, receivedAt: receivedAt || Date.now() });
+    restored.set(tx.tx_id, { tx, receivedAt: receivedAt || nowMs() });
     for (const [k, v] of _pending) restored.set(k, v);
     _pending.clear();
     for (const [k, v] of restored) _pending.set(k, v);
