@@ -237,13 +237,19 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     }),
   },
 
-  // ─── COMMITTEE_ROTATION (multi-sig in data) ───────────────────────────────
-  // Special: the canonical signature path is the 2f+1 sigs aggregated
-  // in `data.signer_node_ids[]` + `data.signatures[]`, verified by
-  // `rules.canCommitteeRotation` in the stateful-check stage. Each
-  // signature covers the rotation's `payload_hash`. The tx.signature
-  // (per GH #51 single-storage rule) is the proposing node's envelope
-  // sig — same as any other node-emitted tx.
+  // ─── COMMITTEE_ROTATION ───────────────────────────────────────────────────
+  // Aggregate-signed exception to the single-tx.signature model. The
+  // 2f+1 prev-committee sigs over `data.payload_hash` live in
+  // `data.signer_node_ids[]` + `data.signatures[]` and are verified by
+  // `rules.canCommitteeRotation` from `_statefulCheck`. tx.signature
+  // is NOT used: `tx_id` must be byte-identical across all honest
+  // submitters (multi-aggregator submission, see #81), so the envelope
+  // cannot carry a submitter-derived signature. The registry entry
+  // shape stays here as a placeholder so the uniform-interface sweep
+  // counts every TX_TYPES; the commit-handler dispatcher special-cases
+  // this tx_type to gate on signature-array presence instead of
+  // calling the unified dispatcher. See the docstring on
+  // `_verifyTxSignature` in commit-handler.js for the full rationale.
   [TX_TYPES.COMMITTEE_ROTATION]: NODE_ENVELOPE,
 
   // UNBIND_DOMAIN — currently delegated to bind-domain.verifyUnbindTx

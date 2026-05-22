@@ -1083,19 +1083,34 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * payload / algorithm. Returns false here on any failure so the caller
    * (`commitOrderedTxs`) treats it as a rejection.
    *
-   * Two tx types carry an extra attestation in `tx.data` that must also
-   * verify (see `SIGNATURES.md` "Attestations on data" rule):
+   * Two tx types diverge from the unified single-signature model:
    *
-   *   - COMMITTEE_ROTATION: the 2f+1 prev-committee sigs over
-   *     `payload_hash` live in `data.signatures[]`. Full crypto
-   *     verification runs in `rules.canCommitteeRotation` during
-   *     `_statefulCheck` (where it can also enforce the quorum +
-   *     prev-committee + monotonic-rotation_number invariants in one
-   *     place). Here we just gate on presence.
-   *   - CONTENT_DISPUTED auto+manual: the creator's
-   *     `data.escalation_signature` proves they authorized the early
-   *     escalation. Verified against `escalated_by_tip_id`'s identity
-   *     pubkey.
+   *   - COMMITTEE_ROTATION is structurally aggregate-signed. The 2f+1
+   *     previous-committee sigs over `data.payload_hash` live in
+   *     `data.signatures[]`, parallel to `data.signer_node_ids[]`. The
+   *     full cryptographic verification (each sig valid, signer is in
+   *     previous committee, quorum reached) runs in
+   *     `rules.canCommitteeRotation` from `_statefulCheck` — that
+   *     layer has the inputs the unified dispatcher doesn't:
+   *     previous-committee composition from `committee_history`.
+   *     `tx.signature` is NOT used because:
+   *       (a) `tx_id` must be byte-identical across all honest
+   *           submitters (test #81); placing a submitter-derived sig
+   *           on the envelope would break that contract under
+   *           multi-aggregator submission;
+   *       (b) the proposer's signature already lives at
+   *           `data.signatures[idx_of_proposer]` — adding it to
+   *           `tx.signature` duplicates state.
+   *     So this case gates only on `signatures[].length > 0` here;
+   *     the real check is in `_statefulCheck`.
+   *
+   *   - CONTENT_DISPUTED auto+manual carries an additional attestation
+   *     `data.escalation_signature` (the creator's proof that they
+   *     authorized an early manual escalation from a CONFIRMED
+   *     review). It's separate from `tx.signature` (the node's
+   *     envelope sig) because the actor is different — per
+   *     `SIGNATURES.md` "Attestations on data". Verified against
+   *     `escalated_by_tip_id`'s identity pubkey below.
    */
   function _verifyTxSignature(tx) {
     const tt = tx.tx_type;
