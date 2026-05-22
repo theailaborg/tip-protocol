@@ -33,8 +33,15 @@ const {
 const {
   TIP_ID_TYPES, DOMAIN_VERIFICATION_METHODS, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_PENDING_CLAIM_TTL_MS,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
 const { nowMs, isValidMs } = require("../../../shared/time");
+
+// GH #51 — unified signature storage. Publisher signs the canonical
+// payload returned by buildSigningPayload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.TIP_ID;
 
 // Domain shape: 1-63 char labels separated by dots, 1-253 total chars, no
 // trailing dot, no consecutive dots. Permissive enough for IDN xn--... and
@@ -266,4 +273,8 @@ module.exports = {
   sign,
   verifySignature,
   canonicalJson,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

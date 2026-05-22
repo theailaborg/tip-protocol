@@ -22,9 +22,14 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
-const { TX_TYPES, ORIGIN, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_CONFIRMED;
+// GH #51 — unified signature storage. Reviewer signs the canonical
+// decision payload returned by buildSigningPayload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.REVIEWER_TIP_ID;
 // Reviewer can only suggest "more AI" labels — OH is already what the
 // creator declared, so confirming an AI flag must recommend something
 // that discloses AI involvement.
@@ -159,4 +164,8 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

@@ -506,6 +506,21 @@ const SIGNATURE_ALGORITHM = Object.freeze({
 const SIGNATURE_ALGORITHM_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_ALGORITHM)));
 const SIGNATURE_ALGORITHM_DEFAULT = SIGNATURE_ALGORITHM.ML_DSA_65;
 
+// GH #51 — enum of tip_id-bearing field names on tx.data. Schemas
+// whose SIGNED_BY = "subject" declare `SUBJECT_TIP_ID_FIELD` as one of
+// these values so the signature dispatcher knows which field on
+// tx.data carries the subject's tip_id. Centralised so the set is
+// type-locked (no typos) and Python parity uses the same enum.
+const TIP_ID_FIELDS = Object.freeze({
+  TIP_ID: "tip_id",                       // most schemas (register-identity, update-profile, register-domain, ...)
+  SIGNER_TIP_ID: "signer_tip_id",         // content-register (CNA-2.2 attributed publisher)
+  REVIEWER_TIP_ID: "reviewer_tip_id",     // prescan-review-confirmed / dismissed / recused
+  AUTHOR_TIP_ID: "author_tip_id",         // prescan-review-accept-correction / dispute
+  JUROR_TIP_ID: "juror_tip_id",           // jury vote commit / reveal
+  APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
+});
+const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
+
 // GH #51 — unified signature storage. The set of kinds that a schema's
 // SIGNED_BY discriminator can take. Each kind tells `verifyTxSignature`
 // how to resolve the signer's public key:
@@ -595,4 +610,6 @@ module.exports = {
   SIGNATURE_ALGORITHM,
   SIGNATURE_ALGORITHM_VALUES,
   SIGNATURE_ALGORITHM_DEFAULT,
+  TIP_ID_FIELDS,
+  TIP_ID_FIELD_VALUES,
 };

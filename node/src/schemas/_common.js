@@ -128,18 +128,14 @@ function resolveSignerRecord(tx, schema, dag) {
     row = dag.getVerificationProvider?.(vpId);
   } else {
     // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
-    // Each schema exposes `resolveSubject(tx, dag)` to look up the right
-    // identity row because the subject's tip_id lives at a tx-type-
-    // specific field (signer_tip_id, tip_id, reviewer_tip_id, etc.).
-    // Falls back to a generic tip_id lookup when the schema doesn't
-    // override.
-    if (typeof schema.resolveSubject === "function") {
-      row = schema.resolveSubject(tx, dag);
-    } else {
-      const tipId = tx?.data?.tip_id;
-      if (!tipId) return null;
-      row = dag.getIdentity?.(tipId);
-    }
+    // Each schema declares WHICH field on tx.data carries the subject's
+    // tip_id via `SUBJECT_TIP_ID_FIELD` (defaults to "tip_id"). This
+    // avoids the (tx, dag) vs (tipId, dag) signature ambiguity that
+    // a `resolveSubject(tx, dag)` helper would introduce.
+    const field = schema.SUBJECT_TIP_ID_FIELD || "tip_id";
+    const tipId = tx?.data?.[field];
+    if (!tipId) return null;
+    row = dag.getIdentity?.(tipId);
   }
   if (!row || typeof row.public_key !== "string") return null;
   return {

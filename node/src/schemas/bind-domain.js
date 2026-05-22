@@ -39,11 +39,19 @@ const {
   TX_TYPES, TIP_ID_TYPES,
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_UNBIND_REASON_VALUES,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
+
+// GH #51 — unified signature storage. The verifying NODE attests the
+// binding (it fetched the proof at /.well-known/tip-protocol.json or
+// the DNS TXT record). Signer = node, scope = body. No
+// SUBJECT_TIP_ID_FIELD because NODE-signed dispatches via tx.data.node_id.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.NODE;
 
 // States that can appear on a committed binding tx. PENDING /
 // VERIFICATION_FAILED / UNVERIFIED are statuses surfaced by the GET API and
@@ -285,4 +293,7 @@ module.exports = {
   verifyTx,
   verifyUnbindTx,
   canonicalJson,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
 };
