@@ -312,10 +312,15 @@ class KnexAdapter {
       t.text("prev").notNullable().defaultTo("[]");
       t.text("signature").nullable();
       _id(t, "subject_tip_id").nullable();
-      t.bigInteger("created_at").notNullable().defaultTo(0);
+      // local_inserted_at = this node's `nowMs()` when the row was written.
+      // Per-node by design. NOT in canonicalTx / tx_id / state_merkle_root.
+      // For chain-time use `transactions.timestamp` (the author-signed value
+      // bound into tx_id). See `local_inserted_at` semantic in the file
+      // header.
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
       t.index("tx_type", "idx_txs_type");
       t.index("timestamp", "idx_txs_ts");
-      t.index("created_at", "idx_txs_created_at");
+      t.index("local_inserted_at", "idx_txs_local_inserted_at");
       t.index("subject_tip_id", "idx_txs_subject");
     });
 
@@ -451,7 +456,9 @@ class KnexAdapter {
       t.text("parent_hashes").notNullable();
       t.text("signature").notNullable();
       t.bigInteger("timestamp").notNullable().defaultTo(0);
-      t.bigInteger("created_at").notNullable().defaultTo(0);
+      // local_inserted_at = node-local write time. Chain-time for a cert
+      // is `certificates.timestamp` (BFT-Time = median of acks.signed_at).
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
       t.index("round", "idx_cert_round");
       t.index(["author_node_id", "round"], "idx_cert_author");
     });
@@ -471,7 +478,9 @@ class KnexAdapter {
       t.text("ack_signed_ats").notNullable().defaultTo("[]");
       t.bigInteger("cert_timestamp").notNullable().defaultTo(0);
       t.string("anchor_batch_hash", 128).nullable();
-      t.bigInteger("created_at").notNullable().defaultTo(0);
+      // local_inserted_at = node-local write time. Chain-time for a
+      // commit is `commits.committed_at` (= anchor cert's BFT-Time).
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
       t.unique(["consensus_index"], "idx_commits_index");
     });
 
@@ -479,7 +488,9 @@ class KnexAdapter {
       t.integer("round").notNullable();
       _id(t, "author").notNullable();
       t.string("batch_hash", 128).notNullable();
-      t.bigInteger("created_at").notNullable().defaultTo(0);
+      // local_inserted_at = when this node first observed the vote.
+      // Pure operational dedup table; not in any canonical projection.
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
       t.primary(["round", "author"]);
       t.index("round", "idx_votes_round");
     });
@@ -523,7 +534,10 @@ class KnexAdapter {
       t.text("signatures").notNullable().defaultTo("[]");
       t.text("payload_hash").nullable();
       t.bigInteger("committed_at").notNullable();
-      t.bigInteger("created_at").notNullable().defaultTo(0);
+      // local_inserted_at = node-local write time. Chain-time for the
+      // rotation is `committee_history.committed_at` (= committing cert's
+      // BFT-Time).
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
       t.index("effective_round", "idx_committee_history_round");
     });
 
@@ -566,7 +580,9 @@ class KnexAdapter {
       _id(t, "disputer_tip_id").notNullable();
       t.text("payload_json").notNullable();
       t.text("signature").notNullable();
-      t.bigInteger("created_at").notNullable();
+      // local_inserted_at = when this node received the evidence body.
+      // Off-chain store by design; no chain-time exists for this row.
+      t.bigInteger("local_inserted_at").notNullable();
     });
   }
 
@@ -829,7 +845,7 @@ class KnexAdapter {
       prev: JSON.stringify(tx.prev || []),
       signature: tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
-      created_at: nowMs(),
+      local_inserted_at: nowMs(),
     };
     this._ff(() => this._dbInsert("transactions", "tx_id", row, "ignore"));
   }
@@ -921,7 +937,7 @@ class KnexAdapter {
         disputer_tip_id: rec.disputer_tip_id,
         payload_json: rec.payload_json,
         signature: rec.signature,
-        created_at: rec.created_at,
+        local_inserted_at: rec.local_inserted_at,
       }, "ignore"));
     }
     return fresh;
@@ -1093,7 +1109,7 @@ class KnexAdapter {
       parent_hashes: JSON.stringify(cert.parent_hashes || []),
       signature: cert.signature,
       timestamp: Number(cert.timestamp || 0),
-      created_at: nowMs(),
+      local_inserted_at: nowMs(),
     };
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
@@ -1137,7 +1153,7 @@ class KnexAdapter {
       ack_signed_ats: JSON.stringify(rec.ack_signed_ats || []),
       cert_timestamp: Number(rec.cert_timestamp || 0),
       anchor_batch_hash: rec.anchor_batch_hash || null,
-      created_at: nowMs(),
+      local_inserted_at: nowMs(),
     };
     this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
@@ -1161,7 +1177,7 @@ class KnexAdapter {
   recordSeenVote(round, author, batchHash) {
     const isNew = this.mirror.recordSeenVote(round, author, batchHash);
     if (isNew) {
-      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash, created_at: nowMs() }, "ignore"));
+      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash, local_inserted_at: nowMs() }, "ignore"));
     }
     return isNew;
   }
@@ -1289,7 +1305,7 @@ class KnexAdapter {
       signatures: JSON.stringify(rec.signatures || []),
       payload_hash: rec.payload_hash || null,
       committed_at: rec.committed_at || nowMs(),
-      created_at: nowMs(),
+      local_inserted_at: nowMs(),
     };
     this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
   }

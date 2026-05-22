@@ -671,7 +671,7 @@ const _shouldRunBigintTest = !!_bigintDriver;
       // Drives the contract on FRESHLY-inserted rows so we catch the
       // case where the driver returns Number on hydration of existing
       // rows but produces strings on RETURNING / SELECT after an
-      // INSERT. Targets `transactions.timestamp` + `transactions.created_at`
+      // INSERT. Targets `transactions.timestamp` + `transactions.local_inserted_at`
       // — both bigInteger, both on a table where we can synthesise a
       // unique row without touching consensus state.
       const fakeTxId = `test_bigint_${nowMs()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -685,14 +685,14 @@ const _shouldRunBigintTest = !!_bigintDriver;
           prev: "[]",
           signature: null,
           subject_tip_id: null,
-          created_at: ts,
+          local_inserted_at: ts,
         });
         const [row] = await knex("transactions").select("*").where({ tx_id: fakeTxId });
         expect(row).toBeTruthy();
         expect(typeof row.timestamp).toBe("number");
         expect(row.timestamp).toBe(ts);
-        expect(typeof row.created_at).toBe("number");
-        expect(row.created_at).toBe(ts);
+        expect(typeof row.local_inserted_at).toBe("number");
+        expect(row.local_inserted_at).toBe(ts);
       } finally {
         try { await knex("transactions").where({ tx_id: fakeTxId }).delete(); } catch { /* ignore */ }
       }

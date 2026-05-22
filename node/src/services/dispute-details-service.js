@@ -187,7 +187,7 @@ function createDisputeDetailsService({ dag }) {
       disputer_tip_id,
       payload_json: canonical,
       signature,
-      created_at: nowMs(),
+      local_inserted_at: nowMs(),
     });
 
     log.info(`Dispute details stored: ${evidence_hash} by ${disputer_tip_id} (${canonicalBytes} bytes)`);
@@ -212,7 +212,7 @@ function createDisputeDetailsService({ dag }) {
       disputer_tip_id: row.disputer_tip_id,
       payload: JSON.parse(row.payload_json),
       signature: row.signature,
-      created_at: row.created_at,
+      local_inserted_at: row.local_inserted_at,
     };
   }
 

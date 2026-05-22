@@ -64,13 +64,13 @@ describe("dag migration — subject_tip_id (pre-migration → migrated DB)", () 
     const seedDb = new Database(dbPath);
     seedDb.exec(`
       CREATE TABLE transactions (
-        tx_id          TEXT PRIMARY KEY,
-        tx_type        TEXT NOT NULL,
-        data           TEXT NOT NULL,
-        timestamp      TEXT NOT NULL,
-        prev           TEXT NOT NULL DEFAULT '[]',
-        signature      TEXT,
-        created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+        tx_id              TEXT PRIMARY KEY,
+        tx_type            TEXT NOT NULL,
+        data               TEXT NOT NULL,
+        timestamp          TEXT NOT NULL,
+        prev               TEXT NOT NULL DEFAULT '[]',
+        signature          TEXT,
+        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE TABLE mempool (
         tx_id           TEXT PRIMARY KEY,

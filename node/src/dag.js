@@ -1032,7 +1032,7 @@ class MemoryStore {
       disputer_tip_id: rec.disputer_tip_id,
       payload_json: rec.payload_json,
       signature: rec.signature,
-      created_at: rec.created_at,
+      local_inserted_at: rec.local_inserted_at,
     });
     return true;
   }
@@ -1117,18 +1117,22 @@ class SQLiteStore {
       -- NODE_REGISTERED, AI_CLASSIFIER_RESULT, APPEAL_RESULT) have no
       -- individual subject and never appear in any user's feed.
       CREATE TABLE IF NOT EXISTS transactions (
-        tx_id          TEXT PRIMARY KEY,
-        tx_type        TEXT NOT NULL,
-        data           TEXT NOT NULL,
+        tx_id              TEXT PRIMARY KEY,
+        tx_type            TEXT NOT NULL,
+        data               TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
-        prev           TEXT NOT NULL DEFAULT '[]',
-        signature      TEXT,
-        subject_tip_id TEXT,
-        created_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        prev               TEXT NOT NULL DEFAULT '[]',
+        signature          TEXT,
+        subject_tip_id     TEXT,
+        -- local_inserted_at = this node's nowMs() when the row was
+        -- written. Per-node by design. NOT in canonicalTx / tx_id /
+        -- state_merkle_root. For chain-time use the timestamp column
+        -- (the author-signed value bound into tx_id).
+        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
-      CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
-      CREATE INDEX IF NOT EXISTS idx_txs_ts         ON transactions(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_txs_created_at ON transactions(created_at);
+      CREATE INDEX IF NOT EXISTS idx_txs_type              ON transactions(tx_type);
+      CREATE INDEX IF NOT EXISTS idx_txs_ts                ON transactions(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_txs_local_inserted_at ON transactions(local_inserted_at);
       -- idx_txs_subject is created unconditionally below the ALTER block
       -- so existing DBs (which need ALTER TABLE first) don't fail here on
       -- a column that hasn't been added yet.
@@ -1290,8 +1294,10 @@ class SQLiteStore {
         -- monotonicity gate rejects anchors with timestamp <= floor, so a real
         -- network with 0-timestamp certs would halt at the next anchor (correct
         -- behavior — flags an upgrade boundary instead of silently mis-ordering).
-        timestamp       INTEGER NOT NULL DEFAULT 0,
-        created_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        timestamp         INTEGER NOT NULL DEFAULT 0,
+        -- local_inserted_at = node-local write time. Chain-time for a
+        -- cert is the timestamp column (BFT-Time = median of acks).
+        local_inserted_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
       CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
@@ -1337,7 +1343,9 @@ class SQLiteStore {
         -- gc_depth rounds. Joiner uses this to reconstruct the
         -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
         anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
-        created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        -- local_inserted_at = node-local write time. Chain-time for a
+        -- commit is the committed_at column (= anchor cert's BFT-Time).
+        local_inserted_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
 
@@ -1373,7 +1381,10 @@ class SQLiteStore {
         signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
         payload_hash       TEXT,              -- hex; what each signer signed
         committed_at INTEGER NOT NULL,
-        created_at         INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        -- local_inserted_at = node-local write time. Chain-time for a
+        -- rotation is the committed_at column (= committing cert's
+        -- BFT-Time).
+        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
 
@@ -1448,10 +1459,12 @@ class SQLiteStore {
       -- to a window of (current_round - VOTES_RETENTION_ROUNDS). Steady-state
       -- row count = VOTES_RETENTION_ROUNDS × committee_size (tens of rows).
       CREATE TABLE IF NOT EXISTS votes_seen (
-        round       INTEGER NOT NULL,
-        author      TEXT NOT NULL,
-        batch_hash  TEXT NOT NULL,
-        created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+        round              INTEGER NOT NULL,
+        author             TEXT NOT NULL,
+        batch_hash         TEXT NOT NULL,
+        -- local_inserted_at = when this node first observed the vote.
+        -- Pure operational dedup table; not in any canonical projection.
+        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
         PRIMARY KEY (round, author)
       );
       CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
@@ -1535,11 +1548,13 @@ class SQLiteStore {
       -- derivable from signature alone) so reads can fetch the pubkey
       -- and re-verify the signature.
       CREATE TABLE IF NOT EXISTS dispute_details (
-        evidence_hash    TEXT PRIMARY KEY,
-        disputer_tip_id  TEXT NOT NULL,
-        payload_json     TEXT NOT NULL,
-        signature        TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        evidence_hash      TEXT PRIMARY KEY,
+        disputer_tip_id    TEXT NOT NULL,
+        payload_json       TEXT NOT NULL,
+        signature          TEXT NOT NULL,
+        -- local_inserted_at = when this node received the evidence body.
+        -- Off-chain store by design; no chain-time exists for this row.
+        local_inserted_at  INTEGER NOT NULL
       );
     `);
 
@@ -1684,13 +1699,13 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?)`
       ),
       getTx: this.db.prepare("SELECT * FROM transactions WHERE tx_id=?"),
-      getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY created_at ASC"),
+      getAllTxs: this.db.prepare("SELECT * FROM transactions ORDER BY local_inserted_at ASC"),
       countTxs: this.db.prepare("SELECT COUNT(*) AS n FROM transactions"),
-      txsByType: this.db.prepare("SELECT * FROM transactions WHERE tx_type=? ORDER BY created_at ASC"),
+      txsByType: this.db.prepare("SELECT * FROM transactions WHERE tx_type=? ORDER BY local_inserted_at ASC"),
       txsByTypeAndCtid: this.db.prepare(
         `SELECT * FROM transactions
          WHERE tx_type=? AND json_extract(data,'$.ctid')=?
-         ORDER BY created_at ASC`
+         ORDER BY local_inserted_at ASC`
       ),
       // OR-on-(tip_id, author_tip_id) — used by scoring.computeScore
       // which expects all txs whose score effect can land on tipId.
@@ -1702,7 +1717,7 @@ class SQLiteStore {
         `SELECT * FROM transactions
          WHERE json_extract(data,'$.tip_id')=?
             OR json_extract(data,'$.author_tip_id')=?
-         ORDER BY created_at ASC`
+         ORDER BY local_inserted_at ASC`
       ),
       // Indexed lookup via the denormalised subject_tip_id column.
       // Broader scope: a juror's vote, a verifier's verification, a
@@ -2047,7 +2062,7 @@ class SQLiteStore {
       // evidence_hash PK keeps re-uploads idempotent.
       saveDisputeDetails: this.db.prepare(
         `INSERT OR IGNORE INTO dispute_details
-           (evidence_hash, disputer_tip_id, payload_json, signature, created_at)
+           (evidence_hash, disputer_tip_id, payload_json, signature, local_inserted_at)
          VALUES (?,?,?,?,?)`
       ),
       getDisputeDetails: this.db.prepare(
@@ -2729,7 +2744,7 @@ class SQLiteStore {
       rec.disputer_tip_id,
       rec.payload_json,
       rec.signature,
-      rec.created_at,
+      rec.local_inserted_at,
     );
     return res.changes === 1;
   }
