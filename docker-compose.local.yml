@@ -355,6 +355,11 @@ services:
       TIP_CONSOLE_LEVEL: info
       TIP_LOG_LEVEL: info
       ZK_SKIP_VERIFY: "true"
+      # Per-IP rate-limit relaxed for local dev / UAT runs that
+      # intentionally fire many requests from one host. Prod default
+      # (200/min) is enforced via env absence; override here keeps
+      # local UAT scripts (scripts/uat-signature-unification.js) green.
+      TIP_RATE_LIMIT_MAX: "10000"
       # ── DB — reads from .env; falls back to postgres defaults ─────────────
       DB_DRIVER:   ${DB_DRIVER:-postgres}
       DB_HOST:     ${DB_HOST:-postgres}
