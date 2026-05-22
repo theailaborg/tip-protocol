@@ -56,18 +56,27 @@ const NODE_ENVELOPE = Object.freeze({
 // ─── REVOKE_* — VP attests revocation with issuing_vp_id ───────────────────
 // All four revocation tx types share the same canonical payload. tx_type
 // is included in the signed payload so a captured signature for one
-// revocation type can't be replayed as a different one.
+// revocation type can't be replayed as a different one. evidence_hash
+// is conditional — only added to the canonical payload when present
+// (matches verifyBodySignature's "ignore undefined" behaviour at the
+// signer; including it as `undefined` would canonicalise to the literal
+// string "undefined" and diverge from the signer's bytes).
 const REVOKE_CONTRACT = Object.freeze({
   SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
   SIGNED_BY: SIGNED_BY_KIND.VP,
   VP_ID_FIELD: VP_ID_FIELDS.ISSUING_VP_ID,
-  buildSigningPayload: (data) => ({
-    tx_type: data.tx_type,                  // distinguishes revoke types
-    tip_id: data.tip_id,
-    reason_code: data.reason_code,
-    evidence_hash: data.evidence_hash,
-    issuing_vp_id: data.issuing_vp_id,
-  }),
+  buildSigningPayload: (data) => {
+    const out = {
+      tx_type: data.tx_type,                  // distinguishes revoke types
+      tip_id: data.tip_id,
+      reason_code: data.reason_code,
+      issuing_vp_id: data.issuing_vp_id,
+    };
+    if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
+      out.evidence_hash = data.evidence_hash;
+    }
+    return out;
+  },
 });
 
 const TX_SIGNATURE_REGISTRY = Object.freeze({

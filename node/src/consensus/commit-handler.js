@@ -461,7 +461,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // Closes the gossip-bypass gap: a peer-submitted tx that didn't go
         // through the API service's 409 still hits the same predicate here.
         const r = rules.canBindDomain(dag, { tip_id: d.tip_id, domain: d.domain });
-        return r.valid ? { valid: true } : { valid: false, error: r.error.message };
+        if (!r.valid) return { valid: false, error: r.error.message };
+        // Schema-level state checks: node active, claimant is an active
+        // organization, user's claim_signature attestation still verifies.
+        // GH #51 split — node binding signature is verified by the
+        // unified dispatcher; this is the non-signature state piece.
+        const s = bindDomainSchema.verifyTx(tx, dag);
+        return s.ok ? { valid: true } : { valid: false, error: s.error };
       }
 
       case TX_TYPES.CONTENT_DISPUTED: {
@@ -784,13 +790,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
 
       // ── Domain binding (org-only) ────────────────────────────────────
-      // BIND_DOMAIN is node-attested (binding_signature in tx.data).
-      // _verifyTxSignature has already validated both the node sig and
-      // the embedded user claim sig. Apply the canonical row to
-      // domain_bindings; commit-handler is the sole writer so the table
-      // stays deterministic and participates in state_merkle_root. The
-      // off-chain `evidence` blob is NOT persisted on the binding row —
-      // it lives on tx.data for audit replay only.
+      // BIND_DOMAIN is node-attested. GH #51: the node's attestation
+      // lives at tx.signature (verified by the unified dispatcher).
+      // The embedded user claim sig stays on tx.data.claim_signature
+      // (attestation by a different actor, per SIGNATURES.md). Apply
+      // the canonical row to domain_bindings; commit-handler is the
+      // sole writer so the table stays deterministic and participates
+      // in state_merkle_root. The off-chain `evidence` blob is NOT
+      // persisted on the binding row — it lives on tx.data for audit
+      // replay only.
       case TX_TYPES.BIND_DOMAIN:
         if (d.domain && d.tip_id) {
           // expires_at + consecutive_failures are v2 renewal prep slots
@@ -812,7 +820,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             consecutive_failures: 0,
             node_id: d.node_id,
             claim_signature: d.claim_signature,
-            binding_signature: d.binding_signature,
+            binding_signature: tx.signature,
             tx_id: tx.tx_id,
           });
           // Drop the pending claim on whichever node was holding it.

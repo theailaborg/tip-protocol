@@ -303,8 +303,8 @@ describe("prescan-review end-to-end flow", () => {
         old_origin_code: "OH",
         new_origin_code: "AG",
         author_tip_id: CREATOR,
-        signature: updateSig,
       },
+      signature: updateSig,
     });
 
     fx.submitted.length = 0;

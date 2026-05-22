@@ -221,13 +221,17 @@ describe("commit-handler — business-rule revalidation: identity_already_regist
       zk_proof: { pi_a: ["1"], pi_b: [["1"]], pi_c: ["1"] },
       social_attested: false,
     };
-    data.vp_signature = _signRegisterIdentity(fx.vpKp, data);
-    const tx = _signByNode(fx.dag, fx.nodeKp, {
+    const vpSig = _signRegisterIdentity(fx.vpKp, data);
+    // GH #51: VP attestation lives at tx.signature. REGISTER_IDENTITY
+    // is a body-scope, VP-signed tx — no node envelope signature on top.
+    const tx = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: 1777507200000,
-      prev: [],
+      prev: fx.dag.getRecentPrev(),
       data,
-    });
+      signature: vpSig,
+    };
+    tx.tx_id = computeTxId(tx);
 
     const res = fx.handler.commitOrderedTxs([tx], 99);
     expect(res.committed).toBe(0);
@@ -263,13 +267,16 @@ describe("commit-handler — business-rule revalidation: content_already_registe
       content_hash: shake256("c2"),
       signer_tip_id: fx.authorTipId,
     };
-    data.signature = _signRegisterContent(fx.authorKp, data);
-    const tx = _signByNode(fx.dag, fx.nodeKp, {
+    const authorSig = _signRegisterContent(fx.authorKp, data);
+    // GH #51: signer's signature lives at tx.signature.
+    const tx = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: 1777507200000,
-      prev: [],
+      prev: fx.dag.getRecentPrev(),
       data,
-    });
+      signature: authorSig,
+    };
+    tx.tx_id = computeTxId(tx);
 
     fx.handler.commitOrderedTxs([tx], 99);
     const row = fx.dag.getTxRejection(tx.tx_id);

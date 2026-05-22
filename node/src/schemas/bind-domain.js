@@ -119,16 +119,16 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 }
 
 /**
- * Server-side high-level entry. Used by commit-handler on every committed
- * BIND_DOMAIN tx. Verifies:
+ * State-level verification at consensus replay. GH #51: the node's
+ * attestation is verified by the unified dispatcher (tx.signature). This
+ * function only enforces the state-machine invariants the dispatcher
+ * doesn't know about:
  *
- *   1. Tx-level binding_signature is present
- *   2. Node that signed is registered + active on the DAG
- *   3. Canonical payload rebuilds deterministically
- *   4. Node's ML-DSA-65 signature verifies over the payload
- *   5. Claimant TIP-ID is registered, not revoked, and is an organization
- *   6. User's claim_signature verifies over the embedded register-domain
- *      sub-payload {claimed_at, domain, method, tip_id}
+ *   1. Emitting node is registered + active
+ *   2. Claimant TIP-ID is registered, not revoked, and is an organization
+ *   3. User's claim_signature (attestation by a different actor, stays
+ *      in tx.data per "Attestations on data") verifies over the
+ *      embedded register-domain sub-payload
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -136,9 +136,6 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
-  if (typeof d.binding_signature !== "string") {
-    return { ok: false, status: 400, error: "binding_signature missing on tx", code: "binding_signature_missing" };
-  }
   if (!d.node_id) {
     return { ok: false, status: 400, error: "node_id missing", code: "node_id_missing" };
   }
@@ -149,18 +146,6 @@ function verifyTx(tx, dag) {
   }
   if (node.status !== "active") {
     return { ok: false, status: 403, error: `Verifying node not active: ${d.node_id}`, code: "node_inactive" };
-  }
-
-  let payload;
-  try {
-    payload = buildSigningPayload(d);
-  } catch (err) {
-    if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
-    throw err;
-  }
-
-  if (!verifySignature(payload, d.binding_signature, node.public_key)) {
-    return { ok: false, status: 403, error: "Node binding signature verification failed", code: "binding_signature_invalid" };
   }
 
   // Claimant must still be an organization on the DAG at commit time —
