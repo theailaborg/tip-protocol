@@ -112,8 +112,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
         decision_note: safeBody.decision_note ?? null,
-        signature: safeBody.signature,
       },
+      signature: safeBody.signature,
     });
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -159,8 +159,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         reviewer_tip_id: safeBody.reviewer_tip_id,
         suggested_origin: safeBody.suggested_origin,
         decision_note: safeBody.decision_note ?? null,
-        signature: safeBody.signature,
       },
+      signature: safeBody.signature,
     });
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -188,8 +188,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
         recusal_reason: safeBody.recusal_reason ?? null,
-        signature: safeBody.signature,
       },
+      signature: safeBody.signature,
     });
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -213,8 +213,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         old_origin_code: content.origin_code,
         new_origin_code,
         author_tip_id: body.author_tip_id,
-        signature: body.signature,
       },
+      signature: body.signature,
     });
 
     // Score penalty batched atomically with the origin update. Accepting

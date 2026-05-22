@@ -51,6 +51,7 @@ function getSignatureContract(tx) {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.REVIEWER_TIP_ID,
+    buildSigningPayload,
   };
 }
 
@@ -141,6 +142,13 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
   return verifyPayload(payload, signatureHex, publicKeyHex);
 }
 
+/**
+ * State-level verification at consensus replay. GH #51: the signature
+ * (auto: node envelope; user: reviewer body sig) is verified by the
+ * unified dispatcher via `getSignatureContract(tx)`. This function only
+ * enforces the state-machine + reviewer-assignment / node-registration
+ * invariants the dispatcher doesn't know about.
+ */
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
@@ -148,16 +156,9 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
   }
 
-  // Node-signed auto-recuse — emitted by prescan-review-trigger when
-  // the assigned reviewer's AUTO_RECUSE_AGE_MS elapses without a
-  // decision. Same shape as CONTENT_DISPUTED auto-cascade (data.auto +
-  // data.node_id, tx.signature at top level over canonicalTx).
   if (d.auto) {
     if (!d.node_id) {
       return { ok: false, status: 400, error: "node_id missing on auto-recuse", code: "node_id_missing" };
-    }
-    if (typeof tx.signature !== "string" || tx.signature.length === 0) {
-      return { ok: false, status: 400, error: "tx.signature missing on auto-recuse", code: "signature_missing" };
     }
     const node = dag.getNode(d.node_id);
     if (!node) {
@@ -172,33 +173,19 @@ function verifyTx(tx, dag) {
       if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
       throw err;
     }
-    if (!mldsaVerify(canonicalTx(tx), tx.signature, node.public_key)) {
-      return { ok: false, status: 403, error: "Node signature verification failed", code: "signature_invalid" };
-    }
     return { ok: true };
   }
 
-  // Reviewer-signed manual recuse (the original path).
-  if (typeof d.signature !== "string") {
-    return { ok: false, status: 400, error: "signature missing on tx", code: "signature_missing" };
-  }
+  // Reviewer-signed manual recuse path.
   if (!d.reviewer_tip_id) {
     return { ok: false, status: 400, error: "reviewer_tip_id missing", code: "reviewer_tip_id_missing" };
   }
-
-  let reviewer;
-  let payload;
   try {
-    reviewer = resolveReviewer(d.reviewer_tip_id, dag);
+    resolveReviewer(d.reviewer_tip_id, dag);
     resolveReview(d.review_id, d.reviewer_tip_id, dag);
-    payload = buildSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.signature, reviewer.public_key)) {
-    return { ok: false, status: 403, error: "Reviewer signature verification failed", code: "signature_invalid" };
   }
   return { ok: true };
 }

@@ -148,7 +148,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       data: {
         // ── Server-derived / tx-level fields ──────────────────────
         tip_id: tipId,
-        vp_signature,
         founding,
         // ── Signed canonical fields (mirror canonicalPayload so
         //    commit-handler can replay buildSigningPayload(d))
@@ -162,6 +161,8 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         vp_id: canonicalPayload.vp_id,
         zk_proof: canonicalPayload.zk_proof,
       },
+      // GH #51 — VP signature lives at tx.signature (unified storage).
+      signature: vp_signature,
     };
     const signedTx = withTxId(txBody);
 

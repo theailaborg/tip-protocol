@@ -185,7 +185,7 @@ function resolveSignerRecord(tx, schema, dag) {
     const field = contract.VP_ID_FIELD || "vp_id";
     const vpId = tx?.data?.[field];
     if (!vpId) return null;
-    row = dag.getVerificationProvider?.(vpId);
+    row = dag.getVP?.(vpId);
   } else {
     // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
     // Contract declares WHICH field on tx.data carries the subject's
@@ -264,9 +264,9 @@ function verifyTxSignature(tx, schema, dag) {
   if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.ENVELOPE) {
     // Outer signature: covers the canonical tx envelope. tx.signature is
     // NOT part of canonicalTx (signTransaction's contract), so the
-    // signature doesn't sign itself.
-    const tipCrypto = require("../../../shared/crypto");
-    message = tipCrypto.shake256(tipCrypto.canonicalTx(tx));   // matches signTransaction's signed bytes
+    // signature doesn't sign itself. mldsaSign treats the input as raw
+    // UTF-8 bytes — matches signTransaction's exact wire format.
+    message = canonicalTx(tx);
   } else if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
     message = bodyMessageHex(tx, contract);
   } else {

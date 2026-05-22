@@ -30,7 +30,30 @@ const updateProfileSchema = require("../schemas/update-profile");
 const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
-const prescanReviewRecusedSchema   = require("../schemas/prescan-review-recused");
+const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
+const registerDomainSchema = require("../schemas/register-domain");
+const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
+const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
+const { verifyTxSignature: unifiedVerifyTxSignature } = require("../schemas/_common");
+
+// GH #51 — tx_type to schema-module map for the unified signature
+// dispatcher. tx types without a schema fall through to the registry
+// (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
+const SCHEMA_FOR_TX_TYPE = Object.freeze({
+  [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
+  [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
+  [TX_TYPES.BIND_DOMAIN]: bindDomainSchema,
+  [TX_TYPES.UPDATE_PROFILE]: updateProfileSchema,
+  [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: prescanReviewTriggeredSchema,
+  [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
+  [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
+  [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
+});
+// Sister schemas exist but their tx_type lives elsewhere or they share
+// dispatch with another schema's TX_TYPE — keep imports so they're not
+// orphaned by the linter, and so future tx_types that promote out of
+// the registry can wire in here cleanly.
+void registerDomainSchema; void prescanReviewAcceptCorrectionSchema; void prescanReviewDisputeSchema;
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
 const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
@@ -520,6 +543,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           };
         }
         return { valid: true };
+      }
+
+      // Prescan-review reviewer-assigned + state-machine checks. GH #51
+      // split: signature is verified by `_verifyTxSignature` via the
+      // unified dispatcher; state-machine invariants (assigned-reviewer
+      // match, review state, auto-recuse node-registration) live in the
+      // schema's `verifyTx` so the same code runs at API time too.
+      case TX_TYPES.PRESCAN_REVIEW_DISMISSED: {
+        const r = prescanReviewDismissedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+      case TX_TYPES.PRESCAN_REVIEW_CONFIRMED: {
+        const r = prescanReviewConfirmedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+        const r = prescanReviewRecusedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
       default:
@@ -1018,208 +1059,74 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   }
 
   /**
-   * Verify body/node signature on a transaction.
-   * Returns true only if the signature is verified against a known signer from our registry.
-   * Returns false if unknown tx type, missing signer, or invalid signature.
+   * Verify the signature on a transaction.
+   *
+   * GH #51 — single dispatch path: every tx type's signature contract
+   * (scope, signer kind, canonical payload) lives in ONE place:
+   *
+   *   - a per-tx-type schema module in `node/src/schemas/` for tx types
+   *     with non-trivial logic (validateRequest, resolveSubject, etc.)
+   *   - the registry in `node/src/schemas/_registry.js` for tx types
+   *     without a full schema module (most node-emitted envelopes plus
+   *     trivial body-signed shapes)
+   *
+   * The unified `verifyTxSignature(tx, schema, dag)` helper resolves the
+   * contract and verifies `tx.signature` against the right key /
+   * payload / algorithm. Returns false here on any failure so the caller
+   * (`commitOrderedTxs`) treats it as a rejection.
+   *
+   * Two tx types carry an extra attestation in `tx.data` that must also
+   * verify (see `SIGNATURES.md` "Attestations on data" rule):
+   *
+   *   - COMMITTEE_ROTATION: the 2f+1 prev-committee sigs over
+   *     `payload_hash` live in `data.signatures[]`. Full crypto
+   *     verification runs in `rules.canCommitteeRotation` during
+   *     `_statefulCheck` (where it can also enforce the quorum +
+   *     prev-committee + monotonic-rotation_number invariants in one
+   *     place). Here we just gate on presence.
+   *   - CONTENT_DISPUTED auto+manual: the creator's
+   *     `data.escalation_signature` proves they authorized the early
+   *     escalation. Verified against `escalated_by_tip_id`'s identity
+   *     pubkey.
    */
   function _verifyTxSignature(tx) {
-    const d = tx.data || {};
     const tt = tx.tx_type;
+    const d = tx.data || {};
+
+    if (tt === TX_TYPES.COMMITTEE_ROTATION) {
+      return Array.isArray(d.signatures) && d.signatures.length > 0;
+    }
 
     try {
-      if (tt === TX_TYPES.REGISTER_CONTENT) {
-        // Single canonical path (CNA-2.2). The schemas/content-register
-        // module owns the field list, canonical-payload builder, and
-        // verifier. Same module the API used at submit time, so the two
-        // sides cannot drift. Spec: docs/CONTENT_SIGNING.md.
-        return contentRegisterSchema.verifyTx(tx, dag).ok;
+      const schema = SCHEMA_FOR_TX_TYPE[tt] || null;
+      const result = unifiedVerifyTxSignature(tx, schema, dag);
+      if (!result.ok) {
+        log.warn(`Round-replay signature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${result.error}`);
+        return false;
       }
 
-      if (tt === TX_TYPES.REGISTER_IDENTITY) {
-        // Single canonical path. The schemas/register-identity module
-        // owns the canonical payload, builder, and verifier — same
-        // module identity-service.register uses at API time.
-        return registerIdentitySchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.UPDATE_PROFILE) {
-        // Sparse update of user-settable identity fields. The schema
-        // module owns the canonical payload (tip_id + present known
-        // fields) and signature verification against the user's own
-        // identity public key.
-        return updateProfileSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.PRESCAN_REVIEW_TRIGGERED) {
-        // Node-emitted system tx (scheduler). Signed by the emitting
-        // node's ML-DSA-65 key over canonicalTx(tx). Schema module
-        // verifies node-registry presence + signature.
-        return prescanReviewTriggeredSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.PRESCAN_REVIEW_DISMISSED) {
-        // Reviewer's "AI was wrong" decision. Schema module verifies
-        // signature against the assigned-reviewer's identity public key.
-        return prescanReviewDismissedSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.PRESCAN_REVIEW_CONFIRMED) {
-        // Reviewer's "AI was right" decision. Same signature pattern as
-        // dismissed; canonical payload also carries the suggested_origin.
-        return prescanReviewConfirmedSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.PRESCAN_REVIEW_RECUSED) {
-        // Reviewer bowing out — same reviewer-signed pattern as
-        // DISMISSED. Schema gates state=TRIGGERED (can't recuse after
-        // a decision).
-        return prescanReviewRecusedSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.BIND_DOMAIN) {
-        // Dual-signature: schemas/bind-domain.verifyTx checks both the
-        // verifying node's ML-DSA-65 attestation AND the embedded user
-        // claim signature. Replicating nodes do NOT re-perform DNS / HTTP
-        // (would diverge across nodes / time).
-        return bindDomainSchema.verifyTx(tx, dag).ok;
-      }
-
-      if (tt === TX_TYPES.UNBIND_DOMAIN) {
-        return bindDomainSchema.verifyUnbindTx(tx, dag).ok;
-      }
-
-      // Signed canonical payload for these three tx types binds the
-      // action to a specific ctid (replay protection — captured
-      // signatures can't be re-used against another ctid the same
-      // actor owns). Must match the field lists used by the API
-      // endpoints in services/content-service.js + the accept-
-      // correction schema, or txs valid at submit time fail replay.
-      if (tt === TX_TYPES.CONTENT_VERIFIED) {
-        const verifier = dag.getIdentity(d.verifier_tip_id);
-        if (!verifier || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, verifier.public_key, ["verifier_tip_id", "ctid", "verdict"]);
-      }
-
-      if (tt === TX_TYPES.UPDATE_ORIGIN) {
-        const author = dag.getIdentity(d.author_tip_id);
-        if (!author || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "ctid", "new_origin_code"]);
-      }
-
-      if (tt === TX_TYPES.CONTENT_RETRACTED) {
-        const author = dag.getIdentity(d.author_tip_id);
-        if (!author || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, author.public_key, ["author_tip_id", "ctid"]);
-      }
-
-      if (tt === TX_TYPES.CONTENT_DISPUTED) {
-        if (d.auto) {
-          const node = dag.getNode(d.node_id);
-          if (!node || !tx.signature) return false;
-          if (!mldsaVerify(canonicalTx(tx), tx.signature, node.public_key)) return false;
-          // Creator-initiated manual escalation (Option 2 from a
-          // CONFIRMED prescan-review): the node signs the tx envelope
-          // and the creator's escalation_signature is embedded as
-          // proof-of-intent. Verify it against the creator's identity
-          // pubkey over { author_tip_id, ctid, review_id } — same
-          // SIGNED_FIELDS the schema enforced at API time. System
-          // auto-escalations (no escalated_by_tip_id) skip this branch.
-          if (d.escalated_by_tip_id) {
-            const escalator = dag.getIdentity(d.escalated_by_tip_id);
-            if (!escalator || !d.escalation_signature) return false;
-            const sigBody = {
-              author_tip_id: d.escalated_by_tip_id,
-              ctid: d.ctid,
-              review_id: d.source_review_id,
-            };
-            if (!verifyBodySignature(sigBody, d.escalation_signature, escalator.public_key,
-                ["author_tip_id", "ctid", "review_id"])) {
-              return false;
-            }
-          }
-          return true;
+      // CONTENT_DISPUTED auto-mode with a user-attributed escalator —
+      // also verify the creator's attestation on data. System
+      // auto-escalations (no escalated_by_tip_id) skip this branch.
+      if (tt === TX_TYPES.CONTENT_DISPUTED && d.auto && d.escalated_by_tip_id) {
+        const escalator = dag.getIdentity(d.escalated_by_tip_id);
+        if (!escalator || !d.escalation_signature) return false;
+        const sigBody = {
+          author_tip_id: d.escalated_by_tip_id,
+          ctid: d.ctid,
+          review_id: d.source_review_id,
+        };
+        if (!verifyBodySignature(sigBody, d.escalation_signature, escalator.public_key,
+          ["author_tip_id", "ctid", "review_id"])) {
+          return false;
         }
-        const disputer = dag.getIdentity(d.disputer_tip_id);
-        if (!disputer || !d.signature) return false;
-        // Mirror dispute-service.fileDispute and the UI: claimed_origin and
-        // evidence_hash are only in the signed fields when truthy. The on-wire
-        // tx data carries them as `null` when absent, but verifyBodySignature
-        // treats `null !== undefined` as "defined", so listing them
-        // unconditionally would diverge from the signer. Same drift class as
-        // #54 / #55 / #56.
-        const disputeFields = ["disputer_tip_id", "reason"];
-        if (d.claimed_origin) disputeFields.push("claimed_origin");
-        if (d.evidence_hash) disputeFields.push("evidence_hash");
-        return verifyBodySignature(d, d.signature, disputer.public_key, disputeFields);
       }
 
-      if (tt === TX_TYPES.JURY_VOTE_COMMIT) {
-        const juror = dag.getIdentity(d.juror_tip_id);
-        if (!juror || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, juror.public_key, ["juror_tip_id", "commitment"]);
-      }
-
-      if (tt === TX_TYPES.JURY_VOTE_REVEAL) {
-        const juror = dag.getIdentity(d.juror_tip_id);
-        if (!juror || !d.signature) return false;
-        const fields = d.confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
-        return verifyBodySignature(d, d.signature, juror.public_key, fields);
-      }
-
-      if (tt === TX_TYPES.APPEAL_FILED) {
-        if (d.appellant_tip_id === "SYSTEM_AUTO_ESCALATION") {
-          // Auto-escalated by node on NO_QUORUM — verify node signature
-          const node = dag.getNode(d.node_id);
-          if (!node || !tx.signature) return false;
-          return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
-        }
-        // User-filed appeal — verify appellant signature
-        const appellant = dag.getIdentity(d.appellant_tip_id);
-        if (!appellant || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, appellant.public_key, ["appellant_tip_id"]);
-      }
-
-      if ([TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP, TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE].includes(tt)) {
-        const vp = dag.getVP(d.issuing_vp_id);
-        if (!vp || !d.signature) return false;
-        return verifyBodySignature(d, d.signature, vp.public_key,
-          ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"]);
-      }
-
-      if (tt === TX_TYPES.VP_REGISTERED || tt === TX_TYPES.NODE_REGISTERED) {
-        const vp = dag.getVP(d.approving_vp_id);
-        if (!vp || !d.council_signature) return false;
-        const fields = tt === TX_TYPES.VP_REGISTERED
-          ? ["name", "jurisdiction", "jurisdiction_tier", "public_key", "approving_vp_id"]
-          : ["name", "public_key", "approving_vp_id"];
-        return verifyBodySignature(d, d.council_signature, vp.public_key, fields);
-      }
-
-      const NODE_SIGNED = [TX_TYPES.SCORE_UPDATE, TX_TYPES.ADJUDICATION_RESULT, TX_TYPES.APPEAL_RESULT,
-      TX_TYPES.JURY_SUMMONS, TX_TYPES.AI_CLASSIFIER_RESULT];
-      if (NODE_SIGNED.includes(tt)) {
-        const node = dag.getNode(d.node_id);
-        if (!node || !tx.signature) return false;
-        return mldsaVerify(canonicalTx(tx), tx.signature, node.public_key);
-      }
-
-      if (tt === TX_TYPES.COMMITTEE_ROTATION) {
-        // §4 + #34: signatures + payload_hash + previous-committee quorum
-        // are validated by `rules.canCommitteeRotation` from `_statefulCheck`.
-        // Treat presence-of-signatures as enough at the signature-verify
-        // stage; the real crypto check runs alongside the other rotation
-        // invariants in the shared predicate so accept/reject is one place.
-        return Array.isArray(d.signatures) && d.signatures.length > 0;
-      }
-
+      return true;
     } catch (err) {
       log.warn(`Signature verification error for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${err.message}`);
       return false;
     }
-
-    // Unknown tx type — reject
-    log.warn(`Rejected unknown tx type: ${tt}`);
-    return false;
   }
 
   return { commitOrderedTxs };

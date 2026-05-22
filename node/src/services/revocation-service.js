@@ -32,7 +32,8 @@ function createRevocationService({ dag, submitTx }) {
     const timestamp = nowMs();
     const revokeTx = withTxId({
       tx_type, timestamp, prev: dag.getRecentPrev(),
-      data: { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id, signature },
+      data: { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id },
+      signature,
     });
 
     const validation = validateTransaction(revokeTx, dag, {});

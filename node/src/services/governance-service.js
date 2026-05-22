@@ -36,7 +36,9 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
 
     const vpTx = withTxId({
       tx_type: TX_TYPES.VP_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
-      data: { vp_id: vpId, name, jurisdiction, jurisdiction_tier, public_key, council_signature, approving_vp_id },
+      data: { vp_id: vpId, name, jurisdiction, jurisdiction_tier, public_key, approving_vp_id },
+      // GH #51 — approving VP's council signature lives at tx.signature.
+      signature: council_signature,
     });
 
     const validation = validateTransaction(vpTx, dag, {});
@@ -77,7 +79,9 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
 
     const nodeTx = withTxId({
       tx_type: TX_TYPES.NODE_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
-      data: { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, public_key, council_signature, approving_vp_id },
+      data: { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, public_key, approving_vp_id },
+      // GH #51 — approving VP's council signature lives at tx.signature.
+      signature: council_signature,
     });
 
     const validation = validateTransaction(nodeTx, dag, {});

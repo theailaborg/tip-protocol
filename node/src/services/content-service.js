@@ -68,7 +68,6 @@ function createContentService({ dag, scoring, config, submitTx }) {
         // time from signer_tip_id — see commit-handler REGISTER_CONTENT.
         ctid, origin_code: canonicalPayload.origin_code,
         content_hash: contentHashFull, perceptual_hash: perceptHash,
-        signature,
         prescan_flagged: preScan.flagged,
         prescan_probability: preScan.probability,
         prescan_tier: preScan.tier,
@@ -88,6 +87,8 @@ function createContentService({ dag, scoring, config, submitTx }) {
         registered_urls: canonicalPayload.registered_urls,
         signer_tip_id: canonicalPayload.signer_tip_id,
       },
+      // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
+      signature,
     };
     const signedTx = withTxId(txBody);
     const validation = validateTransaction(signedTx, dag, {});
@@ -303,7 +304,8 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const verifyTxTimestamp = nowMs();
     const verifyTxBody = {
       tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: dag.getRecentPrev(),
-      data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId, signature },
+      data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId },
+      signature,
     };
     const signedTx = withTxId(verifyTxBody);
     const validation = validateTransaction(signedTx, dag, {});
@@ -358,7 +360,8 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(), prev: dag.getRecentPrev(),
-      data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id, signature },
+      data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id },
+      signature,
     });
     submitTx(updateTx);
 
@@ -385,7 +388,8 @@ function createContentService({ dag, scoring, config, submitTx }) {
     const retractTimestamp = nowMs();
     const retractTx = withTxId({
       tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: dag.getRecentPrev(),
-      data: { ctid, author_tip_id, signature, origin_code: rec.origin_code, pre_retract_status: rec.status },
+      data: { ctid, author_tip_id, origin_code: rec.origin_code, pre_retract_status: rec.status },
+      signature,
     });
     submitTx(retractTx);
 

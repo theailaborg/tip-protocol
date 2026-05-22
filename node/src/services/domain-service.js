@@ -167,6 +167,10 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
         // canonical fields mirrored onto tx.data so commit-handler can
         // replay buildSigningPayload(d) deterministically
         binding_state: canonicalBinding.binding_state,
+        // claim_signature stays in tx.data — it's the *user's* prior
+        // attestation from REGISTER_DOMAIN, carried forward as evidence-on-
+        // data. The tx's own signature (the node's attestation) lives at
+        // tx.signature per GH #51.
         claim_signature: canonicalBinding.claim_signature,
         claimed_at: canonicalBinding.claimed_at,
         domain: canonicalBinding.domain,
@@ -175,9 +179,10 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
         tip_id: canonicalBinding.tip_id,
         verified_at: canonicalBinding.verified_at,
         // tx-level fields
-        binding_signature: bindingSignature,
         evidence: result.evidence,
       },
+      // Node's ML-DSA-65 attestation over the canonical binding payload.
+      signature: bindingSignature,
     };
     const signedTx = withTxId(txBody);
 
