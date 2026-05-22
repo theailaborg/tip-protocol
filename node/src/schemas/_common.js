@@ -122,16 +122,30 @@ function schemaError(status, message, code) {
  * or `null` if the schema is malformed.
  */
 function resolveSignatureContract(tx, schema) {
-  if (!schema) return null;
-  if (typeof schema.getSignatureContract === "function") {
-    return schema.getSignatureContract(tx) || null;
+  // Schema modules win — full per-tx-type logic lives there.
+  if (schema) {
+    if (typeof schema.getSignatureContract === "function") {
+      return schema.getSignatureContract(tx) || null;
+    }
+    if (schema.SIGNATURE_SCOPE && schema.SIGNED_BY) {
+      return {
+        SIGNATURE_SCOPE: schema.SIGNATURE_SCOPE,
+        SIGNED_BY: schema.SIGNED_BY,
+        SUBJECT_TIP_ID_FIELD: schema.SUBJECT_TIP_ID_FIELD,
+        VP_ID_FIELD: schema.VP_ID_FIELD,
+        buildSigningPayload: schema.buildSigningPayload,
+      };
+    }
   }
-  if (!schema.SIGNATURE_SCOPE || !schema.SIGNED_BY) return null;
-  return {
-    SIGNATURE_SCOPE: schema.SIGNATURE_SCOPE,
-    SIGNED_BY: schema.SIGNED_BY,
-    SUBJECT_TIP_ID_FIELD: schema.SUBJECT_TIP_ID_FIELD,
-  };
+  // Registry fallback for tx_types without a schema module.
+  const { TX_SIGNATURE_REGISTRY } = require("./_registry");
+  const entry = TX_SIGNATURE_REGISTRY[tx?.tx_type];
+  if (!entry) return null;
+  if (typeof entry.getSignatureContract === "function") {
+    return entry.getSignatureContract(tx) || null;
+  }
+  if (!entry.SIGNATURE_SCOPE || !entry.SIGNED_BY) return null;
+  return entry;
 }
 
 function resolveSignerRecord(tx, schema, dag) {
@@ -146,10 +160,12 @@ function resolveSignerRecord(tx, schema, dag) {
     if (!nodeId) return null;
     row = dag.getNode?.(nodeId);
   } else if (kind === SIGNED_BY_KIND.VP) {
-    // Covers both regular VP-signed txs and the founding-VP-signed
-    // ring identities at genesis — same dag.getVerificationProvider
-    // lookup either way.
-    const vpId = tx?.data?.vp_id;
+    // VP-signed. Contract may declare a non-default VP_ID_FIELD
+    // (REVOKE_* uses "issuing_vp_id"; VP_REGISTERED / NODE_REGISTERED
+    // use "approving_vp_id"). Default "vp_id" covers REGISTER_IDENTITY
+    // and any future VP-attestation tx that follows the canonical name.
+    const field = contract.VP_ID_FIELD || "vp_id";
+    const vpId = tx?.data?.[field];
     if (!vpId) return null;
     row = dag.getVerificationProvider?.(vpId);
   } else {
@@ -183,11 +199,14 @@ function resolveSignerPubKey(tx, schema, dag) {
  * for which fields the signature covers. The verifier just hashes what
  * the signer hashed; no duplicate field-list to keep in sync.
  */
-function bodyMessageHex(tx, schema) {
-  if (typeof schema?.buildSigningPayload !== "function") {
-    throw schemaError(500, `schema for ${tx?.tx_type} declares SCOPE=body but exports no buildSigningPayload`, "schema_invalid");
+function bodyMessageHex(tx, contractOrSchema) {
+  // Accept either a resolved contract (with buildSigningPayload baked in)
+  // or a schema module (where buildSigningPayload lives at the top level).
+  const build = contractOrSchema?.buildSigningPayload;
+  if (typeof build !== "function") {
+    throw schemaError(500, `contract for ${tx?.tx_type} declares SCOPE=body but exports no buildSigningPayload`, "schema_invalid");
   }
-  return payloadHashHex(schema.buildSigningPayload(tx.data || {}));
+  return payloadHashHex(build(tx.data || {}));
 }
 
 /**
@@ -231,7 +250,7 @@ function verifyTxSignature(tx, schema, dag) {
     const tipCrypto = require("../../../shared/crypto");
     message = tipCrypto.shake256(tipCrypto.canonicalTx(tx));   // matches signTransaction's signed bytes
   } else if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
-    message = bodyMessageHex(tx, schema);
+    message = bodyMessageHex(tx, contract);
   } else {
     return { ok: false, error: `unknown SIGNATURE_SCOPE ${contract.SIGNATURE_SCOPE}`, code: "schema_invalid" };
   }

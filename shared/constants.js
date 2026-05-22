@@ -515,11 +515,26 @@ const TIP_ID_FIELDS = Object.freeze({
   TIP_ID: "tip_id",                       // most schemas (register-identity, update-profile, register-domain, ...)
   SIGNER_TIP_ID: "signer_tip_id",         // content-register (CNA-2.2 attributed publisher)
   REVIEWER_TIP_ID: "reviewer_tip_id",     // prescan-review-confirmed / dismissed / recused
-  AUTHOR_TIP_ID: "author_tip_id",         // prescan-review-accept-correction / dispute
+  AUTHOR_TIP_ID: "author_tip_id",         // prescan-review-accept-correction / dispute, update-origin, content-retracted
   JUROR_TIP_ID: "juror_tip_id",           // jury vote commit / reveal
   APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
+  VERIFIER_TIP_ID: "verifier_tip_id",     // content-verified
+  DISPUTER_TIP_ID: "disputer_tip_id",     // content-disputed (user-mode)
 });
 const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
+
+// GH #51 — VP-id field discriminator. Same pattern as TIP_ID_FIELDS:
+// VP-signed schemas declare WHICH field on tx.data carries the
+// signing VP's vp_id, since the codebase has three usages today:
+//   - "vp_id" for new registrations (REGISTER_IDENTITY)
+//   - "approving_vp_id" for council-style attestations (VP_REGISTERED, NODE_REGISTERED)
+//   - "issuing_vp_id" for revocations (REVOKE_*)
+const VP_ID_FIELDS = Object.freeze({
+  VP_ID: "vp_id",
+  APPROVING_VP_ID: "approving_vp_id",
+  ISSUING_VP_ID: "issuing_vp_id",
+});
+const VP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(VP_ID_FIELDS)));
 
 // GH #51 — unified signature storage. The set of kinds that a schema's
 // SIGNED_BY discriminator can take. Each kind tells `verifyTxSignature`
@@ -612,4 +627,6 @@ module.exports = {
   SIGNATURE_ALGORITHM_DEFAULT,
   TIP_ID_FIELDS,
   TIP_ID_FIELD_VALUES,
+  VP_ID_FIELDS,
+  VP_ID_FIELD_VALUES,
 };
