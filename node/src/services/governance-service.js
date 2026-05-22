@@ -13,8 +13,14 @@ const { log } = require("../logger");
 function createGovernanceService({ dag, scoring, config, submitTx }) {
 
   function registerVP(body) {
-    validate(body, { name: { required: true }, public_key: { required: true }, jurisdiction: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
-    const { name, jurisdiction, jurisdiction_tier = "green", public_key, council_signature, approving_vp_id } = body;
+    // GH #51 — accept legacy `council_signature` or new top-level
+    // `signature`; map onto the same internal field for the rest of
+    // the function. Lets new clients opt into the unified wire format.
+    const normalisedBody = (body && typeof body === "object")
+      ? { ...body, council_signature: body.council_signature || body.signature }
+      : body;
+    validate(normalisedBody, { name: { required: true }, public_key: { required: true }, jurisdiction: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
+    const { name, jurisdiction, jurisdiction_tier = "green", public_key, council_signature, approving_vp_id } = normalisedBody;
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP (${foundingVpId}) can approve new VPs` };
@@ -24,7 +30,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     if (approvingVp.status !== "active") throw { status: 403, error: `Approving VP is not active` };
 
     const VP_REGISTER_FIELDS = ["name", "jurisdiction", "jurisdiction_tier", "public_key", "approving_vp_id"];
-    if (!verifyBodySignature(body, council_signature, approvingVp.public_key, VP_REGISTER_FIELDS)) {
+    if (!verifyBodySignature(normalisedBody, council_signature, approvingVp.public_key, VP_REGISTER_FIELDS)) {
       throw { status: 403, error: "Council signature verification failed" };
     }
 
@@ -56,8 +62,13 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
   }
 
   function registerNode(body) {
-    validate(body, { public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
-    const { name, public_key, council_signature, approving_vp_id } = body;
+    // Same GH #51 alias as registerVP — clients can send `signature`
+    // or the legacy `council_signature`.
+    const normalisedBody = (body && typeof body === "object")
+      ? { ...body, council_signature: body.council_signature || body.signature }
+      : body;
+    validate(normalisedBody, { public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
+    const { name, public_key, council_signature, approving_vp_id } = normalisedBody;
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP can approve nodes` };
@@ -67,7 +78,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     if (approvingVp.status !== "active") throw { status: 403, error: `Approving VP is not active` };
 
     const NODE_REGISTER_FIELDS = ["name", "public_key", "approving_vp_id"];
-    if (!verifyBodySignature(body, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
+    if (!verifyBodySignature(normalisedBody, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
       throw { status: 403, error: "Council signature verification failed" };
     }
 

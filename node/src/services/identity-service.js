@@ -107,16 +107,24 @@ function projectActivityItem(tx, tipId, status, extra = {}) {
 function createIdentityService({ dag, scoring, config, submitTx }) {
 
   async function register(body) {
+    // GH #51 — accept both legacy `vp_signature` (current WP plugin /
+    // VP app shape) and the new top-level `signature` so new clients
+    // can opt into the unified wire format without a server change.
+    // Service-side path is uniform from here on.
+    const normalisedBody = (body && typeof body === "object")
+      ? { ...body, vp_signature: body.vp_signature || body.signature }
+      : body;
+
     // Single envelope gate — schemas/register-identity owns shape + DAG
     // presence (VP must exist and be active). Spec: §1 of the
     // register-identity schema module.
-    registerIdentitySchema.validateRequest(body, { dag });
+    registerIdentitySchema.validateRequest(normalisedBody, { dag });
 
     const {
       public_key, dedup_hash, zk_proof, vp_id, vp_signature,
-    } = body;
+    } = normalisedBody;
 
-    const region = typeof body.region === "string" ? body.region.toUpperCase() : "US";
+    const region = typeof normalisedBody.region === "string" ? normalisedBody.region.toUpperCase() : "US";
     const tipId = generateTIPID(region, public_key);
 
     const { valid, error } = rules.canRegisterIdentity(dag, { tip_id: tipId, dedup_hash, vp_id });
@@ -131,7 +139,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     // over it. canonicalPayload is also written verbatim onto tx.data
     // (mirroring CNA-2.2 content-register pattern) so commit-handler
     // can replay buildSigningPayload(d) deterministically.
-    const canonicalPayload = registerIdentitySchema.buildSigningPayload(body);
+    const canonicalPayload = registerIdentitySchema.buildSigningPayload(normalisedBody);
     const vp = registerIdentitySchema.resolveVP(vp_id, dag);
     if (!registerIdentitySchema.verifySignature(canonicalPayload, vp_signature, vp.public_key)) {
       throw schemaError(403, "VP signature verification failed", "signature_invalid");
