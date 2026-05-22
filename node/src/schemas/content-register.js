@@ -41,10 +41,17 @@ const {
 const {
   TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
 const { validateContentSize } = require("../middleware/validate");
 
 const TX_TYPE = TX_TYPES.REGISTER_CONTENT;
+// GH #51 — unified signature storage. The signer (`signer_tip_id` —
+// the author or attributed publisher under CNA-2.2) signs the
+// canonical 8-field payload returned by buildSigningPayload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.SIGNER_TIP_ID;
 // `current` is the CNA version new submissions are signed under;
 // `versions` is the full whitelist of historically-released CNA
 // versions that verification must accept (replay correctness — old
@@ -205,21 +212,24 @@ function _normalizeExtras(input) {
  * shape failures so the caller can surface the error before signing
  * or verifying.
  *
- * `contentHashFull` is passed in separately because the SERVER
- * recomputes the content hash from the actual content bytes — never
- * trusts the client's `content_hash` field. At sign-time clients pass
- * their own computation; at verify-time the API/commit-handler passes
- * the server-computed value.
+ * `contentHashFull` may be passed explicitly (sign-time at the
+ * service layer: the SERVER recomputes content_hash from the actual
+ * content bytes — never trusts the client's value) OR read from
+ * `input.content_hash` (verify-time: the authoritative content_hash
+ * was already mirrored onto tx.data at commit; the unified dispatcher
+ * calls this with a single arg).
  *
  * @param {Object} input            client body or tx.data
- * @param {string} contentHashFull  authoritative content hash
+ * @param {string} [contentHashFull]  authoritative content hash;
+ *                                    defaults to input.content_hash
  * @returns {Object} the canonical 9-field payload
  */
 function buildSigningPayload(input, contentHashFull) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "input must be an object", "input_invalid");
   }
-  if (typeof contentHashFull !== "string" || !/^[0-9a-f]{64}$/.test(contentHashFull)) {
+  const ch = contentHashFull == null ? input.content_hash : contentHashFull;
+  if (typeof ch !== "string" || !/^[0-9a-f]{64}$/.test(ch)) {
     throw schemaError(400, "content_hash must be a 64-char lowercase hex string", "content_hash_invalid");
   }
 
@@ -258,7 +268,7 @@ function buildSigningPayload(input, contentHashFull) {
     attribution_mode: attributionMode,
     authors,
     cna_version: CURRENT_CNA_VERSION,
-    content_hash: contentHashFull,
+    content_hash: ch,
     extras: _normalizeExtras(input.extras),
     origin_code: originCode,
     registered_urls: _normalizeRegisteredUrls(input.registered_urls),
@@ -368,6 +378,10 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
   // Re-export for tests / debug:
   canonicalJson,
   payloadHashHex,

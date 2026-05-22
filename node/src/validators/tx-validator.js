@@ -50,8 +50,9 @@ const SCHEMA = {
     // deterministically. Deep validation (authors[] entry shape,
     // attribution_mode enum, registered_urls/extras types) is enforced
     // in validateBusinessRules below. Spec: docs/CONTENT_SIGNING.md.
+    // GH #51: tx.signature carries the signer's signature; not a data field.
     required: [
-      "ctid", "origin_code", "content_hash", "signer_tip_id", "signature",
+      "ctid", "origin_code", "content_hash", "signer_tip_id",
       "cna_version", "authors",
     ],
     types: {
@@ -66,23 +67,26 @@ const SCHEMA = {
   [TX_TYPES.BIND_DOMAIN]: {
     // Wire contract — every field is on tx.data so commit-handler can
     // replay bindDomainSchema.buildSigningPayload(d) deterministically.
-    // Deeper checks (domain format, enum values, sig presence/length)
-    // live in validateBusinessRules below + schemas/bind-domain.verifyTx.
+    // GH #51: node attestation lives at tx.signature; claim_signature
+    // stays on data as an attestation by a different actor (the user
+    // who claimed the domain via REGISTER_DOMAIN), per
+    // SIGNATURES.md "Attestations on data".
     required: [
       "binding_state", "claim_signature", "claimed_at", "domain", "method",
-      "node_id", "tip_id", "verified_at", "binding_signature",
+      "node_id", "tip_id", "verified_at",
     ],
     types: {
       binding_state: "string", claim_signature: "string", claimed_at: "number",
       domain: "string", method: "string", node_id: "string", tip_id: "string",
-      verified_at: "number", binding_signature: "string",
+      verified_at: "number",
     },
   },
   [TX_TYPES.UNBIND_DOMAIN]: {
-    required: ["domain", "node_id", "reason", "revoked_at", "unbind_signature"],
+    // GH #51: signature at tx.signature, not tx.data.unbind_signature.
+    required: ["domain", "node_id", "reason", "revoked_at"],
     types: {
       domain: "string", node_id: "string", reason: "string",
-      revoked_at: "number", unbind_signature: "string",
+      revoked_at: "number",
     },
   },
   [TX_TYPES.CONTENT_DISPUTED]: {
@@ -127,13 +131,15 @@ const SCHEMA = {
     types: { vp_id: "string", name: "string" },
   },
   [TX_TYPES.UPDATE_PROFILE]: {
-    // Sparse update — only `tip_id` and `signature` are structurally
-    // required. Preference field presence + types are enforced by
-    // schemas/update-profile.validateRequest at API time and
-    // verifyTx at consensus replay. At least one known preference
-    // field must be present; that check lives in the schema module.
-    required: ["tip_id", "signature"],
-    types: { tip_id: "string", signature: "string" },
+    // Sparse update — only `tip_id` is structurally required on data.
+    // GH #51: subject's signature lives at tx.signature, not tx.data.
+    // Preference field presence + types are enforced by
+    // schemas/update-profile.validateRequest at API time and the
+    // unified dispatcher at consensus replay. At least one known
+    // preference field must be present; that check lives in the
+    // schema module.
+    required: ["tip_id"],
+    types: { tip_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: {
     // Node-emitted system tx. Signature lives at tx.signature, not on
@@ -147,23 +153,24 @@ const SCHEMA = {
     },
   },
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: {
-    required: ["review_id", "reviewer_tip_id", "signature"],
-    types: { review_id: "string", reviewer_tip_id: "string", signature: "string" },
+    // GH #51: reviewer's signature lives at tx.signature, not tx.data.
+    required: ["review_id", "reviewer_tip_id"],
+    types: { review_id: "string", reviewer_tip_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: {
-    // review_id is always required. reviewer_tip_id + signature are
-    // user-recuse only; node-emitted auto-recuse (data.auto = true)
-    // carries node_id + uses tx.signature at the top level instead.
-    // The schema module's verifyTx branches on data.auto and enforces
-    // the right fields per path.
+    // review_id is always required. reviewer_tip_id is user-recuse only;
+    // node-emitted auto-recuse (data.auto = true) carries node_id
+    // instead. Both paths sign via tx.signature; the schema module's
+    // getSignatureContract branches on data.auto.
     required: ["review_id"],
     types: { review_id: "string" },
   },
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: {
-    required: ["review_id", "reviewer_tip_id", "suggested_origin", "signature"],
+    // GH #51: reviewer's signature lives at tx.signature, not tx.data.
+    required: ["review_id", "reviewer_tip_id", "suggested_origin"],
     types: {
       review_id: "string", reviewer_tip_id: "string",
-      suggested_origin: "string", signature: "string",
+      suggested_origin: "string",
     },
   },
   [TX_TYPES.COMMITTEE_ROTATION]: {

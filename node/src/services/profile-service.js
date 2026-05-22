@@ -40,10 +40,10 @@ function createProfileService({ dag, config, submitTx }) {
 
     const timestamp = nowMs();
 
-    // tx.data carries tip_id + every present known field + the signature.
-    // Sparse: only fields the client supplied land here. Commit-handler
-    // merges these into the identity row.
-    const data = { tip_id: canonicalPayload.tip_id, signature: safeBody.signature };
+    // tx.data carries tip_id + every present known field. Sparse: only
+    // fields the client supplied land here. Commit-handler merges these
+    // into the identity row. Signature lives at tx.signature (GH #51).
+    const data = { tip_id: canonicalPayload.tip_id };
     for (const field of updateProfileSchema.KNOWN_FIELD_NAMES) {
       if (canonicalPayload[field] !== undefined) data[field] = canonicalPayload[field];
     }
@@ -53,6 +53,7 @@ function createProfileService({ dag, config, submitTx }) {
       timestamp,
       prev: dag.getRecentPrev(),
       data,
+      signature: safeBody.signature,
     });
 
     const validation = validateTransaction(tx, dag, {});
@@ -60,7 +61,7 @@ function createProfileService({ dag, config, submitTx }) {
 
     submitTx(tx);
 
-    log.info(`Profile update proposed: ${tipId} fields=[${Object.keys(data).filter(k => k !== "tip_id" && k !== "signature").join(",")}]`);
+    log.info(`Profile update proposed: ${tipId} fields=[${Object.keys(data).filter(k => k !== "tip_id").join(",")}]`);
 
     return {
       tip_id: tipId,
@@ -70,7 +71,7 @@ function createProfileService({ dag, config, submitTx }) {
       // Echo the updated fields so the client can confirm what landed.
       updated: Object.fromEntries(
         Object.keys(data)
-          .filter(k => k !== "tip_id" && k !== "signature")
+          .filter(k => k !== "tip_id")
           .map(k => [k, data[k]]),
       ),
     };

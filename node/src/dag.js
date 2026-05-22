@@ -3211,8 +3211,9 @@ function _writeGenesisBlock(store, config) {
         founding: true,
         dedup_hash: member.dedup_hash,
         zk_proof: mockZkProof,
-        vp_signature: member.vp_signature,
       },
+      // GH #51 — founding VP attestation lives at tx.signature.
+      signature: member.vp_signature,
     };
     const idTxId = computeTxId(idTx);
     store.saveTx({ ...idTx, tx_id: idTxId });
@@ -3260,9 +3261,10 @@ function _writeGenesisBlock(store, config) {
         node_id: foundingNode.node_id,
         name: foundingNode.name,
         public_key: foundingNode.public_key,
-        council_signature: foundingNode.council_signature,
         approving_vp_id: foundingNode.approving_vp_id,
       },
+      // GH #51 — approving VP signature lives at tx.signature.
+      signature: foundingNode.council_signature,
     };
     store.saveTx({ ...nodeTx, tx_id: computeTxId(nodeTx) });
     store.saveNode({

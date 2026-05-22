@@ -208,12 +208,6 @@ describe("verifyTx", () => {
     expect(bindSchema.verifyTx({ data }, dag)).toEqual({ ok: true });
   });
 
-  test("missing binding_signature → 400 binding_signature_missing", () => {
-    const { dag, data } = setup();
-    delete data.binding_signature;
-    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 400, code: "binding_signature_missing" });
-  });
-
   test("missing node_id → 400 node_id_missing", () => {
     const { dag, data } = setup();
     data.node_id = "";
@@ -237,15 +231,10 @@ describe("verifyTx", () => {
     expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "node_inactive" });
   });
 
-  test("wrong node sig → 403 binding_signature_invalid", () => {
-    const { dag, data } = setup();
-    const foreign = generateMLDSAKeypair();
-    // Re-sign with a different key — node lookup still succeeds (right pubkey
-    // on DAG), but the signature doesn't validate against it.
-    const payload = bindSchema.buildSigningPayload(data);
-    data.binding_signature = bindSchema.sign(payload, foreign.privateKey);
-    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "binding_signature_invalid" });
-  });
+  // GH #51: wrong-node-sig verification moved from verifyTx (state-only
+  // now) to the unified dispatcher in schemas/_common.verifyTxSignature.
+  // The signature failure path is exercised end-to-end in commit-handler
+  // tests; the dispatcher unit lives in tests/schemas/common.test.js.
 
   test("claimant not registered → 412 signer_not_registered", () => {
     const userKp = generateMLDSAKeypair();
@@ -343,11 +332,8 @@ describe("verifyUnbindTx", () => {
     expect(bindSchema.verifyUnbindTx({ data }, dag)).toEqual({ ok: true });
   });
 
-  test("missing unbind_signature → unbind_signature_missing", () => {
-    const { dag, data } = setup();
-    delete data.unbind_signature;
-    expect(bindSchema.verifyUnbindTx({ data }, dag)).toMatchObject({ status: 400, code: "unbind_signature_missing" });
-  });
+  // GH #51: unbind_signature presence + validity moved to the unified
+  // dispatcher (tx.signature). verifyUnbindTx is state-only now.
 
   test("no existing binding → 404 domain_not_found", () => {
     const { dag, data } = setup();

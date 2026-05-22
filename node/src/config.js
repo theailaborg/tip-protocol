@@ -61,8 +61,12 @@ function loadConfig() {
     nodePublicKey:   process.env.TIP_NODE_PUBLIC_KEY  || null,
 
     // ── Rate limiting ─────────────────────────────────────────────────────────
-    rateLimitWindow:   60 * 1000,   // 1 minute
-    rateLimitMax:      200,          // requests per window per IP
+    // Overridable via env for high-throughput dev / UAT runs that
+    // intentionally fire many requests from one IP (the comprehensive
+    // signature-unification UAT walks ~30 endpoints + polls tx commit
+    // status, easily exceeding the prod default of 200/min).
+    rateLimitWindow:   parseInt(process.env.TIP_RATE_LIMIT_WINDOW_MS || `${60 * 1000}`, 10),
+    rateLimitMax:      parseInt(process.env.TIP_RATE_LIMIT_MAX       || "200", 10),
 
     // ── DAG settings ──────────────────────────────────────────────────────────
     dagMaxPrevRefs:    2,            // each tx references 2 prior txs

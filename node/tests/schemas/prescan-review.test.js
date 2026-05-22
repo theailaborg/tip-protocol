@@ -140,13 +140,13 @@ function _buildDismissedTx(fx, opts) {
     review_id: opts.review_id,
     reviewer_tip_id: reviewerTipId,
     decision_note: opts.decision_note || null,
-    signature,
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
     timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
+    signature,
   };
   txBody.tx_id = computeTxId(txBody);
   return txBody;
@@ -167,13 +167,13 @@ function _buildConfirmedTx(fx, opts) {
     reviewer_tip_id: reviewerTipId,
     suggested_origin: opts.suggested_origin || "AG",
     decision_note: opts.decision_note || null,
-    signature,
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
     timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
+    signature,
   };
   txBody.tx_id = computeTxId(txBody);
   return txBody;
@@ -280,8 +280,8 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
         reviewer_tip_id: REVIEWER_1,
         suggested_origin: "OH",
         decision_note: null,
-        signature: "dummy",
       },
+      signature: "dummy",
     };
     txBody.tx_id = computeTxId(txBody);
     fx.commit([txBody]);
@@ -322,13 +322,13 @@ describe("PRESCAN_REVIEW_RECUSED — reviewer bows out", () => {
       review_id: opts.review_id,
       reviewer_tip_id: reviewerTipId,
       recusal_reason: opts.recusal_reason || null,
-      signature,
     };
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
+      signature,
     };
     txBody.tx_id = computeTxId(txBody);
     return txBody;
@@ -406,15 +406,16 @@ describe("Phase 2.3 — content status transitions", () => {
     data.registered_urls = [];
     data.cna_version = contentRegisterSchema.CURRENT_CNA_VERSION;
     const payload = contentRegisterSchema.buildSigningPayload(data, data.content_hash);
-    data.signature = contentRegisterSchema.sign(payload, fx.nodeKp.privateKey);
+    const signature = contentRegisterSchema.sign(payload, fx.nodeKp.privateKey);
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
+      signature,
     };
     txBody.tx_id = computeTxId(txBody);
-    const tx = signTransaction(txBody, fx.nodeKp.privateKey);
+    const tx = txBody;
 
     fx.commit([tx]);
     const content = fx.dag.getContent(newCtid);

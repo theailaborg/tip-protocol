@@ -86,9 +86,9 @@ const PRESCAN_NOTES = Object.freeze({
 // Aliases the tier with the more human-readable "very_high" for CRITICAL.
 // Stable contract — FE keys its i18n strings off these values.
 const CONFIDENCE_LABELS = Object.freeze({
-  [PRESCAN_TIERS.LOW]:      "low",
+  [PRESCAN_TIERS.LOW]: "low",
   [PRESCAN_TIERS.ELEVATED]: "elevated",
-  [PRESCAN_TIERS.HIGH]:     "high",
+  [PRESCAN_TIERS.HIGH]: "high",
   [PRESCAN_TIERS.CRITICAL]: "very_high",
 });
 
@@ -98,24 +98,24 @@ const CONFIDENCE_LABELS = Object.freeze({
 // change (e.g., removing "retract" at a certain tier) propagates without
 // a coordinated FE deploy.
 const PRESCAN_ACTIONS = Object.freeze({
-  KEEP:          "keep",
+  KEEP: "keep",
   CHANGE_ORIGIN: "change_origin",
-  RETRACT:       "retract",
+  RETRACT: "retract",
 });
 
 // Allowed values in `prescan.consequence_if_confirmed`. Drives the
 // severity badge on the FE.
 const PRESCAN_CONSEQUENCES = Object.freeze({
-  NONE:                 "none",
-  PENALTY:              "penalty",
-  SIGNIFICANT_PENALTY:  "significant_penalty",
+  NONE: "none",
+  PENALTY: "penalty",
+  SIGNIFICANT_PENALTY: "significant_penalty",
 });
 
 // Allowed values in `prescan.next_step_if_kept`. Tells the FE what
 // happens when the creator does nothing during the decision window.
 const PRESCAN_NEXT_STEPS = Object.freeze({
-  NONE:                                     "none",
-  INDEPENDENT_REVIEWER_AT_WINDOW_END:       "independent_reviewer_at_window_end",
+  NONE: "none",
+  INDEPENDENT_REVIEWER_AT_WINDOW_END: "independent_reviewer_at_window_end",
 });
 
 // ─── Prescan-review state ──────────────────────────────────────────────────
@@ -174,7 +174,7 @@ const DISPUTE_REASONS = Object.freeze(Object.values(DISPUTE_REASON));
 const CNA_VERSIONS = Object.freeze({
   REGISTER_CONTENT: Object.freeze({
     versions: Object.freeze(["CNA-2.2"]),
-    current:  "CNA-2.2",
+    current: "CNA-2.2",
   }),
 });
 
@@ -194,9 +194,9 @@ const CNA22_AUTHOR_KEYS = Object.freeze([
 //   - HOSTED    signer is a platform / host publishing third-party
 //               content the platform itself doesn't claim authorship of
 const ATTRIBUTION_MODES = Object.freeze({
-  SELF:     "self",
+  SELF: "self",
   EMPLOYED: "employed",
-  HOSTED:   "hosted",
+  HOSTED: "hosted",
 });
 const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 
@@ -209,7 +209,7 @@ const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 //                   etc. VP attests at REGISTER_IDENTITY time; the
 //                   registrant can't self-claim.
 const TIP_ID_TYPES = Object.freeze({
-  PERSONAL:     "personal",
+  PERSONAL: "personal",
   ORGANIZATION: "organization",
 });
 const TIP_ID_TYPE_VALUES = Object.freeze(Object.values(TIP_ID_TYPES));
@@ -219,16 +219,16 @@ const TIP_ID_TYPE_VALUES = Object.freeze(Object.values(TIP_ID_TYPES));
 // Two-step flow: user-signed claim → node-verified DNS/HTTP proof → DAG tx
 // (BIND_DOMAIN) signed by the verifying node. Spec: my-notes/DOMAIN_VERIFICATION.md.
 const DOMAIN_BINDING_STATUS = Object.freeze({
-  PENDING:             "pending_verification",  // claim recorded, awaiting node verify
-  VERIFIED:            "verified",                // node observed proof and committed to DAG
+  PENDING: "pending_verification",  // claim recorded, awaiting node verify
+  VERIFIED: "verified",                // node observed proof and committed to DAG
   VERIFICATION_FAILED: "verification_failed",     // last re-check failed (record kept for audit)
-  UNVERIFIED:          "unverified",              // no claim or binding exists
+  UNVERIFIED: "unverified",              // no claim or binding exists
 });
 const DOMAIN_BINDING_STATUS_VALUES = Object.freeze(Object.values(DOMAIN_BINDING_STATUS));
 
 const DOMAIN_VERIFICATION_METHODS = Object.freeze({
   HTTP: "http",   // GET https://<domain>/.well-known/tip-protocol.json
-  DNS:  "dns",    // TXT _tip-protocol.<domain> contains "tip-id=<tip_id>"
+  DNS: "dns",    // TXT _tip-protocol.<domain> contains "tip-id=<tip_id>"
   AUTO: "auto",   // try HTTP, fall back to DNS
 });
 const DOMAIN_VERIFICATION_METHOD_VALUES = Object.freeze(Object.values(DOMAIN_VERIFICATION_METHODS));
@@ -252,10 +252,10 @@ const DOMAIN_PENDING_CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Canonical reasons an UNBIND_DOMAIN tx may carry. Locked enum — rejected
 // at schema-build time so the signed payload always carries a known value.
 const DOMAIN_UNBIND_REASONS = Object.freeze({
-  OWNER_REVOKED:     "owner_revoked",      // claimant TIP-ID emitted a voluntary revoke
-  TIP_ID_REVOKED:    "tip_id_revoked",     // claimant TIP-ID was revoked (cascade)
+  OWNER_REVOKED: "owner_revoked",      // claimant TIP-ID emitted a voluntary revoke
+  TIP_ID_REVOKED: "tip_id_revoked",     // claimant TIP-ID was revoked (cascade)
   VERIFICATION_LOST: "verification_lost",  // re-verify failed past the grace window
-  ADMIN_ACTION:      "admin_action",       // governance-driven removal
+  ADMIN_ACTION: "admin_action",       // governance-driven removal
 });
 const DOMAIN_UNBIND_REASON_VALUES = Object.freeze(Object.values(DOMAIN_UNBIND_REASONS));
 
@@ -267,10 +267,10 @@ const DOMAIN_UNBIND_REASON_VALUES = Object.freeze(Object.values(DOMAIN_UNBIND_RE
 // verified_at + DOMAIN_HEALTHY_EXPIRY_MS, consecutive_failures = 0} at
 // BIND_DOMAIN commit time. Read paths surface `expires_at` so consumers
 // can already apply their own freshness policy.
-const DOMAIN_HEALTHY_EXPIRY_MS    = 30 * 24 * 60 * 60 * 1000;  // 30 days — refreshed on successful renewal
-const DOMAIN_RETRY_EXPIRY_MS      = 1 * 24 * 60 * 60 * 1000;   // 1 day — refreshed on transient failure
-const DOMAIN_MAX_FAILURES         = 5;                          // consecutive failures → binding flips to unverified
-const DOMAIN_RENEWAL_WINDOW_MS    = 60 * 60 * 1000;             // 1 hour — scheduler look-ahead
+const DOMAIN_HEALTHY_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;  // 30 days — refreshed on successful renewal
+const DOMAIN_RETRY_EXPIRY_MS = 1 * 24 * 60 * 60 * 1000;   // 1 day — refreshed on transient failure
+const DOMAIN_MAX_FAILURES = 5;                          // consecutive failures → binding flips to unverified
+const DOMAIN_RENEWAL_WINDOW_MS = 60 * 60 * 1000;             // 1 hour — scheduler look-ahead
 const DOMAIN_SCHEDULER_INTERVAL_MS = 10 * 60 * 1000;            // 10 min — scheduler tick cadence
 
 // ─── Protocol-tunable constants (VERIFY_CAPS, DISPUTE, JURY, APPEAL, etc.) ──
@@ -292,7 +292,7 @@ const TX_TYPES = Object.freeze({
   PRESCAN_REVIEW_TRIGGERED: "PRESCAN_REVIEW_TRIGGERED",
   PRESCAN_REVIEW_DISMISSED: "PRESCAN_REVIEW_DISMISSED",
   PRESCAN_REVIEW_CONFIRMED: "PRESCAN_REVIEW_CONFIRMED",
-  PRESCAN_REVIEW_RECUSED:   "PRESCAN_REVIEW_RECUSED",
+  PRESCAN_REVIEW_RECUSED: "PRESCAN_REVIEW_RECUSED",
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
@@ -369,14 +369,14 @@ const DISPUTE_EPISODE_TX_TYPES = Object.freeze([
 // This priority restores the human-meaningful order whenever timestamps
 // collide. Pure data, no DAG state, no determinism risk.
 const DISPUTE_EVENT_PRIORITY = Object.freeze({
-  [TX_TYPES.CONTENT_DISPUTED]:     0,
+  [TX_TYPES.CONTENT_DISPUTED]: 0,
   [TX_TYPES.AI_CLASSIFIER_RESULT]: 1,
-  [TX_TYPES.JURY_SUMMONS]:         2,
-  [TX_TYPES.JURY_VOTE_COMMIT]:     3,
-  [TX_TYPES.JURY_VOTE_REVEAL]:     4,
-  [TX_TYPES.ADJUDICATION_RESULT]:  5,
-  [TX_TYPES.APPEAL_FILED]:         6,
-  [TX_TYPES.APPEAL_RESULT]:        7,
+  [TX_TYPES.JURY_SUMMONS]: 2,
+  [TX_TYPES.JURY_VOTE_COMMIT]: 3,
+  [TX_TYPES.JURY_VOTE_REVEAL]: 4,
+  [TX_TYPES.ADJUDICATION_RESULT]: 5,
+  [TX_TYPES.APPEAL_FILED]: 6,
+  [TX_TYPES.APPEAL_RESULT]: 7,
 });
 
 
@@ -391,33 +391,33 @@ const DISPUTE_EVENT_PRIORITY = Object.freeze({
 // rows will outlive any rename. Removing one is a wire-compat break.
 const TX_REJECTION_REASON = Object.freeze({
   // Site 1 — mempool admission (post-API, pre-batch)
-  MEMPOOL_FULL:                    "mempool_full",
-  MEMPOOL_MISSING_TX_ID:           "missing_tx_id",
+  MEMPOOL_FULL: "mempool_full",
+  MEMPOOL_MISSING_TX_ID: "missing_tx_id",
   // Site 2 — mempool TTL eviction
-  MEMPOOL_TTL_EXPIRED:             "mempool_ttl_expired",
+  MEMPOOL_TTL_EXPIRED: "mempool_ttl_expired",
   // Site 3 — consensus-layer drops (narwhal handleIncomingBatch)
-  BATCH_BEYOND_HORIZON:            "batch_beyond_horizon",
-  BATCH_SIG_INVALID:               "batch_sig_invalid",
-  BATCH_AUTHOR_UNREGISTERED:       "batch_author_unregistered",
-  BATCH_EQUIVOCATION:              "batch_equivocation",
-  BATCH_DECODE_FAILED:             "batch_decode_failed",
+  BATCH_BEYOND_HORIZON: "batch_beyond_horizon",
+  BATCH_SIG_INVALID: "batch_sig_invalid",
+  BATCH_AUTHOR_UNREGISTERED: "batch_author_unregistered",
+  BATCH_EQUIVOCATION: "batch_equivocation",
+  BATCH_DECODE_FAILED: "batch_decode_failed",
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
-  IDENTITY_ALREADY_REGISTERED:     "identity_already_registered",
-  CONTENT_ALREADY_REGISTERED:      "content_already_registered",
-  DOMAIN_ALREADY_CLAIMED:          "domain_already_claimed",
-  VERIFIER_NOT_AUTHORIZED:         "verifier_not_authorized",
-  CLEAN_RECORD_VIOLATION:          "clean_record_violation",
-  REVALIDATION_FAILED:             "revalidation_failed",
+  IDENTITY_ALREADY_REGISTERED: "identity_already_registered",
+  CONTENT_ALREADY_REGISTERED: "content_already_registered",
+  DOMAIN_ALREADY_CLAIMED: "domain_already_claimed",
+  VERIFIER_NOT_AUTHORIZED: "verifier_not_authorized",
+  CLEAN_RECORD_VIOLATION: "clean_record_violation",
+  REVALIDATION_FAILED: "revalidation_failed",
   // Site 5 — generic fallback for unexpected drops; always logs detail.
-  TX_DECODE_FAILED:                "tx_decode_failed",
+  TX_DECODE_FAILED: "tx_decode_failed",
 });
 
 // ─── Media size limits (defaults — node config can override via env) ─────────
 const MEDIA_LIMITS = Object.freeze({
-  max_video_bytes:  5 * 1024 * 1024 * 1024,   // 5 GB
-  max_image_bytes:  50 * 1024 * 1024,          // 50 MB
-  max_audio_bytes:  500 * 1024 * 1024,         // 500 MB
-  max_text_bytes:   10 * 1024 * 1024,          // 10 MB
+  max_video_bytes: 5 * 1024 * 1024 * 1024,   // 5 GB
+  max_image_bytes: 50 * 1024 * 1024,          // 50 MB
+  max_audio_bytes: 500 * 1024 * 1024,         // 500 MB
+  max_text_bytes: 10 * 1024 * 1024,          // 10 MB
 });
 
 // ─── Score display modes (v2 FIX-06) ─────────────────────────────────────────
@@ -488,6 +488,86 @@ const PROTOCOL = Object.freeze({
   issuerUrl: "https://theailab.org",
 });
 
+// GH #51 — crypto agility. Algorithm identifier for each key-bearing
+// row (identities, nodes, verification_providers). Bound to the KEY
+// rather than to each signature so:
+//   - signatures stay compact (no per-sig overhead)
+//   - no JWT-style "alg: none" downgrade attack possible
+//   - future algorithm rotation = KEY_ROTATED tx replacing key + algorithm atomically
+// Genesis bootstrap defaults every key to ML_DSA_65; new algorithms
+// add a branch in verifyWithAlgorithm and a new constant here.
+const SIGNATURE_ALGORITHM = Object.freeze({
+  ML_DSA_65: "ml-dsa-65",
+  // Future:
+  // ML_DSA_87:                          "ml-dsa-87",                              // larger pq, stronger margin
+  // SLH_DSA_128S:                       "slh-dsa-128s",                           // FIPS 205 stateless hash-based
+  // HYBRID_ML_DSA_65_ECDSA_P256:        "hybrid-ml-dsa-65-ecdsa-p256",            // transition hybrid
+});
+const SIGNATURE_ALGORITHM_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_ALGORITHM)));
+const SIGNATURE_ALGORITHM_DEFAULT = SIGNATURE_ALGORITHM.ML_DSA_65;
+
+// GH #51 — enum of tip_id-bearing field names on tx.data. Schemas
+// whose SIGNED_BY = "subject" declare `SUBJECT_TIP_ID_FIELD` as one of
+// these values so the signature dispatcher knows which field on
+// tx.data carries the subject's tip_id. Centralised so the set is
+// type-locked (no typos) and Python parity uses the same enum.
+const TIP_ID_FIELDS = Object.freeze({
+  TIP_ID: "tip_id",                       // most schemas (register-identity, update-profile, register-domain, ...)
+  SIGNER_TIP_ID: "signer_tip_id",         // content-register (CNA-2.2 attributed publisher)
+  REVIEWER_TIP_ID: "reviewer_tip_id",     // prescan-review-confirmed / dismissed / recused
+  AUTHOR_TIP_ID: "author_tip_id",         // prescan-review-accept-correction / dispute, update-origin, content-retracted
+  JUROR_TIP_ID: "juror_tip_id",           // jury vote commit / reveal
+  APPELLANT_TIP_ID: "appellant_tip_id",   // appeal filed
+  VERIFIER_TIP_ID: "verifier_tip_id",     // content-verified
+  DISPUTER_TIP_ID: "disputer_tip_id",     // content-disputed (user-mode)
+});
+const TIP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(TIP_ID_FIELDS)));
+
+// GH #51 — VP-id field discriminator. Same pattern as TIP_ID_FIELDS:
+// VP-signed schemas declare WHICH field on tx.data carries the
+// signing VP's vp_id, since the codebase has three usages today:
+//   - "vp_id" for new registrations (REGISTER_IDENTITY)
+//   - "approving_vp_id" for council-style attestations (VP_REGISTERED, NODE_REGISTERED)
+//   - "issuing_vp_id" for revocations (REVOKE_*)
+const VP_ID_FIELDS = Object.freeze({
+  VP_ID: "vp_id",
+  APPROVING_VP_ID: "approving_vp_id",
+  ISSUING_VP_ID: "issuing_vp_id",
+});
+const VP_ID_FIELD_VALUES = Object.freeze(new Set(Object.values(VP_ID_FIELDS)));
+
+// GH #51 — unified signature storage. The set of kinds that a schema's
+// SIGNED_BY discriminator can take. Each kind tells `verifyTxSignature`
+// how to resolve the signer's public key:
+//   - "subject" → look up via schema.resolveSubject(tx, dag) (defaults
+//                  to dag.getIdentity(tx.data.tip_id) when the schema
+//                  doesn't override)
+//   - "node"    → dag.getNode(tx.data.node_id).public_key
+//   - "vp"      → dag.getVerificationProvider(tx.data.vp_id).public_key
+//                  (covers both regular VP-signed txs and the founding-
+//                   VP-signed ring identities at genesis — same lookup
+//                   path, same trust model, just different context)
+const SIGNED_BY_KIND = Object.freeze({
+  SUBJECT: "subject",
+  NODE: "node",
+  VP: "vp",
+});
+const SIGNED_BY_KIND_VALUES = Object.freeze(new Set(Object.values(SIGNED_BY_KIND)));
+
+// GH #51 — unified signature storage. The two scopes a schema can
+// declare for its tx.signature:
+//   - "envelope" → outer signature over canonicalTx(tx) (whole envelope:
+//                   tx_type + data + timestamp + prev)
+//   - "body"     → signature over a schema-declared subset of tx.data;
+//                   typical for client-signed flows where the client
+//                   computes the payload BEFORE the node adds chain
+//                   metadata (timestamp, prev, tx_id)
+const SIGNATURE_SCOPE = Object.freeze({
+  ENVELOPE: "envelope",
+  BODY: "body",
+});
+const SIGNATURE_SCOPE_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_SCOPE)));
+
 module.exports = {
   ORIGIN,
   ORIGIN_LABELS,
@@ -538,4 +618,15 @@ module.exports = {
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,
+  SIGNED_BY_KIND,
+  SIGNED_BY_KIND_VALUES,
+  SIGNATURE_SCOPE,
+  SIGNATURE_SCOPE_VALUES,
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_ALGORITHM_VALUES,
+  SIGNATURE_ALGORITHM_DEFAULT,
+  TIP_ID_FIELDS,
+  TIP_ID_FIELD_VALUES,
+  VP_ID_FIELDS,
+  VP_ID_FIELD_VALUES,
 };

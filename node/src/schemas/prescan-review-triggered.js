@@ -24,9 +24,14 @@
 
 const { schemaError } = require("./_common");
 const { mldsaVerify, canonicalTx } = require("../../../shared/crypto");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_TRIGGERED;
+// GH #51 — unified signature storage. Node auto-emits this tx after
+// the prescan decision window; outer envelope signature by the
+// emitting node (tx.data.node_id resolves the verifying key).
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.ENVELOPE;
+const SIGNED_BY = SIGNED_BY_KIND.NODE;
 
 function _validateShape(d) {
   if (typeof d.review_id !== "string" || d.review_id.length === 0) {
@@ -85,4 +90,7 @@ function verifyTx(tx, dag) {
 module.exports = {
   TX_TYPE,
   verifyTx,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
 };

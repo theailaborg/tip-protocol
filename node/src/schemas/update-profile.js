@@ -35,9 +35,14 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
-const { TX_TYPES, TIP_ID_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, TIP_ID_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.UPDATE_PROFILE;
+// GH #51 — unified signature storage. Subject (data.tip_id) signs the
+// canonical payload returned by buildSigningPayload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.TIP_ID;
 
 // Fields the user may sparsely update via this tx. Adding a new field
 // here makes it accepted without any other code change — sparse update +
@@ -217,4 +222,8 @@ module.exports = {
   verifySignature,
   verifyTx,
   canonicalJson,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

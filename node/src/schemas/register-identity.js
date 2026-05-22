@@ -42,9 +42,16 @@ const {
 } = require("./_common");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.REGISTER_IDENTITY;
+
+// GH #51 — unified signature storage contract.
+// VP signs the canonical payload produced by `buildSigningPayload`
+// (defined below — single source of truth for which fields are signed).
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.VP;
 
 const VERIFICATION_TIERS = Object.freeze(["T1", "T2", "T3", "T4"]);
 
@@ -126,7 +133,7 @@ function validateRequest(body, deps) {
   // Organizations MUST attest a display name — orgs without a public
   // name aren't useful (can't claim domains, can't credibly publish).
   if (body.tip_id_type === TIP_ID_TYPES.ORGANIZATION
-      && (typeof body.creator_name !== "string" || body.creator_name.length === 0)) {
+    && (typeof body.creator_name !== "string" || body.creator_name.length === 0)) {
     throw schemaError(
       400,
       "creator_name is required for tip_id_type='organization'",
@@ -216,15 +223,12 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 }
 
 /**
- * Server-side high-level entry. Used by identity-service (API time)
- * after request envelope validation and by commit-handler (consensus
- * replay) on every committed REGISTER_IDENTITY tx.
- *
- *   1. Validate signature presence on tx.data
- *   2. Resolve VP on DAG (no fallback)
- *   3. Refuse if VP inactive
- *   4. Rebuild canonical payload from tx.data
- *   5. Verify ML-DSA-65 signature against DAG VP public key
+ * State-level verification at consensus replay. GH #51: the VP
+ * signature is verified by the unified dispatcher
+ * (`schemas/_common.verifyTxSignature`) against `tx.signature`. This
+ * function only enforces the state-machine invariants the dispatcher
+ * doesn't know about (VP existence + active on DAG, canonical payload
+ * shape).
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -232,25 +236,20 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
-  if (typeof d.vp_signature !== "string") {
-    return { ok: false, status: 400, error: "vp_signature missing on tx", code: "vp_signature_missing" };
-  }
   if (!d.vp_id) {
     return { ok: false, status: 400, error: "vp_id missing", code: "vp_id_missing" };
   }
 
-  let vp;
-  let payload;
   try {
-    vp = resolveVP(d.vp_id, dag);
-    payload = buildSigningPayload(d);
+    resolveVP(d.vp_id, dag);
+    // Rebuild + validate canonical payload shape — schemaError surfaces
+    // any missing required field. The dispatcher does this implicitly
+    // via bodyMessageHex when verifying, but doing it here keeps the
+    // state-check error codes precise for the API path.
+    buildSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.vp_signature, vp.public_key)) {
-    return { ok: false, status: 403, error: "VP signature verification failed", code: "signature_invalid" };
   }
 
   return { ok: true };
@@ -267,6 +266,10 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract (consumed by verifyTxSignature
+  // in schemas/_common.js + commit-handler dispatch)
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
   // Re-export for tests / debug:
   canonicalJson,
 };

@@ -309,12 +309,13 @@ describe("PRESCAN_REVIEW_CONFIRMED — confirmed_at_ms persistence", () => {
     const signature = confirmedSchema.sign(payload, fx.reviewer1Kp.privateKey);
     const data = {
       review_id: reviewId, reviewer_tip_id: REVIEWER_1,
-      suggested_origin: "AG", decision_note: null, signature,
+      suggested_origin: "AG", decision_note: null,
     };
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
       timestamp: confirmedCertMs,
       prev: fx.dag.getRecentPrev(), data,
+      signature,
     };
     txBody.tx_id = computeTxId(txBody);
 

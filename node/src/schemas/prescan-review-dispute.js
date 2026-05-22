@@ -34,7 +34,13 @@
 
 const { schemaError } = require("./_common");
 const { verifyBodySignature } = require("../../../shared/crypto");
-const { PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
+
+// GH #51 — unified signature storage. Author signs the escalation
+// payload to dispute the reviewer's CONFIRMED decision.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.AUTHOR_TIP_ID;
 
 // Signed canonical payload binds the escalation to a specific creator,
 // ctid, and review. Without ctid + review_id in the signature, a
@@ -117,8 +123,22 @@ function validateRequest(reviewId, body, deps) {
   return { review, content };
 }
 
+// GH #51 — canonical signed payload for the unified verifier.
+function buildSigningPayload(input) {
+  return {
+    author_tip_id: input.author_tip_id,
+    ctid: input.ctid,
+    review_id: input.review_id,
+  };
+}
+
 module.exports = {
   SIGNED_FIELDS,
   resolveReview,
   validateRequest,
+  buildSigningPayload,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

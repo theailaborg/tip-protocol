@@ -635,12 +635,13 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
       juror_tip_id: jurorTipId, vote: VOTE.MISMATCH, salt: "abc", confirmed_origin: "AG",
     };
     const data = { ...signedFields, ctid: fx.ctid };
-    data.signature = signBody(signedFields, kp.privateKey);
+    const signature = signBody(signedFields, kp.privateKey);
     const txBody = {
       tx_type: TX_TYPES.JURY_VOTE_REVEAL,
       timestamp: timestampISO,
       prev: fx.dag.getRecentPrev(),
       data,
+      signature,
     };
     txBody.tx_id = computeTxId(txBody);
     return txBody;

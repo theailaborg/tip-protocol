@@ -9,8 +9,10 @@
  * from re-selection by selectReviewer's accuracy gate only — recusal
  * itself isn't a "wrong call", so it doesn't impact accuracy.
  *
- * Signed by: the assigned reviewer's ML-DSA-65 key (user signature on
- * `tx.data.signature`).
+ * Signed by: the assigned reviewer's ML-DSA-65 key at `tx.signature`
+ * (GH #51 unified storage). Dual-mode contract: manual recuse =
+ * reviewer body sig; auto-recuse (data.auto=true) = node envelope sig.
+ * `getSignatureContract(tx)` branches.
  *
  * Canonical signed fields (alphabetical):
  *   recusal_reason     string|null,  optional reviewer-written note
@@ -27,9 +29,33 @@
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
 const { mldsaVerify, canonicalTx } = require("../../../shared/crypto");
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_RECUSED;
+
+// GH #51 — DUAL-MODE schema. Two distinct signature paths under one
+// tx_type, discriminated by `tx.data.auto`:
+//   - auto = true   → node-emitted (auto-recuse after SLA expiry).
+//                     Outer envelope signature by the emitting node.
+//   - auto = false  → reviewer-emitted (manual recusal). Body signature
+//                     by the reviewer themselves.
+// The dispatcher in schemas/_common.js calls this function instead of
+// reading static SIGNATURE_SCOPE / SIGNED_BY constants — see
+// `resolveSignatureContract` for the dispatch.
+function getSignatureContract(tx) {
+  if (tx?.data?.auto) {
+    return {
+      SIGNATURE_SCOPE: SIGNATURE_SCOPE.ENVELOPE,
+      SIGNED_BY: SIGNED_BY_KIND.NODE,
+    };
+  }
+  return {
+    SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
+    SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
+    SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.REVIEWER_TIP_ID,
+    buildSigningPayload,
+  };
+}
 
 function resolveReviewer(reviewerTipId, dag) {
   const identity = dag.getIdentity(reviewerTipId);
@@ -118,6 +144,13 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
   return verifyPayload(payload, signatureHex, publicKeyHex);
 }
 
+/**
+ * State-level verification at consensus replay. GH #51: the signature
+ * (auto: node envelope; user: reviewer body sig) is verified by the
+ * unified dispatcher via `getSignatureContract(tx)`. This function only
+ * enforces the state-machine + reviewer-assignment / node-registration
+ * invariants the dispatcher doesn't know about.
+ */
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
@@ -125,16 +158,9 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
   }
 
-  // Node-signed auto-recuse — emitted by prescan-review-trigger when
-  // the assigned reviewer's AUTO_RECUSE_AGE_MS elapses without a
-  // decision. Same shape as CONTENT_DISPUTED auto-cascade (data.auto +
-  // data.node_id, tx.signature at top level over canonicalTx).
   if (d.auto) {
     if (!d.node_id) {
       return { ok: false, status: 400, error: "node_id missing on auto-recuse", code: "node_id_missing" };
-    }
-    if (typeof tx.signature !== "string" || tx.signature.length === 0) {
-      return { ok: false, status: 400, error: "tx.signature missing on auto-recuse", code: "signature_missing" };
     }
     const node = dag.getNode(d.node_id);
     if (!node) {
@@ -149,33 +175,19 @@ function verifyTx(tx, dag) {
       if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
       throw err;
     }
-    if (!mldsaVerify(canonicalTx(tx), tx.signature, node.public_key)) {
-      return { ok: false, status: 403, error: "Node signature verification failed", code: "signature_invalid" };
-    }
     return { ok: true };
   }
 
-  // Reviewer-signed manual recuse (the original path).
-  if (typeof d.signature !== "string") {
-    return { ok: false, status: 400, error: "signature missing on tx", code: "signature_missing" };
-  }
+  // Reviewer-signed manual recuse path.
   if (!d.reviewer_tip_id) {
     return { ok: false, status: 400, error: "reviewer_tip_id missing", code: "reviewer_tip_id_missing" };
   }
-
-  let reviewer;
-  let payload;
   try {
-    reviewer = resolveReviewer(d.reviewer_tip_id, dag);
+    resolveReviewer(d.reviewer_tip_id, dag);
     resolveReview(d.review_id, d.reviewer_tip_id, dag);
-    payload = buildSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.signature, reviewer.public_key)) {
-    return { ok: false, status: 403, error: "Reviewer signature verification failed", code: "signature_invalid" };
   }
   return { ok: true };
 }
@@ -189,4 +201,6 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract (dual-mode via function)
+  getSignatureContract,
 };

@@ -125,9 +125,10 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         data: {
           ctid, disputer_tip_id, reason, claimed_origin: claimed_origin || null,
           declared_origin: rec.origin_code, evidence_hash: evidence_hash || null,
-          signature, author_tip_id: rec.author_tip_id,
+          author_tip_id: rec.author_tip_id,
           pre_dispute_status: rec.status, stake: DISPUTE.DISPUTER_STAKE,
         },
+        signature,
       });
       const validation = validateTransaction(disputeTx, dag, {});
       if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
@@ -214,7 +215,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
     if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Juror signature verification failed" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature } });
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment }, signature });
     submitTx(commitTx);
     return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
@@ -234,7 +235,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
     if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Juror signature verification failed" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature } });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null }, signature });
     submitTx(revealTx);
 
     // Verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.
@@ -359,7 +360,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const appellant = dag.getIdentity(appellant_tip_id);
     if (!verifyBodySignature(body, signature, appellant.public_key, ["appellant_tip_id"])) throw { status: 403, error: "Appellant signature verification failed" };
 
-    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, signature, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE } });
+    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature });
 
     // Collect batch: appeal + stake + expert summons
     const batchTxs = [appealTx];
@@ -407,7 +408,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const juror = dag.getIdentity(juror_tip_id);
     if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Expert signature verification failed" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, signature, is_appeal: true } });
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, is_appeal: true }, signature });
     submitTx(commitTx);
     return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
@@ -430,7 +431,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
     if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Expert signature verification failed" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, signature, is_appeal: true } });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true }, signature });
     submitTx(revealTx);
 
     // Appeal verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.

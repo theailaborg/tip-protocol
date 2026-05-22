@@ -4,8 +4,9 @@
  * reviewer's "AI's flag was right" decision. The review transitions to
  * state=confirmed and the creator's 24h accept-or-escalate window opens.
  *
- * Signed by: the assigned reviewer's ML-DSA-65 key (user signature on
- * `tx.data.signature`).
+ * Signed by: the assigned reviewer's ML-DSA-65 key at `tx.signature`
+ * (GH #51 unified storage). Body scope over the canonical payload
+ * `buildSigningPayload` produces.
  *
  * Canonical signed fields (alphabetical):
  *   decision_note      string|null,  optional reviewer-written notes
@@ -22,9 +23,14 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
-const { TX_TYPES, ORIGIN, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, ORIGIN, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_CONFIRMED;
+// GH #51 — unified signature storage. Reviewer signs the canonical
+// decision payload returned by buildSigningPayload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.REVIEWER_TIP_ID;
 // Reviewer can only suggest "more AI" labels — OH is already what the
 // creator declared, so confirming an AI flag must recommend something
 // that discloses AI involvement.
@@ -119,32 +125,27 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
   return verifyPayload(payload, signatureHex, publicKeyHex);
 }
 
+/**
+ * State-level verification at consensus replay. GH #51: the signature
+ * itself is verified by the unified dispatcher
+ * (`schemas/_common.verifyTxSignature`) — this function only enforces
+ * the state-machine + reviewer-assignment invariants the dispatcher
+ * doesn't know about.
+ */
 function verifyTx(tx, dag) {
   const d = tx.data || {};
-
-  if (typeof d.signature !== "string") {
-    return { ok: false, status: 400, error: "signature missing on tx", code: "signature_missing" };
-  }
   if (!d.reviewer_tip_id) {
     return { ok: false, status: 400, error: "reviewer_tip_id missing", code: "reviewer_tip_id_missing" };
   }
   if (!d.review_id) {
     return { ok: false, status: 400, error: "review_id missing", code: "review_id_missing" };
   }
-
-  let reviewer;
-  let payload;
   try {
-    reviewer = resolveReviewer(d.reviewer_tip_id, dag);
+    resolveReviewer(d.reviewer_tip_id, dag);
     resolveReview(d.review_id, d.reviewer_tip_id, dag);
-    payload = buildSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.signature, reviewer.public_key)) {
-    return { ok: false, status: 403, error: "Reviewer signature verification failed", code: "signature_invalid" };
   }
   return { ok: true };
 }
@@ -159,4 +160,8 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };
