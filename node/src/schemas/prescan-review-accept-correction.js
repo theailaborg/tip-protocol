@@ -29,8 +29,14 @@ const { nowMs } = require("../../../shared/time");
 
 const { schemaError } = require("./_common");
 const { verifyBodySignature } = require("../../../shared/crypto");
-const { ORIGIN, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { ORIGIN, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 const rules = require("../validators/business-rules");
+
+// GH #51 — unified signature storage. The content's author signs the
+// canonical accept-correction payload.
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.AUTHOR_TIP_ID;
 
 // Reviewer can only suggest an AI label; creator's accept-correction
 // must therefore land on the same set. OH (human-only) is excluded.
@@ -135,9 +141,25 @@ function validateRequest(reviewId, body, deps) {
   return { review, content, new_origin_code };
 }
 
+// GH #51 — canonical signed payload for the unified verifier. Picks
+// the exact three fields the signature covers; canonicalJson sorts
+// keys, so this is byte-identical to what the client signed.
+function buildSigningPayload(input) {
+  return {
+    author_tip_id: input.author_tip_id,
+    ctid: input.ctid,
+    new_origin_code: input.new_origin_code,
+  };
+}
+
 module.exports = {
   VALID_NEW_ORIGINS,
   SIGNED_FIELDS,
   resolveReview,
   validateRequest,
+  buildSigningPayload,
+  // GH #51 — unified signature contract
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

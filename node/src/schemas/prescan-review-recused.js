@@ -27,9 +27,32 @@
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
 const { mldsaVerify, canonicalTx } = require("../../../shared/crypto");
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_RECUSED;
+
+// GH #51 — DUAL-MODE schema. Two distinct signature paths under one
+// tx_type, discriminated by `tx.data.auto`:
+//   - auto = true   → node-emitted (auto-recuse after SLA expiry).
+//                     Outer envelope signature by the emitting node.
+//   - auto = false  → reviewer-emitted (manual recusal). Body signature
+//                     by the reviewer themselves.
+// The dispatcher in schemas/_common.js calls this function instead of
+// reading static SIGNATURE_SCOPE / SIGNED_BY constants — see
+// `resolveSignatureContract` for the dispatch.
+function getSignatureContract(tx) {
+  if (tx?.data?.auto) {
+    return {
+      SIGNATURE_SCOPE: SIGNATURE_SCOPE.ENVELOPE,
+      SIGNED_BY: SIGNED_BY_KIND.NODE,
+    };
+  }
+  return {
+    SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
+    SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
+    SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.REVIEWER_TIP_ID,
+  };
+}
 
 function resolveReviewer(reviewerTipId, dag) {
   const identity = dag.getIdentity(reviewerTipId);
@@ -189,4 +212,6 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract (dual-mode via function)
+  getSignatureContract,
 };

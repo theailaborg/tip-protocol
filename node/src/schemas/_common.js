@@ -109,9 +109,35 @@ function schemaError(status, message, code) {
  * (ML-DSA-65) for any row that pre-dates the crypto-agility column,
  * so old data verifies under the assumed-default — see GH #51.
  */
-function resolveSignerRecord(tx, schema, dag) {
+/**
+ * Resolve the per-tx signature contract from a schema. Most schemas
+ * declare static `SIGNATURE_SCOPE` / `SIGNED_BY` constants — those
+ * collapse into a one-shot contract. Multi-mode schemas (e.g.
+ * prescan-review-recused: reviewer-manual body vs node-auto envelope;
+ * CONTENT_DISPUTED: user-dispute vs auto-cascade) export a function
+ * `getSignatureContract(tx)` that inspects the tx (typically the
+ * `data.auto` discriminator) and returns the right shape for THIS tx.
+ *
+ * Returns `{ SIGNATURE_SCOPE, SIGNED_BY, SUBJECT_TIP_ID_FIELD? }`
+ * or `null` if the schema is malformed.
+ */
+function resolveSignatureContract(tx, schema) {
   if (!schema) return null;
-  const kind = schema.SIGNED_BY;
+  if (typeof schema.getSignatureContract === "function") {
+    return schema.getSignatureContract(tx) || null;
+  }
+  if (!schema.SIGNATURE_SCOPE || !schema.SIGNED_BY) return null;
+  return {
+    SIGNATURE_SCOPE: schema.SIGNATURE_SCOPE,
+    SIGNED_BY: schema.SIGNED_BY,
+    SUBJECT_TIP_ID_FIELD: schema.SUBJECT_TIP_ID_FIELD,
+  };
+}
+
+function resolveSignerRecord(tx, schema, dag) {
+  const contract = resolveSignatureContract(tx, schema);
+  if (!contract) return null;
+  const kind = contract.SIGNED_BY;
   if (!SIGNED_BY_KIND_VALUES.has(kind)) return null;
 
   let row;
@@ -128,11 +154,9 @@ function resolveSignerRecord(tx, schema, dag) {
     row = dag.getVerificationProvider?.(vpId);
   } else {
     // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
-    // Each schema declares WHICH field on tx.data carries the subject's
-    // tip_id via `SUBJECT_TIP_ID_FIELD` (defaults to "tip_id"). This
-    // avoids the (tx, dag) vs (tipId, dag) signature ambiguity that
-    // a `resolveSubject(tx, dag)` helper would introduce.
-    const field = schema.SUBJECT_TIP_ID_FIELD || "tip_id";
+    // Contract declares WHICH field on tx.data carries the subject's
+    // tip_id via `SUBJECT_TIP_ID_FIELD` (defaults to "tip_id").
+    const field = contract.SUBJECT_TIP_ID_FIELD || "tip_id";
     const tipId = tx?.data?.[field];
     if (!tipId) return null;
     row = dag.getIdentity?.(tipId);
@@ -187,8 +211,9 @@ function verifyTxSignature(tx, schema, dag) {
   if (typeof tx.signature !== "string" || tx.signature.length === 0) {
     return { ok: false, error: "tx.signature is required", code: "signature_missing" };
   }
-  if (!schema || !schema.SIGNATURE_SCOPE) {
-    return { ok: false, error: "schema missing SIGNATURE_SCOPE", code: "schema_invalid" };
+  const contract = resolveSignatureContract(tx, schema);
+  if (!contract) {
+    return { ok: false, error: "schema missing signature contract (SIGNATURE_SCOPE/SIGNED_BY or getSignatureContract)", code: "schema_invalid" };
   }
   const signer = resolveSignerRecord(tx, schema, dag);
   if (!signer) {
@@ -199,16 +224,16 @@ function verifyTxSignature(tx, schema, dag) {
   // ML-DSA-65). The algorithm is bound to the key — not the signature —
   // for crypto agility without per-sig overhead. See GH #51.
   let message;
-  if (schema.SIGNATURE_SCOPE === SIGNATURE_SCOPE.ENVELOPE) {
+  if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.ENVELOPE) {
     // Outer signature: covers the canonical tx envelope. tx.signature is
     // NOT part of canonicalTx (signTransaction's contract), so the
     // signature doesn't sign itself.
     const tipCrypto = require("../../../shared/crypto");
     message = tipCrypto.shake256(tipCrypto.canonicalTx(tx));   // matches signTransaction's signed bytes
-  } else if (schema.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
+  } else if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
     message = bodyMessageHex(tx, schema);
   } else {
-    return { ok: false, error: `unknown SIGNATURE_SCOPE ${schema.SIGNATURE_SCOPE}`, code: "schema_invalid" };
+    return { ok: false, error: `unknown SIGNATURE_SCOPE ${contract.SIGNATURE_SCOPE}`, code: "schema_invalid" };
   }
   let ok;
   try {
@@ -253,6 +278,7 @@ module.exports = {
   canonicalJson,
   canonicalTx,
   // GH #51 — unified-storage signature helpers (constants in shared/constants.js)
+  resolveSignatureContract,
   resolveSignerRecord,
   resolveSignerPubKey,
   bodyMessageHex,
