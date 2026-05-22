@@ -1312,6 +1312,34 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
       }
     }
+
+    // Sub-quorum escape: when narwhal is ready but has made no round progress
+    // for > SUB_QUORUM_ESCAPE_MS, cert-sync alone cannot recover — the missing
+    // peer's libp2p connection may have silently dropped (observed: node halted
+    // 184s with 2/4 certs, peer_count=3, no auto-recovery fired because the
+    // existing deadlock escape only guards byzantine_fork halts). Snapshot
+    // resync resets join state and reconnects, equivalent to a manual restart.
+    if (!_running) return;
+    if (!_snapshotResyncInFlight && narwhal) {
+      const SUB_QUORUM_ESCAPE_MS = 60_000;
+      const joinState  = typeof narwhal.joinState === "function" ? narwhal.joinState() : null;
+      const lastAdvAt  = typeof narwhal.lastRoundAdvanceAt === "function" ? narwhal.lastRoundAdvanceAt() : 0;
+      const staleMs    = lastAdvAt > 0 ? Date.now() - lastAdvAt : 0;
+      const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+      if (
+        joinState === "ready" &&
+        staleMs > SUB_QUORUM_ESCAPE_MS &&
+        (_lastAutoRecoveryAt === 0 || sinceLastMs > SUB_QUORUM_ESCAPE_MS)
+      ) {
+        _log.warn(
+          `anti-entropy: sub_quorum escape — no round advance for ${Math.round(staleMs / 1000)}s; ` +
+          `triggering snapshot resync (issue #13)`
+        );
+        triggerSnapshotResync(0, 0).catch(err =>
+          _log.warn(`anti-entropy: sub_quorum escape resync failed: ${err.message}`)
+        );
+      }
+    }
   }
 
   function _scheduleNext() {
