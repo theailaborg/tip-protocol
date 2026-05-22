@@ -488,6 +488,39 @@ const PROTOCOL = Object.freeze({
   issuerUrl: "https://theailab.org",
 });
 
+// GH #51 — unified signature storage. The set of kinds that a schema's
+// SIGNED_BY discriminator can take. Each kind tells `verifyTxSignature`
+// how to resolve the signer's public key:
+//   - "subject"     → look up via schema.resolveSubject(tx, dag) (defaults
+//                      to dag.getIdentity(tx.data.tip_id) when the schema
+//                      doesn't override)
+//   - "node"        → dag.getNode(tx.data.node_id).public_key
+//   - "vp"          → dag.getVerificationProvider(tx.data.vp_id).public_key
+//   - "founding-vp" → same as "vp" but documented separately because
+//                      founding-VP signs ring identities at genesis
+//                      time, which is a one-off bootstrap path
+const SIGNED_BY_KIND = Object.freeze({
+  SUBJECT: "subject",
+  NODE: "node",
+  VP: "vp",
+  FOUNDING_VP: "founding-vp",
+});
+const SIGNED_BY_KIND_VALUES = Object.freeze(new Set(Object.values(SIGNED_BY_KIND)));
+
+// GH #51 — unified signature storage. The two scopes a schema can
+// declare for its tx.signature:
+//   - "envelope" → outer signature over canonicalTx(tx) (whole envelope:
+//                   tx_type + data + timestamp + prev)
+//   - "body"     → signature over a schema-declared subset of tx.data;
+//                   typical for client-signed flows where the client
+//                   computes the payload BEFORE the node adds chain
+//                   metadata (timestamp, prev, tx_id)
+const SIGNATURE_SCOPE = Object.freeze({
+  ENVELOPE: "envelope",
+  BODY: "body",
+});
+const SIGNATURE_SCOPE_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_SCOPE)));
+
 module.exports = {
   ORIGIN,
   ORIGIN_LABELS,
@@ -538,4 +571,8 @@ module.exports = {
   HTTP_HEADERS,
   API_PATHS,
   PROTOCOL,
+  SIGNED_BY_KIND,
+  SIGNED_BY_KIND_VALUES,
+  SIGNATURE_SCOPE,
+  SIGNATURE_SCOPE_VALUES,
 };
