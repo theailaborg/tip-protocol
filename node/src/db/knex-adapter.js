@@ -23,6 +23,112 @@ const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 
+// ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
+// Every SQL driver TIP supports returns BIGINT differently in JS land:
+//
+//   pg:        INT8 → string  (precision-loss avoidance; JS Number can't
+//                              hold 2^63 safely, so the driver punts)
+//   mysql2:    BIGINT → string when supportBigNumbers is unset (same reason)
+//   tedious:   BIGINT → string by default
+//   oracledb:  NUMBER(19,0) → string (unless precision fits in JS safe int)
+//   better-sqlite3 (used by the SQLite dag.js path, NOT Knex): INTEGER
+//              → JS Number natively — no fix needed there.
+//
+// Every TIP bigint column carries either an epoch-ms timestamp (max ≈ 1.78e12
+// — three orders of magnitude under MAX_SAFE_INTEGER) or a counter (round,
+// rotation_number, consensus_index — all well below 2^32). None can ever
+// approach the precision boundary, so coercing all BIGINT reads to Number is
+// safe AND fixes a class of bugs where:
+//   - the in-memory mirror hydrates with "1779253012162" (string) instead of
+//     the integer, so `Number.isFinite(row.registered_at)` returns false in
+//     the prescan-review trigger and the content is silently skipped;
+//   - downstream arithmetic like `registered_at + decision_window_ms`
+//     becomes a JS string concatenation ("1779253012162" + 172800000 =
+//     "1779253012162172800000") instead of integer addition;
+//   - the boundary timestamp middleware skips conversion (its `typeof v ===
+//     "number"` value-gate rejects the string), leaking raw bigint strings
+//     to API clients.
+//
+// Two layers of defence:
+//
+//   1. Driver-level type parsers / casts where the driver supports them
+//      (pg setTypeParser + mysql2 connection typeCast). Zero per-row cost
+//      once registered — values arrive in JS land already as Number.
+//
+//   2. Knex postProcessResponse fallback (_coerceBigIntRow below) catches
+//      anything the driver layer missed — by-column-name allow-list so
+//      it never touches VARCHAR fields that happen to contain digit-only
+//      content. Universal: runs for every Knex query result regardless
+//      of which driver is underneath.
+//
+// All TIP bigInteger columns either match the timestamp pattern (`*_at`,
+// `*_at_ms`, `timestamp`, `cert_timestamp`, `last_updated`) or are explicit
+// counters added to BIGINT_COLUMN_NAMES below.
+
+// Pg-level parser — registered at module load so every pg connection
+// (including the one Knex builds further down) inherits it. Idempotent:
+// setTypeParser overwrites silently if called twice.
+try {
+  // OID 20 = int8 (bigint). Numeric literal avoids depending on the
+  // pgTypes.builtins map shape.
+  require("pg").types.setTypeParser(20, v => v === null ? null : Number(v));
+} catch { /* pg not installed in this build — skip */ }
+
+// Column-name allow-list for the Knex postProcessResponse fallback.
+// `BIGINT_COLUMN_PATTERN` matches the codebase's timestamp naming
+// conventions; `BIGINT_COLUMN_NAMES` lists extra explicit columns that
+// don't follow the pattern. Together they identify exactly the columns
+// declared as `t.bigInteger(...)` in the Knex schema.
+const BIGINT_COLUMN_PATTERN = /^(timestamp|cert_timestamp|last_updated|.+_at|.+_at_ms)$/;
+const BIGINT_COLUMN_NAMES = new Set([
+  // Reserved for explicit additions that don't match the pattern (none
+  // today — all current bigInteger columns are timestamps).
+]);
+
+function _isBigintColumn(key) {
+  return BIGINT_COLUMN_PATTERN.test(key) || BIGINT_COLUMN_NAMES.has(key);
+}
+
+function _coerceBigIntRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+  for (const key of Object.keys(row)) {
+    const v = row[key];
+    if (typeof v === "string" && _isBigintColumn(key) && /^-?\d+$/.test(v)) {
+      const n = Number(v);
+      if (Number.isSafeInteger(n)) row[key] = n;
+    } else if (typeof v === "bigint") {
+      // Some drivers (mysql2 with supportBigNumbers, oracledb with
+      // certain configs) return BIGINT as a JS bigint. Same safe-integer
+      // guarantee — coerce to Number.
+      const n = Number(v);
+      if (Number.isSafeInteger(n)) row[key] = n;
+    }
+  }
+  return row;
+}
+
+function _knexPostProcessResponse(result) {
+  if (!result) return result;
+  if (Array.isArray(result)) {
+    for (const row of result) _coerceBigIntRow(row);
+    return result;
+  }
+  return _coerceBigIntRow(result);
+}
+
+// mysql2 connection-level type cast: applied per-cell on the result path,
+// coerces BIGINT (MYSQL_TYPE_LONGLONG = 8) to JS Number before it reaches
+// the Knex layer. Mirrors the pg type parser above.
+function _mysql2TypeCast(field, next) {
+  if (field.type === "LONGLONG" || field.type === "BIGINT") {
+    const s = field.string();
+    if (s === null) return null;
+    const n = Number(s);
+    return Number.isSafeInteger(n) ? n : s;
+  }
+  return next();
+}
+
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 // Uses the Knex schema builder instead of raw DDL so the same code runs on
 // PostgreSQL, MariaDB, MySQL, MSSQL, and Oracle without driver-specific SQL.
@@ -151,6 +257,13 @@ class KnexAdapter {
           rejectUnauthorized: config.dbSslRejectUnauthorized !== false && process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
         };
       }
+      // Driver-level BIGINT coercion for mysql2/mariadb (see _mysql2TypeCast
+      // banner). The pg type parser is registered at module load; mssql
+      // and oracledb fall through to the universal postProcessResponse
+      // fallback wired below.
+      if (client === "mysql2") {
+        connection.typeCast = _mysql2TypeCast;
+      }
     }
 
     const knex = require("knex");
@@ -162,6 +275,13 @@ class KnexAdapter {
         max: config.dbPoolMax != null ? config.dbPoolMax : Number(process.env.DB_POOL_MAX || 10),
       },
       acquireConnectionTimeout: 10000,
+      // Universal BIGINT → Number fallback. Runs after the driver-level
+      // parser / typeCast (no-op when the driver already returned Number),
+      // catches mssql / oracledb / any future driver that doesn't have a
+      // native hook configured. By-column-name allow-list so VARCHAR
+      // fields holding digit-only content (e.g. a stringly-typed numeric
+      // id) are never touched.
+      postProcessResponse: _knexPostProcessResponse,
     });
     this._isOracleDB = (driver === "oracle" || driver === "oracledb");
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
@@ -477,17 +597,17 @@ class KnexAdapter {
     };
     const contentRows = await this.knex("content").select("*");
     for (const row of contentRows) {
-      const urls    = _decodeJson(row.registered_urls, []);
+      const urls = _decodeJson(row.registered_urls, []);
       const authors = _decodeJson(row.authors, []);
-      const extras  = _decodeJson(row.extras, {});
+      const extras = _decodeJson(row.extras, {});
       const mapped = {
         ...row,
         ctid: row.tip_ctid,
         prescan_flagged: !!row.prescan_flagged,
         override: !!row.override,
-        registered_urls: Array.isArray(urls)   ? urls    : [],
-        authors:         Array.isArray(authors) ? authors : [],
-        extras:          (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
+        registered_urls: Array.isArray(urls) ? urls : [],
+        authors: Array.isArray(authors) ? authors : [],
+        extras: (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
       };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
@@ -978,17 +1098,17 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
-  getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
-  getCertificatesByRound(round)           { return this.mirror.getCertificatesByRound(round); }
-  getCertificateByAuthorRound(a, r)       { return this.mirror.getCertificateByAuthorRound(a, r); }
-  getLatestRound()                        { return this.mirror.getLatestRound(); }
-  getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
-  getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
+  getCertificate(hash) { return this.mirror.getCertificate(hash); }
+  getCertificatesByRound(round) { return this.mirror.getCertificatesByRound(round); }
+  getCertificateByAuthorRound(a, r) { return this.mirror.getCertificateByAuthorRound(a, r); }
+  getLatestRound() { return this.mirror.getLatestRound(); }
+  getEarliestCertRound() { return this.mirror.getEarliestCertRound(); }
+  getCertificatesFromRound(from) { return this.mirror.getCertificatesFromRound(from); }
   // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
   // the SQLiteStore generator. Delegates to the in-memory mirror, which has
   // the full cert window post-_hydrate.
-  *iterateCertsByRoundRange(from, to)     { yield* this.mirror.iterateCertsByRoundRange(from, to); }
-  certificateCount()                      { return this.mirror.certificateCount(); }
+  *iterateCertsByRoundRange(from, to) { yield* this.mirror.iterateCertsByRoundRange(from, to); }
+  certificateCount() { return this.mirror.certificateCount(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);

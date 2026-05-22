@@ -421,7 +421,7 @@ function _throughOutgoing(body) {
   const mw = createTimestampFormat({ outgoing: true, incoming: false });
   let captured = null;
   const res = { json(b) { captured = b; return res; } };
-  mw({ body: {} }, res, () => {});
+  mw({ body: {} }, res, () => { });
   res.json(body);
   return captured;
 }
@@ -490,7 +490,7 @@ describe("timestamp discipline — API-boundary outgoing conversion", () => {
       body: {
         items: [
           { dispute_id: "d1", filed_at: NOW, decided_at: NOW + 1, filing_deadline: NOW + 2 },
-          { dispute_id: "d2", filed_at: NOW + 3, decided_at: null,    filing_deadline: NOW + 4 },
+          { dispute_id: "d2", filed_at: NOW + 3, decided_at: null, filing_deadline: NOW + 4 },
         ],
         meta: { generated_at: NOW + 5 },
       },
@@ -541,3 +541,172 @@ describe("timestamp discipline — API-boundary outgoing conversion", () => {
     expect(out.ack_signed_ats).toEqual([NOW, NOW + 1, NOW + 2]);
   });
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. Driver-level BIGINT → JS Number coercion (Knex)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Locks the contract that every timestamp / counter column declared as
+// `t.bigInteger(...)` in the Knex schema comes back from the DB as a JS
+// number (not a string, not a bigint), regardless of which underlying
+// driver is in use.
+//
+// This is the root-cause class of bug that surfaced during UAT for
+// tip://c/OH-9b971892b3c77f-acea: PG returns INT8 as a string by
+// default (precision-loss avoidance), so the in-memory mirror hydrated
+// with `registered_at: "1779253012162"`. The prescan-review trigger's
+// `Number.isFinite(c.registered_at)` check then returned false on every
+// round, silently skipping the content. Downstream arithmetic
+// `registered_at + decision_window_ms` became string concatenation
+// ("1779253012162" + 172800000 = "1779253012162172800000"), leaking
+// to the API.
+//
+// The fix (node/src/db/knex-adapter.js): pg.types.setTypeParser(20,
+// Number) at module load + a Knex `postProcessResponse` fallback that
+// uses a column-name allow-list (BIGINT_COLUMN_PATTERN) so every Knex-
+// supported driver gets the same Number-typed view. This test ensures
+// any future schema addition / driver swap doesn't regress that
+// invariant.
+//
+// Requires env: DB_DRIVER, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+// Skips automatically when DB_DRIVER is absent (covers the local "npm
+// test" pass-through; CI must pin the driver env vars).
+
+const _bigintDriver = process.env.DB_DRIVER || "";
+const _shouldRunBigintTest = !!_bigintDriver;
+
+(_shouldRunBigintTest ? describe : describe.skip)(
+  `timestamp discipline — Knex BIGINT → Number (${_bigintDriver || "skipped"})`,
+  () => {
+    jest.setTimeout(60_000);
+
+    const { KnexAdapter } = require("../../src/db/knex-adapter");
+    const { nowMs } = require("../../../shared/time");
+
+    let adapter;
+    let knex;
+
+    beforeAll(async () => {
+      adapter = new KnexAdapter(_bigintDriver, {
+        dbHost: process.env.DB_HOST,
+        dbPort: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
+        dbName: process.env.DB_NAME,
+        dbUser: process.env.DB_USER,
+        dbPassword: process.env.DB_PASSWORD,
+      });
+      await adapter.migrate();
+      knex = adapter.knex;
+    });
+
+    afterAll(async () => {
+      try { await knex.destroy(); } catch { /* ignore */ }
+    });
+
+    // Parse `await ensure("<table>", t => { ... })` blocks in the knex
+    // source and collect (table, [bigintColumns...]) pairs. Same parser
+    // as the cross-store drift section (section 4) but inverted: there
+    // we want column names per table, here we want table → bigint cols.
+    function _parseKnexBigintByTable() {
+      const src = fs.readFileSync(path.join(NODE_SRC, "db", "knex-adapter.js"), "utf8");
+      const out = [];
+      const ensureRe = /await\s+ensure\(\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
+      let m;
+      while ((m = ensureRe.exec(src)) !== null) {
+        const tableName = m[1];
+        let depth = 1;
+        let i = ensureRe.lastIndex;
+        while (i < src.length && depth > 0) {
+          if (src[i] === "{") depth++;
+          else if (src[i] === "}") depth--;
+          i++;
+        }
+        const blockSrc = src.slice(ensureRe.lastIndex, i);
+        const cols = [];
+        const colRe = /t\.bigInteger\(\s*["']([a-z_][a-z0-9_]*)["']/g;
+        let cm;
+        while ((cm = colRe.exec(blockSrc)) !== null) cols.push(cm[1]);
+        if (cols.length > 0) out.push({ table: tableName, cols });
+      }
+      return out;
+    }
+
+    test("every table with bigInteger columns returns them as JS number on SELECT", async () => {
+      const tables = _parseKnexBigintByTable();
+      expect(tables.length).toBeGreaterThan(0);
+
+      const violations = [];
+      for (const { table, cols } of tables) {
+        // SELECT one row from each table — we don't need to write our
+        // own; the test runs against a populated mirror so any existing
+        // row exercises the read path the production code uses.
+        const rows = await knex(table).select("*").limit(1);
+        if (rows.length === 0) {
+          // Empty table — skip but record for visibility. Most schema
+          // tables have at least the genesis row after migrate(), but
+          // a fresh DB might leave some empty.
+          continue;
+        }
+        const row = rows[0];
+        for (const col of cols) {
+          if (row[col] === null || row[col] === undefined) continue;
+          const t = typeof row[col];
+          if (t !== "number") {
+            violations.push(`  ${table}.${col} returned as ${t} (value=${JSON.stringify(row[col])}, expected number)`);
+          }
+        }
+      }
+      if (violations.length > 0) {
+        throw new Error(
+          `Found ${violations.length} bigInteger column(s) returning non-number type from Knex:\n` +
+          violations.join("\n") +
+          `\n\nDriver-level coercion missing. Check the pg.types parser / mysql2 typeCast / ` +
+          `the postProcessResponse fallback in node/src/db/knex-adapter.js.`,
+        );
+      }
+      expect(violations).toEqual([]);
+    });
+
+    test("INSERT → SELECT round-trip preserves bigint as Number (every bigInteger column)", async () => {
+      // Drives the contract on FRESHLY-inserted rows so we catch the
+      // case where the driver returns Number on hydration of existing
+      // rows but produces strings on RETURNING / SELECT after an
+      // INSERT. Targets `transactions.timestamp` + `transactions.created_at`
+      // — both bigInteger, both on a table where we can synthesise a
+      // unique row without touching consensus state.
+      const fakeTxId = `test_bigint_${nowMs()}_${Math.random().toString(36).slice(2, 10)}`;
+      const ts = nowMs();
+      try {
+        await knex("transactions").insert({
+          tx_id: fakeTxId,
+          tx_type: "TEST_BIGINT_PROBE",
+          data: "{}",
+          timestamp: ts,
+          prev: "[]",
+          signature: null,
+          subject_tip_id: null,
+          created_at: ts,
+        });
+        const [row] = await knex("transactions").select("*").where({ tx_id: fakeTxId });
+        expect(row).toBeTruthy();
+        expect(typeof row.timestamp).toBe("number");
+        expect(row.timestamp).toBe(ts);
+        expect(typeof row.created_at).toBe("number");
+        expect(row.created_at).toBe(ts);
+      } finally {
+        try { await knex("transactions").where({ tx_id: fakeTxId }).delete(); } catch { /* ignore */ }
+      }
+    });
+
+    test("MAX_SAFE_INTEGER headroom — no TIP timestamp can overflow", () => {
+      // Sanity check: epoch ms for year 9999 is ~2.5e14, MAX_SAFE_INTEGER
+      // is ~9.0e15 — 36× headroom. If TIP ever needs sub-millisecond
+      // precision or starts using cert.timestamp * round, revisit.
+      const year9999Ms = new Date("9999-12-31T23:59:59.999Z").getTime();
+      expect(year9999Ms).toBeLessThan(Number.MAX_SAFE_INTEGER);
+      // 36× headroom is comfortably above the precision boundary
+      expect(Number.MAX_SAFE_INTEGER / year9999Ms).toBeGreaterThan(30);
+    });
+  },
+);
+
