@@ -223,15 +223,12 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 }
 
 /**
- * Server-side high-level entry. Used by identity-service (API time)
- * after request envelope validation and by commit-handler (consensus
- * replay) on every committed REGISTER_IDENTITY tx.
- *
- *   1. Validate signature presence on tx.data
- *   2. Resolve VP on DAG (no fallback)
- *   3. Refuse if VP inactive
- *   4. Rebuild canonical payload from tx.data
- *   5. Verify ML-DSA-65 signature against DAG VP public key
+ * State-level verification at consensus replay. GH #51: the VP
+ * signature is verified by the unified dispatcher
+ * (`schemas/_common.verifyTxSignature`) against `tx.signature`. This
+ * function only enforces the state-machine invariants the dispatcher
+ * doesn't know about (VP existence + active on DAG, canonical payload
+ * shape).
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -239,25 +236,20 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
-  if (typeof d.vp_signature !== "string") {
-    return { ok: false, status: 400, error: "vp_signature missing on tx", code: "vp_signature_missing" };
-  }
   if (!d.vp_id) {
     return { ok: false, status: 400, error: "vp_id missing", code: "vp_id_missing" };
   }
 
-  let vp;
-  let payload;
   try {
-    vp = resolveVP(d.vp_id, dag);
-    payload = buildSigningPayload(d);
+    resolveVP(d.vp_id, dag);
+    // Rebuild + validate canonical payload shape — schemaError surfaces
+    // any missing required field. The dispatcher does this implicitly
+    // via bodyMessageHex when verifying, but doing it here keeps the
+    // state-check error codes precise for the API path.
+    buildSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.vp_signature, vp.public_key)) {
-    return { ok: false, status: 403, error: "VP signature verification failed", code: "signature_invalid" };
   }
 
   return { ok: true };

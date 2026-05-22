@@ -332,11 +332,8 @@ describe("verifyUnbindTx", () => {
     expect(bindSchema.verifyUnbindTx({ data }, dag)).toEqual({ ok: true });
   });
 
-  test("missing unbind_signature → unbind_signature_missing", () => {
-    const { dag, data } = setup();
-    delete data.unbind_signature;
-    expect(bindSchema.verifyUnbindTx({ data }, dag)).toMatchObject({ status: 400, code: "unbind_signature_missing" });
-  });
+  // GH #51: unbind_signature presence + validity moved to the unified
+  // dispatcher (tx.signature). verifyUnbindTx is state-only now.
 
   test("no existing binding → 404 domain_not_found", () => {
     const { dag, data } = setup();

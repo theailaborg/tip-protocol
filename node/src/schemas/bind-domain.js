@@ -221,19 +221,19 @@ function signUnbind(payload, nodePrivateKeyHex, opts) {
 }
 
 /**
- * Server-side high-level entry for UNBIND_DOMAIN. Same shape as verifyTx:
- *   1. unbind_signature present
- *   2. Emitting node registered + active
- *   3. Canonical payload rebuilds deterministically
- *   4. Node's ML-DSA-65 signature verifies
- *   5. Domain has a current binding (otherwise unbind is a no-op / spurious)
+ * State-level verification at consensus replay for UNBIND_DOMAIN. GH
+ * #51: the node's signature is verified by the unified dispatcher
+ * against `tx.signature`. This function only enforces the
+ * state-machine invariants the dispatcher doesn't know about:
+ *
+ *   1. Emitting node registered + active
+ *   2. Canonical payload shape rebuilds deterministically
+ *   3. Domain has a current binding (otherwise unbind is a no-op /
+ *      spurious)
  */
 function verifyUnbindTx(tx, dag) {
   const d = tx.data || {};
 
-  if (typeof d.unbind_signature !== "string") {
-    return { ok: false, status: 400, error: "unbind_signature missing on tx", code: "unbind_signature_missing" };
-  }
   if (!d.node_id) {
     return { ok: false, status: 400, error: "node_id missing", code: "node_id_missing" };
   }
@@ -246,16 +246,11 @@ function verifyUnbindTx(tx, dag) {
     return { ok: false, status: 403, error: `Emitting node not active: ${d.node_id}`, code: "node_inactive" };
   }
 
-  let payload;
   try {
-    payload = buildUnbindSigningPayload(d);
+    buildUnbindSigningPayload(d);
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
-  }
-
-  if (!verifySignature(payload, d.unbind_signature, node.public_key)) {
-    return { ok: false, status: 403, error: "Node unbind signature verification failed", code: "unbind_signature_invalid" };
   }
 
   const existing = dag.getDomainBinding(d.domain);

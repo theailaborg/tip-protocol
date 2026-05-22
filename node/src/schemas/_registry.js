@@ -211,9 +211,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
 
   // VP_REGISTERED / NODE_REGISTERED — council-style attestation by an
   // approving VP. Signed payload binds the new entity's identity to
-  // the approving VP. Today's storage uses `data.council_signature` —
-  // post-refactor moves to `tx.signature` at write time, same canonical
-  // bytes.
+  // the approving VP. Signature lives at `tx.signature` (GH #51).
   [TX_TYPES.VP_REGISTERED]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
@@ -252,20 +250,18 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   // `_verifyTxSignature` in commit-handler.js for the full rationale.
   [TX_TYPES.COMMITTEE_ROTATION]: NODE_ENVELOPE,
 
-  // UNBIND_DOMAIN — currently delegated to bind-domain.verifyUnbindTx
-  // (subject-signed body, same identity that holds the binding). Same
-  // SUBJECT_TIP_ID_FIELD as BIND_DOMAIN. Promote to a registry entry
-  // here so the unified dispatcher can route to it without the
-  // schemaForTxType wiring having to special-case bind-domain.
+  // UNBIND_DOMAIN — node-emitted on revocation / lost verification /
+  // governance cascade. Signed by the emitting node over the canonical
+  // 4-field unbind payload. Mirrors bind-domain.buildUnbindSigningPayload
+  // exactly (same canonical bytes the schema sign helper produces).
   [TX_TYPES.UNBIND_DOMAIN]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
-    SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
-    SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.TIP_ID,
+    SIGNED_BY: SIGNED_BY_KIND.NODE,
     buildSigningPayload: (data) => ({
-      tip_id: data.tip_id,
       domain: data.domain,
+      node_id: data.node_id,
       reason: data.reason,
-      claimed_at: data.claimed_at,
+      revoked_at: data.revoked_at,
     }),
   },
 });

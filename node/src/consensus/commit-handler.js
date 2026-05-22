@@ -470,6 +470,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return s.ok ? { valid: true } : { valid: false, error: s.error };
       }
 
+      case TX_TYPES.UNBIND_DOMAIN: {
+        // Schema's verifyUnbindTx checks emitting node is active, payload
+        // shape, and that the domain has a current binding to unbind. Node
+        // signature itself is verified by the unified dispatcher.
+        const s = bindDomainSchema.verifyUnbindTx(tx, dag);
+        return s.ok ? { valid: true } : { valid: false, error: s.error };
+      }
+
       case TX_TYPES.CONTENT_DISPUTED: {
         // Cascade-issued disputes (auto: true, e.g. REVOKE_VP cascade) bypass
         // the disputer-score / state predicates because the issuer is the node
