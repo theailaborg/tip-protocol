@@ -4,8 +4,9 @@
  * reviewer's "AI's flag was wrong" decision. The review closes; content
  * status returns to REGISTERED; no public dispute is created.
  *
- * Signed by: the assigned reviewer's ML-DSA-65 key (user signature on
- * `tx.data.signature`).
+ * Signed by: the assigned reviewer's ML-DSA-65 key at `tx.signature`
+ * (GH #51 unified storage). Body scope over the canonical payload
+ * `buildSigningPayload` produces.
  *
  * Canonical signed fields (alphabetical):
  *   decision_note      string|null,  optional reviewer-written notes

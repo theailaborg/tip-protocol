@@ -4,8 +4,9 @@
  * reviewer's "AI's flag was right" decision. The review transitions to
  * state=confirmed and the creator's 24h accept-or-escalate window opens.
  *
- * Signed by: the assigned reviewer's ML-DSA-65 key (user signature on
- * `tx.data.signature`).
+ * Signed by: the assigned reviewer's ML-DSA-65 key at `tx.signature`
+ * (GH #51 unified storage). Body scope over the canonical payload
+ * `buildSigningPayload` produces.
  *
  * Canonical signed fields (alphabetical):
  *   decision_note      string|null,  optional reviewer-written notes

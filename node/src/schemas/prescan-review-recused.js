@@ -9,8 +9,10 @@
  * from re-selection by selectReviewer's accuracy gate only — recusal
  * itself isn't a "wrong call", so it doesn't impact accuracy.
  *
- * Signed by: the assigned reviewer's ML-DSA-65 key (user signature on
- * `tx.data.signature`).
+ * Signed by: the assigned reviewer's ML-DSA-65 key at `tx.signature`
+ * (GH #51 unified storage). Dual-mode contract: manual recuse =
+ * reviewer body sig; auto-recuse (data.auto=true) = node envelope sig.
+ * `getSignatureContract(tx)` branches.
  *
  * Canonical signed fields (alphabetical):
  *   recusal_reason     string|null,  optional reviewer-written note
