@@ -42,17 +42,15 @@ const {
 } = require("./_common");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
-  SIGNATURE_SCOPE, SIGNED_BY_KIND, SIGNATURE_FIELDS_REGISTER_IDENTITY,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.REGISTER_IDENTITY;
 
 // GH #51 — unified signature storage contract.
-// VP signs the canonical payload (a subset of tx.data, declared in
-// shared/constants.js — protocol data, not schema implementation, so
-// Python parity stays byte-for-byte in lockstep).
+// VP signs the canonical payload produced by `buildSigningPayload`
+// (defined below — single source of truth for which fields are signed).
 const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
-const SIGNATURE_FIELDS = SIGNATURE_FIELDS_REGISTER_IDENTITY;
 const SIGNED_BY = SIGNED_BY_KIND.VP;
 
 const VERIFICATION_TIERS = Object.freeze(["T1", "T2", "T3", "T4"]);
@@ -279,7 +277,6 @@ module.exports = {
   // GH #51 — unified signature contract (consumed by verifyTxSignature
   // in schemas/_common.js + commit-handler dispatch)
   SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
-  SIGNATURE_FIELDS,
   SIGNED_BY,
   // Re-export for tests / debug:
   canonicalJson,

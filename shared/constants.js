@@ -506,24 +506,6 @@ const SIGNATURE_ALGORITHM = Object.freeze({
 const SIGNATURE_ALGORITHM_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_ALGORITHM)));
 const SIGNATURE_ALGORITHM_DEFAULT = SIGNATURE_ALGORITHM.ML_DSA_65;
 
-// GH #51 — per-tx-type canonical signed field lists. These ARE the
-// protocol contract (which bytes each tx_type's signature covers), so
-// they live in shared/ alongside other protocol constants — schema
-// modules import their own list rather than defining it locally. Same
-// pattern as TIP_ID_TYPE_VALUES / ORIGIN_CODES — values that the chain
-// commits to and that Python parity needs to mirror byte-for-byte.
-//
-// Ordering doesn't matter at storage time (canonicalJson sorts keys
-// at signing time), but we keep them ASCII-sorted here so the canonical
-// payload field-pick order matches the canonicalised output, making
-// debugging easier. Frozen arrays so a downstream consumer can't
-// accidentally mutate them.
-
-const SIGNATURE_FIELDS_REGISTER_IDENTITY = Object.freeze([
-  "creator_name", "dedup_hash", "public_key", "region", "social_attested",
-  "tip_id_type", "verification_tier", "vp_id", "zk_proof",
-]);
-
 // GH #51 — unified signature storage. The set of kinds that a schema's
 // SIGNED_BY discriminator can take. Each kind tells `verifyTxSignature`
 // how to resolve the signer's public key:
@@ -613,6 +595,4 @@ module.exports = {
   SIGNATURE_ALGORITHM,
   SIGNATURE_ALGORITHM_VALUES,
   SIGNATURE_ALGORITHM_DEFAULT,
-  // Per-tx-type signed-field lists (GH #51)
-  SIGNATURE_FIELDS_REGISTER_IDENTITY,
 };

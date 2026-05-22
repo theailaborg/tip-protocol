@@ -158,17 +158,16 @@ function resolveSignerPubKey(tx, schema, dag) {
 }
 
 /**
- * Canonical signing payload for a "body"-scope tx. Picks the fields
- * declared by the schema (reject-on-extra), canonicalises, and hashes
- * with SHAKE-256. The signer signs the hex digest's ASCII bytes — same
- * primitive as `signPayload` above but specialised for body-scope.
+ * Canonical signing-message hex for a "body"-scope tx. Delegates to the
+ * schema's own `buildSigningPayload(data)` — the single source of truth
+ * for which fields the signature covers. The verifier just hashes what
+ * the signer hashed; no duplicate field-list to keep in sync.
  */
 function bodyMessageHex(tx, schema) {
-  const fields = schema?.SIGNATURE_FIELDS;
-  if (!Array.isArray(fields) || fields.length === 0) {
-    throw schemaError(500, `schema for ${tx?.tx_type} declares SCOPE=body but no SIGNATURE_FIELDS`, "schema_invalid");
+  if (typeof schema?.buildSigningPayload !== "function") {
+    throw schemaError(500, `schema for ${tx?.tx_type} declares SCOPE=body but exports no buildSigningPayload`, "schema_invalid");
   }
-  return payloadHashHex(pickFields(tx.data || {}, fields));
+  return payloadHashHex(schema.buildSigningPayload(tx.data || {}));
 }
 
 /**
