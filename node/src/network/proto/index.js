@@ -64,6 +64,9 @@ async function loadTypes() {
     "tip.consensus.RotationProposal",
     "tip.consensus.RotationSignature",
     "tip.consensus.CommitteeMember",
+    // #47 active peer-liveness probe
+    "tip.consensus.HeartbeatPing",
+    "tip.consensus.HeartbeatPong",
   ];
 
   _types = {};

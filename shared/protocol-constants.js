@@ -317,6 +317,13 @@ const CONSENSUS = {
   // → 2/4 certs forever" class the existing byzantine_fork escape doesn't
   // cover. See anti-entropy.js sub_quorum escape (issue #13).
   get SUB_QUORUM_ESCAPE_MS() { return _c().sub_quorum_escape_ms ?? 60000; },
+  // #47 Active heartbeat / peer-liveness probe. Each node pings every
+  // authorized peer every HEARTBEAT_INTERVAL_MS over /tip/heartbeat/1.0.0.
+  // HEARTBEAT_TIMEOUT_MS caps a slow/hung peer's response. After
+  // HEARTBEAT_SUSPECT_MISSES consecutive timeouts, onPeerSuspect fires.
+  get HEARTBEAT_INTERVAL_MS() { return _c().heartbeat_interval_ms ?? 5000; },
+  get HEARTBEAT_TIMEOUT_MS() { return _c().heartbeat_timeout_ms ?? 2000; },
+  get HEARTBEAT_SUSPECT_MISSES() { return _c().heartbeat_suspect_misses ?? 2; },
   get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return _c().rotation_coord_rebroadcast_interval_ms ?? 1500; },
   get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
   get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
@@ -367,6 +374,7 @@ const NETWORK = {
   get SNAPSHOT_MAX_FRAME_BYTES() { return _n().snapshot_max_frame_bytes; },
   get SYNC_STATUS_PROTOCOL() { return _n().sync_status_protocol ?? "/tip/sync-status/1.0.0"; },
   get PEER_ANNOUNCE_PROTOCOL() { return _n().peer_announce_protocol ?? "/tip/peer-announce/1.0.0"; },
+  get HEARTBEAT_PROTOCOL() { return _n().heartbeat_protocol ?? "/tip/heartbeat/1.0.0"; },
   get ORIGIN_GRACE_PERIOD_HOURS() { return _n().origin_grace_period_hours; },
   get REVOCATION_CASCADE_DAYS() { return _n().revocation_cascade_days; },
 };
