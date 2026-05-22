@@ -36,6 +36,7 @@
  */
 
 import { execSync, exec } from 'child_process';
+import { nowMs, nowIso, toIso } from "../shared/time.js";
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -43,11 +44,11 @@ import path from 'path';
 // ── File logging ─────────────────────────────────────────────────────────────
 const LOG_DIR = path.resolve('./logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
-const _logDate = new Date().toISOString().slice(0, 10);
+const _logDate = nowIso().slice(0, 10);
 const _logFile = path.join(LOG_DIR, `chaos-restart-${_logDate}.log`);
 const _logStream = fs.createWriteStream(_logFile, { flags: 'a' });
 _logStream.write(`\n${'='.repeat(72)}\n`);
-_logStream.write(`chaos-restart session started: ${new Date().toISOString()}\n`);
+_logStream.write(`chaos-restart session started: ${nowIso()}\n`);
 _logStream.write(`${'='.repeat(72)}\n`);
 const _origLog = console.log.bind(console);
 const _origErr = console.error.bind(console);
@@ -84,7 +85,7 @@ const pauseCounts = Object.fromEntries(NODES.map(n => [n, 0]));
 
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function sleep(ms)      { return new Promise(r => setTimeout(r, ms)); }
-function ts()           { return new Date().toISOString().slice(11, 19); }
+function ts()           { return nowIso().slice(11, 19); }
 
 function health(port) {
   return new Promise(resolve => {
@@ -124,12 +125,12 @@ async function clusterStatus() {
 
 
 async function waitForRecovery(timeoutMs = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const start = nowMs();
+  while (nowMs() - start < timeoutMs) {
     await sleep(1000);
     const st = await clusterStatus();
     if (!st.anyHalted && st.minRound > 0) {
-      return { recovered: true, elapsedMs: Date.now() - start };
+      return { recovered: true, elapsedMs: nowMs() - start };
     }
   }
   return { recovered: false, elapsedMs: timeoutMs };
@@ -206,14 +207,14 @@ async function loop() {
       if (st.anyHalted && !detectedHalt) {
         detectedHalt = true;
         haltCount++;
-        lastHaltAt = Date.now();
+        lastHaltAt = nowMs();
         inHalt = true;
         console.log(`[${ts()}] ⚠  HALT DETECTED (halt #${haltCount}) — round=${st.minRound}  retries=${st.totalRetries}`);
         console.log(`[${ts()}]    Watching for auto-recovery (our fix should fire in ~6-12s)...`);
       }
 
       if (inHalt && !st.anyHalted) {
-        const elapsed = Date.now() - lastHaltAt;
+        const elapsed = nowMs() - lastHaltAt;
         recoveries++;
         inHalt = false;
         console.log(`[${ts()}] ✓  AUTO-RECOVERED in ${(elapsed/1000).toFixed(1)}s (recovery #${recoveries})`);

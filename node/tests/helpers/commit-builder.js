@@ -16,6 +16,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -84,7 +86,7 @@ function buildCommittedDag({
       name: `node ${i}`,
       public_key: kp.publicKey,
       status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z",
+      registered_at: 1767225600000,
     });
     committeeKeys.push({ nodeId, ...kp });
   }
@@ -101,7 +103,7 @@ function buildCommittedDag({
   // a `signed_at` integer epoch ms — a deterministic per-ack offset (1ms
   // apart) anchored 1ms past BFT_TIME_GENESIS_MS. Cert.timestamp = median
   // of these values, also deterministic and comfortably above the floor.
-  const _bftT0 = new Date("2026-03-15T00:00:01.000Z").getTime();
+  const _bftT0 = 1773532801000;
   let ackSignerIds = [];
   let ackSignatures = [];
   let ackSignedAts = [];
@@ -201,7 +203,7 @@ function buildCommittedDag({
     committee,
     support_count: committeeSize,
     consensus_index: consensusIndex,
-    committed_at: "2026-01-01T00:00:00.000Z",
+    committed_at: 1767225600000,
     state_merkle_root: stateRoot,
     txs_merkle_root: txsRoot,
     ack_signer_ids: ackSignerIds,
@@ -233,7 +235,8 @@ function buildCommittedDag({
     for (let i = 0; i < seedTxs; i++) {
       const txBody = {
         tx_type: "REGISTER_CONTENT",
-        timestamp: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+        // 2026-01-01 UTC + i seconds. Monotonic per-loop counter for unique tx_ids.
+        timestamp: 1767225600000 + i * 1000,
         prev: [...chain],
         data: {
           ctid: `tip://content/seed-${i}`,

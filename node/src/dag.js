@@ -25,6 +25,7 @@
 const path = require("path");
 const fs = require("fs");
 const { computeTxId, verifyTxId } = require("../../shared/crypto");
+const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
 const { subjectTipId } = require("./tx-attribution");
@@ -43,7 +44,7 @@ try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 //
 // Every column of each table IS included. This is only safe because every
 // field is populated from tx data (tx.timestamp, tx.tx_id, tx.data.*) —
-// never from Date.now() / unixepoch() / other local-clock sources.
+// never from nowMs() / unixepoch() / other local-clock sources.
 // See setScore() and addDedupHash() for the determinism contract.
 function _canonIdentity(r) {
   return {
@@ -330,7 +331,7 @@ class MemoryStore {
     return [...this._txs.values()]
       .filter(t => t.subject_tip_id === tipId)
       .sort((a, b) => {
-        const d = new Date(b.timestamp) - new Date(a.timestamp);
+        const d = b.timestamp - a.timestamp;
         if (d !== 0) return d;
         const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
         const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;
@@ -442,7 +443,7 @@ class MemoryStore {
 
   // ── Dedup registry ────────────────────────────────────────────────────────
   // `createdAt` is the unix-seconds timestamp of the tx that introduced this
-  // dedup hash (derived from tx.timestamp). Deterministic — never Date.now().
+  // dedup hash (derived from tx.timestamp). Deterministic — never nowMs().
   addDedupHash(hash, createdAt) {
     if (createdAt == null) {
       throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
@@ -465,7 +466,7 @@ class MemoryStore {
   getRevocation(tipId) { return this._revocations.get(tipId) || null; }
   getRevocations(since) {
     const all = [...this._revocations.values()];
-    return since ? all.filter(r => new Date(r.timestamp) > new Date(since)) : all;
+    return since ? all.filter(r => r.timestamp > since) : all;
   }
 
   // ── Domain bindings (org-only; canonical, in state_merkle_root) ──────────
@@ -658,7 +659,7 @@ class MemoryStore {
       signer_node_ids: [...(rec.signer_node_ids || [])],
       signatures: [...(rec.signatures || [])],
       payload_hash: rec.payload_hash || null,
-      committed_at: rec.committed_at || new Date().toISOString(),
+      committed_at: rec.committed_at || nowMs(),
     });
   }
   getCommitteeRotation(rotationNumber) {
@@ -764,7 +765,7 @@ class MemoryStore {
       if (c.status !== "registered") continue;
       if (c.origin_code !== "OH") continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
-      const registeredMs = c.registered_at ? new Date(c.registered_at).getTime() : NaN;
+      const registeredMs = c.registered_at ? c.registered_at : NaN;
       if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
         r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
@@ -980,7 +981,7 @@ class MemoryStore {
       tx_id: rec.tx_id,
       reason: rec.reason,
       reason_detail: rec.reason_detail || null,
-      rejected_at_ms: rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now(),
+      rejected_at_ms: rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs(),
       rejected_at_round: rec.rejected_at_round != null ? rec.rejected_at_round : null,
       dropper_node_id: rec.dropper_node_id,
       tx_type: rec.tx_type || null,
@@ -1119,11 +1120,11 @@ class SQLiteStore {
         tx_id          TEXT PRIMARY KEY,
         tx_type        TEXT NOT NULL,
         data           TEXT NOT NULL,
-        timestamp      TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
         prev           TEXT NOT NULL DEFAULT '[]',
         signature      TEXT,
         subject_tip_id TEXT,
-        created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_txs_type       ON transactions(tx_type);
       CREATE INDEX IF NOT EXISTS idx_txs_ts         ON transactions(timestamp);
@@ -1149,7 +1150,7 @@ class SQLiteStore {
         -- Runtime filters at selection time decide which role a consenting
         -- user lands in (score, content category, conflict-of-interest).
         reviewer_consent    INTEGER NOT NULL DEFAULT 0,
-        registered_at       TEXT NOT NULL,
+        registered_at INTEGER NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
       );
@@ -1176,7 +1177,7 @@ class SQLiteStore {
         prescan_probability REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
         prescan_tier        TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
         override            INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
-        registered_at       TEXT NOT NULL,
+        registered_at INTEGER NOT NULL,
         registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
         tx_id               TEXT
       );
@@ -1190,12 +1191,12 @@ class SQLiteStore {
         tip_id         TEXT PRIMARY KEY,
         score          INTEGER NOT NULL DEFAULT 500,
         offense_count  INTEGER NOT NULL DEFAULT 0,
-        last_updated   TEXT NOT NULL
+        last_updated   INTEGER NOT NULL
       );
 
       -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──
       -- created_at is unix-seconds from tx.timestamp (the REGISTER_IDENTITY tx
-      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch())
+      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch() * 1000)
       -- value — that would read the local clock and break the state_merkle_root.
       CREATE TABLE IF NOT EXISTS dedup_registry (
         dedup_hash  TEXT PRIMARY KEY,
@@ -1206,7 +1207,7 @@ class SQLiteStore {
       CREATE TABLE IF NOT EXISTS revocations (
         tip_id      TEXT PRIMARY KEY,
         tx_type     TEXT NOT NULL,
-        timestamp   TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
         tx_id       TEXT NOT NULL
       );
 
@@ -1227,9 +1228,9 @@ class SQLiteStore {
         tip_id                TEXT NOT NULL,
         binding_state         TEXT NOT NULL,
         method                TEXT NOT NULL,
-        claimed_at            TEXT NOT NULL,
-        verified_at           TEXT NOT NULL,
-        expires_at            TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL,
+        verified_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
         consecutive_failures  INTEGER NOT NULL DEFAULT 0,
         node_id               TEXT NOT NULL,
         claim_signature       TEXT NOT NULL,
@@ -1249,9 +1250,9 @@ class SQLiteStore {
         domain      TEXT PRIMARY KEY,
         tip_id      TEXT NOT NULL,
         method      TEXT NOT NULL,
-        claimed_at  TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL,
         signature   TEXT NOT NULL,
-        received_at TEXT NOT NULL
+        received_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_pending_dom_tip_id ON pending_domain_claims(tip_id);
 
@@ -1263,7 +1264,7 @@ class SQLiteStore {
         jurisdiction_tier  TEXT NOT NULL DEFAULT 'green',
         public_key         TEXT,
         status             TEXT NOT NULL DEFAULT 'active',
-        registered_at      TEXT NOT NULL
+        registered_at INTEGER NOT NULL
       );
 
       -- ── Nodes ───────────────────────────────────────────────────────
@@ -1272,7 +1273,7 @@ class SQLiteStore {
         name            TEXT,
         public_key      TEXT NOT NULL,
         status          TEXT NOT NULL DEFAULT 'active',
-        registered_at   TEXT NOT NULL
+        registered_at INTEGER NOT NULL
       );
 
       -- ── Consensus: Certificates (Narwhal) ─────────────────────────
@@ -1290,7 +1291,7 @@ class SQLiteStore {
         -- network with 0-timestamp certs would halt at the next anchor (correct
         -- behavior — flags an upgrade boundary instead of silently mis-ordering).
         timestamp       INTEGER NOT NULL DEFAULT 0,
-        created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
       CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
@@ -1309,7 +1310,7 @@ class SQLiteStore {
         committee         TEXT NOT NULL,   -- JSON sorted array of node_ids
         support_count     INTEGER NOT NULL,
         consensus_index   INTEGER NOT NULL,
-        committed_at      TEXT NOT NULL,   -- ISO8601 wall-clock
+        committed_at INTEGER NOT NULL,
         -- §14 snapshot-sync fields (two separate roots, both signed by 2f+1 committee):
         state_merkle_root TEXT NOT NULL,   -- hash over canonical derived state tables (answers "is my app state at round R correct?")
         txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
@@ -1336,7 +1337,7 @@ class SQLiteStore {
         -- gc_depth rounds. Joiner uses this to reconstruct the
         -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
         anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
-        created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+        created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
 
@@ -1371,8 +1372,8 @@ class SQLiteStore {
         signer_node_ids    TEXT NOT NULL DEFAULT '[]',  -- JSON sorted node_ids array
         signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
         payload_hash       TEXT,              -- hex; what each signer signed
-        committed_at       TEXT NOT NULL,     -- ISO8601 wall-clock (informational only — not in payload_hash)
-        created_at         INTEGER NOT NULL DEFAULT (unixepoch())
+        committed_at INTEGER NOT NULL,
+        created_at         INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
 
@@ -1450,7 +1451,7 @@ class SQLiteStore {
         round       INTEGER NOT NULL,
         author      TEXT NOT NULL,
         batch_hash  TEXT NOT NULL,
-        created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
         PRIMARY KEY (round, author)
       );
       CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
@@ -1463,7 +1464,7 @@ class SQLiteStore {
         tx_id           TEXT PRIMARY KEY,
         tx_data         TEXT NOT NULL,
         subject_tip_id  TEXT,
-        received_at     INTEGER NOT NULL DEFAULT (unixepoch())
+        received_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       -- idx_mempool_subject created unconditionally below the ALTER block.
 
@@ -1538,7 +1539,7 @@ class SQLiteStore {
         disputer_tip_id  TEXT NOT NULL,
         payload_json     TEXT NOT NULL,
         signature        TEXT NOT NULL,
-        created_at       TEXT NOT NULL
+        created_at INTEGER NOT NULL
       );
     `);
 
@@ -1905,10 +1906,9 @@ class SQLiteStore {
       getPrescanReviewsByCtid: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE ctid=? ORDER BY triggered_at_round DESC"
       ),
-      // Phase 2.5 trigger queries. content.registered_at is an ISO string,
-      // so the comparison parses it via strftime — index on (status,
-      // prescan_tier) carries the high-selectivity prefix; the time
-      // arithmetic runs only against that filtered slice.
+      // Phase 2.5 trigger queries. content.registered_at is integer epoch
+      // ms; index on (status, prescan_tier) carries the high-selectivity
+      // prefix and the time-window check is a direct integer comparison.
       //
       // origin_code = 'OH' is the "no UPDATE_ORIGIN" guard from the
       // design doc: after a self-correction, origin_code is AA/AG/MX,
@@ -1927,7 +1927,7 @@ class SQLiteStore {
            AND c.origin_code = 'OH'
            AND c.prescan_tier IN ('high','critical')
            AND r.review_id IS NULL
-           AND (CAST(strftime('%s', c.registered_at) AS INTEGER) * 1000) <= ?`
+           AND c.registered_at <= ?`
       ),
       // Reviews in state=confirmed whose 24h creator-decision window has
       // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
@@ -2285,7 +2285,7 @@ class SQLiteStore {
       rec.jurisdiction_tier || "green",
       rec.public_key || null,
       rec.status || "active",
-      rec.registered_at || new Date().toISOString()
+      rec.registered_at || nowMs()
     );
   }
   getVP(vpId) { return this._stmts.getVP.get(vpId) || null; }
@@ -2297,7 +2297,7 @@ class SQLiteStore {
       rec.node_id, rec.name || null,
       rec.public_key,
       rec.status || "active",
-      rec.registered_at || new Date().toISOString()
+      rec.registered_at || nowMs()
     );
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
@@ -2416,7 +2416,7 @@ class SQLiteStore {
       JSON.stringify(rec.signer_node_ids || []),
       JSON.stringify(rec.signatures || []),
       rec.payload_hash || null,
-      rec.committed_at || new Date().toISOString(),
+      rec.committed_at || nowMs(),
     );
   }
   getCommitteeRotation(rotationNumber) {
@@ -2669,7 +2669,7 @@ class SQLiteStore {
   // observation wins. Returns true if a new row was inserted, false if
   // a row for this tx_id already existed.
   saveTxRejection(rec) {
-    const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now();
+    const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs();
     // tx_data is stored as JSON text. Callers usually pass the tx
     // object; tolerate a pre-stringified value too so a future drop
     // site that already has bytes in hand can pass them through.
@@ -2820,7 +2820,7 @@ function _buildDagHandle(store, config) {
       // committed-tx replay both pass tx_id and rely on this preservation.
       const hadTxId = !!tx.tx_id;
       if (!hadTxId) {
-        if (!tx.timestamp) tx.timestamp = new Date().toISOString();
+        if (!tx.timestamp) tx.timestamp = nowMs();
         if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
       }
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
@@ -3219,7 +3219,7 @@ function _writeGenesisBlock(store, config) {
     if (member.dedup_hash) {
       // Genesis bootstrap — created_at derived from the genesis timestamp
       // (same on every node that ships the same genesis). Deterministic.
-      store.addDedupHash(member.dedup_hash, Math.floor(new Date(GENESIS_TIMESTAMP).getTime() / 1000));
+      store.addDedupHash(member.dedup_hash, Math.floor(GENESIS_TIMESTAMP / 1000));
     }
     // Genesis seed score — `score.initial_identity` from genesis (per
     // spec, all identities start at the same baseline; founding members

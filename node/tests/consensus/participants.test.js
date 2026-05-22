@@ -53,7 +53,7 @@ function _seedNodes(dag, ids) {
   for (const id of ids) {
     dag.saveNode({
       node_id: id, name: id, public_key: shake256(id),
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
   }
 }
@@ -72,7 +72,7 @@ function _seedRotation(dag, { rotation_number, effective_round, committee }) {
     signer_node_ids: [],
     signatures: [],
     payload_hash: shake256(`rot-${rotation_number}`),
-    committed_at: "2026-01-01T00:00:00.000Z",
+    committed_at: 1767225600000,
   });
 }
 
@@ -131,7 +131,7 @@ describe("getActiveCommittee — committee_history lookup", () => {
     // still contains b, but the runtime committee filters it out.
     dag.saveNode({
       node_id: "tip://node/b", name: "b", public_key: shake256("tip://node/b"),
-      status: "suspended", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "suspended", registered_at: 1767225600000,
     });
 
     const got = getActiveCommittee(dag, 100);
@@ -239,7 +239,7 @@ describe("computeNextRotationCommittee — participation-based admission", () =>
     // Suspend after participation accumulates
     dag.saveNode({
       node_id: "tip://node/active", name: "active", public_key: shake256("tip://node/active"),
-      status: "suspended", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "suspended", registered_at: 1767225600000,
     });
 
     const next = computeNextRotationCommittee(dag, 0);
@@ -401,7 +401,7 @@ describe("getNodeCount", () => {
     _seedNodes(dag, ["tip://node/a", "tip://node/b", "tip://node/c"]);
     dag.saveNode({
       node_id: "tip://node/c", name: "c", public_key: shake256("tip://node/c"),
-      status: "suspended", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "suspended", registered_at: 1767225600000,
     });
     // a, b, plus genesis founding_node from initDAG = 3
     expect(getNodeCount(dag)).toBe(3);

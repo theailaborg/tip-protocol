@@ -27,6 +27,7 @@
 
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
+const { nowIso } = require("../../../shared/time");
 
 function createRouter({ dag, config, consensus, network }) {
   const router = express.Router();
@@ -57,7 +58,7 @@ function createRouter({ dag, config, consensus, network }) {
         heap_used: Math.round(mem.heapUsed / 1048576),
         heap_total: Math.round(mem.heapTotal / 1048576),
       },
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso(),
     };
   }
 
@@ -74,7 +75,7 @@ function createRouter({ dag, config, consensus, network }) {
     res.json({
       node_id: config.nodeRegisteredId || config.nodeId,
       consensus: cons.stats(),
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso(),
     });
   });
 
@@ -157,7 +158,7 @@ function createRouter({ dag, config, consensus, network }) {
       active_committee: activeCommittee,
       active_committee_size: activeCommittee.length,
       quorum: Math.ceil((2 * activeCommittee.length) / 3),
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso(),
     });
   }));
 

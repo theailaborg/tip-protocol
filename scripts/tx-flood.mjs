@@ -11,6 +11,7 @@
  */
 
 import { createRequire } from 'module';
+import { nowMs, nowIso, toIso } from "../shared/time.js";
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -20,11 +21,11 @@ import { execSync } from 'child_process';
 // ── File logging ─────────────────────────────────────────────────────────────
 const LOG_DIR = path.resolve('./logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
-const _logDate = new Date().toISOString().slice(0, 10);
+const _logDate = nowIso().slice(0, 10);
 const _logFile = path.join(LOG_DIR, `tx-flood-${_logDate}.log`);
 const _logStream = fs.createWriteStream(_logFile, { flags: 'a' });
 _logStream.write(`\n${'='.repeat(72)}\n`);
-_logStream.write(`tx-flood session started: ${new Date().toISOString()}\n`);
+_logStream.write(`tx-flood session started: ${nowIso()}\n`);
 _logStream.write(`${'='.repeat(72)}\n`);
 const _origLog = console.log.bind(console);
 const _origErr = console.error.bind(console);

@@ -68,7 +68,7 @@ function buildFixture({ sendAckDirectImpl = null, omitSendAckDirect = false } = 
   ]) {
     dag.saveNode({
       node_id: id, name, public_key: kp.publicKey,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
   }
 

@@ -45,6 +45,7 @@
 "use strict";
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
 const { dialKnownPeers } = require("../network/peer-discovery");
 const { bftHaltThreshold } = require("./certificate");
@@ -350,7 +351,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         // all if they weren't running, and the only consumer is the
         // catch-up guard below which fails-open in the absence of signal.
         join_state: String(msg.joinState || "ready"),
-        checked_at: Date.now(),
+        checked_at: nowMs(),
       };
     } catch (err) {
       if (timedOut) {
@@ -652,15 +653,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     if (!peerNodeId) return false;
     const existing = _peerDivergenceFirstSeen.get(peerNodeId);
     if (!existing || existing.lastJoinState !== currentPeerJoinState) {
-      _peerDivergenceFirstSeen.set(peerNodeId, { firstSeenMs: Date.now(), lastJoinState: currentPeerJoinState });
+      _peerDivergenceFirstSeen.set(peerNodeId, { firstSeenMs: nowMs(), lastJoinState: currentPeerJoinState });
       if (existing) {
         _log.debug(`anti-entropy: divergence grace reset for ${peerNodeId.slice(-8)} — joinState changed ${existing.lastJoinState} → ${currentPeerJoinState}`);
       }
       return false;
     }
-    const elapsedMs = Date.now() - existing.firstSeenMs;
+    const elapsedMs = nowMs() - existing.firstSeenMs;
     if (elapsedMs > CONSENSUS.SYNC_DIVERGENCE_GRACE_MS) {
-      _log.debug(`anti-entropy: divergence grace expired for ${peerNodeId.slice(-8)} (join=${currentPeerJoinState}, elapsed=${Math.round(elapsedMs/1000)}s > grace=${CONSENSUS.SYNC_DIVERGENCE_GRACE_MS/1000}s) — promoting to persistent`);
+      _log.debug(`anti-entropy: divergence grace expired for ${peerNodeId.slice(-8)} (join=${currentPeerJoinState}, elapsed=${Math.round(elapsedMs / 1000)}s > grace=${CONSENSUS.SYNC_DIVERGENCE_GRACE_MS / 1000}s) — promoting to persistent`);
       return true;
     }
     return false;
@@ -767,7 +768,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       if (u2 && src2 && !_minorityRecoveryPending) {
         const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
         const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
-        const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+        const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
         if (_lastAutoRecoveryAt > 0 && sinceLastMs < RECOVERY_COOLDOWN_MS) {
           _log.warn(`anti-entropy: majority minority while halted at round=${atRound} — cooldown active (${Math.floor(sinceLastMs / 1000)}s < ${RECOVERY_COOLDOWN_MS / 1000}s)`);
           return;
@@ -802,7 +803,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     if (unanimous && sourcePeerNodeId) {
       const RECOVERY_DELAY_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_DELAY_MS || 5000;
       const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
-      const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+      const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
       if (_lastAutoRecoveryAt > 0 && sinceLastMs < RECOVERY_COOLDOWN_MS) {
         _log.warn(
           `anti-entropy: unanimous minority at round=${atRound} — auto-recovery cooldown active ` +
@@ -913,7 +914,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           result = await _runSnapshotFallback(libp2pPeerId, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
         }
         if (result === "snapshot_installed") {
-          _lastAutoRecoveryAt = Date.now();
+          _lastAutoRecoveryAt = nowMs();
           const retryNote = attempt > 0 ? ` (after ${attempt} retry/retries)` : "";
           _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${libp2pPeerId.slice(0, 12)}${retryNote}, resuming consensus`);
           return;
@@ -935,7 +936,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           );
           const result = await _runSnapshotFallback(fallbackPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
           if (result === "snapshot_installed") {
-            _lastAutoRecoveryAt = Date.now();
+            _lastAutoRecoveryAt = nowMs();
             _log.notice(`anti-entropy: auto-recovery complete — snapshot installed from ${fallbackPeer.slice(0, 12)} (drifted-root fallback), resuming consensus`);
             return;
           }
@@ -987,7 +988,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         && narwhal.byzantineForkHalt();
       if (selfByzHalt) {
         const RECOVERY_COOLDOWN_MS = CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000;
-        const sinceLastMs = Date.now() - _lastAutoRecoveryAt;
+        const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
         if (_lastAutoRecoveryAt > 0 && sinceLastMs < RECOVERY_COOLDOWN_MS) {
           _log.warn(
             `anti-entropy: byzantine_fork halt active (committed_round=${selfCommitted}, peer=${peerCommitted}) — ` +
@@ -1299,9 +1300,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       : null;
     if (selfByzHalt && !_snapshotResyncInFlight) {
       const DEADLOCK_ESCAPE_MS = (CONSENSUS.BYZANTINE_FORK_AUTO_RECOVERY_COOLDOWN_MS || 30000) * 2;
-      const haltSince    = Number(selfByzHalt.since || 0);
-      const haltDuration = haltSince ? (Date.now() - haltSince) : 0;
-      const sinceLastMs  = Date.now() - _lastAutoRecoveryAt;
+      const haltSince = Number(selfByzHalt.since || 0);
+      const haltDuration = haltSince ? (nowMs() - haltSince) : 0;
+      const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
       if (haltDuration > DEADLOCK_ESCAPE_MS && (_lastAutoRecoveryAt === 0 || sinceLastMs > DEADLOCK_ESCAPE_MS)) {
         _log.warn(
           `anti-entropy: halt deadlock detected — halted ${Math.round(haltDuration / 1000)}s ` +
@@ -1357,7 +1358,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         consensus_index: s.consensus_index,
         state_merkle_root: s.state_merkle_root,
         in_sync: inSync,
-        checked_at: new Date(s.checked_at).toISOString(),
+        checked_at: s.checked_at,
       });
     }
 
@@ -1390,7 +1391,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         distinct_peers_observed: observedAtSelf,
         filtered_peers: divergentPeers(),
       },
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
     };
   }
 
@@ -1467,7 +1468,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
         setTimeout(() => {
           const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
-          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
+          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => { });
         }, jitterMs);
         _snapshotResyncInFlight = false;
         return "deferred";
@@ -1496,8 +1497,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const rootVotes = new Map();
     for (const [, s] of _lastStatus.entries()) {
       const root = s.state_merkle_root || "";
-      const cr   = Number(s.committed_round || 0);
-      const lid  = s._libp2pPeerId;
+      const cr = Number(s.committed_round || 0);
+      const lid = s._libp2pPeerId;
       if (!root || !lid) continue;
       if (!rootVotes.has(root)) rootVotes.set(root, { votes: 0, cr, libp2pPeerId: lid });
       const entry = rootVotes.get(root);
@@ -1507,15 +1508,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     // Pick the root with the most votes (tie-break: highest committed_round).
     let bestPeerId = null;
-    let bestRound  = -1;
-    let bestVotes  = 0;
-    let bestRoot   = "";  // Bug A fix: track the winning root so we can verify candidates later
+    let bestRound = -1;
+    let bestVotes = 0;
+    let bestRoot = "";  // Bug A fix: track the winning root so we can verify candidates later
     for (const [root, { votes, cr, libp2pPeerId }] of rootVotes.entries()) {
       if (votes > bestVotes || (votes === bestVotes && cr > bestRound)) {
-        bestVotes  = votes;
-        bestRound  = cr;
+        bestVotes = votes;
+        bestRound = cr;
         bestPeerId = libp2pPeerId;
-        bestRoot   = root;
+        bestRoot = root;
       }
     }
 
@@ -1535,7 +1536,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // strategy so a busy peer ("snapshot install in progress") doesn't block recovery.
     const orderedPeerIds = [bestPeerId];
     for (const [, { libp2pPeerId }] of [...rootVotes.entries()]
-        .sort(([, a], [, b]) => b.votes - a.votes || b.cr - a.cr)) {
+      .sort(([, a], [, b]) => b.votes - a.votes || b.cr - a.cr)) {
       if (libp2pPeerId && libp2pPeerId !== bestPeerId) orderedPeerIds.push(libp2pPeerId);
     }
     for (const pid of authorizedPeerIds) {
@@ -1562,7 +1563,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         );
         setTimeout(() => {
           const st = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
-          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => {});
+          if (st === "ready" && !_snapshotResyncInFlight) triggerSnapshotResync(fromRound, missingCount).catch(() => { });
         }, jitterMs);
         _snapshotResyncInFlight = false;
         return "deferred";
@@ -1626,8 +1627,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         }
         const result = await _runSnapshotFallback(candidatePeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
         if (result === "snapshot_installed") {
-          _lastAutoRecoveryAt = Date.now();
-          _lastSnapshotResyncCompletedAt = Date.now();
+          _lastAutoRecoveryAt = nowMs();
+          _lastSnapshotResyncCompletedAt = nowMs();
           _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed from ${candidatePeer.slice(0, 12)}, resuming consensus`);
           return "snapshot_installed";
         }
@@ -1659,8 +1660,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           );
           const result = await _runSnapshotFallback(freshBestPeer, { snapshotRequired: true, earliestAvailableRound: 0 }, selfState);
           if (result === "snapshot_installed") {
-            _lastAutoRecoveryAt = Date.now();
-            _lastSnapshotResyncCompletedAt = Date.now();
+            _lastAutoRecoveryAt = nowMs();
+            _lastSnapshotResyncCompletedAt = nowMs();
             _log.notice(`anti-entropy: triggerSnapshotResync complete (fresh-majority fallback) — snapshot installed from ${freshBestPeer.slice(0, 12)}, resuming consensus`);
             return "snapshot_installed";
           }
@@ -1677,7 +1678,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
   function isSnapshotResyncThrottled() {
     return _lastSnapshotResyncCompletedAt > 0 &&
-      (Date.now() - _lastSnapshotResyncCompletedAt) < SNAPSHOT_RESYNC_COOLDOWN_MS;
+      (nowMs() - _lastSnapshotResyncCompletedAt) < SNAPSHOT_RESYNC_COOLDOWN_MS;
   }
 
   return {

@@ -26,6 +26,7 @@ const {
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
+const { nowMs, isValidMs } = require("../../../shared/time");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -72,16 +73,16 @@ const SCHEMA = {
       "node_id", "tip_id", "verified_at", "binding_signature",
     ],
     types: {
-      binding_state: "string", claim_signature: "string", claimed_at: "string",
+      binding_state: "string", claim_signature: "string", claimed_at: "number",
       domain: "string", method: "string", node_id: "string", tip_id: "string",
-      verified_at: "string", binding_signature: "string",
+      verified_at: "number", binding_signature: "string",
     },
   },
   [TX_TYPES.UNBIND_DOMAIN]: {
     required: ["domain", "node_id", "reason", "revoked_at", "unbind_signature"],
     types: {
       domain: "string", node_id: "string", reason: "string",
-      revoked_at: "string", unbind_signature: "string",
+      revoked_at: "number", unbind_signature: "string",
     },
   },
   [TX_TYPES.CONTENT_DISPUTED]: {
@@ -196,12 +197,11 @@ function validateStructure(tx) {
     errors.push(`tx_id must be 64-char lowercase hex (SHAKE-256), got: "${tx.tx_id}"`);
   }
 
-  // Timestamp must be a valid ISO string
-  const ts = Date.parse(tx.timestamp);
-  if (isNaN(ts)) errors.push(`timestamp is not a valid ISO date: ${tx.timestamp}`);
-
-  // Must not be in the future (allow 60s clock skew)
-  if (ts > Date.now() + 60_000) {
+  // Timestamp must be a valid epoch ms integer
+  if (!isValidMs(tx.timestamp)) {
+    errors.push(`timestamp must be a valid epoch ms integer: ${tx.timestamp}`);
+  } else if (tx.timestamp > nowMs() + 60_000) {
+    // Must not be in the future (allow 60s clock skew)
     errors.push(`Transaction timestamp is in the future: ${tx.timestamp}`);
   }
 
@@ -380,18 +380,16 @@ function validateBusinessRules(tx, dag = null) {
       if (d.binding_state && d.binding_state !== "verified") {
         errors.push(`BIND_DOMAIN binding_state must be "verified"`);
       }
-      // ISO8601 + logical ordering. The node observes proof at verified_at
+      // Epoch ms + logical ordering. The node observes proof at verified_at
       // AFTER the user signed at claimed_at — reversed order indicates
       // either a clock skew exploit or a malformed tx.
-      const claimedMs = d.claimed_at ? Date.parse(d.claimed_at) : NaN;
-      const verifiedMs = d.verified_at ? Date.parse(d.verified_at) : NaN;
-      if (d.claimed_at && Number.isNaN(claimedMs)) {
-        errors.push(`claimed_at must be an ISO8601 timestamp`);
+      if (d.claimed_at !== undefined && !isValidMs(d.claimed_at)) {
+        errors.push(`claimed_at must be a valid epoch ms timestamp`);
       }
-      if (d.verified_at && Number.isNaN(verifiedMs)) {
-        errors.push(`verified_at must be an ISO8601 timestamp`);
+      if (d.verified_at !== undefined && !isValidMs(d.verified_at)) {
+        errors.push(`verified_at must be a valid epoch ms timestamp`);
       }
-      if (!Number.isNaN(claimedMs) && !Number.isNaN(verifiedMs) && verifiedMs < claimedMs) {
+      if (isValidMs(d.claimed_at) && isValidMs(d.verified_at) && d.verified_at < d.claimed_at) {
         errors.push(`verified_at must not precede claimed_at`);
       }
       break;
@@ -407,8 +405,8 @@ function validateBusinessRules(tx, dag = null) {
       if (d.reason && !DOMAIN_UNBIND_REASON_VALUES.includes(d.reason)) {
         errors.push(`reason must be one of: ${DOMAIN_UNBIND_REASON_VALUES.join(", ")}`);
       }
-      if (d.revoked_at && Number.isNaN(Date.parse(d.revoked_at))) {
-        errors.push(`revoked_at must be an ISO8601 timestamp`);
+      if (d.revoked_at !== undefined && !isValidMs(d.revoked_at)) {
+        errors.push(`revoked_at must be a valid epoch ms timestamp`);
       }
       break;
     }

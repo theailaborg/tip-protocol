@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -111,32 +113,32 @@ function _seedPriorBonus(dag, tipId, timestamp) {
  * Returns the eligible-tip-id array.
  */
 function _populateAndQuery(dag) {
-  const NOW = "2027-04-01T00:00:00.000Z";        // "today" for the test
-  const CUTOFF = "2027-01-01T00:00:00.000Z";     // 90 days before NOW
-  const REGISTERED_OLD = "2026-01-01T00:00:00.000Z";  // > 90 days before cutoff
-  const REGISTERED_RECENT = "2027-03-30T00:00:00.000Z"; // 2 days before NOW (way under 90)
+  const NOW = 1806537600000;        // "today" for the test
+  const CUTOFF = 1798761600000;     // 90 days before NOW
+  const REGISTERED_OLD = 1767225600000;  // > 90 days before cutoff
+  const REGISTERED_RECENT = 1806364800000; // 2 days before NOW (way under 90)
 
   // freshUser: registered too recently → fails registered_at <= cutoff
   _saveIdentity(dag, TIPS.freshUser, REGISTERED_RECENT);
-  _seedActivity(dag, TIPS.freshUser, "2027-03-31T00:00:00.000Z");
+  _seedActivity(dag, TIPS.freshUser, 1806451200000);
 
   // oldClean: registered long ago, active recently, no UPHELD, no prior bonus
   _saveIdentity(dag, TIPS.oldClean, REGISTERED_OLD);
-  _seedActivity(dag, TIPS.oldClean, "2027-03-15T00:00:00.000Z");
+  _seedActivity(dag, TIPS.oldClean, 1805068800000);
 
   // oldDormant: registered long ago, NO activity in window → fails
   _saveIdentity(dag, TIPS.oldDormant, REGISTERED_OLD);
-  _seedActivity(dag, TIPS.oldDormant, "2026-06-01T00:00:00.000Z"); // before cutoff
+  _seedActivity(dag, TIPS.oldDormant, 1780272000000); // before cutoff
 
   // oldDisputed: registered long ago, recent UPHELD → fails
   _saveIdentity(dag, TIPS.oldDisputed, REGISTERED_OLD);
-  _seedActivity(dag, TIPS.oldDisputed, "2027-03-15T00:00:00.000Z");
-  _seedUpheld(dag, TIPS.oldDisputed, "2027-02-01T00:00:00.000Z");
+  _seedActivity(dag, TIPS.oldDisputed, 1805068800000);
+  _seedUpheld(dag, TIPS.oldDisputed, 1801440000000);
 
   // oldRecentlyBonused: registered long ago, already got bonus inside window → fails
   _saveIdentity(dag, TIPS.oldRecentlyBonused, REGISTERED_OLD);
-  _seedActivity(dag, TIPS.oldRecentlyBonused, "2027-03-15T00:00:00.000Z");
-  _seedPriorBonus(dag, TIPS.oldRecentlyBonused, "2027-02-15T00:00:00.000Z");
+  _seedActivity(dag, TIPS.oldRecentlyBonused, 1805068800000);
+  _seedPriorBonus(dag, TIPS.oldRecentlyBonused, 1802649600000);
 
   void NOW;  // referenced only to document the scenario; CUTOFF is what we pass
   return dag.getCleanRecordEligible(CUTOFF);
@@ -145,7 +147,7 @@ function _populateAndQuery(dag) {
 const SCENARIOS = [
   ["MemoryStore (in-memory)", () => initDAG({ dbPath: ":memory:" })],
   ["SQLiteStore (real DB)", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-clean-record-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-clean-record-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     const dag = initDAG({ dbPath });
     return { dag, _cleanup: () => { try { fs.unlinkSync(dbPath); } catch { /* ignore */ } } };
   }],
@@ -172,9 +174,9 @@ describe.each(SCENARIOS)("getCleanRecordEligible — %s", (_label, makeStore) =>
     const made = makeStore();
     const dag = made.dag || made;
     try {
-      const CUTOFF = "2027-01-01T00:00:00.000Z";
+      const CUTOFF = 1798761600000;
       _saveIdentity(dag, "tip://id/edge", CUTOFF);
-      _seedActivity(dag, "tip://id/edge", "2027-02-01T00:00:00.000Z");
+      _seedActivity(dag, "tip://id/edge", 1801440000000);
       const eligible = dag.getCleanRecordEligible(CUTOFF);
       expect(eligible).toContain("tip://id/edge");
     } finally {
@@ -187,9 +189,9 @@ describe.each(SCENARIOS)("getCleanRecordEligible — %s", (_label, makeStore) =>
     const made = makeStore();
     const dag = made.dag || made;
     try {
-      const CUTOFF = "2027-01-01T00:00:00.000Z";
-      _saveIdentity(dag, "tip://id/edge", "2027-01-01T00:00:01.000Z");
-      _seedActivity(dag, "tip://id/edge", "2027-02-01T00:00:00.000Z");
+      const CUTOFF = 1798761600000;
+      _saveIdentity(dag, "tip://id/edge", 1798761601000);
+      _seedActivity(dag, "tip://id/edge", 1801440000000);
       const eligible = dag.getCleanRecordEligible(CUTOFF);
       expect(eligible).not.toContain("tip://id/edge");
     } finally {
@@ -202,11 +204,11 @@ describe.each(SCENARIOS)("getCleanRecordEligible — %s", (_label, makeStore) =>
     const made = makeStore();
     const dag = made.dag || made;
     try {
-      const CUTOFF = "2027-01-01T00:00:00.000Z";
-      _saveIdentity(dag, "tip://id/revoked", "2025-01-01T00:00:00.000Z");
-      _seedActivity(dag, "tip://id/revoked", "2027-02-01T00:00:00.000Z");
+      const CUTOFF = 1798761600000;
+      _saveIdentity(dag, "tip://id/revoked", 1735689600000);
+      _seedActivity(dag, "tip://id/revoked", 1801440000000);
       // Revoke after seeding — directly mark in DAG.
-      dag.addRevocation("tip://id/revoked", TX_TYPES.REVOKE_VOLUNTARY, "2027-02-15T00:00:00.000Z", shake256("rev"));
+      dag.addRevocation("tip://id/revoked", TX_TYPES.REVOKE_VOLUNTARY, 1802649600000, shake256("rev"));
       const eligible = dag.getCleanRecordEligible(CUTOFF);
       expect(eligible).not.toContain("tip://id/revoked");
     } finally {

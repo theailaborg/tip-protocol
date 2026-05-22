@@ -25,6 +25,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { schemaError } = require("./_common");
 const { verifyBodySignature } = require("../../../shared/crypto");
 const { ORIGIN, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
@@ -113,7 +115,7 @@ function validateRequest(reviewId, body, deps) {
   const r = rules.canUpdateOrigin(
     dag,
     { ctid: review.ctid, author_tip_id: body.author_tip_id, new_origin_code },
-    { now: Date.now() },
+    { now: nowMs() },
   );
   if (!r.valid) throw schemaError(r.error.status, r.error.message, r.error.code);
 

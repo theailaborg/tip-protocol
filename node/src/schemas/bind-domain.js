@@ -40,6 +40,7 @@ const {
   DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHOD_VALUES,
   DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
+const { isValidMs } = require("../../../shared/time");
 const registerDomainSchema = require("./register-domain");
 
 const TX_TYPE = TX_TYPES.BIND_DOMAIN;
@@ -69,11 +70,11 @@ function buildSigningPayload(input) {
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
-  if (typeof input.verified_at !== "string" || Number.isNaN(Date.parse(input.verified_at))) {
-    throw schemaError(400, "verified_at must be an ISO8601 timestamp", "verified_at_invalid");
+  if (!isValidMs(input.verified_at)) {
+    throw schemaError(400, "verified_at must be a valid epoch ms timestamp", "verified_at_invalid");
   }
-  if (typeof input.claimed_at !== "string" || Number.isNaN(Date.parse(input.claimed_at))) {
-    throw schemaError(400, "claimed_at must be an ISO8601 timestamp", "claimed_at_invalid");
+  if (!isValidMs(input.claimed_at)) {
+    throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
   if (typeof input.claim_signature !== "string" || input.claim_signature.length === 0) {
     throw schemaError(400, "claim_signature is required", "claim_signature_required");
@@ -193,7 +194,7 @@ function verifyTx(tx, dag) {
 //   domain     string,  required (lowercased)
 //   node_id    string,  required (emitting node)
 //   reason     string,  required (enum: see DOMAIN_UNBIND_REASONS)
-//   revoked_at string,  required (ISO8601)
+//   revoked_at number,  required (epoch ms)
 function buildUnbindSigningPayload(input) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "input must be an object", "input_invalid");
@@ -204,8 +205,8 @@ function buildUnbindSigningPayload(input) {
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
-  if (typeof input.revoked_at !== "string" || Number.isNaN(Date.parse(input.revoked_at))) {
-    throw schemaError(400, "revoked_at must be an ISO8601 timestamp", "revoked_at_invalid");
+  if (!isValidMs(input.revoked_at)) {
+    throw schemaError(400, "revoked_at must be a valid epoch ms timestamp", "revoked_at_invalid");
   }
   if (!DOMAIN_UNBIND_REASON_VALUES.includes(input.reason)) {
     throw schemaError(

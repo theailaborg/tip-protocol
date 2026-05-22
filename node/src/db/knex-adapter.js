@@ -21,6 +21,113 @@
 // loads, dag.js is fully cached — no circular-dep hazard.
 const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
+const { nowMs } = require("../../../shared/time");
+
+// ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
+// Every SQL driver TIP supports returns BIGINT differently in JS land:
+//
+//   pg:        INT8 → string  (precision-loss avoidance; JS Number can't
+//                              hold 2^63 safely, so the driver punts)
+//   mysql2:    BIGINT → string when supportBigNumbers is unset (same reason)
+//   tedious:   BIGINT → string by default
+//   oracledb:  NUMBER(19,0) → string (unless precision fits in JS safe int)
+//   better-sqlite3 (used by the SQLite dag.js path, NOT Knex): INTEGER
+//              → JS Number natively — no fix needed there.
+//
+// Every TIP bigint column carries either an epoch-ms timestamp (max ≈ 1.78e12
+// — three orders of magnitude under MAX_SAFE_INTEGER) or a counter (round,
+// rotation_number, consensus_index — all well below 2^32). None can ever
+// approach the precision boundary, so coercing all BIGINT reads to Number is
+// safe AND fixes a class of bugs where:
+//   - the in-memory mirror hydrates with "1779253012162" (string) instead of
+//     the integer, so `Number.isFinite(row.registered_at)` returns false in
+//     the prescan-review trigger and the content is silently skipped;
+//   - downstream arithmetic like `registered_at + decision_window_ms`
+//     becomes a JS string concatenation ("1779253012162" + 172800000 =
+//     "1779253012162172800000") instead of integer addition;
+//   - the boundary timestamp middleware skips conversion (its `typeof v ===
+//     "number"` value-gate rejects the string), leaking raw bigint strings
+//     to API clients.
+//
+// Two layers of defence:
+//
+//   1. Driver-level type parsers / casts where the driver supports them
+//      (pg setTypeParser + mysql2 connection typeCast). Zero per-row cost
+//      once registered — values arrive in JS land already as Number.
+//
+//   2. Knex postProcessResponse fallback (_coerceBigIntRow below) catches
+//      anything the driver layer missed — by-column-name allow-list so
+//      it never touches VARCHAR fields that happen to contain digit-only
+//      content. Universal: runs for every Knex query result regardless
+//      of which driver is underneath.
+//
+// All TIP bigInteger columns either match the timestamp pattern (`*_at`,
+// `*_at_ms`, `timestamp`, `cert_timestamp`, `last_updated`) or are explicit
+// counters added to BIGINT_COLUMN_NAMES below.
+
+// Pg-level parser — registered at module load so every pg connection
+// (including the one Knex builds further down) inherits it. Idempotent:
+// setTypeParser overwrites silently if called twice.
+try {
+  // OID 20 = int8 (bigint). Numeric literal avoids depending on the
+  // pgTypes.builtins map shape.
+  require("pg").types.setTypeParser(20, v => v === null ? null : Number(v));
+} catch { /* pg not installed in this build — skip */ }
+
+// Column-name allow-list for the Knex postProcessResponse fallback.
+// `BIGINT_COLUMN_PATTERN` matches the codebase's timestamp naming
+// conventions; `BIGINT_COLUMN_NAMES` lists extra explicit columns that
+// don't follow the pattern. Together they identify exactly the columns
+// declared as `t.bigInteger(...)` in the Knex schema.
+const BIGINT_COLUMN_PATTERN = /^(timestamp|cert_timestamp|last_updated|.+_at|.+_at_ms)$/;
+const BIGINT_COLUMN_NAMES = new Set([
+  // Reserved for explicit additions that don't match the pattern (none
+  // today — all current bigInteger columns are timestamps).
+]);
+
+function _isBigintColumn(key) {
+  return BIGINT_COLUMN_PATTERN.test(key) || BIGINT_COLUMN_NAMES.has(key);
+}
+
+function _coerceBigIntRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+  for (const key of Object.keys(row)) {
+    const v = row[key];
+    if (typeof v === "string" && _isBigintColumn(key) && /^-?\d+$/.test(v)) {
+      const n = Number(v);
+      if (Number.isSafeInteger(n)) row[key] = n;
+    } else if (typeof v === "bigint") {
+      // Some drivers (mysql2 with supportBigNumbers, oracledb with
+      // certain configs) return BIGINT as a JS bigint. Same safe-integer
+      // guarantee — coerce to Number.
+      const n = Number(v);
+      if (Number.isSafeInteger(n)) row[key] = n;
+    }
+  }
+  return row;
+}
+
+function _knexPostProcessResponse(result) {
+  if (!result) return result;
+  if (Array.isArray(result)) {
+    for (const row of result) _coerceBigIntRow(row);
+    return result;
+  }
+  return _coerceBigIntRow(result);
+}
+
+// mysql2 connection-level type cast: applied per-cell on the result path,
+// coerces BIGINT (MYSQL_TYPE_LONGLONG = 8) to JS Number before it reaches
+// the Knex layer. Mirrors the pg type parser above.
+function _mysql2TypeCast(field, next) {
+  if (field.type === "LONGLONG" || field.type === "BIGINT") {
+    const s = field.string();
+    if (s === null) return null;
+    const n = Number(s);
+    return Number.isSafeInteger(n) ? n : s;
+  }
+  return next();
+}
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 // Uses the Knex schema builder instead of raw DDL so the same code runs on
@@ -150,6 +257,13 @@ class KnexAdapter {
           rejectUnauthorized: config.dbSslRejectUnauthorized !== false && process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
         };
       }
+      // Driver-level BIGINT coercion for mysql2/mariadb (see _mysql2TypeCast
+      // banner). The pg type parser is registered at module load; mssql
+      // and oracledb fall through to the universal postProcessResponse
+      // fallback wired below.
+      if (client === "mysql2") {
+        connection.typeCast = _mysql2TypeCast;
+      }
     }
 
     const knex = require("knex");
@@ -161,6 +275,13 @@ class KnexAdapter {
         max: config.dbPoolMax != null ? config.dbPoolMax : Number(process.env.DB_POOL_MAX || 10),
       },
       acquireConnectionTimeout: 10000,
+      // Universal BIGINT → Number fallback. Runs after the driver-level
+      // parser / typeCast (no-op when the driver already returned Number),
+      // catches mssql / oracledb / any future driver that doesn't have a
+      // native hook configured. By-column-name allow-list so VARCHAR
+      // fields holding digit-only content (e.g. a stringly-typed numeric
+      // id) are never touched.
+      postProcessResponse: _knexPostProcessResponse,
     });
     this._isOracleDB = (driver === "oracle" || driver === "oracledb");
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
@@ -187,7 +308,7 @@ class KnexAdapter {
       _pk(t, "tx_id");
       t.string("tx_type", 64).notNullable();
       t.text("data").notNullable();
-      t.string("timestamp", 64).notNullable();
+      t.bigInteger("timestamp").notNullable();
       t.text("prev").notNullable().defaultTo("[]");
       t.text("signature").nullable();
       _id(t, "subject_tip_id").nullable();
@@ -214,7 +335,7 @@ class KnexAdapter {
       // Runtime filters at selection time decide which role a consenting
       // user lands in (score, content category, conflict-of-interest).
       t.integer("reviewer_consent").notNullable().defaultTo(0);
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
       t.index("vp_id", "idx_id_vp");
@@ -241,7 +362,7 @@ class KnexAdapter {
       t.float("prescan_probability").notNullable().defaultTo(0);          // raw classifier output
       t.string("prescan_tier", 16).notNullable().defaultTo("low");        // low|elevated|high|critical
       t.integer("override").notNullable().defaultTo(0);                   // creator confirmed OH despite HIGH/CRITICAL warning
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
       t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
       _id(t, "tx_id").nullable();
       t.index("author_tip_id", "idx_content_author");
@@ -254,7 +375,7 @@ class KnexAdapter {
       _pk(t, "tip_id");
       t.integer("score").notNullable().defaultTo(500);
       t.integer("offense_count").notNullable().defaultTo(0);
-      t.string("last_updated", 64).notNullable();
+      t.bigInteger("last_updated").notNullable();
     });
 
     await ensure("dedup_registry", t => {
@@ -265,7 +386,7 @@ class KnexAdapter {
     await ensure("revocations", t => {
       _pk(t, "tip_id");
       t.string("tx_type", 64).notNullable();
-      t.string("timestamp", 64).notNullable();
+      t.bigInteger("timestamp").notNullable();
       _id(t, "tx_id").notNullable();
     });
 
@@ -278,9 +399,9 @@ class KnexAdapter {
       _id(t, "tip_id").notNullable();
       t.string("binding_state", 32).notNullable();
       t.string("method", 16).notNullable();
-      t.string("claimed_at", 64).notNullable();
-      t.string("verified_at", 64).notNullable();
-      t.string("expires_at", 64).notNullable();
+      t.bigInteger("claimed_at").notNullable();
+      t.bigInteger("verified_at").notNullable();
+      t.bigInteger("expires_at").notNullable();
       t.integer("consecutive_failures").notNullable().defaultTo(0);
       _id(t, "node_id").notNullable();
       t.text("claim_signature").notNullable();
@@ -297,9 +418,9 @@ class KnexAdapter {
       t.string("domain", 253).primary();
       _id(t, "tip_id").notNullable();
       t.string("method", 16).notNullable();
-      t.string("claimed_at", 64).notNullable();
+      t.bigInteger("claimed_at").notNullable();
       t.text("signature").notNullable();
-      t.string("received_at", 64).notNullable();
+      t.bigInteger("received_at").notNullable();
       t.index("tip_id", "idx_pending_dom_tip_id");
     });
 
@@ -310,7 +431,7 @@ class KnexAdapter {
       t.string("jurisdiction_tier", 16).notNullable().defaultTo("green");
       t.text("public_key").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
     });
 
     await ensure("nodes", t => {
@@ -318,7 +439,7 @@ class KnexAdapter {
       t.text("name").nullable();
       t.text("public_key").notNullable();
       t.string("status", 32).notNullable().defaultTo("active");
-      t.string("registered_at", 64).notNullable();
+      t.bigInteger("registered_at").notNullable();
     });
 
     await ensure("certificates", t => {
@@ -342,7 +463,7 @@ class KnexAdapter {
       t.text("committee").notNullable();
       t.integer("support_count").notNullable();
       t.integer("consensus_index").notNullable();
-      t.string("committed_at", 64).notNullable();
+      t.bigInteger("committed_at").notNullable();
       t.string("state_merkle_root", 128).notNullable();
       t.string("txs_merkle_root", 128).notNullable();
       t.text("ack_signer_ids").notNullable();
@@ -401,7 +522,7 @@ class KnexAdapter {
       t.text("signer_node_ids").notNullable().defaultTo("[]");
       t.text("signatures").notNullable().defaultTo("[]");
       t.text("payload_hash").nullable();
-      t.string("committed_at", 64).notNullable();
+      t.bigInteger("committed_at").notNullable();
       t.bigInteger("created_at").notNullable().defaultTo(0);
       t.index("effective_round", "idx_committee_history_round");
     });
@@ -445,7 +566,7 @@ class KnexAdapter {
       _id(t, "disputer_tip_id").notNullable();
       t.text("payload_json").notNullable();
       t.text("signature").notNullable();
-      t.string("created_at", 64).notNullable();
+      t.bigInteger("created_at").notNullable();
     });
   }
 
@@ -476,17 +597,17 @@ class KnexAdapter {
     };
     const contentRows = await this.knex("content").select("*");
     for (const row of contentRows) {
-      const urls    = _decodeJson(row.registered_urls, []);
+      const urls = _decodeJson(row.registered_urls, []);
       const authors = _decodeJson(row.authors, []);
-      const extras  = _decodeJson(row.extras, {});
+      const extras = _decodeJson(row.extras, {});
       const mapped = {
         ...row,
         ctid: row.tip_ctid,
         prescan_flagged: !!row.prescan_flagged,
         override: !!row.override,
-        registered_urls: Array.isArray(urls)   ? urls    : [],
-        authors:         Array.isArray(authors) ? authors : [],
-        extras:          (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
+        registered_urls: Array.isArray(urls) ? urls : [],
+        authors: Array.isArray(authors) ? authors : [],
+        extras: (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
       };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
@@ -708,6 +829,7 @@ class KnexAdapter {
       prev: JSON.stringify(tx.prev || []),
       signature: tx.signature || null,
       subject_tip_id: (entry && entry.subject_tip_id) || null,
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("transactions", "tx_id", row, "ignore"));
   }
@@ -971,21 +1093,22 @@ class KnexAdapter {
       parent_hashes: JSON.stringify(cert.parent_hashes || []),
       signature: cert.signature,
       timestamp: Number(cert.timestamp || 0),
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("certificates", "hash", row, "ignore"));
   }
 
-  getCertificate(hash)                    { return this.mirror.getCertificate(hash); }
-  getCertificatesByRound(round)           { return this.mirror.getCertificatesByRound(round); }
-  getCertificateByAuthorRound(a, r)       { return this.mirror.getCertificateByAuthorRound(a, r); }
-  getLatestRound()                        { return this.mirror.getLatestRound(); }
-  getEarliestCertRound()                  { return this.mirror.getEarliestCertRound(); }
-  getCertificatesFromRound(from)          { return this.mirror.getCertificatesFromRound(from); }
+  getCertificate(hash) { return this.mirror.getCertificate(hash); }
+  getCertificatesByRound(round) { return this.mirror.getCertificatesByRound(round); }
+  getCertificateByAuthorRound(a, r) { return this.mirror.getCertificateByAuthorRound(a, r); }
+  getLatestRound() { return this.mirror.getLatestRound(); }
+  getEarliestCertRound() { return this.mirror.getEarliestCertRound(); }
+  getCertificatesFromRound(from) { return this.mirror.getCertificatesFromRound(from); }
   // §14/#49 — certs-in-range iterator used by snapshot streaming. Mirrors
   // the SQLiteStore generator. Delegates to the in-memory mirror, which has
   // the full cert window post-_hydrate.
-  *iterateCertsByRoundRange(from, to)     { yield* this.mirror.iterateCertsByRoundRange(from, to); }
-  certificateCount()                      { return this.mirror.certificateCount(); }
+  *iterateCertsByRoundRange(from, to) { yield* this.mirror.iterateCertsByRoundRange(from, to); }
+  certificateCount() { return this.mirror.certificateCount(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
@@ -1014,6 +1137,7 @@ class KnexAdapter {
       ack_signed_ats: JSON.stringify(rec.ack_signed_ats || []),
       cert_timestamp: Number(rec.cert_timestamp || 0),
       anchor_batch_hash: rec.anchor_batch_hash || null,
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("commits", "round", row, "ignore"));
   }
@@ -1037,7 +1161,7 @@ class KnexAdapter {
   recordSeenVote(round, author, batchHash) {
     const isNew = this.mirror.recordSeenVote(round, author, batchHash);
     if (isNew) {
-      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash }, "ignore"));
+      this._ff(() => this._dbInsert("votes_seen", ["round", "author"], { round, author, batch_hash: batchHash, created_at: nowMs() }, "ignore"));
     }
     return isNew;
   }
@@ -1058,6 +1182,7 @@ class KnexAdapter {
       tx_id: tx.tx_id,
       tx_data: JSON.stringify(tx),
       subject_tip_id: subjectTipId(tx) || null,
+      received_at: nowMs(),
     }, "ignore"));
   }
 
@@ -1089,7 +1214,7 @@ class KnexAdapter {
   saveTxRejection(rec) {
     const inserted = this.mirror.saveTxRejection(rec);
     if (inserted) {
-      const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : Date.now();
+      const at = rec.rejected_at_ms != null ? rec.rejected_at_ms : nowMs();
       const txData = rec.tx_data == null ? null
         : (typeof rec.tx_data === "string" ? rec.tx_data : JSON.stringify(rec.tx_data));
       const subj = rec.tx_data && typeof rec.tx_data === "object" ? subjectTipId(rec.tx_data) : null;
@@ -1163,8 +1288,8 @@ class KnexAdapter {
       signer_node_ids: JSON.stringify(rec.signer_node_ids || []),
       signatures: JSON.stringify(rec.signatures || []),
       payload_hash: rec.payload_hash || null,
-      committed_at: rec.committed_at || new Date().toISOString(),
-      created_at: Date.now(),
+      committed_at: rec.committed_at || nowMs(),
+      created_at: nowMs(),
     };
     this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
   }

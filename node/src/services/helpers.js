@@ -1,5 +1,7 @@
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const {
   signTransaction, computeTxId,
 } = require("../../../shared/crypto");
@@ -300,7 +302,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
   // LOW — nothing more to surface; the FE shouldn't render any banner.
   if (tier === PRESCAN_TIERS.LOW) return base;
 
-  const registeredMs = registeredAt ? new Date(registeredAt).getTime() : Date.now();
+  const registeredMs = registeredAt ? registeredAt : nowMs();
 
   // Helper — once the creator has already self-corrected, change_origin
   // is no longer a meaningful action (you can keep updating origins, but
@@ -320,7 +322,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
     return {
       ...base,
       decision_window_ms: ms,
-      decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+      decision_window_ends_at: registeredMs + ms,
       actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN]),
       consequence_if_confirmed: PRESCAN_CONSEQUENCES.NONE,
       next_step_if_kept: PRESCAN_NEXT_STEPS.NONE,
@@ -332,7 +334,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
   return {
     ...base,
     decision_window_ms: ms,
-    decision_window_ends_at: new Date(registeredMs + ms).toISOString(),
+    decision_window_ends_at: registeredMs + ms,
     actions_available: buildActions([PRESCAN_ACTIONS.KEEP, PRESCAN_ACTIONS.CHANGE_ORIGIN, PRESCAN_ACTIONS.RETRACT]),
     consequence_if_confirmed: tier === PRESCAN_TIERS.CRITICAL
       ? PRESCAN_CONSEQUENCES.SIGNIFICANT_PENALTY

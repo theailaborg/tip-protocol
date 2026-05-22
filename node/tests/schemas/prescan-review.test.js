@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -51,18 +53,18 @@ function _setup() {
 
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   // Creator identity
   dag.saveIdentity({
     tip_id: CREATOR, region: "US", public_key: nodeKp.publicKey, root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   // Reviewer 1 (the legitimately-assigned reviewer)
   dag.saveIdentity({
@@ -70,7 +72,7 @@ function _setup() {
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
   // Reviewer 2 (NOT assigned — used to test wrong-reviewer rejection)
   dag.saveIdentity({
@@ -78,7 +80,7 @@ function _setup() {
     public_key: reviewer2Kp.publicKey, root_public_key: reviewer2Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer2"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer2"),
   });
   // Seed the content row so business-rules ctid existence check passes
   dag.saveContent({
@@ -90,7 +92,7 @@ function _setup() {
     status: "registered",
     prescan_flagged: true, prescan_probability: 0.92, prescan_tier: "high",
     override: true,
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
     registered_urls: [], tx_id: shake256(`content:${CTID_1}`),
   });
 
@@ -100,7 +102,7 @@ function _setup() {
   let round = 0;
   const commit = (txs) => {
     round++;
-    commitHandler.commitOrderedTxs(txs, round, { certTimestamp: Date.now() });
+    commitHandler.commitOrderedTxs(txs, round, { certTimestamp: nowMs() });
     return round;
   };
   return { dag, commit, nodeKp, reviewer1Kp, reviewer2Kp };
@@ -117,7 +119,7 @@ function _buildTriggeredTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
-    timestamp: new Date().toISOString(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -142,7 +144,7 @@ function _buildDismissedTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
-    timestamp: new Date().toISOString(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -169,7 +171,7 @@ function _buildConfirmedTx(fx, opts) {
   };
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-    timestamp: new Date().toISOString(),
+    timestamp: nowMs(),
     prev: fx.dag.getRecentPrev(),
     data,
   };
@@ -271,7 +273,7 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
     // buildSigningPayload throws on OH — build the tx manually with bad data
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data: {
         review_id: "rv_c2",
@@ -324,7 +326,7 @@ describe("PRESCAN_REVIEW_RECUSED — reviewer bows out", () => {
     };
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
     };
@@ -407,7 +409,7 @@ describe("Phase 2.3 — content status transitions", () => {
     data.signature = contentRegisterSchema.sign(payload, fx.nodeKp.privateKey);
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: fx.dag.getRecentPrev(),
       data,
     };
@@ -440,7 +442,7 @@ describe("Phase 2.3 — content status transitions", () => {
     // rejection — we want canUpdateOrigin to reject solely on the
     // "open TRIGGERED review" branch.
     const seeded = fx.dag.getContent(CTID_1);
-    fx.dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
+    fx.dag.saveContent({ ...seeded, registered_at: nowMs() });
 
     fx.commit([_buildTriggeredTx(fx, { review_id: "rv_p23_b" })]);
     expect(fx.dag.getPrescanReview("rv_p23_b").state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
@@ -452,7 +454,7 @@ describe("Phase 2.3 — content status transitions", () => {
     const result = rules.canUpdateOrigin(
       fx.dag,
       { ctid: CTID_1, author_tip_id: CREATOR, new_origin_code: "AG" },
-      { now: Date.now() },
+      { now: nowMs() },
     );
     expect(result.valid).toBe(false);
     expect(result.error.status).toBe(403);

@@ -30,6 +30,7 @@ const { buildRotationTx } = require("./rotation-coordinator");
 const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { shake256, canonicalJson, mldsaSign } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { computeNextRotationCommittee, epochOf } = require("./participants");
 const { getLogger } = require("../logger");
 
@@ -477,7 +478,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       // Only advance committed round AFTER successful processing.
       // If onOrderedTxs throws, we don't advance — will retry next round.
       // Pass cert.timestamp so commit-handler / downstream derived-state
-      // logic uses the BFT consensus clock, not local Date.now().
+      // logic uses the BFT consensus clock, not local nowMs().
       // Return value: { committed, dropped } — see #73 below.
       const applyResult = onOrderedTxs
         ? onOrderedTxs(orderedTxs, voteRound, certTs)
@@ -537,7 +538,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
             committee: [...nodeIds].sort(),
             support_count: supportCount,
             consensus_index: _consensusIndex,
-            committed_at: new Date().toISOString(),
+            committed_at: nowMs(),
             state_merkle_root: stateRoot,
             txs_merkle_root: txsRoot,
             ack_signer_ids: ackSignerIds,

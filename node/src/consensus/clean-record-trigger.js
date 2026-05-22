@@ -32,6 +32,7 @@
 "use strict";
 
 const { REPUTATION } = require("../../../shared/protocol-constants");
+const { toIso } = require("../../../shared/time");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.clean-record-trigger");
@@ -94,11 +95,10 @@ function createCleanRecordTrigger({ dag, scoring, config, submitBatch, getCommit
     if (!_isMyDay(today)) return;
 
     const cutoffMs = certTimestamp - REPUTATION.CLEAN_PERIOD_DAYS * MS_PER_DAY;
-    const cutoffISO = new Date(cutoffMs).toISOString();
 
     let eligible;
     try {
-      eligible = dag.getCleanRecordEligible(cutoffISO)
+      eligible = dag.getCleanRecordEligible(cutoffMs)
         .filter(tipId => !dag.isRevoked(tipId));
     } catch (err) {
       log.warn(`Clean-record eligibility query failed: ${err.message}`);
@@ -107,7 +107,7 @@ function createCleanRecordTrigger({ dag, scoring, config, submitBatch, getCommit
 
     if (eligible.length === 0) return;
 
-    const proposedTimestamp = new Date(certTimestamp).toISOString();
+    const proposedTimestamp = certTimestamp;
     // Window-scoped reason. The bonus is recurring (every CLEAN_PERIOD_DAYS),
     // so a constant `"clean_record_bonus"` reason would collide forever
     // under the (tip_id, ctid, reason) dedup at commit-handler — only the
@@ -118,7 +118,7 @@ function createCleanRecordTrigger({ dag, scoring, config, submitBatch, getCommit
     //     day → same reason → second one rejected ✓ (multi-leader race)
     //   - Same user on a later day (next window)  → different reason →
     //     accepted, predicate's window check is the actual eligibility gate.
-    const todayISO = new Date(today * MS_PER_DAY).toISOString().slice(0, 10);
+    const todayISO = toIso(today * MS_PER_DAY).slice(0, 10);
     const reason = `clean_record_bonus:${todayISO}`;
     const txs = eligible.map(tipId => scoring.buildScoreUpdateTx({
       tipId,

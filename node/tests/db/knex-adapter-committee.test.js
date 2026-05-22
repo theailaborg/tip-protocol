@@ -51,7 +51,7 @@ function rot(n, effectiveRound, committee, opts = {}) {
     signer_node_ids:  opts.signers || [],
     signatures:       opts.sigs    || [],
     payload_hash:     opts.hash    || shake256(canonicalJson({ rotation_number: n, effective_round: effectiveRound, committee: c })),
-    committed_at:     opts.at      || "2026-05-05T00:00:00.000Z",
+    committed_at:     opts.at      || 1777939200000,
   };
 }
 
@@ -121,7 +121,7 @@ async function drain() {
         prev_rotation: 2,
         signers: ["n1", "n2"],
         sigs: ["sig-3a", "sig-3b"],
-        at: "2026-05-01T12:00:00.000Z",
+        at: 1777636800000,
       });
       a.saveCommitteeRotation(r3);
       await drain();
@@ -136,7 +136,7 @@ async function drain() {
         expect(got.signer_node_ids).toEqual(["n1", "n2"]);
         expect(got.signatures).toEqual(["sig-3a", "sig-3b"]);
         expect(got.payload_hash).toBe(r3.payload_hash);
-        expect(got.committed_at).toBe("2026-05-01T12:00:00.000Z");
+        expect(got.committed_at).toBe(1777636800000);
 
         expect(b.getLatestRotation().rotation_number).toBe(3);
 

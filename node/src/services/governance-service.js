@@ -1,6 +1,7 @@
 "use strict";
 
 const { generateVPId, verifyBodySignature } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { TX_TYPES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -31,7 +32,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     const vpCheck = rules.canRegisterVp(dag, { vp_id: vpId });
     if (!vpCheck.valid) throw { status: vpCheck.error.status, error: vpCheck.error.message };
 
-    const registeredAt = new Date().toISOString();
+    const registeredAt = nowMs();
 
     const vpTx = withTxId({
       tx_type: TX_TYPES.VP_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
@@ -72,7 +73,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     const nodeCheck = rules.canRegisterNode(dag, { node_id: nodeId });
     if (!nodeCheck.valid) throw { status: nodeCheck.error.status, error: nodeCheck.error.message };
 
-    const registeredAt = new Date().toISOString();
+    const registeredAt = nowMs();
 
     const nodeTx = withTxId({
       tx_type: TX_TYPES.NODE_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),

@@ -25,6 +25,7 @@ const {
   TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS,
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH,
 } = require("../../../shared/constants");
+const { nowMs } = require("../../../shared/time");
 const registerDomainSchema = require("../schemas/register-domain");
 const bindDomainSchema = require("../schemas/bind-domain");
 const { schemaError } = require("../schemas/_common");
@@ -78,7 +79,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       method,
       claimed_at: body.claimed_at,
       signature: body.signature,
-      received_at: new Date().toISOString(),
+      received_at: nowMs(),
     });
 
     log.info(`Domain claim received: ${domain} → ${body.tip_id} (method: ${method})`);
@@ -96,7 +97,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
         : DOMAIN_BINDING_STATUS.PENDING,
       verification_url: `https://${domain}${DOMAIN_WELL_KNOWN_PATH}`,
       expected_dns: _txtInstruction(domain, body.tip_id),
-      node_seen_at: new Date().toISOString(),
+      node_seen_at: nowMs(),
     };
   }
 
@@ -145,7 +146,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       throw schemaError(500, "Node id not configured", "node_unconfigured");
     }
 
-    const verifiedAt = result.verified_at || new Date().toISOString();
+    const verifiedAt = result.verified_at || nowMs();
     const canonicalBinding = bindDomainSchema.buildSigningPayload({
       binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
       claim_signature: claim.signature,
@@ -239,16 +240,16 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       throw schemaError(404, `No binding for domain ${normalized}`, "domain_not_found");
     }
 
-    const expiresMs = binding.expires_at ? Date.parse(binding.expires_at) : NaN;
-    const nowMs = Date.now();
-    const isExpired = Number.isFinite(expiresMs) && nowMs > expiresMs;
+    const expiresMs = binding.expires_at ? binding.expires_at : NaN;
+    const now = nowMs();
+    const isExpired = Number.isFinite(expiresMs) && now > expiresMs;
     const status = binding.binding_state === "revoked"
       ? "revoked"
       : isExpired
         ? DOMAIN_BINDING_STATUS.UNVERIFIED
         : binding.binding_state;
     const daysUntilExpiry = Number.isFinite(expiresMs)
-      ? Math.ceil((expiresMs - nowMs) / (24 * 60 * 60 * 1000))
+      ? Math.ceil((expiresMs - now) / (24 * 60 * 60 * 1000))
       : null;
 
     return {

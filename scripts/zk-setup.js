@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../shared/time");
+
 const { execSync } = require("child_process");
 const path         = require("path");
 const fs           = require("fs");
@@ -92,7 +94,7 @@ async function main() {
       path.join(CIRCUITS, "pot12_0000.ptau"),
       path.join(CIRCUITS, "pot12_0001.ptau"),
       "First contribution",
-      "TIP Protocol Setup Entropy " + Date.now(),
+      "TIP Protocol Setup Entropy " + nowMs(),
       console
     );
     await snarkjs.powersOfTau.preparePhase2(
@@ -119,7 +121,7 @@ async function main() {
     zkey0Path,
     zkeyFinal,
     "TIP Protocol",
-    "TIP Protocol ZKey Contribution " + Date.now(),
+    "TIP Protocol ZKey Contribution " + nowMs(),
     console
   );
   fs.unlinkSync(zkey0Path);

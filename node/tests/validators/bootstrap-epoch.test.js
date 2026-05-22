@@ -1,5 +1,7 @@
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC    = path.resolve(__dirname, "../../src");
@@ -21,7 +23,7 @@ const rulesTx = (tx_type, data = {}) => ({ tx_type, data });
 const fullGenesisTx = () => ({
   tx_type:   "GENESIS",
   tx_id:     "genesis-test-bootstrap-gate",
-  timestamp: new Date().toISOString(),
+  timestamp: nowMs(),
   data:      {},
   prev:      [],
 });

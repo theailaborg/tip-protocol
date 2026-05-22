@@ -27,6 +27,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -49,14 +51,14 @@ function registerNode(dag) {
     name: "n1",
     public_key: "00",
     status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
   });
 }
 
 // BFT-Time monotonic floor for synthetic certs. Each call advances by 1ms
 // so anchors land in strictly-increasing order, satisfying bullshark's
 // monotonicity gate without coupling to wall-clock.
-const BFT_T0 = new Date("2026-03-15T00:00:01.000Z").getTime(); // 1ms past genesis floor
+const BFT_T0 = 1773532801000; // 1ms past genesis floor
 function _certTsForRound(round) {
   return BFT_T0 + round; // 1ms per round — strictly increasing
 }
@@ -99,7 +101,7 @@ function driveCommits(bullshark, dag, count, { txsPerCommit = 0 } = {}) {
       ? Array.from({ length: txsPerCommit }, (_, k) => ({
         tx_id: shake256(`tx:${proposeRound}:${k}`),
         tx_type: "TEST",
-        timestamp: "2026-01-01T00:00:00.000Z",
+        timestamp: 1767225600000,
         prev: [],
         data: { i: k },
       }))
@@ -172,7 +174,7 @@ describe("#44 consensus_index — increments on every anchor commit (idle-networ
 
 describe("#44 consensus_index — persistence via consensus_meta", () => {
   test("counter survives DB close + reopen with exact value (idle case)", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       const bullshark = setupBullshark(dag);
@@ -196,7 +198,7 @@ describe("#44 consensus_index — persistence via consensus_meta", () => {
   });
 
   test("counter survives restart with mixed tx-bearing + idle history", () => {
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       const bullshark = setupBullshark(dag);
@@ -230,7 +232,7 @@ describe("#44 consensus_index — persistence via consensus_meta", () => {
     // may temporarily under-report on idle until next tx-bearing commit
     // re-anchors it via consensus_meta — that's acceptable, and exact
     // accuracy resumes from the next anchor.
-    const dbPath = path.join(os.tmpdir(), `tip-cidx-legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-cidx-legacy-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     try {
       const dag = initDAG({ dbPath });
       registerNode(dag);
@@ -245,7 +247,7 @@ describe("#44 consensus_index — persistence via consensus_meta", () => {
           committee: [NODE_ID],
           support_count: 1,
           consensus_index: i,
-          committed_at: "2026-01-01T00:00:00.000Z",
+          committed_at: 1767225600000,
           state_merkle_root: "0".repeat(64),
           txs_merkle_root: "0".repeat(64),
           ack_signer_ids: [],

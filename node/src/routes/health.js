@@ -4,6 +4,7 @@ const express = require("express");
 const { TX_TYPES, PROTOCOL } = require("../../../shared/constants");
 const PC = require("../../../shared/protocol-constants");
 const { asyncHandler } = require("../middleware/error-handler");
+const { nowIso } = require("../../../shared/time");
 
 function createRouter({ dag, scoring, config, consensus, network }) {
   const router = express.Router();
@@ -32,9 +33,9 @@ function createRouter({ dag, scoring, config, consensus, network }) {
     catch { /* best-effort — if the check itself throws, treat as unknown */ }
 
     let status, statusCode;
-    if (!dbOk)                         { status = "degraded"; statusCode = 503; }
-    else if (consensusHalt?.halted)    { status = "halted";   statusCode = 503; }
-    else                               { status = "ok";       statusCode = 200; }
+    if (!dbOk) { status = "degraded"; statusCode = 503; }
+    else if (consensusHalt?.halted) { status = "halted"; statusCode = 503; }
+    else { status = "ok"; statusCode = 200; }
 
     const mem = process.memoryUsage();
 
@@ -62,7 +63,7 @@ function createRouter({ dag, scoring, config, consensus, network }) {
         heap_used: Math.round(mem.heapUsed / 1048576),
         heap_total: Math.round(mem.heapTotal / 1048576),
       },
-      timestamp: new Date().toISOString(),
+      timestamp: nowIso(),
     };
 
     // Consensus stats (if running)
@@ -100,8 +101,14 @@ function createRouter({ dag, scoring, config, consensus, network }) {
   });
 
   router.get("/constants", (req, res) => {
+    // PC.get() returns the deep-frozen genesis-anchored constants. The
+    // boundary timestamp middleware mutates response bodies in place
+    // (ms → ISO on the way out); a frozen body would crash at the
+    // first assignment. Deep-clone the plain-data tree so the
+    // middleware can rewrite *_ms timestamps without touching the
+    // canonical instance.
     res.json({
-      ...PC.get(),
+      ...JSON.parse(JSON.stringify(PC.get())),
       media_limits: config.mediaLimits,
     });
   });

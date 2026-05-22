@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -70,11 +72,11 @@ function buildNarwhal({ currentRound = 100 } = {}) {
   const dag = initDAG({ inMemory: true });
   dag.saveNode({
     node_id: SELF_ID, name: "self", public_key: selfKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveNode({
     node_id: PEER_ID, name: "peer", public_key: peerKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
 
   // #75 atomic boundary: under the rotation-period model, every epoch must
@@ -97,7 +99,7 @@ function buildNarwhal({ currentRound = 100 } = {}) {
       signer_node_ids: [],
       signatures: [],
       payload_hash: `test-rotation-${n}`,
-      committed_at: "2026-01-01T00:00:00.000Z",
+      committed_at: 1767225600000,
     });
   }
 
@@ -196,7 +198,7 @@ describe("narwhal — peer disconnect halts round advance (partition-safety prop
 
     // Peer sends ack of self's batch. signed_at is in ms.
     const peerAck = createBatchAck(
-      selfBatch.hash, PEER_ID, Date.now(), fx.peerKp.privateKey
+      selfBatch.hash, PEER_ID, nowMs(), fx.peerKp.privateKey
     );
     const ackBuf = encode("BatchAck", serializeBatchAck(peerAck));
     fx.narwhal.handleIncomingAck(ackBuf);
@@ -215,8 +217,8 @@ describe("narwhal — peer disconnect halts round advance (partition-safety prop
     // self-ack + self's ack. Peer would build the cert and broadcast it.
     // We construct it here.
     const { createCertificate } = require(path.join(SRC, "consensus", "certificate"));
-    const peerSelfAck = createBatchAck(peerBatch.hash, PEER_ID, Date.now(), fx.peerKp.privateKey);
-    const selfAckOfPeerBatch = createBatchAck(peerBatch.hash, SELF_ID, Date.now(), fx.selfKp.privateKey);
+    const peerSelfAck = createBatchAck(peerBatch.hash, PEER_ID, nowMs(), fx.peerKp.privateKey);
+    const selfAckOfPeerBatch = createBatchAck(peerBatch.hash, SELF_ID, nowMs(), fx.selfKp.privateKey);
     const peerCert = createCertificate(
       1000, PEER_ID, peerBatch,
       [peerSelfAck, selfAckOfPeerBatch],

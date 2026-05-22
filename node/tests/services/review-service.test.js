@@ -17,6 +17,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -49,34 +51,34 @@ function _setup() {
 
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US",
     public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_2, region: "US",
     public_key: reviewer2Kp.publicKey, root_public_key: reviewer2Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer2"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer2"),
   });
 
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
   // Seed scores so listReviewerPool eligibility passes for any opted-in
   // reviewer in tests that don't explicitly set their own scores.
-  const now = new Date().toISOString();
+  const now = nowMs();
   dag.setScore(REVIEWER_1, 900, 0, now);
   dag.setScore(REVIEWER_2, 900, 0, now);
   dag.setScore(CREATOR, 700, 0, now);
@@ -87,7 +89,7 @@ function _setup() {
   const NODE_ID = "tip://node/n1";
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -110,7 +112,7 @@ function _seedTriggeredReview(fx, { reviewId = "rv_t", ctid = CTID_1 } = {}) {
   return reviewId;
 }
 
-function _seedConfirmedReview(fx, { reviewId = "rv_c", ctid = CTID_1, suggestedOrigin = "AG", confirmedAtMs = Date.now() } = {}) {
+function _seedConfirmedReview(fx, { reviewId = "rv_c", ctid = CTID_1, suggestedOrigin = "AG", confirmedAtMs = nowMs() } = {}) {
   fx.dag.savePrescanReview({
     review_id: reviewId, ctid, creator_tip_id: CREATOR,
     assigned_reviewer: REVIEWER_1, triggered_at_round: 1,
@@ -126,7 +128,7 @@ function _throws(fn) {
   catch (err) { return err; }
 }
 
-function _seedContent(fx, { ctid = CTID_1, status = CONTENT_STATUS.PENDING_REVIEW, registeredAtMs = Date.now() } = {}) {
+function _seedContent(fx, { ctid = CTID_1, status = CONTENT_STATUS.PENDING_REVIEW, registeredAtMs = nowMs() } = {}) {
   fx.dag.saveContent({
     ctid, origin_code: "OH",
     content_hash: "ab".repeat(32), perceptual_hash: null,
@@ -135,7 +137,7 @@ function _seedContent(fx, { ctid = CTID_1, status = CONTENT_STATUS.PENDING_REVIE
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
     status, prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
     override: true,
-    registered_at: new Date(registeredAtMs).toISOString(),
+    registered_at: registeredAtMs,
     registered_urls: [], tx_id: shake256(`c:${ctid}:${registeredAtMs}`),
   });
 }
@@ -436,7 +438,7 @@ describe("review-service.acceptCorrection", () => {
     // confirmed 48h ago — far outside the 24h window
     _seedConfirmedReview(fx, {
       reviewId: "rv_acc6", suggestedOrigin: "AG",
-      confirmedAtMs: Date.now() - 48 * 3600 * 1000,
+      confirmedAtMs: nowMs() - 48 * 3600 * 1000,
     });
     _seedContent(fx);
     const signature = _signUpdate(fx.creatorKp, { author_tip_id: CREATOR, new_origin_code: "AG" });
@@ -476,7 +478,7 @@ describe("review-service.listReviewerPool", () => {
 
   test("excludes revoked identities", () => {
     const fx = _setup();
-    fx.dag.addRevocation(REVIEWER_1, TX_TYPES.REVOKE_VOLUNTARY, new Date().toISOString(), shake256("rev"));
+    fx.dag.addRevocation(REVIEWER_1, TX_TYPES.REVOKE_VOLUNTARY, nowMs(), shake256("rev"));
     const { pool, count } = fx.service.listReviewerPool();
     expect(count).toBe(1);
     expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
@@ -484,7 +486,7 @@ describe("review-service.listReviewerPool", () => {
 
   test("excludes identities below REVIEWER.MIN_SCORE", () => {
     const fx = _setup();
-    fx.dag.setScore(REVIEWER_1, 100, 0, new Date().toISOString());
+    fx.dag.setScore(REVIEWER_1, 100, 0, nowMs());
     const { pool, count } = fx.service.listReviewerPool();
     expect(count).toBe(1);
     expect(pool.map(p => p.tip_id)).toEqual([REVIEWER_2]);
@@ -542,8 +544,8 @@ describe("review-service.dispute", () => {
       // Each summons references the dispute tx
       expect(s.data.dispute_tx_id).toBe(tx.tx_id);
       expect(s.data.ctid).toBe(CTID_1);
-      expect(typeof s.data.commit_deadline).toBe("string");
-      expect(typeof s.data.reveal_deadline).toBe("string");
+      expect(typeof s.data.commit_deadline).toBe("number");
+      expect(typeof s.data.reveal_deadline).toBe("number");
     }
   });
 

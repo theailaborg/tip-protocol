@@ -41,14 +41,14 @@ function _setup() {
 
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: SUBJECT, region: "US",
     public_key: subjectKp.publicKey, root_public_key: subjectKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("subject"),
+    registered_at: 1767225600000, tx_id: shake256("subject"),
   });
 
   const submitted = [];

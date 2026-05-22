@@ -41,17 +41,17 @@ function _seed(dag) {
   dag.saveIdentity({
     tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
     vp_id: "tip://vp/v1", verification_tier: "T1", founding: false,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
     tx_id: "deadbeef",
   });
-  dag.setScore(tipId, 1000, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, 1000, 0, 1767225600000);
   return tipId;
 }
 function _seedContent(dag, ctid, originCode) {
   dag.saveContent({
     ctid, origin_code: originCode, content_hash: "00",
     author_tip_id: "tip://id/author", status: CONTENT_STATUS.REGISTERED,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+    registered_at: 1767225600000, tx_id: "00",
   });
 }
 

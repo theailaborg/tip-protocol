@@ -66,7 +66,7 @@ function rot(n, effectiveRound, committee, opts = {}) {
     signer_node_ids: opts.signers || [],
     signatures:      opts.sigs    || [],
     payload_hash:    opts.hash    || shake256(canonicalJson({ rotation_number: n, effective_round: effectiveRound, committee: c })),
-    committed_at:    opts.at      || "2026-05-06T00:00:00.000Z",
+    committed_at:    opts.at      || 1778025600000,
   };
 }
 
@@ -118,7 +118,7 @@ async function drain() {
         prev_rotation: 2,
         signers: ["n1", "n2"],
         sigs:    ["sig-3a", "sig-3b"],
-        at:      "2026-05-06T01:00:00.000Z",
+        at:      1778029200000,
       }),
     ];
 

@@ -47,7 +47,7 @@ beforeAll(async () => {
 // Helper: build a content-addressed tx with given prev. Used for both
 // submission-path testing (no tx_id, addTx auto-fills) and snapshot-
 // install-path testing (tx_id pre-set, addTx preserves canonical bytes).
-function makeTx({ prev = [], tx_type = "REGISTER_CONTENT", data = { ctid: "tip://content/u" }, timestamp = "2026-01-01T00:00:00.000Z" } = {}) {
+function makeTx({ prev = [], tx_type = "REGISTER_CONTENT", data = { ctid: "tip://content/u" }, timestamp = 1767225600000 } = {}) {
   const body = { tx_type, timestamp, prev, data };
   body.tx_id = computeTxId(body);
   body.signature = "00";
@@ -95,7 +95,7 @@ describe("dag.addTx — snapshot-install path", () => {
     expect(before).toHaveLength(2);
     const submitted = dag.addTx({
       tx_type: "REGISTER_CONTENT",
-      timestamp: "2026-04-27T00:00:00.000Z",
+      timestamp: 1777248000000,
       data: { ctid: "tip://content/submission" },
       prev: [],
       signature: "00",
@@ -113,9 +113,9 @@ describe("dag.addTx — snapshot-install path", () => {
     // compute, so no separate reprime call is needed.
     const dag = initDAG({ dbPath: ":memory:" });
     const baseline = dag.getRecentPrev();
-    const tx1 = makeTx({ prev: [...baseline], timestamp: "2026-04-27T00:00:01.000Z" });
+    const tx1 = makeTx({ prev: [...baseline], timestamp: 1777248001000 });
     dag.addTx(tx1);
-    const tx2 = makeTx({ prev: dag.getRecentPrev(), timestamp: "2026-04-27T00:00:02.000Z" });
+    const tx2 = makeTx({ prev: dag.getRecentPrev(), timestamp: 1777248002000 });
     dag.addTx(tx2);
     const ring = dag.getRecentPrev();
     expect(ring[0]).toBe(tx2.tx_id);
@@ -290,11 +290,11 @@ describe("snapshot-roots.computeTxsFullRoot / computeCommitsFullRoot", () => {
     const dag = initDAG({ dbPath: ":memory:" });
     const c1 = {
       round: 1, anchor_cert_hash: "1".repeat(64), leader_node_id: "n", committee: ["n"],
-      support_count: 1, consensus_index: 0, committed_at: "2026-01-01T00:00:01.000Z",
+      support_count: 1, consensus_index: 0, committed_at: 1767225601000,
       state_merkle_root: "0".repeat(64), txs_merkle_root: "0".repeat(64),
       ack_signer_ids: [], ack_signatures: [],
     };
-    const c2 = { ...c1, round: 2, consensus_index: 1, committed_at: "2026-01-01T00:00:02.000Z" };
+    const c2 = { ...c1, round: 2, consensus_index: 1, committed_at: 1767225602000 };
     dag.saveCommit(c1);
     dag.saveCommit(c2);
     // Rooting with latest=2 should hash only c1; with latest=1 only c2.

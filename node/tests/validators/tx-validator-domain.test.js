@@ -30,8 +30,8 @@ function _bindTx(overrides = {}) {
       binding_state:     "verified",
       claim_signature:   "00".repeat(8),
       binding_signature: "00".repeat(8),
-      claimed_at:        "2026-05-12T10:00:00.000Z",
-      verified_at:       "2026-05-12T10:00:30.000Z",
+      claimed_at:        1778580000000,
+      verified_at:       1778580030000,
       ...overrides,
     },
   };
@@ -44,7 +44,7 @@ function _unbindTx(overrides = {}) {
       domain:           "acmenews.com",
       node_id:          "tip://node/n1",
       reason:           "verification_lost",
-      revoked_at:       "2026-05-12T10:00:00.000Z",
+      revoked_at:       1778580000000,
       unbind_signature: "00".repeat(8),
       ...overrides,
     },
@@ -90,19 +90,19 @@ describe("validateBusinessRules — BIND_DOMAIN", () => {
   test("non-ISO claimed_at rejected", () => {
     const r = validateBusinessRules(_bindTx({ claimed_at: "yesterday" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/claimed_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/claimed_at must be a valid epoch ms timestamp/);
   });
 
   test("non-ISO verified_at rejected", () => {
     const r = validateBusinessRules(_bindTx({ verified_at: "tomorrow" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/verified_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/verified_at must be a valid epoch ms timestamp/);
   });
 
   test("verified_at before claimed_at rejected (logical-ordering guard)", () => {
     const r = validateBusinessRules(_bindTx({
-      claimed_at:  "2026-05-12T10:00:00.000Z",
-      verified_at: "2026-05-12T09:59:59.000Z",
+      claimed_at:  1778580000000,
+      verified_at: 1778579999000,
     }));
     expect(r.valid).toBe(false);
     expect(r.errors.join("\n")).toMatch(/verified_at must not precede claimed_at/);
@@ -110,8 +110,8 @@ describe("validateBusinessRules — BIND_DOMAIN", () => {
 
   test("verified_at exactly equal to claimed_at accepted", () => {
     const r = validateBusinessRules(_bindTx({
-      claimed_at:  "2026-05-12T10:00:00.000Z",
-      verified_at: "2026-05-12T10:00:00.000Z",
+      claimed_at:  1778580000000,
+      verified_at: 1778580000000,
     }));
     expect(r.valid).toBe(true);
   });
@@ -144,7 +144,7 @@ describe("validateBusinessRules — UNBIND_DOMAIN", () => {
   test("non-ISO revoked_at rejected", () => {
     const r = validateBusinessRules(_unbindTx({ revoked_at: "right-now" }));
     expect(r.valid).toBe(false);
-    expect(r.errors.join("\n")).toMatch(/revoked_at must be an ISO8601 timestamp/);
+    expect(r.errors.join("\n")).toMatch(/revoked_at must be a valid epoch ms timestamp/);
   });
 
   test("each canonical reason accepted", () => {

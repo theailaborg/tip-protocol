@@ -36,6 +36,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../shared/time");
+
 const { getLogger } = require("./logger");
 
 const log = getLogger("tip.scheduler");
@@ -66,10 +68,10 @@ function createScheduler(network, config) {
         return;
       }
       running = true;
-      const start = Date.now();
+      const start = nowMs();
       try {
         await fn();
-        log.debug(`[${name}] completed in ${Date.now() - start}ms`);
+        log.debug(`[${name}] completed in ${nowMs() - start}ms`);
       } catch (err) {
         log.error(`[${name}] failed: ${err.message}`);
       } finally {

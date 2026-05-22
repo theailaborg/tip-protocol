@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -42,11 +44,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -63,7 +65,7 @@ function _setup() {
   let round = 0;
   const commitSubmitted = () => {
     round++;
-    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: Date.now() });
+    commitHandler.commitOrderedTxs(submitted.splice(0, submitted.length), round, { certTimestamp: nowMs() });
   };
   return { dag, scoring, profileService, commitSubmitted, submitted };
 }
@@ -77,9 +79,9 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     // way SQLite does. Production identities always have this set via
     // CREATE TABLE DEFAULT 0.
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 function _seedUser(fx, label) {

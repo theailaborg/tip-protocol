@@ -19,6 +19,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -42,20 +44,20 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   for (const tip_id of [CREATOR, REVIEWER_1, REVIEWER_2]) {
     dag.saveIdentity({
       tip_id, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
       reviewer_consent: true,
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tip_id}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tip_id}`),
     });
   }
   const scoring = initScoring(dag, { nodeId: "tip://node/n1" });
-  dag.setScore(REVIEWER_1, 900, 0, new Date().toISOString());
-  dag.setScore(REVIEWER_2, 900, 0, new Date().toISOString());
-  dag.setScore(CREATOR, 700, 0, new Date().toISOString());
+  dag.setScore(REVIEWER_1, 900, 0, nowMs());
+  dag.setScore(REVIEWER_2, 900, 0, nowMs());
+  dag.setScore(CREATOR, 700, 0, nowMs());
 
   const service = createDisputeService({
     dag, scoring, config: { nodeId: "tip://node/n1" },
@@ -72,7 +74,7 @@ describe("dashboard — review_assignment_pending", () => {
 
   test("surfaces for the assigned reviewer; hours_remaining counts down", () => {
     const fx = _setup();
-    const triggeredAtMs = Date.now() - 6 * 3600_000; // 6h ago
+    const triggeredAtMs = nowMs() - 6 * 3600_000; // 6h ago
     fx.dag.savePrescanReview({
       review_id: "rv_open", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
@@ -97,7 +99,7 @@ describe("dashboard — review_assignment_pending", () => {
   test("priority=urgent within 6h of SLA", () => {
     const fx = _setup();
     // 4h remaining = within 6h cutoff
-    const triggeredAtMs = Date.now() - (REVIEWER.AUTO_RECUSE_AGE_MS - 4 * 3600_000);
+    const triggeredAtMs = nowMs() - (REVIEWER.AUTO_RECUSE_AGE_MS - 4 * 3600_000);
     fx.dag.savePrescanReview({
       review_id: "rv_close", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
@@ -112,7 +114,7 @@ describe("dashboard — review_assignment_pending", () => {
 
   test("priority=urgent + title past-SLA when overdue", () => {
     const fx = _setup();
-    const triggeredAtMs = Date.now() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
+    const triggeredAtMs = nowMs() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.dag.savePrescanReview({
       review_id: "rv_overdue", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
@@ -132,7 +134,7 @@ describe("dashboard — review_assignment_pending", () => {
     fx.dag.savePrescanReview({
       review_id: "rv_done", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
-      triggered_at_round: 1, triggered_at_ms: Date.now() - 3600_000,
+      triggered_at_round: 1, triggered_at_ms: nowMs() - 3600_000,
       decided_at_round: 2,
       state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
     });
@@ -145,7 +147,7 @@ describe("dashboard — review_assignment_pending", () => {
     fx.dag.savePrescanReview({
       review_id: "rv_recused", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
-      triggered_at_round: 1, triggered_at_ms: Date.now() - 3600_000,
+      triggered_at_round: 1, triggered_at_ms: nowMs() - 3600_000,
       decided_at_round: 2,
       state: PRESCAN_REVIEW_STATES.RECUSED,
     });
@@ -158,7 +160,7 @@ describe("dashboard — review_assignment_pending", () => {
     fx.dag.savePrescanReview({
       review_id: "rv_open_other", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
-      triggered_at_round: 1, triggered_at_ms: Date.now() - 3600_000,
+      triggered_at_round: 1, triggered_at_ms: nowMs() - 3600_000,
       state: PRESCAN_REVIEW_STATES.TRIGGERED,
     });
     const out = fx.service.getUserDashboard(REVIEWER_2);

@@ -369,12 +369,12 @@ describe("commit-handler vs computeScore — same final score for any tx history
     const nodeKp = generateMLDSAKeypair();
     dag.saveNode({
       node_id: "tip://node/n1", name: "n1", public_key: nodeKp.publicKey,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     dag.saveVP({
       vp_id: "tip://vp/v1", name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: vpKp.publicKey, root_public_key: "00", status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("vp:v1"),
+      registered_at: 1767225600000, tx_id: shake256("vp:v1"),
     });
     const config = {
       nodeId: "tip://node/n1", nodeRegisteredId: "tip://node/n1",
@@ -435,7 +435,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
 
   test("social_attested REGISTER_IDENTITY: commit-handler.setScore = computeScore = 500 (post-spec, no +50 bonus)", () => {
     const fx = _makeFx();
-    const { tx, tip_id } = _registerIdentityTx(fx, { social_attested: true, timestamp: "2026-04-29T00:00:00.000Z" });
+    const { tx, tip_id } = _registerIdentityTx(fx, { social_attested: true, timestamp: 1777420800000 });
     const r = fx.handler.commitOrderedTxs([tx], 100);
     expect(r.committed).toBe(1);
 
@@ -447,7 +447,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
 
   test("non-attested REGISTER_IDENTITY: both paths = 500", () => {
     const fx = _makeFx();
-    const { tx, tip_id } = _registerIdentityTx(fx, { social_attested: false, timestamp: "2026-04-29T00:00:00.000Z" });
+    const { tx, tip_id } = _registerIdentityTx(fx, { social_attested: false, timestamp: 1777420800000 });
     fx.handler.commitOrderedTxs([tx], 100);
 
     expect(fx.dag.getScore(tip_id).score).toBe(500);
@@ -457,12 +457,12 @@ describe("commit-handler vs computeScore — same final score for any tx history
   test("REGISTER_IDENTITY + clean_record_bonus: both paths = 510 (regression for live divergence)", () => {
     const fx = _makeFx();
     const { tx: reg, tip_id } = _registerIdentityTx(fx, {
-      social_attested: true, timestamp: "2026-04-29T00:00:00.000Z",
+      social_attested: true, timestamp: 1777420800000,
     });
     fx.handler.commitOrderedTxs([reg], 100);
     const bonus = _scoreUpdateTx(fx, {
       tip_id, delta: 10, reason: "clean_record_bonus",
-      timestamp: "2026-04-29T00:00:01.000Z",
+      timestamp: 1777420801000,
     });
     fx.handler.commitOrderedTxs([bonus], 101);
 
@@ -482,7 +482,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
   test("CONTENT_VERIFIED + paired SCORE_UPDATE — both paths reflect the +3 immediately (#38 gap closed)", () => {
     const fx = _makeFx();
     const { tx: author, tip_id: authorId } = _registerIdentityTx(fx, {
-      social_attested: false, timestamp: "2026-04-29T00:00:00.000Z",
+      social_attested: false, timestamp: 1777420800000,
     });
     fx.handler.commitOrderedTxs([author], 100);
     expect(fx.dag.getScore(authorId).score).toBe(500);
@@ -494,7 +494,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
     // for the score row.
     const verify = {
       tx_type: TX_TYPES.CONTENT_VERIFIED,
-      timestamp: "2026-04-29T00:01:00.000Z",
+      timestamp: 1777420860000,
       prev: fx.dag.getRecentPrev(),
       data: {
         ctid: "tip://content/x", verifier_tip_id: "tip://id/verifier",
@@ -512,7 +512,7 @@ describe("commit-handler vs computeScore — same final score for any tx history
     const scoreUpdate = _scoreUpdateTx(fx, {
       tip_id: authorId, delta: 3,
       reason: `Content verified (tip://content/x)`,
-      timestamp: "2026-04-29T00:01:00.001Z",
+      timestamp: 1777420860001,
     });
     fx.handler.commitOrderedTxs([scoreUpdate], 101);
 

@@ -20,6 +20,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -54,7 +56,7 @@ function seedCerts(dag, rounds) {
 }
 
 function makeTmpDbPath() {
-  return path.join(os.tmpdir(), `tip-cert-gc-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-cert-gc-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 describe("dag.pruneCertificatesBefore — MemoryStore", () => {
@@ -326,7 +328,7 @@ describe("commits table survives cert GC (§15 audit invariant)", () => {
       committee: ["tip://node/a1", "tip://node/b1"],
       support_count: 2,
       consensus_index: 1,
-      committed_at: "2026-04-24T00:00:00.000Z",
+      committed_at: 1776988800000,
       state_merkle_root: "staterootval",
       txs_merkle_root: "txsrootval",
       ack_signer_ids: ["tip://node/a1", "tip://node/b1"],

@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -54,24 +56,24 @@ function _setup() {
 
   dag.saveNode({
     node_id: NODE_ID, name: "n1", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   dag.saveIdentity({
     tip_id: CREATOR, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: shake256("creator"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
 
   const config = {
@@ -79,7 +81,7 @@ function _setup() {
     nodePrivateKey: nodeKp.privateKey,
   };
   const scoring = initScoring(dag, config);
-  dag.setScore(REVIEWER_1, 900, 0, new Date().toISOString());
+  dag.setScore(REVIEWER_1, 900, 0, nowMs());
 
   const submitted = [];
   const submitTx = (tx) => { submitted.push(tx); };
@@ -107,7 +109,7 @@ function _setup() {
       status: CONTENT_STATUS.REGISTERED,
       prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
       override: true,
-      registered_at: new Date(registeredAtMs).toISOString(),
+      registered_at: registeredAtMs,
       registered_urls: [], tx_id: shake256(`c:${CTID}:${registeredAtMs}`),
     });
   }
@@ -119,7 +121,7 @@ describe("PRESCAN_REVIEW_TRIGGERED — triggered_at_ms persistence", () => {
 
   test("commit-handler sets triggered_at_ms from cert.ts", () => {
     const fx = _setup();
-    const registeredAtMs = Date.now() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
+    const registeredAtMs = nowMs() - CONTENT_GRACE.FLAGGED_MS - 5 * 60_000;
     fx.seedFlaggedContent(registeredAtMs);
 
     const triggerCertMs = registeredAtMs + CONTENT_GRACE.FLAGGED_MS + 1000;
@@ -139,7 +141,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("returns TRIGGERED reviews older than REVIEWER.AUTO_RECUSE_AGE_MS; excludes fresh", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     const freshMs = nowMs - 60_000;
 
@@ -162,7 +164,7 @@ describe("dag.getReviewsNeedingAutoRecuse", () => {
 
   test("excludes non-TRIGGERED reviews (decided / recused / etc.)", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
 
     fx.dag.savePrescanReview({
@@ -179,7 +181,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("emits node-signed PRESCAN_REVIEW_RECUSED once SLA elapses", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = 1772323200000;
     const oldMs = nowMs - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.dag.savePrescanReview({
       review_id: "rv_recuse_me", ctid: CTID, creator_tip_id: CREATOR,
@@ -204,7 +206,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
 
   test("does NOT emit before SLA", () => {
     const fx = _setup();
-    const nowMs = Date.parse("2026-03-01T00:00:00.000Z");
+    const nowMs = 1772323200000;
     fx.dag.savePrescanReview({
       review_id: "rv_fresh", ctid: CTID, creator_tip_id: CREATOR,
       assigned_reviewer: REVIEWER_1,
@@ -218,7 +220,7 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
   test("commit-handler applies auto-recuse → review=RECUSED, content.status=REGISTERED", () => {
     const fx = _setup();
     // Seed an old TRIGGERED review with content row backing it
-    const baseMs = Date.now() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
+    const baseMs = nowMs() - REVIEWER.AUTO_RECUSE_AGE_MS - 60_000;
     fx.seedFlaggedContent(baseMs - CONTENT_GRACE.FLAGGED_MS);
     fx.dag.updateContentStatus(CTID, CONTENT_STATUS.PENDING_REVIEW);
     fx.dag.savePrescanReview({
@@ -228,8 +230,8 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
       state: PRESCAN_REVIEW_STATES.TRIGGERED,
     });
 
-    const nowMs = Date.now();
-    fx.prescanReviewTrigger.checkPending(nowMs, 1);
+    const now = nowMs();
+    fx.prescanReviewTrigger.checkPending(now, 1);
     const tx = fx.submitted.find(t => t.tx_type === TX_TYPES.PRESCAN_REVIEW_RECUSED);
     expect(tx).toBeDefined();
 

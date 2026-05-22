@@ -6,7 +6,7 @@
  * Two callers, identical predicate:
  *
  *   API service (CheckTx role):
- *     const r = rules.canVerify(dag, args, { now: Date.now() });
+ *     const r = rules.canVerify(dag, args, { now: nowMs() });
  *     if (!r.valid) throw r.error;            // 4xx response
  *
  *   commit-handler (DeliverTx role):
@@ -14,7 +14,7 @@
  *     if (!r.valid) { log.warn(r.error.message); drop; return; }
  *
  * `now` is the only difference between the two call sites:
- *   - API time uses local wall-clock (Date.now()) — fine for early
+ *   - API time uses local wall-clock (nowMs()) — fine for early
  *     rejection.
  *   - Commit time uses `cert.timestamp` (BFT-Time median of acks) so the
  *     accept/reject decision is identical on every node.
@@ -28,6 +28,8 @@
  */
 
 "use strict";
+
+const { nowMs } = require("../../../shared/time");
 
 const {
   TX_TYPES, ORIGIN, CONTENT_STATUS, DISPUTE_REASON, PRESCAN_TIERS, PRESCAN_REVIEW_STATES,
@@ -176,7 +178,7 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
       "Cannot update origin while a reviewer is evaluating this content. Wait for the reviewer's decision.",
     );
   } else {
-    const registeredAt = new Date(rec.registered_at).getTime();
+    const registeredAt = rec.registered_at;
     const isFlaggedWithOverride =
       (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
       && !!rec.override;
@@ -291,11 +293,11 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   // disputer_tip_id). A user-filed dispute that already failed
   // validation never lands as a tx, so this count only sees committed
   // filings — same value at CheckTx and DeliverTx.
-  const windowCutoffMs = Date.now() - DISPUTE.FILER_WINDOW_MS;
+  const windowCutoffMs = nowMs() - DISPUTE.FILER_WINDOW_MS;
   const filerCount = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED)
     .filter(t => t.data?.disputer_tip_id === disputer_tip_id
       && !t.data?.auto
-      && new Date(t.timestamp).getTime() >= windowCutoffMs)
+      && t.timestamp >= windowCutoffMs)
     .length;
   if (filerCount >= DISPUTE.MAX_PER_FILER_PER_WINDOW) {
     const days = Math.round(DISPUTE.FILER_WINDOW_MS / 86_400_000);
@@ -319,7 +321,7 @@ function canCommitVote(dag, { ctid, juror_tip_id, is_appeal = false }, { now }) 
     return fail(403, is_appeal ? "You were not summoned as an expert for this appeal" : "You were not summoned as a juror for this dispute");
   }
 
-  const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
+  const commitDeadline = summonsTxs[0].data.commit_deadline;
   if (now > commitDeadline && !_devBypassVoteWindows()) return fail(403, "Commit window has closed");
 
   const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
@@ -339,8 +341,8 @@ function canRevealVote(dag, { ctid, juror_tip_id, is_appeal = false, vote, salt 
     return fail(403, is_appeal ? "You were not summoned as an expert" : "You were not summoned as a juror");
   }
 
-  const commitDeadline = new Date(summonsTxs[0].data.commit_deadline).getTime();
-  const revealDeadline = new Date(summonsTxs[0].data.reveal_deadline).getTime();
+  const commitDeadline = summonsTxs[0].data.commit_deadline;
+  const revealDeadline = summonsTxs[0].data.reveal_deadline;
   const bypass = _devBypassVoteWindows();
   if (now < commitDeadline && !bypass) return fail(403, "Reveal window has not opened yet");
   if (now > revealDeadline && !bypass) return fail(403, "Reveal window has closed");
@@ -366,7 +368,7 @@ function canFileAppeal(dag, { ctid, appellant_tip_id }, { now }) {
   const existingAppeal = dag.getTxsByTypeAndCtid(TX_TYPES.APPEAL_FILED, ctid);
   if (existingAppeal.length) return fail(409, "Appeal already filed for this content");
 
-  const verdictTime = new Date(adjTxs[0].timestamp).getTime();
+  const verdictTime = adjTxs[0].timestamp;
   if (now - verdictTime > APPEAL.FILING_WINDOW_HOURS * 3600000) {
     return fail(403, "Appeal filing window has expired");
   }

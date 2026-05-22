@@ -47,13 +47,13 @@ function registerNode(dag) {
     name: "n1",
     public_key: "00",
     status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z",
+    registered_at: 1767225600000,
   });
 }
 
 // BFT-Time monotonic floor for synthetic certs (1ms per round, strictly
 // increasing, anchored 1ms past the genesis floor).
-const BFT_T0 = new Date("2026-03-15T00:00:01.000Z").getTime();
+const BFT_T0 = 1773532801000;
 
 function makeCert(round, parentHashes = []) {
   const hash = shake256(`cert:${round}:${NODE_ID}`);

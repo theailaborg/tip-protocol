@@ -26,6 +26,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -42,7 +44,7 @@ beforeAll(async () => {
 
 // Drop in a tmpfile path; cleaned up on test exit.
 function _tmpDbPath() {
-  return path.join(os.tmpdir(), `tip-mig-subj-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-mig-subj-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function _cleanup(dbPath) {
@@ -95,13 +97,13 @@ describe("dag migration — subject_tip_id (pre-migration → migrated DB)", () 
     ).run(
       "a".repeat(64), "REGISTER_IDENTITY",
       JSON.stringify({ tip_id: "tip://id/US-1234567890abcdef", region: "US" }),
-      "2026-04-30T00:00:00.000Z", "[]", null
+      1777507200000, "[]", null
     );
     seedDb.prepare("INSERT INTO mempool (tx_id, tx_data) VALUES (?,?)").run(
       "b".repeat(64),
       JSON.stringify({
         tx_id: "b".repeat(64), tx_type: "SCORE_UPDATE",
-        timestamp: "2026-04-30T01:00:00.000Z",
+        timestamp: 1777510800000,
         data: { tip_id: "tip://id/US-fedcba9876543210", delta: 1, reason: "test" },
       })
     );

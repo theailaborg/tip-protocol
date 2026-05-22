@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -48,11 +50,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
 
   const disputerKp = generateMLDSAKeypair();
@@ -65,9 +67,9 @@ function _setup() {
       public_key: kp ? kp.publicKey : "00",
       root_public_key: kp ? kp.publicKey : "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   // Seed jury candidates so jury selection has someone to draw from.
@@ -76,9 +78,9 @@ function _setup() {
     dag.saveIdentity({
       tip_id: t, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${t}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${t}`),
     });
-    dag.setScore(t, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(t, 750, 0, 1767225600000);
   }
 
   const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
@@ -101,7 +103,7 @@ function _seedContent(dag, ctid, authorTipId) {
   dag.saveContent({
     ctid, origin_code: "OH", content_hash: shake256(`c:${ctid}`),
     author_tip_id: authorTipId, status: CONTENT_STATUS.REGISTERED,
-    registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256(`reg:${ctid}`),
+    registered_at: 1775001600000, tx_id: shake256(`reg:${ctid}`),
   });
 }
 
@@ -242,7 +244,7 @@ describe("persistEvidence — happy path & idempotency", () => {
       tip_id: otherTipId, region: "US",
       public_key: otherKp.publicKey, root_public_key: otherKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${otherTipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${otherTipId}`),
     });
 
     const payload = _validPayload();
@@ -385,7 +387,7 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
     dag.saveContent({
       ctid, origin_code: originCode, content_hash: shake256(`c:${ctid}:${originCode}`),
       author_tip_id: authorTipId, status: CONTENT_STATUS.REGISTERED,
-      registered_at: "2026-04-01T00:00:00.000Z", tx_id: shake256(`reg:${ctid}:${originCode}`),
+      registered_at: 1775001600000, tx_id: shake256(`reg:${ctid}:${originCode}`),
     });
   }
 
@@ -394,7 +396,7 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
   // evidence_hash uniqueness rule doesn't trip across the eligibility
   // matrix tests.
   function _disputeBodyOnly({ disputerTipId, disputerKp, claimed_origin }) {
-    const payload = _validPayload(`origin-matrix-${claimed_origin}-${Date.now()}-${Math.random()}`);
+    const payload = _validPayload(`origin-matrix-${claimed_origin}-${nowMs()}-${Math.random()}`);
     return _buildDisputeBody({ disputerTipId, disputerKp, payload, claimed_origin });
   }
 

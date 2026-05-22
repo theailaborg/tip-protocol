@@ -49,11 +49,11 @@ function _setup() {
   const nodeKp = generateMLDSAKeypair();
   dag.saveNode({
     node_id: NODE_ID, name: "test", public_key: nodeKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   const config = {
     nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey,
@@ -75,9 +75,9 @@ function _seedIdentity(dag, tipId, score = 750) {
   dag.saveIdentity({
     tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
   });
-  dag.setScore(tipId, score, 0, "2026-01-01T00:00:00.000Z");
+  dag.setScore(tipId, score, 0, 1767225600000);
 }
 
 // Seed a dispute setup: content + author + disputer + N jurors all in DAG,
@@ -91,11 +91,11 @@ function _seedDisputeFixture(dag, { jurorCount = 7, declaredOrigin = ORIGIN.OH, 
   dag.saveContent({
     ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
     author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: "00",
+    registered_at: 1767225600000, tx_id: "00",
   });
 
   const disputeTx = _addTx(dag, {
-    tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: "2026-04-01T00:00:00.000Z",
+    tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: 1775001600000,
     data: {
       ctid: CTID, disputer_tip_id: disputerTipId, reason: "origin_mismatch",
       claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
@@ -107,8 +107,8 @@ function _seedDisputeFixture(dag, { jurorCount = 7, declaredOrigin = ORIGIN.OH, 
   const summons = [];
   const jurors = [];
   // Reveal-deadline far in the future so reveal txs are accepted.
-  const revealDeadline = "2030-01-01T00:00:00.000Z";
-  const commitDeadline = "2030-01-01T00:00:00.000Z";
+  const revealDeadline = 1893456000000;
+  const commitDeadline = 1893456000000;
   for (let i = 0; i < jurorCount; i++) {
     const j = `tip://id/juror-${i}`;
     _seedIdentity(dag, j, 750);
@@ -129,7 +129,7 @@ function _seedDisputeFixture(dag, { jurorCount = 7, declaredOrigin = ORIGIN.OH, 
 }
 
 // Build N reveal txs with a chosen vote distribution.
-function _buildReveals(jurors, votes, ts = "2026-04-02T00:00:00.000Z") {
+function _buildReveals(jurors, votes, ts = 1775088000000) {
   return jurors.slice(0, votes.length).map((j, i) => ({
     tx_id: shake256(`reveal-${i}-${votes[i]}`),
     tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: ts,
@@ -212,7 +212,7 @@ describe("Stage-2 verdict — disputer settlement", () => {
     // Reveals confirm OH (over-disclosure → conservative label).
     const reveals = ids.jurors.slice(0, 7).map((j, i) => ({
       tx_id: shake256(`r-cl-${i}`), tx_type: TX_TYPES.JURY_VOTE_REVEAL,
-      timestamp: "2026-04-02T00:00:00.000Z",
+      timestamp: 1775088000000,
       data: {
         ctid: CTID, juror_tip_id: j,
         vote: i < 5 ? VOTE.MISMATCH : VOTE.MATCH,
@@ -355,7 +355,7 @@ describe("Stage-2 verdict — juror score effects", () => {
 describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () => {
   function _withStage2(dag, stage2Verdict, declared = ORIGIN.OH, confirmed = ORIGIN.AG, appellantTipId, authorScoreDelta = -100) {
     const adjResult = _addTx(dag, {
-      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: "2026-04-03T00:00:00.000Z",
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775174400000,
       data: {
         ctid: CTID, verdict: stage2Verdict,
         declared_origin: declared, confirmed_origin: stage2Verdict === VERDICT.UPHELD ? confirmed : null,
@@ -366,7 +366,7 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
     });
 
     const appealFiled = _addTx(dag, {
-      tx_type: TX_TYPES.APPEAL_FILED, timestamp: "2026-04-04T00:00:00.000Z",
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260800000,
       data: { ctid: CTID, appellant_tip_id: appellantTipId, stage2_verdict: stage2Verdict, stake: APPEAL.APPELLANT_STAKE },
     });
 
@@ -375,8 +375,8 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
 
   function _expertSummons(dag, experts) {
     const out = [];
-    const revealDeadline = "2030-01-01T00:00:00.000Z";
-    const commitDeadline = "2030-01-01T00:00:00.000Z";
+    const revealDeadline = 1893456000000;
+    const commitDeadline = 1893456000000;
     for (let i = 0; i < experts.length; i++) {
       out.push(_addTx(dag, {
         tx_type: TX_TYPES.JURY_SUMMONS,
@@ -403,7 +403,7 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
     const summons = _expertSummons(fx.dag, experts);
     const reveals = experts.map((e, i) => ({
       tx_id: shake256(`er-${i}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-06T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
       data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MATCH, salt: shake256(`s${i}`), is_appeal: true },
     }));
 
@@ -429,7 +429,7 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
     // Experts also vote UPHELD (MISMATCH) — confirms Stage-2.
     const reveals = experts.map((e, i) => ({
       tx_id: shake256(`er-conf-${i}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-06T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
       data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MISMATCH, salt: shake256(`s${i}`), confirmed_origin: ORIGIN.AG, is_appeal: true },
     }));
 
@@ -451,7 +451,7 @@ describe("Stage-3 verdict — appellant settlement (overturn vs confirm)", () =>
     const summons = _expertSummons(fx.dag, experts);
     const reveals = experts.map((e, i) => ({
       tx_id: shake256(`er-rev-${i}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-06T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
       data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MATCH, salt: shake256(`s${i}`), is_appeal: true },
     }));
 
@@ -499,7 +499,7 @@ describe("vindication +5 to author on DISMISSED", () => {
     for (const t of stage2.txs) fx.dag.addTx(t);
 
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.APPEAL_FILED, timestamp: "2026-04-04T00:00:01.000Z",
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260801000,
       data: { ctid: CTID, appellant_tip_id: ids.disputerTipId, stage2_verdict: VERDICT.DISMISSED, stake: APPEAL.APPELLANT_STAKE },
     });
 
@@ -514,8 +514,8 @@ describe("vindication +5 to author on DISMISSED", () => {
           data: {
             ctid: CTID, juror_tip_id: experts[i], is_appeal: true,
             stake: JURY.JUROR_STAKE,
-            commit_deadline: "2030-01-01T00:00:00.000Z",
-            reveal_deadline: "2030-01-01T00:00:00.000Z",
+            commit_deadline: 1893456000000,
+            reveal_deadline: 1893456000000,
             seed: shake256("e"), identity_count: 3,
           },
         }));
@@ -524,7 +524,7 @@ describe("vindication +5 to author on DISMISSED", () => {
     })();
     const expReveals = experts.map((e, i) => ({
       tx_id: shake256(`er-vind-${i}`),
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-04-06T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
       data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MISMATCH, salt: shake256(`s${i}`), confirmed_origin: ORIGIN.AG, is_appeal: true },
     }));
 

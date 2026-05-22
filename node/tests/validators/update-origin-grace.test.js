@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -31,8 +33,8 @@ beforeAll(async () => { await initCrypto(); });
 
 const VP_ID = "tip://vp/v1";
 const AUTHOR_ID = "tip://id/US-aaaaaaaaaaaaaaaa";
-const REGISTERED_AT = "2026-01-01T00:00:00.000Z";
-const REGISTERED_AT_MS = new Date(REGISTERED_AT).getTime();
+const REGISTERED_AT = 1767225600000;
+const REGISTERED_AT_MS = REGISTERED_AT;
 
 function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
@@ -219,13 +221,13 @@ describe("canUpdateOrigin — grace window dispatch", () => {
       // wouldn't reject by itself — the only failure path under test
       // here is the open-review gate.
       const seeded = dag.getContent(CTID);
-      dag.saveContent({ ...seeded, registered_at: new Date().toISOString() });
+      dag.saveContent({ ...seeded, registered_at: nowMs() });
       dag.savePrescanReview({
         review_id: "rv_open", ctid: CTID, creator_tip_id: AUTHOR_ID,
         assigned_reviewer: "tip://id/US-rrrrrrrrrrrrrrrr",
         triggered_at_round: 1,
         confirmed_at_round: state === "confirmed" ? 2 : null,
-        confirmed_at_ms: state === "confirmed" ? Date.now() : null,
+        confirmed_at_ms: state === "confirmed" ? nowMs() : null,
         state,
       });
       return dag;
@@ -233,7 +235,7 @@ describe("canUpdateOrigin — grace window dispatch", () => {
 
     test("canUpdateOrigin rejected while review is TRIGGERED — '...while a reviewer is evaluating...'", () => {
       const dag = _seedWithOpenReview("triggered");
-      const result = rules.canUpdateOrigin(dag, args(CTID), { now: Date.now() });
+      const result = rules.canUpdateOrigin(dag, args(CTID), { now: nowMs() });
       expect(result.valid).toBe(false);
       expect(result.error.status).toBe(403);
       expect(result.error.message).toMatch(/while a reviewer is evaluating/i);

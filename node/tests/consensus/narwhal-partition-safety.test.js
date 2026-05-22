@@ -30,6 +30,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 
 const SRC = path.resolve(__dirname, "../../src");
@@ -80,7 +82,7 @@ function build4NodeNarwhal({ currentRound = 1000 } = {}) {
   for (const [id, kp] of peers) {
     dag.saveNode({
       node_id: id, name: id, public_key: kp.publicKey,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
   }
   // #75 atomic boundary: seed rotations with effective_round = N * EPOCH_LENGTH_ROUNDS
@@ -99,7 +101,7 @@ function build4NodeNarwhal({ currentRound = 1000 } = {}) {
       signer_node_ids: [],
       signatures: [],
       payload_hash: `test-partition-rotation-${n}`,
-      committed_at: "2026-01-01T00:00:00.000Z",
+      committed_at: 1767225600000,
     });
   }
 
@@ -154,7 +156,7 @@ describe("narwhal — 4-node partition halts both halves (no split-brain)", () =
     // peer_c and peer_d are unreachable — no batches, no acks.
     const selfBatch = createBatch(1000, SELF_ID, [], fx.selfKp.privateKey);
     const peerBAck = createBatchAck(
-      selfBatch.hash, PEER_B_ID, Date.now(), fx.peerBKp.privateKey
+      selfBatch.hash, PEER_B_ID, nowMs(), fx.peerBKp.privateKey
     );
     fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(peerBAck)));
 
@@ -186,8 +188,8 @@ describe("narwhal — 4-node partition halts both halves (no split-brain)", () =
     await new Promise(r => setTimeout(r, 50));
 
     const selfBatch = createBatch(1000, SELF_ID, [], fx.selfKp.privateKey);
-    const ackB = createBatchAck(selfBatch.hash, PEER_B_ID, Date.now(), fx.peerBKp.privateKey);
-    const ackC = createBatchAck(selfBatch.hash, PEER_C_ID, Date.now(), fx.peerCKp.privateKey);
+    const ackB = createBatchAck(selfBatch.hash, PEER_B_ID, nowMs(), fx.peerBKp.privateKey);
+    const ackC = createBatchAck(selfBatch.hash, PEER_C_ID, nowMs(), fx.peerCKp.privateKey);
     fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(ackB)));
     fx.narwhal.handleIncomingAck(encode("BatchAck", serializeBatchAck(ackC)));
 

@@ -63,12 +63,10 @@ function _devBypassVoteWindows() {
 }
 
 /**
- * Convert a JURY_SUMMONS reveal_deadline (ISO string) to integer epoch ms.
+ * Validate a JURY_SUMMONS reveal_deadline (integer epoch ms).
  * Returns 0 on invalid input — caller skips the entry.
  */
-function _parseDeadline(iso) {
-  if (typeof iso !== "string" || !iso) return 0;
-  const ms = new Date(iso).getTime();
+function _parseDeadline(ms) {
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 

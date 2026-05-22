@@ -52,7 +52,7 @@ function _setupDisputeFixture(opts = {}) {
     const kp = generateMLDSAKeypair();
     dag.saveNode({
       node_id: nodeId, name: nodeId.split("/").pop(), public_key: kp.publicKey,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
     return { nodeId, ...kp };
   });
@@ -78,25 +78,25 @@ function _setupDisputeFixture(opts = {}) {
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: kp.publicKey, root_public_key: "00", vp_id: "tip://vp/v1",
       verification_tier: "T1", founding: false, status: "active",
-      registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
   }
 
   // Content + dispute
   dag.saveContent({
     ctid, origin_code: "OH", content_hash: shake256("content-1"),
     author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
-    registered_at: "2026-01-01T00:00:00.000Z", tx_id: shake256(`content:${ctid}`),
+    registered_at: 1767225600000, tx_id: shake256(`content:${ctid}`),
   });
 
   // Backdated reveal_deadline so test reveals don't trip the window guard
   // by accident. Tests that DO need the guard use their own deadline.
-  const revealDeadline = opts.revealDeadline || "2099-01-01T00:00:00.000Z";
+  const revealDeadline = opts.revealDeadline || 4070908800000;
 
   const disputeTxBody = {
     tx_type: TX_TYPES.CONTENT_DISPUTED,
-    timestamp: "2026-01-01T00:00:00.000Z",
+    timestamp: 1767225600000,
     prev: [],
     data: {
       ctid, disputer_tip_id: disputerTipId, reason: "origin_mismatch",
@@ -113,11 +113,11 @@ function _setupDisputeFixture(opts = {}) {
   for (const jurorTipId of jurorTipIds) {
     const summonsBody = {
       tx_type: TX_TYPES.JURY_SUMMONS,
-      timestamp: "2026-01-01T00:00:00.000Z",
+      timestamp: 1767225600000,
       prev: [],
       data: {
         ctid, dispute_tx_id: disputeTxBody.tx_id, juror_tip_id: jurorTipId,
-        commit_deadline: "2026-01-02T00:00:00.000Z",
+        commit_deadline: 1767312000000,
         reveal_deadline: revealDeadline,
         node_id: "tip://node/n1",
       },
@@ -145,7 +145,7 @@ function _signByNode(fx, nodeIndex, txBody) {
 function _scoreUpdateTx(fx, { tipId, delta, reason, ctid, relatedTxId, nodeIndex = 0 }) {
   return _signByNode(fx, nodeIndex, {
     tx_type: TX_TYPES.SCORE_UPDATE,
-    timestamp: "2026-01-03T00:00:00.000Z",
+    timestamp: 1767398400000,
     prev: [],
     data: {
       tip_id: tipId, delta, reason,
@@ -196,14 +196,14 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
 
   test("clamps to [0, 1000] regardless of delta magnitude", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 990, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(fx.jurorTipIds[0], 990, 0, 1767225600000);
     const tx = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: 100, reason: "test-overflow", ctid: null,
     });
     fx.handler.commitOrderedTxs([tx], 100);
     expect(fx.dag.getScore(fx.jurorTipIds[0]).score).toBe(1000);
 
-    fx.dag.setScore(fx.jurorTipIds[0], 5, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(fx.jurorTipIds[0], 5, 0, 1767225600000);
     const tx2 = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: -100, reason: "test-underflow", ctid: null,
     });
@@ -218,7 +218,7 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
 describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
   test("two SCORE_UPDATEs with identical (tip_id, ctid, reason) — only first applies", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, 1767225600000);
 
     const reason = `Jury majority vote on ${fx.ctid}`;
     // Two competing nodes submit the SAME logical SCORE_UPDATE — different
@@ -237,7 +237,7 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
 
   test("same tip_id + ctid + DIFFERENT reason → both apply (legitimately distinct events)", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, 1767225600000);
 
     const tx1 = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS,
@@ -255,7 +255,7 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
 
   test("dedup applies across rounds — same SCORE_UPDATE arriving in round R+1 is dropped", () => {
     const fx = _setupDisputeFixture();
-    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, "2026-01-01T00:00:00.000Z");
+    fx.dag.setScore(fx.jurorTipIds[0], 750, 0, 1767225600000);
 
     const reason = `Jury majority vote on ${fx.ctid}`;
     const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });
@@ -279,7 +279,7 @@ describe("commit-handler ADJUDICATION_RESULT: first-wins per ctid", () => {
   function _adjTx(fx, nodeIndex, ctid, verdict) {
     return _signByNode(fx, nodeIndex, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-01-03T00:00:00.000Z",
+      timestamp: 1767398400000,
       prev: [],
       data: {
         ctid, verdict, declared_origin: "OH",
@@ -327,7 +327,7 @@ describe("commit-handler APPEAL_RESULT: content-state effects", () => {
   function _appealTx(fx, ctid, opts) {
     return _signByNode(fx, 0, {
       tx_type: TX_TYPES.APPEAL_RESULT,
-      timestamp: "2026-01-04T00:00:00.000Z",
+      timestamp: 1767484800000,
       prev: [],
       data: {
         ctid,
@@ -418,7 +418,7 @@ describe("commit-handler post-resolution status: pre_dispute_status=PENDING_REVI
   function _adjTxWithPreReview(fx, ctid, verdict) {
     return _signByNode(fx, 0, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-01-03T00:00:00.000Z",
+      timestamp: 1767398400000,
       prev: [],
       data: {
         ctid, verdict, declared_origin: "OH", confirmed_origin: null,
@@ -432,7 +432,7 @@ describe("commit-handler post-resolution status: pre_dispute_status=PENDING_REVI
   function _appealTxWithPreReview(fx, ctid, opts) {
     return _signByNode(fx, 0, {
       tx_type: TX_TYPES.APPEAL_RESULT,
-      timestamp: "2026-01-04T00:00:00.000Z",
+      timestamp: 1767484800000,
       prev: [],
       data: {
         ctid,
@@ -516,7 +516,7 @@ describe("commit-handler non-resolution paths: status liveness", () => {
 
     const tx = _signByNode(fx, 0, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-01-03T00:00:00.000Z",
+      timestamp: 1767398400000,
       prev: [],
       data: {
         ctid: fx.ctid, verdict: VERDICT.NO_QUORUM,
@@ -537,7 +537,7 @@ describe("commit-handler non-resolution paths: status liveness", () => {
 
     const tx = _signByNode(fx, 0, {
       tx_type: TX_TYPES.APPEAL_RESULT,
-      timestamp: "2026-01-04T00:00:00.000Z",
+      timestamp: 1767484800000,
       prev: [],
       data: {
         ctid: fx.ctid,
@@ -560,7 +560,7 @@ describe("commit-handler non-resolution paths: status liveness", () => {
 
     const tx = _signByNode(fx, 0, {
       tx_type: TX_TYPES.APPEAL_RESULT,
-      timestamp: "2026-01-04T00:00:00.000Z",
+      timestamp: 1767484800000,
       prev: [],
       data: {
         ctid: fx.ctid,
@@ -583,7 +583,7 @@ describe("commit-handler non-resolution paths: status liveness", () => {
 
     const tx = _signByNode(fx, 0, {
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
-      timestamp: "2026-01-03T00:00:00.000Z",
+      timestamp: 1767398400000,
       prev: [],
       data: {
         ctid: fx.ctid, verdict: "UNKNOWN_FUTURE_VERDICT",
@@ -609,7 +609,7 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
   function _saveMatchingCommit(fx, jurorTipId) {
     const commitBody = {
       tx_type: TX_TYPES.JURY_VOTE_COMMIT,
-      timestamp: "2026-01-02T00:00:00.000Z",
+      timestamp: 1767312000000,
       prev: [],
       data: {
         ctid: fx.ctid, juror_tip_id: jurorTipId,
@@ -649,12 +649,12 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
   // Use past/historical dates so validator's "timestamp in future" check
   // doesn't fire. Deadline > reveal_at exercises the BEFORE branch;
   // deadline < reveal_at exercises the AFTER branch.
-  const HIST_DEADLINE = "2026-04-15T00:00:00.000Z";
+  const HIST_DEADLINE = 1776211200000;
 
   test("reveal arriving BEFORE deadline is accepted by guard (committed)", () => {
     const fx = _setupDisputeFixture({ revealDeadline: HIST_DEADLINE });
     _saveMatchingCommit(fx, fx.jurorTipIds[0]);
-    const tx = _revealTx(fx, fx.jurorTipIds[0], "2026-04-10T00:00:00.000Z");
+    const tx = _revealTx(fx, fx.jurorTipIds[0], 1775779200000);
 
     const result = fx.handler.commitOrderedTxs([tx], 300);
     expect(result.committed).toBe(1);
@@ -663,9 +663,9 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
 
   test("reveal arriving AFTER deadline is rejected by guard (dropped)", () => {
     // deadline before the reveal's tx.timestamp — guard fires.
-    const fx = _setupDisputeFixture({ revealDeadline: "2026-04-01T00:00:00.000Z" });
+    const fx = _setupDisputeFixture({ revealDeadline: 1775001600000 });
     _saveMatchingCommit(fx, fx.jurorTipIds[0]);
-    const tx = _revealTx(fx, fx.jurorTipIds[0], "2026-04-15T00:00:00.000Z");
+    const tx = _revealTx(fx, fx.jurorTipIds[0], 1776211200000);
 
     const result = fx.handler.commitOrderedTxs([tx], 300);
     expect(result.committed).toBe(0);

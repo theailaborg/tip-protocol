@@ -33,6 +33,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 // Pure Prometheus text-format helpers live in lib/ — they're reusable
 // from any emitter and don't belong in a TIP-specific service file.
 const { line, gauge, counter } = require("../lib/prom-format");
@@ -160,9 +162,9 @@ function narwhalSection(s) {
     gauge("tip_narwhal_join_state_catching_up", "1 when Narwhal is catching_up (cert tail closing, no production)", n.joinState === "catching_up" ? 1 : 0),
     gauge("tip_narwhal_join_state_syncing",     "1 when Narwhal is syncing (snapshot installing)",                   n.joinState === "syncing" ? 1 : 0),
     gauge("tip_narwhal_sync_duration_seconds", "Seconds since the node entered syncing; 0 when not syncing. Sustained > 3× round timeout means sync attempts are looping",
-      n.joinState === "syncing" && n.syncEnteredAt ? Math.floor((Date.now() - n.syncEnteredAt) / 1000) : 0),
+      n.joinState === "syncing" && n.syncEnteredAt ? Math.floor((nowMs() - n.syncEnteredAt) / 1000) : 0),
     gauge("tip_narwhal_catching_up_duration_seconds", "Seconds since the node entered catching_up; 0 when not catching_up. Sustained > 10× round timeout flips back to syncing for a fresher snapshot",
-      n.joinState === "catching_up" && n.catchingUpEnteredAt ? Math.floor((Date.now() - n.catchingUpEnteredAt) / 1000) : 0),
+      n.joinState === "catching_up" && n.catchingUpEnteredAt ? Math.floor((nowMs() - n.catchingUpEnteredAt) / 1000) : 0),
     gauge("tip_narwhal_catch_up_target", "Round the cert tail must reach for catching_up to promote to ready; 0 when not catching up",
       n.catchUpTarget || 0),
     gauge("tip_narwhal_certificates_this_round", "Certificates collected for current round", n.certificatesThisRound),

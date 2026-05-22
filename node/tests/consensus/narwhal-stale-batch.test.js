@@ -70,11 +70,11 @@ function buildNarwhal() {
   // from unregistered authors at line 324.
   dag.saveNode({
     node_id: SELF_ID, name: "self", public_key: selfKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
   dag.saveNode({
     node_id: PEER_ID, name: "peerB", public_key: peerKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    status: "active", registered_at: 1767225600000,
   });
 
   const mempool = createMempool({ dag });

@@ -22,6 +22,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -64,7 +66,7 @@ function _setupDagWith(rotation0Committee) {
         name: m.node_id,
         public_key: m.public_key,
         status: "active",
-        registered_at: "2026-01-01T00:00:00.000Z",
+        registered_at: 1767225600000,
       });
     }
   }
@@ -77,7 +79,7 @@ function _setupDagWith(rotation0Committee) {
     signer_node_ids: [],
     signatures: [],
     payload_hash: "test-rotation-1",
-    committed_at: "2026-01-01T00:00:00.000Z",
+    committed_at: 1767225600000,
   });
   return dag;
 }
@@ -523,7 +525,7 @@ describe("#68 rotation coordinator", () => {
     // proposal+sigs to reach their own quorum and carve out (live observed
     // 2026-05-04 rotation 13 halt: fast submitter went silent in 1.2 s,
     // lagging peers stuck at 2/4 sigs forever).
-    coord._state().get(2).submittedAt = Date.now();
+    coord._state().get(2).submittedAt = nowMs();
     const before2 = network._published.length;
     coord._rebroadcastTick();
     expect(network._published.length).toBe(before2 + 2); // proposal + B's sig
@@ -627,7 +629,7 @@ describe("#68 rotation coordinator", () => {
     expect(coord._state().get(2).submittedAt).not.toBeNull();
 
     // Backdate submittedAt past deadlineMs * 2 so pruneExpired drops it.
-    coord._state().get(2).submittedAt = Date.now() - 11_000; // deadlineMs=5000 → *2=10000
+    coord._state().get(2).submittedAt = nowMs() - 11_000; // deadlineMs=5000 → *2=10000
     coord.pruneExpired();
     expect(coord._state().has(2)).toBe(false);
     coord.stop();
@@ -688,8 +690,8 @@ describe("#68 rotation coordinator", () => {
     const txFromNodeA = buildRotationTx(dagStateA, proposal, signer_node_ids, signatures);
     // Sleep a bit between calls (different wall-clock) — pre-#81 this
     // alone produced different tx_ids.
-    const before = Date.now();
-    while (Date.now() - before < 5) { /* spin briefly */ }
+    const before = nowMs();
+    while (nowMs() - before < 5) { /* spin briefly */ }
     const txFromNodeB = buildRotationTx(dagStateB, proposal, signer_node_ids, signatures);
 
     // Critical assertion: tx_id must be IDENTICAL despite different local
@@ -704,9 +706,9 @@ describe("#68 rotation coordinator", () => {
     expect(txFromNodeA.prev).toEqual([]);
   });
 
-  test("buildRotationTx timestamp is derived from effective_round, not wall-clock", () => {
+  test("buildRotationTx timestamp anchors at latest committed cert.timestamp (BFT-Time)", () => {
     const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
-    const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
+    const { GENESIS_TIMESTAMP } = require(path.join(SRC, "genesis"));
 
     const proposal = {
       rotation_number: 5,
@@ -714,17 +716,24 @@ describe("#68 rotation coordinator", () => {
       new_committee: [{ node_id: "tip://node/X", public_key: "ab".repeat(32) }],
       payload_hash: "00".repeat(32),
     };
-    const tx = buildRotationTx({}, proposal, ["tip://node/X"], ["00".repeat(32)]);
 
-    // Expected timestamp = ISO of (effective_round * BATCH_WAIT_MS)
-    const expectedMs = proposal.effective_round * CONSENSUS.BATCH_WAIT_MS;
-    expect(tx.timestamp).toBe(new Date(expectedMs).toISOString());
+    // No commits yet → falls back to GENESIS_TIMESTAMP.
+    const emptyDag = { getLatestCommit: () => null };
+    const tx0 = buildRotationTx(emptyDag, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx0.timestamp).toBe(GENESIS_TIMESTAMP);
 
-    // Different effective_round → different timestamp (so audit ordering
-    // by tx.timestamp still reflects rotation order, just not real time)
-    const tx2 = buildRotationTx({}, { ...proposal, effective_round: 2000 }, ["tip://node/X"], ["00".repeat(32)]);
-    expect(tx2.timestamp).not.toBe(tx.timestamp);
-    expect(new Date(tx2.timestamp).getTime()).toBeGreaterThan(new Date(tx.timestamp).getTime());
+    // Latest commit has cert_timestamp T → tx adopts T.
+    const T = 1780000000000;
+    const dagWithCommit = { getLatestCommit: () => ({ cert_timestamp: T }) };
+    const tx1 = buildRotationTx(dagWithCommit, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx1.timestamp).toBe(T);
+
+    // Different latest cert.timestamp → different tx.timestamp + tx_id
+    // (deterministic across nodes that see the same latest commit).
+    const dagLater = { getLatestCommit: () => ({ cert_timestamp: T + 60_000 }) };
+    const tx2 = buildRotationTx(dagLater, proposal, ["tip://node/X"], ["00".repeat(32)]);
+    expect(tx2.timestamp).toBe(T + 60_000);
+    expect(tx2.tx_id).not.toBe(tx1.tx_id);
   });
 
   // System-tx semantic: rotation tx with empty prev passes structural

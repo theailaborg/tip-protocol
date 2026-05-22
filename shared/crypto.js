@@ -21,6 +21,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { nowMs } = require("./time");
 
 // ─── SHAKE-256 (FIPS 202) ────────────────────────────────────────────────────
 // Node.js crypto supports SHAKE-256 natively since v12.
@@ -226,7 +227,7 @@ function slhdsaVerify(data, signatureHex, publicKeyHex) {
 // verifier later re-hashes the published post (which now includes the pasted
 // CTID), stripping TIP artifacts ensures the hash still matches.
 
-const TIP_URI_PATTERN      = /tip:\/\/(?:id|vp)\/[A-Z]{2}-[0-9a-f]{16}/gi;
+const TIP_URI_PATTERN = /tip:\/\/(?:id|vp)\/[A-Z]{2}-[0-9a-f]{16}/gi;
 const TIP_CTID_URI_PATTERN = /tip:\/\/c\/(?:OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}/gi;
 const TIP_BARE_CTID_PATTERN = /\b(?:OH|AA|AG|MX)-[0-9a-f]{14}-[0-9a-f]{4}\b/g;
 const TIP_PROMO_PATTERNS = [
@@ -382,7 +383,7 @@ function generateCTID(originCode, contentHash, tipId) {
  * @returns {Object} tx with signature attached
  */
 function signTransaction(tx, privateKeyHex, opts = {}) {
-  if (!tx.timestamp) tx = { ...tx, timestamp: new Date().toISOString() };
+  if (!tx.timestamp) tx = { ...tx, timestamp: nowMs() };
   // NOTE: prev must be set before calling this so tx_id commits to chain position.
   // dag.addTx() sets prev first, then calls computeTxId — do not reverse that order.
   const canonical = canonicalTx(tx);
@@ -456,10 +457,10 @@ function _sortObjectKeys(val) {
  */
 function canonicalTx(tx) {
   return JSON.stringify(_sortObjectKeys({
-    data:      tx.data,
-    prev:      tx.prev || [],
+    data: tx.data,
+    prev: tx.prev || [],
     timestamp: tx.timestamp,
-    tx_type:   tx.tx_type,
+    tx_type: tx.tx_type,
   }));
 }
 

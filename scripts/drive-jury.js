@@ -30,6 +30,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso, fromIso } = require("../shared/time");
+
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
@@ -189,20 +191,47 @@ function writeSecrets(ctid, secrets, appeal) {
 // ─── Phase resolution ───────────────────────────────────────────────────────
 // The Stage-3 appeal block lives at disputeCase.appeal with `experts`; we
 // normalize to a jurors-shaped block so the rest of the script is unchanged.
+//
+// Deadlines come from the API as ISO strings (the boundary middleware
+// converts every `*_deadline` field on the way out). The phase-resolution
+// math below compares against nowMs(), so we coerce back to integer ms
+// here. Numeric inputs pass through unchanged for back-compat with any
+// older API build that hasn't enabled the boundary middleware.
+function _coerceDeadline(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    try { return fromIso(v); }
+    catch { throw new Error(`dispute-case returned non-numeric, non-ISO deadline: ${JSON.stringify(v)}`); }
+  }
+  throw new Error(`dispute-case deadline has unsupported type ${typeof v}: ${JSON.stringify(v)}`);
+}
+
 function pickBlock(disputeCase, appeal) {
   if (appeal) {
     const a = disputeCase.appeal;
     if (!a) throw new Error("dispute-case has no appeal (no appeal filed yet?)");
-    return { jurors: a.experts.map(e => ({ ...e, juror_tip_id: e.expert_tip_id })), commit_deadline: a.commit_deadline, reveal_deadline: a.reveal_deadline, total_summoned: a.total_summoned, total_committed: a.total_committed, total_revealed: a.total_revealed };
+    return {
+      jurors: a.experts.map(e => ({ ...e, juror_tip_id: e.expert_tip_id })),
+      commit_deadline: _coerceDeadline(a.commit_deadline),
+      reveal_deadline: _coerceDeadline(a.reveal_deadline),
+      total_summoned: a.total_summoned,
+      total_committed: a.total_committed,
+      total_revealed: a.total_revealed,
+    };
   }
   const j = disputeCase.jury;
   if (!j) throw new Error("dispute-case has no jury (jury not summoned yet?)");
-  return j;
+  return {
+    ...j,
+    commit_deadline: _coerceDeadline(j.commit_deadline),
+    reveal_deadline: _coerceDeadline(j.reveal_deadline),
+  };
 }
 
-function resolvePhase(block, now = Date.now()) {
-  const commit = new Date(block.commit_deadline).getTime();
-  const reveal = new Date(block.reveal_deadline).getTime();
+function resolvePhase(block, now = nowMs()) {
+  const commit = block.commit_deadline;
+  const reveal = block.reveal_deadline;
   if (now <= commit) return { phase: "COMMIT", commit, reveal };
   if (now <= reveal) return { phase: "REVEAL", commit, reveal };
   return { phase: "EXPIRED", commit, reveal };
@@ -301,9 +330,9 @@ async function doReveal(args, block, disputeCase) {
 // ─── Watch ──────────────────────────────────────────────────────────────────
 async function watchVerdict(args) {
   const url = `${args.nodeUrl}/v1/content/${encodeURIComponent(args.ctid)}/dispute-case`;
-  const deadline = Date.now() + args.watchTimeoutSec * 1000;
+  const deadline = nowMs() + args.watchTimeoutSec * 1000;
   console.log(`\nWatching for verdict (timeout ${args.watchTimeoutSec}s)…`);
-  while (Date.now() < deadline) {
+  while (nowMs() < deadline) {
     try {
       const j = await getJson(url);
       const v = args.appeal ? j?.data?.appeal?.verdict : j?.data?.verdict;
@@ -332,16 +361,16 @@ async function main() {
   const phase = args.forcePhase || auto.phase;
   const { commit, reveal } = auto;
   console.log(`Dispute ${args.ctid}${args.appeal ? " (appeal / Stage-3)" : ""}`);
-  console.log(`  phase=${phase}${args.forcePhase ? " (forced — wall-clock would say " + auto.phase + ")" : ""}  commit_deadline=${new Date(commit).toISOString()}  reveal_deadline=${new Date(reveal).toISOString()}`);
+  console.log(`  phase=${phase}${args.forcePhase ? " (forced — wall-clock would say " + auto.phase + ")" : ""}  commit_deadline=${toIso(commit)}  reveal_deadline=${toIso(reveal)}`);
   console.log(`  summoned=${block.total_summoned}  committed=${block.total_committed}  revealed=${block.total_revealed}`);
 
   if (phase === "COMMIT") {
     await doCommit(args, block);
-    console.log(`\nNext step: wait for commit_deadline (${new Date(commit).toISOString()}), then re-run this script to reveal.`);
+    console.log(`\nNext step: wait for commit_deadline (${toIso(commit)}), then re-run this script to reveal.`);
   } else if (phase === "REVEAL") {
     await doReveal(args, block, disputeCase);
     if (args.watch) await watchVerdict(args);
-    else console.log(`\nNext step: verdict-trigger fires post-round when reveal_deadline (${new Date(reveal).toISOString()}) crosses cert.timestamp. Use --watch to poll, or query /dispute-case manually.`);
+    else console.log(`\nNext step: verdict-trigger fires post-round when reveal_deadline (${toIso(reveal)}) crosses cert.timestamp. Use --watch to poll, or query /dispute-case manually.`);
   } else {
     console.log(`\n  windows expired — verdict-trigger should have fired already. Check /dispute-case for the ${args.appeal ? "APPEAL_RESULT" : "ADJUDICATION_RESULT"}.`);
   }

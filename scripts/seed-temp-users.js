@@ -49,6 +49,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../shared/time");
+
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
@@ -178,8 +180,8 @@ async function getJson(url, timeoutMs = 5000) {
 }
 
 async function waitFor(predicate, { intervalMs = 500, timeoutMs = 60000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = nowMs() + timeoutMs;
+  while (nowMs() < deadline) {
     if (await predicate()) return true;
     await new Promise(r => setTimeout(r, intervalMs));
   }
@@ -297,12 +299,17 @@ function pickScore(args, isHigh) {
 function bumpScoresInAllDBs(rows) {
   // rows: [{ tip_id, score }, ...]
   if (rows.length === 0) return;
-  const now = new Date().toISOString();
+  // `scores.last_updated` is a bigint epoch-ms column (declared
+  // t.bigInteger in db/knex-adapter.js). Pre-migration this script
+  // wrote `nowIso()` here which only worked when the schema was TEXT;
+  // now produces "invalid input syntax for type bigint" against the
+  // migrated column. Match the on-chain shape: integer ms throughout.
+  const now = nowMs();
   // Pipe SQL via stdin rather than -c '...'. The -c path required JSON.stringify
   // to shell-escape, which converted real newlines into literal backslash-n
   // characters and broke psql's parser. Stdin avoids all quoting/escaping
   // headaches: -i keeps the docker exec stdin attached, psql reads SQL until EOF.
-  const valuesSql = rows.map(r => `('${r.tip_id}', ${r.score}, 0, '${now}')`).join(",\n");
+  const valuesSql = rows.map(r => `('${r.tip_id}', ${r.score}, 0, ${now})`).join(",\n");
   const sql = `INSERT INTO scores (tip_id, score, offense_count, last_updated)
 VALUES ${valuesSql}
 ON CONFLICT (tip_id) DO UPDATE SET score = EXCLUDED.score, last_updated = EXCLUDED.last_updated;`;
@@ -428,9 +435,9 @@ async function main() {
     console.log("✓");
   }
 
-  const outFile = path.join(TEMP_USERS_DIR, `temp-users-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  const outFile = path.join(TEMP_USERS_DIR, `temp-users-${nowIso().replace(/[:.]/g, "-")}.json`);
   const payload = {
-    created_at: new Date().toISOString(),
+    created_at: nowIso(),
     vp_id: vpId,
     regions: args.regions,
     note: "DEV-ONLY temp users. Private keys included — never commit. Wipe genesis-data/temp-users/ before sharing.",

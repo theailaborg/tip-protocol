@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const express = require("express");
 const request = require("supertest");
@@ -382,12 +384,12 @@ describe("narwhal lastRoundAdvanceAt wire", () => {
 
   test("after start(): lastRoundAdvanceAt is set to ~now (starts the grace window)", () => {
     const { narwhal } = buildNarwhal();
-    const before = Date.now();
+    const before = nowMs();
     narwhal.start();
     try {
       const got = narwhal.lastRoundAdvanceAt();
       expect(got).toBeGreaterThanOrEqual(before);
-      expect(got).toBeLessThanOrEqual(Date.now());
+      expect(got).toBeLessThanOrEqual(nowMs());
       expect(narwhal.stats().lastRoundAdvanceAt).toBe(got);
     } finally {
       narwhal.stop();
@@ -398,7 +400,7 @@ describe("narwhal lastRoundAdvanceAt wire", () => {
     const { narwhal } = buildNarwhal();
     narwhal.start();
     try {
-      const status = computeHaltStatus(narwhal.stats(), { roundTimeoutMs: 2000, now: Date.now });
+      const status = computeHaltStatus(narwhal.stats(), { roundTimeoutMs: 2000, now: nowMs });
       expect(status.halted).toBe(false);
       expect(["healthy", "join_state_ready"]).toContain(status.reason);
     } finally {

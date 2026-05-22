@@ -18,6 +18,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -125,7 +127,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    *                                     ms). Deterministic across nodes. Currently flowed
    *                                     through unused — Commit 3 will use it as the trigger
    *                                     clock for post-round verdict logic and clean-record
-   *                                     bonus eligibility, replacing scheduler-driven Date.now().
+   *                                     bonus eligibility, replacing scheduler-driven nowMs().
    * @returns {{ committed: number, dropped: number }}
    */
   function commitOrderedTxs(orderedTxs, round, opts = {}) {
@@ -273,7 +275,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     // round's BFT clock instead — none today, but keep the wire so future
     // rules can opt in without changing the signature.
     void certTimestamp;
-    const txMs = new Date(tx.timestamp).getTime();
+    const txMs = tx.timestamp;
     return _statefulCheck(tx, txMs);
   }
 
@@ -538,7 +540,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.REGISTER_IDENTITY:
         if (d.dedup_hash && !dag.hasDedupHash(d.dedup_hash)) {
           // Unix seconds derived from the tx timestamp (deterministic across nodes).
-          dag.addDedupHash(d.dedup_hash, Math.floor(new Date(tx.timestamp).getTime() / 1000));
+          dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000));
         }
         if (d.tip_id && !dag.getIdentity(d.tip_id)) {
           dag.saveIdentity({
@@ -754,9 +756,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           // (adaptive-expiry RENEW_DOMAIN, deferred). Set deterministically
           // from verified_at — every replicating node computes the same
           // value, so the column stays merkle-consistent across nodes.
-          const verifiedMs = Date.parse(d.verified_at);
+          const verifiedMs = d.verified_at;
           const expiresAt = Number.isFinite(verifiedMs)
-            ? new Date(verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS).toISOString()
+            ? verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS
             : null;
           dag.saveDomainBinding({
             domain: d.domain,
@@ -942,7 +944,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           signatures: d.signatures || [],
           payload_hash: d.payload_hash,
           committed_at: _committedCertTimestamp > 0
-            ? new Date(_committedCertTimestamp).toISOString()
+            ? _committedCertTimestamp
             : tx.timestamp,
         });
         break;

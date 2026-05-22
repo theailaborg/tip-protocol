@@ -12,6 +12,7 @@
 "use strict";
 
 const { TX_TYPES } = require("../../../shared/constants");
+const { nowMs } = require("../../../shared/time");
 const { validateTransaction } = require("../validators/tx-validator");
 const updateProfileSchema = require("../schemas/update-profile");
 const { schemaError } = require("../schemas/_common");
@@ -37,7 +38,7 @@ function createProfileService({ dag, config, submitTx }) {
       throw schemaError(403, "Signature verification failed", "signature_invalid");
     }
 
-    const timestamp = new Date().toISOString();
+    const timestamp = nowMs();
 
     // tx.data carries tip_id + every present known field + the signature.
     // Sparse: only fields the client supplied land here. Commit-handler

@@ -3,7 +3,7 @@
  * @description Pure decision function for "is consensus halted?" (#30).
  *
  * Factored out of consensus/index.js so it can be tested deterministically
- * without a running orchestrator, and without Date.now() side-effects.
+ * without a running orchestrator, and without nowMs() side-effects.
  * The orchestrator wraps this with the live narwhal stats + CONSENSUS
  * constants; tests drive `narwhalStats`, `now`, and `roundTimeoutMs`
  * directly.
@@ -13,6 +13,8 @@
  */
 
 "use strict";
+
+const { nowMs } = require("../../../shared/time");
 
 /**
  * Classify a node's consensus state as halted / not-halted based on how
@@ -52,7 +54,7 @@
  * @param {Function} [opts.now]                Clock function (injectable for tests)
  * @returns {{ halted: boolean, reason: string, lastAdvanceAt: number, staleMs: number, message?: string }}
  */
-function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = Date.now } = {}) {
+function computeHaltStatus(narwhalStats, { roundTimeoutMs, now = nowMs } = {}) {
   if (!narwhalStats || !narwhalStats.running) {
     return { halted: false, reason: "narwhal_not_started", lastAdvanceAt: 0, staleMs: 0 };
   }

@@ -40,6 +40,7 @@
 "use strict";
 
 const { shake256, computeTxId, signTransaction } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
 const { selectReviewer } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
@@ -166,7 +167,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
   function _buildTriggeredTx({ reviewId, ctid, creatorTipId, assignedReviewerTipId, round }) {
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: dag.getRecentPrev(),
       data: {
         review_id: reviewId,
@@ -184,7 +185,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
   function _buildAutoDisputeTx({ ctid, reviewId, suggestedOrigin }) {
     const txBody = {
       tx_type: TX_TYPES.CONTENT_DISPUTED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: dag.getRecentPrev(),
       data: {
         ctid,
@@ -237,7 +238,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
   function _buildAutoRecuseTx({ reviewId }) {
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       prev: dag.getRecentPrev(),
       data: {
         review_id: reviewId,

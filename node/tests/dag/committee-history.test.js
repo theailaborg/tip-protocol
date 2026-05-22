@@ -23,6 +23,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -39,7 +41,7 @@ beforeAll(async () => {
 });
 
 function _tmpDbPath() {
-  return path.join(os.tmpdir(), `tip-cot-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-cot-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function _cleanup(dbPath) {
@@ -62,7 +64,7 @@ function _rotation(rotationNumber, effectiveRound, committee, opts = {}) {
       effective_round: effectiveRound,
       committee,
     })),
-    committed_at: opts.committed_at || new Date().toISOString(),
+    committed_at: opts.committed_at || nowMs(),
   };
 }
 
@@ -323,7 +325,7 @@ describe("committee_history — accessors", () => {
         signer_node_ids: ["s1", "s2", "s3"],
         signatures: ["sig_one", "sig_two", "sig_three"],
         prev_rotation: 6,
-        committed_at: "2026-04-30T00:00:00.000Z",
+        committed_at: 1777507200000,
       });
       dag.saveCommitteeRotation(rec);
 
@@ -332,7 +334,7 @@ describe("committee_history — accessors", () => {
       expect(got.signer_node_ids).toEqual(["s1", "s2", "s3"]);
       expect(got.signatures).toEqual(["sig_one", "sig_two", "sig_three"]);
       expect(got.prev_rotation).toBe(6);
-      expect(got.committed_at).toBe("2026-04-30T00:00:00.000Z");
+      expect(got.committed_at).toBe(1777507200000);
       expect(got.payload_hash).toBe(rec.payload_hash);
     } finally {
       cleanup(dag, dbPath);

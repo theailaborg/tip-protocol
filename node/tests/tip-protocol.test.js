@@ -21,6 +21,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../shared/time");
+
 const request = require("supertest");
 const path = require("path");
 
@@ -183,7 +185,7 @@ beforeAll(async () => {
     name: "test-node",
     public_key: nodeKp.publicKey,
     status: "active",
-    registered_at: new Date().toISOString(),
+    registered_at: nowMs(),
   });
   TEST_CONFIG.nodeRegisteredId = TEST_CONFIG.nodeId;
 
@@ -234,7 +236,7 @@ describe("Crypto Layer", () => {
   test("1.4 signTransaction and verifyTransaction roundtrip", () => {
     const tx = {
       tx_type: "SCORE_UPDATE",
-      timestamp: "2026-01-01T00:00:00.000Z",
+      timestamp: 1767225600000,
       data: { hello: "world" },
       prev: [],
     };
@@ -245,7 +247,7 @@ describe("Crypto Layer", () => {
   });
 
   test("1.5 verifyTransaction rejects tampered payload", () => {
-    const tx = { tx_type: "TEST", data: { score: 500 }, timestamp: "2026-01-01T00:00:00.000Z", prev: [] };
+    const tx = { tx_type: "TEST", data: { score: 500 }, timestamp: 1767225600000, prev: [] };
     const signed = signTransaction(tx, keypair1.privateKey);
     const tampered = { ...signed, data: { score: 999 } };
     expect(verifyTransaction(tampered, keypair1.publicKey)).toBe(false);
@@ -279,7 +281,7 @@ describe("Crypto Layer", () => {
   });
 
   test("1.10 computeTxId is content-addressed and deterministic", () => {
-    const base = { tx_type: "SCORE_UPDATE", data: { tip_id: "x", delta: 5 }, timestamp: "2026-01-01T00:00:00.000Z", prev: [] };
+    const base = { tx_type: "SCORE_UPDATE", data: { tip_id: "x", delta: 5 }, timestamp: 1767225600000, prev: [] };
     const id1 = computeTxId({ ...base, data: { tip_id: "x", delta: 5 } });
     const id2 = computeTxId({ ...base, data: { tip_id: "x", delta: 6 } }); // different content
     const id3 = computeTxId({ ...base, data: { tip_id: "x", delta: 5 } }); // same as id1
@@ -371,7 +373,7 @@ describe("DAG Engine", () => {
       public_key: keypair1.publicKey,
       status: "active",
       vp_id: "tip://vp/US-test",
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
     });
     const id = dag.getIdentity(TIP_ID_1);
     expect(id).not.toBeNull();
@@ -383,7 +385,7 @@ describe("DAG Engine", () => {
   test("3.3 saveTx and getTx roundtrip", () => {
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: { tip_id: TIP_ID_1, attested: false },
       prev: [],
       signature: mldsaSign(TIP_ID_1, keypair1.privateKey),
@@ -402,7 +404,7 @@ describe("DAG Engine", () => {
       content_hash: hashContent("test article content here"),
       author_tip_id: TIP_ID_1,
       status: "verified",
-      registered_at: new Date().toISOString(),
+      registered_at: nowMs(),
     });
     const c = dag.getContent(ctid);
     expect(c).not.toBeNull();
@@ -419,12 +421,12 @@ describe("DAG Engine", () => {
   test("3.6 Deduplication hash check and registration", () => {
     const dedupHash = computeDedupHash("ID12345", "1985-06-15", "US");
     expect(dag.hasDedupHash(dedupHash)).toBe(false);
-    dag.addDedupHash(dedupHash, Math.floor(Date.now() / 1000));
+    dag.addDedupHash(dedupHash, Math.floor(nowMs() / 1000));
     expect(dag.hasDedupHash(dedupHash)).toBe(true);
   });
 
   test("3.7 addRevocation and getRevocations roundtrip", () => {
-    const revTs = new Date().toISOString();
+    const revTs = nowMs();
     const txId = computeTxId({ tx_type: TX_TYPES.REVOKE_VOLUNTARY, data: { tip_id: TIP_ID_2 }, timestamp: revTs, prev: [] });
     dag.addRevocation(TIP_ID_2, TX_TYPES.REVOKE_VOLUNTARY, revTs, txId);
     const revs = dag.getRevocations();
@@ -458,17 +460,17 @@ describe("Trust Scoring Engine", () => {
       public_key: generateMLDSAKeypair().publicKey,
       status: "active",
       vp_id: "tip://vp/AU-test",
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
     });
     // Register transaction
     dag.addTx({
       tx_type: TX_TYPES.REGISTER_IDENTITY,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: { tip_id: TIP_ID_SCORE_TEST, attested: false },
       prev: [],
       signature: "test_sig",
     });
-    dag.setScore(TIP_ID_SCORE_TEST, 500, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(TIP_ID_SCORE_TEST, 500, 0, 1767225600000);
   });
 
   test("4.1 Initial score is 500 without attestation", () => {
@@ -479,7 +481,7 @@ describe("Trust Scoring Engine", () => {
   test("4.2 Score penalty for OH declared as AG", () => {
     dag.addTx({
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: {
         tip_id: TIP_ID_SCORE_TEST,
         delta: SCORE_EVENTS.OH_CONFIRMED_AG_1ST.delta,
@@ -489,7 +491,7 @@ describe("Trust Scoring Engine", () => {
       prev: [],
       signature: "test_sig",
     });
-    dag.setScore(TIP_ID_SCORE_TEST, 400, 1, "2026-01-01T00:00:00.000Z");
+    dag.setScore(TIP_ID_SCORE_TEST, 400, 1, 1767225600000);
     const result = scoring.computeScore(TIP_ID_SCORE_TEST);
     expect(result.score).toBeLessThan(500);
   });
@@ -512,33 +514,33 @@ describe("Trust Scoring Engine", () => {
 
   test("4.5 Score does not exceed 1000 regardless of bonuses", () => {
     const richId = generateTIPID("CA", generateMLDSAKeypair().publicKey);
-    dag.setScore(richId, 990, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(richId, 990, 0, 1767225600000);
     // Apply multiple bonuses
     for (let i = 0; i < 20; i++) {
       dag.addTx({
         tx_type: TX_TYPES.CONTENT_VERIFIED,
-        timestamp: new Date().toISOString(),
+        timestamp: nowMs(),
         data: { tip_id: richId, delta: 5 },
         prev: [],
         signature: "sig",
       });
     }
-    dag.setScore(richId, 1000, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(richId, 1000, 0, 1767225600000);
     const s = scoring.getScore(richId);
     expect(s.score).toBeLessThanOrEqual(1000);
   });
 
   test("4.6 Score does not go below 0", () => {
     const poorId = generateTIPID("NG", generateMLDSAKeypair().publicKey);
-    dag.setScore(poorId, 10, 5, "2026-01-01T00:00:00.000Z");
+    dag.setScore(poorId, 10, 5, 1767225600000);
     dag.addTx({
       tx_type: TX_TYPES.SCORE_UPDATE,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: { tip_id: poorId, delta: -500, reason: "Major violation" },
       prev: [],
       signature: "sig",
     });
-    dag.setScore(poorId, 0, 6, "2026-01-01T00:00:00.000Z");
+    dag.setScore(poorId, 0, 6, 1767225600000);
     const s = scoring.getScore(poorId);
     expect(s.score).toBeGreaterThanOrEqual(0);
   });
@@ -559,14 +561,14 @@ describe("Transaction Validator", () => {
       public_key: vpKeypair.publicKey,
       status: "active",
       jurisdiction_tier: "green",
-      registered_at: new Date().toISOString(),
+      registered_at: nowMs(),
     });
   });
 
   test("5.1 Valid REGISTER_IDENTITY tx passes validation", () => {
     const freshKp = generateMLDSAKeypair();
     const tipId = generateTIPID("US", freshKp.publicKey);
-    const ts = new Date().toISOString();
+    const ts = nowMs();
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: ts,
@@ -590,7 +592,7 @@ describe("Transaction Validator", () => {
   test("5.2 REGISTER_IDENTITY with missing vp_id fails", () => {
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: { tip_id: "tip://id/US-abc", region: "US" }, // missing vp_id
       prev: dag.getRecentPrev(),
     };
@@ -604,7 +606,7 @@ describe("Transaction Validator", () => {
     const tipId = generateTIPID("US", keypair1.publicKey);
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: keypair1.publicKey,
-      status: "active", vp_id: VP_ID, verified_at: new Date().toISOString(),
+      status: "active", vp_id: VP_ID, verified_at: nowMs(),
     });
     const contentHashFull = shake256("content here");
     const contentHashShort = hashContent("content here");
@@ -612,7 +614,7 @@ describe("Transaction Validator", () => {
     const authorSig = mldsaSign(ctid + ORIGIN.OH, keypair1.privateKey);
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: {
         ctid, origin_code: ORIGIN.OH,
         content_hash: contentHashFull,
@@ -634,7 +636,7 @@ describe("Transaction Validator", () => {
   test("5.4 Invalid origin code fails validation", () => {
     const txBody = {
       tx_type: TX_TYPES.CONTENT_REGISTERED,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: {
         ctid: "tip://c/XX-invalid",
         origin_code: "XX", // invalid origin
@@ -651,7 +653,7 @@ describe("Transaction Validator", () => {
   test("5.5 REVOKE_VP requires evidence_hash", () => {
     const txBody = {
       tx_type: TX_TYPES.REVOKE_VP,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMs(),
       data: {
         tip_id: "tip://id/US-abc123",
         issuing_vp_id: VP_ID,
@@ -752,9 +754,9 @@ describe("REST API", () => {
     dag.saveIdentity({
       tip_id: tipId, region: "FR", public_key: kp.publicKey,
       status: "active", vp_id: testVpId,
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
     });
-    dag.setScore(tipId, 500, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 500, 0, 1767225600000);
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}`);
     expect(res.status).toBe(200);
@@ -768,10 +770,10 @@ describe("REST API", () => {
     dag.saveIdentity({
       tip_id: tipId, region: "JP", public_key: kp.publicKey,
       status: "active", vp_id: testVpId,
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
       score_display_mode: "FULL_PUBLIC",
     });
-    dag.setScore(tipId, 750, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(tipId, 750, 0, 1767225600000);
     const encoded = encodeURIComponent(tipId);
     const res = await request(app).get(`/v1/identity/${encoded}/score`);
     expect(res.status).toBe(200);
@@ -787,7 +789,7 @@ describe("REST API", () => {
   });
 
   test("6.10b POST /v1/identity/verify-ownership succeeds with correct key", async () => {
-    const challenge = "test-challenge-" + Date.now();
+    const challenge = "test-challenge-" + nowMs();
     // Canonical signing: sign the payload { challenge, tip_id } via the
     // shared signing primitive — same as registerIdentitySchema.sign for
     // any canonical payload.
@@ -805,7 +807,7 @@ describe("REST API", () => {
 
   test("6.10c POST /v1/identity/verify-ownership fails with wrong key", async () => {
     const fakeKp = generateMLDSAKeypair();
-    const challenge = "test-challenge-" + Date.now();
+    const challenge = "test-challenge-" + nowMs();
     const { signPayload } = require(path.join(SRC, "schemas", "_common"));
     const sig = signPayload({ challenge, tip_id: authorId }, fakeKp.privateKey);
     const res = await request(app)
@@ -827,9 +829,9 @@ describe("REST API", () => {
     dag.saveIdentity({
       tip_id: authorId, region: "US", public_key: authorKp.publicKey,
       status: "active", vp_id: testVpId,
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
     });
-    dag.setScore(authorId, 500, 0, "2026-01-01T00:00:00.000Z");
+    dag.setScore(authorId, 500, 0, 1767225600000);
     const content = "This is a test article written by a human author with enough words to pass.";
     const body = _buildContentRegisterBody({
       authorTipId: authorId, authorPriv: authorKp.privateKey, content,
@@ -849,7 +851,7 @@ describe("REST API", () => {
       ctid, origin_code: ORIGIN.AA,
       content_hash: shake256(tipNormalize("ai assisted article test")),
       author_tip_id: "tip://id/US-test001",
-      status: "verified", registered_at: new Date().toISOString(),
+      status: "verified", registered_at: nowMs(),
     });
     const res = await request(app).get(
       `/v1/content/${encodeURIComponent(ctid)}`
@@ -864,14 +866,14 @@ describe("REST API", () => {
       ctid, origin_code: ORIGIN.OH,
       content_hash: shake256(tipNormalize("disputed content test here")),
       author_tip_id: "tip://id/US-disp001",
-      status: "verified", registered_at: new Date().toISOString(),
+      status: "verified", registered_at: nowMs(),
     });
     // Create a disputer identity with known keypair
     const disputerKp = generateMLDSAKeypair();
     const disputerId = generateTIPID("US", disputerKp.publicKey);
     dag.saveIdentity({
       tip_id: disputerId, region: "US", public_key: disputerKp.publicKey,
-      status: "active", vp_id: testVpId, verified_at: new Date().toISOString(),
+      status: "active", vp_id: testVpId, verified_at: nowMs(),
     });
     const body = _buildDisputeBody({
       disputerTipId: disputerId, disputerPriv: disputerKp.privateKey,
@@ -896,7 +898,7 @@ describe("REST API", () => {
     dag.saveIdentity({
       tip_id: tipId, region: "BR", public_key: kp.publicKey,
       status: "active", vp_id: testVpId,
-      verified_at: new Date().toISOString(),
+      verified_at: nowMs(),
     });
     const revokeFields = {
       tx_type: TX_TYPES.REVOKE_VOLUNTARY, tip_id: tipId,
@@ -1001,7 +1003,7 @@ describe("Integration: Full Registration Flow", () => {
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
     const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
-    dag.addDedupHash(dedup, Math.floor(Date.now() / 1000));
+    dag.addDedupHash(dedup, Math.floor(nowMs() / 1000));
 
     const dupKp = generateMLDSAKeypair();
     const dupFields = {
@@ -1032,7 +1034,7 @@ describe("Gossip Broadcast Wiring", () => {
     gossipScoring = initScoring(gossipDag, TEST_CONFIG);
 
     // Register test node
-    gossipDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: new Date().toISOString() });
+    gossipDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: nowMs() });
 
     gFoundingVpKp = generateMLDSAKeypair();
     const allVps = gossipDag.getAllVPs();
@@ -1233,7 +1235,7 @@ describe("Semantic Dedup", () => {
     sdScoring = initScoring(sdDag, TEST_CONFIG);
 
     // Register test node in SD DAG
-    sdDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: new Date().toISOString() });
+    sdDag.saveNode({ node_id: TEST_CONFIG.nodeId, name: "test-node", public_key: TEST_CONFIG.nodePublicKey, status: "active", registered_at: nowMs() });
 
     sdVpKp = generateMLDSAKeypair();
     const allVps = sdDag.getAllVPs();
@@ -1256,7 +1258,7 @@ describe("Semantic Dedup", () => {
       .send({ ...idFields, vp_signature: _signIdentity(idFields, sdVpKp.privateKey) });
     sdTipId = idRes.body.data.tip_id;
     sdAuthorPriv = sdKp.privateKey;
-    sdDag.setScore(sdTipId, 800, 0, "2026-01-01T00:00:00.000Z");
+    sdDag.setScore(sdTipId, 800, 0, 1767225600000);
 
     // Register a separate verifier identity
     const vKp = generateMLDSAKeypair();
@@ -1271,7 +1273,7 @@ describe("Semantic Dedup", () => {
       .send({ ...vFields, vp_signature: _signIdentity(vFields, sdVpKp.privateKey) });
     sdVerifierId = vRes.body.data.tip_id;
     sdVerifierPriv = vKp.privateKey;
-    sdDag.setScore(sdVerifierId, 800, 0, "2026-01-01T00:00:00.000Z");
+    sdDag.setScore(sdVerifierId, 800, 0, 1767225600000);
 
     // Register content
     const sdContent = "Semantic dedup test content.";
@@ -1330,7 +1332,7 @@ describe("Semantic Dedup", () => {
       const idRes = await request(sdApp)
         .post("/v1/identity/register")
         .send({ ...idFields, vp_signature: _signIdentity(idFields, sdVpKp.privateKey) });
-      sdDag.setScore(idRes.body.data.tip_id, 800, 0, "2026-01-01T00:00:00.000Z"); // high-trust for +3 each
+      sdDag.setScore(idRes.body.data.tip_id, 800, 0, 1767225600000); // high-trust for +3 each
       verifiers.push({ tipId: idRes.body.data.tip_id, priv: kp.privateKey });
     }
 
@@ -1521,12 +1523,12 @@ describe("Semantic Dedup", () => {
     // Summon verifier as juror with future deadline
     const { computeTxId } = require("../../shared/crypto");
     const summonsTx = {
-      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "JURY_SUMMONS", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: {
         ctid: juryCtid, dispute_tx_id: "test-dispute-tx", juror_tip_id: sdVerifierId,
         stake: 10, seed: "test", identity_count: 10,
-        commit_deadline: new Date(Date.now() + 72 * 3600000).toISOString(),
-        reveal_deadline: new Date(Date.now() + 78 * 3600000).toISOString()
+        commit_deadline: nowMs() + 72 * 3600000,
+        reveal_deadline: nowMs() + 78 * 3600000
       },
     };
     summonsTx.tx_id = computeTxId(summonsTx);
@@ -1560,10 +1562,10 @@ describe("Semantic Dedup", () => {
     const { computeTxId } = require("../../shared/crypto");
 
     // Summon with commit deadline already passed, reveal deadline in future
-    const commitDeadline = new Date(Date.now() - 1000).toISOString(); // past
-    const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString(); // future
+    const commitDeadline = nowMs() - 1000; // past
+    const revealDeadline = nowMs() + 6 * 3600000; // future
     const summonsTx = {
-      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "JURY_SUMMONS", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: {
         ctid: revCtid, dispute_tx_id: "test-dispute-rev", juror_tip_id: sdVerifierId,
         stake: 10, seed: "test", identity_count: 10,
@@ -1577,7 +1579,7 @@ describe("Semantic Dedup", () => {
     const salt = "revealsalt456";
     const commitment = shake256(`MISMATCH:${salt}`);
     const commitTx = {
-      tx_type: "JURY_VOTE_COMMIT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "JURY_VOTE_COMMIT", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: revCtid, juror_tip_id: sdVerifierId, commitment },
     };
     commitTx.tx_id = computeTxId(commitTx);
@@ -1608,10 +1610,10 @@ describe("Semantic Dedup", () => {
     sdDag.updateContentStatus(misCtid, "disputed");
 
     const { computeTxId } = require("../../shared/crypto");
-    const commitDeadline = new Date(Date.now() - 1000).toISOString();
-    const revealDeadline = new Date(Date.now() + 6 * 3600000).toISOString();
+    const commitDeadline = nowMs() - 1000;
+    const revealDeadline = nowMs() + 6 * 3600000;
     const summonsTx = {
-      tx_type: "JURY_SUMMONS", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "JURY_SUMMONS", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: {
         ctid: misCtid, dispute_tx_id: "test-dispute-mis", juror_tip_id: sdVerifierId,
         stake: 10, seed: "test", identity_count: 10,
@@ -1624,7 +1626,7 @@ describe("Semantic Dedup", () => {
     const salt = "missalt789";
     const commitment = shake256(`MISMATCH:${salt}`);
     const commitTx = {
-      tx_type: "JURY_VOTE_COMMIT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "JURY_VOTE_COMMIT", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: misCtid, juror_tip_id: sdVerifierId, commitment },
     };
     commitTx.tx_id = computeTxId(commitTx);
@@ -1727,7 +1729,7 @@ describe("Semantic Dedup", () => {
 
     // Create dispute tx
     const dTx = {
-      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "CONTENT_DISPUTED", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: {
         ctid: appealCtid, disputer_tip_id: sdVerifierId, reason: "origin_mismatch",
         claimed_origin: "AG", declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered"
@@ -1738,7 +1740,7 @@ describe("Semantic Dedup", () => {
 
     // Create ADJUDICATION_RESULT tx (simulate jury UPHELD)
     const adjTx = {
-      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "ADJUDICATION_RESULT", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: {
         ctid: appealCtid, verdict: "UPHELD", declared_origin: "OH", confirmed_origin: "AG",
         author_tip_id: sdTipId, match_count: 1, mismatch_count: 5, abstain_count: 1
@@ -1781,12 +1783,12 @@ describe("Semantic Dedup", () => {
     const tCtid = ctRes.body.data.ctid;
 
     const dTx = {
-      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "CONTENT_DISPUTED", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: tCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" }
     };
     dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
     const adjTx = {
-      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "ADJUDICATION_RESULT", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: tCtid, verdict: "UPHELD", author_tip_id: sdTipId }
     };
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
@@ -1811,12 +1813,12 @@ describe("Semantic Dedup", () => {
     const dCtid = ctRes.body.data.ctid;
 
     const dTx = {
-      tx_type: "CONTENT_DISPUTED", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "CONTENT_DISPUTED", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: dCtid, disputer_tip_id: sdVerifierId, declared_origin: "OH", author_tip_id: sdTipId, pre_dispute_status: "registered" }
     };
     dTx.tx_id = computeTxId(dTx); sdDag.addTx(dTx);
     const adjTx = {
-      tx_type: "ADJUDICATION_RESULT", timestamp: new Date().toISOString(), prev: sdDag.getRecentPrev(),
+      tx_type: "ADJUDICATION_RESULT", timestamp: nowMs(), prev: sdDag.getRecentPrev(),
       data: { ctid: dCtid, verdict: "UPHELD", author_tip_id: sdTipId }
     };
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);

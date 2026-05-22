@@ -50,7 +50,7 @@ function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   dag.saveVP({
     vp_id: VP_ID, name: "vp1", jurisdiction: "US", jurisdiction_tier: "green",
-    public_key: "00", status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+    public_key: "00", status: "active", registered_at: 1767225600000,
   });
   return { dag };
 }
@@ -70,8 +70,8 @@ function _addTx(dag, body) {
   return tx;
 }
 
-const NOW = "2026-04-01T00:00:00.000Z";
-const CUTOFF_90D_AGO = "2026-01-01T00:00:00.000Z"; // 90 days before NOW
+const NOW = 1775001600000;
+const CUTOFF_90D_AGO = 1767225600000; // 90 days before NOW
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -103,16 +103,16 @@ describe("clean-record eligibility — UPHELD verdict in window blocks the bonus
   test("a tip_id with an UPHELD ADJ_RESULT inside the window is NOT eligible", () => {
     const fx = _setup();
     const tipId = "tip://id/dirty";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
 
     // Some activity inside the window so the "no activity" clause doesn't fire.
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: 1769904000000,
       data: { tip_id: tipId, delta: 1, reason: "noise" },
     });
     // UPHELD against this user inside the window — bonus must be denied.
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: "2026-02-15T00:00:00.000Z",
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1771113600000,
       data: { ctid: "tip://c/x", verdict: "UPHELD", author_tip_id: tipId, author_score_delta: -100 },
     });
 
@@ -122,9 +122,9 @@ describe("clean-record eligibility — UPHELD verdict in window blocks the bonus
   test("identity registered AFTER cutoff (less than 90 days old) is NOT eligible", () => {
     const fx = _setup();
     const tipId = "tip://id/young";
-    _seedIdentity(fx.dag, tipId, "2026-02-01T00:00:00.000Z"); // > cutoff
+    _seedIdentity(fx.dag, tipId, 1769904000000); // > cutoff
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-03-01T00:00:00.000Z",
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: 1772323200000,
       data: { tip_id: tipId, delta: 1, reason: "noise" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
@@ -133,10 +133,10 @@ describe("clean-record eligibility — UPHELD verdict in window blocks the bonus
   test("identity already bonused in this window does NOT double-collect", () => {
     const fx = _setup();
     const tipId = "tip://id/already-bonused";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
 
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: 1769904000000,
       data: { tip_id: tipId, delta: REPUTATION.CLEAN_PERIOD_BONUS, reason: "clean_record_bonus" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
@@ -148,10 +148,10 @@ describe("clean-record eligibility — UPHELD verdict in window blocks the bonus
     fx.dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "revoked",
-      registered_at: "2025-09-01T00:00:00.000Z", tx_id: shake256(`id:${tipId}`),
+      registered_at: 1756684800000, tx_id: shake256(`id:${tipId}`),
     });
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: 1769904000000,
       data: { tip_id: tipId, delta: 1, reason: "noise" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
@@ -192,16 +192,16 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     // prevents idle score farming."
     const fx = _setup();
     const tipId = "tip://id/idle-juror";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
 
     // Plenty of activity — but it's all jury participation, not authored
     // content registrations. The user is "active" but hasn't published.
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1769904000000,
       data: { ctid: "tip://c/x", juror_tip_id: tipId, vote: "MATCH", salt: "00", confirmed_origin: "OH" },
     });
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: "2026-02-15T00:00:00.000Z",
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp: 1771113600000,
       data: { tip_id: tipId, delta: 3, reason: "Jury majority vote on tip://c/x" },
     });
 
@@ -211,9 +211,9 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
   test("user with ≥1 OH content registration in window IS eligible", () => {
     const fx = _setup();
     const tipId = "tip://id/publisher";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1769904000000,
       data: { ctid: "tip://c/x", signer_tip_id: tipId, origin_code: "OH", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
@@ -222,9 +222,9 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
   test("user with ≥1 AA content registration in window IS eligible", () => {
     const fx = _setup();
     const tipId = "tip://id/aa-publisher";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1769904000000,
       data: { ctid: "tip://c/y", signer_tip_id: tipId, origin_code: "AA", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).toContain(tipId);
@@ -235,13 +235,13 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
     // registrations don't carry the same "creator effort" signal.
     const fx = _setup();
     const tipId = "tip://id/ag-only";
-    _seedIdentity(fx.dag, tipId, "2025-09-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1756684800000);
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-01T00:00:00.000Z",
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1769904000000,
       data: { ctid: "tip://c/z", signer_tip_id: tipId, origin_code: "AG", content_hash: "00" },
     });
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2026-02-15T00:00:00.000Z",
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1771113600000,
       data: { ctid: "tip://c/zz", signer_tip_id: tipId, origin_code: "MX", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);
@@ -250,10 +250,10 @@ describe("clean-record eligibility — must register ≥1 OH/AA content in windo
   test("OH/AA registration BEFORE the window does not satisfy the rule", () => {
     const fx = _setup();
     const tipId = "tip://id/old-publisher";
-    _seedIdentity(fx.dag, tipId, "2025-06-01T00:00:00.000Z");
+    _seedIdentity(fx.dag, tipId, 1748736000000);
     // Registered before the cutoff — outside the window.
     _addTx(fx.dag, {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: "2025-08-01T00:00:00.000Z",
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1754006400000,
       data: { ctid: "tip://c/old", signer_tip_id: tipId, origin_code: "OH", content_hash: "00" },
     });
     expect(fx.dag.getCleanRecordEligible(CUTOFF_90D_AGO)).not.toContain(tipId);

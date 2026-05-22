@@ -27,6 +27,8 @@
 
 "use strict";
 
+const { nowMs, nowIso, toIso } = require("../../../shared/time");
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -60,11 +62,11 @@ function buildNarwhal({ onProducerPaused = null, seedRotations = 5 } = {}) {
   const dag = initDAG({ inMemory: true });
   dag.saveNode({
     node_id: SELF_ID, name: "self", public_key: selfKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z"
+    status: "active", registered_at: 1767225600000
   });
   dag.saveNode({
     node_id: PEER_ID, name: "peer", public_key: peerKp.publicKey,
-    status: "active", registered_at: "2026-01-01T00:00:00.000Z"
+    status: "active", registered_at: 1767225600000
   });
 
   const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
@@ -76,7 +78,7 @@ function buildNarwhal({ onProducerPaused = null, seedRotations = 5 } = {}) {
         { node_id: PEER_ID, public_key: peerKp.publicKey },
       ],
       prev_rotation: n - 1, signer_node_ids: [], signatures: [],
-      payload_hash: `r-${n}`, committed_at: "2026-01-01T00:00:00.000Z",
+      payload_hash: `r-${n}`, committed_at: 1767225600000,
     });
   }
 
@@ -119,7 +121,7 @@ function makeRotationTx(rotation_number, effective_round, signers = []) {
       signatures: signers.map(() => "00".repeat(64)),
     },
     signature: "00".repeat(64),
-    timestamp: "2026-05-04T12:00:00.000Z",
+    timestamp: 1777896000000,
     prev: [],
   };
 }
@@ -174,7 +176,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
     // Mirror commit-handler-committee-rotation.test.js fixture: on-disk DB,
     // replace bootstrap rotation 0 with a test committee whose private keys
     // we control, so rotation 1 sigs verify against rotation 0's pubkeys.
-    const dbPath = path.join(os.tmpdir(), `tip-rd-inv-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbPath = path.join(os.tmpdir(), `tip-rd-inv-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
     let dag = initDAG({ dbPath });
     dag.close();
 
@@ -197,7 +199,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
         `INSERT INTO committee_history (rotation_number, effective_round, committee, prev_rotation,
                                          signer_node_ids, signatures, payload_hash, committed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(0, 0, JSON.stringify(prevCommittee), null, "[]", "[]", ph, "2026-01-01T00:00:00.000Z");
+      ).run(0, 0, JSON.stringify(prevCommittee), null, "[]", "[]", ph, 1767225600000);
     } finally {
       raw.close();
     }
@@ -206,13 +208,13 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
     for (const m of prevCommittee) {
       dag.saveNode({
         node_id: m.node_id, name: "test", public_key: m.public_key,
-        status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+        status: "active", registered_at: 1767225600000,
       });
     }
     const driverKp = generateMLDSAKeypair();
     dag.saveNode({
       node_id: NODE_ID_DRIVER, name: "driver", public_key: driverKp.publicKey,
-      status: "active", registered_at: "2026-01-01T00:00:00.000Z",
+      status: "active", registered_at: 1767225600000,
     });
 
     const commitHandler = createCommitHandler({
@@ -249,8 +251,8 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
     // Two distinct txs (different timestamps → different tx_ids) for the
     // SAME rotation_number=1 — the exact pattern produced by re-carving
     // across rounds.
-    const tx1 = buildTx("2026-05-04T12:00:00.000Z");
-    const tx2 = buildTx("2026-05-04T12:00:01.000Z");
+    const tx1 = buildTx(1777896000000);
+    const tx2 = buildTx(1777896001000);
     expect(tx1.tx_id).not.toBe(tx2.tx_id);
 
     // First call: tx1 must commit cleanly.
