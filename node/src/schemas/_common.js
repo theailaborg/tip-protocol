@@ -91,38 +91,56 @@ function schemaError(status, message, code) {
 
 // ─── Unified-storage signature primitives (GH #51) ─────────────────────────
 //
-// Every tx has exactly one signature, stored at tx.signature. The schema
-// module declares scope ("envelope" or "body") + the list of signed fields
-// + who signed (SIGNED_BY = SIGNED_BY_KIND.{SUBJECT|NODE|VP|FOUNDING_VP},
-// imported from shared/constants.js). Verification dispatches here so
-// commit-handler + service code don't branch per tx_type. See
-// my-notes/SIGNATURES.md for the full contract.
+// Every tx has exactly one signature, stored at `tx.signature`. The
+// contract for each tx_type lives in ONE of two places:
+//
+//   1. A schema module at `schemas/<tx-type>.js` for tx types with
+//      non-trivial logic (validateRequest, resolveSubject, state-machine
+//      gates). 11 schemas today: register-identity, update-profile,
+//      register-domain, content-register, bind-domain, prescan-review-*.
+//
+//   2. The registry at `schemas/_registry.js` for tx types without a
+//      full schema module. Mostly node-emitted envelopes plus
+//      body-signed tx types whose buildSigningPayload is a thin
+//      field-pick (SCORE_UPDATE, JURY_*, REVOKE_*, etc).
+//
+// Either source exports the same shape:
+//
+//     SIGNATURE_SCOPE      : SIGNATURE_SCOPE.ENVELOPE | SIGNATURE_SCOPE.BODY
+//     SIGNED_BY            : SIGNED_BY_KIND.{SUBJECT,NODE,VP}
+//     SUBJECT_TIP_ID_FIELD : TIP_ID_FIELDS.*  (only when SIGNED_BY=SUBJECT)
+//     VP_ID_FIELD          : VP_ID_FIELDS.*   (only when SIGNED_BY=VP; default vp_id)
+//     buildSigningPayload  : (data) -> canonical payload  (only when SCOPE=BODY)
+//     getSignatureContract : (tx)   -> contract           (multi-mode tx types)
+//
+// `verifyTxSignature(tx, schema, dag)` is the entry point:
+// `resolveSignatureContract` picks the contract; `resolveSignerRecord`
+// looks up the public key + algorithm per `SIGNED_BY`;
+// `verifyWithAlgorithm` dispatches to the right algorithm verifier
+// (one branch today, ML-DSA-65, extensible to ML-DSA-87 / SLH-DSA /
+// hybrid without per-signature overhead).
+//
+// See my-notes/SIGNATURES.md for the full contract.
 
 /**
- * Resolve the signer's record (public_key + algorithm) for a tx given
- * the schema's SIGNED_BY discriminator. Returns null when the relevant
- * identity isn't registered on the DAG — caller treats null as a
- * verification failure (don't throw here so the verifier can return a
- * clean boolean).
- *
- * The record's `algorithm` field defaults to SIGNATURE_ALGORITHM_DEFAULT
- * (ML-DSA-65) for any row that pre-dates the crypto-agility column,
- * so old data verifies under the assumed-default — see GH #51.
+ * Resolve the signer's record (public_key + algorithm) for a tx.
+ * `algorithm` defaults to SIGNATURE_ALGORITHM_DEFAULT (ML-DSA-65) for
+ * any row that pre-dates the crypto-agility column. Returns null if
+ * the contract can't be resolved or the relevant identity / node / VP
+ * isn't registered on the DAG (caller treats null as a verification
+ * failure; never throws so the verifier can return a clean boolean).
  */
 /**
- * Resolve the per-tx signature contract from a schema. Most schemas
- * declare static `SIGNATURE_SCOPE` / `SIGNED_BY` constants — those
- * collapse into a one-shot contract. Multi-mode schemas (e.g.
- * prescan-review-recused: reviewer-manual body vs node-auto envelope;
- * CONTENT_DISPUTED: user-dispute vs auto-cascade) export a function
- * `getSignatureContract(tx)` that inspects the tx (typically the
- * `data.auto` discriminator) and returns the right shape for THIS tx.
- *
- * Returns `{ SIGNATURE_SCOPE, SIGNED_BY, SUBJECT_TIP_ID_FIELD? }`
- * or `null` if the schema is malformed.
+ * Resolve the per-tx signature contract. Source priority:
+ *   1. `schema.getSignatureContract(tx)` for multi-mode tx types
+ *      (prescan-review-recused, CONTENT_DISPUTED, APPEAL_FILED).
+ *   2. Schema's static SIGNATURE_SCOPE + SIGNED_BY exports.
+ *   3. TX_SIGNATURE_REGISTRY entry for tx types without a schema.
+ * Returns null if no source produces a contract (caller treats as
+ * verification failure).
  */
 function resolveSignatureContract(tx, schema) {
-  // Schema modules win — full per-tx-type logic lives there.
+  // Schema modules win: full per-tx-type logic lives there.
   if (schema) {
     if (typeof schema.getSignatureContract === "function") {
       return schema.getSignatureContract(tx) || null;
