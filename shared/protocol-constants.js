@@ -311,6 +311,12 @@ const CONSENSUS = {
   // be missing at 60s and require a snapshot resync.
   get BULLSHARK_DEFER_MS() { return _c().bullshark_defer_ms ?? 60000; },
   get SYNC_DIVERGENCE_GRACE_MS() { return _c().sync_divergence_grace_ms ?? 30000; },
+  // Sub-quorum escape: when narwhal is ready but has made no round progress
+  // for > this duration, anti-entropy fires a snapshot resync to reset join
+  // state + reconnect. Catches the "silently dropped libp2p connection
+  // → 2/4 certs forever" class the existing byzantine_fork escape doesn't
+  // cover. See anti-entropy.js sub_quorum escape (issue #13).
+  get SUB_QUORUM_ESCAPE_MS() { return _c().sub_quorum_escape_ms ?? 60000; },
   get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return _c().rotation_coord_rebroadcast_interval_ms ?? 1500; },
   get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
   get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
