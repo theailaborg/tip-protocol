@@ -24,8 +24,8 @@
 
 "use strict";
 
-const { canonicalJson, shake256, mldsaSign, mldsaVerify, canonicalTx, signTransaction, verifyTransaction } = require("../../../shared/crypto");
-const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE } = require("../../../shared/constants");
+const { canonicalJson, shake256, mldsaSign, mldsaVerify, canonicalTx, signTransaction, verifyWithAlgorithm, signWithAlgorithm } = require("../../../shared/crypto");
+const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE, SIGNATURE_ALGORITHM_DEFAULT } = require("../../../shared/constants");
 
 /**
  * Hash the canonical JSON of `payload`. Returns a 64-char lowercase
@@ -99,42 +99,62 @@ function schemaError(status, message, code) {
 // my-notes/SIGNATURES.md for the full contract.
 
 /**
- * Resolve the public key that should have signed tx.signature given the
- * schema's SIGNED_BY discriminator. Returns null when the relevant
+ * Resolve the signer's record (public_key + algorithm) for a tx given
+ * the schema's SIGNED_BY discriminator. Returns null when the relevant
  * identity isn't registered on the DAG — caller treats null as a
  * verification failure (don't throw here so the verifier can return a
  * clean boolean).
+ *
+ * The record's `algorithm` field defaults to SIGNATURE_ALGORITHM_DEFAULT
+ * (ML-DSA-65) for any row that pre-dates the crypto-agility column,
+ * so old data verifies under the assumed-default — see GH #51.
  */
-function resolveSignerPubKey(tx, schema, dag) {
+function resolveSignerRecord(tx, schema, dag) {
   if (!schema) return null;
   const kind = schema.SIGNED_BY;
   if (!SIGNED_BY_KIND_VALUES.has(kind)) return null;
 
+  let row;
   if (kind === SIGNED_BY_KIND.NODE) {
     const nodeId = tx?.data?.node_id;
     if (!nodeId) return null;
-    const node = dag.getNode?.(nodeId);
-    return node?.public_key || null;
-  }
-  if (kind === SIGNED_BY_KIND.VP || kind === SIGNED_BY_KIND.FOUNDING_VP) {
-    const vpId = tx?.data?.vp_id || tx?.data?.founding_vp_id;
+    row = dag.getNode?.(nodeId);
+  } else if (kind === SIGNED_BY_KIND.VP) {
+    // Covers both regular VP-signed txs and the founding-VP-signed
+    // ring identities at genesis — same dag.getVerificationProvider
+    // lookup either way.
+    const vpId = tx?.data?.vp_id;
     if (!vpId) return null;
-    const vp = dag.getVerificationProvider?.(vpId);
-    return vp?.public_key || null;
+    row = dag.getVerificationProvider?.(vpId);
+  } else {
+    // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
+    // Each schema exposes `resolveSubject(tx, dag)` to look up the right
+    // identity row because the subject's tip_id lives at a tx-type-
+    // specific field (signer_tip_id, tip_id, reviewer_tip_id, etc.).
+    // Falls back to a generic tip_id lookup when the schema doesn't
+    // override.
+    if (typeof schema.resolveSubject === "function") {
+      row = schema.resolveSubject(tx, dag);
+    } else {
+      const tipId = tx?.data?.tip_id;
+      if (!tipId) return null;
+      row = dag.getIdentity?.(tipId);
+    }
   }
-  // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents. Each schema
-  // exposes `resolveSubject(tx, dag)` to look up the right identity row
-  // because the subject's tip_id lives at a tx-type-specific field
-  // (signer_tip_id, tip_id, reviewer_tip_id, juror_tip_id, ...). Falls
-  // back to a generic tip_id lookup when the schema doesn't override.
-  if (typeof schema.resolveSubject === "function") {
-    const subj = schema.resolveSubject(tx, dag);
-    return subj?.public_key || null;
-  }
-  const tipId = tx?.data?.tip_id;
-  if (!tipId) return null;
-  const id = dag.getIdentity?.(tipId);
-  return id?.public_key || null;
+  if (!row || typeof row.public_key !== "string") return null;
+  return {
+    public_key: row.public_key,
+    algorithm: row.algorithm || SIGNATURE_ALGORITHM_DEFAULT,
+  };
+}
+
+/**
+ * Back-compat alias — older code may call `resolveSignerPubKey`; new
+ * code should use `resolveSignerRecord` so the algorithm is available
+ * for dispatch.
+ */
+function resolveSignerPubKey(tx, schema, dag) {
+  return resolveSignerRecord(tx, schema, dag)?.public_key || null;
 }
 
 /**
@@ -175,20 +195,31 @@ function verifyTxSignature(tx, schema, dag) {
   if (!schema || !schema.SIGNATURE_SCOPE) {
     return { ok: false, error: "schema missing SIGNATURE_SCOPE", code: "schema_invalid" };
   }
-  const pubKey = resolveSignerPubKey(tx, schema, dag);
-  if (!pubKey) {
+  const signer = resolveSignerRecord(tx, schema, dag);
+  if (!signer) {
     return { ok: false, error: "signer not registered or not resolvable", code: "signer_unknown" };
   }
-  let ok = false;
+  // Compute the message bytes this scope signs over, then dispatch via
+  // the algorithm declared on the signer's record (today always
+  // ML-DSA-65). The algorithm is bound to the key — not the signature —
+  // for crypto agility without per-sig overhead. See GH #51.
+  let message;
   if (schema.SIGNATURE_SCOPE === SIGNATURE_SCOPE.ENVELOPE) {
-    // Outer signature: covers the canonical tx envelope (tx_type + data +
-    // timestamp + prev). tx.signature is NOT part of canonicalTx so the
-    // signature doesn't sign itself — same as today.
-    ok = verifyTransaction(tx, pubKey);
+    // Outer signature: covers the canonical tx envelope. tx.signature is
+    // NOT part of canonicalTx (signTransaction's contract), so the
+    // signature doesn't sign itself.
+    const tipCrypto = require("../../../shared/crypto");
+    message = tipCrypto.shake256(tipCrypto.canonicalTx(tx));   // matches signTransaction's signed bytes
   } else if (schema.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
-    ok = mldsaVerify(bodyMessageHex(tx, schema), tx.signature, pubKey);
+    message = bodyMessageHex(tx, schema);
   } else {
     return { ok: false, error: `unknown SIGNATURE_SCOPE ${schema.SIGNATURE_SCOPE}`, code: "schema_invalid" };
+  }
+  let ok;
+  try {
+    ok = verifyWithAlgorithm(message, tx.signature, signer.public_key, signer.algorithm);
+  } catch (e) {
+    return { ok: false, error: `algorithm dispatch failed: ${e.message}`, code: "algorithm_unsupported" };
   }
   if (!ok) {
     return { ok: false, error: "signature verification failed", code: "signature_invalid" };
@@ -227,6 +258,7 @@ module.exports = {
   canonicalJson,
   canonicalTx,
   // GH #51 — unified-storage signature helpers (constants in shared/constants.js)
+  resolveSignerRecord,
   resolveSignerPubKey,
   bodyMessageHex,
   verifyTxSignature,

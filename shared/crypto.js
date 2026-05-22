@@ -152,6 +152,47 @@ function mldsaVerify(data, signatureHex, publicKeyHex) {
   }
 }
 
+// ─── Crypto-agility dispatcher (GH #51) ──────────────────────────────────────
+//
+// Verifies a signature against (message, signature, public_key) using the
+// algorithm declared on the signing key's row. Today only ML-DSA-65 is
+// supported; future algorithms (ML-DSA-87, SLH-DSA, hybrid pq+classical)
+// add a branch here + a constant in SIGNATURE_ALGORITHM. The signing
+// algorithm is NEVER inlined per-signature — it's bound to the public
+// key's registration. Avoids JWT-style "alg: none" downgrade attacks
+// and keeps the wire compact.
+//
+// Throws on unknown algorithm so a misconfigured key isn't silently
+// passing verification.
+function verifyWithAlgorithm(message, signatureHex, publicKeyHex, algorithm) {
+  // Constants imported lazily to avoid a circular dependency with
+  // shared/constants.js — constants.js doesn't depend on crypto.js but
+  // some test fixtures `require("shared/crypto")` first.
+  const { SIGNATURE_ALGORITHM, SIGNATURE_ALGORITHM_DEFAULT } = require("./constants");
+  const alg = algorithm || SIGNATURE_ALGORITHM_DEFAULT;
+  switch (alg) {
+    case SIGNATURE_ALGORITHM.ML_DSA_65:
+      return mldsaVerify(message, signatureHex, publicKeyHex);
+    // Future: case SIGNATURE_ALGORITHM.ML_DSA_87: return mldsa87Verify(...)
+    // Future: case SIGNATURE_ALGORITHM.SLH_DSA_128S: return slhdsaVerify(...)
+    // Future: case SIGNATURE_ALGORITHM.HYBRID_ML_DSA_65_ECDSA_P256: return hybridVerify(...)
+    default:
+      throw new Error(`verifyWithAlgorithm: unsupported algorithm "${alg}"`);
+  }
+}
+
+// Symmetric signer dispatch. Same future-proofing as verifyWithAlgorithm.
+function signWithAlgorithm(message, privateKeyHex, algorithm, opts = {}) {
+  const { SIGNATURE_ALGORITHM, SIGNATURE_ALGORITHM_DEFAULT } = require("./constants");
+  const alg = algorithm || SIGNATURE_ALGORITHM_DEFAULT;
+  switch (alg) {
+    case SIGNATURE_ALGORITHM.ML_DSA_65:
+      return mldsaSign(message, privateKeyHex, opts);
+    default:
+      throw new Error(`signWithAlgorithm: unsupported algorithm "${alg}"`);
+  }
+}
+
 // ─── SLH-DSA-128s ROOT KEY (SPHINCS+, FIPS 205) ──────────────────────────────
 // Used for root identity keys and VP certificates.
 // FIPS 205 compliant via @noble/post-quantum.
@@ -532,6 +573,9 @@ module.exports = {
   generateMLDSAKeypair,
   mldsaSign,
   mldsaVerify,
+  // GH #51 — crypto-agility dispatchers
+  verifyWithAlgorithm,
+  signWithAlgorithm,
   generateSLHDSAKeypair,
   slhdsaSign,
   slhdsaVerify,

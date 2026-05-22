@@ -42,9 +42,18 @@ const {
 } = require("./_common");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
+  SIGNATURE_SCOPE, SIGNED_BY_KIND, SIGNATURE_FIELDS_REGISTER_IDENTITY,
 } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.REGISTER_IDENTITY;
+
+// GH #51 — unified signature storage contract.
+// VP signs the canonical payload (a subset of tx.data, declared in
+// shared/constants.js — protocol data, not schema implementation, so
+// Python parity stays byte-for-byte in lockstep).
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNATURE_FIELDS = SIGNATURE_FIELDS_REGISTER_IDENTITY;
+const SIGNED_BY = SIGNED_BY_KIND.VP;
 
 const VERIFICATION_TIERS = Object.freeze(["T1", "T2", "T3", "T4"]);
 
@@ -126,7 +135,7 @@ function validateRequest(body, deps) {
   // Organizations MUST attest a display name — orgs without a public
   // name aren't useful (can't claim domains, can't credibly publish).
   if (body.tip_id_type === TIP_ID_TYPES.ORGANIZATION
-      && (typeof body.creator_name !== "string" || body.creator_name.length === 0)) {
+    && (typeof body.creator_name !== "string" || body.creator_name.length === 0)) {
     throw schemaError(
       400,
       "creator_name is required for tip_id_type='organization'",
@@ -267,6 +276,11 @@ module.exports = {
   sign,
   verifySignature,
   verifyTx,
+  // GH #51 — unified signature contract (consumed by verifyTxSignature
+  // in schemas/_common.js + commit-handler dispatch)
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNATURE_FIELDS,
+  SIGNED_BY,
   // Re-export for tests / debug:
   canonicalJson,
 };
