@@ -23,6 +23,13 @@
  *     tx. This cryptographically ties recovery to the same gov-id-bearing
  *     witness used at first-time registration — a rogue VP cannot recover
  *     an arbitrary tip_id without also producing a valid dedup proof.
+ *   - Proof-of-possession: a `new_key_signature` co-signs the canonical
+ *     body with the NEW private key. The chain verifies it against
+ *     `new_public_key`. This guarantees that every committed KEY_RECOVERY
+ *     was produced by a party that actually controls the new key — no
+ *     "ghost active key" rows from FE submissions that lost the private
+ *     key before activation. Stored on tx.data alongside zk_proof, not
+ *     in canonical body (self-referential).
  *
  * Cooling-off policy:
  *   The chain enforces only `effective_at >= tx.timestamp`. It does NOT
@@ -87,6 +94,9 @@ function validateRequest(body, deps) {
   }
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
+  }
+  if (typeof body.new_key_signature !== "string" || body.new_key_signature.length === 0) {
+    throw schemaError(400, "new_key_signature is required (proof of possession)", "new_key_signature_required");
   }
   if (typeof body.recovery_evidence_hash !== "string" || body.recovery_evidence_hash.length === 0) {
     throw schemaError(400, "recovery_evidence_hash is required", "recovery_evidence_hash_required");
@@ -205,6 +215,16 @@ function verifyTx(tx, dag) {
   }
   if (!Number.isFinite(d.effective_at) || d.effective_at < tx.timestamp) {
     return { ok: false, status: 400, error: "effective_at must be >= tx.timestamp", code: "effective_at_invalid" };
+  }
+  // Proof-of-possession — the new key must have signed the canonical body.
+  // ML-DSA verify is cheap, so we re-check at consensus replay (unlike
+  // zk_proof, which is groth16 and only verified at API ingress).
+  if (typeof d.new_key_signature !== "string" || d.new_key_signature.length === 0) {
+    return { ok: false, status: 403, error: "new_key_signature missing", code: "new_key_signature_missing" };
+  }
+  const canonicalPayload = buildSigningPayload(d);
+  if (!verifyPayload(canonicalPayload, d.new_key_signature, d.new_public_key)) {
+    return { ok: false, status: 403, error: "new-key proof-of-possession invalid", code: "new_key_signature_invalid" };
   }
   return { ok: true };
 }

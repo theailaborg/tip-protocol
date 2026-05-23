@@ -243,8 +243,12 @@ async function main() {
   };
   const recoverPayload = keyRecoverySchema.buildSigningPayload(recoverBody);
   const recoverSig = keyRecoverySchema.sign(recoverPayload, VP.private_key);
+  // Proof-of-possession: the new keypair co-signs the same canonical body
+  // so the chain rejects recoveries from clients that lost the private key
+  // before submission.
+  const newKeySig = keyRecoverySchema.sign(recoverPayload, recoveredKp.privateKey);
   const recoverRes = await _post(`/v1/identity/${encodeURIComponent(user.tip_id)}/keys/recover`,
-    { ...recoverBody, signature: recoverSig });
+    { ...recoverBody, signature: recoverSig, new_key_signature: newKeySig });
   expect([200, 201, 202].includes(recoverRes.status),
     "POST /v1/identity/:tipId/keys/recover", `status=${recoverRes.status} ${JSON.stringify(recoverRes.body?.error || "")}`);
 

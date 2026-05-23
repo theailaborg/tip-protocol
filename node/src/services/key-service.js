@@ -114,6 +114,12 @@ function createKeyService({ dag, submitTx }) {
     if (!keyRecoverySchema.verifySignature(canonicalPayload, normalised.signature, vp.public_key)) {
       throw schemaError(403, "VP signature verification failed", "signature_invalid");
     }
+    // Proof-of-possession: the NEW key must have signed the canonical body.
+    // Blocks "ghost active key" rows from clients that lost the private key
+    // before submission; chain only commits recoveries the submitter can use.
+    if (!keyRecoverySchema.verifySignature(canonicalPayload, normalised.new_key_signature, normalised.new_public_key)) {
+      throw schemaError(403, "new-key proof-of-possession failed", "new_key_signature_invalid");
+    }
 
     const timestamp = nowMs();
     if (canonicalPayload.effective_at < timestamp) {
@@ -122,7 +128,10 @@ function createKeyService({ dag, submitTx }) {
 
     const txBody = {
       tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: dag.getRecentPrev(),
-      data: _pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
+      data: {
+        ..._pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
+        new_key_signature: normalised.new_key_signature,
+      },
       signature: normalised.signature,
     };
     const signedTx = withTxId(txBody);
