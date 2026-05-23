@@ -396,6 +396,15 @@ const IDENTITY = {
   get MAX_SOCIAL_BONUS() { return get().identity.max_social_bonus; },
 };
 
+// SOCIAL_LINK — convenience alias exposing the same identity sub-block
+// constants under a feature-oriented name. Imported by identity-service
+// and link-platform tests without having to reach for IDENTITY.
+const SOCIAL_LINK = {
+  get SOCIAL_LINK_BONUS()   { return get().identity.social_link_bonus; },
+  get MAX_SOCIAL_ACCOUNTS() { return get().identity.max_social_accounts; },
+  get MAX_SOCIAL_BONUS()    { return get().identity.max_social_bonus; },
+};
+
 function getTier(score) {
   const t = _t();
   if (score >= t.highly_trusted) return { name: "HIGHLY_TRUSTED", label: "Highly Trusted", color: "#1A8A5C" };
@@ -412,5 +421,5 @@ module.exports = {
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
   PRESCAN_THRESHOLDS, PRESCAN_TIER_THRESHOLDS, CALIBRATION_THRESHOLDS,
   REVIEWER, CONTENT_GRACE,
-  CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, getTier,
+  CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, SOCIAL_LINK, getTier,
 };

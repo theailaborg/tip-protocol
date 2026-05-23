@@ -11,6 +11,9 @@ const { validateTransaction } = require(SRC + "/validators/tx-validator");
 const { initDAG } = require(SRC + "/dag");
 const { withTxId } = require(SRC + "/services/helpers");
 const { nowMs } = require(SHARED + "/time");
+const { createIdentityService } = require(SRC + "/services/identity-service");
+const { initScoring } = require(SRC + "/scoring");
+const { SOCIAL_LINK } = require(SHARED + "/protocol-constants");
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -118,5 +121,71 @@ describe("LINK_PLATFORM tx-validator", () => {
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(false);
     expect(result.errors.join("\n")).toMatch(/TIP-ID not found/);
+  });
+});
+
+describe("identityService.linkPlatform", () => {
+  let dag2, scoring2, identityService2;
+  let vpPriv, vpPub2, vpTipId;
+  let userTipId;
+  const submitted = [];
+
+  beforeAll(async () => {
+    dag2 = initDAG({ dbPath: ":memory:" });
+    scoring2 = initScoring(dag2, { nodeId: "tip://node/test" });
+    const { privateKey, publicKey } = await generateMLDSAKeypair();
+    vpPriv = privateKey;
+    vpPub2 = publicKey;
+    vpTipId = "tip://vp/svc-test-vp";
+    dag2.saveVP({ vp_id: vpTipId, public_key: vpPub2, status: "active", tx_id: "genesis-vp-svc" });
+    userTipId = "tip://id/US-1122334455667788";
+    dag2.saveIdentity({ tip_id: userTipId, public_key: vpPub2, vp_id: vpTipId, tx_id: "genesis-id-svc" });
+    identityService2 = createIdentityService({
+      dag: dag2, scoring: scoring2,
+      config: { nodeId: "tip://node/test", nodePrivateKey: vpPriv, nodeRegisteredId: "tip://node/test" },
+      submitTx: (tx) => submitted.push(tx),
+    });
+  });
+
+  test("linkPlatform submits a LINK_PLATFORM tx and a paired SCORE_UPDATE tx", () => {
+    submitted.length = 0;
+    const linkedAt = nowMs();
+    const payload = linkPlatformSchema.buildSigningPayload({
+      tip_id: userTipId, platform: "youtube", handle: "@mychannel", linked_at: linkedAt,
+    });
+    const vpSig = linkPlatformSchema.sign(payload, vpPriv);
+    const result = identityService2.linkPlatform({
+      tipId: userTipId,
+      platform: "youtube",
+      handle: "@mychannel",
+      linkedAt,
+      vpId: vpTipId,
+      vpSignature: vpSig,
+    });
+    expect(result.confirmation).toBe("proposed");
+    expect(result.platform).toBe("youtube");
+    expect(submitted).toHaveLength(2);
+    expect(submitted[0].tx_type).toBe(TX_TYPES.LINK_PLATFORM);
+    expect(submitted[1].tx_type).toBe(TX_TYPES.SCORE_UPDATE);
+    expect(submitted[1].data.delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    expect(submitted[1].data.tip_id).toBe(userTipId);
+  });
+
+  test("linkPlatform rejects duplicate platform", () => {
+    const lp = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    dag2.addTx(lp);
+    let caught;
+    try {
+      identityService2.linkPlatform({
+        tipId: userTipId, platform: "youtube", handle: "@other", linkedAt: nowMs(),
+        vpId: vpTipId, vpSignature: "x",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.status).toBe(409);
+    expect(caught.code).toBe("platform_already_linked");
+    expect(caught.error).toMatch(/already linked/);
   });
 });

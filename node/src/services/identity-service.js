@@ -6,8 +6,9 @@ const {
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
 const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
-const { SCORE } = require("../../../shared/protocol-constants");
+const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
+const linkPlatformSchema = require("../schemas/link-platform");
 const { schemaError, verifyPayload } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -408,7 +409,75 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash };
+  function linkPlatform({ tipId, platform, handle, linkedAt, vpId, vpSignature }) {
+    linkPlatformSchema.validateRequest(
+      { tip_id: tipId, platform, handle, vp_id: vpId, vp_signature: vpSignature },
+      { dag, urlTipId: tipId },
+    );
+
+    const existing = dag.getTxsByTipId(tipId)
+      .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+
+    if (existing.length >= SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS) {
+      throw schemaError(409, `Social account cap reached (max ${SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS})`, "social_cap_reached");
+    }
+    if (existing.some(t => t.data && t.data.platform === platform)) {
+      throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
+    }
+
+    const ts = linkedAt || nowMs();
+    const canonicalPayload = linkPlatformSchema.buildSigningPayload(
+      { tip_id: tipId, platform, handle, linked_at: ts },
+    );
+    const vp = linkPlatformSchema.resolveVP(vpId, dag);
+    if (!linkPlatformSchema.verifySignature(canonicalPayload, vpSignature, vp.public_key)) {
+      throw schemaError(403, "VP signature verification failed", "signature_invalid");
+    }
+
+    const linkTxBody = {
+      tx_type: TX_TYPES.LINK_PLATFORM,
+      timestamp: ts,
+      prev: dag.getRecentPrev(),
+      data: {
+        tip_id: tipId,
+        platform: canonicalPayload.platform,
+        handle: canonicalPayload.handle,
+        linked_at: canonicalPayload.linked_at,
+        vp_id: vpId,
+        vp_signature: vpSignature,
+      },
+    };
+    const linkTx = withTxId(linkTxBody);
+
+    const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });
+    if (!validation.valid) {
+      throw schemaError(400, validation.errors.join("; "), "tx_validation_failed");
+    }
+
+    submitTx(linkTx);
+
+    const scoreTx = scoring.buildScoreUpdateTx({
+      tipId,
+      delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
+      reason: `Social account linked: ${platform}`,
+      relatedTxId: linkTx.tx_id,
+      timestamp: ts,
+      getRecentPrev: () => dag.getRecentPrev(),
+      config,
+    });
+    submitTx(scoreTx);
+
+    log.info(`Social account linked: ${tipId} → ${platform} (${handle})`);
+    return {
+      tip_id: tipId, platform, handle,
+      tx_id: linkTx.tx_id, score_tx_id: scoreTx.tx_id,
+      score_delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
+      linked_at: ts,
+      confirmation: "proposed",
+    };
+  }
+
+  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform };
 }
 
 module.exports = { createIdentityService };
