@@ -598,11 +598,16 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000));
         }
         if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+          // GH #60: public_key + algorithm auto-route to entity_keys via
+          // saveIdentity (DID-style single source of truth — the keys
+          // table holds every key across all time, identities holds
+          // mutable non-cryptographic attributes only). root_public_key
+          // dropped (orphaned scaffold; never wired in any service).
           dag.saveIdentity({
             tip_id: d.tip_id,
             region: d.region || "US",
             public_key: d.public_key || "",
-            root_public_key: d.root_public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             vp_id: d.vp_id || "",
             verification_tier: d.verification_tier || "T1",
             tip_id_type: d.tip_id_type || "personal",

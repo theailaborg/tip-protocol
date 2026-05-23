@@ -37,11 +37,23 @@ const NODE_ID = "tip://node/dispatcher-test";
 const SUBJECT_TIP = "tip://id/US-aaaabbbbccccdddd";
 
 function _fakeDag({ identities = {}, nodes = {}, vps = {} } = {}) {
+  // GH #60: dispatcher reads keys from entity_keys via getKeyValidAt /
+  // getActiveKey. Mirror entity_type → fixture map; ignore valid_from_ts
+  // bounds in this fake (tests don't exercise rotations).
+  const lookup = (entity_type, entity_id) => {
+    const map = entity_type === "node" ? nodes
+      : entity_type === "vp" ? vps
+        : identities;
+    const row = map[entity_id];
+    return row ? { public_key: row.public_key, algorithm: row.algorithm || "ml-dsa-65" } : null;
+  };
   return {
     getIdentity: (id) => identities[id] || null,
     getNode: (id) => nodes[id] || null,
     getVP: (id) => vps[id] || null,
     isRevoked: () => false,
+    getActiveKey: lookup,
+    getKeyValidAt: (entity_type, entity_id, _timestamp) => lookup(entity_type, entity_id),
   };
 }
 

@@ -172,33 +172,46 @@ function resolveSignerRecord(tx, schema, dag) {
   const kind = contract.SIGNED_BY;
   if (!SIGNED_BY_KIND_VALUES.has(kind)) return null;
 
-  let row;
+  // GH #60: pick the entity_type discriminator + entity_id field. We
+  // resolve the signer's key via dag.getKeyValidAt(entity_type,
+  // entity_id, tx.timestamp) so historical signatures verify against
+  // the key that was active at sign time (NOT today's active key
+  // post-rotation). Pre-rotation identities have exactly one row in
+  // entity_keys so the result is identical to the active-key lookup.
+  let entityType;
+  let entityId;
   if (kind === SIGNED_BY_KIND.NODE) {
-    const nodeId = tx?.data?.node_id;
-    if (!nodeId) return null;
-    row = dag.getNode?.(nodeId);
+    entityType = "node";
+    entityId = tx?.data?.node_id;
   } else if (kind === SIGNED_BY_KIND.VP) {
     // VP-signed. Contract may declare a non-default VP_ID_FIELD
     // (REVOKE_* uses "issuing_vp_id"; VP_REGISTERED / NODE_REGISTERED
     // use "approving_vp_id"). Default "vp_id" covers REGISTER_IDENTITY
     // and any future VP-attestation tx that follows the canonical name.
-    const field = contract.VP_ID_FIELD || "vp_id";
-    const vpId = tx?.data?.[field];
-    if (!vpId) return null;
-    row = dag.getVP?.(vpId);
+    entityType = "vp";
+    entityId = tx?.data?.[contract.VP_ID_FIELD || "vp_id"];
   } else {
     // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
     // Contract declares WHICH field on tx.data carries the subject's
     // tip_id via `SUBJECT_TIP_ID_FIELD` (defaults to "tip_id").
-    const field = contract.SUBJECT_TIP_ID_FIELD || "tip_id";
-    const tipId = tx?.data?.[field];
-    if (!tipId) return null;
-    row = dag.getIdentity?.(tipId);
+    entityType = "identity";
+    entityId = tx?.data?.[contract.SUBJECT_TIP_ID_FIELD || "tip_id"];
   }
-  if (!row || typeof row.public_key !== "string") return null;
+  if (!entityId) return null;
+
+  // Time-anchored lookup. Use tx.timestamp so a tx signed before a
+  // rotation verifies against the OLD key (which is the row whose
+  // [valid_from_ts, valid_to_ts) range contains tx.timestamp).
+  // Fallback to active-key lookup if timestamp is missing (defensive
+  // for API-time callers that haven't yet built a full tx envelope).
+  const timestamp = Number(tx?.timestamp);
+  const key = (typeof dag.getKeyValidAt === "function" && Number.isFinite(timestamp) && timestamp > 0)
+    ? dag.getKeyValidAt(entityType, entityId, timestamp)
+    : (typeof dag.getActiveKey === "function" ? dag.getActiveKey(entityType, entityId) : null);
+  if (!key || typeof key.public_key !== "string") return null;
   return {
-    public_key: row.public_key,
-    algorithm: row.algorithm || SIGNATURE_ALGORITHM_DEFAULT,
+    public_key: key.public_key,
+    algorithm: key.algorithm || SIGNATURE_ALGORITHM_DEFAULT,
   };
 }
 

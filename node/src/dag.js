@@ -47,11 +47,15 @@ try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 // never from nowMs() / unixepoch() / other local-clock sources.
 // See setScore() and addDedupHash() for the determinism contract.
 function _canonIdentity(r) {
+  // GH #60: public_key, algorithm, root_public_key removed.
+  // public_key + algorithm participate in state_merkle_root via
+  // entity_keys (see _canonEntityKey). root_public_key was orphaned
+  // scaffolding for a recovery-anchor design that never landed; if a
+  // recovery key is ever needed it slots into entity_keys as a
+  // different key_type extension.
   return {
     tip_id: r.tip_id,
     region: r.region,
-    public_key: r.public_key,
-    root_public_key: r.root_public_key || null,
     vp_id: r.vp_id || null,
     verification_tier: r.verification_tier,
     score_display_mode: r.score_display_mode || "TIER_ONLY",
@@ -163,23 +167,38 @@ function _canonDomainBinding(r) {
   };
 }
 function _canonVP(r) {
+  // GH #60: public_key in entity_keys, not here.
   return {
     vp_id: r.vp_id,
     name: r.name,
     jurisdiction: r.jurisdiction,
     jurisdiction_tier: r.jurisdiction_tier,
-    public_key: r.public_key || null,
     status: r.status,
     registered_at: r.registered_at,
   };
 }
 function _canonNode(r) {
+  // GH #60: public_key in entity_keys, not here.
   return {
     node_id: r.node_id,
     name: r.name || null,
-    public_key: r.public_key,
     status: r.status,
     registered_at: r.registered_at,
+  };
+}
+// GH #60 — canonical projection for the entity_keys table. Participates
+// in state_merkle_root so the federation agrees byte-for-byte on every
+// entity's key history. Sort by (entity_type, entity_id, valid_from_ts)
+// in the iterator before computing the root.
+function _canonEntityKey(r) {
+  return {
+    entity_type: r.entity_type,
+    entity_id: r.entity_id,
+    public_key: r.public_key,
+    algorithm: r.algorithm || "ml-dsa-65",
+    valid_from_ts: r.valid_from_ts,
+    valid_to_ts: r.valid_to_ts == null ? null : r.valid_to_ts,
+    source_tx_id: r.source_tx_id,
   };
 }
 
@@ -265,13 +284,24 @@ function _canonCommitteeRotation(r) {
 class MemoryStore {
   constructor() {
     this._txs = new Map();  // tx_id -> tx
-    this._identities = new Map();  // tip_id -> record
+    this._identities = new Map();  // tip_id -> record (no public_key — see entity_keys)
     this._content = new Map();  // ctid -> record
     this._scores = new Map();  // tip_id -> { score, offense_count, last_updated }
     this._dedup = new Set();  // dedup_hash strings (Poseidon field elements)
     this._revocations = new Map();  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
-    this._vps = new Map();  // vp_id -> record
-    this._nodes = new Map();  // node_id -> record
+    this._vps = new Map();  // vp_id -> record (no public_key — see entity_keys)
+    this._nodes = new Map();  // node_id -> record (no public_key — see entity_keys)
+    // GH #60 — single source of truth for public_key + algorithm of every
+    // identity/node/VP across all time. Append-only with valid_from_ts /
+    // valid_to_ts ranges (DID / X.509 / JWKS pattern). KEY_ROTATED /
+    // KEY_RECOVERY close the active row and append a new one. Verification
+    // dispatchers (commit-handler at consensus replay) walk this with
+    // tx.timestamp to verify historical sigs; API-time verification uses
+    // the active row (valid_to_ts IS NULL).
+    //
+    // Key: `${entity_type}:${entity_id}:${valid_from_ts}` so we can
+    // efficiently iterate per-entity history. Sorted by valid_from_ts.
+    this._entityKeys = new Map();
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
@@ -341,9 +371,39 @@ class MemoryStore {
   }
 
   // ── Identities ────────────────────────────────────────────────────────────
-  saveIdentity(rec) { this._identities.set(rec.tip_id, { ...rec }); }
-  getIdentity(id) { return this._identities.get(id) || null; }
-  getAllIdentities() { return [...this._identities.values()]; }
+  // GH #60: public_key + algorithm auto-route to entity_keys (DID-style
+  // single source of truth). Callers can keep passing them on `rec` —
+  // identities row stores everything else, entity_keys holds the active
+  // (public_key, algorithm) pair indexed by (entity_type, entity_id,
+  // valid_from_ts). `root_public_key` is dropped — never written by any
+  // service, never read by any code path beyond the canonical projection.
+  saveIdentity(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "identity",
+        entity_id: rec.tip_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.tip_id}`,
+      });
+    }
+    const { public_key, algorithm, root_public_key, ...rest } = rec;
+    void public_key; void algorithm; void root_public_key;  // explicit drop
+    this._identities.set(rec.tip_id, { ...rest });
+  }
+  getIdentity(id) {
+    const row = this._identities.get(id);
+    if (!row) return null;
+    const key = this._getActiveEntityKey("identity", id);
+    return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+  }
+  getAllIdentities() {
+    return [...this._identities.values()].map(row => {
+      const key = this._getActiveEntityKey("identity", row.tip_id);
+      return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+    });
+  }
 
   // ── Content ───────────────────────────────────────────────────────────────
   saveContent(rec) { this._content.set(rec.ctid, { ...rec }); }
@@ -499,14 +559,147 @@ class MemoryStore {
   }
 
   // ── Verification Providers ────────────────────────────────────────────────
-  saveVP(rec) { this._vps.set(rec.vp_id, { ...rec }); }
-  getVP(vpId) { return this._vps.get(vpId) || null; }
-  getAllVPs() { return [...this._vps.values()]; }
+  saveVP(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "vp",
+        entity_id: rec.vp_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.vp_id}`,
+      });
+    }
+    const { public_key, algorithm, ...rest } = rec;
+    void public_key; void algorithm;
+    this._vps.set(rec.vp_id, { ...rest });
+  }
+  getVP(vpId) {
+    const row = this._vps.get(vpId);
+    if (!row) return null;
+    const key = this._getActiveEntityKey("vp", vpId);
+    return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+  }
+  getAllVPs() {
+    return [...this._vps.values()].map(row => {
+      const key = this._getActiveEntityKey("vp", row.vp_id);
+      return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+    });
+  }
 
   // ── Nodes ───────────────────────────────────────────────────────────────
-  saveNode(rec) { this._nodes.set(rec.node_id, { ...rec }); }
-  getNode(nodeId) { return this._nodes.get(nodeId) || null; }
-  getAllNodes() { return [...this._nodes.values()]; }
+  saveNode(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "node",
+        entity_id: rec.node_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.node_id}`,
+      });
+    }
+    const { public_key, algorithm, ...rest } = rec;
+    void public_key; void algorithm;
+    this._nodes.set(rec.node_id, { ...rest });
+  }
+  getNode(nodeId) {
+    const row = this._nodes.get(nodeId);
+    if (!row) return null;
+    const key = this._getActiveEntityKey("node", nodeId);
+    return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+  }
+  getAllNodes() {
+    return [...this._nodes.values()].map(row => {
+      const key = this._getActiveEntityKey("node", row.node_id);
+      return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
+    });
+  }
+
+  // ── entity_keys (GH #60) ─────────────────────────────────────────────────
+  // Single source of truth for (public_key, algorithm) of every identity,
+  // node, and VP across all time. Append-only with valid_from_ts /
+  // valid_to_ts ranges. KEY_ROTATED / KEY_RECOVERY apply: close the
+  // active row (set valid_to_ts) and append a new one (valid_from_ts =
+  // effective_at).
+  _entityKeyId(entity_type, entity_id, valid_from_ts) {
+    return `${entity_type}:${entity_id}:${valid_from_ts}`;
+  }
+  _saveActiveEntityKey({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
+    // Saving an "active" row: close any currently-active row for this
+    // entity (set its valid_to_ts to the new row's valid_from_ts), then
+    // insert the new active row with valid_to_ts = null.
+    const prev = this._getActiveEntityKey(entity_type, entity_id);
+    if (prev) {
+      // Idempotent: re-saving the same active key (same pubkey + alg +
+      // valid_from_ts) is a no-op. Happens on snapshot install replay.
+      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+        return;
+      }
+      const prevKey = this._entityKeyId(entity_type, entity_id, prev.valid_from_ts);
+      this._entityKeys.set(prevKey, { ...prev, valid_to_ts: valid_from_ts });
+    }
+    const key = this._entityKeyId(entity_type, entity_id, valid_from_ts);
+    this._entityKeys.set(key, {
+      entity_type, entity_id, public_key, algorithm,
+      valid_from_ts, valid_to_ts: null, source_tx_id,
+    });
+  }
+  saveEntityKey(rec) {
+    // Generalised save — accepts a fully-specified row including
+    // valid_to_ts. Used by snapshot install + KEY_ROTATED/KEY_RECOVERY
+    // direct-write paths where the caller has already computed both
+    // valid_from_ts and valid_to_ts.
+    const key = this._entityKeyId(rec.entity_type, rec.entity_id, rec.valid_from_ts);
+    this._entityKeys.set(key, {
+      entity_type: rec.entity_type,
+      entity_id: rec.entity_id,
+      public_key: rec.public_key,
+      algorithm: rec.algorithm || "ml-dsa-65",
+      valid_from_ts: rec.valid_from_ts,
+      valid_to_ts: rec.valid_to_ts == null ? null : rec.valid_to_ts,
+      source_tx_id: rec.source_tx_id,
+    });
+  }
+  _getActiveEntityKey(entity_type, entity_id) {
+    // Iterate entity's history; return the row with valid_to_ts === null.
+    for (const r of this._entityKeys.values()) {
+      if (r.entity_type === entity_type && r.entity_id === entity_id && r.valid_to_ts === null) {
+        return r;
+      }
+    }
+    return null;
+  }
+  getActiveKey(entity_type, entity_id) {
+    const r = this._getActiveEntityKey(entity_type, entity_id);
+    return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+  }
+  getKeyValidAt(entity_type, entity_id, timestamp) {
+    // Find the row with valid_from_ts <= timestamp < (valid_to_ts || +Inf).
+    // If multiple match, the one with greatest valid_from_ts wins (most
+    // recent rotation that was active at the given time).
+    let best = null;
+    for (const r of this._entityKeys.values()) {
+      if (r.entity_type !== entity_type || r.entity_id !== entity_id) continue;
+      if (r.valid_from_ts > timestamp) continue;
+      if (r.valid_to_ts != null && r.valid_to_ts <= timestamp) continue;
+      if (!best || r.valid_from_ts > best.valid_from_ts) best = r;
+    }
+    return best ? { public_key: best.public_key, algorithm: best.algorithm } : null;
+  }
+  *iterateEntityKeys() {
+    // For snapshot serialisation + state_merkle_root canonicalisation.
+    // Sort deterministically by (entity_type, entity_id, valid_from_ts).
+    const all = [...this._entityKeys.values()].sort((a, b) => {
+      if (a.entity_type !== b.entity_type) return a.entity_type < b.entity_type ? -1 : 1;
+      if (a.entity_id !== b.entity_id) return a.entity_id < b.entity_id ? -1 : 1;
+      return a.valid_from_ts - b.valid_from_ts;
+    });
+    for (const r of all) yield r;
+  }
+  clearEntityKeys() {
+    this._entityKeys.clear();
+  }
 
   clearCanonicalState() {
     this._identities.clear();
@@ -517,6 +710,8 @@ class MemoryStore {
     this._revocations.clear();
     this._vps.clear();
     this._nodes.clear();
+    // GH #60 — entity_keys is canonical state too.
+    this._entityKeys.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -898,6 +1093,13 @@ class MemoryStore {
       .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
       yield { table: "nodes", row: _canonNode(r) };
     }
+    // GH #60 — entity_keys participates in state_merkle_root so the
+    // federation agrees byte-for-byte on every identity/node/VP's key
+    // history across all time. iterateEntityKeys yields rows sorted by
+    // (entity_type, entity_id, valid_from_ts).
+    for (const r of this.iterateEntityKeys()) {
+      yield { table: "entity_keys", row: _canonEntityKey(r) };
+    }
     for (const r of [...this._prescanReviews.values()]
       .sort((a, b) => a.review_id.localeCompare(b.review_id))) {
       yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
@@ -1138,11 +1340,18 @@ class SQLiteStore {
       -- a column that hasn't been added yet.
 
       -- ── Identities ───────────────────────────────────────────────────
+      -- GH #60: public_key + algorithm are NOT columns on this table.
+      -- entity_keys is the single source of truth (see below). This
+      -- table holds mutable non-cryptographic attributes only. Readers
+      -- needing current key go through dag.getIdentity (auto-joins
+      -- active entity_keys row) or dag.getActiveKey("identity", tip_id).
+      -- Historical-signature verification (commit-handler / dispatcher)
+      -- uses dag.getKeyValidAt("identity", tip_id, tx.timestamp).
+      -- root_public_key dropped — it was scaffolded for a recovery
+      -- anchor that was never wired in any service / schema / seed.
       CREATE TABLE IF NOT EXISTS identities (
         tip_id              TEXT PRIMARY KEY,
         region              TEXT NOT NULL DEFAULT 'US',
-        public_key          TEXT NOT NULL,
-        root_public_key     TEXT,
         vp_id               TEXT,
         verification_tier   TEXT NOT NULL DEFAULT 'T1',
         score_display_mode  TEXT NOT NULL DEFAULT 'TIER_ONLY',
@@ -1161,6 +1370,32 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_id_vp        ON identities(vp_id);
       CREATE INDEX IF NOT EXISTS idx_id_status    ON identities(status);
       CREATE INDEX IF NOT EXISTS idx_id_type      ON identities(tip_id_type);
+
+      -- ── entity_keys (GH #60) ──────────────────────────────────────────
+      -- Single source of truth for public_key + algorithm of every
+      -- identity, node, and VP across all time. Same pattern as W3C
+      -- DIDs verificationMethod[] / X.509 cert chains / WebAuthn
+      -- credentials / JWKS keysets. Append-only with valid_from_ts /
+      -- valid_to_ts ranges. KEY_ROTATED / KEY_RECOVERY close the
+      -- currently-active row (set valid_to_ts = effective_at) and
+      -- append a new one (valid_from_ts = effective_at,
+      -- valid_to_ts = NULL). REGISTER_IDENTITY / VP_REGISTERED /
+      -- NODE_REGISTERED insert the initial active row. Historical
+      -- signature verification reads the row valid at tx.timestamp.
+      CREATE TABLE IF NOT EXISTS entity_keys (
+        entity_type   TEXT NOT NULL,           -- 'identity' | 'node' | 'vp'
+        entity_id     TEXT NOT NULL,           -- tip://id/... | tip://node/... | tip://vp/...
+        public_key    TEXT NOT NULL,
+        algorithm     TEXT NOT NULL DEFAULT 'ml-dsa-65',
+        valid_from_ts INTEGER NOT NULL,         -- inclusive lower bound (epoch ms from tx.timestamp)
+        valid_to_ts   INTEGER,                  -- NULL = still active
+        source_tx_id  TEXT NOT NULL,            -- REGISTER_IDENTITY | KEY_ROTATED | KEY_RECOVERY | genesis:<id>
+        PRIMARY KEY (entity_type, entity_id, valid_from_ts)
+      );
+      CREATE INDEX IF NOT EXISTS idx_entity_keys_active
+        ON entity_keys(entity_type, entity_id, valid_to_ts);
+      CREATE INDEX IF NOT EXISTS idx_entity_keys_time
+        ON entity_keys(entity_type, entity_id, valid_from_ts);
 
       -- ── Content ───────────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS content (
@@ -1261,21 +1496,21 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_pending_dom_tip_id ON pending_domain_claims(tip_id);
 
       -- ── Verification Providers ────────────────────────────────────────
+      -- GH #60: public_key + algorithm live in entity_keys.
       CREATE TABLE IF NOT EXISTS verification_providers (
         vp_id              TEXT PRIMARY KEY,
         name               TEXT NOT NULL,
         jurisdiction       TEXT NOT NULL DEFAULT 'US',
         jurisdiction_tier  TEXT NOT NULL DEFAULT 'green',
-        public_key         TEXT,
         status             TEXT NOT NULL DEFAULT 'active',
         registered_at INTEGER NOT NULL
       );
 
       -- ── Nodes ───────────────────────────────────────────────────────
+      -- GH #60: public_key + algorithm live in entity_keys.
       CREATE TABLE IF NOT EXISTS nodes (
         node_id         TEXT PRIMARY KEY,
         name            TEXT,
-        public_key      TEXT NOT NULL,
         status          TEXT NOT NULL DEFAULT 'active',
         registered_at INTEGER NOT NULL
       );
@@ -1739,13 +1974,29 @@ class SQLiteStore {
 
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
-           (tip_id,region,public_key,root_public_key,vp_id,
+           (tip_id,region,vp_id,
             verification_tier,tip_id_type,founding,status,reviewer_consent,
             registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ),
-      getIdentity: this.db.prepare("SELECT * FROM identities WHERE tip_id=?"),
-      getAllIdentities: this.db.prepare("SELECT * FROM identities WHERE status='active'"),
+      // GH #60 — JOIN with active entity_keys row so existing callers
+      // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
+      // picks the currently-active key. Algorithm is also synthesised
+      // for the dispatcher's algorithm-aware verification.
+      getIdentity: this.db.prepare(
+        `SELECT i.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM identities i
+         LEFT JOIN entity_keys k
+           ON k.entity_type='identity' AND k.entity_id=i.tip_id AND k.valid_to_ts IS NULL
+         WHERE i.tip_id=?`
+      ),
+      getAllIdentities: this.db.prepare(
+        `SELECT i.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM identities i
+         LEFT JOIN entity_keys k
+           ON k.entity_type='identity' AND k.entity_id=i.tip_id AND k.valid_to_ts IS NULL
+         WHERE i.status='active'`
+      ),
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
@@ -1817,18 +2068,73 @@ class SQLiteStore {
 
       saveVP: this.db.prepare(
         `INSERT OR REPLACE INTO verification_providers
-           (vp_id,name,jurisdiction,jurisdiction_tier,public_key,status,registered_at)
-         VALUES (?,?,?,?,?,?,?)`
+           (vp_id,name,jurisdiction,jurisdiction_tier,status,registered_at)
+         VALUES (?,?,?,?,?,?)`
       ),
-      getVP: this.db.prepare("SELECT * FROM verification_providers WHERE vp_id=?"),
-      getAllVPs: this.db.prepare("SELECT * FROM verification_providers"),
+      getVP: this.db.prepare(
+        `SELECT v.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM verification_providers v
+         LEFT JOIN entity_keys k
+           ON k.entity_type='vp' AND k.entity_id=v.vp_id AND k.valid_to_ts IS NULL
+         WHERE v.vp_id=?`
+      ),
+      getAllVPs: this.db.prepare(
+        `SELECT v.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM verification_providers v
+         LEFT JOIN entity_keys k
+           ON k.entity_type='vp' AND k.entity_id=v.vp_id AND k.valid_to_ts IS NULL`
+      ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,public_key,status,registered_at)
-         VALUES (?,?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,registered_at)
+         VALUES (?,?,?,?)`
       ),
-      getNode: this.db.prepare("SELECT * FROM nodes WHERE node_id=?"),
-      getAllNodes: this.db.prepare("SELECT * FROM nodes"),
+      getNode: this.db.prepare(
+        `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM nodes n
+         LEFT JOIN entity_keys k
+           ON k.entity_type='node' AND k.entity_id=n.node_id AND k.valid_to_ts IS NULL
+         WHERE n.node_id=?`
+      ),
+      getAllNodes: this.db.prepare(
+        `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
+         FROM nodes n
+         LEFT JOIN entity_keys k
+           ON k.entity_type='node' AND k.entity_id=n.node_id AND k.valid_to_ts IS NULL`
+      ),
+
+      // GH #60 — entity_keys statements.
+      saveEntityKey: this.db.prepare(
+        `INSERT OR REPLACE INTO entity_keys
+           (entity_type,entity_id,public_key,algorithm,valid_from_ts,valid_to_ts,source_tx_id)
+         VALUES (?,?,?,?,?,?,?)`
+      ),
+      getActiveEntityKey: this.db.prepare(
+        `SELECT * FROM entity_keys
+         WHERE entity_type=? AND entity_id=? AND valid_to_ts IS NULL`
+      ),
+      getKeyValidAt: this.db.prepare(
+        // Pick the row whose validity range covers the timestamp;
+        // among matching rows the greatest valid_from_ts wins (the
+        // most recent rotation active at that time).
+        `SELECT * FROM entity_keys
+         WHERE entity_type=? AND entity_id=?
+           AND valid_from_ts <= ?
+           AND (valid_to_ts IS NULL OR valid_to_ts > ?)
+         ORDER BY valid_from_ts DESC
+         LIMIT 1`
+      ),
+      closeActiveEntityKey: this.db.prepare(
+        // Used by KEY_ROTATED / KEY_RECOVERY apply to mark the prior
+        // active key as expired at effective_at.
+        `UPDATE entity_keys SET valid_to_ts=?
+         WHERE entity_type=? AND entity_id=? AND valid_to_ts IS NULL`
+      ),
+      iterateEntityKeys: this.db.prepare(
+        `SELECT * FROM entity_keys
+         ORDER BY entity_type, entity_id, valid_from_ts`
+      ),
+      clearEntityKeys: this.db.prepare("DELETE FROM entity_keys"),
 
       // Certificates — 8 columns including BFT-Time `timestamp`
       // (median of acks.signed_at at cert creation, integer epoch ms).
@@ -2116,10 +2422,22 @@ class SQLiteStore {
   }
 
   // ── Identities ────────────────────────────────────────────────────────────
+  // GH #60: public_key + algorithm auto-route to entity_keys (single
+  // source of truth, DID/X.509/JWKS pattern). The identities row stores
+  // everything else. `root_public_key` is dropped — orphaned scaffold.
   saveIdentity(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "identity",
+        entity_id: rec.tip_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.tip_id}`,
+      });
+    }
     this._stmts.saveIdentity.run(
       rec.tip_id, rec.region || "US",
-      rec.public_key, rec.root_public_key || null,
       rec.vp_id || null, rec.verification_tier || "T1",
       rec.tip_id_type || "personal",
       rec.founding ? 1 : 0,
@@ -2294,11 +2612,20 @@ class SQLiteStore {
 
   // ── Verification Providers ────────────────────────────────────────────────
   saveVP(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "vp",
+        entity_id: rec.vp_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at || nowMs(),
+        source_tx_id: rec.tx_id || `genesis:${rec.vp_id}`,
+      });
+    }
     this._stmts.saveVP.run(
       rec.vp_id, rec.name,
       rec.jurisdiction || "US",
       rec.jurisdiction_tier || "green",
-      rec.public_key || null,
       rec.status || "active",
       rec.registered_at || nowMs()
     );
@@ -2308,15 +2635,62 @@ class SQLiteStore {
 
   // ── Nodes ───────────────────────────────────────────────────────────────
   saveNode(rec) {
+    if (rec.public_key) {
+      this._saveActiveEntityKey({
+        entity_type: "node",
+        entity_id: rec.node_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at || nowMs(),
+        source_tx_id: rec.tx_id || `genesis:${rec.node_id}`,
+      });
+    }
     this._stmts.saveNode.run(
       rec.node_id, rec.name || null,
-      rec.public_key,
       rec.status || "active",
       rec.registered_at || nowMs()
     );
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes() { return this._stmts.getAllNodes.all(); }
+
+  // ── entity_keys (GH #60) ─────────────────────────────────────────────────
+  _saveActiveEntityKey({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
+    const prev = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
+    if (prev) {
+      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+        return;  // idempotent re-write (snapshot install replay)
+      }
+      this._stmts.closeActiveEntityKey.run(valid_from_ts, entity_type, entity_id);
+    }
+    this._stmts.saveEntityKey.run(
+      entity_type, entity_id, public_key, algorithm,
+      valid_from_ts, null, source_tx_id,
+    );
+  }
+  saveEntityKey(rec) {
+    // Generalised save (used by snapshot install + KEY_ROTATED/KEY_RECOVERY
+    // direct-write paths). Caller has already computed both bounds.
+    this._stmts.saveEntityKey.run(
+      rec.entity_type, rec.entity_id, rec.public_key,
+      rec.algorithm || "ml-dsa-65",
+      rec.valid_from_ts,
+      rec.valid_to_ts == null ? null : rec.valid_to_ts,
+      rec.source_tx_id,
+    );
+  }
+  getActiveKey(entity_type, entity_id) {
+    const r = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
+    return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+  }
+  getKeyValidAt(entity_type, entity_id, timestamp) {
+    const r = this._stmts.getKeyValidAt.get(entity_type, entity_id, timestamp, timestamp);
+    return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+  }
+  *iterateEntityKeys() {
+    for (const r of this._stmts.iterateEntityKeys.iterate()) yield r;
+  }
+  clearEntityKeys() { this._stmts.clearEntityKeys.run(); }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────────
   saveCertificate(cert) {
@@ -2609,6 +2983,10 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM nodes ORDER BY node_id").iterate()) {
       yield { table: "nodes", row: _canonNode(r) };
     }
+    // GH #60 — entity_keys participates in state_merkle_root.
+    for (const r of this._stmts.iterateEntityKeys.iterate()) {
+      yield { table: "entity_keys", row: _canonEntityKey(r) };
+    }
     for (const r of db.prepare("SELECT * FROM prescan_reviews ORDER BY review_id").iterate()) {
       yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
     }
@@ -2625,6 +3003,8 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM revocations").run();
       this.db.prepare("DELETE FROM verification_providers").run();
       this.db.prepare("DELETE FROM nodes").run();
+      // GH #60 — entity_keys is canonical state too.
+      this.db.prepare("DELETE FROM entity_keys").run();
     })();
   }
 
@@ -2918,6 +3298,22 @@ function _buildDagHandle(store, config) {
     saveNode: (rec) => store.saveNode(rec),
     getNode: (id) => store.getNode(id),
     getAllNodes: () => store.getAllNodes(),
+
+    // ── entity_keys (GH #60) — single source of truth for keys ──────────
+    // saveEntityKey writes a fully-specified row (caller supplies both
+    // valid_from_ts and valid_to_ts). For "activate this new key + close
+    // the prior one" semantics use _saveActiveEntityKey via saveIdentity
+    // / saveVP / saveNode (auto-route from rec.public_key + algorithm).
+    // KEY_ROTATED / KEY_RECOVERY apply uses closeActiveKey + saveEntityKey
+    // directly so the close + insert is one atomic pair.
+    saveEntityKey: (rec) => store.saveEntityKey(rec),
+    getActiveKey: (entityType, entityId) => store.getActiveKey(entityType, entityId),
+    // Historical-signature verification entry. Verifiers must pass
+    // tx.timestamp so the right key is selected for that point in time.
+    // Returns { public_key, algorithm } or null.
+    getKeyValidAt: (entityType, entityId, timestamp) => store.getKeyValidAt(entityType, entityId, timestamp),
+    iterateEntityKeys: () => store.iterateEntityKeys(),
+    clearEntityKeys: () => store.clearEntityKeys(),
 
     // ── Certificates (Narwhal consensus) ─────────────────────────────────
     saveCertificate: (cert) => store.saveCertificate(cert),

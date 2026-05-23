@@ -324,11 +324,11 @@ class KnexAdapter {
       t.index("subject_tip_id", "idx_txs_subject");
     });
 
+    // GH #60: public_key + algorithm live in entity_keys (DID-style
+    // single source of truth). root_public_key dropped (orphaned scaffold).
     await ensure("identities", t => {
       _pk(t, "tip_id");
       t.string("region", 8).notNullable().defaultTo("US");
-      t.text("public_key").notNullable();
-      t.text("root_public_key").nullable();
       _id(t, "vp_id").nullable();
       t.string("verification_tier", 8).notNullable().defaultTo("T1");
       t.string("score_display_mode", 32).notNullable().defaultTo("TIER_ONLY");
@@ -346,6 +346,28 @@ class KnexAdapter {
       t.index("vp_id", "idx_id_vp");
       t.index("status", "idx_id_status");
       t.index("tip_id_type", "idx_id_type");
+    });
+
+    // GH #60 — entity_keys: single source of truth for (public_key,
+    // algorithm) of every identity, node, and VP across all time. Same
+    // pattern as W3C DID verificationMethod[] / X.509 cert chains /
+    // WebAuthn credentials / JWKS keysets. Append-only with
+    // valid_from_ts / valid_to_ts ranges; KEY_ROTATED / KEY_RECOVERY
+    // close the active row and append a new one. Historical-signature
+    // verification reads the row whose validity range covers
+    // tx.timestamp; API-time verification reads the active row
+    // (valid_to_ts IS NULL).
+    await ensure("entity_keys", t => {
+      t.string("entity_type", 32).notNullable();           // 'identity' | 'node' | 'vp'
+      t.text("entity_id").notNullable();
+      t.text("public_key").notNullable();
+      t.string("algorithm", 64).notNullable().defaultTo("ml-dsa-65");
+      t.bigInteger("valid_from_ts").notNullable();
+      t.bigInteger("valid_to_ts").nullable();              // NULL = still active
+      _id(t, "source_tx_id").notNullable();                // REGISTER_IDENTITY | KEY_ROTATED | KEY_RECOVERY | genesis:<id>
+      t.primary(["entity_type", "entity_id", "valid_from_ts"], "pk_entity_keys");
+      t.index(["entity_type", "entity_id", "valid_to_ts"], "idx_entity_keys_active");
+      t.index(["entity_type", "entity_id", "valid_from_ts"], "idx_entity_keys_time");
     });
 
     await ensure("content", t => {
@@ -429,20 +451,20 @@ class KnexAdapter {
       t.index("tip_id", "idx_pending_dom_tip_id");
     });
 
+    // GH #60: public_key + algorithm live in entity_keys.
     await ensure("verification_providers", t => {
       _pk(t, "vp_id");
       t.string("name", 256).notNullable();
       t.string("jurisdiction", 8).notNullable().defaultTo("US");
       t.string("jurisdiction_tier", 16).notNullable().defaultTo("green");
-      t.text("public_key").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
       t.bigInteger("registered_at").notNullable();
     });
 
+    // GH #60: public_key + algorithm live in entity_keys.
     await ensure("nodes", t => {
       _pk(t, "node_id");
       t.text("name").nullable();
-      t.text("public_key").notNullable();
       t.string("status", 32).notNullable().defaultTo("active");
       t.bigInteger("registered_at").notNullable();
     });
@@ -661,6 +683,23 @@ class KnexAdapter {
       this.mirror._nodes.set(row.node_id, { ...row });
     }
 
+    // GH #60 — entity_keys (single source of truth for keys across all time)
+    const keyRows = await this.knex("entity_keys").select("*");
+    for (const row of keyRows) {
+      this.mirror._entityKeys.set(
+        `${row.entity_type}:${row.entity_id}:${row.valid_from_ts}`,
+        {
+          entity_type: row.entity_type,
+          entity_id: row.entity_id,
+          public_key: row.public_key,
+          algorithm: row.algorithm || "ml-dsa-65",
+          valid_from_ts: Number(row.valid_from_ts),
+          valid_to_ts: row.valid_to_ts == null ? null : Number(row.valid_to_ts),
+          source_tx_id: row.source_tx_id,
+        },
+      );
+    }
+
     // Certificates
     const certRows = await this.knex("certificates").select("*");
     for (const row of certRows) {
@@ -865,11 +904,22 @@ class KnexAdapter {
 
   saveIdentity(rec) {
     this.mirror.saveIdentity(rec);
+    // GH #60: public_key + algorithm auto-route to entity_keys (single
+    // source of truth). The mirror handles in-memory; PG path persists
+    // here by calling _saveActiveEntityKeyToDb. root_public_key dropped.
+    if (rec.public_key) {
+      this._saveActiveEntityKeyToDb({
+        entity_type: "identity",
+        entity_id: rec.tip_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.tip_id}`,
+      });
+    }
     const row = {
       tip_id: rec.tip_id,
       region: rec.region || "US",
-      public_key: rec.public_key,
-      root_public_key: rec.root_public_key || null,
       vp_id: rec.vp_id || null,
       verification_tier: rec.verification_tier || "T1",
       score_display_mode: rec.score_display_mode || "TIER_ONLY",
@@ -886,6 +936,63 @@ class KnexAdapter {
 
   getIdentity(id) { return this.mirror.getIdentity(id); }
   getAllIdentities() { return this.mirror.getAllIdentities(); }
+
+  // ── entity_keys (GH #60) ─────────────────────────────────────────────────
+  // PG/MariaDB write path. Closes any currently-active row for the
+  // entity (sets valid_to_ts = new row's valid_from_ts) and inserts the
+  // new active row (valid_to_ts = null). Idempotent on re-save of the
+  // same active key. Used by saveIdentity/saveVP/saveNode auto-routing
+  // AND by KEY_ROTATED / KEY_RECOVERY commit-handler apply.
+  _saveActiveEntityKeyToDb({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
+    this._ff(async () => {
+      // Idempotency: if an active row exists with the same key+alg+valid_from_ts, skip.
+      const existing = await this.knex("entity_keys")
+        .where({ entity_type, entity_id })
+        .whereNull("valid_to_ts")
+        .first();
+      if (existing
+        && existing.public_key === public_key
+        && existing.algorithm === algorithm
+        && Number(existing.valid_from_ts) === Number(valid_from_ts)) {
+        return;
+      }
+      await this.knex.transaction(async (trx) => {
+        await trx("entity_keys")
+          .where({ entity_type, entity_id })
+          .whereNull("valid_to_ts")
+          .update({ valid_to_ts: valid_from_ts });
+        await trx("entity_keys").insert({
+          entity_type, entity_id, public_key, algorithm,
+          valid_from_ts, valid_to_ts: null, source_tx_id,
+        });
+      });
+    });
+  }
+
+  saveEntityKey(rec) {
+    this.mirror.saveEntityKey(rec);
+    this._ff(() => this._dbInsert(
+      "entity_keys",
+      ["entity_type", "entity_id", "valid_from_ts"],
+      {
+        entity_type: rec.entity_type,
+        entity_id: rec.entity_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.valid_from_ts,
+        valid_to_ts: rec.valid_to_ts == null ? null : rec.valid_to_ts,
+        source_tx_id: rec.source_tx_id,
+      },
+      "merge",
+    ));
+  }
+  getActiveKey(entity_type, entity_id) { return this.mirror.getActiveKey(entity_type, entity_id); }
+  getKeyValidAt(entity_type, entity_id, timestamp) { return this.mirror.getKeyValidAt(entity_type, entity_id, timestamp); }
+  *iterateEntityKeys() { yield* this.mirror.iterateEntityKeys(); }
+  clearEntityKeys() {
+    this.mirror.clearEntityKeys();
+    this._ff(() => this.knex("entity_keys").del());
+  }
 
   // ── Content ────────────────────────────────────────────────────────────────
 
@@ -998,6 +1105,8 @@ class KnexAdapter {
       this.knex("revocations").delete(),
       this.knex("verification_providers").delete(),
       this.knex("nodes").delete(),
+      // GH #60 — entity_keys is canonical state too.
+      this.knex("entity_keys").delete(),
     ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
   }
 
@@ -1064,12 +1173,22 @@ class KnexAdapter {
 
   saveVP(rec) {
     this.mirror.saveVP(rec);
+    // GH #60 — auto-route public_key + algorithm to entity_keys.
+    if (rec.public_key) {
+      this._saveActiveEntityKeyToDb({
+        entity_type: "vp",
+        entity_id: rec.vp_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.vp_id}`,
+      });
+    }
     const row = {
       vp_id: rec.vp_id,
       name: rec.name,
       jurisdiction: rec.jurisdiction || "US",
       jurisdiction_tier: rec.jurisdiction_tier || "green",
-      public_key: rec.public_key || null,
       status: rec.status || "active",
       registered_at: rec.registered_at,
     };
@@ -1083,10 +1202,20 @@ class KnexAdapter {
 
   saveNode(rec) {
     this.mirror.saveNode(rec);
+    // GH #60 — auto-route public_key + algorithm to entity_keys.
+    if (rec.public_key) {
+      this._saveActiveEntityKeyToDb({
+        entity_type: "node",
+        entity_id: rec.node_id,
+        public_key: rec.public_key,
+        algorithm: rec.algorithm || "ml-dsa-65",
+        valid_from_ts: rec.registered_at,
+        source_tx_id: rec.tx_id || `genesis:${rec.node_id}`,
+      });
+    }
     const row = {
       node_id: rec.node_id,
       name: rec.name || null,
-      public_key: rec.public_key,
       status: rec.status || "active",
       registered_at: rec.registered_at,
     };
