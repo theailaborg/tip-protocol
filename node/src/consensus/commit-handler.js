@@ -946,6 +946,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
 
       // ── Governance ────────────────────────────────────────────────────
+      // GH #60: public_key + algorithm auto-route to entity_keys via
+      // saveVP / saveNode. tx_id is passed (accepted-but-ignored by
+      // the main row, used by the auto-router as entity_keys.source_tx_id
+      // so the key history can be traced back to the registration tx).
       case TX_TYPES.VP_REGISTERED:
         if (d.vp_id && !dag.getVP(d.vp_id)) {
           dag.saveVP({
@@ -954,8 +958,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             jurisdiction: d.jurisdiction || "US",
             jurisdiction_tier: d.jurisdiction_tier || "green",
             public_key: d.public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             status: "active",
             registered_at: tx.timestamp,
+            tx_id: tx.tx_id,
           });
         }
         break;
@@ -966,8 +972,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             node_id: d.node_id,
             name: d.name || "",
             public_key: d.public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             status: "active",
             registered_at: tx.timestamp,
+            tx_id: tx.tx_id,
           });
         }
         break;

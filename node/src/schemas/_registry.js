@@ -210,13 +210,17 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   [TX_TYPES.REVOKE_DEVICE]: REVOKE_CONTRACT,
 
   // VP_REGISTERED / NODE_REGISTERED — council-style attestation by an
-  // approving VP. Signed payload binds the new entity's identity to
-  // the approving VP. Signature lives at `tx.signature` (GH #51).
+  // approving VP. Signed payload binds the new entity's (key, algorithm)
+  // pair to the approving VP. Signature lives at `tx.signature`
+  // (GH #51). GH #60: `algorithm` is part of the canonical bytes so
+  // the approving VP attests to the algorithm choice, not just the
+  // pubkey. Default ml-dsa-65 when client omits.
   [TX_TYPES.VP_REGISTERED]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
+      algorithm: data.algorithm || "ml-dsa-65",
       name: data.name,
       jurisdiction: data.jurisdiction,
       jurisdiction_tier: data.jurisdiction_tier,
@@ -229,6 +233,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
+      algorithm: data.algorithm || "ml-dsa-65",
       name: data.name,
       public_key: data.public_key,
       approving_vp_id: data.approving_vp_id,
