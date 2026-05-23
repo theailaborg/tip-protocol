@@ -2,6 +2,7 @@
 
 const { nowMs } = require("../../../shared/time");
 const { TX_TYPES, SIGNATURE_ALGORITHM_DEFAULT } = require("../../../shared/constants");
+const { verifyDedupProof } = require("../../../shared/zk");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
 const { schemaError } = require("../schemas/_common");
@@ -11,7 +12,7 @@ const { log } = require("../logger");
 
 // Canonical body fields per schema (alphabetical, mirrors buildSigningPayload).
 const KEY_ROTATED_FIELDS = ["algorithm", "effective_at", "new_public_key", "old_key_fingerprint", "tip_id"];
-const KEY_RECOVERY_FIELDS = ["algorithm", "effective_at", "new_public_key", "recovery_evidence_hash", "tip_id", "vp_id"];
+const KEY_RECOVERY_FIELDS = ["algorithm", "effective_at", "new_public_key", "recovery_evidence_hash", "tip_id", "vp_id", "zk_proof"];
 
 function _normaliseAlgorithm(value) {
   return value == null ? SIGNATURE_ALGORITHM_DEFAULT : value;
@@ -78,8 +79,12 @@ function createKeyService({ dag, submitTx }) {
   // for off-chain re-verification. The VP signs the canonical body
   // attesting they re-verified the user; the chain installs the user's
   // NEW key. Same time-anchored dispatch path (VP's key valid at
-  // tx.timestamp).
-  function recoverKey(body) {
+  // tx.timestamp). On top of the VP signature, the user supplies a
+  // fresh zk_proof bound to the SAME dedup_hash as their original
+  // REGISTER_IDENTITY — recovery is only valid when the gov-id-bearing
+  // witness matches, defending against a rogue VP recovering an
+  // arbitrary identity.
+  async function recoverKey(body) {
     const normalised = (body && typeof body === "object")
       ? { ...body, algorithm: _normaliseAlgorithm(body.algorithm) }
       : body;
@@ -89,6 +94,20 @@ function createKeyService({ dag, submitTx }) {
     const vp = dag.getVP(normalised.vp_id);
     if (!vp || !vp.public_key) {
       throw schemaError(412, `VP has no active key: ${normalised.vp_id}`, "vp_no_active_key");
+    }
+
+    // Look up the original REGISTER_IDENTITY for this tip_id to recover
+    // the canonical dedup_hash, then verify the fresh zk_proof against it.
+    // Mirrors the proof-check identity-service runs at first-time register.
+    const identity = dag.getIdentity(normalised.tip_id);
+    const originalTx = identity && identity.tx_id ? dag.getTx(identity.tx_id) : null;
+    const originalDedupHash = originalTx && originalTx.data ? originalTx.data.dedup_hash : null;
+    if (!originalDedupHash) {
+      throw schemaError(412, "original dedup_hash unavailable for tip_id", "dedup_hash_unresolvable");
+    }
+    const proofValid = await verifyDedupProof(originalDedupHash, normalised.zk_proof);
+    if (!proofValid) {
+      throw schemaError(403, "zk_proof does not bind to original dedup_hash", "zk_proof_invalid");
     }
 
     const canonicalPayload = keyRecoverySchema.buildSigningPayload(normalised);

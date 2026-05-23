@@ -191,10 +191,10 @@ const SCHEMA = {
     },
   },
   [TX_TYPES.KEY_RECOVERY]: {
-    required: ["tip_id", "vp_id", "new_public_key", "recovery_evidence_hash", "effective_at"],
+    required: ["tip_id", "vp_id", "new_public_key", "recovery_evidence_hash", "effective_at", "zk_proof"],
     types: {
       tip_id: "string", vp_id: "string", new_public_key: "string",
-      recovery_evidence_hash: "string", effective_at: "number",
+      recovery_evidence_hash: "string", effective_at: "number", zk_proof: "object",
     },
   },
 };

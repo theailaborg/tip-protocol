@@ -69,8 +69,8 @@ function createRouter({ identityService, profileService, keyService }) {
   // Recovery: VP signs the canonical body after off-chain re-verification.
   // Same atomic close+append, but the chain trusts the VP attestation
   // because the user has lost possession of the OLD key.
-  router.post("/identity/:tipId/keys/recover", asyncHandler((req, res) => {
-    res.status(202).json(keyService.recoverKey({ ...req.body, tip_id: req.params.tipId }));
+  router.post("/identity/:tipId/keys/recover", asyncHandler(async (req, res) => {
+    res.status(202).json(await keyService.recoverKey({ ...req.body, tip_id: req.params.tipId }));
   }));
 
   return router;

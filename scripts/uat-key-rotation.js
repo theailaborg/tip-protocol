@@ -208,6 +208,10 @@ async function main() {
   const recoveredKp = generateMLDSAKeypair();
   const effectiveAt2 = nowMs() + 5000;
   const evidenceHash = shake256(`recovery-evidence:${user.tip_id}:${nowMs()}`);
+  // Fresh zk_proof bound to the SAME dedup_hash the user committed to at
+  // first-time REGISTER_IDENTITY. ZK_SKIP_VERIFY=true keeps the proof
+  // structurally validated but bypasses the heavy verifier so UAT can run
+  // without a trusted-setup artefact on the test box.
   const recoverBody = {
     tip_id: user.tip_id,
     vp_id: VP.vp_id,
@@ -215,6 +219,7 @@ async function main() {
     recovery_evidence_hash: evidenceHash,
     effective_at: effectiveAt2,
     algorithm: "ml-dsa-65",
+    zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
   };
   const recoverPayload = keyRecoverySchema.buildSigningPayload(recoverBody);
   const recoverSig = keyRecoverySchema.sign(recoverPayload, VP.private_key);
