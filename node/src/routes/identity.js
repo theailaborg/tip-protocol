@@ -3,7 +3,7 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ identityService, profileService }) {
+function createRouter({ identityService, profileService, keyService }) {
   const router = express.Router();
 
   router.post("/identity/register", asyncHandler(async (req, res) => {
@@ -55,6 +55,22 @@ function createRouter({ identityService, profileService }) {
 
   router.post("/identity/:tipId/stop-reviewing", asyncHandler((req, res) => {
     res.status(202).json(profileService.stopReviewing(req.params.tipId, req.body));
+  }));
+
+  // ── Key lifecycle (KEY_ROTATED / KEY_RECOVERY) ──────────────────────
+  // Rotation: client signs the canonical body with their CURRENT (OLD)
+  // private key. The chain closes the OLD entity_keys row and appends
+  // the NEW one at effective_at — old signatures still verify because
+  // historical lookup is time-anchored on tx.timestamp.
+  router.post("/identity/:tipId/keys/rotate", asyncHandler((req, res) => {
+    res.status(202).json(keyService.rotateKey({ ...req.body, tip_id: req.params.tipId }));
+  }));
+
+  // Recovery: VP signs the canonical body after off-chain re-verification.
+  // Same atomic close+append, but the chain trusts the VP attestation
+  // because the user has lost possession of the OLD key.
+  router.post("/identity/:tipId/keys/recover", asyncHandler((req, res) => {
+    res.status(202).json(keyService.recoverKey({ ...req.body, tip_id: req.params.tipId }));
   }));
 
   return router;

@@ -1,0 +1,126 @@
+"use strict";
+
+const { nowMs } = require("../../../shared/time");
+const { TX_TYPES, SIGNATURE_ALGORITHM_DEFAULT } = require("../../../shared/constants");
+const keyRotatedSchema = require("../schemas/key-rotated");
+const keyRecoverySchema = require("../schemas/key-recovery");
+const { schemaError } = require("../schemas/_common");
+const { validateTransaction } = require("../validators/tx-validator");
+const { withTxId } = require("./helpers");
+const { log } = require("../logger");
+
+// Canonical body fields per schema (alphabetical, mirrors buildSigningPayload).
+const KEY_ROTATED_FIELDS = ["algorithm", "effective_at", "new_public_key", "old_key_fingerprint", "tip_id"];
+const KEY_RECOVERY_FIELDS = ["algorithm", "effective_at", "new_public_key", "recovery_evidence_hash", "tip_id", "vp_id"];
+
+function _normaliseAlgorithm(value) {
+  return value == null ? SIGNATURE_ALGORITHM_DEFAULT : value;
+}
+
+function _pickTxData(body, fields) {
+  const out = {};
+  for (const f of fields) out[f] = body[f];
+  return out;
+}
+
+function createKeyService({ dag, submitTx }) {
+
+  // KEY_ROTATED — user proves possession of CURRENT (OLD) key by signing
+  // the canonical body with it. Time-anchored dispatcher (`getKeyValidAt`
+  // at tx.timestamp) resolves the OLD key for verification because the
+  // OLD row is still active at tx.timestamp (< effective_at). commit-
+  // handler closes the OLD row and appends the NEW one atomically.
+  function rotateKey(body) {
+    const normalised = (body && typeof body === "object")
+      ? { ...body, algorithm: _normaliseAlgorithm(body.algorithm) }
+      : body;
+
+    keyRotatedSchema.validateRequest(normalised, { dag });
+
+    // Resolve OLD key (still active at API time — the rotation hasn't
+    // committed yet). API-side signature check is fail-fast UX; consensus
+    // replays the verification via the unified dispatcher.
+    const oldKey = dag.getActiveKey("identity", normalised.tip_id);
+    if (!oldKey || !oldKey.public_key) {
+      throw schemaError(412, "no active key on file for tip_id", "no_active_key");
+    }
+
+    const canonicalPayload = keyRotatedSchema.buildSigningPayload(normalised);
+    if (!keyRotatedSchema.verifySignature(canonicalPayload, normalised.signature, oldKey.public_key)) {
+      throw schemaError(403, "OLD-key signature verification failed", "signature_invalid");
+    }
+
+    const timestamp = nowMs();
+    if (canonicalPayload.effective_at < timestamp) {
+      throw schemaError(400, "effective_at must be >= tx.timestamp", "effective_at_invalid");
+    }
+
+    const txBody = {
+      tx_type: TX_TYPES.KEY_ROTATED, timestamp, prev: dag.getRecentPrev(),
+      data: _pickTxData(canonicalPayload, KEY_ROTATED_FIELDS),
+      signature: normalised.signature,
+    };
+    const signedTx = withTxId(txBody);
+
+    const validation = validateTransaction(signedTx, dag, {});
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+
+    submitTx(signedTx);
+    log.info(`Key rotation proposed: ${normalised.tip_id} (effective_at=${canonicalPayload.effective_at})`);
+    return {
+      tx_id: signedTx.tx_id, tip_id: normalised.tip_id,
+      effective_at: canonicalPayload.effective_at,
+      confirmation: "proposed",
+    };
+  }
+
+  // KEY_RECOVERY — user has lost their CURRENT key and goes back to a VP
+  // for off-chain re-verification. The VP signs the canonical body
+  // attesting they re-verified the user; the chain installs the user's
+  // NEW key. Same time-anchored dispatch path (VP's key valid at
+  // tx.timestamp).
+  function recoverKey(body) {
+    const normalised = (body && typeof body === "object")
+      ? { ...body, algorithm: _normaliseAlgorithm(body.algorithm) }
+      : body;
+
+    keyRecoverySchema.validateRequest(normalised, { dag });
+
+    const vp = dag.getVP(normalised.vp_id);
+    if (!vp || !vp.public_key) {
+      throw schemaError(412, `VP has no active key: ${normalised.vp_id}`, "vp_no_active_key");
+    }
+
+    const canonicalPayload = keyRecoverySchema.buildSigningPayload(normalised);
+    if (!keyRecoverySchema.verifySignature(canonicalPayload, normalised.signature, vp.public_key)) {
+      throw schemaError(403, "VP signature verification failed", "signature_invalid");
+    }
+
+    const timestamp = nowMs();
+    if (canonicalPayload.effective_at < timestamp) {
+      throw schemaError(400, "effective_at must be >= tx.timestamp", "effective_at_invalid");
+    }
+
+    const txBody = {
+      tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: dag.getRecentPrev(),
+      data: _pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
+      signature: normalised.signature,
+    };
+    const signedTx = withTxId(txBody);
+
+    const validation = validateTransaction(signedTx, dag, {});
+    if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
+
+    submitTx(signedTx);
+    log.info(`Key recovery proposed: ${normalised.tip_id} via vp=${normalised.vp_id} (effective_at=${canonicalPayload.effective_at})`);
+    return {
+      tx_id: signedTx.tx_id, tip_id: normalised.tip_id, vp_id: normalised.vp_id,
+      effective_at: canonicalPayload.effective_at,
+      confirmation: "proposed",
+    };
+  }
+
+  return { rotateKey, recoverKey };
+}
+
+module.exports = { createKeyService };

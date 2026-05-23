@@ -284,6 +284,13 @@ const TX_TYPES = Object.freeze({
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
+  // GH #60 — key rotation + recovery. Both append a new entity_keys row
+  // and close the prior active one atomically at commit. KEY_ROTATED is
+  // signed by the OLD key (user proves possession); KEY_RECOVERY is
+  // signed by an approving VP (user lost OLD key; VP attests recovery
+  // after off-chain re-verification).
+  KEY_ROTATED: "KEY_ROTATED",
+  KEY_RECOVERY: "KEY_RECOVERY",
   // Prescan review pipeline — human reviewer auditing whether the AI
   // prescan's HIGH/CRITICAL flag was correct. Single-reviewer gate
   // between prescan flag and public CONTENT_DISPUTED. On DAG for

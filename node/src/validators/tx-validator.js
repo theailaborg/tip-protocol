@@ -181,6 +181,22 @@ const SCHEMA = {
     required: ["rotation_number", "effective_round", "new_committee", "payload_hash", "signer_node_ids", "signatures"],
     types: { rotation_number: "number", effective_round: "number", payload_hash: "string" },
   },
+  // GH #60 — key rotation + VP-attested recovery. Signature lives at
+  // tx.signature (OLD key signs KEY_ROTATED; VP signs KEY_RECOVERY).
+  [TX_TYPES.KEY_ROTATED]: {
+    required: ["tip_id", "new_public_key", "old_key_fingerprint", "effective_at"],
+    types: {
+      tip_id: "string", new_public_key: "string",
+      old_key_fingerprint: "string", effective_at: "number",
+    },
+  },
+  [TX_TYPES.KEY_RECOVERY]: {
+    required: ["tip_id", "vp_id", "new_public_key", "recovery_evidence_hash", "effective_at"],
+    types: {
+      tip_id: "string", vp_id: "string", new_public_key: "string",
+      recovery_evidence_hash: "string", effective_at: "number",
+    },
+  },
 };
 
 // ─── Layer 1: Base structure ──────────────────────────────────────────────────
