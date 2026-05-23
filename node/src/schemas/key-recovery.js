@@ -24,11 +24,25 @@
  *     witness used at first-time registration — a rogue VP cannot recover
  *     an arbitrary tip_id without also producing a valid dedup proof.
  *
+ * Cooling-off policy:
+ *   The chain enforces only `effective_at >= tx.timestamp`. It does NOT
+ *   impose a takeover-window delay. Rationale: zk_proof + VP signature
+ *   together are the cryptographic gate; a fixed delay does not add
+ *   security beyond that. Recovery is a lost-key flow — the legitimate
+ *   user by definition cannot observe the activity feed during a delay
+ *   window, so a chain-side timer protects nobody. A user who DOES still
+ *   hold their OLD key (and observes an unauthorised recovery in their
+ *   feed) preempts via KEY_ROTATED rather than relying on a window.
+ *   Per-VP cooling-off (e.g. 24h for high-stakes identities) is a VP
+ *   policy choice — the VP sets `effective_at` accordingly.
+ *
  * Canonical signed payload (alphabetical, picked-fields):
  *
  *   algorithm               string,   new key's algorithm (default ml-dsa-65)
  *   effective_at            number,   epoch ms — boundary where OLD validity
- *                                     ends and NEW validity begins.
+ *                                     ends and NEW validity begins. Must be
+ *                                     >= tx.timestamp; VP chooses any further
+ *                                     delay per its policy.
  *   new_public_key          string,   hex of the new public key
  *   recovery_evidence_hash  string,   shake256 of off-chain evidence body
  *                                     (passport scan, biometric match log,
