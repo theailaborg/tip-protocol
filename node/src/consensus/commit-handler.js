@@ -37,12 +37,15 @@ const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
 const interestRegisteredSchema = require("../schemas/interest-registered");
+const linkPlatformSchema = require("../schemas/link-platform");
 const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
 // (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
+// NOTE: LINK_PLATFORM is intentionally absent — its VP signature lives on
+// data.vp_signature (not tx.signature), so it bypasses this dispatcher.
 const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
   [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
@@ -1261,6 +1264,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
     if (tt === TX_TYPES.COMMITTEE_ROTATION) {
       return Array.isArray(d.cosignatures) && d.cosignatures.length > 0;
+    }
+
+    // LINK_PLATFORM: VP attests via data.vp_signature, not tx.signature.
+    // The unified dispatcher below requires tx.signature and rejects any tx
+    // that lacks it — LINK_PLATFORM must be handled before that block.
+    if (tt === TX_TYPES.LINK_PLATFORM) {
+      return linkPlatformSchema.verifyTx(tx, dag).ok;
     }
 
     try {

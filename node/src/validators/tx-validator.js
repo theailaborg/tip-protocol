@@ -28,6 +28,7 @@ const { isValidDomain } = require("../schemas/register-domain");
 const { PLATFORM_VALUES: LINK_PLATFORM_PLATFORM_VALUES } = require("../schemas/link-platform");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
+const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -684,7 +685,7 @@ function validateState(tx, dag) {
         errors.push(`TIP-ID is revoked: ${d.tip_id}`);
       }
       if (d.tip_id && dag.getTxsByTipId) {
-        const MAX = 6;
+        const MAX = SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
         const existing = dag.getTxsByTipId(d.tip_id)
           .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
         if (existing.length >= MAX) {
