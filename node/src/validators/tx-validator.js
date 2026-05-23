@@ -25,6 +25,7 @@ const {
   DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
+const { PLATFORM_VALUES: LINK_PLATFORM_PLATFORM_VALUES } = require("../schemas/link-platform");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
 
@@ -479,6 +480,22 @@ function validateBusinessRules(tx, dag = null) {
       break;
     }
 
+    case TX_TYPES.LINK_PLATFORM: {
+      if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
+        errors.push(`Invalid TIP-ID format: "${d.tip_id}"`);
+      }
+      if (d.platform !== undefined && !LINK_PLATFORM_PLATFORM_VALUES.includes(d.platform)) {
+        errors.push(`platform must be one of: ${LINK_PLATFORM_PLATFORM_VALUES.join(", ")}`);
+      }
+      if (d.handle !== undefined && (typeof d.handle !== "string" || d.handle.trim().length === 0)) {
+        errors.push("handle must be a non-empty string");
+      }
+      if (d.vp_id !== undefined && (typeof d.vp_id !== "string" || !d.vp_id.startsWith("tip://vp/"))) {
+        errors.push("vp_id must be a tip://vp/... string");
+      }
+      break;
+    }
+
     case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
     case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
     case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
@@ -655,6 +672,27 @@ function validateState(tx, dag) {
       }
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`Cannot update profile: TIP-ID is revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.LINK_PLATFORM: {
+      if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+        errors.push(`Cannot link platform: TIP-ID not found: ${d.tip_id}`);
+      }
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`TIP-ID is revoked: ${d.tip_id}`);
+      }
+      if (d.tip_id && dag.getTxsByTipId) {
+        const MAX = 6;
+        const existing = dag.getTxsByTipId(d.tip_id)
+          .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+        if (existing.length >= MAX) {
+          errors.push(`Social account cap reached (max ${MAX}) for ${d.tip_id}`);
+        }
+        if (d.platform && existing.some(t => t.data && t.data.platform === d.platform)) {
+          errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
+        }
       }
       break;
     }
