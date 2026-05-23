@@ -64,6 +64,9 @@ function scoreTargetTipId(tx) {
     case TX_TYPES.REGISTER_IDENTITY:
       return d.tip_id || null;
 
+    case TX_TYPES.LINK_PLATFORM:
+      return d.tip_id || null;
+
     // CONTENT_VERIFIED / CONTENT_RETRACTED no longer carry a score
     // effect here — they emit a paired SCORE_UPDATE that handles the
     // delta. Returning null keeps commit-handler from doing a wasted
@@ -148,6 +151,15 @@ function applyScoreEffect(tx, current) {
       // SCORE_UPDATE txs (issues.md Scoring #11, +5 per linked account
       // up to identity.max_social_bonus = +30).
       reason = "Registration";
+      break;
+    }
+
+    case TX_TYPES.LINK_PLATFORM: {
+      // No inline delta — paired SCORE_UPDATE (emitted by identity-service.linkPlatform
+      // in the same mempool batch) owns the +5 delta. This case exists so
+      // scoreTargetTipId routes the tx and applyScoreEffect produces a
+      // deterministic reason string for the activity feed.
+      reason = "Social account linked";
       break;
     }
 
