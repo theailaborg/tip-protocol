@@ -91,7 +91,15 @@ function assertUnifiedSig(label, tx) {
   }
 }
 
-const VP = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../genesis-data/backups/tip-vp-US-1d8e8ee431f715ec.tip.json"), "utf8"));
+// Resolve the founding VP backup from genesis-data — the file id changes
+// every seed regen, so glob rather than hardcode.
+function _resolveVPBackup() {
+  const dir = path.resolve(__dirname, "../genesis-data/backups");
+  const file = fs.readdirSync(dir).find(f => /^tip-vp-.*\.tip\.json$/.test(f));
+  if (!file) throw new Error(`no tip-vp-*.tip.json under ${dir} — run npm run seed first`);
+  return JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+}
+const VP = _resolveVPBackup();
 
 async function _registerIdentity(label) {
   const kp = generateMLDSAKeypair();
