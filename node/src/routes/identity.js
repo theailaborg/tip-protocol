@@ -82,6 +82,19 @@ function createRouter({ identityService, profileService, keyService }) {
     res.status(202).json(await keyService.recoverKey({ ...req.body, tip_id: req.params.tipId }));
   }));
 
+  router.post("/identity/:tipId/link-platform", asyncHandler(async (req, res) => {
+    const tipId = decodeURIComponent(req.params.tipId);
+    const result = await identityService.linkPlatform({
+      tipId,
+      platform:    req.body.platform,
+      handle:      req.body.handle,
+      linkedAt:    req.body.linked_at,
+      vpId:        req.body.vp_id,
+      vpSignature: req.body.vp_signature,
+    });
+    res.status(202).json(result);
+  }));
+
   return router;
 }
 

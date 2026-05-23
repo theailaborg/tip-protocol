@@ -14,6 +14,9 @@ const { nowMs } = require(SHARED + "/time");
 const { createIdentityService } = require(SRC + "/services/identity-service");
 const { initScoring } = require(SRC + "/scoring");
 const { SOCIAL_LINK } = require(SHARED + "/protocol-constants");
+const request = require("supertest");
+const express = require("express");
+const { createRouter } = require(SRC + "/routes/identity");
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -187,5 +190,38 @@ describe("identityService.linkPlatform", () => {
     expect(caught.status).toBe(409);
     expect(caught.code).toBe("platform_already_linked");
     expect(caught.error).toMatch(/already linked/);
+  });
+});
+
+describe("POST /v1/identity/:tipId/link-platform route", () => {
+  let app;
+
+  beforeAll(() => {
+    app = express();
+    app.use(express.json());
+    const mockService = {
+      register:        () => {},
+      resolve:         () => {},
+      verifyOwnership: () => {},
+      getScore:        () => {},
+      getHistory:      () => {},
+      getActivity:     () => {},
+      linkPlatform: ({ tipId, platform, handle }) => ({
+        tip_id: tipId, platform, handle,
+        tx_id: "mock-tx-id", score_tx_id: "mock-score-tx",
+        score_delta: 5, confirmation: "proposed",
+        linked_at: nowMs(),
+      }),
+    };
+    app.use("/v1", createRouter({ identityService: mockService, profileService: {} }));
+  });
+
+  test("POST /v1/identity/:tipId/link-platform returns 202 with proposed", async () => {
+    const res = await request(app)
+      .post("/v1/identity/tip:%2F%2Fid%2FIN-aabbccdd11223344/link-platform")
+      .send({ tip_id: "tip://id/IN-aabbccdd11223344", platform: "youtube", handle: "@ch", vp_id: "tip://vp/test", vp_signature: "abc" });
+    expect(res.status).toBe(202);
+    expect(res.body.confirmation).toBe("proposed");
+    expect(res.body.score_delta).toBe(5);
   });
 });
