@@ -42,6 +42,7 @@ const { execSync } = require("child_process");
 
 const SHARED = path.resolve(__dirname, "../shared");
 const { initCrypto, generateMLDSAKeypair, signBody, shake256, generateTIPID, tipNormalize, canonicalJson } = require(path.join(SHARED, "crypto"));
+const { nowMs } = require(path.join(SHARED, "time"));
 const registerIdentitySchema = require(path.resolve(__dirname, "../node/src/schemas/register-identity"));
 const contentRegisterSchema = require(path.resolve(__dirname, "../node/src/schemas/content-register"));
 
@@ -83,8 +84,8 @@ async function _get(p) {
 async function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function _getTx(tx_id, { timeoutMs = 4000 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const start = nowMs();
+  while (nowMs() - start < timeoutMs) {
     const r = await _get(`/v1/dag/tx/${tx_id}`);
     if (r.status === 200 && r.body?.data?.tx_id) return r.body.data;
     await _sleep(100);
@@ -93,8 +94,8 @@ async function _getTx(tx_id, { timeoutMs = 4000 } = {}) {
 }
 
 async function _findTx(tipId, txType, predicate, { timeoutMs = 6000 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const start = nowMs();
+  while (nowMs() - start < timeoutMs) {
     const feed = await _get(`/v1/identity/${encodeURIComponent(tipId)}/activity?types=${txType}`);
     const items = feed.body?.data?.items || [];
     const match = items.find(predicate || (() => true));
@@ -106,7 +107,7 @@ async function _findTx(tipId, txType, predicate, { timeoutMs = 6000 } = {}) {
 
 function _bumpScore(tipId, score) {
   const sql = `INSERT INTO scores (tip_id, score, offense_count, last_updated)
-    VALUES ('${tipId}', ${score}, 0, ${Date.now()})
+    VALUES ('${tipId}', ${score}, 0, ${nowMs()})
     ON CONFLICT (tip_id) DO UPDATE SET score = EXCLUDED.score, last_updated = EXCLUDED.last_updated;`;
   execSync(`docker exec -i ${PG_CONTAINER} psql -U tip -d ${PG_DB} -v ON_ERROR_STOP=1`, {
     input: sql,
@@ -315,7 +316,7 @@ async function main() {
 
   // verify-ownership — no tx; just a sig check
   {
-    const challenge = `uat-${Date.now()}`;
+    const challenge = `uat-${nowMs()}`;
     const body = { tip_id: author.tip_id, challenge };
     const sig = signBody(body, author.kp.privateKey);
     const r = await _post("/v1/identity/verify-ownership", { ...body, signature: sig });
@@ -324,7 +325,7 @@ async function main() {
 
   // domain/register — off-chain pending claim, signature persisted to pending_domain_claims
   {
-    const claimedAt = Date.now();
+    const claimedAt = nowMs();
     const body = { tip_id: author.tip_id, domain: "uat-example.test", method: "dns", claimed_at: claimedAt };
     const sig = signBody({ claimed_at: claimedAt, domain: body.domain, method: body.method, tip_id: body.tip_id }, author.kp.privateKey);
     const r = await _post("/v1/domain/register", { ...body, signature: sig });

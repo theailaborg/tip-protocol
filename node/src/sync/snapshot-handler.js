@@ -43,6 +43,7 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
+const { TX_TYPES } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
@@ -861,8 +862,47 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           stateN++;
         }
 
+        // GH #32 — dedup gate: snapshot install bypasses
+        // commit-handler._statefulCheck (rules.canCommitteeRotation
+        // enforces rotation_number uniqueness for normal commits).
+        // Without this guard, a snapshot containing a peer's
+        // rotation-N tx whose tx_id differs from ours (pre-#31-Phase-1
+        // rotation tx_ids could diverge across honest nodes) lands as
+        // a second physical row for the same rotation_number — same
+        // committee_history outcome but two rows in `transactions`,
+        // which then bloats `computeTxsMerkleRoot`'s ordered set.
+        //
+        // Skip the install only when committee_history (still holding
+        // this node's pre-snapshot state at this point in the install
+        // sequence — clearCommitteeHistory runs further below) already
+        // records this rotation_number with the EXACT same
+        // payload_hash. Same payload = same logical rotation; the
+        // existing physical tx is the canonical one to keep.
+        //
+        // Divergent payload_hash should never get here (chain-of-trust
+        // upstream verifier in `_verifySnapshotRotations` rejects); if
+        // it does, log warn and let the addTx proceed — the upstream
+        // verifier is the source of truth, this layer is
+        // defense-in-depth not the authoritative gate.
         let txN = 0;
+        let rotationSkipped = 0;
         for (const tx of queues.txs) {
+          if (tx.tx_type === TX_TYPES.COMMITTEE_ROTATION) {
+            const rn = tx.data?.rotation_number;
+            const existing = (rn != null) ? dag.getCommitteeRotation(rn) : null;
+            if (existing && existing.payload_hash === tx.data?.payload_hash) {
+              rotationSkipped++;
+              continue;
+            }
+            if (existing && existing.payload_hash !== tx.data?.payload_hash) {
+              log.warn(
+                `Snapshot install: rotation ${rn} payload_hash mismatch ` +
+                `local=${existing.payload_hash?.slice(0, 12)} ` +
+                `snapshot=${tx.data?.payload_hash?.slice(0, 12)} ` +
+                `(upstream chain-of-trust verifier should have caught this)`,
+              );
+            }
+          }
           dag.addTx(tx);
           txN++;
         }
@@ -973,7 +1013,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           cert_timestamp: headerCertTimestamp,
         });
 
-        return { state: stateN, txs: txN, commits: commitN, rotations: rotationN, certs: certN, rp: rpN };
+        return {
+          state: stateN, txs: txN, commits: commitN,
+          rotations: rotationN, certs: certN, rp: rpN,
+          rotation_txs_skipped: rotationSkipped,
+        };
       });
     } finally {
       _snapServing = false;
@@ -1201,6 +1245,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // Exposed for unit tests
     _handleIncomingSnapshot,
     _verifyRotationChain,
+    _installSnapshot,
   };
 }
 
