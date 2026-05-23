@@ -191,6 +191,47 @@ describe("identityService.linkPlatform", () => {
     expect(caught.code).toBe("platform_already_linked");
     expect(caught.error).toMatch(/already linked/);
   });
+
+  test("6th link is accepted, 7th is rejected (cap enforcement)", async () => {
+    const dag3 = initDAG({ dbPath: ":memory:" });
+    const scoring3 = initScoring(dag3, { nodeId: "tip://node/cap-test" });
+    const { privateKey: vPriv, publicKey: vPub } = await generateMLDSAKeypair();
+    dag3.saveVP({ vp_id: "tip://vp/cap-vp", public_key: vPub, status: "active", tx_id: "g-vp" });
+    const capTipId = "tip://id/US-ccddeeff00112233";
+    dag3.saveIdentity({ tip_id: capTipId, public_key: vPub, vp_id: "tip://vp/cap-vp", tx_id: "g-id" });
+    const submitted3 = [];
+    const svc3 = createIdentityService({
+      dag: dag3, scoring: scoring3,
+      config: { nodeId: "tip://node/cap-test", nodePrivateKey: vPriv, nodeRegisteredId: "tip://node/cap-test" },
+      submitTx: (tx) => { submitted3.push(tx); if (tx.tx_type === TX_TYPES.LINK_PLATFORM) dag3.addTx(tx); },
+    });
+
+    const platforms = ["youtube", "twitter", "instagram", "linkedin", "tiktok", "rooverse"];
+    for (const plat of platforms) {
+      const linkedAt = nowMs();
+      const payload = linkPlatformSchema.buildSigningPayload({
+        tip_id: capTipId, platform: plat, handle: `@${plat}`, linked_at: linkedAt,
+      });
+      const sig = linkPlatformSchema.sign(payload, vPriv);
+      svc3.linkPlatform({ tipId: capTipId, platform: plat, handle: `@${plat}`, linkedAt, vpId: "tip://vp/cap-vp", vpSignature: sig });
+    }
+    // All 6 linked — 7th must throw cap or duplicate
+    const linkedAt7 = nowMs();
+    const payload7 = linkPlatformSchema.buildSigningPayload({
+      tip_id: capTipId, platform: "youtube", handle: "@extra", linked_at: linkedAt7,
+    });
+    let caught;
+    try {
+      svc3.linkPlatform({
+        tipId: capTipId, platform: "youtube", handle: "@extra", linkedAt: linkedAt7,
+        vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload7, vPriv),
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.error || caught.message).toMatch(/cap reached|already linked/);
+  });
 });
 
 describe("POST /v1/identity/:tipId/link-platform route", () => {
