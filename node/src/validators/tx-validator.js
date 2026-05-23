@@ -25,7 +25,7 @@ const {
   DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
-const { PLATFORM_VALUES: LINK_PLATFORM_PLATFORM_VALUES } = require("../schemas/link-platform");
+const { PLATFORM_MAX_LENGTH: LINK_PLATFORM_MAX_LENGTH } = require("../schemas/link-platform");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
 const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
@@ -485,8 +485,11 @@ function validateBusinessRules(tx, dag = null) {
       if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
         errors.push(`Invalid TIP-ID format: "${d.tip_id}"`);
       }
-      if (d.platform !== undefined && !LINK_PLATFORM_PLATFORM_VALUES.includes(d.platform)) {
-        errors.push(`platform must be one of: ${LINK_PLATFORM_PLATFORM_VALUES.join(", ")}`);
+      if (d.platform !== undefined && (typeof d.platform !== "string" || d.platform.trim().length === 0)) {
+        errors.push("platform must be a non-empty string");
+      }
+      if (d.platform !== undefined && typeof d.platform === "string" && d.platform.trim().length > LINK_PLATFORM_MAX_LENGTH) {
+        errors.push(`platform must be ${LINK_PLATFORM_MAX_LENGTH} characters or fewer`);
       }
       if (d.handle !== undefined && (typeof d.handle !== "string" || d.handle.trim().length === 0)) {
         errors.push("handle must be a non-empty string");
@@ -685,12 +688,8 @@ function validateState(tx, dag) {
         errors.push(`TIP-ID is revoked: ${d.tip_id}`);
       }
       if (d.tip_id && dag.getTxsByTipId) {
-        const MAX = SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
         const existing = dag.getTxsByTipId(d.tip_id)
           .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-        if (existing.length >= MAX) {
-          errors.push(`Social account cap reached (max ${MAX}) for ${d.tip_id}`);
-        }
         if (d.platform && existing.some(t => t.data && t.data.platform === d.platform)) {
           errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
         }

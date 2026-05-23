@@ -415,15 +415,18 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       { dag, urlTipId: tipId },
     );
 
-    const existing = dag.getTxsByTipId(tipId)
+    const committed = dag.getTxsByTipId(tipId)
       .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    const pending = typeof dag.getMempoolTxsByTipId === "function"
+      ? dag.getMempoolTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM)
+      : [];
+    const existing = [...committed, ...pending];
 
-    if (existing.length >= SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS) {
-      throw schemaError(409, `Social account cap reached (max ${SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS})`, "social_cap_reached");
-    }
     if (existing.some(t => t.data && t.data.platform === platform)) {
       throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
     }
+
+    const scoreEligible = existing.length < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
 
     const ts = linkedAt || nowMs();
     const canonicalPayload = linkPlatformSchema.buildSigningPayload(
@@ -456,22 +459,27 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     submitTx(linkTx);
 
-    const scoreTx = scoring.buildScoreUpdateTx({
-      tipId,
-      delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
-      reason: `Social account linked: ${platform}`,
-      relatedTxId: linkTx.tx_id,
-      timestamp: ts,
-      getRecentPrev: () => dag.getRecentPrev(),
-      config,
-    });
-    submitTx(scoreTx);
+    let scoreTxId = null;
+    const scoreDelta = scoreEligible ? SOCIAL_LINK.SOCIAL_LINK_BONUS : 0;
+    if (scoreEligible) {
+      const scoreTx = scoring.buildScoreUpdateTx({
+        tipId,
+        delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
+        reason: `Social account linked: ${platform}`,
+        relatedTxId: linkTx.tx_id,
+        timestamp: ts,
+        getRecentPrev: () => dag.getRecentPrev(),
+        config,
+      });
+      submitTx(scoreTx);
+      scoreTxId = scoreTx.tx_id;
+    }
 
-    log.info(`Social account linked: ${tipId} → ${platform} (${handle})`);
+    log.info(`Social account linked: ${tipId} → ${platform} (${handle})${scoreEligible ? "" : " [no score bonus — cap reached]"}`);
     return {
       tip_id: tipId, platform, handle,
-      tx_id: linkTx.tx_id, score_tx_id: scoreTx.tx_id,
-      score_delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
+      tx_id: linkTx.tx_id, score_tx_id: scoreTxId,
+      score_delta: scoreDelta,
       linked_at: ts,
       confirmation: "proposed",
     };

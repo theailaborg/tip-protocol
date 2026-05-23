@@ -8,7 +8,7 @@
  * Signed canonical payload (4 fields, alphabetical):
  *   handle      string,  required (platform username / handle)
  *   linked_at   number,  required (epoch ms)
- *   platform    string,  required (enum — see PLATFORM_VALUES)
+ *   platform    string,  required (any non-empty string ≤ 50 chars, e.g. "youtube", "x.com")
  *   tip_id      string,  required (tip://id/... owner identity)
  *
  * Signer: the VP that attested the identity signs the payload using its
@@ -27,9 +27,7 @@ const { TX_TYPES } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.LINK_PLATFORM;
 
-const PLATFORM_VALUES = Object.freeze([
-  "youtube", "twitter", "instagram", "linkedin", "tiktok", "rooverse",
-]);
+const PLATFORM_MAX_LENGTH = 50;
 
 function resolveVP(vpId, dag) {
   const vp = dag.getVP(vpId);
@@ -57,12 +55,11 @@ function validateRequest(body, deps) {
   if (deps && deps.urlTipId !== undefined && body.tip_id !== deps.urlTipId) {
     throw schemaError(400, "URL tip_id does not match body.tip_id", "tip_id_mismatch");
   }
-  if (!PLATFORM_VALUES.includes(body.platform)) {
-    throw schemaError(
-      400,
-      `platform must be one of: ${PLATFORM_VALUES.join(", ")}`,
-      "platform_invalid",
-    );
+  if (typeof body.platform !== "string" || body.platform.trim().length === 0) {
+    throw schemaError(400, "platform is required (non-empty string)", "platform_required");
+  }
+  if (body.platform.trim().length > PLATFORM_MAX_LENGTH) {
+    throw schemaError(400, `platform must be ${PLATFORM_MAX_LENGTH} characters or fewer`, "platform_too_long");
   }
   if (typeof body.handle !== "string" || body.handle.trim().length === 0) {
     throw schemaError(400, "handle is required (non-empty string)", "handle_required");
@@ -84,12 +81,11 @@ function buildSigningPayload(input) {
   if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) {
     throw schemaError(400, "tip_id is required", "tip_id_required");
   }
-  if (!PLATFORM_VALUES.includes(input.platform)) {
-    throw schemaError(
-      400,
-      `platform must be one of: ${PLATFORM_VALUES.join(", ")}`,
-      "platform_invalid",
-    );
+  if (typeof input.platform !== "string" || input.platform.trim().length === 0) {
+    throw schemaError(400, "platform is required (non-empty string)", "platform_required");
+  }
+  if (input.platform.trim().length > PLATFORM_MAX_LENGTH) {
+    throw schemaError(400, `platform must be ${PLATFORM_MAX_LENGTH} characters or fewer`, "platform_too_long");
   }
   if (typeof input.handle !== "string" || input.handle.trim().length === 0) {
     throw schemaError(400, "handle is required", "handle_required");
@@ -139,7 +135,7 @@ function verifyTx(tx, dag) {
 
 module.exports = {
   TX_TYPE,
-  PLATFORM_VALUES,
+  PLATFORM_MAX_LENGTH,
   validateRequest,
   resolveVP,
   resolveSubject,

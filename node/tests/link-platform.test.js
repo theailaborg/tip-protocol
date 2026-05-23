@@ -21,11 +21,8 @@ const { createRouter } = require(SRC + "/routes/identity");
 beforeAll(async () => { await initCrypto(); });
 
 describe("link-platform schema", () => {
-  test("PLATFORM_VALUES contains exactly the 6 supported platforms", () => {
-    expect(linkPlatformSchema.PLATFORM_VALUES).toEqual(
-      expect.arrayContaining(["youtube", "twitter", "instagram", "linkedin", "tiktok", "rooverse"])
-    );
-    expect(linkPlatformSchema.PLATFORM_VALUES).toHaveLength(6);
+  test("PLATFORM_MAX_LENGTH is 50", () => {
+    expect(linkPlatformSchema.PLATFORM_MAX_LENGTH).toBe(50);
   });
 
   test("buildSigningPayload returns 4 canonical fields sorted alphabetically", () => {
@@ -48,9 +45,22 @@ describe("link-platform schema", () => {
       .toThrow();
   });
 
-  test("buildSigningPayload throws on invalid platform", () => {
+  test("buildSigningPayload accepts any non-empty platform string (e.g. myspace, x.com)", () => {
+    const p = linkPlatformSchema.buildSigningPayload({
+      tip_id: "tip://id/IN-abcdef1234567890", platform: "myspace", handle: "@x", linked_at: 1748000000000,
+    });
+    expect(p.platform).toBe("myspace");
+  });
+
+  test("buildSigningPayload throws on empty platform", () => {
     expect(() => linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890", platform: "myspace", handle: "@x", linked_at: 1,
+      tip_id: "tip://id/IN-abcdef1234567890", platform: "", handle: "@x", linked_at: 1748000000000,
+    })).toThrow();
+  });
+
+  test("buildSigningPayload throws on platform exceeding max length", () => {
+    expect(() => linkPlatformSchema.buildSigningPayload({
+      tip_id: "tip://id/IN-abcdef1234567890", platform: "a".repeat(51), handle: "@x", linked_at: 1748000000000,
     })).toThrow();
   });
 
@@ -105,8 +115,14 @@ describe("LINK_PLATFORM tx-validator", () => {
     expect(result.valid).toBe(true);
   });
 
-  test("invalid platform enum fails shape validation", () => {
+  test("any non-empty platform string passes shape validation (e.g. myspace, x.com)", () => {
     const tx = makeTx({ platform: "myspace" });
+    const result = validateTransaction(tx, dag, { skipPrevCheck: true });
+    expect(result.valid).toBe(true);
+  });
+
+  test("empty platform fails shape validation", () => {
+    const tx = makeTx({ platform: "" });
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(false);
     expect(result.errors.join("\n")).toMatch(/platform/);
@@ -192,7 +208,7 @@ describe("identityService.linkPlatform", () => {
     expect(caught.error).toMatch(/already linked/);
   });
 
-  test("6th link is accepted, 7th is rejected (cap enforcement)", async () => {
+  test("6th link earns score bonus, 7th link succeeds with score_delta 0 (no cap block)", async () => {
     const dag3 = initDAG({ dbPath: ":memory:" });
     const scoring3 = initScoring(dag3, { nodeId: "tip://node/cap-test" });
     const { privateKey: vPriv, publicKey: vPub } = await generateMLDSAKeypair();
@@ -215,22 +231,34 @@ describe("identityService.linkPlatform", () => {
       const sig = linkPlatformSchema.sign(payload, vPriv);
       svc3.linkPlatform({ tipId: capTipId, platform: plat, handle: `@${plat}`, linkedAt, vpId: "tip://vp/cap-vp", vpSignature: sig });
     }
-    // All 6 linked — 7th must throw cap or duplicate
+
+    // 7th link (new platform) must succeed but return score_delta 0
     const linkedAt7 = nowMs();
     const payload7 = linkPlatformSchema.buildSigningPayload({
-      tip_id: capTipId, platform: "youtube", handle: "@extra", linked_at: linkedAt7,
+      tip_id: capTipId, platform: "threads", handle: "@extra", linked_at: linkedAt7,
+    });
+    const result7 = svc3.linkPlatform({
+      tipId: capTipId, platform: "threads", handle: "@extra", linkedAt: linkedAt7,
+      vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload7, vPriv),
+    });
+    expect(result7.confirmation).toBe("proposed");
+    expect(result7.score_delta).toBe(0);
+    expect(result7.score_tx_id).toBeNull();
+
+    // Duplicate platform still throws 409
+    const linkedAt8 = nowMs();
+    const payload8 = linkPlatformSchema.buildSigningPayload({
+      tip_id: capTipId, platform: "youtube", handle: "@dup", linked_at: linkedAt8,
     });
     let caught;
     try {
       svc3.linkPlatform({
-        tipId: capTipId, platform: "youtube", handle: "@extra", linkedAt: linkedAt7,
-        vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload7, vPriv),
+        tipId: capTipId, platform: "youtube", handle: "@dup", linkedAt: linkedAt8,
+        vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload8, vPriv),
       });
-    } catch (e) {
-      caught = e;
-    }
+    } catch (e) { caught = e; }
     expect(caught).toBeDefined();
-    expect(caught.error || caught.message).toMatch(/cap reached|already linked/);
+    expect(caught.code).toBe("platform_already_linked");
   });
 });
 
