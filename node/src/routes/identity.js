@@ -15,6 +15,15 @@ function createRouter({ identityService, profileService, keyService }) {
     res.json(identityService.resolve(req.params.tipId));
   }));
 
+  // Resolve an existing tip_id from a gov-id-derived dedup_hash. Mounted
+  // BEFORE /identity/:tipId so the static path matches first (Express's
+  // first-defined-wins ordering would also handle it, but it's explicit).
+  // Returns 404 when no identity has been registered with this dedup_hash —
+  // i.e. the user should go down the registration path, not recovery.
+  router.get("/identity/by-dedup-hash/:dedupHash", asyncHandler((req, res) => {
+    res.json(identityService.findByDedupHash(req.params.dedupHash));
+  }));
+
   router.post("/identity/verify-ownership", asyncHandler((req, res) => {
     res.json(identityService.verifyOwnership(req.body));
   }));

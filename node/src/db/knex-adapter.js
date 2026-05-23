@@ -408,6 +408,9 @@ class KnexAdapter {
     await ensure("dedup_registry", t => {
       t.string("dedup_hash", 512).primary();
       t.bigInteger("created_at").notNullable();
+      // Denormalized for fast hash→tip_id lookup (recovery pivot from
+      // duplicate-registration; /v1/identity/by-dedup-hash endpoint).
+      t.string("tip_id", 128);
     });
 
     await ensure("revocations", t => {
@@ -660,9 +663,11 @@ class KnexAdapter {
     // Dedup registry
     const dedupRows = await this.knex("dedup_registry").select("*");
     if (!this.mirror._dedupCreated) this.mirror._dedupCreated = new Map();
+    if (!this.mirror._dedupTipId) this.mirror._dedupTipId = new Map();
     for (const row of dedupRows) {
       this.mirror._dedup.add(row.dedup_hash);
       this.mirror._dedupCreated.set(row.dedup_hash, row.created_at);
+      if (row.tip_id) this.mirror._dedupTipId.set(row.dedup_hash, row.tip_id);
     }
 
     // Revocations
@@ -1081,12 +1086,13 @@ class KnexAdapter {
 
   // ── Dedup registry ─────────────────────────────────────────────────────────
 
-  addDedupHash(hash, createdAt) {
-    this.mirror.addDedupHash(hash, createdAt);
-    this._ff(() => this._dbInsert("dedup_registry", "dedup_hash", { dedup_hash: hash, created_at: createdAt }, "ignore"));
+  addDedupHash(hash, createdAt, tipId) {
+    this.mirror.addDedupHash(hash, createdAt, tipId);
+    this._ff(() => this._dbInsert("dedup_registry", "dedup_hash", { dedup_hash: hash, created_at: createdAt, tip_id: tipId || null }, "ignore"));
   }
 
   hasDedupHash(h) { return this.mirror.hasDedupHash(h); }
+  getDedupRegistration(h) { return this.mirror.getDedupRegistration(h); }
   dedupCount() { return this.mirror.dedupCount(); }
 
   // ── Canonical state iterator (§14 snapshot-sync) ──────────────────────────

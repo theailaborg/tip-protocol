@@ -120,7 +120,9 @@ async function _registerIdentity(label) {
   // Wait for commit so subsequent ops see the identity.
   for (let i = 0; i < 60; i++) {
     const cr = await _get(`/v1/identity/${encodeURIComponent(r.body.data.tip_id)}`);
-    if (cr.status === 200 && cr.body?.data?.tip_id) return { tip_id: r.body.data.tip_id, kp, tx_id: r.body.data.tx_id };
+    if (cr.status === 200 && cr.body?.data?.tip_id) {
+      return { tip_id: r.body.data.tip_id, kp, tx_id: r.body.data.tx_id, dedup_hash: dedupHash, fields, vpSig };
+    }
     await _sleep(150);
   }
   throw new Error(`${label} identity did not commit within timeout`);
@@ -146,6 +148,24 @@ async function main() {
   const user = await _registerIdentity("rotate-test");
   expect(!!user.tip_id, "Identity registered + committed", user.tip_id);
   const oldKp = user.kp;
+
+  // Recovery-pivot oracles (FE blocker fix): from a dedup_hash alone, both
+  // the lookup endpoint AND the duplicate-registration 409 response must
+  // surface the existing tip_id so the FE/VP can pivot to KEY_RECOVERY
+  // without typing the tip_id by hand.
+  {
+    const lookup = await _get(`/v1/identity/by-dedup-hash/${encodeURIComponent(user.dedup_hash)}`);
+    expect(lookup.status === 200 && lookup.body?.data?.tip_id === user.tip_id,
+      "GET /v1/identity/by-dedup-hash/:hash resolves tip_id", `status=${lookup.status}`);
+
+    // Replay the same registration payload — chain must 409 and include
+    // tip_id under error.details so the FE can switch to recovery in-place.
+    const dupRes = await _post("/v1/identity/register", { ...user.fields, vp_signature: user.vpSig });
+    expect(dupRes.status === 409,
+      "Duplicate registration returns 409", `status=${dupRes.status}`);
+    expect(dupRes.body?.error?.details?.tip_id === user.tip_id,
+      "409 error.details.tip_id matches existing identity", dupRes.body?.error?.details?.tip_id);
+  }
 
   // Sanity: OLD key signs profile update successfully.
   {

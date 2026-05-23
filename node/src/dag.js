@@ -110,7 +110,7 @@ function _canonScore(tip_id, v) {
     last_updated: v.last_updated,
   };
 }
-function _canonDedup(hash, createdAt) {
+function _canonDedup(hash, createdAt, tipId) {
   // Normalize created_at to string. Source of truth is a unix-seconds
   // bigint column, but the value reaches the mirror two ways:
   //   • genesis init — passes Number (Math.floor(getTime()/1000))
@@ -122,8 +122,9 @@ function _canonDedup(hash, createdAt) {
   // in sync↔catching_up because dedup digest differed by Number-vs-String
   // canonical encoding.
   return {
-    dedup_hash: hash,
     created_at: createdAt != null ? String(createdAt) : null,
+    dedup_hash: hash,
+    tip_id: tipId || null,
   };
 }
 function _canonRotationParticipation(r) {
@@ -504,7 +505,10 @@ class MemoryStore {
   // ── Dedup registry ────────────────────────────────────────────────────────
   // `createdAt` is the unix-seconds timestamp of the tx that introduced this
   // dedup hash (derived from tx.timestamp). Deterministic — never nowMs().
-  addDedupHash(hash, createdAt) {
+  // `tipId` is denormalized so the FE/VP can resolve "this gov-id maps to which
+  // tip_id" in one indexed read (used by /v1/identity/by-dedup-hash and to
+  // surface tip_id on duplicate-registration 409s for the recovery pivot).
+  addDedupHash(hash, createdAt, tipId) {
     if (createdAt == null) {
       throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
     }
@@ -512,9 +516,19 @@ class MemoryStore {
     this._dedup.add(hash);
     if (!this._dedupCreated) this._dedupCreated = new Map();
     this._dedupCreated.set(hash, createdAt);
+    if (!this._dedupTipId) this._dedupTipId = new Map();
+    if (tipId) this._dedupTipId.set(hash, tipId);
   }
   hasDedupHash(hash) { return this._dedup.has(hash); }
   dedupCount() { return this._dedup.size; }
+  getDedupRegistration(hash) {
+    if (!this._dedup.has(hash)) return null;
+    return {
+      dedup_hash: hash,
+      created_at: this._dedupCreated ? this._dedupCreated.get(hash) || null : null,
+      tip_id: this._dedupTipId ? this._dedupTipId.get(hash) || null : null,
+    };
+  }
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
@@ -1075,7 +1089,8 @@ class MemoryStore {
     }
     for (const h of [...this._dedup].sort()) {
       const createdAt = this._dedupCreated ? this._dedupCreated.get(h) : null;
-      yield { table: "dedup_registry", row: _canonDedup(h, createdAt) };
+      const tipId = this._dedupTipId ? this._dedupTipId.get(h) : null;
+      yield { table: "dedup_registry", row: _canonDedup(h, createdAt, tipId) };
     }
     for (const r of [...this._revocations.values()]
       .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
@@ -1437,9 +1452,14 @@ class SQLiteStore {
       -- created_at is unix-seconds from tx.timestamp (the REGISTER_IDENTITY tx
       -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch() * 1000)
       -- value — that would read the local clock and break the state_merkle_root.
+      -- tip_id is denormalized so /v1/identity/by-dedup-hash (and the
+      -- duplicate-registration 409 response) can resolve hash → tip_id
+      -- in a single indexed read. The same fact is derivable by walking
+      -- back to the REGISTER_IDENTITY tx but that's O(N).
       CREATE TABLE IF NOT EXISTS dedup_registry (
         dedup_hash  TEXT PRIMARY KEY,
-        created_at  INTEGER NOT NULL
+        created_at  INTEGER NOT NULL,
+        tip_id      TEXT
       );
 
       -- ── Revocations ───────────────────────────────────────────────────
@@ -2032,8 +2052,9 @@ class SQLiteStore {
       ),
       getScore: this.db.prepare("SELECT * FROM scores WHERE tip_id=?"),
 
-      addDedupHash: this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash, created_at) VALUES (?, ?)"),
+      addDedupHash: this.db.prepare("INSERT OR IGNORE INTO dedup_registry (dedup_hash, created_at, tip_id) VALUES (?, ?, ?)"),
       hasDedupHash: this.db.prepare("SELECT 1 FROM dedup_registry WHERE dedup_hash=?"),
+      getDedupRegistration: this.db.prepare("SELECT dedup_hash, created_at, tip_id FROM dedup_registry WHERE dedup_hash=?"),
       dedupCount: this.db.prepare("SELECT COUNT(*) AS n FROM dedup_registry"),
 
       addRevoc: this.db.prepare(
@@ -2562,13 +2583,18 @@ class SQLiteStore {
 
   // ── Dedup registry ────────────────────────────────────────────────────────
   // createdAt (unix seconds) must come from tx.timestamp — see MemoryStore.
-  addDedupHash(hash, createdAt) {
+  // tipId denormalized for fast hash→tip_id lookups (see _canonDedup).
+  addDedupHash(hash, createdAt, tipId) {
     if (createdAt == null) {
       throw new Error("addDedupHash: createdAt (from tx.timestamp) is required for deterministic state");
     }
-    this._stmts.addDedupHash.run(hash, createdAt);
+    this._stmts.addDedupHash.run(hash, createdAt, tipId || null);
   }
   hasDedupHash(hash) { return !!this._stmts.hasDedupHash.get(hash); }
+  getDedupRegistration(hash) {
+    const row = this._stmts.getDedupRegistration.get(hash);
+    return row ? { dedup_hash: row.dedup_hash, created_at: row.created_at, tip_id: row.tip_id || null } : null;
+  }
   dedupCount() { return this._stmts.dedupCount.get().n; }
 
   // ── Revocations ───────────────────────────────────────────────────────────
@@ -2968,8 +2994,8 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT tip_id, score, offense_count, last_updated FROM scores ORDER BY tip_id").iterate()) {
       yield { table: "scores", row: _canonScore(r.tip_id, r) };
     }
-    for (const r of db.prepare("SELECT dedup_hash, created_at FROM dedup_registry ORDER BY dedup_hash").iterate()) {
-      yield { table: "dedup_registry", row: _canonDedup(r.dedup_hash, r.created_at) };
+    for (const r of db.prepare("SELECT dedup_hash, created_at, tip_id FROM dedup_registry ORDER BY dedup_hash").iterate()) {
+      yield { table: "dedup_registry", row: _canonDedup(r.dedup_hash, r.created_at, r.tip_id) };
     }
     for (const r of db.prepare("SELECT * FROM revocations ORDER BY tip_id").iterate()) {
       yield { table: "revocations", row: _canonRevocation(r) };
@@ -3264,8 +3290,9 @@ function _buildDagHandle(store, config) {
     getScore: (id) => store.getScore(id),
 
     // ── Dedup registry ────────────────────────────────────────────────────
-    addDedupHash: (h, createdAt) => store.addDedupHash(h, createdAt),
+    addDedupHash: (h, createdAt, tipId) => store.addDedupHash(h, createdAt, tipId),
     hasDedupHash: (h) => store.hasDedupHash(h),
+    getDedupRegistration: (h) => store.getDedupRegistration(h),
     dedupCount: () => store.dedupCount(),
 
     // ── Canonical derived state (§14 snapshot-sync) ──────────────────────
@@ -3631,7 +3658,7 @@ function _writeGenesisBlock(store, config) {
     if (member.dedup_hash) {
       // Genesis bootstrap — created_at derived from the genesis timestamp
       // (same on every node that ships the same genesis). Deterministic.
-      store.addDedupHash(member.dedup_hash, Math.floor(GENESIS_TIMESTAMP / 1000));
+      store.addDedupHash(member.dedup_hash, Math.floor(GENESIS_TIMESTAMP / 1000), member.tip_id);
     }
     // Genesis seed score — `score.initial_identity` from genesis (per
     // spec, all identities start at the same baseline; founding members

@@ -615,7 +615,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.REGISTER_IDENTITY:
         if (d.dedup_hash && !dag.hasDedupHash(d.dedup_hash)) {
           // Unix seconds derived from the tx timestamp (deterministic across nodes).
-          dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000));
+          // tip_id denormalized so /v1/identity/by-dedup-hash is a single read.
+          dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000), d.tip_id);
         }
         if (d.tip_id && !dag.getIdentity(d.tip_id)) {
           // GH #60: public_key + algorithm auto-route to entity_keys via
