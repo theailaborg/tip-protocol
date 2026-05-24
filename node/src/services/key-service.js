@@ -12,7 +12,7 @@ const { log } = require("../logger");
 
 // Canonical body fields per schema (alphabetical, mirrors buildSigningPayload).
 const KEY_ROTATED_FIELDS = ["algorithm", "effective_at", "new_public_key", "old_key_fingerprint", "tip_id"];
-const KEY_RECOVERY_FIELDS = ["algorithm", "effective_at", "new_public_key", "recovery_evidence_hash", "tip_id", "vp_id", "zk_proof"];
+const KEY_RECOVERY_FIELDS = ["algorithm", "new_public_key", "recovery_evidence_hash", "replaces_pubkey", "tip_id", "vp_id", "zk_proof"];
 
 function _normaliseAlgorithm(value) {
   return value == null ? SIGNATURE_ALGORITHM_DEFAULT : value;
@@ -96,6 +96,14 @@ function createKeyService({ dag, submitTx }) {
       throw schemaError(412, `VP has no active key: ${normalised.vp_id}`, "vp_no_active_key");
     }
 
+    // CAS — the VP's replaces_pubkey must equal the live active key.
+    // Replay defense (captured body can only commit once before state moves)
+    // + concurrency guard (two simultaneous recoveries: one wins).
+    const activeKey = dag.getActiveKey("identity", normalised.tip_id);
+    if (!activeKey || activeKey.public_key !== normalised.replaces_pubkey) {
+      throw schemaError(409, "replaces_pubkey does not match current active key", "state_changed");
+    }
+
     // Look up the original REGISTER_IDENTITY for this tip_id to recover
     // the canonical dedup_hash, then verify the fresh zk_proof against it.
     // Mirrors the proof-check identity-service runs at first-time register.
@@ -121,15 +129,16 @@ function createKeyService({ dag, submitTx }) {
       throw schemaError(403, "new-key proof-of-possession failed", "new_key_signature_invalid");
     }
 
+    // Chain stamps effective_at = tx.timestamp so recovery activates the
+    // instant it commits — no future window for an attacker holding the
+    // OLD key to submit a counter-rotation against the queued row.
     const timestamp = nowMs();
-    if (canonicalPayload.effective_at < timestamp) {
-      throw schemaError(400, "effective_at must be >= tx.timestamp", "effective_at_invalid");
-    }
 
     const txBody = {
       tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: dag.getRecentPrev(),
       data: {
         ..._pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
+        effective_at: timestamp,
         new_key_signature: normalised.new_key_signature,
       },
       signature: normalised.signature,

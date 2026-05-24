@@ -31,29 +31,35 @@
  *     key before activation. Stored on tx.data alongside zk_proof, not
  *     in canonical body (self-referential).
  *
- * Cooling-off policy:
- *   The chain enforces only `effective_at >= tx.timestamp`. It does NOT
- *   impose a takeover-window delay. Rationale: zk_proof + VP signature
- *   together are the cryptographic gate; a fixed delay does not add
- *   security beyond that. Recovery is a lost-key flow — the legitimate
- *   user by definition cannot observe the activity feed during a delay
- *   window, so a chain-side timer protects nobody. A user who DOES still
- *   hold their OLD key (and observes an unauthorised recovery in their
- *   feed) preempts via KEY_ROTATED rather than relying on a window.
- *   Per-VP cooling-off (e.g. 24h for high-stakes identities) is a VP
- *   policy choice — the VP sets `effective_at` accordingly.
+ * Activation is instant + replay-resistant:
+ *   `effective_at` is NOT in the canonical signed body. The chain stamps
+ *   it on commit as `tx.timestamp` so the OLD key dies and the NEW key
+ *   takes over at the exact moment the recovery commits — no future
+ *   window for an attacker (still holding the OLD/stolen key) to submit
+ *   a counter-rotation. KEY_ROTATED still uses a future `effective_at`
+ *   (the OLD key must be active at signing time, structurally required);
+ *   recovery has no such requirement because the VP signs it, not the
+ *   OLD key.
+ *
+ *   `replaces_pubkey` IS in the canonical body — it pins the recovery to
+ *   the specific currently-active key the VP saw at signing time. Chain
+ *   rejects (409 state_changed) if the active key has moved on between
+ *   signing and commit. This is the replay defense: a captured recovery
+ *   body+sigs can only commit against the exact state the VP signed for;
+ *   once that state has changed (by any other rotation/recovery), every
+ *   replay attempt misses.
  *
  * Canonical signed payload (alphabetical, picked-fields):
  *
  *   algorithm               string,   new key's algorithm (default ml-dsa-65)
- *   effective_at            number,   epoch ms — boundary where OLD validity
- *                                     ends and NEW validity begins. Must be
- *                                     >= tx.timestamp; VP chooses any further
- *                                     delay per its policy.
  *   new_public_key          string,   hex of the new public key
  *   recovery_evidence_hash  string,   shake256 of off-chain evidence body
  *                                     (passport scan, biometric match log,
  *                                     etc.) the VP attests they reviewed
+ *   replaces_pubkey         string,   hex of the public key currently active
+ *                                     for tip_id at the moment the VP signed.
+ *                                     Chain validates it matches the live
+ *                                     active key at commit time (CAS).
  *   tip_id                  string,   the identity being recovered
  *   vp_id                   string,   the attesting VP
  *   zk_proof                object,   groth16 proof for the original dedup_hash
@@ -92,6 +98,9 @@ function validateRequest(body, deps) {
   if (typeof body.new_public_key !== "string" || body.new_public_key.length === 0) {
     throw schemaError(400, "new_public_key is required", "new_public_key_required");
   }
+  if (typeof body.replaces_pubkey !== "string" || body.replaces_pubkey.length === 0) {
+    throw schemaError(400, "replaces_pubkey is required (CAS against current active key)", "replaces_pubkey_required");
+  }
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
   }
@@ -111,9 +120,6 @@ function validateRequest(body, deps) {
       `algorithm must be one of ${[...SIGNATURE_ALGORITHM_VALUES].join(", ")}`,
       "algorithm_invalid",
     );
-  }
-  if (!Number.isFinite(body.effective_at) || body.effective_at <= 0) {
-    throw schemaError(400, "effective_at must be a positive epoch ms", "effective_at_invalid");
   }
   // DAG presence.
   const identity = deps.dag.getIdentity(body.tip_id);
@@ -145,11 +151,11 @@ function buildSigningPayload(input) {
   if (typeof input.recovery_evidence_hash !== "string") {
     throw schemaError(400, "recovery_evidence_hash is required", "recovery_evidence_hash_required");
   }
+  if (typeof input.replaces_pubkey !== "string" || input.replaces_pubkey.length === 0) {
+    throw schemaError(400, "replaces_pubkey is required", "replaces_pubkey_required");
+  }
   if (!input.zk_proof || typeof input.zk_proof !== "object" || Array.isArray(input.zk_proof)) {
     throw schemaError(400, "zk_proof is required", "zk_proof_required");
-  }
-  if (!Number.isFinite(input.effective_at)) {
-    throw schemaError(400, "effective_at must be a number", "effective_at_invalid");
   }
   const algorithm = input.algorithm == null ? SIGNATURE_ALGORITHM_DEFAULT : input.algorithm;
   if (!SIGNATURE_ALGORITHM_VALUES.has(algorithm)) {
@@ -161,9 +167,9 @@ function buildSigningPayload(input) {
   }
   return {
     algorithm,
-    effective_at: input.effective_at,
     new_public_key: input.new_public_key,
     recovery_evidence_hash: input.recovery_evidence_hash,
+    replaces_pubkey: input.replaces_pubkey,
     tip_id: input.tip_id,
     vp_id: input.vp_id,
     zk_proof: input.zk_proof,
@@ -186,8 +192,12 @@ function verifySignature(payload, signatureHex, vpPublicKeyHex) {
  *
  *   1. Identity exists + active + not revoked.
  *   2. VP exists + active.
- *   3. effective_at >= tx.timestamp.
+ *   3. effective_at is set (chain-stamped to tx.timestamp on commit;
+ *      we sanity-check it equals tx.timestamp so a malformed tx is
+ *      rejected at replay too).
  *   4. NEW key is non-empty + algorithm is in the enum.
+ *   5. replaces_pubkey matches current active key (CAS, replay defense).
+ *   6. new_key_signature verifies (proof of possession).
  */
 function verifyTx(tx, dag) {
   const d = tx.data || {};
@@ -195,6 +205,9 @@ function verifyTx(tx, dag) {
   if (!d.vp_id) return { ok: false, status: 400, error: "vp_id missing", code: "vp_id_missing" };
   if (typeof d.new_public_key !== "string" || d.new_public_key.length === 0) {
     return { ok: false, status: 400, error: "new_public_key missing", code: "new_public_key_missing" };
+  }
+  if (typeof d.replaces_pubkey !== "string" || d.replaces_pubkey.length === 0) {
+    return { ok: false, status: 400, error: "replaces_pubkey missing", code: "replaces_pubkey_missing" };
   }
   const algorithm = d.algorithm || SIGNATURE_ALGORITHM_DEFAULT;
   if (!SIGNATURE_ALGORITHM_VALUES.has(algorithm)) {
@@ -213,8 +226,17 @@ function verifyTx(tx, dag) {
   if (vp.status !== "active") {
     return { ok: false, status: 403, error: `VP not active (status=${vp.status})`, code: "vp_inactive" };
   }
-  if (!Number.isFinite(d.effective_at) || d.effective_at < tx.timestamp) {
-    return { ok: false, status: 400, error: "effective_at must be >= tx.timestamp", code: "effective_at_invalid" };
+  // effective_at is chain-stamped to tx.timestamp at commit; reject anything
+  // that drifted off that contract (recovery has no future window).
+  if (d.effective_at !== tx.timestamp) {
+    return { ok: false, status: 400, error: "effective_at must equal tx.timestamp (chain-stamped)", code: "effective_at_invalid" };
+  }
+  // CAS — replaces_pubkey must equal the live active key. Replay defense:
+  // any change to the active key (rotation/recovery) since the VP signed
+  // makes the signed claim stale → reject.
+  const active = typeof dag.getActiveKey === "function" ? dag.getActiveKey("identity", d.tip_id) : null;
+  if (!active || active.public_key !== d.replaces_pubkey) {
+    return { ok: false, status: 409, error: "replaces_pubkey does not match current active key (state changed)", code: "state_changed" };
   }
   // Proof-of-possession — the new key must have signed the canonical body.
   // ML-DSA verify is cheap, so we re-check at consensus replay (unlike

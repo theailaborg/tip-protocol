@@ -226,8 +226,12 @@ async function main() {
   // User "loses" the current key. They go back to the VP for off-chain
   // re-verification; the VP attests and the chain installs the new key.
   const recoveredKp = generateMLDSAKeypair();
-  const effectiveAt2 = nowMs() + 5000;
   const evidenceHash = shake256(`recovery-evidence:${user.tip_id}:${nowMs()}`);
+  // The currently-active key is the rotated one from Phase 2 — VP signs
+  // canonical with replaces_pubkey pinned to it. Chain rejects (409
+  // state_changed) if anything has rotated the identity in between.
+  const currentActiveLookup = await _get(`/v1/identity/${encodeURIComponent(user.tip_id)}`);
+  const currentActivePubkey = currentActiveLookup.body?.data?.public_key;
   // Fresh zk_proof bound to the SAME dedup_hash the user committed to at
   // first-time REGISTER_IDENTITY. ZK_SKIP_VERIFY=true keeps the proof
   // structurally validated but bypasses the heavy verifier so UAT can run
@@ -237,7 +241,7 @@ async function main() {
     vp_id: VP.vp_id,
     new_public_key: recoveredKp.publicKey,
     recovery_evidence_hash: evidenceHash,
-    effective_at: effectiveAt2,
+    replaces_pubkey: currentActivePubkey,
     algorithm: "ml-dsa-65",
     zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
   };
@@ -258,8 +262,9 @@ async function main() {
     expect(!!tx, "KEY_RECOVERY tx committed", tx?.tx_id?.slice(0, 16));
     if (tx) assertUnifiedSig("KEY_RECOVERY", tx);
 
-    const waitMs = Math.max(0, effectiveAt2 - nowMs()) + 500;
-    await _sleep(waitMs);
+    // Recovery is instant — chain sets effective_at = tx.timestamp on commit.
+    // No post-commit sleep required; the new key is active the moment the
+    // chain returns 200 on /dag/tx/:tx_id.
 
     // RECOVERED key authenticates.
     {
@@ -274,6 +279,15 @@ async function main() {
       expect(r.status === 403 || r.status === 400,
         `Post-recovery: ${label} key REJECTED for update-profile`, `status=${r.status}`);
     }
+
+    // Replay defense — resubmit the SAME body+sigs. CAS check sees that the
+    // active key has moved on (recovery just installed recoveredKp) so the
+    // captured tx no longer matches the live state.
+    const replayRes = await _post(`/v1/identity/${encodeURIComponent(user.tip_id)}/keys/recover`,
+      { ...recoverBody, signature: recoverSig, new_key_signature: newKeySig });
+    expect(replayRes.status === 409,
+      "Replay of captured recovery body REJECTED (state_changed)",
+      `status=${replayRes.status} code=${replayRes.body?.error?.code || ""}`);
   }
 
   // ── Summary ───────────────────────────────────────────────────────
