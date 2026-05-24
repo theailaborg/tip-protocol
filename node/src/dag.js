@@ -362,7 +362,9 @@ class MemoryStore {
     return [...this._txs.values()]
       .filter(t => t.subject_tip_id === tipId)
       .sort((a, b) => {
-        const d = b.timestamp - a.timestamp;
+        // Coerce — guards against any DB driver that returns timestamps
+        // as strings (PG's node-pg returns bigint as string by default).
+        const d = Number(b.timestamp) - Number(a.timestamp);
         if (d !== 0) return d;
         const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
         const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;

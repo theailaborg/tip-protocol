@@ -358,7 +358,10 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     // Same rule mirrored in MemoryStore.getTxsBySubject and the SQL
     // ORDER BY — single source of truth.
     items.sort((a, b) => {
-      const d = b.timestamp - a.timestamp;
+      // Coerce — see MemoryStore.getTxsBySubject. PG returns bigint as
+      // string by default; mixed-type subtraction yields NaN which V8
+      // treats as "don't swap" and the feed drifts out of order.
+      const d = Number(b.timestamp) - Number(a.timestamp);
       if (d !== 0) return d;
       const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
       const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;

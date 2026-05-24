@@ -178,11 +178,17 @@ function _j(v) {
 }
 
 function _parseTxRow(row) {
+  // PG returns `bigint` columns as STRING (node-pg default — JS Number
+  // can't safely hold the full bigint range). Coerce to Number here so
+  // the mirror has consistent numeric timestamps regardless of whether
+  // a tx arrived via live saveTx (numeric) or hydrate (string). Without
+  // this, the activity-feed sort hits NaN on mixed comparisons and
+  // string-timestamped txs drift out of order.
   return {
     tx_id: row.tx_id,
     tx_type: row.tx_type,
     data: _j(row.data) || {},
-    timestamp: row.timestamp,
+    timestamp: row.timestamp != null ? Number(row.timestamp) : row.timestamp,
     prev: _j(row.prev) || [],
     signature: row.signature || null,
     subject_tip_id: row.subject_tip_id || null,
