@@ -824,15 +824,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
 
       // ── Domain binding (org-only) ────────────────────────────────────
-      // BIND_DOMAIN is node-attested. GH #51: the node's attestation
-      // lives at tx.signature (verified by the unified dispatcher).
-      // The embedded user claim sig stays on tx.data.claim_signature
-      // (attestation by a different actor, per SIGNATURES.md). Apply
-      // the canonical row to domain_bindings; commit-handler is the
-      // sole writer so the table stays deterministic and participates
-      // in state_merkle_root. The off-chain `evidence` blob is NOT
-      // persisted on the binding row — it lives on tx.data for audit
-      // replay only.
+      // BIND_DOMAIN is node-attested. The node's attestation lives at
+      // tx.signature (verified by the unified dispatcher). The user's
+      // prior REGISTER_DOMAIN claim sig rides as a cosignature on
+      // tx.data.cosignatures (verified by bind-domain schema verifyTx).
+      // Apply the canonical row to domain_bindings; commit-handler is
+      // the sole writer so the table stays deterministic and
+      // participates in state_merkle_root. The off-chain `evidence`
+      // blob is NOT persisted on the binding row — it lives on tx.data
+      // for audit replay only.
       case TX_TYPES.BIND_DOMAIN:
         if (d.domain && d.tip_id) {
           // expires_at + consecutive_failures are v2 renewal prep slots
@@ -842,6 +842,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           const verifiedMs = d.verified_at;
           const expiresAt = Number.isFinite(verifiedMs)
             ? verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS
+            : null;
+          // Extract the user's claim sig from the cosignatures entry
+          // (signer_kind=subject, signer_ref=tip_id). Stored verbatim on
+          // the derived row so reverse-lookup callers get the same flat
+          // shape as before.
+          const claimCosig = Array.isArray(d.cosignatures)
+            ? d.cosignatures.find(c => c && c.signer_kind === "subject" && c.signer_ref === d.tip_id)
             : null;
           dag.saveDomainBinding({
             domain: d.domain,
@@ -853,7 +860,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             expires_at: expiresAt,
             consecutive_failures: 0,
             node_id: d.node_id,
-            claim_signature: d.claim_signature,
+            claim_signature: claimCosig ? claimCosig.signature : null,
             binding_signature: tx.signature,
             tx_id: tx.tx_id,
           });

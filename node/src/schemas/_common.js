@@ -27,6 +27,18 @@
 const { canonicalJson, shake256, mldsaSign, mldsaVerify, canonicalTx, signTransaction, verifyWithAlgorithm, signWithAlgorithm } = require("../../../shared/crypto");
 const { SIGNED_BY_KIND, SIGNED_BY_KIND_VALUES, SIGNATURE_SCOPE, SIGNATURE_ALGORITHM_DEFAULT } = require("../../../shared/constants");
 
+// Cosignatures normalisation — see SIGNATURES.md "Cosignatures" section.
+// Maps cosignature kind discriminator to entity_type used by
+// dag.getKeyValidAt / dag.getActiveKey. The "pubkey" / future-self case
+// (KEY_RECOVERY's new_key_signature) is intentionally NOT here — it's a
+// proof-of-possession on the same identity's own future key, kept as a
+// named field on its tx_type.
+const COSIGNER_ENTITY_TYPE = Object.freeze({
+  [SIGNED_BY_KIND.SUBJECT]: "identity",
+  [SIGNED_BY_KIND.NODE]:    "node",
+  [SIGNED_BY_KIND.VP]:      "vp",
+});
+
 /**
  * Hash the canonical JSON of `payload`. Returns a 64-char lowercase
  * hex string (the message ML-DSA signs as ASCII bytes).
@@ -318,6 +330,132 @@ function signTxBody(tx, schema, privateKeyHex, opts = {}) {
   return tx;
 }
 
+// ─── Cosignatures (additional signers beyond tx.signature) ─────────────────
+//
+// Some tx_types carry signatures from a SECOND registered entity beyond
+// the primary signer — e.g. a node-emitted BIND_DOMAIN carrying the
+// user's prior REGISTER_DOMAIN attestation, an auto-escalated
+// CONTENT_DISPUTED carrying the creator's escalation, a
+// COMMITTEE_ROTATION carrying N previous-committee node signatures.
+//
+// Canonical shape, on every such tx:
+//   tx.data.cosignatures = [
+//     { signer_kind, signer_ref, signature },
+//     ...
+//   ]
+//
+// `signer_kind` is one of SIGNED_BY_KIND.{SUBJECT, NODE, VP}; key
+// resolution is time-anchored at tx.timestamp exactly like the primary
+// dispatcher. Builders MUST sort the array by (signer_kind, signer_ref)
+// ASC before envelope-signing so canonicalTx(tx) bytes are deterministic.
+//
+// Schemas declare what each cosignature signs by passing a contract
+// list to `verifyCosignatures(tx, contracts, dag)` from inside their
+// own verifyTx. Each contract entry is:
+//   { kind, ref, body }
+// where `body` is the raw object the cosigner hashed (canonical-JSON +
+// SHAKE-256). For cross-tx-type cosigs (BIND_DOMAIN's claim_signature
+// signs the REGISTER_DOMAIN body, not the BIND_DOMAIN body), the
+// schema constructs the correct body itself — the helper just verifies
+// what the schema declares.
+
+/**
+ * Sort cosignatures into canonical wire order: (signer_kind, signer_ref)
+ * ASC. Required before envelope-signing so canonicalTx bytes are
+ * deterministic; safe to call on already-sorted arrays.
+ */
+function sortCosignatures(arr) {
+  if (!Array.isArray(arr)) return [];
+  return [...arr].sort((a, b) => {
+    const ak = String(a?.signer_kind ?? "");
+    const bk = String(b?.signer_kind ?? "");
+    if (ak !== bk) return ak < bk ? -1 : 1;
+    const ar = String(a?.signer_ref ?? "");
+    const br = String(b?.signer_ref ?? "");
+    if (ar !== br) return ar < br ? -1 : 1;
+    return 0;
+  });
+}
+
+/**
+ * Build one cosignature entry: sign `body` with `privateKeyHex` and
+ * label it with the signer's (kind, ref). Convenience for builders /
+ * UATs / test fixtures; verification side has no equivalent (verifiers
+ * read tx.data.cosignatures and compare against a schema-declared
+ * contract list).
+ */
+function signCosignature(body, privateKeyHex, signerKind, signerRef, opts = {}) {
+  return {
+    signer_kind: signerKind,
+    signer_ref:  signerRef,
+    signature:   signPayload(body, privateKeyHex, opts),
+  };
+}
+
+/**
+ * Verify all cosignatures declared by a schema's contract list. Each
+ * contract entry `{kind, ref, body}` is matched to a tx.data.cosignatures
+ * entry by (signer_kind, signer_ref); the matched entry's signature is
+ * verified against the body the schema declares the cosigner signed.
+ *
+ * Key resolution mirrors the primary dispatcher: time-anchored at
+ * tx.timestamp via dag.getKeyValidAt(entityType, ref, timestamp), with
+ * dag.getActiveKey as a defensive fallback when timestamp is missing.
+ *
+ * Returns { ok: true } on success, or { ok: false, error, code } on the
+ * first failure. Empty contract list is a no-op (returns ok).
+ */
+function verifyCosignatures(tx, contracts, dag) {
+  if (!Array.isArray(contracts) || contracts.length === 0) {
+    return { ok: true };
+  }
+  const cosigs = tx?.data?.cosignatures;
+  if (!Array.isArray(cosigs)) {
+    return { ok: false, error: "tx.data.cosignatures missing or not an array", code: "cosignatures_missing" };
+  }
+  if (cosigs.length !== contracts.length) {
+    return {
+      ok: false,
+      error: `expected ${contracts.length} cosignatures, got ${cosigs.length}`,
+      code: "cosignatures_length_mismatch",
+    };
+  }
+  const timestamp = Number(tx?.timestamp);
+  for (const c of contracts) {
+    const entityType = COSIGNER_ENTITY_TYPE[c.kind];
+    if (!entityType) {
+      return { ok: false, error: `unknown signer_kind: ${c.kind}`, code: "cosignature_kind_invalid" };
+    }
+    const entry = cosigs.find(e => e?.signer_kind === c.kind && e?.signer_ref === c.ref);
+    if (!entry) {
+      return { ok: false, error: `cosignature missing for ${c.kind}:${c.ref}`, code: "cosignature_missing" };
+    }
+    if (typeof entry.signature !== "string" || entry.signature.length === 0) {
+      return { ok: false, error: `cosignature signature empty for ${c.kind}:${c.ref}`, code: "cosignature_invalid" };
+    }
+    // Time-anchored key lookup (same contract as the primary dispatcher
+    // — a cosig signed before a rotation verifies against the OLD key).
+    const key = (typeof dag.getKeyValidAt === "function" && Number.isFinite(timestamp) && timestamp > 0)
+      ? dag.getKeyValidAt(entityType, c.ref, timestamp)
+      : (typeof dag.getActiveKey === "function" ? dag.getActiveKey(entityType, c.ref) : null);
+    if (!key || typeof key.public_key !== "string") {
+      return { ok: false, error: `cosigner not resolvable: ${c.kind}:${c.ref}`, code: "cosigner_unknown" };
+    }
+    const algorithm = key.algorithm || SIGNATURE_ALGORITHM_DEFAULT;
+    const message = payloadHashHex(c.body);
+    let ok;
+    try {
+      ok = verifyWithAlgorithm(message, entry.signature, key.public_key, algorithm);
+    } catch (e) {
+      return { ok: false, error: `cosignature algorithm dispatch failed: ${e.message}`, code: "algorithm_unsupported" };
+    }
+    if (!ok) {
+      return { ok: false, error: `cosignature verification failed for ${c.kind}:${c.ref}`, code: "cosignature_invalid" };
+    }
+  }
+  return { ok: true };
+}
+
 module.exports = {
   payloadHashHex,
   signPayload,
@@ -335,4 +473,8 @@ module.exports = {
   verifyTxSignature,
   signTxEnvelope,
   signTxBody,
+  // Cosignatures
+  sortCosignatures,
+  signCosignature,
+  verifyCosignatures,
 };

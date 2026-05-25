@@ -67,16 +67,14 @@ const SCHEMA = {
   [TX_TYPES.BIND_DOMAIN]: {
     // Wire contract — every field is on tx.data so commit-handler can
     // replay bindDomainSchema.buildSigningPayload(d) deterministically.
-    // GH #51: node attestation lives at tx.signature; claim_signature
-    // stays on data as an attestation by a different actor (the user
-    // who claimed the domain via REGISTER_DOMAIN), per
-    // SIGNATURES.md "Attestations on data".
+    // Node attestation at tx.signature; user's claim cosig at
+    // tx.data.cosignatures (verified by schema verifyTx).
     required: [
-      "binding_state", "claim_signature", "claimed_at", "domain", "method",
+      "binding_state", "claimed_at", "domain", "method",
       "node_id", "tip_id", "verified_at",
     ],
     types: {
-      binding_state: "string", claim_signature: "string", claimed_at: "number",
+      binding_state: "string", claimed_at: "number",
       domain: "string", method: "string", node_id: "string", tip_id: "string",
       verified_at: "number",
     },

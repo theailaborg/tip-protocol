@@ -24,6 +24,7 @@
 const {
   TX_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_VERIFICATION_METHODS,
   DOMAIN_DNS_TXT_PREFIX, DOMAIN_WELL_KNOWN_PATH,
+  SIGNED_BY_KIND,
 } = require("../../../shared/constants");
 const { nowMs } = require("../../../shared/time");
 const registerDomainSchema = require("../schemas/register-domain");
@@ -149,7 +150,6 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     const verifiedAt = result.verified_at || nowMs();
     const canonicalBinding = bindDomainSchema.buildSigningPayload({
       binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
-      claim_signature: claim.signature,
       claimed_at: claim.claimed_at,
       domain,
       method: result.method,
@@ -167,17 +167,21 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
         // canonical fields mirrored onto tx.data so commit-handler can
         // replay buildSigningPayload(d) deterministically
         binding_state: canonicalBinding.binding_state,
-        // claim_signature stays in tx.data — it's the *user's* prior
-        // attestation from REGISTER_DOMAIN, carried forward as evidence-on-
-        // data. The tx's own signature (the node's attestation) lives at
-        // tx.signature per GH #51.
-        claim_signature: canonicalBinding.claim_signature,
         claimed_at: canonicalBinding.claimed_at,
         domain: canonicalBinding.domain,
         method: canonicalBinding.method,
         node_id: canonicalBinding.node_id,
         tip_id: canonicalBinding.tip_id,
         verified_at: canonicalBinding.verified_at,
+        // User's claim sig from REGISTER_DOMAIN, carried as a cosignature.
+        // The cosigner (claimant tip_id) signed the register-domain
+        // canonical body — verifyTx rebuilds that body and verifies via
+        // the cosignatures dispatcher.
+        cosignatures: [{
+          signer_kind: SIGNED_BY_KIND.SUBJECT,
+          signer_ref:  claim.tip_id,
+          signature:   claim.signature,
+        }],
         // tx-level fields
         evidence: result.evidence,
       },

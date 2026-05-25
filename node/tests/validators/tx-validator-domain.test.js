@@ -28,7 +28,11 @@ function _bindTx(overrides = {}) {
       domain:            "acmenews.com",
       method:            "http",
       binding_state:     "verified",
-      claim_signature:   "00".repeat(8),
+      cosignatures: [{
+        signer_kind: "subject",
+        signer_ref:  "tip://id/US-aaaaaaaaaaaaaaaa",
+        signature:   "00".repeat(8),
+      }],
       binding_signature: "00".repeat(8),
       claimed_at:        1778580000000,
       verified_at:       1778580030000,

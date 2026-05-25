@@ -37,11 +37,21 @@ const PERSONAL_TIP = "tip://id/US-bbbbbbbbbbbbbbbb";
 const NODE_ID = "node-test-1";
 
 function makeFakeDag({ identities = {}, nodes = {}, bindings = {}, revoked = new Set() } = {}) {
+  // Cosignatures dispatcher resolves cosigner keys via getActiveKey
+  // (no getKeyValidAt fallback path) — surface the same {public_key}
+  // shape the production dag uses so verifyCosignatures can do its job.
+  function getActiveKey(entityType, entityId) {
+    const rec = entityType === "identity" ? identities[entityId]
+              : entityType === "node"     ? nodes[entityId]
+              : null;
+    return rec ? { public_key: rec.public_key } : null;
+  }
   return {
     getIdentity: (id) => identities[id] || null,
     getNode: (id) => nodes[id] || null,
     getDomainBinding: (d) => bindings[d] || null,
     isRevoked: (id) => revoked.has(id),
+    getActiveKey,
   };
 }
 
@@ -56,7 +66,6 @@ function buildBindTxData(userKp, nodeKp, overrides = {}) {
 
   const binding = bindSchema.buildSigningPayload({
     binding_state:   DOMAIN_BINDING_STATUS.VERIFIED,
-    claim_signature: claimSig,
     claimed_at:      claimedAt,
     domain:          "example.com",
     method:          "auto",
@@ -68,13 +77,17 @@ function buildBindTxData(userKp, nodeKp, overrides = {}) {
 
   return {
     binding_state:     binding.binding_state,
-    claim_signature:   binding.claim_signature,
     claimed_at:        binding.claimed_at,
     domain:            binding.domain,
     method:            binding.method,
     node_id:           binding.node_id,
     tip_id:            binding.tip_id,
     verified_at:       binding.verified_at,
+    cosignatures: [{
+      signer_kind: "subject",
+      signer_ref:  ORG_TIP,
+      signature:   claimSig,
+    }],
     binding_signature: bindingSig,
     ...overrides,
   };
@@ -93,12 +106,11 @@ describe("module surface", () => {
   });
 });
 
-// ─── buildSigningPayload — exact 8-field shape ──────────────────────────────
+// ─── buildSigningPayload — exact 7-field shape ──────────────────────────────
 
-describe("buildSigningPayload — exact 8-field canonical shape", () => {
+describe("buildSigningPayload — exact 7-field canonical shape", () => {
   const minimal = (overrides = {}) => bindSchema.buildSigningPayload({
     binding_state: "verified",
-    claim_signature: "00".repeat(8),
     claimed_at: 1778580000000,
     domain: "example.com",
     method: "auto",
@@ -108,9 +120,9 @@ describe("buildSigningPayload — exact 8-field canonical shape", () => {
     ...overrides,
   });
 
-  test("emits exactly the 8 spec fields, alphabetical", () => {
+  test("emits exactly the 7 spec fields, alphabetical", () => {
     expect(Object.keys(minimal()).sort()).toEqual([
-      "binding_state", "claim_signature", "claimed_at", "domain", "method",
+      "binding_state", "claimed_at", "domain", "method",
       "node_id", "tip_id", "verified_at",
     ]);
   });
@@ -118,6 +130,11 @@ describe("buildSigningPayload — exact 8-field canonical shape", () => {
   test("reject-on-extra — junk fields stripped", () => {
     const p = minimal({ malicious: "stripped" });
     expect(p.malicious).toBeUndefined();
+  });
+
+  test("claim_signature is NOT part of the canonical body anymore", () => {
+    const p = minimal({ claim_signature: "ab".repeat(8) });
+    expect(p.claim_signature).toBeUndefined();
   });
 
   test("binding_state outside the on-chain set rejected", () => {
@@ -139,11 +156,6 @@ describe("buildSigningPayload — exact 8-field canonical shape", () => {
     expect(() => minimal({ verified_at: "not-a-date" }))
       .toThrow(expect.objectContaining({ status: 400, code: "verified_at_invalid" }));
   });
-
-  test("missing claim_signature rejected", () => {
-    expect(() => minimal({ claim_signature: "" }))
-      .toThrow(expect.objectContaining({ status: 400, code: "claim_signature_required" }));
-  });
 });
 
 // ─── sign / verify round-trip ───────────────────────────────────────────────
@@ -153,7 +165,6 @@ describe("sign / verify round-trip (node key)", () => {
     const kp = generateMLDSAKeypair();
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
-      claim_signature: "ab".repeat(8),
       claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
@@ -169,7 +180,6 @@ describe("sign / verify round-trip (node key)", () => {
     const kp = generateMLDSAKeypair();
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
-      claim_signature: "ab".repeat(8),
       claimed_at: 1778580000000,
       domain: "example.com",
       method: "auto",
@@ -270,17 +280,21 @@ describe("verifyTx", () => {
     expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "tip_id_not_authorised" });
   });
 
-  test("user claim signature invalid → 403 claim_signature_invalid", () => {
+  test("user claim cosignature invalid → 403 cosignature_invalid", () => {
     const { dag, data } = setup();
-    // Swap claim_signature out for garbage. Node sig has to be rebuilt over
-    // the new bytes for the verifyTx to even reach the claim-sig check.
-    data.claim_signature = "00".repeat(8);
-    const payload = bindSchema.buildSigningPayload(data);
-    // re-sign with the actual node key that's on the DAG
-    const realNodeKp = generateMLDSAKeypair();
-    dag.getNode = () => ({ public_key: realNodeKp.publicKey, status: "active" });
-    data.binding_signature = bindSchema.sign(payload, realNodeKp.privateKey);
-    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "claim_signature_invalid" });
+    // Swap the cosignature out for garbage of the right hex length.
+    data.cosignatures = [{
+      signer_kind: "subject",
+      signer_ref:  ORG_TIP,
+      signature:   "00".repeat(8),
+    }];
+    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "cosignature_invalid" });
+  });
+
+  test("cosignatures array missing → 403 cosignatures_missing", () => {
+    const { dag, data } = setup();
+    delete data.cosignatures;
+    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false, status: 403, code: "cosignatures_missing" });
   });
 });
 
