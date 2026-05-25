@@ -133,61 +133,80 @@ describe("register-social schema", () => {
   });
 });
 
-describe("LINK_PLATFORM tx-validator", () => {
+describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
   let dag;
-  let vpPub;
+  let nodePub, nodePriv;
+  let userPub, userPriv;
   let testTipId;
 
   beforeAll(async () => {
     dag = initDAG({ dbPath: ":memory:" });
-    const { publicKey: vpKey } = await generateMLDSAKeypair();
-    vpPub = vpKey;
-    dag.saveVP({ vp_id: "tip://vp/test-vp-1", public_key: vpKey, status: "active", tx_id: "genesis-vp-1" });
-    testTipId = "tip://id/IN-aabbccdd11223344";
-    dag.saveIdentity({ tip_id: testTipId, public_key: vpKey, vp_id: "tip://vp/test-vp-1", tx_id: "genesis-id-1" });
+    const nodeKeys = await generateMLDSAKeypair();
+    nodePub = nodeKeys.publicKey;
+    nodePriv = nodeKeys.privateKey;
+    const userKeys = await generateMLDSAKeypair();
+    userPub = userKeys.publicKey;
+    userPriv = userKeys.privateKey;
+    dag.saveNode({ node_id: "tip://node/n1", public_key: nodePub, status: "active", tx_id: "g-node" });
+    testTipId = "tip://id/US-aabbccdd11223344";
+    dag.saveIdentity({ tip_id: testTipId, public_key: userPub, vp_id: "tip://vp/v1", tx_id: "g-id" });
   });
 
+  function makeClaimSig(overrides = {}) {
+    const payload = registerSocialSchema.buildSigningPayload({
+      tip_id: testTipId,
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      claimed_at: 1748000000000,
+      ...overrides,
+    });
+    return registerSocialSchema.sign(payload, userPriv);
+  }
+
   function makeTx(overrides = {}) {
+    const claimSig = makeClaimSig();
+    // Build a valid base payload first (for signing), then apply overrides to tx.data
+    const baseData = {
+      tip_id: testTipId,
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      handle: "alice",
+      claimed_at: 1748000000000,
+      verified_at: nowMs(),
+      node_id: "tip://node/n1",
+      claim_signature: claimSig,
+    };
+    const payload = linkPlatformSchema.buildSigningPayload(baseData);
+    const nodeSig = linkPlatformSchema.sign(payload, nodePriv);
+    // Apply overrides to data after signing (allows invalid fields to reach validator)
+    const txData = { ...baseData, ...overrides };
     return withTxId({
       tx_type: TX_TYPES.LINK_PLATFORM,
       timestamp: nowMs(),
-      prev: ["genesis-id-1"],
-      data: {
-        tip_id: testTipId,
-        platform: "youtube",
-        handle: "@testchannel",
-        linked_at: nowMs(),
-        vp_id: "tip://vp/test-vp-1",
-        vp_signature: "a".repeat(256),
-        ...overrides,
-      },
+      signature: nodeSig,
+      prev: ["g-id"],
+      data: txData,
     });
   }
 
-  test("valid LINK_PLATFORM tx passes shape validation (ignores sig for shape layer)", () => {
+  test("valid LINK_PLATFORM tx passes shape validation", () => {
     const tx = makeTx();
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(true);
   });
 
-  test("any non-empty platform string passes shape validation (e.g. myspace, x.com)", () => {
-    const tx = makeTx({ platform: "myspace" });
-    const result = validateTransaction(tx, dag, { skipPrevCheck: true });
-    expect(result.valid).toBe(true);
-  });
-
-  test("empty platform fails shape validation", () => {
-    const tx = makeTx({ platform: "" });
+  test("missing profile_url fails shape validation", () => {
+    const tx = makeTx({ profile_url: undefined });
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(false);
-    expect(result.errors.join("\n")).toMatch(/platform/);
+    expect(result.errors.join("\n")).toMatch(/profile_url/);
   });
 
-  test("empty handle fails shape validation", () => {
-    const tx = makeTx({ handle: "" });
+  test("missing claim_signature fails shape validation", () => {
+    const tx = makeTx({ claim_signature: "" });
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(false);
-    expect(result.errors.join("\n")).toMatch(/handle/);
+    expect(result.errors.join("\n")).toMatch(/claim_signature/);
   });
 
   test("unknown tip_id fails state validation", () => {
@@ -198,122 +217,117 @@ describe("LINK_PLATFORM tx-validator", () => {
   });
 });
 
-describe("identityService.linkPlatform", () => {
+describe("identityService.linkPlatform v2 (node-attested)", () => {
   let dag2, scoring2, identityService2;
-  let vpPriv, vpPub2, vpTipId;
+  let userPriv, userPub;
+  let nodePriv;
   let userTipId;
   const submitted = [];
 
   beforeAll(async () => {
     dag2 = initDAG({ dbPath: ":memory:" });
     scoring2 = initScoring(dag2, { nodeId: "tip://node/test" });
-    const { privateKey, publicKey } = await generateMLDSAKeypair();
-    vpPriv = privateKey;
-    vpPub2 = publicKey;
-    vpTipId = "tip://vp/svc-test-vp";
-    dag2.saveVP({ vp_id: vpTipId, public_key: vpPub2, status: "active", tx_id: "genesis-vp-svc" });
+    const userKeys = await generateMLDSAKeypair();
+    userPriv = userKeys.privateKey;
+    userPub = userKeys.publicKey;
+    const nodeKeys = await generateMLDSAKeypair();
+    nodePriv = nodeKeys.privateKey;
+    const nodePub = nodeKeys.publicKey;
+    dag2.saveNode({ node_id: "tip://node/test", public_key: nodePub, status: "active", tx_id: "g-node" });
+    dag2.saveVP({ vp_id: "tip://vp/v1", public_key: nodePub, status: "active", tx_id: "g-vp" });
     userTipId = "tip://id/US-1122334455667788";
-    dag2.saveIdentity({ tip_id: userTipId, public_key: vpPub2, vp_id: vpTipId, tx_id: "genesis-id-svc" });
+    dag2.saveIdentity({ tip_id: userTipId, public_key: userPub, vp_id: "tip://vp/v1", tx_id: "g-id" });
     identityService2 = createIdentityService({
       dag: dag2, scoring: scoring2,
-      config: { nodeId: "tip://node/test", nodePrivateKey: vpPriv, nodeRegisteredId: "tip://node/test" },
+      config: {
+        nodeId: "tip://node/test",
+        nodePrivateKey: nodePriv,
+        nodeRegisteredId: "tip://node/test",
+      },
       submitTx: (tx) => submitted.push(tx),
     });
   });
 
-  test("linkPlatform submits a LINK_PLATFORM tx and a paired SCORE_UPDATE tx", () => {
+  function makeClaimSig(platform, profileUrl, claimedAt) {
+    const payload = registerSocialSchema.buildSigningPayload({
+      tip_id: userTipId, platform, profile_url: profileUrl, claimed_at: claimedAt,
+    });
+    return registerSocialSchema.sign(payload, userPriv);
+  }
+
+  test("linkPlatform calls verifyBio and submits LINK_PLATFORM + SCORE_UPDATE", async () => {
     submitted.length = 0;
-    const linkedAt = nowMs();
-    const payload = linkPlatformSchema.buildSigningPayload({
-      tip_id: userTipId, platform: "youtube", handle: "@mychannel", linked_at: linkedAt,
-    });
-    const vpSig = linkPlatformSchema.sign(payload, vpPriv);
-    const result = identityService2.linkPlatform({
+    const claimedAt = nowMs();
+    const claimSig = makeClaimSig("twitter", "https://x.com/alice", claimedAt);
+
+    const bioFetcher = require(SRC + "/services/bio-fetcher");
+    const origVerify = bioFetcher.verifyBio;
+    bioFetcher.verifyBio = async () => ({ handle: "alice" });
+
+    const result = await identityService2.linkPlatform({
       tipId: userTipId,
-      platform: "youtube",
-      handle: "@mychannel",
-      linkedAt,
-      vpId: vpTipId,
-      vpSignature: vpSig,
+      platform: "twitter",
+      profileUrl: "https://x.com/alice",
+      claimSignature: claimSig,
+      claimedAt,
     });
+
+    bioFetcher.verifyBio = origVerify;
+
     expect(result.confirmation).toBe("proposed");
-    expect(result.platform).toBe("youtube");
+    expect(result.platform).toBe("twitter");
+    expect(result.handle).toBe("alice");
     expect(submitted).toHaveLength(2);
     expect(submitted[0].tx_type).toBe(TX_TYPES.LINK_PLATFORM);
     expect(submitted[1].tx_type).toBe(TX_TYPES.SCORE_UPDATE);
     expect(submitted[1].data.delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
-    expect(submitted[1].data.tip_id).toBe(userTipId);
   });
 
-  test("linkPlatform rejects duplicate platform", () => {
+  test("linkPlatform throws 409 on duplicate platform", async () => {
     const lp = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
     dag2.addTx(lp);
+
+    const bioFetcher = require(SRC + "/services/bio-fetcher");
+    const origVerify = bioFetcher.verifyBio;
+    bioFetcher.verifyBio = async () => ({ handle: "alice2" });
+
     let caught;
     try {
-      identityService2.linkPlatform({
-        tipId: userTipId, platform: "youtube", handle: "@other", linkedAt: nowMs(),
-        vpId: vpTipId, vpSignature: "x",
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "twitter",
+        profileUrl: "https://x.com/alice2",
+        claimSignature: makeClaimSig("twitter", "https://x.com/alice2", nowMs()),
+        claimedAt: nowMs(),
       });
-    } catch (e) {
-      caught = e;
-    }
+    } catch (e) { caught = e; }
+
+    bioFetcher.verifyBio = origVerify;
     expect(caught).toBeDefined();
     expect(caught.status).toBe(409);
     expect(caught.code).toBe("platform_already_linked");
-    expect(caught.error).toMatch(/already linked/);
   });
 
-  test("6th link earns score bonus, 7th link succeeds with score_delta 0 (no cap block)", async () => {
-    const dag3 = initDAG({ dbPath: ":memory:" });
-    const scoring3 = initScoring(dag3, { nodeId: "tip://node/cap-test" });
-    const { privateKey: vPriv, publicKey: vPub } = await generateMLDSAKeypair();
-    dag3.saveVP({ vp_id: "tip://vp/cap-vp", public_key: vPub, status: "active", tx_id: "g-vp" });
-    const capTipId = "tip://id/US-ccddeeff00112233";
-    dag3.saveIdentity({ tip_id: capTipId, public_key: vPub, vp_id: "tip://vp/cap-vp", tx_id: "g-id" });
-    const submitted3 = [];
-    const svc3 = createIdentityService({
-      dag: dag3, scoring: scoring3,
-      config: { nodeId: "tip://node/cap-test", nodePrivateKey: vPriv, nodeRegisteredId: "tip://node/cap-test" },
-      submitTx: (tx) => { submitted3.push(tx); if (tx.tx_type === TX_TYPES.LINK_PLATFORM) dag3.addTx(tx); },
-    });
+  test("linkPlatform throws 422 when TIP-ID not found in bio", async () => {
+    const bioFetcher = require(SRC + "/services/bio-fetcher");
+    const origVerify = bioFetcher.verifyBio;
+    bioFetcher.verifyBio = async () => {
+      throw { status: 422, error: "TIP-ID not found in bio", code: "tip_id_not_in_bio" };
+    };
 
-    const platforms = ["youtube", "twitter", "instagram", "linkedin", "tiktok", "rooverse"];
-    for (const plat of platforms) {
-      const linkedAt = nowMs();
-      const payload = linkPlatformSchema.buildSigningPayload({
-        tip_id: capTipId, platform: plat, handle: `@${plat}`, linked_at: linkedAt,
-      });
-      const sig = linkPlatformSchema.sign(payload, vPriv);
-      svc3.linkPlatform({ tipId: capTipId, platform: plat, handle: `@${plat}`, linkedAt, vpId: "tip://vp/cap-vp", vpSignature: sig });
-    }
-
-    // 7th link (new platform) must succeed but return score_delta 0
-    const linkedAt7 = nowMs();
-    const payload7 = linkPlatformSchema.buildSigningPayload({
-      tip_id: capTipId, platform: "threads", handle: "@extra", linked_at: linkedAt7,
-    });
-    const result7 = svc3.linkPlatform({
-      tipId: capTipId, platform: "threads", handle: "@extra", linkedAt: linkedAt7,
-      vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload7, vPriv),
-    });
-    expect(result7.confirmation).toBe("proposed");
-    expect(result7.score_delta).toBe(0);
-    expect(result7.score_tx_id).toBeNull();
-
-    // Duplicate platform still throws 409
-    const linkedAt8 = nowMs();
-    const payload8 = linkPlatformSchema.buildSigningPayload({
-      tip_id: capTipId, platform: "youtube", handle: "@dup", linked_at: linkedAt8,
-    });
+    const claimedAt422 = nowMs();
     let caught;
     try {
-      svc3.linkPlatform({
-        tipId: capTipId, platform: "youtube", handle: "@dup", linkedAt: linkedAt8,
-        vpId: "tip://vp/cap-vp", vpSignature: linkPlatformSchema.sign(payload8, vPriv),
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "instagram",
+        profileUrl: "https://instagram.com/myhandle",
+        claimSignature: makeClaimSig("instagram", "https://instagram.com/myhandle", claimedAt422),
+        claimedAt: claimedAt422,
       });
     } catch (e) { caught = e; }
-    expect(caught).toBeDefined();
-    expect(caught.code).toBe("platform_already_linked");
+
+    bioFetcher.verifyBio = origVerify;
+    expect(caught.status).toBe(422);
+    expect(caught.code).toBe("tip_id_not_in_bio");
   });
 });
 

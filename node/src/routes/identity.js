@@ -86,11 +86,10 @@ function createRouter({ identityService, profileService, keyService }) {
     const tipId = decodeURIComponent(req.params.tipId);
     const result = await identityService.linkPlatform({
       tipId,
-      platform:    req.body.platform,
-      handle:      req.body.handle,
-      linkedAt:    req.body.linked_at,
-      vpId:        req.body.vp_id,
-      vpSignature: req.body.vp_signature,
+      platform:        req.body.platform,
+      profileUrl:      req.body.profile_url,
+      claimSignature:  req.body.claim_signature,
+      claimedAt:       req.body.claimed_at,
     });
     res.status(202).json(result);
   }));
