@@ -7,6 +7,7 @@ const SRC    = path.resolve(__dirname, "../src");
 const { initCrypto, generateMLDSAKeypair } = require(SHARED + "/crypto");
 const { TX_TYPES } = require(SHARED + "/constants");
 const linkPlatformSchema = require(SRC + "/schemas/link-platform");
+const registerSocialSchema = require(SRC + "/schemas/register-social");
 const { validateTransaction } = require(SRC + "/validators/tx-validator");
 const { initDAG } = require(SRC + "/dag");
 const { withTxId } = require(SRC + "/services/helpers");
@@ -80,6 +81,42 @@ describe("link-platform schema", () => {
     const sig = linkPlatformSchema.sign(payload, privateKey);
     expect(linkPlatformSchema.verifySignature(payload, sig, publicKey)).toBe(true);
     expect(linkPlatformSchema.verifySignature(payload, sig, publicKey.slice(0, -4) + "0000")).toBe(false);
+  });
+});
+
+describe("register-social schema", () => {
+  test("buildSigningPayload produces 4 canonical fields alphabetically", () => {
+    const payload = registerSocialSchema.buildSigningPayload({
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      claimed_at: 1748000000000,
+    });
+    expect(Object.keys(payload)).toEqual(["claimed_at", "platform", "profile_url", "tip_id"]);
+  });
+
+  test("buildSigningPayload throws on missing tip_id", () => {
+    expect(() => registerSocialSchema.buildSigningPayload({
+      platform: "twitter", profile_url: "https://x.com/alice", claimed_at: 1748000000000,
+    })).toThrow();
+  });
+
+  test("buildSigningPayload throws on missing profile_url", () => {
+    expect(() => registerSocialSchema.buildSigningPayload({
+      tip_id: "tip://id/US-aabbccdd11223344", platform: "twitter", claimed_at: 1748000000000,
+    })).toThrow();
+  });
+
+  test("sign + verifySignature round-trip", async () => {
+    const { privateKey, publicKey } = await generateMLDSAKeypair();
+    const payload = registerSocialSchema.buildSigningPayload({
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      claimed_at: 1748000000000,
+    });
+    const sig = registerSocialSchema.sign(payload, privateKey);
+    expect(registerSocialSchema.verifySignature(payload, sig, publicKey)).toBe(true);
   });
 });
 
