@@ -36,7 +36,8 @@ const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-a
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
-const { verifyTxSignature: unifiedVerifyTxSignature } = require("../schemas/_common");
+const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
+const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
@@ -824,15 +825,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
 
       // ── Domain binding (org-only) ────────────────────────────────────
-      // BIND_DOMAIN is node-attested. GH #51: the node's attestation
-      // lives at tx.signature (verified by the unified dispatcher).
-      // The embedded user claim sig stays on tx.data.claim_signature
-      // (attestation by a different actor, per SIGNATURES.md). Apply
-      // the canonical row to domain_bindings; commit-handler is the
-      // sole writer so the table stays deterministic and participates
-      // in state_merkle_root. The off-chain `evidence` blob is NOT
-      // persisted on the binding row — it lives on tx.data for audit
-      // replay only.
+      // BIND_DOMAIN is node-attested. The node's attestation lives at
+      // tx.signature (verified by the unified dispatcher). The user's
+      // prior REGISTER_DOMAIN claim sig rides as a cosignature on
+      // tx.data.cosignatures (verified by bind-domain schema verifyTx).
+      // Apply the canonical row to domain_bindings; commit-handler is
+      // the sole writer so the table stays deterministic and
+      // participates in state_merkle_root. The off-chain `evidence`
+      // blob is NOT persisted on the binding row — it lives on tx.data
+      // for audit replay only.
       case TX_TYPES.BIND_DOMAIN:
         if (d.domain && d.tip_id) {
           // expires_at + consecutive_failures are v2 renewal prep slots
@@ -842,6 +843,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           const verifiedMs = d.verified_at;
           const expiresAt = Number.isFinite(verifiedMs)
             ? verifiedMs + DOMAIN_HEALTHY_EXPIRY_MS
+            : null;
+          // Extract the user's claim sig from the cosignatures entry
+          // (signer_kind=subject, signer_ref=tip_id). Stored verbatim on
+          // the derived row so reverse-lookup callers get the same flat
+          // shape as before.
+          const claimCosig = Array.isArray(d.cosignatures)
+            ? d.cosignatures.find(c => c && c.signer_kind === "subject" && c.signer_ref === d.tip_id)
             : null;
           dag.saveDomainBinding({
             domain: d.domain,
@@ -853,7 +861,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             expires_at: expiresAt,
             consecutive_failures: 0,
             node_id: d.node_id,
-            claim_signature: d.claim_signature,
+            claim_signature: claimCosig ? claimCosig.signature : null,
             binding_signature: tx.signature,
             tx_id: tx.tx_id,
           });
@@ -1077,20 +1085,33 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // wall-clock that's STILL deterministic across nodes via BFT-Time
       // consensus. Falls back to tx.timestamp if certTimestamp wasn't
       // plumbed (test/legacy paths).
-      case TX_TYPES.COMMITTEE_ROTATION:
+      case TX_TYPES.COMMITTEE_ROTATION: {
+        // Split tx.data.cosignatures back into the parallel-array storage
+        // shape (committee_history columns). Sort order on tx.data is
+        // signer_ref ASC; preserve it here so the stored rows match.
+        const cosigs = Array.isArray(d.cosignatures) ? d.cosignatures : [];
+        const signer_node_ids = [];
+        const signatures = [];
+        for (const c of cosigs) {
+          if (c && c.signer_kind === "node" && typeof c.signer_ref === "string" && typeof c.signature === "string") {
+            signer_node_ids.push(c.signer_ref);
+            signatures.push(c.signature);
+          }
+        }
         dag.saveCommitteeRotation({
           rotation_number: d.rotation_number,
           effective_round: d.effective_round,
           committee: d.new_committee,
           prev_rotation: d.rotation_number - 1,
-          signer_node_ids: d.signer_node_ids || [],
-          signatures: d.signatures || [],
+          signer_node_ids,
+          signatures,
           payload_hash: d.payload_hash,
           committed_at: _committedCertTimestamp > 0
             ? _committedCertTimestamp
             : tx.timestamp,
         });
         break;
+      }
 
       // ── No additional derived state needed ──
       case TX_TYPES.JURY_SUMMONS:
@@ -1180,38 +1201,38 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * Two tx types diverge from the unified single-signature model:
    *
    *   - COMMITTEE_ROTATION is structurally aggregate-signed. The 2f+1
-   *     previous-committee sigs over `data.payload_hash` live in
-   *     `data.signatures[]`, parallel to `data.signer_node_ids[]`. The
-   *     full cryptographic verification (each sig valid, signer is in
-   *     previous committee, quorum reached) runs in
-   *     `rules.canCommitteeRotation` from `_statefulCheck` — that
-   *     layer has the inputs the unified dispatcher doesn't:
+   *     previous-committee sigs over `data.payload_hash` ride as
+   *     cosignatures on `tx.data.cosignatures` (signer_kind=node,
+   *     signer_ref=node_id). Full cryptographic verification (each sig
+   *     valid, signer is in previous committee, quorum reached) runs in
+   *     `rules.canCommitteeRotation` from `_statefulCheck` — that layer
+   *     has the inputs the generic cosignatures dispatcher doesn't:
    *     previous-committee composition from `committee_history`.
    *     `tx.signature` is NOT used because:
    *       (a) `tx_id` must be byte-identical across all honest
-   *           submitters (test #81); placing a submitter-derived sig
-   *           on the envelope would break that contract under
-   *           multi-aggregator submission;
-   *       (b) the proposer's signature already lives at
-   *           `data.signatures[idx_of_proposer]` — adding it to
-   *           `tx.signature` duplicates state.
-   *     So this case gates only on `signatures[].length > 0` here;
-   *     the real check is in `_statefulCheck`.
+   *           submitters; placing a submitter-derived sig on the
+   *           envelope would break that contract under multi-aggregator
+   *           submission;
+   *       (b) the proposer's signature already lives in
+   *           `data.cosignatures` — adding it to `tx.signature`
+   *           duplicates state.
+   *     So this case gates only on `cosignatures.length > 0` here; the
+   *     real check is in `_statefulCheck`.
    *
-   *   - CONTENT_DISPUTED auto+manual carries an additional attestation
-   *     `data.escalation_signature` (the creator's proof that they
-   *     authorized an early manual escalation from a CONFIRMED
-   *     review). It's separate from `tx.signature` (the node's
-   *     envelope sig) because the actor is different — per
-   *     `SIGNATURES.md` "Attestations on data". Verified against
-   *     `escalated_by_tip_id`'s identity pubkey below.
+   *   - Cosignatures (tx.data.cosignatures[]) — additional signers
+   *     beyond `tx.signature`. The schema (module or registry entry)
+   *     declares the contract via `getCosignatureContract(tx)` and
+   *     verifyCosignatures from `_common` resolves each cosigner's key
+   *     via dag.getKeyValidAt at tx.timestamp. Used today by
+   *     BIND_DOMAIN (user's claim sig) and CONTENT_DISPUTED auto+manual
+   *     (creator's escalation authorisation).
    */
   function _verifyTxSignature(tx) {
     const tt = tx.tx_type;
     const d = tx.data || {};
 
     if (tt === TX_TYPES.COMMITTEE_ROTATION) {
-      return Array.isArray(d.signatures) && d.signatures.length > 0;
+      return Array.isArray(d.cosignatures) && d.cosignatures.length > 0;
     }
 
     try {
@@ -1222,20 +1243,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return false;
       }
 
-      // CONTENT_DISPUTED auto-mode with a user-attributed escalator —
-      // also verify the creator's attestation on data. System
-      // auto-escalations (no escalated_by_tip_id) skip this branch.
-      if (tt === TX_TYPES.CONTENT_DISPUTED && d.auto && d.escalated_by_tip_id) {
-        const escalator = dag.getIdentity(d.escalated_by_tip_id);
-        if (!escalator || !d.escalation_signature) return false;
-        const sigBody = {
-          author_tip_id: d.escalated_by_tip_id,
-          ctid: d.ctid,
-          review_id: d.source_review_id,
-        };
-        if (!verifyBodySignature(sigBody, d.escalation_signature, escalator.public_key,
-          ["author_tip_id", "ctid", "review_id"])) {
-          return false;
+      // Cosignatures: schema declares the contract (per-tx_type, may be
+      // empty). Dispatcher resolves keys and verifies each entry.
+      const cosigSource = schema && typeof schema.getCosignatureContract === "function"
+        ? schema
+        : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
+            ? TX_SIGNATURE_REGISTRY[tt]
+            : null);
+      if (cosigSource) {
+        const contract = cosigSource.getCosignatureContract(tx) || [];
+        if (contract.length > 0) {
+          const cosigResult = verifyCosignatures(tx, contract, dag);
+          if (!cosigResult.ok) {
+            log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
+            return false;
+          }
         }
       }
 

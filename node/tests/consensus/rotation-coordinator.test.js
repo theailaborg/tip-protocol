@@ -123,8 +123,10 @@ describe("#68 rotation coordinator", () => {
     });
 
     expect(submitted).toHaveLength(1);
-    expect(submitted[0].data.signer_node_ids).toEqual([id.node_id]);
-    expect(submitted[0].data.signatures).toHaveLength(1);
+    expect(submitted[0].data.cosignatures).toHaveLength(1);
+    expect(submitted[0].data.cosignatures[0].signer_kind).toBe("node");
+    expect(submitted[0].data.cosignatures[0].signer_ref).toBe(id.node_id);
+    expect(typeof submitted[0].data.cosignatures[0].signature).toBe("string");
   });
 
   test("3-node committee: aggregator collects 2 sigs (quorum=2) before submitting", () => {
@@ -172,7 +174,8 @@ describe("#68 rotation coordinator", () => {
 
     // Now sigs = {A, B} = 2 ≥ quorum → A (proposer) submits.
     expect(submitted).toHaveLength(1);
-    expect(submitted[0].data.signer_node_ids.sort()).toEqual([ids[0].node_id, ids[1].node_id].sort());
+    expect(submitted[0].data.cosignatures.map(c => c.signer_ref).sort())
+      .toEqual([ids[0].node_id, ids[1].node_id].sort());
   });
 
   test("non-proposer prev-committee member with quorum sigs ALSO submits (multi-aggregator)", () => {
@@ -236,7 +239,7 @@ describe("#68 rotation coordinator", () => {
     coord.handleIncoming(cBuf, "peer-c");
 
     expect(submitted).toHaveLength(1);
-    expect(submitted[0].data.signer_node_ids.sort()).toEqual(
+    expect(submitted[0].data.cosignatures.map(c => c.signer_ref).sort()).toEqual(
       [ids[0].node_id, ids[1].node_id].sort()
     );
   });

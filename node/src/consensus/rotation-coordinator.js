@@ -59,6 +59,13 @@ const log = getLogger("tip.rotation-coord");
  * between the coordinator's normal aggregation path and bullshark's legacy
  * single-sig fallback path (used by tests/legacy mode without a coordinator).
  *
+ * Signatures ride as `tx.data.cosignatures = [{signer_kind:"node",
+ * signer_ref:<node_id>, signature:<hex>}, ...]`, sorted by signer_ref ASC.
+ * Each entry signs the chain-of-trust message `rotation:<payload_hash>:<node_id>`
+ * with the signer's previous-committee node key. tx.signature stays null
+ * (multi-aggregator submission requires byte-identical tx_id across all
+ * honest submitters; an envelope sig would break that).
+ *
  * @param {object} dag      — read latest committed cert.timestamp (BFT-Time
  *                            anchor for the rotation tx timestamp)
  * @param {object} proposal — { rotation_number, effective_round, new_committee, payload_hash }
@@ -67,13 +74,21 @@ const log = getLogger("tip.rotation-coord");
  * @returns {object} tx with tx_id computed
  */
 function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
+  const cosignatures = [];
+  for (let i = 0; i < signer_node_ids.length; i++) {
+    cosignatures.push({
+      signer_kind: "node",
+      signer_ref:  signer_node_ids[i],
+      signature:   signatures[i],
+    });
+  }
+  cosignatures.sort((a, b) => a.signer_ref < b.signer_ref ? -1 : a.signer_ref > b.signer_ref ? 1 : 0);
   const data = {
     rotation_number: proposal.rotation_number,
     effective_round: proposal.effective_round,
     new_committee: proposal.new_committee,
     payload_hash: proposal.payload_hash,
-    signer_node_ids,
-    signatures,
+    cosignatures,
   };
   // Deterministic outer envelope — every honest node building a rotation
   // tx for the same (rotation_number, effective_round, committee, sigs)

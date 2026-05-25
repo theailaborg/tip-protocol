@@ -444,7 +444,7 @@ function canBindDomain(dag, { tip_id, domain }) {
 // so this module stays free of crypto-library import side effects (matches
 // canRevealVote's pattern of injected shake256). All checks are deterministic
 // over DAG state — same accept/reject decision on every node.
-function canCommitteeRotation(dag, { rotation_number, effective_round, new_committee, payload_hash, signer_node_ids, signatures }, opts = {}) {
+function canCommitteeRotation(dag, { rotation_number, effective_round, new_committee, payload_hash, cosignatures }, opts = {}) {
   const { shake256, canonicalJson, mldsaVerify } = opts;
 
   // Structural — invariants the wire schema doesn't enforce.
@@ -499,14 +499,13 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
     return fail(400, "payload_hash does not match canonical(rotation_number, effective_round, new_committee)");
   }
 
-  if (!Array.isArray(signer_node_ids) || !Array.isArray(signatures)
-    || signer_node_ids.length === 0 || signer_node_ids.length !== signatures.length) {
-    return fail(400, "signer_node_ids and signatures must be parallel non-empty arrays");
+  if (!Array.isArray(cosignatures) || cosignatures.length === 0) {
+    return fail(400, "cosignatures must be a non-empty array");
   }
 
   // Pubkey lookup from previous rotation's committee — NOT from peer-
   // provided nodes table. This is what closes the chicken-and-egg in
-  // fresh-joiner verification (#34).
+  // fresh-joiner verification.
   const prevPubkeys = Object.create(null);
   for (const m of prev.committee) {
     if (m && m.node_id && m.public_key) prevPubkeys[m.node_id] = m.public_key;
@@ -514,14 +513,15 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
 
   let validSigs = 0;
   const seen = new Set();
-  for (let i = 0; i < signer_node_ids.length; i++) {
-    const signerId = signer_node_ids[i];
+  for (const c of cosignatures) {
+    if (!c || c.signer_kind !== "node" || typeof c.signer_ref !== "string" || typeof c.signature !== "string") continue;
+    const signerId = c.signer_ref;
     if (seen.has(signerId)) continue;          // duplicate signers count once
     seen.add(signerId);
     const pubkey = prevPubkeys[signerId];
     if (!pubkey) continue;                     // signer outside previous committee
     const message = `rotation:${payload_hash}:${signerId}`;
-    if (mldsaVerify(message, signatures[i], pubkey)) {
+    if (mldsaVerify(message, c.signature, pubkey)) {
       validSigs++;
     }
   }

@@ -7,24 +7,24 @@
  *   - The USER signs a claim {claimed_at, domain, method, tip_id}
  *     (schemas/register-domain.js) — proves they own the TIP-ID.
  *   - The NODE independently verifies DNS / well-known proof, then signs
- *     {binding_state, claim_signature, claimed_at, domain, method,
- *      node_id, tip_id, verified_at} (this module) — proves a node
- *     observed proof at time T.
- *   - The BIND_DOMAIN tx carries BOTH signatures. Replicating nodes
- *     verify both at commit time but do NOT re-perform DNS / HTTP
- *     (non-deterministic across nodes / time). Periodic re-verification
- *     lands as its own consensus-emitted tx in a follow-up.
+ *     {binding_state, claimed_at, domain, method, node_id, tip_id,
+ *      verified_at} (this module) — proves a node observed proof at time T.
+ *   - The user's claim sig rides on the BIND_DOMAIN tx as a cosignature
+ *     entry in `tx.data.cosignatures` (signer_kind="subject",
+ *     signer_ref=tip_id). Replicating nodes verify both the node's
+ *     primary tx.signature and the user's cosignature at commit time;
+ *     they do NOT re-perform DNS / HTTP (non-deterministic). Periodic
+ *     re-verification lands as its own consensus-emitted tx.
  *
- * Quick summary of the 8 signed fields (alphabetical):
+ * Quick summary of the 7 signed fields (alphabetical):
  *
  *   binding_state    string,  required (verified | revoked)
- *   claim_signature  string,  required (user's ML-DSA hex over the register-domain payload)
- *   claimed_at       string,  required (ISO8601 — from the original claim)
+ *   claimed_at       number,  required (epoch ms — from the original claim)
  *   domain           string,  required (lowercased)
  *   method           string,  required (http | dns | auto)
  *   node_id          string,  required (verifying node's TIP node_id)
  *   tip_id           string,  required (claimant)
- *   verified_at      string,  required (ISO8601 — when this node observed proof)
+ *   verified_at      number,  required (epoch ms — when this node observed proof)
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -33,7 +33,7 @@
 "use strict";
 
 const {
-  signPayload, verifyPayload, schemaError, canonicalJson,
+  signPayload, verifyPayload, schemaError, canonicalJson, verifyCosignatures,
 } = require("./_common");
 const {
   TX_TYPES, TIP_ID_TYPES,
@@ -62,8 +62,10 @@ const BIND_DOMAIN_STATES = Object.freeze([
 ]);
 
 /**
- * Build the canonical 8-field signed payload for a BIND_DOMAIN tx. All
- * fields always present, reject-on-extra: picks exactly these 8 keys.
+ * Build the canonical 7-field signed payload for a BIND_DOMAIN tx. All
+ * fields always present, reject-on-extra: picks exactly these 7 keys.
+ * The user's claim signature is NOT in the canonical body — it rides as
+ * a cosignature on tx.data and is verified independently.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
@@ -84,9 +86,6 @@ function buildSigningPayload(input) {
   if (!isValidMs(input.claimed_at)) {
     throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
-  if (typeof input.claim_signature !== "string" || input.claim_signature.length === 0) {
-    throw schemaError(400, "claim_signature is required", "claim_signature_required");
-  }
   if (!DOMAIN_VERIFICATION_METHOD_VALUES.includes(input.method)) {
     throw schemaError(400, "method must be http | dns | auto", "method_invalid");
   }
@@ -100,7 +99,6 @@ function buildSigningPayload(input) {
 
   return {
     binding_state: input.binding_state,
-    claim_signature: input.claim_signature,
     claimed_at: input.claimed_at,
     domain: input.domain,
     method: input.method,
@@ -119,16 +117,14 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 }
 
 /**
- * State-level verification at consensus replay. GH #51: the node's
- * attestation is verified by the unified dispatcher (tx.signature). This
- * function only enforces the state-machine invariants the dispatcher
- * doesn't know about:
+ * State-level verification at consensus replay. The node's attestation
+ * is verified by the unified dispatcher (tx.signature) and the user's
+ * claim cosignature is verified by the cosignatures dispatcher (using
+ * `getCosignatureContract` below). This function only enforces the
+ * state-machine invariants:
  *
  *   1. Emitting node is registered + active
  *   2. Claimant TIP-ID is registered, not revoked, and is an organization
- *   3. User's claim_signature (attestation by a different actor, stays
- *      in tx.data per "Attestations on data") verifies over the
- *      embedded register-domain sub-payload
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -161,20 +157,37 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 403, error: "Claimant TIP-ID is not an organization", code: "tip_id_not_authorised" };
   }
 
-  // The original user-signed claim is bound into the BIND_DOMAIN tx so
-  // replay-time verification re-establishes the full trust chain (user
-  // → node) without needing the off-chain register call to still exist.
-  const claimPayload = registerDomainSchema.buildSigningPayload({
-    claimed_at: d.claimed_at,
-    domain: d.domain,
-    method: d.method,
-    tip_id: d.tip_id,
-  });
-  if (!registerDomainSchema.verifySignature(claimPayload, d.claim_signature, identity.public_key)) {
-    return { ok: false, status: 403, error: "User claim signature verification failed", code: "claim_signature_invalid" };
+  // Cosignature verification runs in commit-handler via the cosignatures
+  // dispatcher (calls getCosignatureContract below). Verify it here too
+  // so the schema-level verifyTx remains a complete state check (used by
+  // API-time pre-submission validation in domain-service).
+  const cosigResult = verifyCosignatures(tx, getCosignatureContract(tx), dag);
+  if (!cosigResult.ok) {
+    return { ok: false, status: 403, error: cosigResult.error, code: cosigResult.code };
   }
 
   return { ok: true };
+}
+
+/**
+ * Cosignature contract — the user's prior REGISTER_DOMAIN claim sig
+ * carried forward on tx.data.cosignatures. Signer is the claimant
+ * (resolved via dag, time-anchored at tx.timestamp), signing the
+ * canonical REGISTER_DOMAIN body (4 fields).
+ */
+function getCosignatureContract(tx) {
+  const d = tx?.data || {};
+  if (!d.tip_id) return [];
+  return [{
+    kind: SIGNED_BY_KIND.SUBJECT,
+    ref:  d.tip_id,
+    body: registerDomainSchema.buildSigningPayload({
+      claimed_at: d.claimed_at,
+      domain:     d.domain,
+      method:     d.method,
+      tip_id:     d.tip_id,
+    }),
+  }];
 }
 
 // ─── UNBIND_DOMAIN ──────────────────────────────────────────────────────────
@@ -276,4 +289,6 @@ module.exports = {
   // GH #51 — unified signature contract
   SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
   SIGNED_BY,
+  // Cosignatures contract (user's claim sig)
+  getCosignatureContract,
 };

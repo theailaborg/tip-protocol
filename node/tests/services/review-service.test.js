@@ -523,7 +523,14 @@ describe("review-service.dispute", () => {
     expect(tx.data.source_review_id).toBe("rv_esc1");
     expect(tx.data.suggested_origin).toBe("AG");
     expect(tx.data.escalated_by_tip_id).toBe(CREATOR);
-    expect(tx.data.escalation_signature).toBe(signature);
+    expect(tx.data.escalation_signature).toBeUndefined();
+    expect(Array.isArray(tx.data.cosignatures)).toBe(true);
+    expect(tx.data.cosignatures).toHaveLength(1);
+    expect(tx.data.cosignatures[0]).toEqual({
+      signer_kind: "subject",
+      signer_ref:  CREATOR,
+      signature,
+    });
     expect(tx.data.reason).toBe("creator_disagrees_with_reviewer");
     expect(tx.data.declared_origin).toBe("OH");
     expect(tx.data.claimed_origin).toBe("AG");

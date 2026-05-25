@@ -117,8 +117,11 @@ function makeRotationTx(rotation_number, effective_round, signers = []) {
         rotation_number, effective_round,
         committee: [{ node_id: SELF_ID, public_key: "ab".repeat(32) }],
       })),
-      signer_node_ids: signers,
-      signatures: signers.map(() => "00".repeat(64)),
+      cosignatures: signers.map(id => ({
+        signer_kind: "node",
+        signer_ref:  id,
+        signature:   "00".repeat(64),
+      })),
     },
     signature: "00".repeat(64),
     timestamp: 1777896000000,
@@ -230,11 +233,14 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
       rotation_number: 1, effective_round: 100, committee: new_committee,
     }));
     const buildTx = (timestamp) => {
-      const signer_ids = prevCommittee.map(m => m.node_id);
-      const signatures = signer_ids.map(id => mldsaSign(`rotation:${payload_hash}:${id}`, prevPriv[id]));
+      const cosignatures = prevCommittee.map(m => ({
+        signer_kind: "node",
+        signer_ref:  m.node_id,
+        signature:   mldsaSign(`rotation:${payload_hash}:${m.node_id}`, prevPriv[m.node_id]),
+      }));
       const data = {
         rotation_number: 1, effective_round: 100, new_committee, payload_hash,
-        signer_node_ids: signer_ids, signatures,
+        cosignatures,
       };
       const tx = {
         tx_type: TX_TYPES.COMMITTEE_ROTATION,

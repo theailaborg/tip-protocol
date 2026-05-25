@@ -562,9 +562,12 @@ describe("canCommitteeRotation", () => {
       effective_round: rec.effective_round,
       committee: rec.new_committee,
     }));
-    const signers = committee.map(m => m.node_id);
-    const signatures = signers.map(id => mldsaSign(`rotation:${payload_hash}:${id}`, keys[id]));
-    return { ...rec, payload_hash, signer_node_ids: signers, signatures };
+    const cosignatures = committee.map(m => ({
+      signer_kind: "node",
+      signer_ref:  m.node_id,
+      signature:   mldsaSign(`rotation:${payload_hash}:${m.node_id}`, keys[m.node_id]),
+    }));
+    return { ...rec, payload_hash, cosignatures };
   }
 
   test("valid rotation 1 with full quorum sigs → valid", () => {
@@ -605,7 +608,7 @@ describe("canCommitteeRotation", () => {
       const r = rules.canCommitteeRotation(fx.dag, {
         rotation_number: 1, effective_round: 100,
         new_committee: [{ node_id: "tip://node/x" }],
-        payload_hash: "abc", signer_node_ids: [], signatures: [],
+        payload_hash: "abc", cosignatures: [],
       }, cryptoOpts);
       expect(r.valid).toBe(false);
       expect(r.error.status).toBe(400);
@@ -624,8 +627,8 @@ describe("canCommitteeRotation", () => {
       const r = rules.canCommitteeRotation(fx.dag, {
         rotation_number: 1, effective_round: 100,
         new_committee: fx.committee.slice(0, 3),
-        // No payload_hash / signers / sigs — would fail crypto check
-        payload_hash: "stub", signer_node_ids: [], signatures: [],
+        // No payload_hash / cosignatures — would fail crypto check
+        payload_hash: "stub", cosignatures: [],
       }, /* no crypto opts */);
       expect(r.valid).toBe(true);
     } finally {
@@ -644,9 +647,12 @@ describe("canCommitteeRotation", () => {
         effective_round: rec.effective_round,
         committee: rec.new_committee,
       }));
-      const signers = committee.slice(0, signerCount).map(m => m.node_id);
-      const signatures = signers.map(id => mldsaSign(`rotation:${payload_hash}:${id}`, keys[id]));
-      return { ...rec, payload_hash, signer_node_ids: signers, signatures };
+      const cosignatures = committee.slice(0, signerCount).map(m => ({
+        signer_kind: "node",
+        signer_ref:  m.node_id,
+        signature:   mldsaSign(`rotation:${payload_hash}:${m.node_id}`, keys[m.node_id]),
+      }));
+      return { ...rec, payload_hash, cosignatures };
     }
 
     test("prev size=2: 1 sig REJECTED (was accepted under 2f+1)", () => {

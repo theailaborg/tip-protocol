@@ -303,12 +303,17 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         disputer_tip_id: review.assigned_reviewer,
         source_review_id: review.review_id,
         suggested_origin: review.suggested_origin || null,
-        // Audit fields — proves the creator authorised this manual
-        // fast-forward (vs. h=R+24 system auto-escalation). consensus
-        // replay re-verifies escalation_signature against
-        // escalated_by_tip_id's public key (see commit-handler).
+        // Discriminator + cosignature carrying the creator's
+        // authorisation of this manual fast-forward (vs. h=R+24 system
+        // auto-escalation, which has no cosignature). Consensus replay
+        // resolves the creator's key via dag.getKeyValidAt and verifies
+        // the cosig over {author_tip_id, ctid, review_id}.
         escalated_by_tip_id: body.author_tip_id,
-        escalation_signature: body.signature,
+        cosignatures: [{
+          signer_kind: "subject",
+          signer_ref:  body.author_tip_id,
+          signature:   body.signature,
+        }],
         // Mirror the standard dispute fields so jury / dashboard
         // queries that read declared/claimed don't have to special-case.
         declared_origin: content.origin_code,
