@@ -386,6 +386,12 @@ function validateBusinessRules(tx, dag = null) {
       if (d.score_after !== undefined && (d.score_after < 0 || d.score_after > 1000)) {
         errors.push(`score_after must be 0–1000, got ${d.score_after}`);
       }
+      if (d.link_tx_id) {
+        const linkedTx = dag.getTx(d.link_tx_id);
+        if (!linkedTx) {
+          return { valid: false, errors: [`SCORE_UPDATE: linked LINK_PLATFORM tx not committed: ${d.link_tx_id}`] };
+        }
+      }
       break;
     }
 
@@ -482,20 +488,35 @@ function validateBusinessRules(tx, dag = null) {
     }
 
     case TX_TYPES.LINK_PLATFORM: {
-      if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
-        errors.push(`Invalid TIP-ID format: "${d.tip_id}"`);
+      if (typeof d.tip_id !== "string" || d.tip_id.length === 0) {
+        errors.push("LINK_PLATFORM: tip_id is required");
       }
-      if (d.platform !== undefined && (typeof d.platform !== "string" || d.platform.trim().length === 0)) {
-        errors.push("platform must be a non-empty string");
+      if (typeof d.platform !== "string" || d.platform.length === 0) {
+        errors.push("LINK_PLATFORM: platform is required");
+      } else if (d.platform.length > LINK_PLATFORM_MAX_LENGTH) {
+        errors.push(`LINK_PLATFORM: platform must be <= ${LINK_PLATFORM_MAX_LENGTH} chars`);
       }
-      if (d.platform !== undefined && typeof d.platform === "string" && d.platform.trim().length > LINK_PLATFORM_MAX_LENGTH) {
-        errors.push(`platform must be ${LINK_PLATFORM_MAX_LENGTH} characters or fewer`);
+      if (typeof d.profile_url !== "string" || !d.profile_url.startsWith("https://")) {
+        errors.push("LINK_PLATFORM: profile_url is required (https:// URL)");
       }
-      if (d.handle !== undefined && (typeof d.handle !== "string" || d.handle.trim().length === 0)) {
-        errors.push("handle must be a non-empty string");
+      if (typeof d.claim_signature !== "string" || d.claim_signature.length === 0) {
+        errors.push("LINK_PLATFORM: claim_signature is required");
       }
-      if (d.vp_id !== undefined && (typeof d.vp_id !== "string" || !d.vp_id.startsWith("tip://vp/"))) {
-        errors.push("vp_id must be a tip://vp/... string");
+      if (typeof d.node_id !== "string" || d.node_id.length === 0) {
+        errors.push("LINK_PLATFORM: node_id is required");
+      }
+      if (errors.length > 0) break;
+
+      const identity = dag.getIdentity(d.tip_id);
+      if (!identity) {
+        errors.push(`Cannot link platform: TIP-ID not found: ${d.tip_id}`);
+        break;
+      }
+
+      const existingLinks = dag.getTxsByTipId(d.tip_id)
+        .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+      if (existingLinks.some(t => t.data && t.data.platform === d.platform)) {
+        errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
       }
       break;
     }
@@ -681,18 +702,10 @@ function validateState(tx, dag) {
     }
 
     case TX_TYPES.LINK_PLATFORM: {
-      if (d.tip_id && !dag.getIdentity(d.tip_id)) {
-        errors.push(`Cannot link platform: TIP-ID not found: ${d.tip_id}`);
-      }
+      // TIP-ID existence and platform dedup are checked in validateBusinessRules.
+      // State layer only checks revocation (requires live DAG lookup).
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`TIP-ID is revoked: ${d.tip_id}`);
-      }
-      if (d.tip_id && dag.getTxsByTipId) {
-        const existing = dag.getTxsByTipId(d.tip_id)
-          .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-        if (d.platform && existing.some(t => t.data && t.data.platform === d.platform)) {
-          errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
-        }
       }
       break;
     }

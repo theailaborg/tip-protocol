@@ -9,6 +9,8 @@ const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
+const registerSocialSchema = require("../schemas/register-social");
+const bioFetcher = require("./bio-fetcher");
 const { schemaError, verifyPayload } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -409,14 +411,15 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  function linkPlatform({ tipId, platform, handle, linkedAt, vpId, vpSignature }) {
-    linkPlatformSchema.validateRequest(
-      { tip_id: tipId, platform, handle, vp_id: vpId, vp_signature: vpSignature },
-      { dag, urlTipId: tipId },
-    );
+  async function linkPlatform({ tipId, platform, profileUrl, claimSignature, claimedAt }) {
+    if (!tipId || !platform || !profileUrl || !claimSignature || !claimedAt) {
+      throw schemaError(400, "tipId, platform, profileUrl, claimSignature, claimedAt are required", "missing_fields");
+    }
 
-    const committed = dag.getTxsByTipId(tipId)
-      .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    const identity = dag.getIdentity(tipId);
+    if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
+
+    const committed = dag.getTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
     const pending = typeof dag.getMempoolTxsByTipId === "function"
       ? dag.getMempoolTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM)
       : [];
@@ -426,31 +429,47 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
     }
 
-    const scoreEligible = existing.length < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
-
-    const ts = linkedAt || nowMs();
-    const canonicalPayload = linkPlatformSchema.buildSigningPayload(
-      { tip_id: tipId, platform, handle, linked_at: ts },
-    );
-    const vp = linkPlatformSchema.resolveVP(vpId, dag);
-    if (!linkPlatformSchema.verifySignature(canonicalPayload, vpSignature, vp.public_key)) {
-      throw schemaError(403, "VP signature verification failed", "signature_invalid");
+    const claimPayload = registerSocialSchema.buildSigningPayload({
+      tip_id: tipId, platform, profile_url: profileUrl, claimed_at: claimedAt,
+    });
+    if (!registerSocialSchema.verifySignature(claimPayload, claimSignature, identity.public_key)) {
+      throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
     }
 
-    const linkTxBody = {
+    const { handle } = await bioFetcher.verifyBio({ tipId, profileUrl, platform });
+
+    const verifiedAt = nowMs();
+    const canonicalPayload = linkPlatformSchema.buildSigningPayload({
+      tip_id: tipId,
+      platform,
+      profile_url: profileUrl,
+      handle,
+      claimed_at: claimedAt,
+      verified_at: verifiedAt,
+      node_id: config.nodeRegisteredId || config.nodeId,
+      claim_signature: claimSignature,
+    });
+
+    const nodePrivKey = config.nodePrivateKey;
+    if (!nodePrivKey) throw schemaError(500, "Node private key not configured", "node_key_missing");
+    const nodeSig = linkPlatformSchema.sign(canonicalPayload, nodePrivKey);
+
+    const linkTx = withTxId({
       tx_type: TX_TYPES.LINK_PLATFORM,
-      timestamp: ts,
+      timestamp: verifiedAt,
+      signature: nodeSig,
       prev: dag.getRecentPrev(),
       data: {
         tip_id: tipId,
-        platform: canonicalPayload.platform,
-        handle: canonicalPayload.handle,
-        linked_at: canonicalPayload.linked_at,
-        vp_id: vpId,
-        vp_signature: vpSignature,
+        platform,
+        profile_url: profileUrl,
+        handle,
+        claimed_at: claimedAt,
+        verified_at: verifiedAt,
+        node_id: config.nodeRegisteredId || config.nodeId,
+        claim_signature: claimSignature,
       },
-    };
-    const linkTx = withTxId(linkTxBody);
+    });
 
     const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });
     if (!validation.valid) {
@@ -459,28 +478,32 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     submitTx(linkTx);
 
+    const scoreEligible = existing.length < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
     let scoreTxId = null;
     const scoreDelta = scoreEligible ? SOCIAL_LINK.SOCIAL_LINK_BONUS : 0;
+
     if (scoreEligible) {
       const scoreTx = scoring.buildScoreUpdateTx({
         tipId,
         delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
         reason: `Social account linked: ${platform}`,
         relatedTxId: linkTx.tx_id,
-        timestamp: ts,
+        timestamp: verifiedAt,
         getRecentPrev: () => dag.getRecentPrev(),
         config,
+        extraData: { link_tx_id: linkTx.tx_id },
       });
       submitTx(scoreTx);
       scoreTxId = scoreTx.tx_id;
     }
 
-    log.info(`Social account linked: ${tipId} → ${platform} (${handle})${scoreEligible ? "" : " [no score bonus — cap reached]"}`);
+    log.info(`Social account linked: ${tipId} -> ${platform} (${handle || "no-handle"})${scoreEligible ? "" : " [no bonus - cap reached]"}`);
     return {
       tip_id: tipId, platform, handle,
       tx_id: linkTx.tx_id, score_tx_id: scoreTxId,
       score_delta: scoreDelta,
-      linked_at: ts,
+      profile_url: profileUrl,
+      verified_at: verifiedAt,
       confirmation: "proposed",
     };
   }
