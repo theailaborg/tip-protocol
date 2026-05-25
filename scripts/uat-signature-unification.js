@@ -123,6 +123,21 @@ function assertUnifiedSig(label, tx) {
     expect(tx?.data?.[f] === undefined,
       `${label} — tx.data.${f} absent`, "");
   }
+  // Cosignatures normalisation — legacy named-secondary-signature fields
+  // must NOT appear on tx.data; the canonical shape is tx.data.cosignatures.
+  for (const f of ["claim_signature", "escalation_signature", "signer_node_ids"]) {
+    expect(tx?.data?.[f] === undefined,
+      `${label} — tx.data.${f} absent (cosignatures normalisation)`, "");
+  }
+  // When cosignatures IS present, every entry must have the canonical
+  // {signer_kind, signer_ref, signature} triplet.
+  if (Array.isArray(tx?.data?.cosignatures)) {
+    for (let i = 0; i < tx.data.cosignatures.length; i++) {
+      const c = tx.data.cosignatures[i];
+      expect(c && typeof c.signer_kind === "string" && typeof c.signer_ref === "string" && typeof c.signature === "string",
+        `${label} — cosignatures[${i}] has {signer_kind, signer_ref, signature}`, "");
+    }
+  }
 }
 
 const VP = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../genesis-data/backups/tip-vp-US-1d8e8ee431f715ec.tip.json"), "utf8"));

@@ -1085,20 +1085,33 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // wall-clock that's STILL deterministic across nodes via BFT-Time
       // consensus. Falls back to tx.timestamp if certTimestamp wasn't
       // plumbed (test/legacy paths).
-      case TX_TYPES.COMMITTEE_ROTATION:
+      case TX_TYPES.COMMITTEE_ROTATION: {
+        // Split tx.data.cosignatures back into the parallel-array storage
+        // shape (committee_history columns). Sort order on tx.data is
+        // signer_ref ASC; preserve it here so the stored rows match.
+        const cosigs = Array.isArray(d.cosignatures) ? d.cosignatures : [];
+        const signer_node_ids = [];
+        const signatures = [];
+        for (const c of cosigs) {
+          if (c && c.signer_kind === "node" && typeof c.signer_ref === "string" && typeof c.signature === "string") {
+            signer_node_ids.push(c.signer_ref);
+            signatures.push(c.signature);
+          }
+        }
         dag.saveCommitteeRotation({
           rotation_number: d.rotation_number,
           effective_round: d.effective_round,
           committee: d.new_committee,
           prev_rotation: d.rotation_number - 1,
-          signer_node_ids: d.signer_node_ids || [],
-          signatures: d.signatures || [],
+          signer_node_ids,
+          signatures,
           payload_hash: d.payload_hash,
           committed_at: _committedCertTimestamp > 0
             ? _committedCertTimestamp
             : tx.timestamp,
         });
         break;
+      }
 
       // ── No additional derived state needed ──
       case TX_TYPES.JURY_SUMMONS:
@@ -1188,23 +1201,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * Two tx types diverge from the unified single-signature model:
    *
    *   - COMMITTEE_ROTATION is structurally aggregate-signed. The 2f+1
-   *     previous-committee sigs over `data.payload_hash` live in
-   *     `data.signatures[]`, parallel to `data.signer_node_ids[]`. The
-   *     full cryptographic verification (each sig valid, signer is in
-   *     previous committee, quorum reached) runs in
-   *     `rules.canCommitteeRotation` from `_statefulCheck` — that
-   *     layer has the inputs the unified dispatcher doesn't:
+   *     previous-committee sigs over `data.payload_hash` ride as
+   *     cosignatures on `tx.data.cosignatures` (signer_kind=node,
+   *     signer_ref=node_id). Full cryptographic verification (each sig
+   *     valid, signer is in previous committee, quorum reached) runs in
+   *     `rules.canCommitteeRotation` from `_statefulCheck` — that layer
+   *     has the inputs the generic cosignatures dispatcher doesn't:
    *     previous-committee composition from `committee_history`.
    *     `tx.signature` is NOT used because:
    *       (a) `tx_id` must be byte-identical across all honest
-   *           submitters (test #81); placing a submitter-derived sig
-   *           on the envelope would break that contract under
-   *           multi-aggregator submission;
-   *       (b) the proposer's signature already lives at
-   *           `data.signatures[idx_of_proposer]` — adding it to
-   *           `tx.signature` duplicates state.
-   *     So this case gates only on `signatures[].length > 0` here;
-   *     the real check is in `_statefulCheck`.
+   *           submitters; placing a submitter-derived sig on the
+   *           envelope would break that contract under multi-aggregator
+   *           submission;
+   *       (b) the proposer's signature already lives in
+   *           `data.cosignatures` — adding it to `tx.signature`
+   *           duplicates state.
+   *     So this case gates only on `cosignatures.length > 0` here; the
+   *     real check is in `_statefulCheck`.
    *
    *   - Cosignatures (tx.data.cosignatures[]) — additional signers
    *     beyond `tx.signature`. The schema (module or registry entry)
@@ -1219,7 +1232,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     const d = tx.data || {};
 
     if (tt === TX_TYPES.COMMITTEE_ROTATION) {
-      return Array.isArray(d.signatures) && d.signatures.length > 0;
+      return Array.isArray(d.cosignatures) && d.cosignatures.length > 0;
     }
 
     try {

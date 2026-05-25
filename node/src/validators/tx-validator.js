@@ -172,11 +172,12 @@ const SCHEMA = {
     },
   },
   [TX_TYPES.COMMITTEE_ROTATION]: {
-    // §4 + #34: chain-of-trust rotation event. Deeper validation
-    // (rotation_number monotonic, sigs from previous committee, ≥2f+1
-    // quorum) lives in commit-handler — those checks need DAG state
-    // and can't run in the structure-only layer here.
-    required: ["rotation_number", "effective_round", "new_committee", "payload_hash", "signer_node_ids", "signatures"],
+    // Chain-of-trust rotation event. Deeper validation (rotation_number
+    // monotonic, sigs from previous committee, ≥2f+1 quorum) lives in
+    // commit-handler — those checks need DAG state and can't run in the
+    // structure-only layer here. Aggregate sigs ride on
+    // tx.data.cosignatures (signer_kind=node, signer_ref=node_id).
+    required: ["rotation_number", "effective_round", "new_committee", "payload_hash", "cosignatures"],
     types: { rotation_number: "number", effective_round: "number", payload_hash: "string" },
   },
   // GH #60 — key rotation + VP-attested recovery. Signature lives at

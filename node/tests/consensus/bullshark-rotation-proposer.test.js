@@ -227,8 +227,10 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     expect(ids).toEqual([...ids].sort());
     expect(ids).toContain(FOUNDING.node_id);
     expect(ids).toContain("tip://node/peer");
-    expect(tx.data.signer_node_ids).toEqual([FOUNDING.node_id]);
-    expect(tx.data.signatures).toHaveLength(1);
+    expect(tx.data.cosignatures).toHaveLength(1);
+    expect(tx.data.cosignatures[0].signer_kind).toBe("node");
+    expect(tx.data.cosignatures[0].signer_ref).toBe(FOUNDING.node_id);
+    expect(typeof tx.data.cosignatures[0].signature).toBe("string");
   });
 
   test("does NOT fire when proposer config is omitted (test/legacy mode)", () => {

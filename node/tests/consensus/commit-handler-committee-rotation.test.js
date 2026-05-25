@@ -113,13 +113,12 @@ function _buildRotationTx({
   }));
 
   const signers = signerNodeIds || prevCommittee.map(m => m.node_id);
-  const signatures = signers.map(signerId => {
+  const cosignatures = signers.map(signerId => {
     const message = `rotation:${payload_hash}:${signerId}`;
     const privKey = prevKeys[signerId];
-    if (!privKey) return "00".repeat(32);  // bogus sig — for "signer not in committee" tests
-    let sig = mldsaSign(message, privKey);
+    let sig = privKey ? mldsaSign(message, privKey) : "00".repeat(32);  // bogus sig — for "signer not in committee" tests
     if (signatureMutator) sig = signatureMutator(sig, signerId);
-    return sig;
+    return { signer_kind: "node", signer_ref: signerId, signature: sig };
   });
 
   const data = {
@@ -127,8 +126,7 @@ function _buildRotationTx({
     effective_round,
     new_committee,
     payload_hash,
-    signer_node_ids: signers,
-    signatures,
+    cosignatures,
   };
 
   const tx = {
