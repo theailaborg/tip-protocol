@@ -140,13 +140,15 @@ function assertUnifiedSig(label, tx) {
   }
 }
 
-const VP = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../genesis-data/backups/tip-vp-US-1d8e8ee431f715ec.tip.json"), "utf8"));
-const founderIds = [
-  "tip-id-US-2ed64e139079d435",  // org founder
-  "tip-id-US-9ef90f7c97271ad8",  // Dinesh
-  "tip-id-US-1a2806569b35f03f",  // Tushar
-  "tip-id-US-a5b5308bd57f637b",  // Vishal
-].map(f => JSON.parse(fs.readFileSync(path.resolve(__dirname, `../genesis-data/backups/${f}.tip.json`), "utf8")));
+// Resolve VP + founder backup files dynamically — actual ids in the
+// repo's genesis-data/backups/ shift whenever the seed regenerates.
+const _backupDir = path.resolve(__dirname, "../genesis-data/backups");
+const _backupFiles = fs.readdirSync(_backupDir);
+const _vpFile = _backupFiles.find(f => f.startsWith("tip-vp-"));
+if (!_vpFile) throw new Error("No VP backup found in genesis-data/backups/");
+const VP = JSON.parse(fs.readFileSync(path.join(_backupDir, _vpFile), "utf8"));
+const founderIds = _backupFiles.filter(f => f.startsWith("tip-id-"))
+  .map(f => JSON.parse(fs.readFileSync(path.join(_backupDir, f), "utf8")));
 
 /** Register a brand-new identity via the API. Returns {tip_id, kp}. */
 async function _registerIdentity(label) {
