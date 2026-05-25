@@ -118,14 +118,13 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 
 /**
  * State-level verification at consensus replay. The node's attestation
- * is verified by the unified dispatcher (tx.signature). This function
- * enforces the state-machine invariants AND the user's claim
- * cosignature (cross-actor attestation carried on tx.data.cosignatures).
+ * is verified by the unified dispatcher (tx.signature) and the user's
+ * claim cosignature is verified by the cosignatures dispatcher (using
+ * `getCosignatureContract` below). This function only enforces the
+ * state-machine invariants:
  *
  *   1. Emitting node is registered + active
  *   2. Claimant TIP-ID is registered, not revoked, and is an organization
- *   3. User's claim cosignature verifies over the embedded
- *      register-domain sub-payload (resolved via dag, time-anchored)
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -158,27 +157,37 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 403, error: "Claimant TIP-ID is not an organization", code: "tip_id_not_authorised" };
   }
 
-  // Verify the user's claim cosignature. The cosigner is the claimant
-  // tip_id, signing the register-domain canonical body (4 fields, a
-  // cross-tx-type body the user produced during their REGISTER_DOMAIN
-  // request — carried forward here so replay-time verification
-  // re-establishes the full trust chain user → node).
-  const claimBody = registerDomainSchema.buildSigningPayload({
-    claimed_at: d.claimed_at,
-    domain: d.domain,
-    method: d.method,
-    tip_id: d.tip_id,
-  });
-  const cosigResult = verifyCosignatures(
-    tx,
-    [{ kind: SIGNED_BY_KIND.SUBJECT, ref: d.tip_id, body: claimBody }],
-    dag,
-  );
+  // Cosignature verification runs in commit-handler via the cosignatures
+  // dispatcher (calls getCosignatureContract below). Verify it here too
+  // so the schema-level verifyTx remains a complete state check (used by
+  // API-time pre-submission validation in domain-service).
+  const cosigResult = verifyCosignatures(tx, getCosignatureContract(tx), dag);
   if (!cosigResult.ok) {
     return { ok: false, status: 403, error: cosigResult.error, code: cosigResult.code };
   }
 
   return { ok: true };
+}
+
+/**
+ * Cosignature contract — the user's prior REGISTER_DOMAIN claim sig
+ * carried forward on tx.data.cosignatures. Signer is the claimant
+ * (resolved via dag, time-anchored at tx.timestamp), signing the
+ * canonical REGISTER_DOMAIN body (4 fields).
+ */
+function getCosignatureContract(tx) {
+  const d = tx?.data || {};
+  if (!d.tip_id) return [];
+  return [{
+    kind: SIGNED_BY_KIND.SUBJECT,
+    ref:  d.tip_id,
+    body: registerDomainSchema.buildSigningPayload({
+      claimed_at: d.claimed_at,
+      domain:     d.domain,
+      method:     d.method,
+      tip_id:     d.tip_id,
+    }),
+  }];
 }
 
 // ─── UNBIND_DOMAIN ──────────────────────────────────────────────────────────
@@ -280,4 +289,6 @@ module.exports = {
   // GH #51 — unified signature contract
   SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
   SIGNED_BY,
+  // Cosignatures contract (user's claim sig)
+  getCosignatureContract,
 };

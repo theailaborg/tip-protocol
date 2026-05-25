@@ -171,11 +171,11 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   },
 
   // ─── DUAL-MODE: dispute can be user-filed or auto-cascade ─────────────────
-  // The auto-mode case ALSO carries an inner escalation_signature when
-  // the escalator is a real user (Option 2 from a CONFIRMED review).
-  // That secondary attestation stays on `tx.data.escalation_signature`
-  // — it's a separate signer (the creator) whose signature is carried
-  // forward as evidence-on-data, not the tx's own signature.
+  // When auto=true AND a real creator escalated (Option 2 from a
+  // CONFIRMED review), the creator's authorising signature rides as a
+  // cosignature entry on tx.data.cosignatures (signer_kind=subject,
+  // signer_ref=<escalator tip_id>). Pure system auto-escalations
+  // (h=R+24) have no cosigner.
   [TX_TYPES.CONTENT_DISPUTED]: {
     getSignatureContract: (tx) => {
       if (tx?.data?.auto) {
@@ -189,8 +189,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
           // claimed_origin + evidence_hash are conditional. Mirror the
           // dispute-service.fileDispute + UI canonicalisation: only
           // emit when truthy. Listing them unconditionally would diverge
-          // from the signer's canonical bytes (drift class observed in
-          // #54 / #55 / #56).
+          // from the signer's canonical bytes.
           const out = {
             disputer_tip_id: data.disputer_tip_id,
             reason: data.reason,
@@ -200,6 +199,25 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
           return out;
         },
       };
+    },
+    // Cosignature contract — used by commit-handler to verify the
+    // creator's authorisation on a manual auto-escalation. Returns []
+    // for system auto-escalations and user-filed disputes (no
+    // additional signer).
+    getCosignatureContract: (tx) => {
+      const d = tx?.data || {};
+      if (!d.auto) return [];
+      const escalator = d.escalated_by_tip_id;
+      if (!escalator) return [];
+      return [{
+        kind: SIGNED_BY_KIND.SUBJECT,
+        ref:  escalator,
+        body: {
+          author_tip_id: escalator,
+          ctid:          d.ctid,
+          review_id:     d.source_review_id,
+        },
+      }];
     },
   },
 

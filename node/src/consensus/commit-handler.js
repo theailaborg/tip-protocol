@@ -36,7 +36,8 @@ const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-a
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
-const { verifyTxSignature: unifiedVerifyTxSignature } = require("../schemas/_common");
+const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
+const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
@@ -1205,13 +1206,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    *     So this case gates only on `signatures[].length > 0` here;
    *     the real check is in `_statefulCheck`.
    *
-   *   - CONTENT_DISPUTED auto+manual carries an additional attestation
-   *     `data.escalation_signature` (the creator's proof that they
-   *     authorized an early manual escalation from a CONFIRMED
-   *     review). It's separate from `tx.signature` (the node's
-   *     envelope sig) because the actor is different — per
-   *     `SIGNATURES.md` "Attestations on data". Verified against
-   *     `escalated_by_tip_id`'s identity pubkey below.
+   *   - Cosignatures (tx.data.cosignatures[]) — additional signers
+   *     beyond `tx.signature`. The schema (module or registry entry)
+   *     declares the contract via `getCosignatureContract(tx)` and
+   *     verifyCosignatures from `_common` resolves each cosigner's key
+   *     via dag.getKeyValidAt at tx.timestamp. Used today by
+   *     BIND_DOMAIN (user's claim sig) and CONTENT_DISPUTED auto+manual
+   *     (creator's escalation authorisation).
    */
   function _verifyTxSignature(tx) {
     const tt = tx.tx_type;
@@ -1229,20 +1230,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return false;
       }
 
-      // CONTENT_DISPUTED auto-mode with a user-attributed escalator —
-      // also verify the creator's attestation on data. System
-      // auto-escalations (no escalated_by_tip_id) skip this branch.
-      if (tt === TX_TYPES.CONTENT_DISPUTED && d.auto && d.escalated_by_tip_id) {
-        const escalator = dag.getIdentity(d.escalated_by_tip_id);
-        if (!escalator || !d.escalation_signature) return false;
-        const sigBody = {
-          author_tip_id: d.escalated_by_tip_id,
-          ctid: d.ctid,
-          review_id: d.source_review_id,
-        };
-        if (!verifyBodySignature(sigBody, d.escalation_signature, escalator.public_key,
-          ["author_tip_id", "ctid", "review_id"])) {
-          return false;
+      // Cosignatures: schema declares the contract (per-tx_type, may be
+      // empty). Dispatcher resolves keys and verifies each entry.
+      const cosigSource = schema && typeof schema.getCosignatureContract === "function"
+        ? schema
+        : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
+            ? TX_SIGNATURE_REGISTRY[tt]
+            : null);
+      if (cosigSource) {
+        const contract = cosigSource.getCosignatureContract(tx) || [];
+        if (contract.length > 0) {
+          const cosigResult = verifyCosignatures(tx, contract, dag);
+          if (!cosigResult.ok) {
+            log.warn(`Cosignature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${cosigResult.error}`);
+            return false;
+          }
         }
       }
 
