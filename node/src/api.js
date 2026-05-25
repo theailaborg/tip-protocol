@@ -27,6 +27,7 @@ const { createTxSubmitter } = require("./services/helpers");
 const { createIdentityService } = require("./services/identity-service");
 const { createContentService } = require("./services/content-service");
 const { createProfileService } = require("./services/profile-service");
+const { createKeyService } = require("./services/key-service");
 const { createDisputeService } = require("./services/dispute-service");
 const { createDisputeDetailsService } = require("./services/dispute-details-service");
 const { createRevocationService } = require("./services/revocation-service");
@@ -56,6 +57,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   const identityService = createIdentityService(ctx);
   const contentService = createContentService(ctx);
   const profileService = createProfileService(ctx);
+  const keyService = createKeyService(ctx);
   const disputeDetailsService = createDisputeDetailsService(ctx);
   const disputeService = createDisputeService({ ...ctx, disputeDetailsService });
   const revocationService = createRevocationService(ctx);
@@ -148,7 +150,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, createConsensusGate({ consensusRef }));
 
   // All API routes under /v1
-  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService }));
+  app.use(API_VERSION, identityRoutes.createRouter({ identityService, profileService, keyService }));
   app.use(API_VERSION, contentRoutes.createRouter({ contentService }));
   app.use(API_VERSION, disputeRoutes.createRouter({ disputeService }));
   app.use(API_VERSION, disputeDetailsRoutes.createRouter({ disputeDetailsService }));

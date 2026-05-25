@@ -713,6 +713,9 @@ describe("REST API", () => {
   test("6.5 POST /v1/vp/register registers a VP", async () => {
     testVpKp = generateMLDSAKeypair();
     const vpFields = {
+      // GH #60: algorithm is in canonical signed bytes — VP attests
+      // the (pubkey, algorithm) pair, not just the pubkey.
+      algorithm: "ml-dsa-65",
       name: "Test VP UK", jurisdiction: "UK", jurisdiction_tier: "green",
       public_key: testVpKp.publicKey, approving_vp_id: foundingVpId,
     };
@@ -953,6 +956,7 @@ describe("Integration: Full Registration Flow", () => {
 
     // Step 1: Register VP (approved by founding VP)
     const vpFields = {
+      algorithm: "ml-dsa-65",
       name: "Integration Test VP SG", jurisdiction: "SG", jurisdiction_tier: "green",
       public_key: integrationKp.publicKey, approving_vp_id: foundingVpId,
     };
@@ -1056,6 +1060,7 @@ describe("Gossip Broadcast Wiring", () => {
   test("8.1 VP register triggers gossip broadcast", async () => {
     const vpKp = generateMLDSAKeypair();
     const vpFields = {
+      algorithm: "ml-dsa-65",
       name: "Gossip Test VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: vpKp.publicKey, approving_vp_id: gFoundingVpId,
     };
@@ -1123,6 +1128,7 @@ describe("Gossip Broadcast Wiring", () => {
     // Register a VP + identity, then revoke
     const rVpKp = generateMLDSAKeypair();
     const vpFields = {
+      algorithm: "ml-dsa-65",
       name: "Revoke Broadcast VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: rVpKp.publicKey, approving_vp_id: gFoundingVpId,
     };

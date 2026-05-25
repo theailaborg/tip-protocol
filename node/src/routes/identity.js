@@ -3,7 +3,7 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
-function createRouter({ identityService, profileService }) {
+function createRouter({ identityService, profileService, keyService }) {
   const router = express.Router();
 
   router.post("/identity/register", asyncHandler(async (req, res) => {
@@ -13,6 +13,15 @@ function createRouter({ identityService, profileService }) {
 
   router.get("/identity/:tipId", asyncHandler((req, res) => {
     res.json(identityService.resolve(req.params.tipId));
+  }));
+
+  // Resolve an existing tip_id from a gov-id-derived dedup_hash. Mounted
+  // BEFORE /identity/:tipId so the static path matches first (Express's
+  // first-defined-wins ordering would also handle it, but it's explicit).
+  // Returns 404 when no identity has been registered with this dedup_hash —
+  // i.e. the user should go down the registration path, not recovery.
+  router.get("/identity/by-dedup-hash/:dedupHash", asyncHandler((req, res) => {
+    res.json(identityService.findByDedupHash(req.params.dedupHash));
   }));
 
   router.post("/identity/verify-ownership", asyncHandler((req, res) => {
@@ -55,6 +64,22 @@ function createRouter({ identityService, profileService }) {
 
   router.post("/identity/:tipId/stop-reviewing", asyncHandler((req, res) => {
     res.status(202).json(profileService.stopReviewing(req.params.tipId, req.body));
+  }));
+
+  // ── Key lifecycle (KEY_ROTATED / KEY_RECOVERY) ──────────────────────
+  // Rotation: client signs the canonical body with their CURRENT (OLD)
+  // private key. The chain closes the OLD entity_keys row and appends
+  // the NEW one at effective_at — old signatures still verify because
+  // historical lookup is time-anchored on tx.timestamp.
+  router.post("/identity/:tipId/keys/rotate", asyncHandler((req, res) => {
+    res.status(202).json(keyService.rotateKey({ ...req.body, tip_id: req.params.tipId }));
+  }));
+
+  // Recovery: VP signs the canonical body after off-chain re-verification.
+  // Same atomic close+append, but the chain trusts the VP attestation
+  // because the user has lost possession of the OLD key.
+  router.post("/identity/:tipId/keys/recover", asyncHandler(async (req, res) => {
+    res.status(202).json(await keyService.recoverKey({ ...req.body, tip_id: req.params.tipId }));
   }));
 
   return router;

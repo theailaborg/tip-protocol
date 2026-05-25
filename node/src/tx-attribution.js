@@ -59,6 +59,8 @@ function subjectTipId(tx) {
     case TX_TYPES.REVOKE_VP:
     case TX_TYPES.REVOKE_DECEASED:
     case TX_TYPES.REVOKE_DEVICE:
+    case TX_TYPES.KEY_ROTATED:
+    case TX_TYPES.KEY_RECOVERY:
       return d.tip_id || null;
 
     // ── Author actions on owned content ─────────────────────────────────

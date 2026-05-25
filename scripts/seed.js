@@ -593,7 +593,15 @@ async function registerSeedNode(vpKeypair) {
 
   const freshGenesis = require("../node/src/genesis");
   const vpId = freshGenesis.getFoundingVP().vp_id;
-  const nodeFields = { name: nodeName, public_key: _nodeKp.publicKey, approving_vp_id: vpId };
+  // GH #60: algorithm is in the canonical signed bytes — the VP attests
+  // the (pubkey, algorithm) pair. Field order is the alphabetical
+  // canonical layout matching schemas/_registry.js NODE_REGISTERED.
+  const nodeFields = {
+    algorithm: "ml-dsa-65",
+    approving_vp_id: vpId,
+    name: nodeName,
+    public_key: _nodeKp.publicKey,
+  };
   // council_signature is embedded into founding_node inside GENESIS_PAYLOAD →
   // it must be deterministic for genesis_hash to be stable across re-seeds.
   const councilSig = signBody(nodeFields, vpKeypair.privateKey, { deterministic: true });
@@ -606,6 +614,7 @@ async function registerSeedNode(vpKeypair) {
       node_id: nodeId,
       name: nodeName,
       public_key: _nodeKp.publicKey,
+      algorithm: "ml-dsa-65",
       council_signature: councilSig,
       approving_vp_id: vpId,
     },

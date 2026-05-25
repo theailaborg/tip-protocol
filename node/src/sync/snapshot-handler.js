@@ -535,8 +535,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         try { parsed = JSON.parse(canonical); }
         catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
 
-        if (table === "nodes" && parsed.node_id && parsed.public_key) {
-          nodePubKeys.set(parsed.node_id, parsed.public_key);
+        // GH #60: node pubkeys live in entity_keys (single source of
+        // truth, DID-style). Collect the CURRENTLY-ACTIVE node key
+        // (valid_to_ts == null = no later rotation has superseded it)
+        // so the ack-quorum check below can resolve each signer to a
+        // pubkey. Pre-#60 snapshots had public_key on the nodes row;
+        // post-#60 it's an entity_keys row with entity_type='node'.
+        if (table === "entity_keys"
+          && parsed.entity_type === "node"
+          && parsed.valid_to_ts == null
+          && parsed.public_key) {
+          nodePubKeys.set(parsed.entity_id, parsed.public_key);
         }
         stateInstallQueue.push({ table, row: parsed });
       }
@@ -1226,6 +1235,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         break;
       case "nodes":
         dag.saveNode(row);
+        break;
+      case "entity_keys":
+        // GH #60: snapshot ships the full key history (every identity /
+        // node / VP across all time, including pre-rotation entries).
+        // Use the generalised saveEntityKey since the row already has
+        // valid_from_ts + valid_to_ts pre-computed — we replay the
+        // exact ranges the sender had.
+        dag.saveEntityKey(row);
         break;
       default:
         // Unknown tables are tolerated so adding a new canonical table on

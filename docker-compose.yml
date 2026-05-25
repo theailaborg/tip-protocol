@@ -105,6 +105,10 @@ x-node-common: &node-common
     TIP_DEV_ALLOW_LOCALHOST_DOMAINS: ${TIP_DEV_ALLOW_LOCALHOST_DOMAINS:-0}
     TIP_DEV_LOCALHOST_FETCH_HOST: ${TIP_DEV_LOCALHOST_FETCH_HOST:-}
     TIP_DEV_FORCE_PRESCAN_TIER: ${TIP_DEV_FORCE_PRESCAN_TIER:-}
+    # Dev-only ZK skip — when set to "true" the dedup-proof verifier
+    # returns true unconditionally. Production deployments leave this
+    # unset; the var only takes effect when the operator opts in.
+    ZK_SKIP_VERIFY: ${ZK_SKIP_VERIFY:-}
     # ── DB adapter passthrough — values come from .env. DB_HOST should
     #    match the service name of whichever DB profile is active.
     DB_DRIVER:                  ${DB_DRIVER:-sqlite}

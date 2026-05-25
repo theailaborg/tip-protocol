@@ -38,6 +38,8 @@ const prescanReviewTriggered      = require(path.join(SRC, "schemas", "prescan-r
 const prescanReviewDismissed      = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
 const prescanReviewConfirmed      = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
 const prescanReviewRecused        = require(path.join(SRC, "schemas", "prescan-review-recused"));
+const keyRotatedSchema            = require(path.join(SRC, "schemas", "key-rotated"));
+const keyRecoverySchema           = require(path.join(SRC, "schemas", "key-recovery"));
 
 const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.REGISTER_CONTENT]:         contentRegisterSchema,
@@ -48,6 +50,8 @@ const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissed,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmed,
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]:   prescanReviewRecused,
+  [TX_TYPES.KEY_ROTATED]:              keyRotatedSchema,
+  [TX_TYPES.KEY_RECOVERY]:             keyRecoverySchema,
 };
 
 // Tx types intentionally not yet on the unified contract — accounted for

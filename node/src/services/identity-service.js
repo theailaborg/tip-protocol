@@ -132,7 +132,17 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       const code = error.message.startsWith("Identity already") || error.message.startsWith("TIP-ID")
         ? "DUPLICATE_IDENTITY"
         : error.code;
-      throw schemaError(error.status, error.message, code);
+      const e = schemaError(error.status, error.message, code);
+      // Surface the existing tip_id on duplicate-registration so the FE can
+      // pivot to the recovery flow (POST /v1/identity/:tipId/keys/recover)
+      // without a separate by-dedup-hash lookup round-trip.
+      if (code === "DUPLICATE_IDENTITY" && typeof dag.getDedupRegistration === "function") {
+        const existing = dag.getDedupRegistration(dedup_hash);
+        if (existing && existing.tip_id) {
+          e.details = { tip_id: existing.tip_id };
+        }
+      }
+      throw e;
     }
 
     // Build the canonical signed payload, verify the VP's signature
@@ -159,6 +169,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         founding,
         // ── Signed canonical fields (mirror canonicalPayload so
         //    commit-handler can replay buildSigningPayload(d))
+        algorithm: canonicalPayload.algorithm,
         creator_name: canonicalPayload.creator_name,
         dedup_hash: canonicalPayload.dedup_hash,
         public_key: canonicalPayload.public_key,
@@ -347,7 +358,10 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     // Same rule mirrored in MemoryStore.getTxsBySubject and the SQL
     // ORDER BY — single source of truth.
     items.sort((a, b) => {
-      const d = b.timestamp - a.timestamp;
+      // Coerce — see MemoryStore.getTxsBySubject. PG returns bigint as
+      // string by default; mixed-type subtraction yields NaN which V8
+      // treats as "don't swap" and the feed drifts out of order.
+      const d = Number(b.timestamp) - Number(a.timestamp);
       if (d !== 0) return d;
       const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
       const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;
@@ -371,7 +385,30 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity };
+  // GH #60 — public hash→tip_id lookup. Used by VP backends + FE clients
+  // to decide between registration and recovery flows when the user
+  // re-presents the same gov-id-derived dedup_hash. The dedup_hash is
+  // already public on-chain (carried in REGISTER_IDENTITY tx.data), so
+  // exposing it as an indexed lookup leaks no additional information.
+  function findByDedupHash(dedupHash) {
+    if (typeof dedupHash !== "string" || dedupHash.length === 0) {
+      throw { status: 400, error: "dedup_hash is required" };
+    }
+    const rec = typeof dag.getDedupRegistration === "function" ? dag.getDedupRegistration(dedupHash) : null;
+    if (!rec || !rec.tip_id) throw { status: 404, error: "no identity registered for this dedup_hash" };
+    const identity = dag.getIdentity(rec.tip_id);
+    if (!identity) throw { status: 404, error: "identity row missing for dedup_hash" };
+    return {
+      tip_id: identity.tip_id,
+      vp_id: identity.vp_id,
+      region: identity.region,
+      verification_tier: identity.verification_tier,
+      registered_at: identity.registered_at,
+      status: dag.isRevoked(identity.tip_id) ? "revoked" : identity.status,
+    };
+  }
+
+  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash };
 }
 
 module.exports = { createIdentityService };

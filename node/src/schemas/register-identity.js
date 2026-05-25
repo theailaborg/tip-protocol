@@ -43,6 +43,7 @@ const {
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND,
+  SIGNATURE_ALGORITHM_VALUES, SIGNATURE_ALGORITHM_DEFAULT,
 } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.REGISTER_IDENTITY;
@@ -187,12 +188,28 @@ function buildSigningPayload(input) {
     );
   }
 
+  // GH #60: algorithm bound to the public_key. Default ml-dsa-65;
+  // enum-locked so unknown values reject before signing. Binding it
+  // into the VP-signed canonical bytes means an attacker can't
+  // post-hoc claim the same pubkey under a different algorithm — the
+  // VP's attestation covers the (key, algorithm) pair. Required for
+  // future hybrid schemes where pubkey byte-length is ambiguous.
+  const algorithm = input.algorithm == null ? SIGNATURE_ALGORITHM_DEFAULT : input.algorithm;
+  if (!SIGNATURE_ALGORITHM_VALUES.has(algorithm)) {
+    throw schemaError(
+      400,
+      `algorithm must be one of ${[...SIGNATURE_ALGORITHM_VALUES].join(", ")}`,
+      "algorithm_invalid",
+    );
+  }
+
   // creator_name pass-through: typeof check passes strings through
   // verbatim, null / undefined / non-strings emit `null`. Empty string
   // is REJECTED at validateRequest, so it never reaches here in normal
   // flow; the only callers that hit this with `""` are misbehaving
   // (and their canonical bytes won't match the server's anyway).
   return {
+    algorithm,
     creator_name: typeof input.creator_name === "string" ? input.creator_name : null,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,

@@ -34,6 +34,8 @@ const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
 const registerDomainSchema = require("../schemas/register-domain");
 const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
+const keyRotatedSchema = require("../schemas/key-rotated");
+const keyRecoverySchema = require("../schemas/key-recovery");
 const { verifyTxSignature: unifiedVerifyTxSignature } = require("../schemas/_common");
 
 // GH #51 — tx_type to schema-module map for the unified signature
@@ -48,6 +50,10 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
+  // GH #60 — key rotation + VP-attested recovery. Both append a new
+  // entity_keys row + close the prior one atomically.
+  [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
+  [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
 });
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
@@ -577,6 +583,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      // GH #60 — key rotation + recovery state checks. Signature is
+      // verified by the unified dispatcher (OLD key for KEY_ROTATED;
+      // VP key for KEY_RECOVERY). These predicates enforce the
+      // state-machine invariants (active identity, valid effective_at,
+      // VP authorisation, rate limits).
+      case TX_TYPES.KEY_ROTATED: {
+        const r = keyRotatedSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+      case TX_TYPES.KEY_RECOVERY: {
+        const r = keyRecoverySchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       default:
         return { valid: true };
     }
@@ -595,14 +615,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.REGISTER_IDENTITY:
         if (d.dedup_hash && !dag.hasDedupHash(d.dedup_hash)) {
           // Unix seconds derived from the tx timestamp (deterministic across nodes).
-          dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000));
+          // tip_id denormalized so /v1/identity/by-dedup-hash is a single read.
+          dag.addDedupHash(d.dedup_hash, Math.floor(tx.timestamp / 1000), d.tip_id);
         }
         if (d.tip_id && !dag.getIdentity(d.tip_id)) {
+          // GH #60: public_key + algorithm auto-route to entity_keys via
+          // saveIdentity (DID-style single source of truth — the keys
+          // table holds every key across all time, identities holds
+          // mutable non-cryptographic attributes only). root_public_key
+          // dropped (orphaned scaffold; never wired in any service).
           dag.saveIdentity({
             tip_id: d.tip_id,
             region: d.region || "US",
             public_key: d.public_key || "",
-            root_public_key: d.root_public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             vp_id: d.vp_id || "",
             verification_tier: d.verification_tier || "T1",
             tip_id_type: d.tip_id_type || "personal",
@@ -941,6 +967,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
 
       // ── Governance ────────────────────────────────────────────────────
+      // GH #60: public_key + algorithm auto-route to entity_keys via
+      // saveVP / saveNode. tx_id is passed (accepted-but-ignored by
+      // the main row, used by the auto-router as entity_keys.source_tx_id
+      // so the key history can be traced back to the registration tx).
       case TX_TYPES.VP_REGISTERED:
         if (d.vp_id && !dag.getVP(d.vp_id)) {
           dag.saveVP({
@@ -949,8 +979,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             jurisdiction: d.jurisdiction || "US",
             jurisdiction_tier: d.jurisdiction_tier || "green",
             public_key: d.public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             status: "active",
             registered_at: tx.timestamp,
+            tx_id: tx.tx_id,
           });
         }
         break;
@@ -961,8 +993,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             node_id: d.node_id,
             name: d.name || "",
             public_key: d.public_key || "",
+            algorithm: d.algorithm || "ml-dsa-65",
             status: "active",
             registered_at: tx.timestamp,
+            tx_id: tx.tx_id,
           });
         }
         break;
@@ -972,6 +1006,58 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // below. First-wins dedup (tip_id + ctid + reason) gates upstream
       // in `_validateBusinessRules`.
       case TX_TYPES.SCORE_UPDATE:
+        break;
+
+      // ── Key rotation + recovery (GH #60) ─────────────────────────────
+      // Close the prior active entity_keys row (set valid_to_ts =
+      // effective_at) and append the NEW active row. Both writes happen
+      // inside the surrounding commit-handler transaction so the
+      // identity always has exactly one active key. For KEY_ROTATED the
+      // old key signed the tx (dispatcher resolved it via
+      // getKeyValidAt at tx.timestamp, when the OLD key was still
+      // active). For KEY_RECOVERY the VP signed.
+      case TX_TYPES.KEY_ROTATED:
+      case TX_TYPES.KEY_RECOVERY:
+        if (d.tip_id && d.new_public_key) {
+          const prev = dag.getActiveKey("identity", d.tip_id);
+          const algorithm = d.algorithm || "ml-dsa-65";
+          const effectiveAt = Number(d.effective_at);
+          // Close the prior active row at effective_at.
+          if (prev) {
+            // We don't have a direct closeActiveKey API on the public
+            // dag handle (intentional — auto-router handles new key
+            // rotation transparently). Use saveEntityKey to write a
+            // replacement row with valid_to_ts set. We need the prior
+            // row's valid_from_ts to re-write its primary key — pull
+            // it via iterateEntityKeys.
+            for (const r of dag.iterateEntityKeys()) {
+              if (r.entity_type === "identity"
+                && r.entity_id === d.tip_id
+                && r.valid_to_ts == null) {
+                dag.saveEntityKey({
+                  entity_type: "identity",
+                  entity_id: d.tip_id,
+                  public_key: r.public_key,
+                  algorithm: r.algorithm,
+                  valid_from_ts: r.valid_from_ts,
+                  valid_to_ts: effectiveAt,
+                  source_tx_id: r.source_tx_id,
+                });
+                break;
+              }
+            }
+          }
+          // Insert the new active row.
+          dag.saveEntityKey({
+            entity_type: "identity",
+            entity_id: d.tip_id,
+            public_key: d.new_public_key,
+            algorithm,
+            valid_from_ts: effectiveAt,
+            valid_to_ts: null,
+            source_tx_id: tx.tx_id,
+          });
+        }
         break;
 
       // ── Committee rotation (§4 + #34 — chain-of-trust) ───────────────
