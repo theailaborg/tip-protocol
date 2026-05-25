@@ -44,8 +44,6 @@ const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
 // (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
-// NOTE: LINK_PLATFORM is intentionally absent — its VP signature lives on
-// data.vp_signature (not tx.signature), so it bypasses this dispatcher.
 const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
   [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
@@ -61,6 +59,8 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
   // Interest taxonomy registry — VP-attested.
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
+  // Social account linking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
+  [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
 });
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
@@ -899,6 +899,37 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         break;
 
+      // ── Social account linking ────────────────────────────────────────
+      // LINK_PLATFORM is node-attested (SIGNED_BY=NODE, SCOPE=BODY).
+      // Write canonical row to platform_links; expires_at is computed
+      // deterministically from verified_at so all replicating nodes
+      // produce the same value and the column stays merkle-consistent.
+      case TX_TYPES.LINK_PLATFORM: {
+        if (d.tip_id && d.platform) {
+          const verifiedMs = d.verified_at;
+          const expiresAt = Number.isFinite(verifiedMs)
+            ? verifiedMs + 365 * 24 * 60 * 60 * 1000
+            : null;
+          dag.savePlatformLink({
+            id: `${d.tip_id}::${d.platform}`,
+            tip_id: d.tip_id,
+            platform: d.platform,
+            handle: d.handle ?? null,
+            profile_url: d.profile_url,
+            status: "active",
+            linked_at: d.claimed_at,
+            verified_at: verifiedMs,
+            expires_at: expiresAt,
+            consecutive_failures: 0,
+            node_id: d.node_id,
+            claim_signature: d.claim_signature,
+            node_signature: tx.signature,
+            tx_id: tx.tx_id,
+          });
+        }
+        break;
+      }
+
       // ── Verification ──────────────────────────────────────────────────
       case TX_TYPES.CONTENT_VERIFIED:
         // Score effect handled by scoring.computeScore() replay (reads weighted_delta from tx.data)
@@ -1264,13 +1295,6 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
     if (tt === TX_TYPES.COMMITTEE_ROTATION) {
       return Array.isArray(d.cosignatures) && d.cosignatures.length > 0;
-    }
-
-    // LINK_PLATFORM: VP attests via data.vp_signature, not tx.signature.
-    // The unified dispatcher below requires tx.signature and rejects any tx
-    // that lacks it — LINK_PLATFORM must be handled before that block.
-    if (tt === TX_TYPES.LINK_PLATFORM) {
-      return linkPlatformSchema.verifyTx(tx, dag).ok;
     }
 
     try {
