@@ -453,6 +453,27 @@ class KnexAdapter {
       t.index("expires_at", "idx_dom_bind_expires");
     });
 
+    // Platform links (canonical, in state_merkle_root).
+    await ensure("platform_links", t => {
+      _id(t, "id").primary();
+      _id(t, "tip_id").notNullable();
+      t.string("platform", 50).notNullable();
+      t.string("handle", 255).nullable();
+      t.text("profile_url").notNullable();
+      t.string("status", 32).notNullable().defaultTo("active");
+      t.bigInteger("linked_at").notNullable();
+      t.bigInteger("verified_at").notNullable();
+      t.bigInteger("expires_at").notNullable();
+      t.integer("consecutive_failures").notNullable().defaultTo(0);
+      _id(t, "node_id").notNullable();
+      t.text("claim_signature").notNullable();
+      t.text("node_signature").notNullable();
+      _id(t, "tx_id").notNullable();
+      t.unique(["tip_id", "platform"], "idx_platform_links_tip_plat");
+      t.index("tip_id", "idx_platform_links_tip_id");
+      t.index("status", "idx_platform_links_status");
+    });
+
     // Pending domain claims (NOT canonical; per-node storage between
     // POST /register and POST /verify).
     await ensure("pending_domain_claims", t => {

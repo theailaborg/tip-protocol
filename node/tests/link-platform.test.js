@@ -267,6 +267,55 @@ describe("identityService.linkPlatform", () => {
   });
 });
 
+describe("dag platform_links CRUD", () => {
+  test("savePlatformLink + getPlatformLink round-trip", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    dag.savePlatformLink({
+      id: "tip://id/US-aabb::twitter",
+      tip_id: "tip://id/US-aabb",
+      platform: "twitter",
+      handle: "@alice",
+      profile_url: "https://x.com/alice",
+      status: "active",
+      linked_at: 1748000000000,
+      verified_at: 1748000000001,
+      expires_at: 1748000000001 + 365 * 24 * 3600 * 1000,
+      consecutive_failures: 0,
+      node_id: "tip://node/n1",
+      claim_signature: "aaa",
+      node_signature: "bbb",
+      tx_id: "tx-1",
+    });
+    const row = dag.getPlatformLink("tip://id/US-aabb", "twitter");
+    expect(row).not.toBeNull();
+    expect(row.handle).toBe("@alice");
+    expect(row.status).toBe("active");
+  });
+
+  test("getPlatformLinksByTipId returns all links for identity", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const base = {
+      tip_id: "tip://id/US-ccdd",
+      handle: "@x",
+      profile_url: "https://example.com/x",
+      status: "active",
+      linked_at: 1748000000000,
+      verified_at: 1748000000001,
+      expires_at: 1748000000001 + 365 * 24 * 3600 * 1000,
+      consecutive_failures: 0,
+      node_id: "tip://node/n1",
+      claim_signature: "aaa",
+      node_signature: "bbb",
+      tx_id: "tx-x",
+    };
+    dag.savePlatformLink({ ...base, id: "tip://id/US-ccdd::youtube", platform: "youtube", tx_id: "tx-1" });
+    dag.savePlatformLink({ ...base, id: "tip://id/US-ccdd::github", platform: "github", tx_id: "tx-2" });
+    const links = dag.getPlatformLinksByTipId("tip://id/US-ccdd");
+    expect(links).toHaveLength(2);
+    expect(links.map(l => l.platform).sort()).toEqual(["github", "youtube"]);
+  });
+});
+
 describe("POST /v1/identity/:tipId/link-platform route", () => {
   let app;
 

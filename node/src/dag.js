@@ -167,6 +167,26 @@ function _canonDomainBinding(r) {
     tx_id: r.tx_id,
   };
 }
+// Platform links: every column participates in state_merkle_root.
+// handle may be null for platforms where the identifier is the profile_url.
+function _canonPlatformLink(r) {
+  return {
+    id: r.id,
+    tip_id: r.tip_id,
+    platform: r.platform,
+    handle: r.handle || null,
+    profile_url: r.profile_url,
+    status: r.status,
+    linked_at: r.linked_at,
+    verified_at: r.verified_at,
+    expires_at: r.expires_at,
+    consecutive_failures: typeof r.consecutive_failures === "number" ? r.consecutive_failures : 0,
+    node_id: r.node_id,
+    claim_signature: r.claim_signature,
+    node_signature: r.node_signature,
+    tx_id: r.tx_id,
+  };
+}
 function _canonVP(r) {
   // GH #60: public_key in entity_keys, not here.
   return {
@@ -333,6 +353,7 @@ class MemoryStore {
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
+    this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -577,6 +598,17 @@ class MemoryStore {
   }
   getAllDomainBindings() {
     return [...this._domainBindings.values()];
+  }
+
+  // ── Platform links (canonical, in state_merkle_root) ─────────────────────
+  savePlatformLink(rec) {
+    this._platformLinks.set(rec.id, { ...rec });
+  }
+  getPlatformLink(tipId, platform) {
+    return this._platformLinks.get(`${tipId}::${platform}`) || null;
+  }
+  getPlatformLinksByTipId(tipId) {
+    return [...this._platformLinks.values()].filter(r => r.tip_id === tipId);
   }
 
   // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
@@ -1149,6 +1181,10 @@ class MemoryStore {
       .sort((a, b) => a.domain.localeCompare(b.domain))) {
       yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
+    for (const r of [...this._platformLinks.values()]
+      .sort((a, b) => a.id.localeCompare(b.id))) {
+      yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
     for (const r of [...this._vps.values()]
       .sort((a, b) => a.vp_id.localeCompare(b.vp_id))) {
       yield { table: "verification_providers", row: _canonVP(r) };
@@ -1556,6 +1592,30 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id  ON domain_bindings(tip_id);
       CREATE INDEX IF NOT EXISTS idx_dom_bind_state   ON domain_bindings(binding_state);
       CREATE INDEX IF NOT EXISTS idx_dom_bind_expires ON domain_bindings(expires_at);
+
+      -- ── Platform links (canonical, in state_merkle_root) ─────────────
+      -- One row per (tip_id, platform) pair. Written by commit-handler on
+      -- every committed LINK_PLATFORM tx. node_signature is the node's
+      -- ML-DSA attestation over the canonical link payload.
+      CREATE TABLE IF NOT EXISTS platform_links (
+        id                   TEXT PRIMARY KEY,
+        tip_id               TEXT NOT NULL,
+        platform             TEXT NOT NULL,
+        handle               TEXT,
+        profile_url          TEXT NOT NULL,
+        status               TEXT NOT NULL DEFAULT 'active',
+        linked_at            INTEGER NOT NULL,
+        verified_at          INTEGER NOT NULL,
+        expires_at           INTEGER NOT NULL,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        node_id              TEXT NOT NULL,
+        claim_signature      TEXT NOT NULL,
+        node_signature       TEXT NOT NULL,
+        tx_id                TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_links_tip_plat ON platform_links(tip_id, platform);
+      CREATE INDEX IF NOT EXISTS idx_platform_links_tip_id ON platform_links(tip_id);
+      CREATE INDEX IF NOT EXISTS idx_platform_links_status ON platform_links(status);
 
       -- ── Pending domain claims (local-only; NOT in state_merkle_root) ─
       -- Stores the user-signed claim between POST /v1/domain/register
@@ -2154,6 +2214,21 @@ class SQLiteStore {
       getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
       getAllDomainBindings: this.db.prepare("SELECT * FROM domain_bindings"),
 
+      savePlatformLink: this.db.prepare(
+        `INSERT OR REPLACE INTO platform_links
+         (id, tip_id, platform, handle, profile_url, status, linked_at, verified_at,
+          expires_at, consecutive_failures, node_id, claim_signature, node_signature, tx_id)
+         VALUES (@id, @tip_id, @platform, @handle, @profile_url, @status, @linked_at,
+                 @verified_at, @expires_at, @consecutive_failures, @node_id,
+                 @claim_signature, @node_signature, @tx_id)`
+      ),
+      getPlatformLink: this.db.prepare(
+        "SELECT * FROM platform_links WHERE tip_id=? AND platform=?"
+      ),
+      getPlatformLinksByTipId: this.db.prepare(
+        "SELECT * FROM platform_links WHERE tip_id=?"
+      ),
+
       savePendingDomainClaim: this.db.prepare(
         `INSERT OR REPLACE INTO pending_domain_claims
            (domain,tip_id,method,claimed_at,signature,received_at)
@@ -2732,6 +2807,15 @@ class SQLiteStore {
   getDomainBindingsByTipId(tipId) { return this._stmts.getDomainBindingsByTipId.all(tipId); }
   getAllDomainBindings() { return this._stmts.getAllDomainBindings.all(); }
 
+  // ── Platform links (canonical) ───────────────────────────────────────────
+  savePlatformLink(rec) { this._stmts.savePlatformLink.run(rec); }
+  getPlatformLink(tipId, platform) {
+    return this._stmts.getPlatformLink.get(tipId, platform) || null;
+  }
+  getPlatformLinksByTipId(tipId) {
+    return this._stmts.getPlatformLinksByTipId.all(tipId);
+  }
+
   // ── Pending domain claims (local-only) ───────────────────────────────────
   savePendingDomainClaim(rec) {
     this._stmts.savePendingDomainClaim.run(
@@ -3137,6 +3221,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM domain_bindings ORDER BY domain").iterate()) {
       yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
+    for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
+      yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
     for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
@@ -3459,6 +3546,11 @@ function _buildDagHandle(store, config) {
     savePendingDomainClaim: (rec) => store.savePendingDomainClaim(rec),
     getPendingDomainClaim: (domain) => store.getPendingDomainClaim(domain),
     deletePendingDomainClaim: (domain) => store.deletePendingDomainClaim(domain),
+
+    // ── Platform links (canonical) ────────────────────────────────────────
+    savePlatformLink: (rec) => store.savePlatformLink(rec),
+    getPlatformLink: (tipId, platform) => store.getPlatformLink(tipId, platform),
+    getPlatformLinksByTipId: (tipId) => store.getPlatformLinksByTipId(tipId),
 
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),
