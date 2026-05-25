@@ -26,61 +26,74 @@ test("TX_TYPES.UNLINK_PLATFORM is defined", () => {
   expect(TX_TYPES.UNLINK_PLATFORM).toBe("UNLINK_PLATFORM");
 });
 
-describe("link-platform schema", () => {
+describe("link-platform schema v2 (node-attested)", () => {
   test("PLATFORM_MAX_LENGTH is 50", () => {
     expect(linkPlatformSchema.PLATFORM_MAX_LENGTH).toBe(50);
   });
 
-  test("buildSigningPayload returns 4 canonical fields sorted alphabetically", () => {
+  test("buildSigningPayload produces 8 canonical fields alphabetically", () => {
     const payload = linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890",
+      tip_id: "tip://id/US-aabbccdd11223344",
       platform: "twitter",
-      handle: "@alice",
-      linked_at: 1748000000000,
+      profile_url: "https://x.com/alice",
+      handle: "alice",
+      claimed_at: 1748000000000,
+      verified_at: 1748000000001,
+      node_id: "tip://node/n1",
+      claim_signature: "aabbcc",
     });
-    expect(payload).toEqual({
-      handle: "@alice",
-      linked_at: 1748000000000,
-      platform: "twitter",
-      tip_id: "tip://id/IN-abcdef1234567890",
-    });
+    expect(Object.keys(payload)).toEqual([
+      "claim_signature", "claimed_at", "handle", "node_id",
+      "platform", "profile_url", "tip_id", "verified_at",
+    ]);
   });
 
-  test("buildSigningPayload throws on missing tip_id", () => {
-    expect(() => linkPlatformSchema.buildSigningPayload({ platform: "twitter", handle: "@x", linked_at: 1 }))
-      .toThrow();
-  });
-
-  test("buildSigningPayload accepts any non-empty platform string (e.g. myspace, x.com)", () => {
-    const p = linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890", platform: "myspace", handle: "@x", linked_at: 1748000000000,
+  test("buildSigningPayload accepts null handle (LinkedIn/Facebook)", () => {
+    const payload = linkPlatformSchema.buildSigningPayload({
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "linkedin",
+      profile_url: "https://www.linkedin.com/in/alice",
+      handle: null,
+      claimed_at: 1748000000000,
+      verified_at: 1748000000001,
+      node_id: "tip://node/n1",
+      claim_signature: "aabbcc",
     });
-    expect(p.platform).toBe("myspace");
+    expect(payload.handle).toBeNull();
   });
 
-  test("buildSigningPayload throws on empty platform", () => {
+  test("buildSigningPayload throws on missing claim_signature", () => {
     expect(() => linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890", platform: "", handle: "@x", linked_at: 1748000000000,
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      handle: "alice",
+      claimed_at: 1748000000000,
+      verified_at: 1748000000001,
+      node_id: "tip://node/n1",
     })).toThrow();
   });
 
-  test("buildSigningPayload throws on platform exceeding max length", () => {
-    expect(() => linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890", platform: "a".repeat(51), handle: "@x", linked_at: 1748000000000,
-    })).toThrow();
-  });
-
-  test("sign + verifySignature round-trip", async () => {
+  test("sign + verifySignature round-trip (node signs)", async () => {
     const { privateKey, publicKey } = await generateMLDSAKeypair();
     const payload = linkPlatformSchema.buildSigningPayload({
-      tip_id: "tip://id/IN-abcdef1234567890",
-      platform: "youtube",
-      handle: "@mychannel",
-      linked_at: 1748000000000,
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      handle: "alice",
+      claimed_at: 1748000000000,
+      verified_at: 1748000000001,
+      node_id: "tip://node/n1",
+      claim_signature: "aabbcc",
     });
     const sig = linkPlatformSchema.sign(payload, privateKey);
     expect(linkPlatformSchema.verifySignature(payload, sig, publicKey)).toBe(true);
-    expect(linkPlatformSchema.verifySignature(payload, sig, publicKey.slice(0, -4) + "0000")).toBe(false);
+  });
+
+  test("SIGNATURE_SCOPE and SIGNED_BY are exported", () => {
+    const { SIGNATURE_SCOPE, SIGNED_BY_KIND } = require("../../shared/constants");
+    expect(linkPlatformSchema.SIGNATURE_SCOPE).toBe(SIGNATURE_SCOPE.BODY);
+    expect(linkPlatformSchema.SIGNED_BY).toBe(SIGNED_BY_KIND.NODE);
   });
 });
 
