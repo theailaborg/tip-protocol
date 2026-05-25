@@ -62,6 +62,7 @@ const SCHEMA_FOR_TX_TYPE = {
 const UNIMPLEMENTED = new Set([
   TX_TYPES.UPDATE_DEVICE_BINDING,   // device-binding work deferred
   TX_TYPES.LINK_PLATFORM,           // cross-platform link not yet implemented
+  TX_TYPES.UNLINK_PLATFORM,         // cross-platform unlink not yet implemented
   TX_TYPES.VP_SUSPENDED,            // VP lifecycle suspension not yet implemented
 ]);
 

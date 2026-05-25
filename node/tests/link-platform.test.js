@@ -20,6 +20,11 @@ const { createRouter } = require(SRC + "/routes/identity");
 
 beforeAll(async () => { await initCrypto(); });
 
+test("TX_TYPES.UNLINK_PLATFORM is defined", () => {
+  const { TX_TYPES } = require("../../shared/constants");
+  expect(TX_TYPES.UNLINK_PLATFORM).toBe("UNLINK_PLATFORM");
+});
+
 describe("link-platform schema", () => {
   test("PLATFORM_MAX_LENGTH is 50", () => {
     expect(linkPlatformSchema.PLATFORM_MAX_LENGTH).toBe(50);

@@ -354,6 +354,7 @@ const TX_TYPES = Object.freeze({
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
+  UNLINK_PLATFORM: "UNLINK_PLATFORM",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
   // and close the prior active one atomically at commit. KEY_ROTATED is
   // signed by the OLD key (user proves possession); KEY_RECOVERY is
