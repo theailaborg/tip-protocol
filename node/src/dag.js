@@ -258,6 +258,25 @@ function _canonPrescanReview(r) {
   };
 }
 
+// Canonical projection for the `interests_registry` table — participates
+// in state_merkle_root so two nodes that have applied the same tx
+// sequence must agree byte-for-byte on the registry. registered_at +
+// registered_by_vp_id + tx_id are CANONICAL: they're set deterministically
+// at commit time (tx.timestamp + d.approving_vp_id + tx.tx_id) and
+// included so a snapshot-installer's row matches the genesis-seeded /
+// commit-applied row exactly. Genesis-seeded rows carry
+// registered_by_vp_id=null + tx_id=null on every node.
+function _canonInterest(r) {
+  return {
+    slug:                r.slug,
+    label:               r.label,
+    category:            r.category,
+    registered_at:       r.registered_at,
+    registered_by_vp_id: r.registered_by_vp_id || null,
+    tx_id:               r.tx_id || null,
+  };
+}
+
 function _canonCommitteeRotation(r) {
   const committee = Array.isArray(r.committee)
     ? r.committee
@@ -1148,6 +1167,10 @@ class MemoryStore {
     for (const r of [...this._prescanReviews.values()]
       .sort((a, b) => a.review_id.localeCompare(b.review_id))) {
       yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
+    }
+    for (const r of [...this._interestsRegistry.values()]
+      .sort((a, b) => a.slug.localeCompare(b.slug))) {
+      yield { table: "interests_registry", row: _canonInterest(r) };
     }
     // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
     // RP is real-time counter state that flickers as anchor walks process certs;
@@ -3126,6 +3149,9 @@ class SQLiteStore {
     }
     for (const r of db.prepare("SELECT * FROM prescan_reviews ORDER BY review_id").iterate()) {
       yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
+    }
+    for (const r of db.prepare("SELECT * FROM interests_registry ORDER BY slug").iterate()) {
+      yield { table: "interests_registry", row: _canonInterest(r) };
     }
     // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
     // version for rationale. RP ships in its own snapshot stream below.

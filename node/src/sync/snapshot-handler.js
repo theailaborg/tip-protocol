@@ -1243,6 +1243,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // exact ranges the sender had.
         dag.saveEntityKey(row);
         break;
+      case "prescan_reviews":
+        dag.savePrescanReview(row);
+        break;
+      case "interests_registry":
+        // Ships the full taxonomy: genesis seed + VP-extended runtime
+        // entries. UPSERT semantics in saveInterest mean re-applying a
+        // genesis-seeded row (already pre-installed by
+        // _bootstrapInterestsRegistry on the joiner's first boot) is
+        // idempotent.
+        dag.saveInterest(row);
+        break;
       default:
         // Unknown tables are tolerated so adding a new canonical table on
         // the server doesn't hard-fail older joiners — they'll just skip
