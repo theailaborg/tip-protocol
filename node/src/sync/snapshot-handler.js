@@ -922,16 +922,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           commitN++;
         }
 
-        // §4 + #34: install committee_history rotations. Already verified
-        // up the call chain (rotations_full_root match + chain-of-trust
-        // walk). Clear existing rows first so INSERT OR IGNORE can't
-        // silently skip a corrected rotation for a rotation_number that
-        // already exists locally from a divergent history (e.g. after a
-        // byzantine_fork where different nodes committed different
-        // COMMITTEE_ROTATION txs at the same rotation_number).
-        if (typeof dag.clearCommitteeHistory === "function") {
-          dag.clearCommitteeHistory();
-        }
+        // Install committee_history rotations. Already verified up the
+        // call chain (rotations_full_root match + chain-of-trust walk).
+        // saveCommitteeRotation uses INSERT OR REPLACE / merge, so a
+        // snapshot's authoritative row overwrites any prior local
+        // divergent row by (rotation_number) PK — no destructive pre-clear
+        // needed. The previous pre-clear pattern (Knex DELETE outside the
+        // install transaction) could leave committee_history permanently
+        // empty if the install aborted mid-flight (e.g. "no authorized
+        // peers" during a resync) — wipe survived, install never finished.
         let rotationN = 0;
         const rotations = queues.rotations || [];
         for (const r of rotations) {

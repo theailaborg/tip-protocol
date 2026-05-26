@@ -286,7 +286,12 @@ describe("committee_history — accessors", () => {
   test.each([
     ["MemoryStore", () => initDAG({ inMemory: true }), () => null],
     ["SQLiteStore", (dbPath) => initDAG({ dbPath }), (dag, dbPath) => { dag.close(); _cleanup(dbPath); }],
-  ])("%s: saveCommitteeRotation is idempotent on duplicate rotation_number (INSERT OR IGNORE)", (_name, mk, cleanup) => {
+  ])("%s: saveCommitteeRotation overwrites on duplicate rotation_number (INSERT OR REPLACE / merge)", (_name, mk, cleanup) => {
+    // Snapshot install relies on overwrite-on-conflict so an authoritative
+    // peer row replaces any prior local divergent row by (rotation_number)
+    // PK — no destructive pre-clear needed. Identical re-save is still
+    // idempotent (every column re-set to the same canonical value); chain
+    // length is unaffected either way.
     const dbPath = _tmpDbPath();
     const dag = mk(dbPath);
     try {
@@ -294,15 +299,20 @@ describe("committee_history — accessors", () => {
       const rot1 = _rotation(1, 100, [{ node_id: founding.node_id, public_key: founding.public_key }]);
 
       dag.saveCommitteeRotation(rot1);
-      // Second save with different content but same rotation_number — should NOT overwrite
-      const tampered = { ...rot1, payload_hash: "different_hash" };
-      dag.saveCommitteeRotation(tampered);
 
-      const stored = dag.getCommitteeRotation(1);
-      expect(stored.payload_hash).toBe(rot1.payload_hash);   // first wins
-      expect(stored.payload_hash).not.toBe("different_hash");
+      // Identical re-save: row unchanged (idempotent).
+      dag.saveCommitteeRotation(rot1);
+      let stored = dag.getCommitteeRotation(1);
+      expect(stored.payload_hash).toBe(rot1.payload_hash);
 
-      // Chain length unchanged
+      // Authoritative overwrite (e.g. snapshot install correcting a
+      // divergent local row): new payload_hash wins.
+      const corrected = { ...rot1, payload_hash: "different_hash" };
+      dag.saveCommitteeRotation(corrected);
+      stored = dag.getCommitteeRotation(1);
+      expect(stored.payload_hash).toBe("different_hash");
+
+      // Chain length unchanged across all three writes (still rotations 0 + 1).
       const chain = [...dag.getRotationsFromGenesis()];
       expect(chain).toHaveLength(2);
     } finally {

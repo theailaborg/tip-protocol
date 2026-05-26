@@ -861,7 +861,11 @@ class MemoryStore {
   // Snapshot fast-sync ships these rows in their own stream + root; the
   // joiner walks the chain forward verifying each transition.
   saveCommitteeRotation(rec) {
-    if (this._committeeHistory.has(rec.rotation_number)) return; // idempotent like INSERT OR IGNORE
+    // Overwrite-on-conflict: mirrors SQLite's INSERT OR REPLACE so a
+    // snapshot install carrying an authoritative rotation row overwrites
+    // any prior local divergent row by (rotation_number) PK. Re-applying
+    // the same row is still idempotent (all columns re-set to identical
+    // canonical values).
     this._committeeHistory.set(rec.rotation_number, {
       rotation_number: rec.rotation_number,
       effective_round: rec.effective_round,
@@ -895,12 +899,6 @@ class MemoryStore {
     }
     return best ? { ...best, committee: [...best.committee], signer_node_ids: [...best.signer_node_ids], signatures: [...best.signatures] } : null;
   }
-  // Clear all committee_history rows. Called by snapshot install before
-  // re-installing the sender's rotation chain, so INSERT OR IGNORE can't
-  // silently skip a corrected rotation for a rotation_number that this node
-  // already had (from a divergent history after a byzantine_fork).
-  clearCommitteeHistory() { this._committeeHistory.clear(); }
-
   // Streaming iterator over the entire chain in rotation_number order.
   // Used by snapshot sender (ship every rotation) and chain-of-trust walker.
   *getRotationsFromGenesis() {
@@ -2200,14 +2198,18 @@ class SQLiteStore {
       ),
 
       // §4 + #34: committee_history accessors. saveCommitteeRotation uses
-      // INSERT OR IGNORE — re-applying the same rotation is a no-op so the
-      // commit-handler doesn't need to dedup. getCommitteeAtRound is the
-      // hot-path read used by participants.getActiveCommittee (every round).
-      // SQLite picks the index on (effective_round) for the WHERE; the
-      // ORDER BY rotation_number DESC LIMIT 1 narrows to the latest rotation
-      // at-or-before the requested round in a single index scan.
+      // INSERT OR REPLACE so a snapshot install carrying an authoritative
+      // rotation row overwrites any prior local divergent row by
+      // (rotation_number) PK — no destructive clear step needed before
+      // re-insert. Re-applying the same row is still idempotent (every
+      // column re-set to the same canonical value).
+      // getCommitteeAtRound is the hot-path read used by
+      // participants.getActiveCommittee (every round). SQLite picks the
+      // index on (effective_round) for the WHERE; the ORDER BY
+      // rotation_number DESC LIMIT 1 narrows to the latest rotation at-or-
+      // before the requested round in a single index scan.
       saveCommitteeRotation: this.db.prepare(
-        `INSERT OR IGNORE INTO committee_history
+        `INSERT OR REPLACE INTO committee_history
            (rotation_number,effective_round,committee,prev_rotation,
             signer_node_ids,signatures,payload_hash,committed_at)
          VALUES (?,?,?,?,?,?,?,?)`
@@ -2853,9 +2855,6 @@ class SQLiteStore {
       yield this._parseRotation(row);
     }
   }
-  clearCommitteeHistory() {
-    this.db.prepare("DELETE FROM committee_history").run();
-  }
 
   // ── Prescan reviews ─────────────────────────────────────────────────────
   savePrescanReview(rec) {
@@ -3392,7 +3391,6 @@ function _buildDagHandle(store, config) {
     // getRotationsFromGenesis: streaming iterator in rotation_number order;
     //   used by snapshot sender + chain-of-trust walker.
     saveCommitteeRotation: (rec) => store.saveCommitteeRotation(rec),
-    clearCommitteeHistory: () => store.clearCommitteeHistory(),
     getCommitteeRotation: (rotationNumber) => store.getCommitteeRotation(rotationNumber),
     getLatestRotation: () => store.getLatestRotation(),
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
