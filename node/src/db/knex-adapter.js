@@ -346,6 +346,11 @@ class KnexAdapter {
       // Runtime filters at selection time decide which role a consenting
       // user lands in (score, content category, conflict-of-interest).
       t.integer("reviewer_consent").notNullable().defaultTo(0);
+      // Denormalised user-picked interest slugs (canonical sort, deduped).
+      // Source of truth is the chain of UPDATE_PROFILE txs; this column
+      // is the read-side projection for activity feed / discovery /
+      // recommendation. JSON-encoded array of strings.
+      t.text("interests").notNullable().defaultTo("[]");
       t.bigInteger("registered_at").notNullable();
       t.text("creator_name").nullable();
       _id(t, "tx_id").nullable();
@@ -572,6 +577,21 @@ class KnexAdapter {
       t.index("effective_round", "idx_committee_history_round");
     });
 
+    // Curated taxonomy of slugs users pick from on their profile.
+    // Seeded at first boot from INITIAL_INTERESTS_SEED; extended at
+    // runtime by INTEREST_REGISTERED txs (VP-attested). Slug PK enforces
+    // uniqueness at the DB layer.
+    await ensure("interests_registry", t => {
+      t.string("slug", 40).primary();
+      t.string("label", 80).notNullable();
+      t.string("category", 32).notNullable();
+      t.bigInteger("registered_at").notNullable();
+      t.string("registered_by_vp_id", 128).nullable();
+      t.string("tx_id", 128).nullable();
+      t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+      t.index("category", "idx_interests_registry_category");
+    });
+
     // Prescan reviews (Phase 2 — human reviewing AI prescan flag).
     // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
     await ensure("prescan_reviews", t => {
@@ -629,10 +649,15 @@ class KnexAdapter {
     // Identities
     const idRows = await this.knex("identities").select("*");
     for (const row of idRows) {
+      let interests = [];
+      if (typeof row.interests === "string" && row.interests.length > 0) {
+        try { interests = JSON.parse(row.interests); } catch { interests = []; }
+      }
       this.mirror._identities.set(row.tip_id, {
         ...row,
         founding: !!row.founding,
         reviewer_consent: !!row.reviewer_consent,
+        interests,
       });
     }
 
@@ -783,6 +808,20 @@ class KnexAdapter {
         signatures: _j(row.signatures) || [],
         payload_hash: row.payload_hash || null,
         committed_at: row.committed_at,
+      });
+    }
+
+    // Interests registry
+    const interestRows = await this.knex("interests_registry").select("*");
+    if (!this.mirror._interestsRegistry) this.mirror._interestsRegistry = new Map();
+    for (const row of interestRows) {
+      this.mirror._interestsRegistry.set(row.slug, {
+        slug: row.slug,
+        label: row.label,
+        category: row.category,
+        registered_at: Number(row.registered_at),
+        registered_by_vp_id: row.registered_by_vp_id || null,
+        tx_id: row.tx_id || null,
       });
     }
 
@@ -938,6 +977,7 @@ class KnexAdapter {
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
       reviewer_consent: rec.reviewer_consent ? 1 : 0,
+      interests: JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
       tx_id: rec.tx_id || null,
@@ -1455,6 +1495,26 @@ class KnexAdapter {
   getLatestRotation() { return this.mirror.getLatestRotation(); }
   getCommitteeAtRound(r) { return this.mirror.getCommitteeAtRound(r); }
   *getRotationsFromGenesis() { yield* this.mirror.getRotationsFromGenesis(); }
+
+  // ── Interests registry ─────────────────────────────────────────────────────
+
+  saveInterest(rec) {
+    this.mirror.saveInterest(rec);
+    const row = {
+      slug: rec.slug,
+      label: rec.label,
+      category: rec.category,
+      registered_at: rec.registered_at,
+      registered_by_vp_id: rec.registered_by_vp_id || null,
+      tx_id: rec.tx_id || null,
+      local_inserted_at: nowMs(),
+    };
+    this._ff(() => this._dbInsert("interests_registry", "slug", row, "merge"));
+  }
+
+  getInterest(slug) { return this.mirror.getInterest(slug); }
+  getAllInterests() { return this.mirror.getAllInterests(); }
+  interestCount() { return this.mirror.interestCount(); }
 
   // ── Prescan reviews ────────────────────────────────────────────────────────
 

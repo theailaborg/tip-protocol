@@ -1224,7 +1224,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         dag.setScore(row.tip_id, row.score, row.offense_count, row.last_updated);
         break;
       case "dedup_registry":
-        dag.addDedupHash(row.dedup_hash, row.created_at);
+        // tip_id is denormalised in the canonical row (used for fast
+        // hash→tip_id lookups + included in state_merkle_root). Pass
+        // it through so the sink's row matches the source byte-for-byte.
+        dag.addDedupHash(row.dedup_hash, row.created_at, row.tip_id || null);
         break;
       case "revocations":
         dag.addRevocation(row.tip_id, row.tx_type, row.timestamp, row.tx_id);
@@ -1242,6 +1245,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // valid_from_ts + valid_to_ts pre-computed — we replay the
         // exact ranges the sender had.
         dag.saveEntityKey(row);
+        break;
+      case "prescan_reviews":
+        dag.savePrescanReview(row);
+        break;
+      case "interests_registry":
+        // Ships the full taxonomy: genesis seed + VP-extended runtime
+        // entries. UPSERT semantics in saveInterest mean re-applying a
+        // genesis-seeded row (already pre-installed by
+        // _bootstrapInterestsRegistry on the joiner's first boot) is
+        // idempotent.
+        dag.saveInterest(row);
+        break;
+      case "domain_bindings":
+        dag.saveDomainBinding(row);
         break;
       default:
         // Unknown tables are tolerated so adding a new canonical table on
@@ -1262,6 +1279,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     _handleIncomingSnapshot,
     _verifyRotationChain,
     _installSnapshot,
+    _installOneRow,
   };
 }
 

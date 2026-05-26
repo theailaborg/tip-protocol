@@ -36,6 +36,7 @@ const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-a
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
+const interestRegisteredSchema = require("../schemas/interest-registered");
 const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
@@ -55,6 +56,8 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   // entity_keys row + close the prior one atomically.
   [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
+  // Interest taxonomy registry — VP-attested.
+  [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
 });
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
@@ -598,6 +601,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
+      case TX_TYPES.INTEREST_REGISTERED: {
+        // VP active + slug uniqueness + category enum + slug/label syntax.
+        // First-wins dedup: if two VPs race to register the same slug, the
+        // second one 409s here in canonical consensus order.
+        const r = interestRegisteredSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
       default:
         return { valid: true };
     }
@@ -1005,6 +1016,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
+          });
+        }
+        break;
+
+      // Interest taxonomy extension. Slug uniqueness already enforced by
+      // schemas/interest-registered.verifyTx in _statefulCheck — by the
+      // time we land here, the slug is guaranteed new. saveInterest is
+      // INSERT OR REPLACE / merge so a duplicate replay is a no-op.
+      case TX_TYPES.INTEREST_REGISTERED:
+        if (d.slug && d.label && d.category && d.approving_vp_id) {
+          dag.saveInterest({
+            slug:                d.slug,
+            label:               d.label,
+            category:            d.category,
+            registered_at:       tx.timestamp,
+            registered_by_vp_id: d.approving_vp_id,
+            tx_id:               tx.tx_id,
           });
         }
         break;

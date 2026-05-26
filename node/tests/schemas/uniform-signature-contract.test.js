@@ -30,28 +30,30 @@ const { resolveSignatureContract } = require(path.join(SRC, "schemas", "_common"
 // SCHEMA_FOR_TX_TYPE mirror — keep in sync with commit-handler's map.
 // Sourced here as the unit-under-test rather than the production
 // constant so the test fails loud if a wiring drifts.
-const contentRegisterSchema       = require(path.join(SRC, "schemas", "content-register"));
-const registerIdentitySchema      = require(path.join(SRC, "schemas", "register-identity"));
-const bindDomainSchema            = require(path.join(SRC, "schemas", "bind-domain"));
-const updateProfileSchema         = require(path.join(SRC, "schemas", "update-profile"));
-const prescanReviewTriggered      = require(path.join(SRC, "schemas", "prescan-review-triggered"));
-const prescanReviewDismissed      = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
-const prescanReviewConfirmed      = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
-const prescanReviewRecused        = require(path.join(SRC, "schemas", "prescan-review-recused"));
-const keyRotatedSchema            = require(path.join(SRC, "schemas", "key-rotated"));
-const keyRecoverySchema           = require(path.join(SRC, "schemas", "key-recovery"));
+const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
+const registerIdentitySchema = require(path.join(SRC, "schemas", "register-identity"));
+const bindDomainSchema = require(path.join(SRC, "schemas", "bind-domain"));
+const updateProfileSchema = require(path.join(SRC, "schemas", "update-profile"));
+const prescanReviewTriggered = require(path.join(SRC, "schemas", "prescan-review-triggered"));
+const prescanReviewDismissed = require(path.join(SRC, "schemas", "prescan-review-dismissed"));
+const prescanReviewConfirmed = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
+const prescanReviewRecused = require(path.join(SRC, "schemas", "prescan-review-recused"));
+const keyRotatedSchema = require(path.join(SRC, "schemas", "key-rotated"));
+const keyRecoverySchema = require(path.join(SRC, "schemas", "key-recovery"));
+const interestRegisteredSchema = require(path.join(SRC, "schemas", "interest-registered"));
 
 const SCHEMA_FOR_TX_TYPE = {
-  [TX_TYPES.REGISTER_CONTENT]:         contentRegisterSchema,
-  [TX_TYPES.REGISTER_IDENTITY]:        registerIdentitySchema,
-  [TX_TYPES.BIND_DOMAIN]:              bindDomainSchema,
-  [TX_TYPES.UPDATE_PROFILE]:           updateProfileSchema,
+  [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
+  [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
+  [TX_TYPES.BIND_DOMAIN]: bindDomainSchema,
+  [TX_TYPES.UPDATE_PROFILE]: updateProfileSchema,
   [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: prescanReviewTriggered,
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissed,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmed,
-  [TX_TYPES.PRESCAN_REVIEW_RECUSED]:   prescanReviewRecused,
-  [TX_TYPES.KEY_ROTATED]:              keyRotatedSchema,
-  [TX_TYPES.KEY_RECOVERY]:             keyRecoverySchema,
+  [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecused,
+  [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
+  [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
+  [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
 };
 
 // Tx types intentionally not yet on the unified contract — accounted for
@@ -76,7 +78,7 @@ const SPECIAL_AGGREGATE = new Set([
 describe("GH #51 — every TX_TYPES has a resolvable signature contract", () => {
   for (const [name, tt] of Object.entries(TX_TYPES)) {
     if (UNIMPLEMENTED.has(tt)) {
-      test.skip(`${name} (unimplemented — deferred)`, () => {});
+      test.skip(`${name} (unimplemented — deferred)`, () => { });
       continue;
     }
 

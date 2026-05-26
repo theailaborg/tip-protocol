@@ -8,6 +8,7 @@ const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { getFoundingVP } = require("../genesis");
+const interestRegisteredSchema = require("../schemas/interest-registered");
 const { log } = require("../logger");
 
 function createGovernanceService({ dag, scoring, config, submitTx }) {
@@ -121,7 +122,47 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     return { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, registered_at: registeredAt, confirmation: "proposed" };
   }
 
-  return { registerVP, resolveVP, registerNode };
+  /**
+   * Register a new interest in the curated taxonomy. VP-attested:
+   * caller must be a registered + active VP and have signed the
+   * canonical payload (alphabetical: approving_vp_id, category, label,
+   * slug). Slug uniqueness is enforced at commit time via the unified
+   * dedup gate (canCommitteeRotation-style); a 409 here surfaces the
+   * duplicate before the tx is even submitted.
+   */
+  function addInterest(body) {
+    interestRegisteredSchema.validateRequest(body, { dag });
+    const { slug, label, category, approving_vp_id, signature } = body;
+    const canonicalPayload = interestRegisteredSchema.buildSigningPayload({
+      slug, label, category, approving_vp_id,
+    });
+    const approvingVp = dag.getVP(approving_vp_id);
+    if (!interestRegisteredSchema.verifySignature(canonicalPayload, signature, approvingVp.public_key)) {
+      throw { status: 403, error: "VP signature verification failed" };
+    }
+
+    const registeredAt = nowMs();
+    const tx = withTxId({
+      tx_type:   TX_TYPES.INTEREST_REGISTERED,
+      timestamp: registeredAt,
+      prev:      dag.getRecentPrev(),
+      data:      { slug, label, category, approving_vp_id },
+      signature,
+    });
+
+    const validation = validateTransaction(tx, dag, {});
+    if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
+
+    submitTx(tx);
+    log.info(`Interest registration proposed: ${slug} (category=${category}, vp=${approving_vp_id})`);
+    return { slug, label, category, registered_at: registeredAt, confirmation: "proposed" };
+  }
+
+  function listInterests() {
+    return { interests: dag.getAllInterests() };
+  }
+
+  return { registerVP, resolveVP, registerNode, addInterest, listInterests };
 }
 
 module.exports = { createGovernanceService };

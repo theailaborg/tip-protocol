@@ -197,6 +197,13 @@ const SCHEMA = {
       effective_at: "number", zk_proof: "object", new_key_signature: "string",
     },
   },
+  // Interest taxonomy registry — VP-attested. Slug uniqueness + VP-active
+  // + category-enum enforced at commit time by
+  // schemas/interest-registered.verifyTx.
+  [TX_TYPES.INTEREST_REGISTERED]: {
+    required: ["category", "label", "slug", "approving_vp_id"],
+    types: { slug: "string", label: "string", category: "string", approving_vp_id: "string" },
+  },
 };
 
 // ─── Layer 1: Base structure ──────────────────────────────────────────────────

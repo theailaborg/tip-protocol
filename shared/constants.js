@@ -277,6 +277,76 @@ const DOMAIN_SCHEDULER_INTERVAL_MS = 10 * 60 * 1000;            // 10 min — sc
 // These now live in shared/protocol-constants.js, loaded from the genesis block.
 // Import them from there: const { JURY, DISPUTE } = require("./protocol-constants");
 
+// ─── Interest taxonomy ──────────────────────────────────────────────────────
+// Curated vocabulary users select from on their profile (UPDATE_PROFILE.interests).
+//
+//   - Seeded with INITIAL_INTERESTS_SEED at first boot (every honest node
+//     starts with the identical list — same code, same constant).
+//   - Extended at runtime via INTEREST_REGISTERED txs, VP-attested (matches
+//     VP_REGISTERED / NODE_REGISTERED governance pattern). New interests
+//     can be added without a code release.
+//   - Slug uniqueness enforced at commit (interests_registry PK on slug);
+//     semantic-dupe prevention is off-chain federation policy (VP UI warns
+//     about similar slugs before signing).
+const INTEREST_SLUG_REGEX = /^[a-z][a-z0-9-]{1,38}[a-z0-9]$/;   // 3–40 chars, lowercase + digits + hyphens, starts with letter, no trailing hyphen
+const INTEREST_LABEL_MAX_LEN = 80;
+const MAX_INTERESTS_PER_PROFILE = 10;   // ceiling on tx.data.interests array length
+
+// Closed category enum. Taxonomy at this level is far more stable than
+// individual interests, so locking the category vocabulary in code is
+// acceptable — adding a new top-level category is a code release. Adding
+// a new interest UNDER an existing category is dynamic via
+// INTEREST_REGISTERED. Used by validators (reject unknown category) and
+// by the FE to group the checkbox list visually.
+const INTEREST_CATEGORIES = Object.freeze({
+  TECH: "tech",
+  SCIENCE: "science",
+  HUMANITIES: "humanities",
+  ARTS: "arts",
+  BUSINESS: "business",
+  LIFESTYLE: "lifestyle",
+});
+const INTEREST_CATEGORY_VALUES = Object.freeze(new Set(Object.values(INTEREST_CATEGORIES)));
+
+const INITIAL_INTERESTS_SEED = Object.freeze([
+  // Tech
+  { slug: "ai-ml", label: "AI & Machine Learning", category: "tech" },
+  { slug: "web-dev", label: "Web Development", category: "tech" },
+  { slug: "devops", label: "DevOps & Infrastructure", category: "tech" },
+  { slug: "crypto-blockchain", label: "Crypto & Blockchain", category: "tech" },
+  { slug: "cybersecurity", label: "Cybersecurity", category: "tech" },
+  { slug: "data-science", label: "Data Science", category: "tech" },
+  // Science
+  { slug: "climate", label: "Climate Science", category: "science" },
+  { slug: "biology", label: "Biology & Life Sciences", category: "science" },
+  { slug: "physics", label: "Physics & Cosmology", category: "science" },
+  { slug: "chemistry", label: "Chemistry", category: "science" },
+  { slug: "neuroscience", label: "Neuroscience", category: "science" },
+  { slug: "space-exploration", label: "Space Exploration", category: "science" },
+  // Humanities
+  { slug: "philosophy", label: "Philosophy", category: "humanities" },
+  { slug: "history", label: "History", category: "humanities" },
+  { slug: "psychology", label: "Psychology", category: "humanities" },
+  { slug: "economics", label: "Economics", category: "humanities" },
+  { slug: "politics", label: "Politics & Policy", category: "humanities" },
+  // Arts
+  { slug: "music", label: "Music", category: "arts" },
+  { slug: "film", label: "Film & TV", category: "arts" },
+  { slug: "literature", label: "Literature", category: "arts" },
+  { slug: "visual-arts", label: "Visual Arts & Design", category: "arts" },
+  { slug: "gaming", label: "Gaming", category: "arts" },
+  // Business
+  { slug: "startups", label: "Startups & Entrepreneurship", category: "business" },
+  { slug: "investing", label: "Investing & Finance", category: "business" },
+  { slug: "marketing", label: "Marketing & Branding", category: "business" },
+  // Lifestyle
+  { slug: "fitness-health", label: "Fitness & Health", category: "lifestyle" },
+  { slug: "food-cooking", label: "Food & Cooking", category: "lifestyle" },
+  { slug: "travel", label: "Travel", category: "lifestyle" },
+  { slug: "sports", label: "Sports", category: "lifestyle" },
+  { slug: "parenting", label: "Parenting & Family", category: "lifestyle" },
+]);
+
 // ─── Transaction types ────────────────────────────────────────────────────────
 const TX_TYPES = Object.freeze({
   // Identity
@@ -328,6 +398,12 @@ const TX_TYPES = Object.freeze({
   VP_REGISTERED: "VP_REGISTERED",
   VP_SUSPENDED: "VP_SUSPENDED",
   NODE_REGISTERED: "NODE_REGISTERED",
+  // Interest taxonomy — VP-attested registry entries. Each tx adds a
+  // {slug, label} row to interests_registry. Users reference these slugs
+  // in their UPDATE_PROFILE.interests selection. Genesis seeds the initial
+  // taxonomy from INITIAL_INTERESTS_SEED below; later additions arrive
+  // through this tx type.
+  INTEREST_REGISTERED: "INTEREST_REGISTERED",
   // Consensus committee rotation (§4 + #34 chain-of-trust). Carries the
   // new committee's [{node_id, public_key}] records along with ≥2f+1
   // signatures from the PREVIOUS committee endorsing the transition.
@@ -636,4 +712,10 @@ module.exports = {
   TIP_ID_FIELD_VALUES,
   VP_ID_FIELDS,
   VP_ID_FIELD_VALUES,
+  INTEREST_SLUG_REGEX,
+  INTEREST_LABEL_MAX_LEN,
+  MAX_INTERESTS_PER_PROFILE,
+  INTEREST_CATEGORIES,
+  INTEREST_CATEGORY_VALUES,
+  INITIAL_INTERESTS_SEED,
 };
