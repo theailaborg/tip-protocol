@@ -35,7 +35,10 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
-const { TX_TYPES, TIP_ID_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
+const {
+  TX_TYPES, TIP_ID_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
+  INTEREST_SLUG_REGEX, MAX_INTERESTS_PER_PROFILE,
+} = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.UPDATE_PROFILE;
 // GH #51 — unified signature storage. Subject (data.tip_id) signs the
@@ -49,8 +52,14 @@ const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.TIP_ID;
 // strict schema both consult this list. Keep alphabetized for canonical
 // payload determinism (canonicalJson sorts keys anyway, but explicit
 // ordering keeps reviewer + future-developer mental models aligned).
+// interests is an array (typeof === "object"). Schema-build validates
+// each entry against INTEREST_SLUG_REGEX, max length, and (at commit
+// time) registry presence. Stored sorted-alphabetical in the canonical
+// payload for deterministic signed bytes regardless of client input
+// order.
 const KNOWN_FIELDS = Object.freeze({
   reviewer_consent: { type: "boolean" },
+  interests: { type: "object" },
 });
 
 const KNOWN_FIELD_NAMES = Object.freeze(Object.keys(KNOWN_FIELDS));
@@ -138,6 +147,40 @@ function validateRequest(body, deps) {
       );
     }
   }
+
+  // Interests — type-check as array, syntax-check each slug, cap count.
+  // Registry-existence check happens at commit time (verifyTx) so the
+  // API can succeed even if the registry got extended between API call
+  // and consensus order (the slug will exist for both sides).
+  if (presentFields.includes("interests")) {
+    _validateInterestsShape(body.interests, deps.dag);
+  }
+}
+
+function _validateInterestsShape(interests, dag) {
+  if (!Array.isArray(interests)) {
+    throw schemaError(400, "interests must be an array of slug strings", "interests_invalid");
+  }
+  if (interests.length > MAX_INTERESTS_PER_PROFILE) {
+    throw schemaError(400, `interests must have ≤ ${MAX_INTERESTS_PER_PROFILE} entries`, "interests_too_many");
+  }
+  const seen = new Set();
+  for (const slug of interests) {
+    if (typeof slug !== "string" || !INTEREST_SLUG_REGEX.test(slug)) {
+      throw schemaError(400, `interest slug "${slug}" invalid (must match ${INTEREST_SLUG_REGEX})`, "interest_slug_invalid");
+    }
+    if (seen.has(slug)) {
+      throw schemaError(400, `duplicate interest slug: "${slug}"`, "interest_duplicate");
+    }
+    seen.add(slug);
+    // Registry presence — gate at API ingress so the user gets a 412
+    // immediately for typos / stale taxonomy rather than discovering at
+    // commit time. Commit-handler re-checks in verifyTx (deps.dag may be
+    // the same DAG here, but the property must hold at consensus time).
+    if (dag && typeof dag.getInterest === "function" && !dag.getInterest(slug)) {
+      throw schemaError(412, `interest not registered: "${slug}"`, "interest_not_registered");
+    }
+  }
 }
 
 /**
@@ -160,6 +203,17 @@ function buildSigningPayload(input) {
     const expectedType = KNOWN_FIELDS[field].type;
     if (typeof input[field] !== expectedType) {
       throw schemaError(400, `Field "${field}" must be ${expectedType}`, "field_type_invalid");
+    }
+    // Interests — sort alphabetically + dedupe so client input order
+    // doesn't change the canonical signed bytes. Validation happens in
+    // validateRequest / verifyTx — by the time we reach here for signing,
+    // the slugs are assumed shape-valid.
+    if (field === "interests") {
+      if (!Array.isArray(input.interests)) {
+        throw schemaError(400, "interests must be an array", "interests_invalid");
+      }
+      payload.interests = [...new Set(input.interests)].sort();
+      continue;
     }
     payload[field] = input[field];
   }
@@ -202,6 +256,17 @@ function verifyTx(tx, dag) {
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
     throw err;
+  }
+
+  // Commit-replay registry presence — every slug must still exist when
+  // the tx commits, even if the registry shifted between API ingress and
+  // consensus order. Reject the whole tx if any slug is unknown.
+  if (Array.isArray(d.interests) && typeof dag.getInterest === "function") {
+    for (const slug of d.interests) {
+      if (!dag.getInterest(slug)) {
+        return { ok: false, status: 412, error: `interest not registered: ${slug}`, code: "interest_not_registered" };
+      }
+    }
   }
 
   if (!verifySignature(payload, d.signature, identity.public_key)) {

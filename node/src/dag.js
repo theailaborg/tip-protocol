@@ -306,6 +306,7 @@ class MemoryStore {
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
+    this._interestsRegistry = new Map(); // slug -> {slug, label, category, registered_at, registered_by_vp_id, tx_id}
     this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
     this._prescanReviews = new Map();  // review_id -> review record (human reviewing AI prescan flag)
     this._mempool = new Map();  // tx_id -> tx
@@ -908,6 +909,35 @@ class MemoryStore {
     }
   }
 
+  // ── Interests registry ─────────────────────────────────────────────────
+  // Curated vocabulary of interest slugs the user can pick from on their
+  // profile. Genesis seeds the initial taxonomy from INITIAL_INTERESTS_SEED;
+  // INTEREST_REGISTERED txs extend it at runtime. Slug is PK; overwrite-
+  // on-conflict semantics match interests_registry's UPSERT pattern (same
+  // shape as committee_history — peer-authoritative install wins).
+  saveInterest(rec) {
+    this._interestsRegistry.set(rec.slug, {
+      slug: rec.slug,
+      label: rec.label,
+      category: rec.category,
+      registered_at: rec.registered_at,
+      registered_by_vp_id: rec.registered_by_vp_id || null,
+      tx_id: rec.tx_id || null,
+    });
+  }
+  getInterest(slug) {
+    const r = this._interestsRegistry.get(slug);
+    return r ? { ...r } : null;
+  }
+  // Full registry — used by GET /v1/interests and by UPDATE_PROFILE
+  // validation to check that every user-picked slug exists.
+  getAllInterests() {
+    return [...this._interestsRegistry.values()]
+      .sort((a, b) => a.slug.localeCompare(b.slug))
+      .map(r => ({ ...r }));
+  }
+  interestCount() { return this._interestsRegistry.size; }
+
   // ── Prescan reviews ─────────────────────────────────────────────────
   // INSERT OR REPLACE semantics — the same review_id walks through its
   // state machine (triggered → confirmed → closed_accepted_private etc.)
@@ -1378,6 +1408,10 @@ class SQLiteStore {
         -- Runtime filters at selection time decide which role a consenting
         -- user lands in (score, content category, conflict-of-interest).
         reviewer_consent    INTEGER NOT NULL DEFAULT 0,
+        -- Denormalised user-picked interest slugs (canonical sort, deduped).
+        -- Source of truth is the chain of UPDATE_PROFILE txs; this column
+        -- is the read-side projection. JSON-encoded array.
+        interests           TEXT NOT NULL DEFAULT '[]',
         registered_at INTEGER NOT NULL,
         creator_name        TEXT,
         tx_id               TEXT
@@ -1642,6 +1676,23 @@ class SQLiteStore {
         local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
+
+      -- ── Interests Registry ──────────────────────────────────────────
+      -- Curated taxonomy of slugs users can pick from on their profile
+      -- (UPDATE_PROFILE.interests). Seeded at first boot from
+      -- INITIAL_INTERESTS_SEED; extended at runtime via INTEREST_REGISTERED
+      -- (VP-attested). Slug is PK so duplicates are rejected at insert.
+      -- registered_by_vp_id is NULL for genesis-seeded rows.
+      CREATE TABLE IF NOT EXISTS interests_registry (
+        slug                  TEXT PRIMARY KEY,
+        label                 TEXT NOT NULL,
+        category              TEXT NOT NULL,
+        registered_at         INTEGER NOT NULL,
+        registered_by_vp_id   TEXT,
+        tx_id                 TEXT,
+        local_inserted_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_interests_registry_category ON interests_registry(category);
 
       -- ── Prescan Reviews ─────────────────────────────────────────────
       -- Tracks human-reviewing-AI-flag instances. A row is created at h=48
@@ -1996,8 +2047,9 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO identities
            (tip_id,region,vp_id,
             verification_tier,tip_id_type,founding,status,reviewer_consent,
+            interests,
             registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -2225,6 +2277,25 @@ class SQLiteStore {
       ),
       getRotationsFromGenesis: this.db.prepare(
         "SELECT * FROM committee_history ORDER BY rotation_number ASC"
+      ),
+
+      // Interests registry accessors. INSERT OR REPLACE so an
+      // authoritative re-install (snapshot install correcting a row, or
+      // re-registration via tx) overwrites by (slug) PK without a
+      // destructive clear step. Re-applying identical data is idempotent.
+      saveInterest: this.db.prepare(
+        `INSERT OR REPLACE INTO interests_registry
+           (slug, label, category, registered_at, registered_by_vp_id, tx_id)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ),
+      getInterest: this.db.prepare(
+        "SELECT * FROM interests_registry WHERE slug = ?"
+      ),
+      getAllInterests: this.db.prepare(
+        "SELECT * FROM interests_registry ORDER BY slug ASC"
+      ),
+      interestCount: this.db.prepare(
+        "SELECT COUNT(*) AS n FROM interests_registry"
       ),
 
       // Prescan-review accessors. INSERT OR REPLACE so the same row can
@@ -2468,19 +2539,28 @@ class SQLiteStore {
       rec.founding ? 1 : 0,
       rec.status || "active",
       rec.reviewer_consent ? 1 : 0,
+      JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
   }
   getIdentity(id) {
     const row = this._stmts.getIdentity.get(id);
-    return row ? {
+    return row ? this._parseIdentityRow(row) : null;
+  }
+  getAllIdentities() {
+    return this._stmts.getAllIdentities.all().map(r => this._parseIdentityRow(r));
+  }
+  _parseIdentityRow(row) {
+    let interests = [];
+    if (typeof row.interests === "string" && row.interests.length > 0) {
+      try { interests = JSON.parse(row.interests); } catch { interests = []; }
+    }
+    return {
       ...row,
       founding: row.founding === 1,
       reviewer_consent: row.reviewer_consent === 1,
-    } : null;
-  }
-  getAllIdentities() {
-    return this._stmts.getAllIdentities.all().map(r => ({ ...r, founding: r.founding === 1 }));
+      interests,
+    };
   }
 
   // ── Content ───────────────────────────────────────────────────────────────
@@ -2856,6 +2936,36 @@ class SQLiteStore {
     }
   }
 
+  // ── Interests registry ─────────────────────────────────────────────────
+  saveInterest(rec) {
+    this._stmts.saveInterest.run(
+      rec.slug,
+      rec.label,
+      rec.category,
+      rec.registered_at,
+      rec.registered_by_vp_id || null,
+      rec.tx_id || null,
+    );
+  }
+  getInterest(slug) {
+    const row = this._stmts.getInterest.get(slug);
+    return row ? this._parseInterest(row) : null;
+  }
+  getAllInterests() {
+    return this._stmts.getAllInterests.all().map(r => this._parseInterest(r));
+  }
+  interestCount() { return this._stmts.interestCount.get().n; }
+  _parseInterest(row) {
+    return {
+      slug:                row.slug,
+      label:               row.label,
+      category:            row.category,
+      registered_at:       row.registered_at,
+      registered_by_vp_id: row.registered_by_vp_id || null,
+      tx_id:               row.tx_id || null,
+    };
+  }
+
   // ── Prescan reviews ─────────────────────────────────────────────────────
   savePrescanReview(rec) {
     this._stmts.savePrescanReview.run(
@@ -3205,6 +3315,13 @@ function _buildDagHandle(store, config) {
   // if rotation 0 already exists.
   _bootstrapCommitteeRotationZero(store);
 
+  // ── Bootstrap: interests_registry from INITIAL_INTERESTS_SEED ─────────────
+  // Curated taxonomy of profile interests. Same idempotency contract as
+  // rotation 0 — runs every boot, UPSERTs per slug so re-running is a
+  // no-op when data matches. Genesis-seeded rows carry
+  // registered_by_vp_id=null (no signing VP at genesis).
+  _bootstrapInterestsRegistry(store);
+
   // Activity-feed denormalisation: populate `subject_tip_id` for rows
   // that pre-date the column. Idempotent — second startup matches
   // zero rows and exits immediately. Without this, existing committed
@@ -3396,6 +3513,17 @@ function _buildDagHandle(store, config) {
     getCommitteeAtRound: (round) => store.getCommitteeAtRound(round),
     getRotationsFromGenesis: () => store.getRotationsFromGenesis(),
 
+    // ── Interests registry — VP-attested taxonomy of profile interests ──
+    // saveInterest: INSERT OR REPLACE. Genesis seed + commit-handler are
+    //   the writers. Slug is PK; authoritative re-install overwrites by PK.
+    // getInterest: O(1) lookup used by UPDATE_PROFILE validation +
+    //   schema verifyTx for INTEREST_REGISTERED dedup.
+    // getAllInterests: full taxonomy, used by GET /v1/interests.
+    saveInterest: (rec) => store.saveInterest(rec),
+    getInterest: (slug) => store.getInterest(slug),
+    getAllInterests: () => store.getAllInterests(),
+    interestCount: () => store.interestCount(),
+
     // ── Prescan reviews (Phase 2 — human reviewing AI prescan flag) ─────
     // savePrescanReview: INSERT OR REPLACE. The same review_id walks through
     //   its state machine (triggered → confirmed → closed_*) via successive
@@ -3564,6 +3692,23 @@ function _bootstrapCommitteeRotationZero(store) {
     payload_hash,
     committed_at: GENESIS_TIMESTAMP,
   });
+}
+
+function _bootstrapInterestsRegistry(store) {
+  // Skip if any caller (test, fake store) doesn't implement the registry.
+  if (typeof store.saveInterest !== "function") return;
+  const { INITIAL_INTERESTS_SEED } = require("../../shared/constants");
+  const { GENESIS_TIMESTAMP } = require("./genesis");
+  for (const entry of INITIAL_INTERESTS_SEED) {
+    store.saveInterest({
+      slug:                entry.slug,
+      label:               entry.label,
+      category:            entry.category,
+      registered_at:       GENESIS_TIMESTAMP,
+      registered_by_vp_id: null,     // genesis-seeded — no signing VP
+      tx_id:               null,
+    });
+  }
 }
 
 function _writeGenesisBlock(store, config) {

@@ -82,9 +82,19 @@ function createProfileService({ dag, config, submitTx }) {
     if (!identity) throw schemaError(404, "TIP-ID not registered", "tip_id_not_registered");
     // Project the user-settable preference fields only — internal fields
     // (founding, region, etc.) are exposed through other identity endpoints.
+    // Type-aware projection so arrays/objects survive (interests is an
+    // array; reviewer_consent is a boolean).
     const profile = { tip_id: tipId };
     for (const field of updateProfileSchema.KNOWN_FIELD_NAMES) {
-      profile[field] = !!identity[field];
+      const spec = updateProfileSchema.KNOWN_FIELDS[field];
+      const raw = identity[field];
+      if (spec.type === "boolean") {
+        profile[field] = !!raw;
+      } else if (spec.type === "object") {
+        profile[field] = Array.isArray(raw) ? [...raw] : (raw ? { ...raw } : []);
+      } else {
+        profile[field] = raw === undefined ? null : raw;
+      }
     }
     return profile;
   }

@@ -250,6 +250,7 @@ describe("profile-service.getProfile", () => {
     expect(profile).toEqual({
       tip_id: tipId,
       reviewer_consent: false,
+      interests: [],
     });
   });
 
