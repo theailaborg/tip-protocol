@@ -93,6 +93,14 @@ function fetchProfileHtml(profileUrl) {
 }
 
 async function verifyBio({ tipId, profileUrl, platform }) {
+  // Dev/test bypass: set TIP_SKIP_BIO_CHECK=true to skip real fetch.
+  // NEVER enable in production.
+  if (process.env.TIP_SKIP_BIO_CHECK === "true") {
+    log.warn("bio-fetcher: TIP_SKIP_BIO_CHECK=true — skipping bio verification for %s (dev only)", profileUrl);
+    const handle = extractHandle(profileUrl, platform);
+    return { handle };
+  }
+
   let html;
   try {
     html = await fetchProfileHtml(profileUrl);

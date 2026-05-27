@@ -803,6 +803,13 @@ class KnexAdapter {
       this.mirror._domainBindings.set(row.domain, { ...row });
     }
 
+    // Platform links (canonical)
+    const plRows = await this.knex("platform_links").select("*");
+    if (!this.mirror._platformLinks) this.mirror._platformLinks = new Map();
+    for (const row of plRows) {
+      this.mirror._platformLinks.set(row.id, { ...row });
+    }
+
     // Pending domain claims (per-node local)
     const pendingRows = await this.knex("pending_domain_claims").select("*");
     for (const row of pendingRows) {
@@ -1218,6 +1225,32 @@ class KnexAdapter {
   getDomainBinding(domain) { return this.mirror.getDomainBinding(domain); }
   getDomainBindingsByTipId(tipId) { return this.mirror.getDomainBindingsByTipId(tipId); }
   getAllDomainBindings() { return this.mirror.getAllDomainBindings(); }
+
+  // ── Platform links (canonical, in state_merkle_root) ─────────────────────
+
+  savePlatformLink(rec) {
+    this.mirror.savePlatformLink(rec);
+    const row = {
+      id: rec.id,
+      tip_id: rec.tip_id,
+      platform: rec.platform,
+      handle: rec.handle ?? null,
+      profile_url: rec.profile_url,
+      status: rec.status || "active",
+      linked_at: rec.linked_at,
+      verified_at: rec.verified_at,
+      expires_at: rec.expires_at ?? null,
+      consecutive_failures: typeof rec.consecutive_failures === "number" ? rec.consecutive_failures : 0,
+      node_id: rec.node_id,
+      claim_signature: rec.claim_signature,
+      node_signature: rec.node_signature,
+      tx_id: rec.tx_id,
+    };
+    this._ff(() => this._dbInsert("platform_links", "id", row, "merge"));
+  }
+
+  getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
+  getPlatformLinksByTipId(tipId) { return this.mirror.getPlatformLinksByTipId(tipId); }
 
   savePendingDomainClaim(rec) {
     this.mirror.savePendingDomainClaim(rec);
