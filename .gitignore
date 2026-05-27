@@ -181,7 +181,6 @@ browser-extension
 genesis-data/seed.db
 genesis-data/seed.db-shm
 genesis-data/seed.db-wal
-docs/
 node2-env/
 node3-env/
 node4-env/
