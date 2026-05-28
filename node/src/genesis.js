@@ -217,6 +217,93 @@ const GENESIS_PAYLOAD = Object.freeze({
         moderate_min: 50,
         veteran_min: 200,
       },
+
+      // ── Async-prescan worker config ──────────────────────────────────
+      // The worker process polls prescan_jobs, calls the classifier, and
+      // emits PRESCAN_COMPLETED. Retry policy: degraded (soft) failures
+      // and hard errors get separate budgets but share the same backoff
+      // schedule. After both budgets exhaust, fail-open silently —
+      // content moves to REGISTERED without a flag.
+      worker_max_retries_on_degraded: 4,
+      worker_max_retries_on_error: 4,
+      worker_retry_backoff_ms: [5000, 30000, 300000, 1800000],  // 5s, 30s, 5min, 30min
+      worker_claim_timeout_ms: 60000,         // 60s before another worker reclaims a stuck job
+      // Failover: when the original assigned node fails to emit
+      // PRESCAN_COMPLETED within takeover_after_ms, a round-modulo
+      // leader on another node takes over. fail_open_after_ms is the
+      // backstop — past this point, any leader can emit a fail-open
+      // completion so content can't get stuck in PENDING_PRESCAN forever.
+      takeover_after_ms: 600000,              // 10 min
+      fail_open_after_ms: 3600000,            // 1 hour
+      // Client poll hints — surfaced on the 202 response from
+      // /v1/content/register. Wait poll_after_ms before each poll;
+      // give up after poll_max_attempts.
+      poll_after_ms: 2000,
+      poll_max_attempts: 30,
+      // Content-type taxonomy + detection
+      valid_content_types: ["text", "image", "audio", "video", "multi"],
+      // Image + text post split: text length ≥ this → article-with-hero
+      // (content_type="text"), below → photo-with-caption ("image").
+      article_text_threshold_chars: 1000,
+      // When a modality returns degraded signal (error / disagreement /
+      // exact 0.5 neutral), its weight in the aggregation is multiplied
+      // by this. 0.5 = half-weight; 0 would zero it out entirely.
+      degraded_weight_multiplier: 0.5,
+      // Per-content-type modality weight matrix.
+      //
+      // PRIMARY-FLOOR + ASYMMETRIC-LIFT aggregation: the primary modality
+      // (matching content_type — diagonal of this matrix) is the FLOOR
+      // — its probability is the minimum verdict. Off-diagonal entries
+      // are LIFT COEFFICIENTS for secondary modalities, which can ONLY
+      // RAISE the verdict when they vote AI more strongly than primary;
+      // they NEVER dilute a clean primary.
+      //
+      //   final = primary_prob + Σ max(0, secondary_prob - primary_prob) × secondary_weight
+      //   (clamped to [0, 1])
+      //
+      // Diagonal cells are set to 1.00 as a documentation convention
+      // marking "this is the primary." The aggregator skips the primary
+      // in the lift sum (it's the floor, added directly), so the value
+      // is not arithmetic — it's read at a glance to identify each row's
+      // primary modality.
+      //
+      // 'multi' has no single primary; the aggregator falls back to a
+      // traditional weighted average over present modalities.
+      //
+      // Per-row reasoning (off-diagonal lift coefficients):
+      // - text:  image=0.30 (visual companion content), video=0.20
+      //          (embedded video), audio=0.10 (rare in articles)
+      // - image: text=0.30 (caption claim), video=0.20 (carousel clip),
+      //          audio=0.10 (rare)
+      // - audio: text=0.20 (description/lyrics), image=0.15 (cover art),
+      //          video=0.20 (music video case)
+      // - video: audio=0.35 (voice-over AI is the strongest secondary
+      //          signal for AI video), text=0.15 (description), image=0.10
+      //          (thumbnail is just a frame, redundant with video itself)
+      //
+      // See ASYNC_PRESCAN_ARCHITECTURE.md § Modality weight matrix for
+      // full design discussion.
+      modality_weights: {
+        text:  { text: 1.00, image: 0.30, audio: 0.10, video: 0.20 },
+        image: { text: 0.30, image: 1.00, audio: 0.10, video: 0.20 },
+        audio: { text: 0.20, image: 0.15, audio: 1.00, video: 0.20 },
+        video: { text: 0.15, image: 0.10, audio: 0.35, video: 1.00 },
+        multi: { text: 0.30, image: 0.30, audio: 0.20, video: 0.30 },
+      },
+    },
+    // ── Content size caps (v1: inline base64 only) ─────────────────────
+    // Hard limits enforced at the API boundary BEFORE the body-parser.
+    // video_max_bytes=0 means video uploads are rejected in v1; lifts
+    // to GB-scale in v2 once the content-storage layer + file_url path
+    // ships. request_body_max_bytes is the Express body-parser limit;
+    // single media + reasonable text fits under 25 MB.
+    content_limits: {
+      text_max_bytes: 102400,             // 100 KB
+      image_max_bytes: 5242880,           // 5 MB
+      audio_max_bytes: 10485760,          // 10 MB
+      video_max_bytes: 0,                 // v1: unsupported; v2: lifts when file_url + storage land
+      media_items_max: 4,
+      request_body_max_bytes: 26214400,   // 25 MB
     },
     reviewer: {
       // Runtime eligibility gates for reviewer pool. No REGISTER_REVIEWER tx —
