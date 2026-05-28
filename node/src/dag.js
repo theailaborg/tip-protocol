@@ -93,6 +93,12 @@ function _canonContent(r) {
     prescan_flagged: r.prescan_flagged ? 1 : 0,
     prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
     prescan_tier: r.prescan_tier || "low",
+    prescan_status: r.prescan_status || "completed",
+    prescan_completed_at: typeof r.prescan_completed_at === "number" ? r.prescan_completed_at : null,
+    prescan_assigned_node_id: r.prescan_assigned_node_id || null,
+    prescan_content_type: r.prescan_content_type || null,
+    prescan_overall_degraded: r.prescan_overall_degraded ? 1 : 0,
+    content_type_hint: r.content_type_hint || null,
     override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
@@ -1514,32 +1520,51 @@ class SQLiteStore {
         ON entity_keys(entity_type, entity_id, valid_from_ts);
 
       -- ── Content ───────────────────────────────────────────────────────
+      -- Async-prescan fields: prescan_status flips from 'pending' (set at
+      -- REGISTER_CONTENT) to 'completed' when the worker emits
+      -- PRESCAN_COMPLETED. prescan_completed_at is the worker's submit
+      -- timestamp; downstream consumers (h=48 reviewer trigger, grace
+      -- windows) anchor to it rather than registered_at so the clock
+      -- starts when the creator sees the verdict, not when they pressed
+      -- publish. prescan_content_type is the resolved primary modality
+      -- (text/image/audio/video/multi) used by the modality-weight
+      -- aggregator. content_type_hint is the publisher's signed
+      -- declaration; the worker may override at PRESCAN_COMPLETED time.
+      -- Default 'completed' on prescan_status keeps existing/legacy rows
+      -- valid without a migration.
       CREATE TABLE IF NOT EXISTS content (
-        ctid                TEXT PRIMARY KEY,
-        origin_code         TEXT NOT NULL,
-        content_hash        TEXT NOT NULL,
-        perceptual_hash     TEXT,
-        author_tip_id       TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
-        signer_tip_id       TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
-        authors             TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
-        attribution_mode    TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
-        extras              TEXT,                            -- JSON-encoded extension data
-        cna_version         TEXT NOT NULL,                   -- CNA version this content was signed under
-        status              TEXT NOT NULL DEFAULT 'verified',
-        dispute_count       INTEGER NOT NULL DEFAULT 0,
-        verification_count  INTEGER NOT NULL DEFAULT 0,
-        prescan_flagged     INTEGER NOT NULL DEFAULT 0,
-        prescan_probability REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
-        prescan_tier        TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
-        override            INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
-        registered_at INTEGER NOT NULL,
-        registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
-        tx_id               TEXT
+        ctid                       TEXT PRIMARY KEY,
+        origin_code                TEXT NOT NULL,
+        content_hash               TEXT NOT NULL,
+        perceptual_hash            TEXT,
+        author_tip_id              TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
+        signer_tip_id              TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
+        authors                    TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
+        attribution_mode           TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
+        extras                     TEXT,                            -- JSON-encoded extension data
+        cna_version                TEXT NOT NULL,                   -- CNA version this content was signed under
+        status                     TEXT NOT NULL DEFAULT 'verified',
+        dispute_count              INTEGER NOT NULL DEFAULT 0,
+        verification_count         INTEGER NOT NULL DEFAULT 0,
+        prescan_flagged            INTEGER NOT NULL DEFAULT 0,
+        prescan_probability        REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
+        prescan_tier               TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
+        prescan_status             TEXT NOT NULL DEFAULT 'completed', -- 'pending' | 'completed'
+        prescan_completed_at       INTEGER,                          -- ms epoch; null for legacy rows
+        prescan_assigned_node_id   TEXT,                             -- node_reg_id of the API node that received the registration
+        prescan_content_type       TEXT,                             -- 'text'|'image'|'audio'|'video'|'multi'; null until PRESCAN_COMPLETED applies
+        prescan_overall_degraded   INTEGER NOT NULL DEFAULT 0,       -- 1 if any modality returned error / disagreement / 0.5 neutral
+        content_type_hint          TEXT,                             -- publisher's declared hint at register time
+        override                   INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
+        registered_at              INTEGER NOT NULL,
+        registered_urls            TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
+        tx_id                      TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
       CREATE INDEX IF NOT EXISTS idx_content_signer ON content(signer_tip_id);
       CREATE INDEX IF NOT EXISTS idx_content_origin ON content(origin_code);
       CREATE INDEX IF NOT EXISTS idx_content_status ON content(status);
+      CREATE INDEX IF NOT EXISTS idx_content_prescan_status ON content(prescan_status);
 
       -- ── Trust Scores ──────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS scores (
@@ -1951,6 +1976,29 @@ class SQLiteStore {
         -- Off-chain store by design; no chain-time exists for this row.
         local_inserted_at  INTEGER NOT NULL
       );
+
+      -- ── Prescan jobs (node-local async queue; NOT in state_merkle_root) ─
+      -- Worker-process queue for outbound classifier calls. One row per
+      -- registered content awaiting prescan. The API node that received
+      -- the registration enqueues; its sibling worker process polls,
+      -- calls the classifier, and emits PRESCAN_COMPLETED. Stuck claims
+      -- past claimed_at + worker_claim_timeout_ms are reclaimable by
+      -- another worker on the same node. Per-node by design — other
+      -- nodes never see these rows, only the PRESCAN_COMPLETED tx that
+      -- eventually commits.
+      CREATE TABLE IF NOT EXISTS prescan_jobs (
+        job_id        TEXT PRIMARY KEY,
+        ctid          TEXT NOT NULL UNIQUE,
+        payload       BLOB NOT NULL,                       -- canonical JSON of classifier input
+        status        TEXT NOT NULL,                       -- 'queued' | 'claimed' | 'done' | 'failed'
+        claimed_at    INTEGER,                              -- ms; null while queued
+        claimed_by    TEXT,                                  -- worker pid / node_reg_id; null while queued
+        retries       INTEGER NOT NULL DEFAULT 0,
+        last_error    TEXT,
+        created_at    INTEGER NOT NULL,                     -- ms; enqueue time
+        completed_at  INTEGER                                -- ms; null while incomplete
+      );
+      CREATE INDEX IF NOT EXISTS idx_prescan_jobs_status ON prescan_jobs(status, created_at);
     `);
 
     // Backfill creator_name column for pre-existing identities tables
@@ -2163,9 +2211,11 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO content
            (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
-            status,prescan_flagged,prescan_probability,prescan_tier,override,
-            registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            status,prescan_flagged,prescan_probability,prescan_tier,
+            prescan_status,prescan_completed_at,prescan_assigned_node_id,
+            prescan_content_type,prescan_overall_degraded,content_type_hint,
+            override,registered_at,registered_urls,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -2690,6 +2740,12 @@ class SQLiteStore {
       rec.prescan_flagged ? 1 : 0,
       typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
       rec.prescan_tier || "low",
+      rec.prescan_status || "completed",
+      typeof rec.prescan_completed_at === "number" ? rec.prescan_completed_at : null,
+      rec.prescan_assigned_node_id || null,
+      rec.prescan_content_type || null,
+      rec.prescan_overall_degraded ? 1 : 0,
+      rec.content_type_hint || null,
       rec.override ? 1 : 0,
       rec.registered_at, JSON.stringify(urls), rec.tx_id || null
     );
