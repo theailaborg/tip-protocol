@@ -411,7 +411,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  async function linkPlatform({ tipId, platform, profileUrl, claimSignature, claimedAt }) {
+  async function linkPlatform({ tipId, platform, profileUrl, claimSignature, claimedAt, vpId, vpOauthSignature, vpOauthHandle, vpOauthVerifiedAt }) {
     if (!tipId || !platform || !profileUrl || !claimSignature || !claimedAt) {
       throw schemaError(400, "tipId, platform, profileUrl, claimSignature, claimedAt are required", "missing_fields");
     }
@@ -436,7 +436,28 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
     }
 
-    const { handle } = await bioFetcher.verifyBio({ tipId, profileUrl, platform });
+    // VP OAuth proof path — VP verified social ownership via OAuth; skip bio check.
+    // Falls back to bio check when no VP proof is provided.
+    let handle;
+    if (vpOauthSignature && vpId) {
+      const vp = registerIdentitySchema.resolveVP(vpId, dag);
+      const oauthProof = {
+        claimed_at:  claimedAt,
+        handle:      vpOauthHandle ?? null,
+        platform,
+        profile_url: profileUrl,
+        tip_id:      tipId,
+        verified_at: vpOauthVerifiedAt,
+        vp_id:       vpId,
+      };
+      if (!verifyPayload(oauthProof, vpOauthSignature, vp.public_key)) {
+        throw schemaError(403, "VP OAuth signature verification failed", "vp_oauth_signature_invalid");
+      }
+      handle = vpOauthHandle ?? null;
+      log.info(`VP OAuth verified: ${tipId} -> ${platform} (handle: ${handle}) via VP ${vpId}`);
+    } else {
+      ({ handle } = await bioFetcher.verifyBio({ tipId, profileUrl, platform }));
+    }
 
     const verifiedAt = nowMs();
     const canonicalPayload = linkPlatformSchema.buildSigningPayload({
