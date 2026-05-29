@@ -31,6 +31,7 @@ const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggere
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
 const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
+const prescanCompletedSchema = require("../schemas/prescan-completed");
 const registerDomainSchema = require("../schemas/register-domain");
 const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
@@ -54,6 +55,7 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
+  [TX_TYPES.PRESCAN_COMPLETED]: prescanCompletedSchema,
   // GH #60 — key rotation + VP-attested recovery. Both append a new
   // entity_keys row + close the prior one atomically.
   [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
@@ -736,6 +738,45 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (dag.getContent(d.ctid)) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.PENDING_REVIEW);
         }
+        break;
+      }
+
+      case TX_TYPES.PRESCAN_COMPLETED: {
+        // Worker-emitted (assigned API node or failover leader) once the
+        // classifier returns. Persist the verdict onto the content row
+        // and flip status PENDING_PRESCAN → REGISTERED/PENDING_REVIEW.
+        //
+        // First-wins dedup: if PRESCAN_COMPLETED already applied for
+        // this ctid (race between original assignee + failover leader),
+        // skip — the chronologically-first tx_id wins per consensus
+        // ordering.
+        const existing = dag.getContent(d.ctid);
+        if (!existing) {
+          // REGISTER_CONTENT hasn't applied yet (network reordering).
+          // Defer by no-op; the failover trigger will re-emit when it
+          // sees this ctid stuck in pending past takeover_after_ms.
+          break;
+        }
+        if (existing.prescan_status === "completed") {
+          // Already settled; honour first-wins.
+          break;
+        }
+        // Degraded verdicts must not flag content — even if tier is
+        // HIGH/CRITICAL, signal quality is too low to act on. See
+        // ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling.
+        const shouldFlag = !!d.flagged && !d.overall_degraded;
+        const nextStatus = shouldFlag ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
+        dag.saveContent({
+          ...existing,
+          prescan_flagged: shouldFlag ? 1 : 0,
+          prescan_probability: d.probability,
+          prescan_tier: d.tier,
+          prescan_status: "completed",
+          prescan_completed_at: d.completed_at,
+          prescan_content_type: d.content_type,
+          prescan_overall_degraded: d.overall_degraded ? 1 : 0,
+          status: nextStatus,
+        });
         break;
       }
 
