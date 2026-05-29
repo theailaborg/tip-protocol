@@ -1,0 +1,325 @@
+"use strict";
+
+const path = require("path");
+const SHARED = path.resolve(__dirname, "../../../shared");
+
+const { getGenesisPayload } = require(path.resolve(__dirname, "../../src/genesis"));
+const PC = require(path.join(SHARED, "protocol-constants"));
+try { PC._resetForTesting(); } catch { /* already initialised */ }
+PC.init(getGenesisPayload().protocol_constants);
+
+const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initDAG } = require(path.resolve(__dirname, "../../src/dag"));
+const { createPrescanJobs } = require(path.resolve(__dirname, "../../src/services/prescan-jobs"));
+const { createPrescanWorker } = require(path.resolve(__dirname, "../../src/workers/prescan-worker"));
+const { TX_TYPES } = require(path.join(SHARED, "constants"));
+
+// ── Mocks + helpers ───────────────────────────────────────────────────────
+function makeClock(start = 1779800000000) {
+  let t = start;
+  return { now: () => t, advance: (ms) => { t += ms; }, set: (ms) => { t = ms; } };
+}
+
+function makeSubmitter() {
+  const txs = [];
+  return { submitTx: (tx) => { txs.push(tx); return { tx_id: tx.tx_id }; }, txs };
+}
+
+// Build a classifier-client mock from a single response generator. The
+// generator receives ({ originCode, text, file }) and returns a partial
+// /v1/prescan response shape that we use to populate modality_results.
+function makeClassifier(handler) {
+  return {
+    prescan: async (args) => handler(args),
+    stage1:  async () => ({}),
+    providers: async () => ({}),
+    health:    async () => ({}),
+  };
+}
+
+// Helper: deterministic response shape matching real /v1/prescan.
+function R({ modalities = [], provider = "ensemble(ollama,statistical,heuristic)", version = "2.0.0", skipped = false }) {
+  if (skipped) {
+    return {
+      flagged: false, probability: 0, modalities_analyzed: [], modality_results: [],
+      provider_used: "skipped_locally", processing_ms: 0, locally_skipped: true,
+    };
+  }
+  const top = modalities.length ? modalities.map(m => m.probability).reduce((a, b) => Math.max(a, b)) : 0;
+  return {
+    flagged: false,
+    probability: top,
+    modalities_analyzed: modalities.map(m => m.modality),
+    modality_results: modalities.map(m => ({
+      modality: m.modality,
+      probability: m.probability,
+      weight: m.weight ?? 0.5,
+      provider: m.provider || provider,
+      features_used: m.features_used || [],
+      reasoning: null,
+      processing_ms: 1000,
+      error: m.error || null,
+    })),
+    provider_used: provider,
+    classifier_version: version,
+    processing_ms: 1500,
+    recommended_status: "verified",
+    grace_window_hours: 24,
+    note: null,
+  };
+}
+
+async function setup({ now, classifierHandler }) {
+  await initCrypto();
+  const kp = generateMLDSAKeypair();
+  const dag = initDAG({ dbPath: ":memory-test:" });
+  // Register the worker's signing node so verifyTx-style checks downstream
+  // (commit-handler) won't reject. Worker tests don't run commit-handler;
+  // we only validate tx shape + queue state here.
+  dag.saveNode?.({
+    node_id: "tip://node/efbe3707224fb785",
+    public_key: kp.publicKey,
+    status: "active",
+  });
+  const config = {
+    nodeRegisteredId: "tip://node/efbe3707224fb785",
+    nodePrivateKey: kp.privateKey,
+  };
+  const jobs = createPrescanJobs({ dag, now });
+  const submitter = makeSubmitter();
+  const classifier = makeClassifier(classifierHandler);
+  const worker = createPrescanWorker({
+    dag, jobs, classifierClient: classifier,
+    submitTx: submitter.submitTx, config,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    now,
+  });
+  return { dag, jobs, classifier, submitter, worker };
+}
+
+const CTID = "tip://c/OH-7f2a91bc3d5e4a-a3f8";
+
+// ── tick — happy path ─────────────────────────────────────────────────────
+describe("tick — happy path", () => {
+  test("text-only OH content → emits PRESCAN_COMPLETED with clean verdict", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.21 }] }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "human-ish writing", origin_code: "OH", content_type: "text" },
+    });
+    const r = await worker.tick();
+    expect(r.outcome).toBe("completed");
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.tx_type).toBe(TX_TYPES.PRESCAN_COMPLETED);
+    expect(tx.data.ctid).toBe(CTID);
+    expect(tx.data.probability).toBe(0.21);
+    expect(tx.data.tier).toBe("low");
+    expect(tx.data.flagged).toBe(false);
+    expect(tx.data.overall_degraded).toBe(false);
+    expect(tx.data.failed).toBe(false);
+    expect(tx.data.content_type).toBe("text");
+    expect(jobs.get(jobs.getByCtid(CTID).job_id).status).toBe("done");
+  });
+
+  test("CRITICAL probability → tier + flagged set", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.985 }] }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "ai-style", origin_code: "OH", content_type: "text" },
+    });
+    await worker.tick();
+    expect(submitter.txs[0].data.tier).toBe("critical");
+    expect(submitter.txs[0].data.flagged).toBe(true);
+  });
+
+  test("non-OH origin → locally skipped, no modality results, fail-open-style verdict", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      // Mirror the real classifier-client's behaviour: short-circuit on
+      // non-OH origins by returning the skipped shape.
+      classifierHandler: (args) => args.originCode === "OH"
+        ? R({ modalities: [{ modality: "text", probability: 0.1 }] })
+        : R({ skipped: true }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "AG", content_type: "text" },
+    });
+    await worker.tick();
+    expect(submitter.txs[0].data.probability).toBe(0);
+    expect(submitter.txs[0].data.tier).toBe("low");
+    expect(submitter.txs[0].data.flagged).toBe(false);
+    expect(submitter.txs[0].data.failed).toBe(false);
+    expect(submitter.txs[0].data.modality_results).toEqual([]);
+  });
+
+  test("multimodal text + image → single classifier call, both modalities in tx", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker, classifier } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [
+        { modality: "text",  probability: 0.30 },
+        { modality: "image", probability: 0.80 },
+      ] }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: {
+        text: "caption",
+        origin_code: "OH",
+        content_type: "image",
+        media: [{ base64: "<b64>", mime: "image/png" }],
+      },
+    });
+    await worker.tick();
+    expect(submitter.txs[0].data.modality_results).toHaveLength(2);
+    const m = submitter.txs[0].data.modality_results.map(x => x.modality).sort();
+    expect(m).toEqual(["image", "text"]);
+  });
+
+  test("N images → N classifier calls + union of modality_results", async () => {
+    const clock = makeClock();
+    let callCount = 0;
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: (args) => {
+        callCount += 1;
+        // First call: text + image
+        if (callCount === 1) {
+          return R({ modalities: [
+            { modality: "text", probability: 0.10 },
+            { modality: "image", probability: 0.40 },
+          ] });
+        }
+        return R({ modalities: [{ modality: "image", probability: 0.95 }] });
+      },
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: {
+        text: "x", origin_code: "OH", content_type: "image",
+        media: [
+          { base64: "b64a", mime: "image/png" },
+          { base64: "b64b", mime: "image/jpeg" },
+        ],
+      },
+    });
+    await worker.tick();
+    expect(callCount).toBe(2);
+    // After collapseSameModality, the image entry should be the max (0.95).
+    const tx = submitter.txs[0];
+    const img = tx.data.modality_results.find(m => m.modality === "image");
+    expect(img.probability).toBe(0.95);
+  });
+});
+
+// ── tick — degraded path ──────────────────────────────────────────────────
+describe("tick — degraded signal handling", () => {
+  test("degraded response → release for retry (under retry budget)", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.5 }] }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "OH", content_type: "text" },
+    });
+    await worker.tick();
+    expect(submitter.txs).toHaveLength(0);
+    const job = jobs.getByCtid(CTID);
+    expect(job.status).toBe("queued");
+    expect(job.retries).toBe(1);
+    expect(job.last_error).toBe("degraded_signal");
+  });
+
+  test("degraded + retries exhausted → silent fail-open", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.5 }] }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "OH", content_type: "text" },
+    });
+    // Burn through the retry budget.
+    for (let i = 0; i <= PC.PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED; i++) {
+      // Advance past claim timeout so next tick can re-claim
+      clock.advance(PC.PRESCAN_WORKER.CLAIM_TIMEOUT_MS + 1);
+      await worker.tick();
+    }
+    // Final tick should fail-open (after retries exhausted).
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(true);
+    expect(tx.data.flagged).toBe(false);
+    expect(tx.data.probability).toBe(0);
+    expect(tx.data.tier).toBe("low");
+    expect(tx.data.failure_reason).toMatch(/degraded_signal_after_retries/);
+    expect(jobs.getByCtid(CTID).status).toBe("failed");
+  });
+});
+
+// ── tick — hard error path ────────────────────────────────────────────────
+describe("tick — hard error handling", () => {
+  test("classifier throws → release for retry", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => { throw new Error("ECONNREFUSED"); },
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "OH", content_type: "text" },
+    });
+    await worker.tick();
+    expect(submitter.txs).toHaveLength(0);
+    const job = jobs.getByCtid(CTID);
+    expect(job.status).toBe("queued");
+    expect(job.retries).toBe(1);
+    expect(job.last_error).toBe("ECONNREFUSED");
+  });
+
+  test("hard error + retries exhausted → fail-open", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => { throw new Error("ECONNREFUSED"); },
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "x", origin_code: "OH", content_type: "text" },
+    });
+    for (let i = 0; i <= PC.PRESCAN_WORKER.MAX_RETRIES_ON_ERROR; i++) {
+      clock.advance(PC.PRESCAN_WORKER.CLAIM_TIMEOUT_MS + 1);
+      await worker.tick();
+    }
+    expect(submitter.txs).toHaveLength(1);
+    expect(submitter.txs[0].data.failed).toBe(true);
+    expect(submitter.txs[0].data.failure_reason).toMatch(/error_after_retries/);
+  });
+});
+
+// ── tick — empty queue ────────────────────────────────────────────────────
+describe("tick — idle", () => {
+  test("returns worked:false when no jobs available", async () => {
+    const clock = makeClock();
+    const { worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.1 }] }),
+    });
+    const r = await worker.tick();
+    expect(r).toEqual({ worked: false });
+  });
+});

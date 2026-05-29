@@ -1,0 +1,310 @@
+/**
+ * @file @tip-protocol/node/src/workers/prescan-worker.js
+ * @description Async prescan worker loop. Polls the prescan_jobs table,
+ * calls the classifier for each modality, aggregates the per-modality
+ * results, builds + signs a PRESCAN_COMPLETED tx, and submits it through
+ * consensus.
+ *
+ * Retry policy (per ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling +
+ * the user's choice on what to do after retries exhaust):
+ *
+ *   1. Classifier returns clean signal (no error, prob ≠ exact 0.5,
+ *      no disagreement_override) → emit PRESCAN_COMPLETED with verdict.
+ *   2. Classifier returns degraded signal AND job.retries < max
+ *      → release back to queue with backoff.
+ *   3. Classifier returns degraded signal AND retries exhausted
+ *      → fail-open silently: emit PRESCAN_COMPLETED with failed=true,
+ *      flagged=false (content moves to REGISTERED, no flag).
+ *   4. Hard error (network/5xx/timeout) — same retry-then-fail-open path.
+ *
+ * Fan-out: classifier accepts ONE file per call. For posts with N media
+ * items, the worker makes N calls (first one includes text, others
+ * file-only) and aggregates the union of modality_results. The
+ * aggregator collapses same-modality results by max.
+ *
+ * Factory function — caller wires in dag + classifierClient + jobs +
+ * config. Tests can inject mocks.
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+"use strict";
+
+const { TX_TYPES } = require("../../../shared/constants");
+const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
+const { aggregate } = require("../services/prescan-aggregator");
+const prescanCompletedSchema = require("../schemas/prescan-completed");
+const { nodeSignedAuto } = require("../services/helpers");
+const { isSkipped, isHeuristicOnly } = require("../services/classifier-client");
+
+const POLL_IDLE_MS = 500;        // how long to sleep when queue is empty
+const STAGE_TEXT = "text";
+const STAGE_IMAGE = "image";
+const STAGE_AUDIO = "audio";
+
+/**
+ * Build the worker.
+ *
+ * @param {Object} deps
+ * @param {Object} deps.dag                 DAG facade.
+ * @param {Object} deps.jobs                createPrescanJobs() instance.
+ * @param {Object} deps.classifierClient    createClassifierClient() instance.
+ * @param {Function} deps.submitTx          Consensus submitter.
+ * @param {Object} deps.config              Node config (private key + reg id).
+ * @param {Object} [deps.log]               Logger (defaults to console).
+ * @param {() => number} [deps.now]         Time source for tests.
+ * @param {() => Promise<void>} [deps.sleep] Sleep impl for tests.
+ */
+function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn }) {
+  if (!dag) throw new Error("prescan-worker: dag required");
+  if (!jobs) throw new Error("prescan-worker: jobs required");
+  if (!classifierClient) throw new Error("prescan-worker: classifierClient required");
+  if (typeof submitTx !== "function") throw new Error("prescan-worker: submitTx required");
+  if (!config?.nodePrivateKey) throw new Error("prescan-worker: config.nodePrivateKey required");
+
+  const logger = log || console;
+  const workerId = config.nodeRegisteredId || config.nodeId || `worker_${process.pid}`;
+  const now = typeof nowFn === "function" ? nowFn : Date.now;
+  const sleep = typeof sleepFn === "function"
+    ? sleepFn
+    : (ms) => new Promise(r => setTimeout(r, ms));
+
+  let _stopped = false;
+
+  // ── Public loop ─────────────────────────────────────────────────────────
+
+  async function tick() {
+    const job = jobs.claim(workerId);
+    if (!job) return { worked: false };
+    try {
+      await _processJob(job);
+      return { worked: true, jobId: job.job_id, outcome: "completed" };
+    } catch (err) {
+      // _processJob handles its own retry/fail-open accounting; anything
+      // that escapes here is a programmer bug. Mark failed loudly.
+      logger.error?.(`prescan-worker: unexpected error on ${job.job_id}: ${err?.message || err}`);
+      jobs.markFailed(job.job_id, err);
+      return { worked: true, jobId: job.job_id, outcome: "crashed", error: err };
+    }
+  }
+
+  async function run() {
+    while (!_stopped) {
+      const r = await tick();
+      if (!r.worked) await sleep(POLL_IDLE_MS);
+    }
+  }
+
+  function stop() { _stopped = true; }
+
+  // ── Private ─────────────────────────────────────────────────────────────
+
+  async function _processJob(job) {
+    const payload = job.payload;
+    if (!payload || typeof payload !== "object") {
+      jobs.markFailed(job.job_id, "payload not parseable");
+      return;
+    }
+
+    let modalityResults;
+    let providersUsed;
+    let classifierVersion;
+    let skipped = false;
+    try {
+      const fanOut = await _fanOutClassifierCalls(payload);
+      modalityResults     = fanOut.modalityResults;
+      providersUsed       = fanOut.providersUsed;
+      classifierVersion   = fanOut.classifierVersion;
+      skipped             = !!fanOut.skipped;
+    } catch (err) {
+      _handleHardFailure(job, err);
+      return;
+    }
+
+    const contentType = payload.content_type;
+
+    // Locally-skipped (non-OH origin): emit clean verdict directly.
+    // No real verdict to produce — classifier deliberately didn't run.
+    // Content moves to REGISTERED with probability 0.
+    if (skipped) {
+      _submitPrescanCompleted({
+        ctid: job.ctid,
+        probability: 0,
+        tier: "low",
+        flagged: false,
+        overall_degraded: false,
+        content_type: contentType,
+        content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
+        modality_results: [],
+        classifier_version: classifierVersion || "n/a",
+        classifier_providers_used: providersUsed || "skipped_locally",
+        completed_at: now(),
+        failed: false,
+        failure_reason: null,
+      });
+      jobs.markDone(job.job_id);
+      return;
+    }
+
+    // Aggregate using the primary-floor algorithm. content_type comes
+    // off the enqueued payload (resolved at register time).
+    const agg = aggregate(modalityResults, contentType);
+
+    // Degraded path: retry if budget remains, else fail-open silently.
+    if (agg.overall_degraded) {
+      if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
+        jobs.releaseForRetry(job.job_id, "degraded_signal");
+        return;
+      }
+      // Exhausted — fail-open. Worker chose silent fail-open per design
+      // (Option A): content moves to REGISTERED, no flag, no degraded
+      // marker on chain.
+      _emitFailOpen(job, contentType, "degraded_signal_after_retries");
+      return;
+    }
+
+    // Clean verdict path.
+    const tier = prescanCompletedSchema.tierFromProbability(agg.probability);
+    const flagged = tier === "high" || tier === "critical";
+
+    const data = {
+      ctid: job.ctid,
+      probability: agg.probability,
+      tier,
+      flagged,
+      overall_degraded: false,
+      content_type: contentType,
+      content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
+      modality_results: agg.modality_results,
+      classifier_version: classifierVersion || "unknown",
+      classifier_providers_used: providersUsed || "unknown",
+      completed_at: now(),
+      failed: false,
+      failure_reason: null,
+    };
+    _submitPrescanCompleted(data);
+    jobs.markDone(job.job_id);
+  }
+
+  function _handleHardFailure(job, err) {
+    const msg = err?.message || String(err);
+    if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_ERROR) {
+      logger.warn?.(`prescan-worker: classifier call failed on ${job.job_id} (retry ${job.retries + 1}): ${msg}`);
+      jobs.releaseForRetry(job.job_id, msg);
+      return;
+    }
+    logger.warn?.(`prescan-worker: classifier exhausted retries on ${job.job_id}; failing open: ${msg}`);
+    _emitFailOpen(job, job.payload?.content_type, `error_after_retries: ${msg}`);
+  }
+
+  function _emitFailOpen(job, contentType, reason) {
+    const data = {
+      ctid: job.ctid,
+      probability: 0,
+      tier: "low",
+      flagged: false,
+      overall_degraded: false,        // fail-open hides the degradation from downstream
+      content_type: contentType || "multi",
+      content_type_meta: { hint_provided: null, resolution: "fail_open", reason: null },
+      modality_results: [],
+      classifier_version: "unknown",
+      classifier_providers_used: "fail_open",
+      completed_at: now(),
+      failed: true,
+      failure_reason: reason,
+    };
+    _submitPrescanCompleted(data);
+    jobs.markFailed(job.job_id, reason);
+  }
+
+  function _submitPrescanCompleted(data) {
+    const txBody = {
+      tx_type: TX_TYPES.PRESCAN_COMPLETED,
+      timestamp: now(),
+      prev: dag.getRecentPrev(),
+      data,
+    };
+    const signed = nodeSignedAuto(txBody, config);
+    submitTx(signed);
+  }
+
+  /**
+   * Fan out N classifier calls — text+media[0] in the first call, then
+   * one call per remaining media item. Return the union of all
+   * per-modality result entries, with provider + version strings drawn
+   * from the responses (worker reports the most informative one).
+   */
+  async function _fanOutClassifierCalls(payload) {
+    const text       = typeof payload.text === "string" ? payload.text : "";
+    const originCode = payload.origin_code;
+    const media      = Array.isArray(payload.media) ? payload.media : [];
+    const cleared    = Number.isInteger(payload.creator_cleared_count) ? payload.creator_cleared_count : 0;
+    const authorTip  = payload.author_tip_id || undefined;
+
+    const calls = [];
+    if (media.length === 0) {
+      calls.push(classifierClient.prescan({ originCode, text, creatorClearedCount: cleared, authorTipId: authorTip }));
+    } else {
+      // First call carries the text alongside media[0].
+      calls.push(classifierClient.prescan({
+        originCode, text,
+        file: { base64: media[0].base64, mime: media[0].mime },
+        creatorClearedCount: cleared, authorTipId: authorTip,
+      }));
+      // Remaining media files alone (empty text).
+      for (let i = 1; i < media.length; i++) {
+        calls.push(classifierClient.prescan({
+          originCode, text: "",
+          file: { base64: media[i].base64, mime: media[i].mime },
+          creatorClearedCount: cleared, authorTipId: authorTip,
+        }));
+      }
+    }
+
+    const responses = await Promise.all(calls);
+
+    // Special-case: locally-skipped (non-OH origins) — emit a no-modality
+    // verdict and skip the aggregator path. Downstream sees prob=0, low
+    // tier, not flagged.
+    if (responses.length === 1 && isSkipped(responses[0])) {
+      return {
+        modalityResults: [],
+        providersUsed: responses[0].provider_used,
+        classifierVersion: responses[0].classifier_version || "n/a",
+        skipped: true,
+      };
+    }
+
+    // Quality gate: heuristic-only responses shouldn't drive verdicts.
+    // Surface as degraded so the aggregator handles them like other
+    // unreliable signals.
+    const modalityResults = [];
+    const providers = new Set();
+    let version;
+    for (const r of responses) {
+      if (!r) continue;
+      providers.add(r.provider_used || "unknown");
+      version = version || r.classifier_version;
+      const heuristicOnly = isHeuristicOnly(r);
+      for (const m of r.modality_results || []) {
+        modalityResults.push({
+          ...m,
+          // Mark heuristic-only modality results as degraded — the
+          // aggregator already treats degraded entries as unreliable.
+          error: m.error || (heuristicOnly ? "heuristic_only_unreliable" : null),
+        });
+      }
+    }
+
+    return {
+      modalityResults,
+      providersUsed: Array.from(providers).join("|"),
+      classifierVersion: version || "unknown",
+    };
+  }
+
+  return { tick, run, stop };
+}
+
+module.exports = { createPrescanWorker };
