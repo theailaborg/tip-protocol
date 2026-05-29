@@ -359,6 +359,7 @@ class MemoryStore {
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
+    this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
@@ -1364,6 +1365,81 @@ class MemoryStore {
   }
   deleteDisputeDetails(hash) {
     return this._disputeDetails.delete(hash);
+  }
+
+  // ── Prescan jobs (node-local async classifier queue) ────────────────────
+  // Worker queue. Per-node — NOT in state_merkle_root. Same pattern as
+  // dispute_details: each node stores what it received locally. See
+  // my-notes/ASYNC_PRESCAN_ARCHITECTURE.md § Worker process.
+  enqueuePrescanJob(rec) {
+    if (this._prescanJobs.has(rec.job_id)) return false;
+    this._prescanJobs.set(rec.job_id, {
+      job_id: rec.job_id,
+      ctid: rec.ctid,
+      payload: rec.payload,
+      status: rec.status || "queued",
+      claimed_at: null,
+      claimed_by: null,
+      retries: 0,
+      last_error: null,
+      created_at: rec.created_at,
+      completed_at: null,
+    });
+    return true;
+  }
+  getPrescanJob(jobId) {
+    return this._prescanJobs.get(jobId) || null;
+  }
+  getPrescanJobByCtid(ctid) {
+    for (const row of this._prescanJobs.values()) {
+      if (row.ctid === ctid) return row;
+    }
+    return null;
+  }
+  // Atomic claim: prefer queued jobs (oldest first), then recover stuck
+  // claimed jobs whose claimed_at is past the timeout. Returns the
+  // claimed row or null if no work is available.
+  claimPrescanJob({ workerId, now, claimTimeoutMs }) {
+    const queued = [];
+    const stuck = [];
+    for (const row of this._prescanJobs.values()) {
+      if (row.status === "queued") queued.push(row);
+      else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
+    }
+    queued.sort((a, b) => a.created_at - b.created_at);
+    stuck.sort((a, b) => a.created_at - b.created_at);
+    const next = queued[0] || stuck[0] || null;
+    if (!next) return null;
+    next.status = "claimed";
+    next.claimed_at = now;
+    next.claimed_by = workerId;
+    return { ...next };
+  }
+  markPrescanJobDone(jobId, { completedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "done";
+    row.completed_at = completedAt;
+    row.last_error = null;
+    return true;
+  }
+  markPrescanJobFailed(jobId, { lastError, completedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "failed";
+    row.last_error = lastError || null;
+    row.completed_at = completedAt;
+    return true;
+  }
+  releasePrescanJobForRetry(jobId, { lastError }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "queued";
+    row.claimed_at = null;
+    row.claimed_by = null;
+    row.last_error = lastError || null;
+    row.retries = (row.retries || 0) + 1;
+    return true;
   }
 
   // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
@@ -2633,6 +2709,51 @@ class SQLiteStore {
       deleteDisputeDetails: this.db.prepare(
         "DELETE FROM dispute_details WHERE evidence_hash=?"
       ),
+
+      // Prescan jobs (node-local async classifier queue). INSERT OR IGNORE
+      // on job_id PK keeps the API node's enqueue idempotent if it
+      // re-fires for the same registration. Atomic claim primitive runs
+      // a single UPDATE…RETURNING — SQLite's row-level locking handles
+      // concurrent workers correctly.
+      enqueuePrescanJob: this.db.prepare(
+        `INSERT OR IGNORE INTO prescan_jobs
+           (job_id, ctid, payload, status, claimed_at, claimed_by, retries, last_error, created_at, completed_at)
+         VALUES (?, ?, ?, 'queued', NULL, NULL, 0, NULL, ?, NULL)`
+      ),
+      getPrescanJob: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE job_id=?"
+      ),
+      getPrescanJobByCtid: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE ctid=?"
+      ),
+      claimPrescanJob: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='claimed', claimed_at=?, claimed_by=?
+          WHERE job_id = (
+            SELECT job_id FROM prescan_jobs
+             WHERE status='queued'
+                OR (status='claimed' AND claimed_at < ?)
+             ORDER BY created_at
+             LIMIT 1
+          )
+          RETURNING *`
+      ),
+      markPrescanJobDone: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='done', completed_at=?, last_error=NULL
+          WHERE job_id=?`
+      ),
+      markPrescanJobFailed: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='failed', completed_at=?, last_error=?
+          WHERE job_id=?`
+      ),
+      releasePrescanJobForRetry: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='queued', claimed_at=NULL, claimed_by=NULL,
+                last_error=?, retries=retries+1
+          WHERE job_id=?`
+      ),
     };
   }
 
@@ -3437,6 +3558,33 @@ class SQLiteStore {
   // ── Dispute details (off-chain dispute body) ────────────────────────────
   // Mirrors MemoryStore.saveDisputeDetails. Idempotent on evidence_hash —
   // re-uploads of the same payload are a silent no-op.
+  // ── Prescan jobs (node-local async classifier queue) ───────────────────
+  enqueuePrescanJob(rec) {
+    // payload is canonical JSON; pass as-is (SQLite BLOB column).
+    const res = this._stmts.enqueuePrescanJob.run(
+      rec.job_id, rec.ctid, rec.payload, rec.created_at,
+    );
+    return res.changes > 0;
+  }
+  getPrescanJob(jobId) {
+    return this._stmts.getPrescanJob.get(jobId) || null;
+  }
+  getPrescanJobByCtid(ctid) {
+    return this._stmts.getPrescanJobByCtid.get(ctid) || null;
+  }
+  claimPrescanJob({ workerId, now, claimTimeoutMs }) {
+    return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
+  }
+  markPrescanJobDone(jobId, { completedAt }) {
+    return this._stmts.markPrescanJobDone.run(completedAt, jobId).changes > 0;
+  }
+  markPrescanJobFailed(jobId, { lastError, completedAt }) {
+    return this._stmts.markPrescanJobFailed.run(completedAt, lastError || null, jobId).changes > 0;
+  }
+  releasePrescanJobForRetry(jobId, { lastError }) {
+    return this._stmts.releasePrescanJobForRetry.run(lastError || null, jobId).changes > 0;
+  }
+
   saveDisputeDetails(rec) {
     const res = this._stmts.saveDisputeDetails.run(
       rec.evidence_hash,
@@ -3768,6 +3916,15 @@ function _buildDagHandle(store, config) {
     getDisputeDetails: (hash) => store.getDisputeDetails(hash),
     hasDisputeDetails: (hash) => store.hasDisputeDetails(hash),
     deleteDisputeDetails: (hash) => store.deleteDisputeDetails(hash),
+
+    // ── Prescan jobs (node-local async classifier queue) ────────────────
+    enqueuePrescanJob: (rec) => store.enqueuePrescanJob(rec),
+    getPrescanJob: (jobId) => store.getPrescanJob(jobId),
+    getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
+    claimPrescanJob: (opts) => store.claimPrescanJob(opts),
+    markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
+    markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
+    releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
 
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),

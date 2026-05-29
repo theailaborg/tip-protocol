@@ -1179,6 +1179,78 @@ class KnexAdapter {
     return removed;
   }
 
+  // ── Prescan jobs (node-local async classifier queue) ────────────────────
+  // Per-node store, NOT consensus state. Mirrors the in-memory map and
+  // writes through to Knex so jobs survive worker / API restart.
+  enqueuePrescanJob(rec) {
+    const fresh = this.mirror.enqueuePrescanJob(rec);
+    if (fresh) {
+      this._ff(() => this._dbInsert("prescan_jobs", "job_id", {
+        job_id: rec.job_id,
+        ctid: rec.ctid,
+        payload: rec.payload,
+        status: "queued",
+        claimed_at: null,
+        claimed_by: null,
+        retries: 0,
+        last_error: null,
+        created_at: rec.created_at,
+        completed_at: null,
+      }, "ignore"));
+    }
+    return fresh;
+  }
+  getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
+  getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
+  claimPrescanJob(opts) {
+    const claimed = this.mirror.claimPrescanJob(opts);
+    if (claimed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", claimed.job_id)
+        .update({
+          status: "claimed",
+          claimed_at: claimed.claimed_at,
+          claimed_by: claimed.claimed_by,
+        }));
+    }
+    return claimed;
+  }
+  markPrescanJobDone(jobId, opts) {
+    const changed = this.mirror.markPrescanJobDone(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ status: "done", completed_at: opts.completedAt, last_error: null }));
+    }
+    return changed;
+  }
+  markPrescanJobFailed(jobId, opts) {
+    const changed = this.mirror.markPrescanJobFailed(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ status: "failed", completed_at: opts.completedAt, last_error: opts.lastError || null }));
+    }
+    return changed;
+  }
+  releasePrescanJobForRetry(jobId, opts) {
+    const changed = this.mirror.releasePrescanJobForRetry(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({
+          status: "queued",
+          claimed_at: null,
+          claimed_by: null,
+          last_error: opts.lastError || null,
+        })
+        .then(() => this.knex("prescan_jobs")
+          .where("job_id", jobId)
+          .increment("retries", 1)));
+    }
+    return changed;
+  }
+
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);
     this._ff(() => this.knex("content").where("tip_ctid", ctid).update({ status }));
