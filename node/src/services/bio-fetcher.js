@@ -20,6 +20,9 @@ const EXTRACTORS = {
   mastodon:  u => (u.match(/^https:\/\/([^/]+)\/@([^/?#]+)/)?.[2] || null),
   linkedin:  () => null,
   facebook:  () => null,
+  medium:    u => (u.match(/medium\.com\/@([^/?#]+)/)?.[1] || u.match(/^https?:\/\/([^.]+)\.medium\.com/)?.[1] || null),
+  substack:  u => (u.match(/^https?:\/\/([^.]+)\.substack\.com/)?.[1] || null),
+  devto:     u => (u.match(/dev\.to\/([^/?#]+)/)?.[1] || null),
 };
 
 function extractHandle(profileUrl, platform) {
