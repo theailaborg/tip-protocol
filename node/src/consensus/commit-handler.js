@@ -38,6 +38,7 @@ const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
 const interestRegisteredSchema = require("../schemas/interest-registered");
 const linkPlatformSchema = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
@@ -59,8 +60,9 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
   // Interest taxonomy registry — VP-attested.
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
-  // Social account linking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
+  // Social account linking/unlinking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
   [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
+  [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
 });
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
@@ -899,17 +901,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         break;
 
-      // ── Social account linking ────────────────────────────────────────
-      // LINK_PLATFORM is node-attested (SIGNED_BY=NODE, SCOPE=BODY).
-      // Write canonical row to platform_links; expires_at is computed
-      // deterministically from verified_at so all replicating nodes
-      // produce the same value and the column stays merkle-consistent.
+      // ── Social account linking / unlinking ───────────────────────────
       case TX_TYPES.LINK_PLATFORM: {
         if (d.tip_id && d.platform) {
-          const verifiedMs = d.verified_at;
-          const expiresAt = Number.isFinite(verifiedMs)
-            ? verifiedMs + 365 * 24 * 60 * 60 * 1000
-            : null;
           dag.savePlatformLink({
             id: `${d.tip_id}::${d.platform}`,
             tip_id: d.tip_id,
@@ -918,13 +912,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             profile_url: d.profile_url,
             status: "active",
             linked_at: d.claimed_at,
-            verified_at: verifiedMs,
-            expires_at: expiresAt,
-            consecutive_failures: 0,
+            verified_at: d.verified_at,
+            unlinked_at: null,
+            unlink_tx_id: null,
             node_id: d.node_id,
             claim_signature: d.claim_signature,
             node_signature: tx.signature,
             tx_id: tx.tx_id,
+          });
+        }
+        break;
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        if (d.tip_id && d.platform) {
+          dag.updatePlatformLinkStatus(d.tip_id, d.platform, {
+            status: "unlinked",
+            unlinked_at: d.unlinked_at,
+            unlink_tx_id: tx.tx_id,
           });
         }
         break;

@@ -179,8 +179,8 @@ function _canonPlatformLink(r) {
     status: r.status,
     linked_at: r.linked_at,
     verified_at: r.verified_at,
-    expires_at: r.expires_at,
-    consecutive_failures: typeof r.consecutive_failures === "number" ? r.consecutive_failures : 0,
+    unlinked_at: r.unlinked_at ?? null,
+    unlink_tx_id: r.unlink_tx_id ?? null,
     node_id: r.node_id,
     claim_signature: r.claim_signature,
     node_signature: r.node_signature,
@@ -604,6 +604,11 @@ class MemoryStore {
   savePlatformLink(rec) {
     this._platformLinks.set(rec.id, { ...rec });
   }
+  updatePlatformLinkStatus(tipId, platform, update) {
+    const key = `${tipId}::${platform}`;
+    const existing = this._platformLinks.get(key);
+    if (existing) this._platformLinks.set(key, { ...existing, ...update });
+  }
   getPlatformLink(tipId, platform) {
     return this._platformLinks.get(`${tipId}::${platform}`) || null;
   }
@@ -780,6 +785,7 @@ class MemoryStore {
     this._nodes.clear();
     // GH #60 — entity_keys is canonical state too.
     this._entityKeys.clear();
+    this._platformLinks.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -1598,20 +1604,20 @@ class SQLiteStore {
       -- every committed LINK_PLATFORM tx. node_signature is the node's
       -- ML-DSA attestation over the canonical link payload.
       CREATE TABLE IF NOT EXISTS platform_links (
-        id                   TEXT PRIMARY KEY,
-        tip_id               TEXT NOT NULL,
-        platform             TEXT NOT NULL,
-        handle               TEXT,
-        profile_url          TEXT NOT NULL,
-        status               TEXT NOT NULL DEFAULT 'active',
-        linked_at            INTEGER NOT NULL,
-        verified_at          INTEGER NOT NULL,
-        expires_at           INTEGER NOT NULL,
-        consecutive_failures INTEGER NOT NULL DEFAULT 0,
-        node_id              TEXT NOT NULL,
-        claim_signature      TEXT NOT NULL,
-        node_signature       TEXT NOT NULL,
-        tx_id                TEXT NOT NULL
+        id             TEXT PRIMARY KEY,
+        tip_id         TEXT NOT NULL,
+        platform       TEXT NOT NULL,
+        handle         TEXT,
+        profile_url    TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'active',
+        linked_at      INTEGER NOT NULL,
+        verified_at    INTEGER NOT NULL,
+        unlinked_at    INTEGER,
+        unlink_tx_id   TEXT,
+        node_id        TEXT NOT NULL,
+        claim_signature TEXT NOT NULL,
+        node_signature  TEXT NOT NULL,
+        tx_id           TEXT NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_links_tip_plat ON platform_links(tip_id, platform);
       CREATE INDEX IF NOT EXISTS idx_platform_links_tip_id ON platform_links(tip_id);
@@ -2217,10 +2223,14 @@ class SQLiteStore {
       savePlatformLink: this.db.prepare(
         `INSERT OR REPLACE INTO platform_links
          (id, tip_id, platform, handle, profile_url, status, linked_at, verified_at,
-          expires_at, consecutive_failures, node_id, claim_signature, node_signature, tx_id)
+          unlinked_at, unlink_tx_id, node_id, claim_signature, node_signature, tx_id)
          VALUES (@id, @tip_id, @platform, @handle, @profile_url, @status, @linked_at,
-                 @verified_at, @expires_at, @consecutive_failures, @node_id,
+                 @verified_at, @unlinked_at, @unlink_tx_id, @node_id,
                  @claim_signature, @node_signature, @tx_id)`
+      ),
+      updatePlatformLinkStatus: this.db.prepare(
+        `UPDATE platform_links SET status=@status, unlinked_at=@unlinked_at, unlink_tx_id=@unlink_tx_id
+         WHERE tip_id=@tip_id AND platform=@platform`
       ),
       getPlatformLink: this.db.prepare(
         "SELECT * FROM platform_links WHERE tip_id=? AND platform=?"
@@ -2809,6 +2819,9 @@ class SQLiteStore {
 
   // ── Platform links (canonical) ───────────────────────────────────────────
   savePlatformLink(rec) { this._stmts.savePlatformLink.run(rec); }
+  updatePlatformLinkStatus(tipId, platform, update) {
+    this._stmts.updatePlatformLinkStatus.run({ tip_id: tipId, platform, ...update });
+  }
   getPlatformLink(tipId, platform) {
     return this._stmts.getPlatformLink.get(tipId, platform) || null;
   }
@@ -3255,6 +3268,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM nodes").run();
       // GH #60 — entity_keys is canonical state too.
       this.db.prepare("DELETE FROM entity_keys").run();
+      this.db.prepare("DELETE FROM platform_links").run();
     })();
   }
 
@@ -3549,6 +3563,7 @@ function _buildDagHandle(store, config) {
 
     // ── Platform links (canonical) ────────────────────────────────────────
     savePlatformLink: (rec) => store.savePlatformLink(rec),
+    updatePlatformLinkStatus: (tipId, platform, update) => store.updatePlatformLinkStatus(tipId, platform, update),
     getPlatformLink: (tipId, platform) => store.getPlatformLink(tipId, platform),
     getPlatformLinksByTipId: (tipId) => store.getPlatformLinksByTipId(tipId),
 

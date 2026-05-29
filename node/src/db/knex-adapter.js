@@ -463,8 +463,8 @@ class KnexAdapter {
       t.string("status", 32).notNullable().defaultTo("active");
       t.bigInteger("linked_at").notNullable();
       t.bigInteger("verified_at").notNullable();
-      t.bigInteger("expires_at").notNullable();
-      t.integer("consecutive_failures").notNullable().defaultTo(0);
+      t.bigInteger("unlinked_at").nullable();
+      _id(t, "unlink_tx_id").nullable();
       _id(t, "node_id").notNullable();
       t.text("claim_signature").notNullable();
       t.text("node_signature").notNullable();
@@ -473,6 +473,15 @@ class KnexAdapter {
       t.index("tip_id", "idx_platform_links_tip_id");
       t.index("status", "idx_platform_links_status");
     });
+    // Migration: replace expires_at / consecutive_failures with unlinked_at / unlink_tx_id
+    if (await db.schema.hasColumn("platform_links", "expires_at")) {
+      await db.schema.alterTable("platform_links", t => {
+        t.dropColumn("expires_at");
+        t.dropColumn("consecutive_failures");
+        t.bigInteger("unlinked_at").nullable();
+        t.string("unlink_tx_id", 128).nullable();
+      });
+    }
 
     // Pending domain claims (NOT canonical; per-node storage between
     // POST /register and POST /verify).
@@ -1187,6 +1196,7 @@ class KnexAdapter {
       this.knex("nodes").delete(),
       // GH #60 — entity_keys is canonical state too.
       this.knex("entity_keys").delete(),
+      this.knex("platform_links").delete(),
     ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
   }
 
@@ -1239,14 +1249,19 @@ class KnexAdapter {
       status: rec.status || "active",
       linked_at: rec.linked_at,
       verified_at: rec.verified_at,
-      expires_at: rec.expires_at ?? null,
-      consecutive_failures: typeof rec.consecutive_failures === "number" ? rec.consecutive_failures : 0,
+      unlinked_at: rec.unlinked_at ?? null,
+      unlink_tx_id: rec.unlink_tx_id ?? null,
       node_id: rec.node_id,
       claim_signature: rec.claim_signature,
       node_signature: rec.node_signature,
       tx_id: rec.tx_id,
     };
     this._ff(() => this._dbInsert("platform_links", "id", row, "merge"));
+  }
+
+  updatePlatformLinkStatus(tipId, platform, update) {
+    this.mirror.updatePlatformLinkStatus(tipId, platform, update);
+    this._ff(() => this.knex("platform_links").where({ tip_id: tipId, platform }).update(update));
   }
 
   getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }

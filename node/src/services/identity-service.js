@@ -9,6 +9,7 @@ const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const registerSocialSchema = require("../schemas/register-social");
 const bioFetcher = require("./bio-fetcher");
 const { schemaError, verifyPayload } = require("../schemas/_common");
@@ -419,15 +420,23 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const identity = dag.getIdentity(tipId);
     if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
 
-    const committed = dag.getTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-    const pending = typeof dag.getMempoolTxsByTipId === "function"
-      ? dag.getMempoolTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM)
-      : [];
-    const existing = [...committed, ...pending];
-
-    if (existing.some(t => t.data && t.data.platform === platform)) {
+    const existingLink = dag.getPlatformLink(tipId, platform);
+    if (existingLink && existingLink.status === "active") {
       throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
     }
+    // Also block if there is a pending LINK_PLATFORM in mempool (not yet committed)
+    const pending = typeof dag.getMempoolTxsByTipId === "function"
+      ? dag.getMempoolTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM && t.data?.platform === platform)
+      : [];
+    if (pending.length > 0) {
+      throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
+    }
+    const existingLinkTxs = dag.getTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    // A re-link is when this specific platform already has a committed LINK_PLATFORM tx.
+    // Re-links are allowed (after unlink) but never earn another +5.
+    const isRelink = existingLinkTxs.some(t => t.data?.platform === platform);
+    // Cap is per unique platform ever linked, not per tx (re-links don't consume a new slot).
+    const uniqueLinkedPlatforms = new Set(existingLinkTxs.map(t => t.data?.platform));
 
     const claimPayload = registerSocialSchema.buildSigningPayload({
       tip_id: tipId, platform, profile_url: profileUrl, claimed_at: claimedAt,
@@ -499,7 +508,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     submitTx(linkTx);
 
-    const scoreEligible = existing.length < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
+    const scoreEligible = !isRelink && uniqueLinkedPlatforms.size < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
     let scoreTxId = null;
     const scoreDelta = scoreEligible ? SOCIAL_LINK.SOCIAL_LINK_BONUS : 0;
 
@@ -529,7 +538,77 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform };
+  function getPlatformLinks(tipId) {
+    const links = dag.getPlatformLinksByTipId(tipId) || [];
+    return { tip_id: tipId, platform_links: links };
+  }
+
+  async function unlinkPlatform({ tipId, platform, claimSignature, claimedAt }) {
+    if (!tipId || !platform || !claimSignature || !claimedAt) {
+      throw schemaError(400, "tipId, platform, claimSignature, claimedAt are required", "missing_fields");
+    }
+
+    const identity = dag.getIdentity(tipId);
+    if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
+
+    const existingLink = dag.getPlatformLink(tipId, platform);
+    if (!existingLink || existingLink.status !== "active") {
+      throw schemaError(409, `Platform "${platform}" is not actively linked for ${tipId}`, "platform_not_linked");
+    }
+
+    const claimPayload = unlinkPlatformSchema.buildUnlinkClaimPayload({ claimed_at: claimedAt, platform, tip_id: tipId });
+    if (!unlinkPlatformSchema.verifySignature(claimPayload, claimSignature, identity.public_key)) {
+      throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
+    }
+
+    const unlinkedAt = nowMs();
+    const nodeId = config.nodeRegisteredId || config.nodeId;
+    const canonicalPayload = unlinkPlatformSchema.buildSigningPayload({
+      claim_signature: claimSignature,
+      claimed_at: claimedAt,
+      node_id: nodeId,
+      platform,
+      tip_id: tipId,
+      unlinked_at: unlinkedAt,
+    });
+
+    const nodePrivKey = config.nodePrivateKey;
+    if (!nodePrivKey) throw schemaError(500, "Node private key not configured", "node_key_missing");
+    const nodeSig = unlinkPlatformSchema.sign(canonicalPayload, nodePrivKey);
+
+    const unlinkTx = withTxId({
+      tx_type: TX_TYPES.UNLINK_PLATFORM,
+      timestamp: unlinkedAt,
+      signature: nodeSig,
+      prev: dag.getRecentPrev(),
+      data: {
+        tip_id: tipId,
+        platform,
+        claimed_at: claimedAt,
+        unlinked_at: unlinkedAt,
+        node_id: nodeId,
+        claim_signature: claimSignature,
+      },
+    });
+
+    const validation = validateTransaction(unlinkTx, dag, { skipPrevCheck: true });
+    if (!validation.valid) {
+      throw schemaError(400, validation.errors.join("; "), "tx_validation_failed");
+    }
+
+    submitTx(unlinkTx);
+
+    log.info(`Social account unlinked: ${tipId} -> ${platform}`);
+    return {
+      tip_id: tipId,
+      platform,
+      tx_id: unlinkTx.tx_id,
+      unlinked_at: unlinkedAt,
+      confirmation: "proposed",
+    };
+  }
+
+  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform, unlinkPlatform, getPlatformLinks };
 }
 
 module.exports = { createIdentityService };

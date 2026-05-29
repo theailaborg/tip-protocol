@@ -1260,6 +1260,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       case "domain_bindings":
         dag.saveDomainBinding(row);
         break;
+      case "platform_links":
+        dag.savePlatformLink(row);
+        break;
       default:
         // Unknown tables are tolerated so adding a new canonical table on
         // the server doesn't hard-fail older joiners — they'll just skip

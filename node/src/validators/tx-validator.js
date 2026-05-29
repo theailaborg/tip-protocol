@@ -26,6 +26,7 @@ const {
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
 const { PLATFORM_MAX_LENGTH: LINK_PLATFORM_MAX_LENGTH } = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
 const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
@@ -513,10 +514,31 @@ function validateBusinessRules(tx, dag = null) {
         break;
       }
 
-      const existingLinks = dag.getTxsByTipId(d.tip_id)
-        .filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-      if (existingLinks.some(t => t.data && t.data.platform === d.platform)) {
+      const existingLink = dag.getPlatformLink(d.tip_id, d.platform);
+      if (existingLink && existingLink.status === "active") {
         errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UNLINK_PLATFORM: {
+      if (typeof d.tip_id !== "string" || d.tip_id.length === 0) {
+        errors.push("UNLINK_PLATFORM: tip_id is required");
+      }
+      if (typeof d.platform !== "string" || d.platform.length === 0) {
+        errors.push("UNLINK_PLATFORM: platform is required");
+      }
+      if (typeof d.claim_signature !== "string" || d.claim_signature.length === 0) {
+        errors.push("UNLINK_PLATFORM: claim_signature is required");
+      }
+      if (typeof d.node_id !== "string" || d.node_id.length === 0) {
+        errors.push("UNLINK_PLATFORM: node_id is required");
+      }
+      if (errors.length > 0) break;
+
+      const link = dag.getPlatformLink(d.tip_id, d.platform);
+      if (!link || link.status !== "active") {
+        errors.push(`Platform "${d.platform}" is not actively linked for ${d.tip_id}`);
       }
       break;
     }
@@ -702,8 +724,13 @@ function validateState(tx, dag) {
     }
 
     case TX_TYPES.LINK_PLATFORM: {
-      // TIP-ID existence and platform dedup are checked in validateBusinessRules.
-      // State layer only checks revocation (requires live DAG lookup).
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`TIP-ID is revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UNLINK_PLATFORM: {
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`TIP-ID is revoked: ${d.tip_id}`);
       }
