@@ -54,6 +54,16 @@ const CONTENT_STATUS = Object.freeze({
   PENDING_PRESCAN: "pending_prescan",
 });
 
+// ─── Classifier client (outbound HTTP) ─────────────────────────────────────
+// Per-call ceilings for the prescan worker's classifier HTTP calls. Same
+// on every node — they affect operational timing, not consensus output.
+// Text-only cold start (ollama) is ~33s; file-bearing cold start (ONNX
+// vision) is ~118s — both warm to a few seconds.
+const CLASSIFIER_CLIENT = Object.freeze({
+  TEXT_TIMEOUT_MS: 60_000,
+  FILE_TIMEOUT_MS: 180_000,
+});
+
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
 // Vocabulary enum for the 4-tier categorical model. Threshold values that
 // decide which probability falls into which tier live in genesis under
@@ -715,6 +725,7 @@ module.exports = {
   JURY_VOTES,
   VERDICT,
   CONTENT_STATUS,
+  CLASSIFIER_CLIENT,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,
