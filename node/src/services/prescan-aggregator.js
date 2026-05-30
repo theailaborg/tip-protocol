@@ -47,9 +47,11 @@ const { primaryModality } = require("./content-type");
 
 /**
  * A modality result is "degraded" when the classifier couldn't decide
- * reliably. Three independent tells, any of which sets the flag:
+ * reliably. Four independent tells, any of which sets the flag:
  *
  *   - explicit per-modality error
+ *   - non-finite probability (NaN / undefined / Infinity — malformed
+ *     classifier response; never trust the value, treat as no-signal)
  *   - exact probability 0.5 (the classifier's "no signal" neutral)
  *   - features_used includes "disagreement_override" (multiple providers
  *     disagreed, classifier picked a neutral default)
@@ -57,6 +59,7 @@ const { primaryModality } = require("./content-type");
 function isDegraded(m) {
   if (!m || typeof m !== "object") return true;
   if (m.error) return true;
+  if (!Number.isFinite(m.probability)) return true;
   if (m.probability === 0.5) return true;
   if (Array.isArray(m.features_used) && m.features_used.includes("disagreement_override")) return true;
   return false;
@@ -75,7 +78,12 @@ function collapseSameModality(results) {
   for (const r of results || []) {
     if (!r || !r.modality) continue;
     const prev = byModality.get(r.modality);
-    if (!prev || r.probability > prev.probability) byModality.set(r.modality, r);
+    if (!prev) { byModality.set(r.modality, r); continue; }
+    // Treat non-finite probabilities as -Infinity so a leading malformed
+    // entry never blocks a later finite reading from winning the slot.
+    const prevP = Number.isFinite(prev.probability) ? prev.probability : -Infinity;
+    const curP = Number.isFinite(r.probability) ? r.probability : -Infinity;
+    if (curP > prevP) byModality.set(r.modality, r);
   }
   return Array.from(byModality.values());
 }
@@ -94,6 +102,10 @@ function _weightedAverage(results, weights) {
   for (const r of results) {
     const w = typeof weights[r.modality] === "number" ? weights[r.modality] : 0;
     if (w <= 0) continue;
+    // Non-finite probability carries no usable signal — skip entirely
+    // rather than half-weight it. Half-weighting NaN would contaminate
+    // num via NaN × effective = NaN and collapse the verdict.
+    if (!Number.isFinite(r.probability)) continue;
     const degraded = isDegraded(r);
     const effective = degraded ? w * MODALITY_WEIGHTS.DEGRADED_MULTIPLIER : w;
     num += r.probability * effective;
@@ -171,7 +183,12 @@ function aggregate(modalityResults, contentType) {
 }
 
 function _clamp01(p) {
-  if (!Number.isFinite(p)) return 0;
+  // Non-finite → neutral. "Definitely-human" (0) would be a lie when we
+  // simply have no signal; 0.5 matches the per-modality no-signal marker
+  // and lets downstream callers see this as the "unknown" case. With
+  // isDegraded()'s finite-probability check upstream, this should never
+  // fire on a normal flow — it's a defensive last line.
+  if (!Number.isFinite(p)) return 0.5;
   if (p < 0) return 0;
   if (p > 1) return 1;
   return p;

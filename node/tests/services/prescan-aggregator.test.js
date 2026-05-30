@@ -49,6 +49,15 @@ describe("isDegraded", () => {
     const r = aggregate([M("text", 0.5), M("image", 0.20)], "text");
     expect(r.overall_degraded).toBe(true);
   });
+  test("non-finite probability (NaN) → degraded", () => {
+    expect(isDegraded(M("text", NaN))).toBe(true);
+  });
+  test("undefined probability → degraded", () => {
+    expect(isDegraded({ modality: "text" })).toBe(true);
+  });
+  test("Infinity probability → degraded (defensive)", () => {
+    expect(isDegraded(M("text", Infinity))).toBe(true);
+  });
 });
 
 // ── collapseSameModality ───────────────────────────────────────────────────
@@ -73,6 +82,26 @@ describe("collapseSameModality", () => {
   test("empty input → empty", () => {
     expect(collapseSameModality([])).toEqual([]);
     expect(collapseSameModality(null)).toEqual([]);
+  });
+  test("leading undefined-prob entry doesn't block subsequent finite reading", () => {
+    // Bug class: a first entry with prob=undefined would, under naive
+    // `r.probability > prev.probability`, never be replaced because
+    // `> undefined` is always false. The hardening treats non-finite as
+    // -Infinity so the finite reading wins.
+    const collapsed = collapseSameModality([
+      { modality: "image" /* no probability */ },
+      M("image", 0.80),
+    ]);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0].probability).toBe(0.80);
+  });
+  test("leading NaN-prob entry doesn't block subsequent finite reading", () => {
+    const collapsed = collapseSameModality([
+      M("text", NaN),
+      M("text", 0.42),
+    ]);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0].probability).toBe(0.42);
   });
 });
 
@@ -233,6 +262,32 @@ describe("aggregate — degraded signal handling", () => {
     );
     expect(close(r.probability, 0.05, 1e-6)).toBe(true);
     expect(r.overall_degraded).toBe(true);
+  });
+
+  test("malformed primary (NaN probability) routes through degraded path, not a fake 0 verdict", () => {
+    // Without isDegraded's finite-probability check, NaN would propagate
+    // through _weightedAverage and get masked to 0 by _clamp01 — a verdict
+    // of "definitely human" that the classifier never produced. The
+    // hardening detects NaN as degraded so the result instead reflects
+    // the secondary's clean signal.
+    const r = aggregate(
+      [M("text", NaN), M("image", 0.85)],
+      "text",
+    );
+    expect(r.overall_degraded).toBe(true);
+    expect(close(r.probability, 0.85, 1e-6)).toBe(true);   // fallback weighted-avg over the one clean modality
+  });
+
+  test("all modalities malformed (NaN) → 0.5 neutral, NOT 0", () => {
+    // Previously _clamp01(NaN) returned 0; now non-finite final maps to
+    // the no-signal neutral so downstream sees this as "unknown" rather
+    // than "definitely human."
+    const r = aggregate(
+      [M("text", NaN), M("image", undefined)],
+      "text",
+    );
+    expect(r.overall_degraded).toBe(true);
+    expect(r.probability).toBe(0.5);
   });
 });
 
