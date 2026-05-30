@@ -117,13 +117,13 @@ function aggregate(modalityResults, contentType) {
 
   // Enrich each modality with applied_weight + degraded flag for audit.
   const enriched = collapsed.map(m => ({
-    modality:          m.modality,
-    probability:       m.probability,
+    modality: m.modality,
+    probability: m.probability,
     classifier_weight: typeof m.weight === "number" ? m.weight : null,
-    applied_weight:    typeof weights[m.modality] === "number" ? weights[m.modality] : 0,
-    provider:          m.provider || null,
-    error:             m.error || null,
-    degraded:          isDegraded(m),
+    applied_weight: typeof weights[m.modality] === "number" ? weights[m.modality] : 0,
+    provider: m.provider || null,
+    error: m.error || null,
+    degraded: isDegraded(m),
   }));
 
   // All-degraded short-circuit: no real signal anywhere → neutral 0.5,

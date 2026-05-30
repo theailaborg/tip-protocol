@@ -40,6 +40,8 @@ const { nodeSignedAuto } = require("../services/helpers");
 const { isSkipped, isHeuristicOnly } = require("../services/classifier-client");
 
 const POLL_IDLE_MS = 500;        // how long to sleep when queue is empty
+const POLL_BUSY_MS = 50;         // brief breather between claim attempts when pool isn't full
+const DEFAULT_CONCURRENCY = 1;   // sequential by default; bump via run({ concurrency }) or env
 const STAGE_TEXT = "text";
 const STAGE_IMAGE = "image";
 const STAGE_AUDIO = "audio";
@@ -90,11 +92,68 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     }
   }
 
-  async function run() {
+  /**
+   * Run the worker loop. Maintains up to `concurrency` in-flight jobs at a
+   * time. Each job's classifier call is IO-bound, so a single Node process
+   * can comfortably run many concurrently — typical setting is 4-8.
+   *
+   * Race-safety: each claim is atomic at the queue layer (SQLite
+   * UPDATE…RETURNING), so two concurrent _processJob() calls can't grab
+   * the same job. The retry budget (`worker_claim_timeout_ms`) recovers
+   * any job left orphaned by a crash mid-processing.
+   *
+   * @param {Object} [opts]
+   * @param {number} [opts.concurrency]  Max in-flight jobs. Default 1
+   *   (sequential — same as before). Reads `TIP_PRESCAN_CONCURRENCY` if
+   *   not passed.
+   */
+  async function run(opts = {}) {
+    const envConcurrency = parseInt(process.env.TIP_PRESCAN_CONCURRENCY || "", 10);
+    const concurrency = Math.max(1, Number.isInteger(opts.concurrency)
+      ? opts.concurrency
+      : (Number.isInteger(envConcurrency) && envConcurrency > 0 ? envConcurrency : DEFAULT_CONCURRENCY));
+
+    const inFlight = new Set();
+
     while (!_stopped) {
-      const r = await tick();
-      if (!r.worked) await sleep(POLL_IDLE_MS);
+      // Top up to the concurrency limit: claim + dispatch jobs without
+      // awaiting so the classifier calls actually overlap.
+      let claimedThisRound = 0;
+      while (inFlight.size < concurrency) {
+        const task = _runOne();
+        if (task === null) break;              // queue empty
+        claimedThisRound += 1;
+        task.finally(() => inFlight.delete(task));
+        inFlight.add(task);
+      }
+
+      if (inFlight.size === 0) {
+        await sleep(POLL_IDLE_MS);             // queue empty + nothing in flight
+      } else if (inFlight.size >= concurrency || claimedThisRound === 0) {
+        await Promise.race(inFlight);          // pool full or queue empty — wait for any to finish
+      } else {
+        await sleep(POLL_BUSY_MS);             // briefly yield, then try to claim more
+      }
     }
+
+    // Drain in-flight before returning so the caller can rely on stop()
+    // meaning "everything settled."
+    if (inFlight.size > 0) await Promise.all(inFlight);
+  }
+
+  /**
+   * Claim + process one job in the background. Returns the in-flight
+   * promise (so the pool can track it) or null when the queue is empty.
+   * Mirrors tick()'s error handling but doesn't await — caller manages
+   * the lifecycle.
+   */
+  function _runOne() {
+    const job = jobs.claim(workerId);
+    if (!job) return null;
+    return _processJob(job).catch((err) => {
+      logger.error?.(`prescan-worker: unexpected error on ${job.job_id}: ${err?.message || err}`);
+      jobs.markFailed(job.job_id, err);
+    });
   }
 
   function stop() { _stopped = true; }
@@ -114,10 +173,10 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     let skipped = false;
     try {
       const fanOut = await _fanOutClassifierCalls(payload);
-      modalityResults     = fanOut.modalityResults;
-      providersUsed       = fanOut.providersUsed;
-      classifierVersion   = fanOut.classifierVersion;
-      skipped             = !!fanOut.skipped;
+      modalityResults = fanOut.modalityResults;
+      providersUsed = fanOut.providersUsed;
+      classifierVersion = fanOut.classifierVersion;
+      skipped = !!fanOut.skipped;
     } catch (err) {
       _handleHardFailure(job, err);
       return;
@@ -237,11 +296,11 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
    * from the responses (worker reports the most informative one).
    */
   async function _fanOutClassifierCalls(payload) {
-    const text       = typeof payload.text === "string" ? payload.text : "";
+    const text = typeof payload.text === "string" ? payload.text : "";
     const originCode = payload.origin_code;
-    const media      = Array.isArray(payload.media) ? payload.media : [];
-    const cleared    = Number.isInteger(payload.creator_cleared_count) ? payload.creator_cleared_count : 0;
-    const authorTip  = payload.author_tip_id || undefined;
+    const media = Array.isArray(payload.media) ? payload.media : [];
+    const cleared = Number.isInteger(payload.creator_cleared_count) ? payload.creator_cleared_count : 0;
+    const authorTip = payload.author_tip_id || undefined;
 
     const calls = [];
     if (media.length === 0) {

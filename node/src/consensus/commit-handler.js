@@ -1164,12 +1164,12 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.INTEREST_REGISTERED:
         if (d.slug && d.label && d.category && d.approving_vp_id) {
           dag.saveInterest({
-            slug:                d.slug,
-            label:               d.label,
-            category:            d.category,
-            registered_at:       tx.timestamp,
+            slug: d.slug,
+            label: d.label,
+            category: d.category,
+            registered_at: tx.timestamp,
             registered_by_vp_id: d.approving_vp_id,
-            tx_id:               tx.tx_id,
+            tx_id: tx.tx_id,
           });
         }
         break;
@@ -1413,8 +1413,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       const cosigSource = schema && typeof schema.getCosignatureContract === "function"
         ? schema
         : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
-            ? TX_SIGNATURE_REGISTRY[tt]
-            : null);
+          ? TX_SIGNATURE_REGISTRY[tt]
+          : null);
       if (cosigSource) {
         const contract = cosigSource.getCosignatureContract(tx) || [];
         if (contract.length > 0) {

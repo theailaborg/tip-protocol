@@ -323,3 +323,148 @@ describe("tick — idle", () => {
     expect(r).toEqual({ worked: false });
   });
 });
+
+describe("run — concurrency", () => {
+  test("processes jobs in parallel up to opts.concurrency", async () => {
+    const clock = makeClock();
+    // Each classifier call resolves only when we let it. Tracks in-flight
+    // count at the moment the classifier was entered — high water mark
+    // proves we ran more than one at the same time.
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const pending = [];
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => new Promise(resolve => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        pending.push(() => {
+          inFlight -= 1;
+          resolve(R({ modalities: [{ modality: "text", probability: 0.1 }] }));
+        });
+      }),
+    });
+
+    // Enqueue 5 jobs
+    for (let i = 0; i < 5; i++) {
+      jobs.enqueue({
+        ctid: `tip://c/OH-${String(i).padStart(14, "0")}-0001`,
+        payload: { text: `job ${i}`, origin_code: "OH", content_type: "text" },
+      });
+    }
+
+    // Start the loop in the background with concurrency=3
+    const runPromise = worker.run({ concurrency: 3 });
+
+    // Wait briefly for the loop to claim and dispatch the first batch
+    await new Promise(r => setTimeout(r, 50));
+    expect(inFlight).toBe(3);
+    expect(peakInFlight).toBe(3);
+
+    // Resolve all 5 classifier calls so the loop can drain
+    while (pending.length > 0 || inFlight > 0) {
+      const r = pending.shift();
+      if (r) r();
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    worker.stop();
+    await runPromise;
+
+    expect(submitter.txs).toHaveLength(5);
+    expect(peakInFlight).toBe(3);
+  });
+
+  test("reads concurrency from TIP_PRESCAN_CONCURRENCY env when opts.concurrency unset", async () => {
+    const saved = process.env.TIP_PRESCAN_CONCURRENCY;
+    process.env.TIP_PRESCAN_CONCURRENCY = "2";
+    try {
+      const clock = makeClock();
+      let inFlight = 0;
+      let peakInFlight = 0;
+      const pending = [];
+      const { jobs, worker, submitter } = await setup({
+        now: clock.now,
+        classifierHandler: () => new Promise(resolve => {
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          pending.push(() => { inFlight -= 1; resolve(R({ modalities: [{ modality: "text", probability: 0.1 }] })); });
+        }),
+      });
+      for (let i = 0; i < 4; i++) {
+        jobs.enqueue({
+          ctid: `tip://c/OH-${String(i).padStart(14, "e")}-0002`,
+          payload: { text: `j${i}`, origin_code: "OH", content_type: "text" },
+        });
+      }
+      const runPromise = worker.run();
+      await new Promise(r => setTimeout(r, 50));
+      expect(peakInFlight).toBe(2);    // env says 2
+      while (pending.length > 0 || inFlight > 0) {
+        pending.shift()?.();
+        await new Promise(r => setTimeout(r, 10));
+      }
+      worker.stop();
+      await runPromise;
+      expect(submitter.txs).toHaveLength(4);
+    } finally {
+      if (saved === undefined) delete process.env.TIP_PRESCAN_CONCURRENCY;
+      else process.env.TIP_PRESCAN_CONCURRENCY = saved;
+    }
+  });
+
+  test("default concurrency = 1 (sequential — back-compat)", async () => {
+    const clock = makeClock();
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const pending = [];
+    const { jobs, worker, submitter } = await setup({
+      now: clock.now,
+      classifierHandler: () => new Promise(resolve => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        pending.push(() => { inFlight -= 1; resolve(R({ modalities: [{ modality: "text", probability: 0.1 }] })); });
+      }),
+    });
+    for (let i = 0; i < 3; i++) {
+      jobs.enqueue({
+        ctid: `tip://c/OH-${String(i).padStart(14, "d")}-0003`,
+        payload: { text: `s${i}`, origin_code: "OH", content_type: "text" },
+      });
+    }
+    const runPromise = worker.run();   // no opts, no env → defaults to 1
+    await new Promise(r => setTimeout(r, 50));
+    expect(peakInFlight).toBe(1);
+    while (pending.length > 0 || inFlight > 0) {
+      pending.shift()?.();
+      await new Promise(r => setTimeout(r, 10));
+    }
+    worker.stop();
+    await runPromise;
+    expect(submitter.txs).toHaveLength(3);
+  });
+
+  test("stop() drains in-flight jobs before returning", async () => {
+    const clock = makeClock();
+    let resolveFn;
+    const classifierPromise = new Promise(resolve => { resolveFn = resolve; });
+    const { jobs, worker, submitter } = await setup({
+      now: clock.now,
+      classifierHandler: () => classifierPromise.then(() =>
+        R({ modalities: [{ modality: "text", probability: 0.1 }] })),
+    });
+    jobs.enqueue({
+      ctid: "tip://c/OH-drain000000000-0004",
+      payload: { text: "drain", origin_code: "OH", content_type: "text" },
+    });
+    const runPromise = worker.run({ concurrency: 2 });
+    await new Promise(r => setTimeout(r, 50));
+    worker.stop();
+    // Submission hasn't happened yet — classifier still hanging
+    expect(submitter.txs).toHaveLength(0);
+    resolveFn();
+    await runPromise;
+    // After run() resolves, the in-flight job has settled and emitted
+    expect(submitter.txs).toHaveLength(1);
+  });
+});
