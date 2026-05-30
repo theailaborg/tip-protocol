@@ -88,6 +88,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
       text: content,
       // media[] is plumbed in a follow-up step; for now there's only text.
       content_type_hint: body.content_type_hint || null,
+      // First registered URL drives platform-based resolution
+      // (twitter.com → MIXED, youtube.com → video, etc.). See
+      // shared/platforms.js for the strategy table.
+      registered_url: Array.isArray(canonicalPayload.registered_urls) && canonicalPayload.registered_urls.length > 0
+        ? canonicalPayload.registered_urls[0]
+        : null,
     });
     const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);

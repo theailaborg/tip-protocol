@@ -9,9 +9,14 @@
  *   1. Client declaration   — `content_type_hint` on REGISTER_CONTENT,
  *                             signed by the publisher. Trusted unless it
  *                             clearly contradicts the request shape.
- *   2. Heuristic derivation — when no hint, infer from media MIME types +
- *                             text length.
- *   3. Validate + auto-correct — when the hint is catastrophically wrong
+ *   2. URL platform lookup  — registered_urls[0] host matched against
+ *                             shared/platforms.js PLATFORM_CONTENT_TYPE.
+ *                             Resolves via a strategy (FIXED, MEDIA_DOMINANT,
+ *                             MIXED, TEXT_DOMINANT) appropriate to the
+ *                             platform's posting conventions.
+ *   3. Shape heuristic      — when host isn't registered, infer from
+ *                             media MIME types + text length.
+ *   4. Validate + auto-correct — when the hint is catastrophically wrong
  *                             (e.g. "text" declared with a 30 MB video
  *                             and 5 chars of text), override and record
  *                             the correction for audit.
@@ -30,6 +35,7 @@
 "use strict";
 
 const { CONTENT_TYPE } = require("../../../shared/protocol-constants");
+const { PLATFORM_ALIASES, PLATFORM_CONTENT_TYPE } = require("../../../shared/platforms");
 
 const PRIMARY_MODALITY = Object.freeze({
   text: "text",
@@ -63,7 +69,8 @@ function _shape(req) {
 }
 
 /**
- * Derive content_type heuristically from request shape.
+ * Derive content_type heuristically from request shape. Last-resort
+ * fallback used when no publisher hint AND no platform-registry match.
  *
  * Order matters: video > audio > image+long-text (article-with-hero) >
  * image+short-text (photo-with-caption) > text-only. Multiple media kinds
@@ -82,6 +89,90 @@ function deriveContentType(req) {
     return s.textLen >= CONTENT_TYPE.ARTICLE_TEXT_THRESHOLD_CHARS ? "text" : "image";
   }
   if (s.textLen > 0) return "text";
+
+  return null;
+}
+
+/**
+ * Look up a URL's host in PLATFORM_CONTENT_TYPE, resolving aliases first
+ * (twitter.com → x.com) and walking subdomain suffixes
+ * (anyone.substack.com → substack.com). Returns the strategy string or
+ * null when the host isn't registered.
+ */
+function resolvePlatformStrategy(url) {
+  if (typeof url !== "string" || url.length === 0) return null;
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); }
+  catch { return null; }
+  if (host.startsWith("www.")) host = host.slice(4);
+
+  while (true) {
+    const canonical = PLATFORM_ALIASES[host] || host;
+    if (PLATFORM_CONTENT_TYPE[canonical]) return PLATFORM_CONTENT_TYPE[canonical];
+    const dot = host.indexOf(".");
+    if (dot < 0 || dot === host.length - 1) return null;
+    host = host.slice(dot + 1);
+    if (!host.includes(".")) {
+      const root = PLATFORM_ALIASES[host] || host;
+      return PLATFORM_CONTENT_TYPE[root] || null;
+    }
+  }
+}
+
+/**
+ * Apply a platform-strategy ruleset against a request's shape and return
+ * the resolved content_type or null when the shape carries no
+ * classifiable content.
+ *
+ * Strategy semantics are documented at the top of shared/platforms.js;
+ * the table below summarises each strategy's behavior when text+media
+ * are both present.
+ *
+ *   FIXED:type       → the type, regardless of request shape
+ *   MEDIA_DOMINANT   → media kind wins (text is caption)
+ *   TEXT_DOMINANT    → text if any text present, else media kind
+ *   MIXED            → video/audio always win; image+text → "multi"
+ */
+function applyStrategy(strategy, req) {
+  // Fixed-type strategies — the platform IS the type. We still require
+  // *some* classifiable content so an empty request 400s like the
+  // heuristic path.
+  if (strategy === "video" || strategy === "audio" || strategy === "image" || strategy === "text") {
+    const s = _shape(req);
+    if (s.kinds === 0 && s.textLen === 0) return null;
+    return strategy;
+  }
+
+  const s = _shape(req);
+  if (s.kinds === 0 && s.textLen === 0) return null;
+
+  if (strategy === "MEDIA_DOMINANT") {
+    if (s.kinds >= 2) return "multi";
+    if (s.hasVideo) return "video";
+    if (s.hasAudio) return "audio";
+    if (s.hasImage) return "image";
+    return "text";
+  }
+
+  if (strategy === "TEXT_DOMINANT") {
+    if (s.textLen > 0) return "text";
+    if (s.kinds >= 2) return "multi";
+    if (s.hasVideo) return "video";
+    if (s.hasAudio) return "audio";
+    if (s.hasImage) return "image";
+    return null;
+  }
+
+  if (strategy === "MIXED") {
+    if (s.kinds === 0) return "text";              // text-only post
+    if (s.kinds >= 2) return "multi";              // mixed-media → multi
+    if (s.hasVideo) return "video";                // attention-dominant
+    if (s.hasAudio) return "audio";                // attention-dominant
+    // Only image remains. Image + any text → multi (text might be the work);
+    // image-only → image.
+    if (s.hasImage) return s.textLen > 0 ? "multi" : "image";
+    return null;
+  }
 
   return null;
 }
@@ -143,14 +234,17 @@ function validateAgainstShape(hint, req) {
 /**
  * Resolve the authoritative content_type for a registration request.
  *
- * The caller (content-service.register) passes the parsed request body;
- * the resolver returns:
+ * The caller (content-service.register) passes the parsed request body
+ * augmented with `registered_url` (the canonical URL from
+ * registered_urls[0]). The resolver returns:
  *
  *   {
  *     contentType:   "text"|"image"|"audio"|"video"|"multi",
  *     hintProvided:  string | null,
- *     resolution:    "from_hint" | "derived" | "auto_corrected_from_hint",
- *     reason:        string | null   // populated for auto-corrections
+ *     resolution:    "from_hint" | "from_url" | "derived"
+ *                  | "auto_corrected_from_hint",
+ *     reason:        string | null,        // populated for auto-corrections
+ *     platformStrategy: string | null,     // populated when resolved from URL
  *   }
  *
  * Throws { status, error, code } on:
@@ -159,7 +253,9 @@ function validateAgainstShape(hint, req) {
  */
 function resolve(req) {
   const hint = req && typeof req.content_type_hint === "string" ? req.content_type_hint : null;
+  const url  = req && typeof req.registered_url === "string" ? req.registered_url : null;
 
+  // Step 1: explicit publisher hint — trust unless catastrophic mismatch.
   if (hint) {
     const v = validateAgainstShape(hint, req);
     if (!v.ok) {
@@ -171,6 +267,7 @@ function resolve(req) {
         hintProvided: hint,
         resolution: "auto_corrected_from_hint",
         reason: v.reason,
+        platformStrategy: null,
       };
     }
     return {
@@ -178,9 +275,31 @@ function resolve(req) {
       hintProvided: hint,
       resolution: "from_hint",
       reason: null,
+      platformStrategy: null,
     };
   }
 
+  // Step 2: URL platform lookup.
+  const strategy = resolvePlatformStrategy(url);
+  if (strategy) {
+    const resolved = applyStrategy(strategy, req);
+    if (resolved === null) {
+      throw {
+        status: 400,
+        error: "Request has no classifiable content (no text, no media)",
+        code: "no_content_to_classify",
+      };
+    }
+    return {
+      contentType: resolved,
+      hintProvided: null,
+      resolution: "from_url",
+      reason: null,
+      platformStrategy: strategy,
+    };
+  }
+
+  // Step 3: shape heuristic (unknown / no URL).
   const derived = deriveContentType(req);
   if (derived === null) {
     throw {
@@ -194,6 +313,7 @@ function resolve(req) {
     hintProvided: null,
     resolution: "derived",
     reason: null,
+    platformStrategy: null,
   };
 }
 
@@ -212,6 +332,8 @@ function primaryModality(contentType) {
 module.exports = {
   deriveContentType,
   validateAgainstShape,
+  resolvePlatformStrategy,
+  applyStrategy,
   resolve,
   primaryModality,
 };
