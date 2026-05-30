@@ -85,9 +85,12 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       return { worked: true, jobId: job.job_id, outcome: "completed" };
     } catch (err) {
       // _processJob handles its own retry/fail-open accounting; anything
-      // that escapes here is a programmer bug. Mark failed loudly.
+      // that escapes here is a programmer bug. Emit a fail-open so the
+      // chain reflects a terminal state instead of leaving the content
+      // stuck in PENDING_PRESCAN until the cross-node trigger picks it
+      // up at FAIL_OPEN_AFTER_MS.
       logger.error?.(`prescan-worker: unexpected error on ${job.job_id}: ${err?.message || err}`);
-      jobs.markFailed(job.job_id, err);
+      _safeEmitFailOpen(job, `worker_crash: ${err?.message || err}`, err);
       return { worked: true, jobId: job.job_id, outcome: "crashed", error: err };
     }
   }
@@ -152,7 +155,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     if (!job) return null;
     return _processJob(job).catch((err) => {
       logger.error?.(`prescan-worker: unexpected error on ${job.job_id}: ${err?.message || err}`);
-      jobs.markFailed(job.job_id, err);
+      _safeEmitFailOpen(job, `worker_crash: ${err?.message || err}`, err);
     });
   }
 
@@ -163,7 +166,11 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   async function _processJob(job) {
     const payload = job.payload;
     if (!payload || typeof payload !== "object") {
-      jobs.markFailed(job.job_id, "payload not parseable");
+      // Can't classify a corrupt payload. Fail-open so the content
+      // moves out of PENDING_PRESCAN — local marker alone would leave
+      // the chain inconsistent with the queue until the cross-node
+      // trigger catches it at FAIL_OPEN_AFTER_MS.
+      _safeEmitFailOpen(job, "payload_not_parseable", null);
       return;
     }
 
@@ -256,6 +263,26 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     }
     logger.warn?.(`prescan-worker: classifier exhausted retries on ${job.job_id}; failing open: ${msg}`);
     _emitFailOpen(job, job.payload?.content_type, `error_after_retries: ${msg}`);
+  }
+
+  /**
+   * Defensive wrapper around _emitFailOpen for use in catch handlers.
+   * If _emitFailOpen itself throws (consensus submitter error, sign
+   * failure), we fall back to the previous behaviour — markFailed
+   * locally and let the cross-node prescan-completion-trigger emit
+   * the fail-open after FAIL_OPEN_AFTER_MS. Never throws.
+   */
+  function _safeEmitFailOpen(job, reason, originalErr) {
+    try {
+      _emitFailOpen(job, job?.payload?.content_type, reason);
+    } catch (emitErr) {
+      logger.error?.(
+        `prescan-worker: emit fail-open failed for ${job?.job_id}: ${emitErr?.message || emitErr}` +
+        " — falling back to local mark; cross-node trigger will handle"
+      );
+      try { jobs.markFailed(job.job_id, originalErr || reason); }
+      catch { /* nothing we can do */ }
+    }
   }
 
   function _emitFailOpen(job, contentType, reason) {

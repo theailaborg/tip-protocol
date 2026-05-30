@@ -311,6 +311,63 @@ describe("tick — hard error handling", () => {
   });
 });
 
+// ── tick — unhandled-exception path emits fail-open ───────────────────────
+describe("tick — unexpected errors → fail-open (not just markFailed)", () => {
+  // The worker's catch handlers previously called jobs.markFailed without
+  // submitting any tx, leaving the chain in PENDING_PRESCAN until the
+  // cross-node trigger fired at FAIL_OPEN_AFTER_MS. They now emit a
+  // fail-open immediately so the local queue and chain agree.
+
+  test("payload-not-parseable → fail-open emitted", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [] }),
+    });
+    // Stub claim() to hand back a job with a non-object payload — simulates
+    // corrupted queue data that survived the decode step in prescan-jobs.
+    jobs.claim = () => ({
+      job_id: "pj_corrupt_test",
+      ctid: CTID,
+      payload: "not-an-object-payload",
+      retries: 0,
+    });
+    await worker.tick();
+    expect(submitter.txs).toHaveLength(1);
+    expect(submitter.txs[0].tx_type).toBe(TX_TYPES.PRESCAN_COMPLETED);
+    expect(submitter.txs[0].data.failed).toBe(true);
+    expect(submitter.txs[0].data.failure_reason).toBe("payload_not_parseable");
+  });
+
+  test("unhandled error in processing → fail-open emitted (tick path)", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      // Throw a non-Error to bypass _handleHardFailure's normal retry path —
+      // simulates a programmer bug that escapes _processJob.
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.7 }] }),
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "x", origin_code: "OH", content_type: "text" } });
+
+    // Patch jobs.markDone to throw — this simulates an unexpected error
+    // that escapes _processJob's normal retry/fail-open accounting.
+    const originalMarkDone = jobs.markDone;
+    jobs.markDone = () => { throw new Error("simulated post-classification crash"); };
+    try {
+      const result = await worker.tick();
+      expect(result.outcome).toBe("crashed");
+    } finally {
+      jobs.markDone = originalMarkDone;
+    }
+
+    // First tx is the success verdict submitted before markDone threw;
+    // second is the fail-open emitted by the catch handler.
+    const failOpens = submitter.txs.filter(tx => tx?.data?.failed === true);
+    expect(failOpens).toHaveLength(1);
+    expect(failOpens[0].data.failure_reason).toMatch(/worker_crash/);
+  });
+});
+
 // ── tick — empty queue ────────────────────────────────────────────────────
 describe("tick — idle", () => {
   test("returns worked:false when no jobs available", async () => {
