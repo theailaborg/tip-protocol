@@ -117,16 +117,15 @@ describe("validateAgainstShape", () => {
     });
   });
 
-  test("hint=text + 30MB video + 5 char text → auto-correct to video", () => {
+  test("hint=text with media + trivial text body → trust hint (publisher is authoritative)", () => {
+    // Publisher's signed hint wins even when shape suggests otherwise.
+    // The classifier still scans the video modality; aggregator weights
+    // both modalities so AI signal isn't lost.
     const r = { text: "lol", media: [{ mime: "video/mp4", size: 31457280 }] };
-    expect(validateAgainstShape("text", r)).toMatchObject({
-      ok: true,
-      correctedTo: "video",
-      reason: expect.stringMatching(/text but.*media/),
-    });
+    expect(validateAgainstShape("text", r)).toEqual({ ok: true });
   });
 
-  test("hint=text with substantial text (≥100 chars) + image → trust hint (no correction)", () => {
+  test("hint=text with substantial text + image → trust hint", () => {
     const r = { text: "x".repeat(150), media: [{ mime: "image/jpeg" }] };
     expect(validateAgainstShape("text", r)).toEqual({ ok: true });
   });
@@ -143,7 +142,6 @@ describe("resolve", () => {
       contentType: "text",
       hintProvided: null,
       resolution: "derived",
-      reason: null,
       platformStrategy: null,
     });
   });
@@ -155,7 +153,6 @@ describe("resolve", () => {
       contentType: "image",
       hintProvided: "image",
       resolution: "from_hint",
-      reason: null,
       platformStrategy: null,
     });
   });
@@ -166,17 +163,19 @@ describe("resolve", () => {
     );
   });
 
-  test("auto-correctable hint (text + huge video file) → auto_corrected", () => {
+  test("hint=text with video media → trusts hint (no auto-correction)", () => {
+    // Publisher's signed declaration wins; the aggregator's weighted-
+    // average path still scans the video modality, so AI signal isn't
+    // lost when the resolved type is "text".
     const r = {
       content_type_hint: "text",
       text: "lol",
       media: [{ mime: "video/mp4", size: 31457280 }],
     };
     expect(resolve(r)).toMatchObject({
-      contentType: "video",
+      contentType: "text",
       hintProvided: "text",
-      resolution: "auto_corrected_from_hint",
-      reason: expect.stringMatching(/text but.*media/),
+      resolution: "from_hint",
     });
   });
 

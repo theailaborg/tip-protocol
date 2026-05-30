@@ -44,7 +44,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
           content_type_meta: {
             hint_provided: ctypeResolution.hintProvided || null,
             resolution: ctypeResolution.resolution,
-            reason: ctypeResolution.reason || null,
+            platform_strategy: ctypeResolution.platformStrategy || null,
           },
           creator_cleared_count: verifiedOhCount,
           author_tip_id: signer_tip_id,

@@ -179,17 +179,19 @@ function applyStrategy(strategy, req) {
 
 /**
  * Decide whether a publisher-declared `hint` is consistent with the
- * request's actual shape.
+ * request's actual shape. Only catches structural impossibilities
+ * (declared modality with the required file entirely absent); text
+ * length, media size, and other heuristic comparisons are intentionally
+ * NOT checked — the publisher's signed hint is authoritative and the
+ * classifier scans every present modality regardless of the resolved
+ * content_type, so the aggregator catches AI signal in modalities the
+ * publisher de-emphasised.
  *
  * Returns:
- *   { ok: true }                                  — hint matches shape; trust it
- *   { ok: false, code: "...", message: "..." }    — major mismatch the caller
- *                                                   should reject (audio/video
- *                                                   declared without the file)
- *   { ok: true, correctedTo, reason }             — recoverable mismatch
- *                                                   (e.g. "text" with a huge
- *                                                   media file): caller should
- *                                                   use correctedTo instead.
+ *   { ok: true }                                  — hint is structurally valid; trust it
+ *   { ok: false, code: "...", message: "..." }    — declared modality requires
+ *                                                   a file of that type that
+ *                                                   the request doesn't carry
  */
 function validateAgainstShape(hint, req) {
   if (!CONTENT_TYPE.VALID_TYPES.includes(hint)) {
@@ -197,7 +199,6 @@ function validateAgainstShape(hint, req) {
   }
   const s = _shape(req);
 
-  // Catastrophic: declared modality requires a file of that type, none present.
   if (hint === "video" && !s.hasVideo) {
     return { ok: false, code: "missing_video", message: "content_type=video requires a video file" };
   }
@@ -207,26 +208,6 @@ function validateAgainstShape(hint, req) {
   if (hint === "image" && !s.hasImage) {
     return { ok: false, code: "missing_image", message: "content_type=image requires an image file" };
   }
-
-  // Recoverable: "text" with a substantial media file + trivial text.
-  // The publisher likely mis-declared a photo/video post. Auto-correct
-  // to the heuristic-derived type and record the override for audit.
-  if (hint === "text" && s.kinds >= 1 && s.textLen < 100) {
-    const derived = deriveContentType(req);
-    if (derived && derived !== hint) {
-      return {
-        ok: true,
-        correctedTo: derived,
-        reason: `hint=text but request carries ${s.mediaCount} media file(s) with only ${s.textLen} chars of text`,
-      };
-    }
-  }
-
-  // Recoverable: "multi" with only one media kind. Not strictly wrong,
-  // but the heuristic suggests a more specific type. Trust the hint for
-  // "multi" since publishers may genuinely have heterogeneous content
-  // they want classified neutrally — log only.
-  // (No auto-correction; multi is always valid.)
 
   return { ok: true };
 }
@@ -239,12 +220,10 @@ function validateAgainstShape(hint, req) {
  * registered_urls[0]). The resolver returns:
  *
  *   {
- *     contentType:   "text"|"image"|"audio"|"video"|"multi",
- *     hintProvided:  string | null,
- *     resolution:    "from_hint" | "from_url" | "derived"
- *                  | "auto_corrected_from_hint",
- *     reason:        string | null,        // populated for auto-corrections
- *     platformStrategy: string | null,     // populated when resolved from URL
+ *     contentType:      "text"|"image"|"audio"|"video"|"multi",
+ *     hintProvided:     string | null,
+ *     resolution:       "from_hint" | "from_url" | "derived",
+ *     platformStrategy: string | null,   // populated when resolved from URL
  *   }
  *
  * Throws { status, error, code } on:
@@ -253,28 +232,19 @@ function validateAgainstShape(hint, req) {
  */
 function resolve(req) {
   const hint = req && typeof req.content_type_hint === "string" ? req.content_type_hint : null;
-  const url  = req && typeof req.registered_url === "string" ? req.registered_url : null;
+  const url = req && typeof req.registered_url === "string" ? req.registered_url : null;
 
-  // Step 1: explicit publisher hint — trust unless catastrophic mismatch.
+  // Step 1: explicit publisher hint — trust unless the declared modality
+  // is structurally impossible (missing required file).
   if (hint) {
     const v = validateAgainstShape(hint, req);
     if (!v.ok) {
       throw { status: 400, error: v.message, code: v.code };
     }
-    if (v.correctedTo) {
-      return {
-        contentType: v.correctedTo,
-        hintProvided: hint,
-        resolution: "auto_corrected_from_hint",
-        reason: v.reason,
-        platformStrategy: null,
-      };
-    }
     return {
       contentType: hint,
       hintProvided: hint,
       resolution: "from_hint",
-      reason: null,
       platformStrategy: null,
     };
   }
@@ -294,7 +264,6 @@ function resolve(req) {
       contentType: resolved,
       hintProvided: null,
       resolution: "from_url",
-      reason: null,
       platformStrategy: strategy,
     };
   }
@@ -312,7 +281,6 @@ function resolve(req) {
     contentType: derived,
     hintProvided: null,
     resolution: "derived",
-    reason: null,
     platformStrategy: null,
   };
 }
