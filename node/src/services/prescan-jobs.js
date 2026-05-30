@@ -25,6 +25,7 @@
 
 const crypto = require("crypto");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 
 /**
  * Create the prescan-jobs service bound to a DAG facade.
@@ -39,7 +40,7 @@ const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
  */
 function createPrescanJobs({ dag, now: nowFn }) {
   if (!dag) throw new Error("prescan-jobs: dag required");
-  const now = typeof nowFn === "function" ? nowFn : Date.now;
+  const now = typeof nowFn === "function" ? nowFn : nowMs;
 
   /**
    * Enqueue a new prescan job for a freshly-registered ctid.

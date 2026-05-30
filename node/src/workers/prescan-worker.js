@@ -33,6 +33,7 @@
 
 const { TX_TYPES } = require("../../../shared/constants");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { aggregate } = require("../services/prescan-aggregator");
 const prescanCompletedSchema = require("../schemas/prescan-completed");
 const { nodeSignedAuto } = require("../services/helpers");
@@ -65,7 +66,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
 
   const logger = log || console;
   const workerId = config.nodeRegisteredId || config.nodeId || `worker_${process.pid}`;
-  const now = typeof nowFn === "function" ? nowFn : Date.now;
+  const now = typeof nowFn === "function" ? nowFn : nowMs;
   const sleep = typeof sleepFn === "function"
     ? sleepFn
     : (ms) => new Promise(r => setTimeout(r, ms));

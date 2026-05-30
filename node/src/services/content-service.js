@@ -6,19 +6,54 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
-const { VERIFY_CAPS, SCORE_EVENTS } = require("../../../shared/protocol-constants");
+const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
+const contentType = require("./content-type");
 // Imported via the module reference (not destructured) so tests can
 // jest.spyOn(helpers, "preScanContent") to drive specific tier scenarios.
 const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createContentService({ dag, scoring, config, submitTx }) {
+function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
+
+  // Enqueue the prescan job for the worker. The job payload carries
+  // everything the worker needs (text, origin_code, resolved content_type,
+  // creator history calibration). Non-OH origins still enqueue — the
+  // worker / classifier-client will short-circuit them with prob=0.
+  // Enqueue failure is operational, not fatal — registration still
+  // succeeds; the failover trigger will eventually pick the content up
+  // if PRESCAN_COMPLETED never arrives. No-op when prescanJobs isn't
+  // wired (legacy paths / certain test setups).
+  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution }) {
+    if (!prescanJobs) return;
+    try {
+      const verifiedOhCount = dag.getContentByAuthor(signer_tip_id)
+        .filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED)
+        .length;
+      prescanJobs.enqueue({
+        ctid,
+        payload: {
+          text: content || "",
+          origin_code,
+          content_type: ctypeResolution.contentType,
+          content_type_meta: {
+            hint_provided: ctypeResolution.hintProvided || null,
+            resolution: ctypeResolution.resolution,
+            reason: ctypeResolution.reason || null,
+          },
+          creator_cleared_count: verifiedOhCount,
+          author_tip_id: signer_tip_id,
+        },
+      });
+    } catch (err) {
+      log.warn(`prescan-jobs enqueue failed for ${ctid}: ${err.message || err}`);
+    }
+  }
 
   function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
@@ -43,19 +78,24 @@ function createContentService({ dag, scoring, config, submitTx }) {
     }
 
     const perceptHash = content ? perceptualHashText(content) : null;
-    const contentHistory = { verified_oh_count: dag.getContentByAuthor(signer_tip_id).filter(c => c.origin_code === ORIGIN.OH && c.status === CONTENT_STATUS.VERIFIED).length };
-    const preScan = helpers.preScanContent(content || "", origin_code, contentHistory);
 
-    // Silent registration: HIGH/CRITICAL-tier OH/AA content is accepted
-    // without a blocking gate. The post-registration `/content/:ctid`
-    // response carries prescan_tier + prescan_note so clients can warn
-    // the creator. If they don't self-correct within the 48h window the
-    // h=48 PRESCAN_REVIEW_TRIGGERED trigger hands the call to a reviewer.
+    // ── Async prescan ───────────────────────────────────────────────────
+    // Resolve content_type (publisher's signed hint → server-derived from
+    // request shape → server validation/auto-correct). Result is recorded
+    // on the prescan job's payload and ends up on PRESCAN_COMPLETED later;
+    // REGISTER_CONTENT only carries the hint (publisher's declaration).
+    const ctypeResolution = contentType.resolve({
+      text: content,
+      // media[] is plumbed in a follow-up step; for now there's only text.
+      content_type_hint: body.content_type_hint || null,
+    });
     const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
     const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
     if (!valid) throw schemaError(error.status, error.message, error.code);
+
+    const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: dag.getRecentPrev(),
@@ -68,9 +108,12 @@ function createContentService({ dag, scoring, config, submitTx }) {
         // time from signer_tip_id — see commit-handler REGISTER_CONTENT.
         ctid, origin_code: canonicalPayload.origin_code,
         content_hash: contentHashFull, perceptual_hash: perceptHash,
-        prescan_flagged: preScan.flagged,
-        prescan_probability: preScan.probability,
-        prescan_tier: preScan.tier,
+        // Async-prescan slots — verdict lands later via PRESCAN_COMPLETED.
+        // Defaults match the content row's schema defaults so legacy
+        // commit-handler paths keep working.
+        prescan_status: "pending",
+        prescan_assigned_node_id: assignedNodeId,
+        content_type_hint: ctypeResolution.hintProvided || null,
         // Passthrough — clients MAY send override=true as an explicit
         // ack-of-warning signal. Defaults to false when omitted; not
         // gated, so registration succeeds either way. The field is kept
@@ -96,8 +139,12 @@ function createContentService({ dag, scoring, config, submitTx }) {
 
     submitTx(signedTx);
 
-    const status = preScan.flagged ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
-    log.info(`Content proposed: ${ctid} (origin: ${origin_code}, signer: ${signer_tip_id})`);
+    _enqueuePrescanJob({
+      ctid, content, origin_code, signer_tip_id, ctypeResolution,
+    });
+
+    const status = CONTENT_STATUS.PENDING_PRESCAN;
+    log.info(`Content proposed: ${ctid} (origin: ${origin_code}, signer: ${signer_tip_id}, content_type: ${ctypeResolution.contentType})`);
 
     // Note: direct dag.saveContent happens in commit-handler when the tx
     // commits via consensus. API returns 202-style "proposed" so client
@@ -115,11 +162,15 @@ function createContentService({ dag, scoring, config, submitTx }) {
       confirmation: "proposed",
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
-      prescan_flagged: preScan.flagged,
-      prescan_tier: preScan.tier,
-      prescan_probability: preScan.probability,
-      prescan_note: PRESCAN_NOTES[preScan.tier] || null,
-      prescan: buildPrescanDescriptor({ preScan, originCode: origin_code, registeredAt }),
+      // ── Async prescan ─────────────────────────────────────────────
+      // No verdict yet — client polls the prescan_status endpoint until
+      // PRESCAN_COMPLETED commits and the row's prescan_status flips
+      // to "completed".
+      prescan_status: "pending",
+      prescan_poll_url: `/v1/content/${encodeURIComponent(ctid)}/prescan_status`,
+      prescan_poll_after_ms: PRESCAN_WORKER.POLL_AFTER_MS,
+      prescan_poll_max_attempts: PRESCAN_WORKER.POLL_MAX_ATTEMPTS,
+      content_type_hint: ctypeResolution.hintProvided || null,
       http_headers: {
         [HTTP_HEADERS.AUTHOR]: signer_tip_id, [HTTP_HEADERS.CONTENT]: ctid,
         [HTTP_HEADERS.ORIGIN]: ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
@@ -130,7 +181,7 @@ function createContentService({ dag, scoring, config, submitTx }) {
         "tip:author": signer_tip_id, "tip:content": ctid,
         "tip:origin": ORIGIN_LABELS[origin_code].toLowerCase().replace(/ /g, "-"),
         "tip:score": scoring.getScore(signer_tip_id).score.toString(),
-        "tip:status": preScan.flagged ? "PENDING" : "REGISTERED",
+        "tip:status": "PENDING_PRESCAN",
       },
     };
   }

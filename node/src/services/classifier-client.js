@@ -30,6 +30,7 @@
 
 const { CONTENT_LIMITS } = require("../../../shared/protocol-constants");
 const { ORIGIN, CLASSIFIER_CLIENT } = require("../../../shared/constants");
+const { nowMs } = require("../../../shared/time");
 
 const ORIGIN_CODES = Object.freeze(new Set(Object.values(ORIGIN)));
 
@@ -95,7 +96,7 @@ function createClassifierClient(opts = {}) {
   async function _post(path, body, timeoutMs) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
-    const started = Date.now();
+    const started = nowMs();
     try {
       const res = await fetchImpl(`${url}${path}`, {
         method: "POST",
@@ -103,7 +104,7 @@ function createClassifierClient(opts = {}) {
         body: JSON.stringify(body),
         signal: ac.signal,
       });
-      const elapsed = Date.now() - started;
+      const elapsed = nowMs() - started;
       const text = await res.text();
       let parsed = null;
       try { parsed = text ? JSON.parse(text) : null; }

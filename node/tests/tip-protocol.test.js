@@ -1415,7 +1415,9 @@ describe("Semantic Dedup", () => {
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: updateContent }));
     expect(ctRes.status).toBe(202);
     const updateCtid = ctRes.body.data.ctid;
-    expect(ctRes.body.data.status).toBe("registered");
+    // Async prescan: register returns immediately with status pending_prescan;
+    // PRESCAN_COMPLETED later flips to registered/pending_review.
+    expect(ctRes.body.data.status).toBe("pending_prescan");
 
     // Update origin from OH to AA
     const fields = { author_tip_id: sdTipId, ctid: updateCtid, new_origin_code: ORIGIN.AA };
