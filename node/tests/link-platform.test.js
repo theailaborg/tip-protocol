@@ -244,7 +244,27 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
         nodePrivateKey: nodePriv,
         nodeRegisteredId: "tip://node/test",
       },
-      submitTx: (tx) => submitted.push(tx),
+      // Simulate the commit handler: save LINK_PLATFORM txs to platform_links so
+      // the duplicate check (getPlatformLink) works in subsequent test calls.
+      submitTx: (tx) => {
+        submitted.push(tx);
+        if (tx.tx_type === TX_TYPES.LINK_PLATFORM) {
+          dag2.savePlatformLink({
+            id: `${tx.data.tip_id}::${tx.data.platform}`,
+            tip_id: tx.data.tip_id,
+            platform: tx.data.platform,
+            handle: tx.data.handle ?? null,
+            profile_url: tx.data.profile_url,
+            status: "active",
+            linked_at: tx.data.verified_at,
+            verified_at: tx.data.verified_at,
+            node_id: tx.data.node_id,
+            claim_signature: tx.data.claim_signature,
+            node_signature: tx.signature,
+            tx_id: tx.tx_id,
+          });
+        }
+      },
     });
   });
 
@@ -257,8 +277,10 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
 
   test("linkPlatform calls verifyBio and submits LINK_PLATFORM + SCORE_UPDATE", async () => {
     submitted.length = 0;
+    // Use a bio-check platform (medium) — twitter is OAUTH_REQUIRED and would
+    // reject without a VP proof before ever reaching verifyBio.
     const claimedAt = nowMs();
-    const claimSig = makeClaimSig("twitter", "https://x.com/alice", claimedAt);
+    const claimSig = makeClaimSig("medium", "https://medium.com/@alice", claimedAt);
 
     const bioFetcher = require(SRC + "/services/bio-fetcher");
     const origVerify = bioFetcher.verifyBio;
@@ -266,8 +288,8 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
 
     const result = await identityService2.linkPlatform({
       tipId: userTipId,
-      platform: "twitter",
-      profileUrl: "https://x.com/alice",
+      platform: "medium",
+      profileUrl: "https://medium.com/@alice",
       claimSignature: claimSig,
       claimedAt,
     });
@@ -275,7 +297,7 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     bioFetcher.verifyBio = origVerify;
 
     expect(result.confirmation).toBe("proposed");
-    expect(result.platform).toBe("twitter");
+    expect(result.platform).toBe("medium");
     expect(result.handle).toBe("alice");
     expect(submitted).toHaveLength(2);
     expect(submitted[0].tx_type).toBe(TX_TYPES.LINK_PLATFORM);
@@ -284,20 +306,21 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
   });
 
   test("linkPlatform throws 409 on duplicate platform", async () => {
-    const lp = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-    dag2.addTx(lp);
-
+    // The submitTx mock already called savePlatformLink for the medium link above.
+    // No manual dag2.addTx needed — getPlatformLink will find the active link.
     const bioFetcher = require(SRC + "/services/bio-fetcher");
     const origVerify = bioFetcher.verifyBio;
     bioFetcher.verifyBio = async () => ({ handle: "alice2" });
 
+    const claimedAt409 = nowMs();
     let caught;
     try {
+      // Attempt to link medium again (same platform already committed above).
       await identityService2.linkPlatform({
-        tipId: userTipId, platform: "twitter",
-        profileUrl: "https://x.com/alice2",
-        claimSignature: makeClaimSig("twitter", "https://x.com/alice2", nowMs()),
-        claimedAt: nowMs(),
+        tipId: userTipId, platform: "medium",
+        profileUrl: "https://medium.com/@alice2",
+        claimSignature: makeClaimSig("medium", "https://medium.com/@alice2", claimedAt409),
+        claimedAt: claimedAt409,
       });
     } catch (e) { caught = e; }
 
@@ -314,13 +337,15 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
       throw { status: 422, error: "TIP-ID not found in bio", code: "tip_id_not_in_bio" };
     };
 
+    // Use soundcloud (bio-check platform, not OAUTH_REQUIRED, not yet linked) so
+    // the request reaches verifyBio instead of hitting the duplicate-platform 409.
     const claimedAt422 = nowMs();
     let caught;
     try {
       await identityService2.linkPlatform({
-        tipId: userTipId, platform: "instagram",
-        profileUrl: "https://instagram.com/myhandle",
-        claimSignature: makeClaimSig("instagram", "https://instagram.com/myhandle", claimedAt422),
+        tipId: userTipId, platform: "soundcloud",
+        profileUrl: "https://soundcloud.com/myhandle",
+        claimSignature: makeClaimSig("soundcloud", "https://soundcloud.com/myhandle", claimedAt422),
         claimedAt: claimedAt422,
       });
     } catch (e) { caught = e; }
@@ -328,6 +353,67 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     bioFetcher.verifyBio = origVerify;
     expect(caught.status).toBe(422);
     expect(caught.code).toBe("tip_id_not_in_bio");
+  });
+
+  test("linkPlatform throws 403 when OAuth-required platform has no VP proof", async () => {
+    const claimedAt = nowMs();
+    let caught;
+    try {
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "instagram",
+        profileUrl: "https://instagram.com/myhandle",
+        claimSignature: makeClaimSig("instagram", "https://instagram.com/myhandle", claimedAt),
+        claimedAt,
+        // no vpOauthSignature / vpId
+      });
+    } catch (e) { caught = e; }
+    expect(caught.status).toBe(403);
+    expect(caught.code).toBe("oauth_required");
+  });
+
+  test("linkPlatform throws 400 for unknown platform", async () => {
+    const claimedAt = nowMs();
+    let caught;
+    try {
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "myspace",
+        profileUrl: "https://myspace.com/alice",
+        claimSignature: makeClaimSig("myspace", "https://myspace.com/alice", claimedAt),
+        claimedAt,
+      });
+    } catch (e) { caught = e; }
+    expect(caught.status).toBe(400);
+    expect(caught.code).toBe("unknown_platform");
+  });
+
+  test("linkPlatform throws 400 for mismatched profile_url domain", async () => {
+    const claimedAt = nowMs();
+    let caught;
+    try {
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "github",
+        profileUrl: "https://evil.com/alice",
+        claimSignature: makeClaimSig("github", "https://evil.com/alice", claimedAt),
+        claimedAt,
+      });
+    } catch (e) { caught = e; }
+    expect(caught.status).toBe(400);
+    expect(caught.code).toBe("invalid_profile_url");
+  });
+
+  test("linkPlatform throws 400 when claimed_at is older than 15 minutes", async () => {
+    const staleClaimedAt = nowMs() - 16 * 60 * 1000; // 16 min ago
+    let caught;
+    try {
+      await identityService2.linkPlatform({
+        tipId: userTipId, platform: "github",
+        profileUrl: "https://github.com/alice",
+        claimSignature: makeClaimSig("github", "https://github.com/alice", staleClaimedAt),
+        claimedAt: staleClaimedAt,
+      });
+    } catch (e) { caught = e; }
+    expect(caught.status).toBe(400);
+    expect(caught.code).toBe("claim_expired");
   });
 });
 
@@ -377,6 +463,85 @@ describe("dag platform_links CRUD", () => {
     const links = dag.getPlatformLinksByTipId("tip://id/US-ccdd");
     expect(links).toHaveLength(2);
     expect(links.map(l => l.platform).sort()).toEqual(["github", "youtube"]);
+  });
+});
+
+describe("social link score cap — 7th platform earns no bonus", () => {
+  let dag3, scoring3, svc3;
+  let userPriv3, userPub3, nodePriv3;
+  let uid3;
+  const submitted3 = [];
+
+  beforeAll(async () => {
+    dag3 = initDAG({ dbPath: ":memory:" });
+    scoring3 = initScoring(dag3, { nodeId: "tip://node/cap-test" });
+    const uKeys = await generateMLDSAKeypair();
+    userPriv3 = uKeys.privateKey;
+    userPub3 = uKeys.publicKey;
+    const nKeys = await generateMLDSAKeypair();
+    nodePriv3 = nKeys.privateKey;
+    const nodePub3 = nKeys.publicKey;
+    dag3.saveNode({ node_id: "tip://node/cap-test", public_key: nodePub3, status: "active", tx_id: "g-node3" });
+    dag3.saveVP({ vp_id: "tip://vp/cap", public_key: nodePub3, status: "active", tx_id: "g-vp3" });
+    uid3 = "tip://id/US-cap0000cap00000";
+    dag3.saveIdentity({ tip_id: uid3, public_key: userPub3, vp_id: "tip://vp/cap", tx_id: "g-id3" });
+    svc3 = createIdentityService({
+      dag: dag3, scoring: scoring3,
+      config: { nodeId: "tip://node/cap-test", nodePrivateKey: nodePriv3, nodeRegisteredId: "tip://node/cap-test" },
+      // Add each tx to the DAG so subsequent calls see the already-linked platforms.
+      submitTx: (tx) => { submitted3.push(tx); dag3.addTx(tx); },
+    });
+  });
+
+  function makeClaimSig3(platform, profileUrl, claimedAt) {
+    const payload = registerSocialSchema.buildSigningPayload({
+      tip_id: uid3, platform, profile_url: profileUrl, claimed_at: claimedAt,
+    });
+    return registerSocialSchema.sign(payload, userPriv3);
+  }
+
+  async function linkOne(platform, profileUrl) {
+    const claimedAt = nowMs();
+    const claimSig = makeClaimSig3(platform, profileUrl, claimedAt);
+    return svc3.linkPlatform({ tipId: uid3, platform, profileUrl, claimSignature: claimSig, claimedAt });
+  }
+
+  const CAP_PLATFORMS = [
+    { platform: "github",     profileUrl: "https://github.com/alice" },
+    { platform: "reddit",     profileUrl: "https://reddit.com/user/alice" },
+    { platform: "soundcloud", profileUrl: "https://soundcloud.com/alice" },
+    { platform: "medium",     profileUrl: "https://medium.com/@alice" },
+    { platform: "substack",   profileUrl: "https://alice.substack.com" },
+    { platform: "devto",      profileUrl: "https://dev.to/alice" },
+  ];
+
+  test("platforms 1–6 each earn SOCIAL_LINK_BONUS", async () => {
+    const bioFetcher = require(SRC + "/services/bio-fetcher");
+    const origVerify = bioFetcher.verifyBio;
+    bioFetcher.verifyBio = async ({ platform }) => ({ handle: `alice_${platform}` });
+
+    for (const { platform, profileUrl } of CAP_PLATFORMS) {
+      const result = await linkOne(platform, profileUrl);
+      expect(result.score_delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    }
+
+    bioFetcher.verifyBio = origVerify;
+  });
+
+  test("7th platform link returns score_delta 0 (cap enforced)", async () => {
+    const bioFetcher = require(SRC + "/services/bio-fetcher");
+    const origVerify = bioFetcher.verifyBio;
+    bioFetcher.verifyBio = async () => ({ handle: "alice_bluesky" });
+
+    const result = await linkOne("bluesky", "https://bsky.app/profile/alice.bsky.social");
+
+    bioFetcher.verifyBio = origVerify;
+    expect(result.score_delta).toBe(0);
+    expect(result.confirmation).toBe("proposed");
+
+    // No SCORE_UPDATE should have been emitted for the 7th link.
+    const scoreTxs = submitted3.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
+    expect(scoreTxs).toHaveLength(SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS);
   });
 });
 

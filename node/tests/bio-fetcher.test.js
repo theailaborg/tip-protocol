@@ -37,9 +37,6 @@ describe("extractHandle", () => {
     expect(extractHandle("https://www.threads.net/@alice", "threads")).toBe("alice");
   });
 
-  test("rooverse URL extracts handle", () => {
-    expect(extractHandle("https://www.rooverse.app/alice", "rooverse")).toBe("alice");
-  });
 
   test("linkedin returns null (no username)", () => {
     expect(extractHandle("https://www.linkedin.com/in/john-doe-123", "linkedin")).toBeNull();

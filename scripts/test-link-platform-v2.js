@@ -93,8 +93,8 @@ const getJson  = (url, ms = 5000) => httpRequest(url, { method: "GET", timeoutMs
 const postJson = (url, body, ms = 30000) => httpRequest(url, { method: "POST", body, timeoutMs: ms });
 
 async function waitFor(fn, { intervalMs = 1200, timeoutMs = 90000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = nowMs() + timeoutMs;
+  while (nowMs() < deadline) {
     try { const v = await fn(); if (v !== false && v !== null && v !== undefined) return v; } catch { /* retry */ }
     await new Promise((r) => setTimeout(r, intervalMs));
   }

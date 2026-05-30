@@ -22,6 +22,38 @@ const { log } = require("../logger");
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
 
+const CLAIM_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes — replay-attack window
+
+// profile_url must match at least one pattern for the stated platform.
+const ALLOWED_PLATFORMS = {
+  twitter:    [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  x:          [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  linkedin:   [/^https?:\/\/(www\.)?linkedin\.com\/in\/[^/?#]/i],
+  youtube:    [/^https?:\/\/(www\.)?youtube\.com\/@[^/?#]/i,
+               /^https?:\/\/(www\.)?youtube\.com\/c\/[^/?#]/i,
+               /^https?:\/\/(www\.)?youtube\.com\/channel\/[^/?#]/i],
+  facebook:   [/^https?:\/\/(www\.)?facebook\.com\/[^/?#]/i],
+  instagram:  [/^https?:\/\/(www\.)?instagram\.com\/[^/?#]/i],
+  reddit:     [/^https?:\/\/(www\.)?reddit\.com\/u(?:ser)?\/[^/?#]/i],
+  github:     [/^https?:\/\/(www\.)?github\.com\/[^/?#]/i],
+  medium:     [/^https?:\/\/(www\.)?medium\.com\/@[^/?#]/i,
+               /^https?:\/\/[^.]+\.medium\.com/i],
+  soundcloud: [/^https?:\/\/(www\.)?soundcloud\.com\/[^/?#]/i],
+  tiktok:     [/^https?:\/\/(www\.)?tiktok\.com\/@[^/?#]/i],
+  spotify:    [/^https?:\/\/open\.spotify\.com\/[^/?#]/i],
+  substack:   [/^https?:\/\/[^.]+\.substack\.com/i],
+  devto:      [/^https?:\/\/(www\.)?dev\.to\/[^/?#]/i],
+  bluesky:    [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
+  threads:    [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
+  mastodon:   [/^https?:\/\/[^/]+\/@[^/?#]/i],
+};
+
+// These platforms render bios with JavaScript or are login-gated — static
+// HTML scraping cannot verify ownership. Must use VP OAuth proof.
+const OAUTH_REQUIRED_PLATFORMS = new Set([
+  "twitter", "x", "instagram", "tiktok", "threads", "facebook", "linkedin", "youtube",
+]);
+
 // Statuses the activity feed can include. Default is "committed" only —
 // preserves back-compat for clients that pre-date the no-loss work.
 const ACTIVITY_STATUSES = Object.freeze(["committed", "pending", "rejected"]);
@@ -417,6 +449,21 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       throw schemaError(400, "tipId, platform, profileUrl, claimSignature, claimedAt are required", "missing_fields");
     }
 
+    const platformKey = platform.toLowerCase();
+    const platformPatterns = ALLOWED_PLATFORMS[platformKey];
+    if (!platformPatterns) {
+      throw schemaError(400, `Unknown or unsupported platform: "${platform}"`, "unknown_platform");
+    }
+    if (!platformPatterns.some(re => re.test(profileUrl))) {
+      throw schemaError(400, `profile_url does not match expected domain for platform "${platform}"`, "invalid_profile_url");
+    }
+    if (nowMs() - claimedAt > CLAIM_MAX_AGE_MS) {
+      throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
+    }
+    if (OAUTH_REQUIRED_PLATFORMS.has(platformKey) && !(vpOauthSignature && vpId)) {
+      throw schemaError(403, `Platform "${platform}" requires VP OAuth verification`, "oauth_required");
+    }
+
     const identity = dag.getIdentity(tipId);
     if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
 
@@ -546,6 +593,9 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
   async function unlinkPlatform({ tipId, platform, claimSignature, claimedAt }) {
     if (!tipId || !platform || !claimSignature || !claimedAt) {
       throw schemaError(400, "tipId, platform, claimSignature, claimedAt are required", "missing_fields");
+    }
+    if (nowMs() - claimedAt > CLAIM_MAX_AGE_MS) {
+      throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
     }
 
     const identity = dag.getIdentity(tipId);
