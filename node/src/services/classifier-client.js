@@ -34,6 +34,15 @@ const { nowMs } = require("../../../shared/time");
 
 const ORIGIN_CODES = Object.freeze(new Set(Object.values(ORIGIN)));
 
+// Classifier HTTP paths. Single source of truth so tests, smoke scripts,
+// and any future endpoint addition stay in lockstep.
+const PATHS = Object.freeze({
+  PRESCAN:   "/v1/prescan",
+  STAGE1:    "/v1/stage1",
+  PROVIDERS: "/v1/providers",
+  HEALTH:    "/health",
+});
+
 /**
  * Build a clean response that mirrors what the classifier returns for
  * non-OH origins, so callers downstream don't need to special-case the
@@ -62,13 +71,17 @@ function _skippedResponse(originCode, providerUsed = "skipped_locally") {
  * pointing at localhost in production.
  *
  * @param {Object} [opts]
- * @param {string} [opts.url]       Override env (used by tests).
- * @param {string} [opts.key]       Override env (used by tests). When
+ * @param {string} [opts.url]         Override env (used by tests).
+ * @param {string} [opts.key]         Override env (used by tests). When
  *   unset and TIP_CLASSIFIER_KEY is empty, the X-TIP-Classifier-Key
  *   header is omitted — dev mode against an unauthenticated classifier.
- * @param {Object} [opts.timeouts]  Override the protocol-level
+ * @param {Object} [opts.timeouts]    Override the protocol-level
  *   { text, file } ceilings. Tests use this; production should not.
- * @param {Function} [opts.fetch]   Injectable fetch (tests pass a mock).
+ * @param {boolean} [opts.scanNonOH]  Override env TIP_CLASSIFIER_SCAN_NON_OH.
+ *   Default false: AA/AG/MX origins short-circuit locally as "skipped"
+ *   (those origins self-disclose AI involvement). True: send those
+ *   origins to the classifier too (e.g. to fact-check self-disclosure).
+ * @param {Function} [opts.fetch]     Injectable fetch (tests pass a mock).
  */
 function createClassifierClient(opts = {}) {
   const url = opts.url ?? process.env.TIP_CLASSIFIER_URL;
@@ -82,6 +95,9 @@ function createClassifierClient(opts = {}) {
     text: opts.timeouts?.text ?? CLASSIFIER_CLIENT.TEXT_TIMEOUT_MS,
     file: opts.timeouts?.file ?? CLASSIFIER_CLIENT.FILE_TIMEOUT_MS,
   };
+  const scanNonOH = opts.scanNonOH !== undefined
+    ? !!opts.scanNonOH
+    : _envBool(process.env.TIP_CLASSIFIER_SCAN_NON_OH, false);
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("classifier-client: fetch implementation not available");
@@ -158,9 +174,12 @@ function createClassifierClient(opts = {}) {
         message: `origin_code must be one of: OH, AA, AG, MX (got "${originCode}")`,
       };
     }
-    // Non-OH origins: classifier always returns "skipped". Short-circuit
-    // locally to save latency + classifier load.
-    if (originCode !== "OH") {
+    // Non-OH origins (AA/AG/MX): self-disclose AI involvement, so the
+    // classifier's job (catch undisclosed AI) doesn't apply. Default to
+    // short-circuiting locally — saves latency + classifier load.
+    // Override via TIP_CLASSIFIER_SCAN_NON_OH=true (or opts.scanNonOH)
+    // when you want to fact-check self-disclosure / seed training data.
+    if (originCode !== "OH" && !scanNonOH) {
       return _skippedResponse(originCode);
     }
 
@@ -180,12 +199,12 @@ function createClassifierClient(opts = {}) {
     }
 
     const timeoutMs = hasFile ? timeouts.file : timeouts.text;
-    const res = await _post("/v1/prescan", body, timeoutMs);
+    const res = await _post(PATHS.PRESCAN, body, timeoutMs);
     if (res.status < 200 || res.status >= 300) {
       throw {
         code: "classifier_http_error",
         status: res.status,
-        message: `classifier /v1/prescan returned ${res.status}`,
+        message: `classifier ${PATHS.PRESCAN} returned ${res.status}`,
         body: res.body ?? res.raw,
       };
     }
@@ -219,12 +238,12 @@ function createClassifierClient(opts = {}) {
     }
 
     const timeoutMs = hasFile ? timeouts.file : timeouts.text;
-    const res = await _post("/v1/stage1", body, timeoutMs);
+    const res = await _post(PATHS.STAGE1, body, timeoutMs);
     if (res.status < 200 || res.status >= 300) {
       throw {
         code: "classifier_http_error",
         status: res.status,
-        message: `classifier /v1/stage1 returned ${res.status}`,
+        message: `classifier ${PATHS.STAGE1} returned ${res.status}`,
         body: res.body ?? res.raw,
       };
     }
@@ -232,12 +251,12 @@ function createClassifierClient(opts = {}) {
   }
 
   async function providers() {
-    const res = await _get("/v1/providers");
+    const res = await _get(PATHS.PROVIDERS);
     return res.body;
   }
 
   async function health() {
-    const res = await _get("/health");
+    const res = await _get(PATHS.HEALTH);
     return res.body;
   }
 
@@ -245,6 +264,18 @@ function createClassifierClient(opts = {}) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// Parse a "truthy" env string. Accepts: "1", "true", "yes", "on" (any
+// case). Anything else (including unset) → fallback. Used for boolean
+// flags whose default we want explicit (not just "any non-empty string
+// is truthy").
+function _envBool(raw, fallback) {
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  return fallback;
+}
 
 function _assertFileAllowed(file) {
   const mime = String(file.mime || "").toLowerCase();
@@ -286,4 +317,5 @@ module.exports = {
   createClassifierClient,
   isHeuristicOnly,
   isSkipped,
+  PATHS,
 };

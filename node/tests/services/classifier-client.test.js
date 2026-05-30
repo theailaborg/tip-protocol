@@ -12,6 +12,7 @@ const {
   createClassifierClient,
   isHeuristicOnly,
   isSkipped,
+  PATHS,
 } = require(path.resolve(__dirname, "../../src/services/classifier-client"));
 
 // ── Mock fetch helpers ─────────────────────────────────────────────────────
@@ -38,6 +39,16 @@ function clientWith(responder, opts = {}) {
   });
   return { client, fetch };
 }
+
+// ── Path constants ─────────────────────────────────────────────────────────
+describe("PATHS", () => {
+  test("exports the four classifier paths", () => {
+    expect(PATHS.PRESCAN).toBe("/v1/prescan");
+    expect(PATHS.STAGE1).toBe("/v1/stage1");
+    expect(PATHS.PROVIDERS).toBe("/v1/providers");
+    expect(PATHS.HEALTH).toBe("/health");
+  });
+});
 
 // ── Configuration ──────────────────────────────────────────────────────────
 describe("createClassifierClient — config", () => {
@@ -96,7 +107,7 @@ describe("prescan", () => {
     expect(body.file_mime_type).toBe("image/png");
   });
 
-  test("non-OH origin → locally skipped without round-trip", async () => {
+  test("non-OH origin → locally skipped without round-trip (default)", async () => {
     const { client, fetch } = clientWith(() => ({ body: { error: "should-not-be-called" } }));
     const r = await client.prescan({ originCode: "AG", text: "x" });
     expect(fetch.calls).toHaveLength(0);
@@ -104,6 +115,50 @@ describe("prescan", () => {
     expect(r.probability).toBe(0);
     expect(r.provider_used).toBe("skipped_locally");
     expect(r.locally_skipped).toBe(true);
+  });
+
+  test("non-OH origin DOES hit the classifier when scanNonOH=true (opts override)", async () => {
+    const { client, fetch } = clientWith(
+      () => ({ body: { flagged: false, probability: 0.4, modality_results: [], provider_used: "ensemble(...)" } }),
+      { scanNonOH: true },
+    );
+    const r = await client.prescan({ originCode: "AG", text: "self-disclosed AI" });
+    expect(fetch.calls).toHaveLength(1);
+    expect(r.locally_skipped).toBeUndefined();
+    expect(r.probability).toBe(0.4);
+    expect(JSON.parse(fetch.calls[0].init.body).origin_code).toBe("AG");
+  });
+
+  test("non-OH origin DOES hit the classifier when TIP_CLASSIFIER_SCAN_NON_OH=true (env)", async () => {
+    const saved = process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+    process.env.TIP_CLASSIFIER_SCAN_NON_OH = "true";
+    try {
+      const { client, fetch } = clientWith(
+        () => ({ body: { probability: 0.2, modality_results: [], provider_used: "ensemble(...)" } }),
+      );
+      await client.prescan({ originCode: "AA", text: "assisted" });
+      expect(fetch.calls).toHaveLength(1);
+    } finally {
+      if (saved === undefined) delete process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+      else process.env.TIP_CLASSIFIER_SCAN_NON_OH = saved;
+    }
+  });
+
+  test("explicit opts.scanNonOH=false overrides env=true", async () => {
+    const saved = process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+    process.env.TIP_CLASSIFIER_SCAN_NON_OH = "true";
+    try {
+      const { client, fetch } = clientWith(
+        () => ({ body: { error: "should-not-be-called" } }),
+        { scanNonOH: false },
+      );
+      const r = await client.prescan({ originCode: "AG", text: "x" });
+      expect(fetch.calls).toHaveLength(0);
+      expect(r.locally_skipped).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.TIP_CLASSIFIER_SCAN_NON_OH;
+      else process.env.TIP_CLASSIFIER_SCAN_NON_OH = saved;
+    }
   });
 
   test("invalid origin_code → throws before fetch", async () => {
