@@ -78,6 +78,26 @@ function _signIdentity(idFields, vpPriv) {
   const payload = registerIdentitySchema.buildSigningPayload(idFields);
   return registerIdentitySchema.sign(payload, vpPriv);
 }
+// Async-prescan helper for tests: forcibly mark a content row as
+// prescan-completed (no actual classifier call). Tests that exercise
+// flows downstream of registration (dispute, verify, update-origin)
+// shouldn't have to spin up the real worker just to leave PENDING_PRESCAN.
+function _completePrescanInline(dag, ctid, { flagged = false, tier = "low", probability = 0.1 } = {}) {
+  const rec = dag.getContent(ctid);
+  if (!rec) return;
+  dag.saveContent({
+    ...rec,
+    status: flagged ? "pending_review" : "registered",
+    prescan_status: "completed",
+    prescan_flagged: flagged,
+    prescan_probability: probability,
+    prescan_tier: tier,
+    prescan_completed_at: rec.registered_at,
+    prescan_content_type: rec.prescan_content_type || "text",
+    prescan_overall_degraded: 0,
+  });
+}
+
 function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCode = "OH", title }) {
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
@@ -1199,6 +1219,7 @@ describe("Gossip Broadcast Wiring", () => {
         authorTipId: dTipId, authorPriv: dAuthorPriv, content,
       }));
     const ctid = cRes.body.data.ctid;
+    _completePrescanInline(gossipDag, ctid);
 
     // (gossip broadcast removed — txs go through consensus)
     const body = _buildDisputeBody({
@@ -1383,6 +1404,7 @@ describe("Semantic Dedup", () => {
       .post("/v1/content/register")
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: sdContent2 }));
     const ctid2 = ctRes2.body.data.ctid;
+    _completePrescanInline(sdDag, ctid2);
 
     const body = _buildDisputeBody({
       disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
@@ -1456,6 +1478,7 @@ describe("Semantic Dedup", () => {
       .post("/v1/content/register")
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: content96 }));
     const ctid96 = ctRes.body.data.ctid;
+    _completePrescanInline(sdDag, ctid96);
 
     const dBody = _buildDisputeBody({
       disputerTipId: sdVerifierId, disputerPriv: sdVerifierPriv, claimedOrigin: "AG",
@@ -1656,6 +1679,7 @@ describe("Semantic Dedup", () => {
       .post("/v1/content/register")
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: caseContent }));
     const caseCtid = ctRes.body.data.ctid;
+    _completePrescanInline(sdDag, caseCtid);
 
     // File dispute (requires the evidence block; client-supplied
     // evidence_hash without a body is now refused).

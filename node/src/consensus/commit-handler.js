@@ -875,14 +875,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             attribution_mode: d.attribution_mode || "self",
             extras: (d.extras && typeof d.extras === "object" && !Array.isArray(d.extras)) ? d.extras : {},
             cna_version: d.cna_version,
-            // Phase 2.3: registration always lands as REGISTERED (green
-            // badge). For HIGH/CRITICAL tier + override, the creator has
-            // a 48h self-correction window; PENDING_REVIEW status is
-            // applied only when PRESCAN_REVIEW_TRIGGERED fires at h=48.
-            status: CONTENT_STATUS.REGISTERED,
+            // Async-prescan: when REGISTER_CONTENT carries
+            // prescan_status='pending' the row lands as PENDING_PRESCAN
+            // and waits for PRESCAN_COMPLETED to flip it to
+            // REGISTERED/PENDING_REVIEW. Legacy (sync-prescan) txs that
+            // didn't carry the field default to "completed", preserving
+            // pre-async behaviour where the row is immediately usable.
+            status: d.prescan_status === "pending"
+              ? CONTENT_STATUS.PENDING_PRESCAN
+              : CONTENT_STATUS.REGISTERED,
             prescan_flagged: !!d.prescan_flagged,
             prescan_probability: typeof d.prescan_probability === "number" ? d.prescan_probability : 0,
             prescan_tier: d.prescan_tier || "low",
+            prescan_status: d.prescan_status || "completed",
+            prescan_assigned_node_id: d.prescan_assigned_node_id || null,
+            content_type_hint: d.content_type_hint || null,
             override: !!d.override,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,

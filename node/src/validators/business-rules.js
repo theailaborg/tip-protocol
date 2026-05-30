@@ -134,7 +134,13 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update the origin code");
-  if (rec.status !== CONTENT_STATUS.REGISTERED && rec.status !== CONTENT_STATUS.PENDING_REVIEW) {
+  // PENDING_PRESCAN is allowed: while the worker hasn't returned a
+  // verdict, there's no flag to defend against — let the creator
+  // freely change the origin (PRESCAN_COMPLETED will classify against
+  // whatever origin is recorded when it lands).
+  if (rec.status !== CONTENT_STATUS.REGISTERED
+      && rec.status !== CONTENT_STATUS.PENDING_REVIEW
+      && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
     return fail(403, `Cannot update origin — content status is '${rec.status}'`);
   }
   if (!ORIGIN_CODES.includes(new_origin_code)) {
