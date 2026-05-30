@@ -127,6 +127,7 @@ function _setup() {
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
       status: CONTENT_STATUS.REGISTERED,
       prescan_flagged: true, prescan_probability: 0.95, prescan_tier: "high",
+      prescan_status: "completed", prescan_completed_at: registeredAtMs,
       override: true,
       registered_at: registeredAtMs,
       registered_urls: [], tx_id: shake256(`c:${CTID}:${registeredAtMs}`),

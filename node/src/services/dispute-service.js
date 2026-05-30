@@ -1084,6 +1084,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         // Pre-filter — only HIGH/CRITICAL OH content of this author is
         // a candidate for any of the three notifications.
         if (c.origin_code !== ORIGIN.OH) continue;
+        // Async-prescan: skip rows where the verdict hasn't landed yet,
+        // and skip degraded verdicts (don't surface "AI flagged" UX
+        // when the classifier signal itself was unreliable).
+        if ((c.prescan_status || "completed") !== "completed") continue;
+        if (c.prescan_overall_degraded) continue;
         if (c.prescan_tier !== PRESCAN_TIERS.HIGH && c.prescan_tier !== PRESCAN_TIERS.CRITICAL) continue;
 
         const registeredMs = c.registered_at ? c.registered_at : NaN;

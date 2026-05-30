@@ -296,12 +296,12 @@ function _canonPrescanReview(r) {
 // registered_by_vp_id=null + tx_id=null on every node.
 function _canonInterest(r) {
   return {
-    slug:                r.slug,
-    label:               r.label,
-    category:            r.category,
-    registered_at:       r.registered_at,
+    slug: r.slug,
+    label: r.label,
+    category: r.category,
+    registered_at: r.registered_at,
     registered_by_vp_id: r.registered_by_vp_id || null,
-    tx_id:               r.tx_id || null,
+    tx_id: r.tx_id || null,
   };
 }
 
@@ -1069,9 +1069,18 @@ class MemoryStore {
     for (const c of this._content.values()) {
       if (c.status !== "registered") continue;
       if (c.origin_code !== "OH") continue;
+      // Async-prescan gates: only act on completed, non-degraded verdicts.
+      // PENDING_PRESCAN rows wait; degraded verdicts get the
+      // unflagged-content treatment downstream.
+      if ((c.prescan_status || "completed") !== "completed") continue;
+      if (c.prescan_overall_degraded) continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
-      const registeredMs = c.registered_at ? c.registered_at : NaN;
-      if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
+      // Strict anchor: require prescan_completed_at. Falling back to
+      // registered_at would silently grandfather data bugs (status
+      // marked completed without a verdict time) and fire prematurely.
+      // Legacy pre-async rows are excluded by design.
+      const anchorMs = c.prescan_completed_at;
+      if (!Number.isFinite(anchorMs) || anchorMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
         r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
       if (prior.length > 0) continue;
@@ -2575,9 +2584,12 @@ class SQLiteStore {
            ON r.ctid = c.ctid AND r.state != 'recused'
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
+           AND c.prescan_status = 'completed'
+           AND c.prescan_overall_degraded = 0
            AND c.prescan_tier IN ('high','critical')
            AND r.review_id IS NULL
-           AND c.registered_at <= ?`
+           AND c.prescan_completed_at IS NOT NULL
+           AND c.prescan_completed_at <= ?`
       ),
       // Reviews in state=confirmed whose 24h creator-decision window has
       // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
@@ -3253,12 +3265,12 @@ class SQLiteStore {
   interestCount() { return this._stmts.interestCount.get().n; }
   _parseInterest(row) {
     return {
-      slug:                row.slug,
-      label:               row.label,
-      category:            row.category,
-      registered_at:       row.registered_at,
+      slug: row.slug,
+      label: row.label,
+      category: row.category,
+      registered_at: row.registered_at,
       registered_by_vp_id: row.registered_by_vp_id || null,
-      tx_id:               row.tx_id || null,
+      tx_id: row.tx_id || null,
     };
   }
 
@@ -4046,12 +4058,12 @@ function _bootstrapInterestsRegistry(store) {
   const { GENESIS_TIMESTAMP } = require("./genesis");
   for (const entry of INITIAL_INTERESTS_SEED) {
     store.saveInterest({
-      slug:                entry.slug,
-      label:               entry.label,
-      category:            entry.category,
-      registered_at:       GENESIS_TIMESTAMP,
+      slug: entry.slug,
+      label: entry.label,
+      category: entry.category,
+      registered_at: GENESIS_TIMESTAMP,
       registered_by_vp_id: null,     // genesis-seeded — no signing VP
-      tx_id:               null,
+      tx_id: null,
     });
   }
 }
