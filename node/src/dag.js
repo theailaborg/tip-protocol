@@ -1088,6 +1088,24 @@ class MemoryStore {
     }
     return out;
   }
+
+  // Content rows still stuck in prescan_status='pending' past the
+  // fail-open deadline. Surfaces the rows where the failover trigger
+  // should emit a fail-open PRESCAN_COMPLETED so content can't get
+  // stuck in PENDING_PRESCAN forever (API node dead, worker dead,
+  // classifier permanently unreachable, etc.). Anchor is
+  // registered_at — that's when the clock starts for "should have
+  // had a verdict by now."
+  getContentsStuckInPrescan(failOpenCutoffMs) {
+    const out = [];
+    for (const c of this._content.values()) {
+      if (c.prescan_status !== "pending") continue;
+      if (!Number.isFinite(c.registered_at)) continue;
+      if (c.registered_at > failOpenCutoffMs) continue;
+      out.push({ ...c });
+    }
+    return out;
+  }
   getReviewsNeedingAutoEscalation(nowMs) {
     const cutoff = nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS;
     return [...this._prescanReviews.values()]
@@ -2591,6 +2609,18 @@ class SQLiteStore {
            AND c.prescan_completed_at IS NOT NULL
            AND c.prescan_completed_at <= ?`
       ),
+      // Content rows stuck in prescan_status='pending' past the
+      // fail-open deadline. Caller passes (now - prescan.fail_open_after_ms)
+      // as the cutoff; rows registered before that haven't produced a
+      // verdict and need a synthesised fail-open completion so they
+      // don't sit in PENDING_PRESCAN forever (e.g. API node died after
+      // enqueueing but before the worker emitted PRESCAN_COMPLETED).
+      getContentsStuckInPrescan: this.db.prepare(
+        `SELECT * FROM content
+          WHERE prescan_status = 'pending'
+            AND registered_at IS NOT NULL
+            AND registered_at <= ?`
+      ),
       // Reviews in state=confirmed whose 24h creator-decision window has
       // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
       getReviewsNeedingAutoEscalation: this.db.prepare(
@@ -3306,6 +3336,9 @@ class SQLiteStore {
   getContentsNeedingReview(nowMs) {
     return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS);
   }
+  getContentsStuckInPrescan(failOpenCutoffMs) {
+    return this._stmts.getContentsStuckInPrescan.all(failOpenCutoffMs);
+  }
   getReviewsNeedingAutoEscalation(nowMs) {
     return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
   }
@@ -3885,6 +3918,7 @@ function _buildDagHandle(store, config) {
     getPrescanReviewsByReviewer: (reviewerTipId) => store.getPrescanReviewsByReviewer(reviewerTipId),
     getPrescanReviewsByCtid: (ctid) => store.getPrescanReviewsByCtid(ctid),
     getContentsNeedingReview: (nowMs) => store.getContentsNeedingReview(nowMs),
+    getContentsStuckInPrescan: (cutoffMs) => store.getContentsStuckInPrescan(cutoffMs),
     getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
     getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
 

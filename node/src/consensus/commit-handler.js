@@ -144,7 +144,7 @@ function _mapBusinessRuleReason(error) {
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, config, nodeId }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -283,6 +283,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         prescanReviewTrigger.checkPending(certTimestamp, round);
       } catch (err) {
         log.warn(`Round ${round}: post-round prescan-review trigger failed: ${err.message}`);
+      }
+    }
+    if (prescanCompletionTrigger && certTimestamp > 0) {
+      try {
+        prescanCompletionTrigger.checkPending(certTimestamp, round);
+      } catch (err) {
+        log.warn(`Round ${round}: post-round prescan-completion failover trigger failed: ${err.message}`);
       }
     }
 
