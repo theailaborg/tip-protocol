@@ -115,6 +115,30 @@ function _weightedAverage(results, weights) {
 }
 
 /**
+ * Primary-floor + asymmetric lift: anchor on the primary modality's
+ * probability and let non-degraded secondaries only LIFT the verdict
+ * upward. Secondaries weaker than the primary contribute nothing —
+ * encoding the safety bias that clean secondaries can't exonerate a
+ * flagged primary modality.
+ *
+ *   final = primaryProb + Σ max(0, secondary_prob - primaryProb) × secondary_weight
+ *
+ * Caller is responsible for verifying primaryProb is finite + non-degraded
+ * BEFORE invoking — this helper assumes the floor is trustworthy.
+ */
+function _primaryFloorLift(collapsed, primary, primaryProb, weights) {
+  let lift = 0;
+  for (const m of collapsed) {
+    if (m.modality === primary) continue;
+    if (m.probability <= primaryProb) continue;   // only positive contributions
+    if (isDegraded(m)) continue;                   // degraded secondaries excluded entirely
+    const w = typeof weights[m.modality] === "number" ? weights[m.modality] : 0;
+    lift += (m.probability - primaryProb) * w;
+  }
+  return primaryProb + lift;
+}
+
+/**
  * Aggregate per-modality classifier results into a single probability +
  * overall degraded flag + enriched modality entries.
  *
@@ -164,19 +188,10 @@ function aggregate(modalityResults, contentType) {
 
   // Primary-floor + asymmetric lift: secondaries can only RAISE the
   // verdict above primary's probability, never lower it.
-  const primaryProb = primaryResult.probability;
-  let lift = 0;
-  for (const m of collapsed) {
-    if (m.modality === primary) continue;
-    if (m.probability <= primaryProb) continue;          // only positive contributions
-    if (isDegraded(m)) continue;                          // degraded secondaries skipped entirely
-
-    const w = typeof weights[m.modality] === "number" ? weights[m.modality] : 0;
-    lift += (m.probability - primaryProb) * w;
-  }
+  const probability = _primaryFloorLift(collapsed, primary, primaryResult.probability, weights);
 
   return {
-    probability: _clamp01(primaryProb + lift),
+    probability: _clamp01(probability),
     overall_degraded: enriched.some(m => m.degraded),
     modality_results: enriched,
   };

@@ -37,10 +37,10 @@ const ORIGIN_CODES = Object.freeze(new Set(Object.values(ORIGIN)));
 // Classifier HTTP paths. Single source of truth so tests, smoke scripts,
 // and any future endpoint addition stay in lockstep.
 const PATHS = Object.freeze({
-  PRESCAN:   "/v1/prescan",
-  STAGE1:    "/v1/stage1",
+  PRESCAN: "/v1/prescan",
+  STAGE1: "/v1/stage1",
   PROVIDERS: "/v1/providers",
-  HEALTH:    "/health",
+  HEALTH: "/health",
 });
 
 /**
