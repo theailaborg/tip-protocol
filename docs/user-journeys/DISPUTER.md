@@ -29,7 +29,7 @@ You qualify if **all** are true:
 
 | Requirement | Why |
 |---|---|
-| Your trust score is **400 or higher** | Filters out brand-new or untrusted users from spam-disputing |
+| Your trust score is **550 or higher** | Filters out brand-new or untrusted users from spam-disputing |
 | You're not disputing your own content | The system filters this automatically |
 | You haven't disputed too many times in the last 30 days (5-per-30 days cap per user) | Anti-abuse — prevents serial disputers |
 
@@ -271,6 +271,53 @@ Net = cradle-to-grave change to your trust score across the full dispute lifecyc
 | Stage 2 UPHELD, creator appeals, Stage 3 OVERTURNS | **-15**  (Stage 2 win reverses: -15 -5 from your settlement) |
 
 Headline: **only file when you genuinely believe you're right and have evidence.** A 50/50 hunch loses you points on average.
+
+---
+
+## Notifications you'll see (dashboard feed)
+
+You sit on the disputer side of the same feed creators read. Two notification types are scoped specifically to you (everything else — jury phases, prescan flow — fires only for the author or jurors).
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  type:     verdict_landed  (role: disputer)                    │
+│  priority: info                                                │
+│  When:     ADJUDICATION_RESULT lands on a dispute you filed    │
+│                                                                │
+│  Title:    "Verdict landed on dispute you're party to"         │
+│  Summary:  "{ctid} {verdict}."                                 │
+│            (verdict ∈ UPHELD, DISMISSED, CONSERVATIVE_LABEL,   │
+│             NO_QUORUM)                                         │
+│  Action:   [ View dispute ] → /disputes/{dispute_id}           │
+│  Recency:  24h, then drops off the dashboard                   │
+│  Metadata: { verdict, confirmed_origin, resolved_at }          │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     appeal_available  (role: disputer, you LOST)        │
+│  priority: urgent (≤ 12h left) │ high otherwise                │
+│  When:     verdict = DISMISSED (author won, you lost)          │
+│            AND no APPEAL_FILED yet                             │
+│            AND within the 48h filing window                    │
+│                                                                │
+│  Title:    "Your dispute was DISMISSED —                       │
+│             appeal closes in {remaining}"                      │
+│  Summary:  "Verdict on {ctid} (DISMISSED).                     │
+│             You can file an appeal."                           │
+│  Action:   [ File appeal ] → /disputes/{dispute_id}/appeal     │
+│  Deadline: verdict_at + APPEAL.FILING_WINDOW_HOURS (48h)       │
+│  Metadata: { verdict, confirmed_origin,                        │
+│              stake_at_risk_for_appeal: 25 }                    │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**What you DON'T see:** the in-flight jury phases (`juror_commit_required`, `juror_reveal_required`, etc.) are juror-scoped — they only fire for the seven people elected to your case. As the disputer you sit in passive-waiting mode through the 78h commit+reveal window. The dashboard doesn't surface progress because there's nothing you can do during that phase; only the final `verdict_landed` lands when the case settles.
+
+The author's `dispute_filed_against_me` notification fires the moment you file — but that's their dashboard, not yours.
+
+**CONSERVATIVE_LABEL and NO_QUORUM:** neither triggers `appeal_available` on either side. CONSERVATIVE_LABEL has no clear loser (label adjustment without penalty); NO_QUORUM auto-escalates to a Stage-3 expert panel without anyone filing.
+
+**Tier interplay:** you only see these notifications if you've filed a dispute, which requires score 550+. If your score drops below 550 between filing and verdict, your existing disputes still settle — the eligibility check runs at filing time, not at verdict time. The notifications still surface to you regardless.
 
 ---
 

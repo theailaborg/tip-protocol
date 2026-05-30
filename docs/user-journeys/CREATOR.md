@@ -260,6 +260,105 @@ Same flow if you WON Stage 2 and the disputer appealed — except now you're hop
 
 ---
 
+## Notifications you'll see (dashboard feed)
+
+Your dashboard feed (the JSON behind your "To Do" list) emits these author-facing notification types. Each is keyed on a chain event, so they appear / disappear automatically as state changes — no mark-as-read, no inbox.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  type:     content_flagged_for_review                          │
+│  priority: high                                                │
+│  When:     HIGH or CRITICAL prescan tier, OH origin, age < 48h │
+│                                                                │
+│  Title:    "{hours}h to reconsider —                           │
+│             reviewer engages after that."                      │
+│  Summary:  "{ctid} was flagged at {TIER} AI confidence         │
+│             ({pct}%). Update the origin to AA / AG / MX        │
+│             during this window for a clean exit, or do         │
+│             nothing and an independent reviewer will           │
+│             examine it at h=48."                               │
+│  Action:   [ Update origin ] →                                 │
+│            /content/{ctid}/update-origin                       │
+│  Deadline: registered_at + CONTENT_GRACE.FLAGGED_MS (48h)      │
+│  Dismiss:  self-correct OR clock passes 48h (then B takes over)│
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     content_under_review                                │
+│  priority: high                                                │
+│  When:     prescan_review.state = TRIGGERED                    │
+│                                                                │
+│  Title:    "Independent reviewer is examining your content."   │
+│  Summary:  "{ctid}: a reviewer was assigned at {ISO}.          │
+│             You can still update the origin at zero penalty    │
+│             until they decide."                                │
+│  Action:   [ Update origin ] →                                 │
+│            /content/{ctid}/update-origin                       │
+│  Deadline: none (reviewer SLA bounds it server-side)           │
+│  Dismiss:  reviewer DISMISS/CONFIRM/RECUSE  OR  self-correct   │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     prescan_review_decision_required                    │
+│  priority: high                                                │
+│  When:     prescan_review.state = CONFIRMED (reviewer agreed)  │
+│                                                                │
+│  Title:    "Reviewer confirmed the AI flag —                   │
+│             {hours}h to respond."                              │
+│  Summary:  "{ctid}: an independent reviewer agreed with the    │
+│             {TIER} AI assessment{ and suggested {origin} }.    │
+│             Accept the correction privately (-10 reputation)   │
+│             or escalate to a public dispute."                  │
+│  Action:   [ Respond to reviewer ] → /reviews/{review_id}      │
+│  Deadline: confirmed_at + REVIEWER.CREATOR_DECISION_WINDOW (24h)│
+│  Dismiss:  you accept correction OR auto-escalates to dispute  │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     dispute_filed_against_me                            │
+│  priority: info                                                │
+│  When:     CONTENT_DISPUTED tx commits with you as author      │
+│                                                                │
+│  Title:    "New dispute filed against your content"            │
+│  Summary:  "{ctid} — {declared_origin}→{claimed_origin} claim."│
+│  Action:   [ View dispute ] → /disputes/{dispute_id}           │
+│  Deadline: none (informational; 24h recency on the feed)       │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     verdict_landed  (role: author)                      │
+│  priority: info                                                │
+│  When:     ADJUDICATION_RESULT lands for a dispute you're in   │
+│                                                                │
+│  Title:    "Verdict landed on dispute you're party to"         │
+│  Summary:  "{ctid} {verdict}."                                 │
+│  Action:   [ View dispute ] → /disputes/{dispute_id}           │
+│  Recency:  24h, then drops off the dashboard                   │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  type:     appeal_available  (role: author, you LOST Stage 2)  │
+│  priority: urgent (≤ 12h left) │ high otherwise                │
+│  When:     verdict = UPHELD (disputer won, you lost)           │
+│            AND no APPEAL_FILED yet                             │
+│            AND within the 48h filing window                    │
+│                                                                │
+│  Title:    "Your content's verdict was UPHELD —                │
+│             appeal closes in {remaining}"                      │
+│  Summary:  "Verdict on {ctid} (UPHELD). You can file an appeal.│
+│  Action:   [ File appeal ] → /disputes/{dispute_id}/appeal     │
+│  Deadline: verdict_at + APPEAL.FILING_WINDOW_HOURS (48h)       │
+│  Metadata: { verdict, confirmed_origin,                        │
+│              stake_at_risk_for_appeal: 25 }                    │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Priority + ordering:** the dashboard sorts by priority descending (`urgent` → `high` → `info`), then by deadline ascending. The `attention_count` field in the feed response counts `urgent` + `high` items — that's the number on your dashboard tab indicator.
+
+**Tier interplay:** none of these notifications gate on your trust tier — creators get them at any score. The actions you can take *in response* are tier-gated though (e.g. you can't dispute your own content; if you accept the reviewer's correction the -10 fires regardless of tier; appeal stake is a flat 25 regardless of tier). So the notifications surface uniformly, and the affordability of each response scales with your score.
+
+---
+
 ## The complete journey at a glance
 
 ```
@@ -380,7 +479,7 @@ You can retract it (-50). The content's metadata stays on the chain — it's app
 Effectively yes — by not accepting the correction. That auto-escalates to Stage 2 (public Jury). And then if you lose Stage 2, you can appeal to Stage 3 (Experts).
 
 **Can someone dispute my content even after AI didn't flag it?**
-Yes — any user with score 400+ can file a public dispute on verified content. They stake 15 points; if they're wrong, they lose it. This is the "I read this and it really doesn't look human" community check on top of AI.
+Yes — any user with score 550+ can file a public dispute on verified content. They stake 15 points; if they're wrong, they lose it. This is the "I read this and it really doesn't look human" community check on top of AI.
 
 **Do I see who disputed me?**
 You see their TIP ID. Not their legal name.

@@ -248,6 +248,75 @@ Same constants as Juror — there's no special expert escrow.
 
 ---
 
+## Recognition: your Expert badge
+
+Every appeal reveal you submit lands on chain as a `JURY_VOTE_REVEAL` tx with `is_appeal: true` attributed to you. The UI counts them off your activity feed and shows an **Expert badge** on your profile — e.g. *"Served 4 times as Expert"* — alongside your trust-tier badge. Because Stage 3 is rare (only triggers on appeal), the count grows slowly; that's by design — the badge signals depth of service, not volume.
+
+Same data source as Juror, just filtered by `is_appeal === true`. Nothing extra stored on chain.
+
+---
+
+## Notifications you'll see
+
+Your dashboard feed surfaces these expert-facing notification types — mirror of the juror set, with `expert_` prefix and 3-person panel context:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 1 — Commit                                              │
+│  type:     expert_commit_required                              │
+│  priority: urgent (≤ 12h left) │ high otherwise                │
+│  Title:    "Commit your expert vote ({remaining} left)"        │
+│  Summary:  "Dispute on {ctid} is in commit phase."             │
+│  Action:   [ Commit vote ] →                                   │
+│            /disputes/{disputeId}/appeal/commit                 │
+│  Deadline: summons.commit_deadline (72h after appeal summons)  │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 1.5 — Committed, reveal window not yet open             │
+│  type:     expert_awaiting_reveal_window                       │
+│  priority: info                                                │
+│  Title:    "Expert vote committed — reveal opens in {remaining}"│
+│  Action:   [ View dispute ] → /disputes/{disputeId}            │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 2 — Reveal                                              │
+│  type:     expert_reveal_required                              │
+│  priority: urgent (≤ 1h left) │ high otherwise                 │
+│  Title:    "Reveal your expert vote ({remaining} left)"        │
+│  Summary:  "Dispute on {ctid} is in reveal phase."             │
+│  Action:   [ Reveal vote ] →                                   │
+│            /disputes/{disputeId}/appeal/reveal                 │
+│  Deadline: summons.reveal_deadline (78h after appeal summons)  │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 3 — Revealed, awaiting appeal verdict                   │
+│  type:     expert_awaiting_verdict                             │
+│  priority: info                                                │
+│  Title:    "Expert vote revealed — awaiting verdict"           │
+│  Metadata: { my_vote, reveal_deadline }                        │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 4 — Appeal verdict landed (24h info-recency window)     │
+│  type:     verdict_on_my_jury  (role: expert)                  │
+│  priority: info                                                │
+│  Title:    "Appeal verdict on a dispute you served in:         │
+│             {verdict}"                                         │
+│  Summary:  "{ctid} {verdict}. You voted {my_vote}.             │
+│             Score {±n}."                                       │
+│  Metadata: { verdict, my_vote, outcome, score_impact }         │
+└────────────────────────────────────────────────────────────────┘
+```
+
+The feed carries one item per appeal at a time — each card flips to the next phase as your commit / reveal lands, and the final VERDICT card stays visible for 24h before falling off the dashboard (your activity history keeps it forever). Appeals are final, so there's no follow-on `appeal_available` notification after this — the case is closed.
+
+If you miss commit or reveal, no terminal notification fires; you just see `status: missed_*` in your jury-history endpoint and the -10 in your activity feed.
+
+---
+
 ## How is Expert different from Juror?
 
 You're at a higher tier, so:

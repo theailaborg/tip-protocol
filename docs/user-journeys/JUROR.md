@@ -26,7 +26,7 @@ You can turn the toggle off any time. You stop getting picked, immediately.
 ```
 Someone publicly disputed a piece of content
        (could be the creator themselves after a reviewer's CONFIRM,
-        or any user with score 400+ challenging a verified content)
+        or any user with score 550+ challenging a verified content)
                  ↓
        System runs a deterministic random selection
        (same algorithm on every node — everyone agrees)
@@ -244,6 +244,72 @@ So if the jury collapses into NO_QUORUM, **nobody is penalised** — not even th
 | Commit + reveal + ABSTAIN | **0 — neutral** |
 | Commit + miss reveal | **-10 trust score** (no-show) |
 | Didn't commit at all | **-10 trust score** (still counts as no-show) |
+
+---
+
+## Recognition: your Juror badge
+
+Every jury reveal you submit lands on chain as a `JURY_VOTE_REVEAL` tx (with `is_appeal: false`) attributed to you. The UI counts them off your activity feed and shows a **Juror badge** on your profile — e.g. *"Served 17 times as Juror"* — next to your trust-tier badge. Nothing extra is stored: it's a pure read from `/v1/identity/:tipId/activity` filtered to `JURY_VOTE_REVEAL` rows where you're the `juror_tip_id` and `is_appeal` is false.
+
+The count includes ABSTAIN reveals (you showed up and signalled) but not no-shows (no tx was emitted on your behalf). The badge appears the first time you reveal and ticks up every reveal after that.
+
+---
+
+## Notifications you'll see
+
+Your dashboard feed surfaces these juror-facing types, each tied to a phase of the case. The same item ID updates priority as the deadline approaches:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 1 — Commit                                              │
+│  type:     juror_commit_required                               │
+│  priority: urgent (≤ 12h left) │ high otherwise                │
+│  Title:    "Commit your jury vote ({remaining} left)"          │
+│  Summary:  "Dispute on {ctid} is in commit phase."             │
+│  Action:   [ Commit vote ] → /disputes/{disputeId}/commit      │
+│  Deadline: summons.commit_deadline (72h after summons)         │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 1.5 — Committed, reveal window not yet open             │
+│  type:     juror_awaiting_reveal_window                        │
+│  priority: info                                                │
+│  Title:    "Jury vote committed — reveal opens in {remaining}" │
+│  Action:   [ View dispute ] → /disputes/{disputeId}            │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 2 — Reveal                                              │
+│  type:     juror_reveal_required                               │
+│  priority: urgent (≤ 1h left) │ high otherwise                 │
+│  Title:    "Reveal your jury vote ({remaining} left)"          │
+│  Summary:  "Dispute on {ctid} is in reveal phase."             │
+│  Action:   [ Reveal vote ] → /disputes/{disputeId}/reveal      │
+│  Deadline: summons.reveal_deadline (78h after summons)         │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 3 — Revealed, awaiting verdict                          │
+│  type:     juror_awaiting_verdict                              │
+│  priority: info                                                │
+│  Title:    "Jury vote revealed — awaiting verdict"             │
+│  Metadata: { my_vote, reveal_deadline }                        │
+└────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────┐
+│  PHASE 4 — Verdict landed (24h info-recency window)            │
+│  type:     verdict_on_my_jury                                  │
+│  priority: info                                                │
+│  Title:    "Jury verdict on a dispute you served in: {verdict}"│
+│  Summary:  "{ctid} {verdict}. You voted {my_vote}.             │
+│             Score {±n}."                                       │
+│  Metadata: { verdict, my_vote, outcome, score_impact }         │
+└────────────────────────────────────────────────────────────────┘
+```
+
+The feed only carries one item per case at a time — as you commit, the COMMIT card flips to AWAITING_REVEAL_WINDOW; when the reveal phase opens, it flips to REVEAL_REQUIRED; after you reveal, it becomes AWAITING_VERDICT; and once the verdict batch settles, you see VERDICT_ON_MY_JURY for 24h before it drops off the dashboard (still visible in your history).
+
+If you miss commit or reveal, no terminal notification fires — the chain doesn't replay your no-show to your dashboard. Your jury-history endpoint shows `status: missed_*` and the -10 in your activity feed.
 
 ---
 

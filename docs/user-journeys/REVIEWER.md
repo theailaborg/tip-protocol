@@ -178,6 +178,40 @@ The math is asymmetric in design: clear DISMISS / CONFIRM-with-accept paths are 
 
 ---
 
+## Recognition: your Reviewer badge
+
+Every assignment you close (DISMISS, CONFIRM, or RECUSE) shows up on your activity feed as a `PRESCAN_REVIEW_DISMISSED` / `PRESCAN_REVIEW_CONFIRMED` / `PRESCAN_REVIEW_RECUSED` tx attributed to you. The UI counts them and surfaces a **Reviewer badge** on your profile — e.g. *"Served 42 times as Reviewer"* — alongside your trust-tier badge. Nothing new gets minted on-chain: the count is a pure read off the same activity history that powers your `/v1/identity/:tipId/activity` feed.
+
+No threshold to "unlock" the badge — it appears the first time you close a review and ticks up with every one after.
+
+---
+
+## Notifications you'll see
+
+Your dashboard feed (the JSON behind your "To Do" list) emits exactly one notification type for reviewers:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  type:     review_assignment_pending                     │
+│  priority: urgent (≤ 6h left or overdue) │ high otherwise│
+│                                                          │
+│  Title:    "Review assignment open —                     │
+│             {hoursRemaining}h to decide or recuse"       │
+│            (overdue → "past SLA — auto-recuse imminent") │
+│                                                          │
+│  Summary:  "{ctid} is awaiting your decision.            │
+│             Dismiss, confirm, or recuse before the       │
+│             assignment auto-recuses and reassigns."      │
+│                                                          │
+│  Action:   [ Open review ]  →  /reviews/{review_id}      │
+│  Deadline: triggered_at + 48h (REVIEWER.AUTO_RECUSE_AGE) │
+└──────────────────────────────────────────────────────────┘
+```
+
+The item appears the moment a `PRESCAN_REVIEW_TRIGGERED` tx with you as `assigned_reviewer` commits, and disappears the moment you submit DISMISS / CONFIRM / RECUSE (or the 48h auto-recuse fires). No badge / no toast for closed reviews — they're visible only through your activity history and your Reviewer badge count.
+
+---
+
 ## The complete journey at a glance
 
 ```
