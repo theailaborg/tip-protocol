@@ -1,7 +1,6 @@
 "use strict";
 
 const https = require("https");
-const zlib  = require("zlib");
 const { log } = require("../logger");
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -60,10 +59,8 @@ function fetchProfileHtml(profileUrl) {
       path: url.pathname + url.search,
       method: "GET",
       headers: {
-        "User-Agent":      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
+        "User-Agent": "Mozilla/5.0 TIPProtocolBot/1.0 (+https://tip.protocol)",
+        "Accept": "text/html,application/xhtml+xml",
       },
       timeout: FETCH_TIMEOUT_MS,
     };
@@ -73,13 +70,9 @@ function fetchProfileHtml(profileUrl) {
         res.destroy();
         return reject({ status: 502, error: `Profile URL returned HTTP ${res.statusCode}`, code: "profile_fetch_failed" });
       }
-      const encoding = (res.headers["content-encoding"] || "").toLowerCase();
-      const stream = encoding === "gzip"    ? res.pipe(zlib.createGunzip())
-                   : encoding === "deflate" ? res.pipe(zlib.createInflate())
-                   : res;
       const chunks = [];
       let totalBytes = 0;
-      stream.on("data", (chunk) => {
+      res.on("data", (chunk) => {
         totalBytes += chunk.length;
         if (totalBytes > MAX_RESPONSE_BYTES) {
           res.destroy();
@@ -87,8 +80,8 @@ function fetchProfileHtml(profileUrl) {
         }
         chunks.push(chunk);
       });
-      stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      stream.on("error", (err) => reject({ status: 502, error: `Profile fetch error: ${err.message}`, code: "profile_fetch_failed" }));
+      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      res.on("error", (err) => reject({ status: 502, error: `Profile fetch error: ${err.message}`, code: "profile_fetch_failed" }));
     });
 
     req.on("timeout", () => {
