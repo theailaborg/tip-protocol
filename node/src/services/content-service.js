@@ -461,7 +461,37 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     return { success: true, ctid, penalty: SCORE_EVENTS.CONTENT_RETRACTION.delta, tx_id: retractTx.tx_id, confirmation: "proposed" };
   }
 
-  return { register, resolve, verify, updateOrigin, retract };
+  /**
+   * Lightweight poll endpoint backing GET /v1/content/:ctid/prescan_status.
+   * Returns just the prescan verdict fields the client needs to render the
+   * pending → completed transition, without paying the cost of the full
+   * resolve() projection.
+   *
+   * - 404 when the content row doesn't exist
+   * - { prescan_status: "pending" } until PRESCAN_COMPLETED applies
+   * - full verdict shape once the row's prescan_status === "completed"
+   */
+  function getPrescanStatus(ctid) {
+    const rec = dag.getContent(ctid);
+    if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
+
+    const status = rec.prescan_status || "completed";
+    if (status !== "completed") {
+      return { ctid, prescan_status: status };
+    }
+    return {
+      ctid,
+      prescan_status: "completed",
+      prescan_flagged: !!rec.prescan_flagged,
+      prescan_probability: typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
+      prescan_tier: rec.prescan_tier || "low",
+      prescan_completed_at: rec.prescan_completed_at ?? null,
+      prescan_content_type: rec.prescan_content_type || null,
+      prescan_overall_degraded: !!rec.prescan_overall_degraded,
+    };
+  }
+
+  return { register, resolve, verify, updateOrigin, retract, getPrescanStatus };
 }
 
 module.exports = { createContentService };
