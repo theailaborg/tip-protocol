@@ -679,7 +679,10 @@ class KnexAdapter {
     // chain as a PRESCAN_COMPLETED tx that every node applies.
     await ensure("prescan_jobs", t => {
       t.string("job_id", 128).primary();
-      t.string("ctid", 512).notNullable().unique();
+      // Column named `tip_ctid` (not `ctid`) because `ctid` is a Postgres
+      // reserved system column (physical tuple identifier). Same pattern
+      // as the `content` table.
+      t.string("tip_ctid", 512).notNullable().unique();
       t.binary("payload").notNullable();              // canonical JSON of classifier input
       t.string("status", 16).notNullable();           // 'queued' | 'claimed' | 'done' | 'failed'
       t.bigInteger("claimed_at").nullable();          // ms; null while queued
@@ -1187,7 +1190,7 @@ class KnexAdapter {
     if (fresh) {
       this._ff(() => this._dbInsert("prescan_jobs", "job_id", {
         job_id: rec.job_id,
-        ctid: rec.ctid,
+        tip_ctid: rec.ctid,
         payload: rec.payload,
         status: "queued",
         claimed_at: null,
