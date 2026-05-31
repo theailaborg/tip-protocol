@@ -59,7 +59,7 @@ const STAGE_AUDIO = "audio";
  * @param {() => number} [deps.now]         Time source for tests.
  * @param {() => Promise<void>} [deps.sleep] Sleep impl for tests.
  */
-function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn }) {
+function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "" }) {
   if (!dag) throw new Error("prescan-worker: dag required");
   if (!jobs) throw new Error("prescan-worker: jobs required");
   if (!classifierClient) throw new Error("prescan-worker: classifierClient required");
@@ -67,7 +67,12 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
   if (!config?.nodePrivateKey) throw new Error("prescan-worker: config.nodePrivateKey required");
 
   const logger = log || console;
-  const workerId = config.nodeRegisteredId || config.nodeId || `worker_${process.pid}`;
+  // workerId identifies this worker in the queue's claimed_by column —
+  // useful for debugging stuck claims when multiple workers run against
+  // the same queue. Has NO effect on signed tx (config.nodeRegisteredId
+  // flows separately into nodeSignedAuto for the on-chain signer field).
+  const baseId = config.nodeRegisteredId || config.nodeId || `worker_${process.pid}`;
+  const workerId = `${baseId}${workerTag}`;
   const now = typeof nowFn === "function" ? nowFn : nowMs;
   const sleep = typeof sleepFn === "function"
     ? sleepFn

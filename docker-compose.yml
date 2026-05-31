@@ -105,6 +105,14 @@ x-node-common: &node-common
     TIP_DEV_ALLOW_LOCALHOST_DOMAINS: ${TIP_DEV_ALLOW_LOCALHOST_DOMAINS:-0}
     TIP_DEV_LOCALHOST_FETCH_HOST: ${TIP_DEV_LOCALHOST_FETCH_HOST:-}
     TIP_DEV_FORCE_PRESCAN_TIER: ${TIP_DEV_FORCE_PRESCAN_TIER:-}
+    # AI prescan classifier — base URL of the FastAPI service. Required at
+    # boot for the prescan worker. See .env.example for full description.
+    TIP_CLASSIFIER_URL:          ${TIP_CLASSIFIER_URL:-}
+    TIP_CLASSIFIER_KEY:          ${TIP_CLASSIFIER_KEY:-}
+    TIP_CLASSIFIER_SCAN_NON_OH:  ${TIP_CLASSIFIER_SCAN_NON_OH:-false}
+    TIP_PRESCAN_CONCURRENCY:     ${TIP_PRESCAN_CONCURRENCY:-1}
+    TIP_PRESCAN_WORKER_COUNT:    ${TIP_PRESCAN_WORKER_COUNT:-1}
+    TIP_PRESCAN_WORKER_DISABLE:  ${TIP_PRESCAN_WORKER_DISABLE:-}
     # Dev-only ZK skip — when set to "true" the dedup-proof verifier
     # returns true unconditionally. Production deployments leave this
     # unset; the var only takes effect when the operator opts in.

@@ -49,9 +49,9 @@ const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
 const reviewRoutes = require("./routes/reviews");
 
-function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null }) {
+function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null, prescanJobs = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
-  const ctx = { dag, scoring, config, submitTx, submitBatch, consensus: consensusRef, network: networkRef };
+  const ctx = { dag, scoring, config, submitTx, submitBatch, consensus: consensusRef, network: networkRef, prescanJobs };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
