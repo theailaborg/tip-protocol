@@ -442,7 +442,10 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     }
 
     const verifiedAt = nowMs();
-    const canonicalPayload = linkPlatformSchema.buildSigningPayload({
+    // Canonical payload + tx.data carry the OAuth bundle on the OAuth
+    // path. tx.data.handle IS vp_oauth_handle here (asserted by test)
+    // so the OAuth signature reconstructs from tx.data alone at replay.
+    const txData = {
       tip_id: tipId,
       platform,
       profile_url: profileUrl,
@@ -451,7 +454,14 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       verified_at: verifiedAt,
       node_id: config.nodeRegisteredId || config.nodeId,
       claim_signature: claimSignature,
-    });
+    };
+    if (vpOauthSignature && vpId) {
+      txData.vp_id = vpId;
+      txData.vp_oauth_signature = vpOauthSignature;
+      txData.vp_oauth_verified_at = vpOauthVerifiedAt;
+    }
+
+    const canonicalPayload = linkPlatformSchema.buildSigningPayload(txData);
 
     const nodePrivKey = config.nodePrivateKey;
     if (!nodePrivKey) throw schemaError(500, "Node private key not configured", "node_key_missing");
@@ -462,16 +472,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       timestamp: verifiedAt,
       signature: nodeSig,
       prev: dag.getRecentPrev(),
-      data: {
-        tip_id: tipId,
-        platform,
-        profile_url: profileUrl,
-        handle,
-        claimed_at: claimedAt,
-        verified_at: verifiedAt,
-        node_id: config.nodeRegisteredId || config.nodeId,
-        claim_signature: claimSignature,
-      },
+      data: txData,
     });
 
     const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });

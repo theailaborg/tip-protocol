@@ -193,8 +193,13 @@ function validateRequest(body, deps) {
 }
 
 /**
- * Build the canonical 8-field signed payload for a LINK_PLATFORM tx. All
- * fields always present; picks exactly these 8 keys in alphabetical order.
+ * Build the canonical signed payload for a LINK_PLATFORM tx. The 8 core
+ * fields are always present; when the OAuth path was used, three more
+ * fields (vp_id, vp_oauth_signature, vp_oauth_verified_at) are appended
+ * so the node's body signature covers them and replay verification can
+ * re-check the VP attestation. vp_oauth_handle is intentionally NOT in
+ * the payload — tx.data.handle is the canonical handle for the OAuth
+ * path too, asserted by an explicit invariant test.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
@@ -228,7 +233,7 @@ function buildSigningPayload(input) {
     throw schemaError(400, "verified_at must be a valid epoch ms timestamp", "verified_at_invalid");
   }
 
-  return {
+  const payload = {
     claim_signature: input.claim_signature,
     claimed_at: input.claimed_at,
     handle: input.handle ?? null,
@@ -238,6 +243,27 @@ function buildSigningPayload(input) {
     tip_id: input.tip_id,
     verified_at: input.verified_at,
   };
+
+  // OAuth bundle — included only when the link went through a VP OAuth
+  // flow. All three fields move together; presence of any one without
+  // the others would make the OAuth signature unverifiable at replay.
+  const oauthPresent = input.vp_id || input.vp_oauth_signature || input.vp_oauth_verified_at;
+  if (oauthPresent) {
+    if (typeof input.vp_id !== "string" || input.vp_id.length === 0) {
+      throw schemaError(400, "vp_id is required when OAuth proof is provided", "vp_id_required");
+    }
+    if (typeof input.vp_oauth_signature !== "string" || input.vp_oauth_signature.length === 0) {
+      throw schemaError(400, "vp_oauth_signature is required when OAuth proof is provided", "vp_oauth_signature_required");
+    }
+    if (!isValidMs(input.vp_oauth_verified_at)) {
+      throw schemaError(400, "vp_oauth_verified_at must be a valid epoch ms timestamp", "vp_oauth_verified_at_invalid");
+    }
+    payload.vp_id = input.vp_id;
+    payload.vp_oauth_signature = input.vp_oauth_signature;
+    payload.vp_oauth_verified_at = input.vp_oauth_verified_at;
+  }
+
+  return payload;
 }
 
 function sign(payload, nodePrivateKeyHex, opts) {
@@ -318,6 +344,53 @@ function verifyTx(tx, dag) {
 
   if (!registerSocialSchema.verifySignature(claimPayload, d.claim_signature, identity.public_key)) {
     return { ok: false, status: 403, error: "User claim signature verification failed", code: "claim_signature_invalid" };
+  }
+
+  // VP OAuth proof — for platforms that can't be bio-scraped, the VP's
+  // off-chain OAuth attestation is the only proof of ownership. Replay
+  // re-verifies the VP signature against the VP's on-chain public key
+  // so a malicious node can't gossip a LINK_PLATFORM for an OAuth-only
+  // platform without a real VP attestation.
+  const platformKey = (d.platform || "").toLowerCase();
+  const oauthRequired = OAUTH_REQUIRED_PLATFORMS.has(platformKey);
+  const oauthPresent = d.vp_id && d.vp_oauth_signature && d.vp_oauth_verified_at;
+
+  if (oauthRequired && !oauthPresent) {
+    return {
+      ok: false, status: 403,
+      error: `Platform "${d.platform}" requires VP OAuth verification`,
+      code: "oauth_required",
+    };
+  }
+
+  if (oauthPresent) {
+    let vp;
+    try {
+      vp = registerIdentitySchema.resolveVP(d.vp_id, dag);
+    } catch (err) {
+      if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
+      throw err;
+    }
+    // tx.data.handle IS the OAuth-attested handle (enforced by the
+    // service-layer invariant `handle = vpOauthHandle ?? null` on the
+    // OAuth path, asserted by test). Reusing it here avoids an extra
+    // tx.data field while keeping the OAuth signature reproducible.
+    const oauthProof = {
+      claimed_at: d.claimed_at,
+      handle: d.handle ?? null,
+      platform: d.platform,
+      profile_url: d.profile_url,
+      tip_id: d.tip_id,
+      verified_at: d.vp_oauth_verified_at,
+      vp_id: d.vp_id,
+    };
+    if (!verifyPayload(oauthProof, d.vp_oauth_signature, vp.public_key)) {
+      return {
+        ok: false, status: 403,
+        error: "VP OAuth signature verification failed",
+        code: "vp_oauth_signature_invalid",
+      };
+    }
   }
 
   return { ok: true };

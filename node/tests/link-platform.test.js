@@ -8,6 +8,7 @@ const { initCrypto, generateMLDSAKeypair } = require(SHARED + "/crypto");
 const { TX_TYPES } = require(SHARED + "/constants");
 const linkPlatformSchema = require(SRC + "/schemas/link-platform");
 const registerSocialSchema = require(SRC + "/schemas/register-social");
+const { signPayload } = require(SRC + "/schemas/_common");
 const { validateTransaction } = require(SRC + "/validators/tx-validator");
 const { initDAG } = require(SRC + "/dag");
 const { withTxId } = require(SRC + "/services/helpers");
@@ -369,6 +370,125 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     } catch (e) { caught = e; }
     expect(caught.status).toBe(403);
     expect(caught.code).toBe("oauth_required");
+  });
+
+  test("linkPlatform OAuth path: handle invariant + tx.data carries OAuth bundle + verifyTx re-verifies", async () => {
+    submitted.length = 0;
+    // Register a separate OAuth-attesting VP so we have a private key
+    // to sign the OAuth proof with. The base setup VP shares its key
+    // with the test node, which is fine for those tests but conflates
+    // identities here.
+    const oauthVpKeys = await generateMLDSAKeypair();
+    const oauthVpId = "tip://vp/oauth-test";
+    dag2.saveVP({ vp_id: oauthVpId, public_key: oauthVpKeys.publicKey, status: "active", tx_id: "g-vp-oauth" });
+
+    const profileUrl = "https://tiktok.com/@alice_oauth";
+    const claimedAt = nowMs();
+    const vpOauthVerifiedAt = nowMs();
+    const vpOauthHandle = "alice_oauth";
+
+    // VP signs the canonical 7-field OAuth attestation. handle and
+    // verified_at slots are what the VP observed via OAuth — distinct
+    // from the node's verified_at stamped later when the tx is built.
+    const oauthProof = {
+      claimed_at: claimedAt,
+      handle: vpOauthHandle,
+      platform: "tiktok",
+      profile_url: profileUrl,
+      tip_id: userTipId,
+      verified_at: vpOauthVerifiedAt,
+      vp_id: oauthVpId,
+    };
+    const vpOauthSignature = signPayload(oauthProof, oauthVpKeys.privateKey);
+
+    const result = await identityService2.linkPlatform({
+      tipId: userTipId,
+      platform: "tiktok",
+      profileUrl,
+      claimSignature: makeClaimSig("tiktok", profileUrl, claimedAt),
+      claimedAt,
+      vpId: oauthVpId,
+      vpOauthSignature,
+      vpOauthHandle,
+      vpOauthVerifiedAt,
+    });
+
+    expect(result.confirmation).toBe("proposed");
+    const linkTx = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    expect(linkTx).toBeDefined();
+
+    // Invariant guard — tx.data.handle IS what the VP attested to.
+    // If a future change canonicalizes / rewrites handle between
+    // input and tx.data, the OAuth signature would silently fail to
+    // re-verify at replay. This assertion catches that drift.
+    expect(linkTx.data.handle).toBe(vpOauthHandle);
+
+    // OAuth bundle persisted into tx.data so replay can re-verify.
+    expect(linkTx.data.vp_id).toBe(oauthVpId);
+    expect(linkTx.data.vp_oauth_signature).toBe(vpOauthSignature);
+    expect(linkTx.data.vp_oauth_verified_at).toBe(vpOauthVerifiedAt);
+    // Node's own verified_at is a distinct timestamp from the VP's.
+    expect(typeof linkTx.data.verified_at).toBe("number");
+
+    // Replay round-trip — verifyTx must re-verify the VP OAuth signature
+    // using tx.data alone (no off-chain artifacts needed). The test
+    // mock's submitTx eagerly wrote the active row above; in real
+    // consensus the row is written by _applyDerivedState AFTER
+    // verifyTx, so flip the existing row's status to simulate the
+    // pre-apply state the verifier actually sees.
+    dag2.updatePlatformLinkStatus(userTipId, "tiktok", { status: "unlinked" });
+    const verifyResult = linkPlatformSchema.verifyTx(linkTx, dag2);
+    expect(verifyResult.ok).toBe(true);
+  });
+
+  test("linkPlatform OAuth replay rejects forged vp_oauth_signature", async () => {
+    submitted.length = 0;
+    const oauthVpKeys = await generateMLDSAKeypair();
+    const oauthVpId = "tip://vp/oauth-forge-test";
+    dag2.saveVP({ vp_id: oauthVpId, public_key: oauthVpKeys.publicKey, status: "active", tx_id: "g-vp-forge" });
+
+    const profileUrl = "https://facebook.com/alice_forge";
+    const claimedAt = nowMs();
+    const vpOauthVerifiedAt = nowMs();
+    const vpOauthHandle = "alice_forge";
+
+    const oauthProof = {
+      claimed_at: claimedAt,
+      handle: vpOauthHandle,
+      platform: "facebook",
+      profile_url: profileUrl,
+      tip_id: userTipId,
+      verified_at: vpOauthVerifiedAt,
+      vp_id: oauthVpId,
+    };
+    const vpOauthSignature = signPayload(oauthProof, oauthVpKeys.privateKey);
+
+    await identityService2.linkPlatform({
+      tipId: userTipId,
+      platform: "facebook",
+      profileUrl,
+      claimSignature: makeClaimSig("facebook", profileUrl, claimedAt),
+      claimedAt,
+      vpId: oauthVpId,
+      vpOauthSignature,
+      vpOauthHandle,
+      vpOauthVerifiedAt,
+    });
+
+    const linkTx = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+
+    // Simulate pre-apply state for replay verification (same reason
+    // as the OAuth round-trip test above).
+    dag2.updatePlatformLinkStatus(userTipId, "facebook", { status: "unlinked" });
+
+    // Tamper the OAuth signature on a clone and re-verify — must fail.
+    const tampered = {
+      ...linkTx,
+      data: { ...linkTx.data, vp_oauth_signature: "00".repeat(linkTx.data.vp_oauth_signature.length / 2) },
+    };
+    const r = linkPlatformSchema.verifyTx(tampered, dag2);
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("vp_oauth_signature_invalid");
   });
 
   test("linkPlatform throws 400 for unknown platform", async () => {
