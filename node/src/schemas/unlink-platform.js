@@ -38,8 +38,8 @@ function buildUnlinkClaimPayload(input) {
   if (!isValidMs(input.claimed_at)) throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   return {
     claimed_at: input.claimed_at,
-    platform:   input.platform,
-    tip_id:     input.tip_id,
+    platform: input.platform,
+    tip_id: input.tip_id,
   };
 }
 
@@ -53,11 +53,11 @@ function buildSigningPayload(input) {
   if (!isValidMs(input.unlinked_at)) throw schemaError(400, "unlinked_at must be a valid epoch ms timestamp", "unlinked_at_invalid");
   return {
     claim_signature: input.claim_signature,
-    claimed_at:      input.claimed_at,
-    node_id:         input.node_id,
-    platform:        input.platform,
-    tip_id:          input.tip_id,
-    unlinked_at:     input.unlinked_at,
+    claimed_at: input.claimed_at,
+    node_id: input.node_id,
+    platform: input.platform,
+    tip_id: input.tip_id,
+    unlinked_at: input.unlinked_at,
   };
 }
 
@@ -79,6 +79,19 @@ function verifyTx(tx, dag) {
 
   const identity = dag.getIdentity(d.tip_id);
   if (!identity) return { ok: false, status: 412, error: `TIP-ID not found: ${d.tip_id}`, code: "tip_id_not_found" };
+
+  // Must have an active link to unlink. Catches gossip-bypass txs that
+  // would otherwise flip a non-existent or already-unlinked row.
+  if (typeof dag.getPlatformLink === "function") {
+    const existing = dag.getPlatformLink(d.tip_id, d.platform);
+    if (!existing || existing.status !== "active") {
+      return {
+        ok: false, status: 409,
+        error: `No active link to unlink for (${d.tip_id}, ${d.platform})`,
+        code: "platform_not_linked",
+      };
+    }
+  }
 
   let claimPayload;
   try {

@@ -80,13 +80,13 @@ function buildSigningPayload(input) {
 
   return {
     claim_signature: input.claim_signature,
-    claimed_at:      input.claimed_at,
-    handle:          input.handle ?? null,
-    node_id:         input.node_id,
-    platform:        input.platform,
-    profile_url:     input.profile_url,
-    tip_id:          input.tip_id,
-    verified_at:     input.verified_at,
+    claimed_at: input.claimed_at,
+    handle: input.handle ?? null,
+    node_id: input.node_id,
+    platform: input.platform,
+    profile_url: input.profile_url,
+    tip_id: input.tip_id,
+    verified_at: input.verified_at,
   };
 }
 
@@ -99,14 +99,15 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 }
 
 /**
- * State-level verification at consensus replay. GH #51: the node's
- * attestation is verified by the unified dispatcher (tx.signature). This
- * function only enforces the state-machine invariants the dispatcher
- * doesn't know about:
+ * State-level verification at consensus replay. The node's attestation is
+ * verified by the unified dispatcher (tx.signature). This function enforces
+ * the state-machine invariants the dispatcher doesn't know about:
  *
  *   1. Emitting node is registered + active
  *   2. Claimant TIP-ID is registered, not revoked
- *   3. User's claim_signature (attestation by the subject) verifies over
+ *   3. No existing active link for (tip_id, platform) — first-wins gate
+ *      against gossip-bypass and racing nodes
+ *   4. User's claim_signature (attestation by the subject) verifies over
  *      the embedded register-social sub-payload
  *
  * Returns { ok: true } on success, or
@@ -134,16 +135,31 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 403, error: `TIP-ID is revoked: ${d.tip_id}`, code: "tip_id_revoked" };
   }
 
+  // First-wins guard. Relink after an UNLINK is allowed (existing row's
+  // status flips to "unlinked"); a second LINK_PLATFORM while a link is
+  // still active is rejected so racing nodes / gossip-bypass txs can't
+  // overwrite the canonical row.
+  if (typeof dag.getPlatformLink === "function") {
+    const existing = dag.getPlatformLink(d.tip_id, d.platform);
+    if (existing && existing.status === "active") {
+      return {
+        ok: false, status: 409,
+        error: `Platform "${d.platform}" already linked for ${d.tip_id}`,
+        code: "platform_already_linked",
+      };
+    }
+  }
+
   // The original user-signed claim is bound into the LINK_PLATFORM tx so
   // replay-time verification re-establishes the full trust chain (user
   // → node) without needing the off-chain register call to still exist.
   let claimPayload;
   try {
     claimPayload = registerSocialSchema.buildSigningPayload({
-      claimed_at:  d.claimed_at,
-      platform:    d.platform,
+      claimed_at: d.claimed_at,
+      platform: d.platform,
       profile_url: d.profile_url,
-      tip_id:      d.tip_id,
+      tip_id: d.tip_id,
     });
   } catch (err) {
     if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };

@@ -415,6 +415,30 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.LINK_PLATFORM: {
+        // In-batch dedup. The committed-history first-wins guard lives in
+        // linkPlatformSchema.verifyTx (active-link check); two siblings in
+        // the same batch both see no committed row, so drop the second
+        // here before _applyDerivedState's upsert silently overwrites.
+        if (!d.tip_id || !d.platform) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.LINK_PLATFORM
+          && t.data?.tip_id === d.tip_id
+          && t.data?.platform === d.platform);
+        if (inBatch) return { valid: false, error: `duplicate LINK_PLATFORM in batch for (${d.tip_id}, ${d.platform})` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        if (!d.tip_id || !d.platform) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UNLINK_PLATFORM
+          && t.data?.tip_id === d.tip_id
+          && t.data?.platform === d.platform);
+        if (inBatch) return { valid: false, error: `duplicate UNLINK_PLATFORM in batch for (${d.tip_id}, ${d.platform})` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
@@ -611,6 +635,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // First-wins dedup: if two VPs race to register the same slug, the
         // second one 409s here in canonical consensus order.
         const r = interestRegisteredSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      // Social account linking — schema enforces verifying-node active,
+      // subject registered + unrevoked, no existing active link, and the
+      // user's claim_signature attestation. Closes the gossip-bypass gap
+      // for peer-submitted txs that never hit the API service's predicates.
+      case TX_TYPES.LINK_PLATFORM: {
+        const r = linkPlatformSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        const r = unlinkPlatformSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 

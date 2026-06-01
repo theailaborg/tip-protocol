@@ -26,26 +26,26 @@ const CLAIM_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes — replay-attack window
 
 // profile_url must match at least one pattern for the stated platform.
 const ALLOWED_PLATFORMS = {
-  twitter:    [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
-  x:          [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
-  linkedin:   [/^https?:\/\/(www\.)?linkedin\.com\/in\/[^/?#]/i],
-  youtube:    [/^https?:\/\/(www\.)?youtube\.com\/@[^/?#]/i,
-               /^https?:\/\/(www\.)?youtube\.com\/c\/[^/?#]/i,
-               /^https?:\/\/(www\.)?youtube\.com\/channel\/[^/?#]/i],
-  facebook:   [/^https?:\/\/(www\.)?facebook\.com\/[^/?#]/i],
-  instagram:  [/^https?:\/\/(www\.)?instagram\.com\/[^/?#]/i],
-  reddit:     [/^https?:\/\/(www\.)?reddit\.com\/u(?:ser)?\/[^/?#]/i],
-  github:     [/^https?:\/\/(www\.)?github\.com\/[^/?#]/i],
-  medium:     [/^https?:\/\/(www\.)?medium\.com\/@[^/?#]/i,
-               /^https?:\/\/[^.]+\.medium\.com/i],
+  twitter: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  x: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  linkedin: [/^https?:\/\/(www\.)?linkedin\.com\/in\/[^/?#]/i],
+  youtube: [/^https?:\/\/(www\.)?youtube\.com\/@[^/?#]/i,
+    /^https?:\/\/(www\.)?youtube\.com\/c\/[^/?#]/i,
+    /^https?:\/\/(www\.)?youtube\.com\/channel\/[^/?#]/i],
+  facebook: [/^https?:\/\/(www\.)?facebook\.com\/[^/?#]/i],
+  instagram: [/^https?:\/\/(www\.)?instagram\.com\/[^/?#]/i],
+  reddit: [/^https?:\/\/(www\.)?reddit\.com\/u(?:ser)?\/[^/?#]/i],
+  github: [/^https?:\/\/(www\.)?github\.com\/[^/?#]/i],
+  medium: [/^https?:\/\/(www\.)?medium\.com\/@[^/?#]/i,
+    /^https?:\/\/[^.]+\.medium\.com/i],
   soundcloud: [/^https?:\/\/(www\.)?soundcloud\.com\/[^/?#]/i],
-  tiktok:     [/^https?:\/\/(www\.)?tiktok\.com\/@[^/?#]/i],
-  spotify:    [/^https?:\/\/open\.spotify\.com\/[^/?#]/i],
-  substack:   [/^https?:\/\/[^.]+\.substack\.com/i],
-  devto:      [/^https?:\/\/(www\.)?dev\.to\/[^/?#]/i],
-  bluesky:    [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
-  threads:    [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
-  mastodon:   [/^https?:\/\/[^/]+\/@[^/?#]/i],
+  tiktok: [/^https?:\/\/(www\.)?tiktok\.com\/@[^/?#]/i],
+  spotify: [/^https?:\/\/open\.spotify\.com\/[^/?#]/i],
+  substack: [/^https?:\/\/[^.]+\.substack\.com/i],
+  devto: [/^https?:\/\/(www\.)?dev\.to\/[^/?#]/i],
+  bluesky: [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
+  threads: [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
+  mastodon: [/^https?:\/\/[^/]+\/@[^/?#]/i],
 };
 
 // These platforms render bios with JavaScript or are login-gated — static
@@ -498,13 +498,13 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     if (vpOauthSignature && vpId) {
       const vp = registerIdentitySchema.resolveVP(vpId, dag);
       const oauthProof = {
-        claimed_at:  claimedAt,
-        handle:      vpOauthHandle ?? null,
+        claimed_at: claimedAt,
+        handle: vpOauthHandle ?? null,
         platform,
         profile_url: profileUrl,
-        tip_id:      tipId,
+        tip_id: tipId,
         verified_at: vpOauthVerifiedAt,
-        vp_id:       vpId,
+        vp_id: vpId,
       };
       if (!verifyPayload(oauthProof, vpOauthSignature, vp.public_key)) {
         throw schemaError(403, "VP OAuth signature verification failed", "vp_oauth_signature_invalid");

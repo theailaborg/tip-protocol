@@ -7,22 +7,22 @@ const FETCH_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2MB cap
 
 const EXTRACTORS = {
-  twitter:   u => (u.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] || null),
-  x:         u => (u.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] || null),
+  twitter: u => (u.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] || null),
+  x: u => (u.match(/(?:twitter|x)\.com\/([^/?#]+)/)?.[1] || null),
   instagram: u => (u.match(/instagram\.com\/([^/?#]+)/)?.[1]?.replace(/\/$/, "") || null),
-  tiktok:    u => (u.match(/tiktok\.com\/@([^/?#]+)/)?.[1] || null),
-  youtube:   u => (u.match(/youtube\.com\/@([^/?#]+)/)?.[1] || u.match(/youtube\.com\/c\/([^/?#]+)/)?.[1] || null),
-  github:    u => (u.match(/github\.com\/([^/?#]+)/)?.[1]?.replace(/\/$/, "") || null),
-  reddit:    u => (u.match(/reddit\.com\/u(?:ser)?\/([^/?#]+)/)?.[1] || null),
-  bluesky:   u => (u.match(/bsky\.app\/profile\/([^/?#]+)/)?.[1] || null),
-  threads:   u => (u.match(/threads\.net\/@([^/?#]+)/)?.[1]?.replace(/\/$/, "") || null),
-soundcloud: u => (u.match(/soundcloud\.com\/([^/?#]+)/)?.[1] || null),
-  mastodon:  u => (u.match(/^https:\/\/([^/]+)\/@([^/?#]+)/)?.[2] || null),
-  linkedin:  () => null,
-  facebook:  () => null,
-  medium:    u => (u.match(/medium\.com\/@([^/?#]+)/)?.[1] || u.match(/^https?:\/\/([^.]+)\.medium\.com/)?.[1] || null),
-  substack:  u => (u.match(/^https?:\/\/([^.]+)\.substack\.com/)?.[1] || null),
-  devto:     u => (u.match(/dev\.to\/([^/?#]+)/)?.[1] || null),
+  tiktok: u => (u.match(/tiktok\.com\/@([^/?#]+)/)?.[1] || null),
+  youtube: u => (u.match(/youtube\.com\/@([^/?#]+)/)?.[1] || u.match(/youtube\.com\/c\/([^/?#]+)/)?.[1] || null),
+  github: u => (u.match(/github\.com\/([^/?#]+)/)?.[1]?.replace(/\/$/, "") || null),
+  reddit: u => (u.match(/reddit\.com\/u(?:ser)?\/([^/?#]+)/)?.[1] || null),
+  bluesky: u => (u.match(/bsky\.app\/profile\/([^/?#]+)/)?.[1] || null),
+  threads: u => (u.match(/threads\.net\/@([^/?#]+)/)?.[1]?.replace(/\/$/, "") || null),
+  soundcloud: u => (u.match(/soundcloud\.com\/([^/?#]+)/)?.[1] || null),
+  mastodon: u => (u.match(/^https:\/\/([^/]+)\/@([^/?#]+)/)?.[2] || null),
+  linkedin: () => null,
+  facebook: () => null,
+  medium: u => (u.match(/medium\.com\/@([^/?#]+)/)?.[1] || u.match(/^https?:\/\/([^.]+)\.medium\.com/)?.[1] || null),
+  substack: u => (u.match(/^https?:\/\/([^.]+)\.substack\.com/)?.[1] || null),
+  devto: u => (u.match(/dev\.to\/([^/?#]+)/)?.[1] || null),
 };
 
 function extractHandle(profileUrl, platform) {
