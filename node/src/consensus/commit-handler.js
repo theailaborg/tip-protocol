@@ -942,6 +942,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // ── Social account linking / unlinking ───────────────────────────
       case TX_TYPES.LINK_PLATFORM: {
         if (d.tip_id && d.platform) {
+          // Signatures live on the tx envelope (tx.signature = node body
+          // sig; tx.data.cosignatures[] = user claim sig). The row stores
+          // only display state + tx_id so verifiers can join back.
           dag.savePlatformLink({
             id: `${d.tip_id}::${d.platform}`,
             tip_id: d.tip_id,
@@ -954,8 +957,6 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             unlinked_at: null,
             unlink_tx_id: null,
             node_id: d.node_id,
-            claim_signature: d.claim_signature,
-            node_signature: tx.signature,
             tx_id: tx.tx_id,
           });
         }
@@ -964,9 +965,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
       case TX_TYPES.UNLINK_PLATFORM: {
         if (d.tip_id && d.platform) {
+          // SUBJECT-signed: the canonical body has no unlinked_at field
+          // (only claimed_at, platform, tip_id). tx.timestamp is the
+          // user-signed envelope time — use it as the on-chain unlink
+          // moment so platform_links carries a deterministic value.
           dag.updatePlatformLinkStatus(d.tip_id, d.platform, {
             status: "unlinked",
-            unlinked_at: d.unlinked_at,
+            unlinked_at: tx.timestamp,
             unlink_tx_id: tx.tx_id,
           });
         }

@@ -5,13 +5,13 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
+const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND } = require("../../../shared/constants");
 const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const bioFetcher = require("./bio-fetcher");
-const { schemaError, verifyPayload } = require("../schemas/_common");
+const { schemaError, verifyPayload, sortCosignatures } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -431,29 +431,33 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const isRelink = existingLinkTxs.some(t => t.data?.platform === platform);
     const uniqueLinkedPlatforms = new Set(existingLinkTxs.map(t => t.data?.platform));
 
-    // OAuth path skips the bio fetch — the VP already proved ownership
-    // off-chain. Bio path is the default for scrapeable platforms.
+    // Handle source depends on path:
+    //   OAuth path → VP attestation supplies it (vp_oauth_handle)
+    //   Bio path   → bioFetcher extracts from URL / scraped bio
     let handle;
     if (vpOauthSignature && vpId) {
       handle = vpOauthHandle ?? null;
-      log.info(`VP OAuth verified: ${tipId} -> ${platform} (handle: ${handle}) via VP ${vpId}`);
+      log.info(`VP OAuth verified: ${tipId} -> ${platform} (handle: ${handle ?? "null"}) via VP ${vpId}`);
     } else {
       ({ handle } = await bioFetcher.verifyBio({ tipId, profileUrl, platform }));
     }
 
     const verifiedAt = nowMs();
-    // Canonical payload + tx.data carry the OAuth bundle on the OAuth
-    // path. tx.data.handle IS vp_oauth_handle here (asserted by test)
-    // so the OAuth signature reconstructs from tx.data alone at replay.
+    // User's claim sig rides as a SUBJECT cosignature per the unified
+    // pattern (BIND_DOMAIN, link-platform schema getCosignatureContract).
     const txData = {
       tip_id: tipId,
       platform,
       profile_url: profileUrl,
-      handle,
+      handle: handle ?? null,
       claimed_at: claimedAt,
       verified_at: verifiedAt,
       node_id: config.nodeRegisteredId || config.nodeId,
-      claim_signature: claimSignature,
+      cosignatures: sortCosignatures([{
+        signer_kind: SIGNED_BY_KIND.SUBJECT,
+        signer_ref:  tipId,
+        signature:   claimSignature,
+      }]),
     };
     if (vpOauthSignature && vpId) {
       txData.vp_id = vpId;
@@ -503,7 +507,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     log.info(`Social account linked: ${tipId} -> ${platform} (${handle || "no-handle"})${scoreEligible ? "" : " [no bonus - cap reached]"}`);
     return {
-      tip_id: tipId, platform, handle,
+      tip_id: tipId, platform, handle: handle ?? null,
       tx_id: linkTx.tx_id, score_tx_id: scoreTxId,
       score_delta: scoreDelta,
       profile_url: profileUrl,
@@ -517,43 +521,29 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     return { tip_id: tipId, platform_links: links };
   }
 
-  async function unlinkPlatform({ tipId, platform, claimSignature, claimedAt }) {
-    // Schema owns shape, claim age, identity present, active-link state,
-    // and user claim_signature verification.
+  async function unlinkPlatform({ tipId, platform, linkTxId, signature, claimedAt }) {
+    // SUBJECT-signed: the user signs the canonical 4-field body
+    // client-side and the resulting signature becomes tx.signature
+    // directly. Service is a thin relay — no node attestation, no
+    // cosignatures. Same shape as UPDATE_PROFILE.
     const body = {
-      tip_id: tipId, platform,
-      claim_signature: claimSignature, claimed_at: claimedAt,
+      tip_id: tipId, platform, link_tx_id: linkTxId,
+      signature, claimed_at: claimedAt,
     };
     unlinkPlatformSchema.validateRequest(body, { dag, urlTipId: tipId });
 
-    const unlinkedAt = nowMs();
-    const nodeId = config.nodeRegisteredId || config.nodeId;
-    const canonicalPayload = unlinkPlatformSchema.buildSigningPayload({
-      claim_signature: claimSignature,
-      claimed_at: claimedAt,
-      node_id: nodeId,
-      platform,
-      tip_id: tipId,
-      unlinked_at: unlinkedAt,
-    });
-
-    const nodePrivKey = config.nodePrivateKey;
-    if (!nodePrivKey) throw schemaError(500, "Node private key not configured", "node_key_missing");
-    const nodeSig = unlinkPlatformSchema.sign(canonicalPayload, nodePrivKey);
-
+    const timestamp = nowMs();
     const unlinkTx = withTxId({
       tx_type: TX_TYPES.UNLINK_PLATFORM,
-      timestamp: unlinkedAt,
-      signature: nodeSig,
+      timestamp,
       prev: dag.getRecentPrev(),
       data: {
         tip_id: tipId,
         platform,
+        link_tx_id: linkTxId,
         claimed_at: claimedAt,
-        unlinked_at: unlinkedAt,
-        node_id: nodeId,
-        claim_signature: claimSignature,
       },
+      signature,
     });
 
     const validation = validateTransaction(unlinkTx, dag, { skipPrevCheck: true });
@@ -568,7 +558,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tip_id: tipId,
       platform,
       tx_id: unlinkTx.tx_id,
-      unlinked_at: unlinkedAt,
+      unlinked_at: timestamp,
       confirmation: "proposed",
     };
   }

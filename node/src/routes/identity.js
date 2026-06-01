@@ -92,7 +92,8 @@ function createRouter({ identityService, profileService, keyService }) {
     const result = await identityService.unlinkPlatform({
       tipId,
       platform: req.body.platform,
-      claimSignature: req.body.claim_signature,
+      linkTxId: req.body.link_tx_id,
+      signature: req.body.signature,
       claimedAt: req.body.claimed_at,
     });
     res.status(202).json(result);

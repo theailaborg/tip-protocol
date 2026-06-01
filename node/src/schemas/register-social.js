@@ -1,8 +1,15 @@
 /**
  * @file @tip-protocol/node/src/schemas/register-social.js
  * @description User-side claim schema for social account registration.
- * A user signs a 4-field payload to prove they control their TIP-ID before
- * the node fetches their social profile to verify bio ownership.
+ * A user signs a 4-field payload asserting only what they know
+ * offline — their TIP-ID, the platform, the profile URL, and the
+ * moment of signing.
+ *
+ * Handle is intentionally NOT in this payload. The handle is derived
+ * by the verifier (node's bio-fetcher extracts from URL on bio-check
+ * path; VP attests from OAuth callback on OAuth path). Same pattern
+ * as BIND_DOMAIN: user signs the claim, verifier supplies observed
+ * fields (binding_state for BIND_DOMAIN, handle here).
  *
  * Signed canonical payload (4 fields, alphabetical):
  *   claimed_at    number,  required (epoch ms)
@@ -10,8 +17,9 @@
  *   profile_url   string,  required (https:// URL)
  *   tip_id        string,  required (tip://id/... owner identity)
  *
- * Signer: the user (subject) signs the payload using their ML-DSA-65 key,
- * proving they own the TIP-ID and intend to claim the social account.
+ * Signer: the user (subject) signs the payload using their ML-DSA-65
+ * key. This signed claim rides on LINK_PLATFORM tx as a cosignature
+ * entry (signer_kind="subject") in tx.data.cosignatures.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0

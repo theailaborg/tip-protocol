@@ -32,7 +32,7 @@ describe("link-platform schema v2 (node-attested)", () => {
     expect(linkPlatformSchema.PLATFORM_MAX_LENGTH).toBe(50);
   });
 
-  test("buildSigningPayload produces 8 canonical fields alphabetically", () => {
+  test("buildSigningPayload produces 7 canonical fields alphabetically (no claim_signature)", () => {
     const payload = linkPlatformSchema.buildSigningPayload({
       tip_id: "tip://id/US-aabbccdd11223344",
       platform: "twitter",
@@ -41,10 +41,9 @@ describe("link-platform schema v2 (node-attested)", () => {
       claimed_at: 1748000000000,
       verified_at: 1748000000001,
       node_id: "tip://node/n1",
-      claim_signature: "aabbcc",
     });
     expect(Object.keys(payload)).toEqual([
-      "claim_signature", "claimed_at", "handle", "node_id",
+      "claimed_at", "handle", "node_id",
       "platform", "profile_url", "tip_id", "verified_at",
     ]);
   });
@@ -58,21 +57,28 @@ describe("link-platform schema v2 (node-attested)", () => {
       claimed_at: 1748000000000,
       verified_at: 1748000000001,
       node_id: "tip://node/n1",
-      claim_signature: "aabbcc",
     });
     expect(payload.handle).toBeNull();
   });
 
-  test("buildSigningPayload throws on missing claim_signature", () => {
-    expect(() => linkPlatformSchema.buildSigningPayload({
+  test("buildSigningPayload appends 3 OAuth fields when present", () => {
+    const payload = linkPlatformSchema.buildSigningPayload({
       tip_id: "tip://id/US-aabbccdd11223344",
-      platform: "twitter",
-      profile_url: "https://x.com/alice",
-      handle: "alice",
+      platform: "linkedin",
+      profile_url: "https://www.linkedin.com/in/alice",
+      handle: null,
       claimed_at: 1748000000000,
       verified_at: 1748000000001,
       node_id: "tip://node/n1",
-    })).toThrow();
+      vp_id: "tip://vp/v1",
+      vp_oauth_signature: "deadbeef",
+      vp_oauth_verified_at: 1748000000000,
+    });
+    expect(Object.keys(payload).sort()).toEqual([
+      "claimed_at", "handle", "node_id",
+      "platform", "profile_url", "tip_id", "verified_at",
+      "vp_id", "vp_oauth_signature", "vp_oauth_verified_at",
+    ].sort());
   });
 
   test("sign + verifySignature round-trip (node signs)", async () => {
@@ -85,7 +91,6 @@ describe("link-platform schema v2 (node-attested)", () => {
       claimed_at: 1748000000000,
       verified_at: 1748000000001,
       node_id: "tip://node/n1",
-      claim_signature: "aabbcc",
     });
     const sig = linkPlatformSchema.sign(payload, privateKey);
     expect(linkPlatformSchema.verifySignature(payload, sig, publicKey)).toBe(true);
@@ -111,13 +116,15 @@ describe("register-social schema", () => {
 
   test("buildSigningPayload throws on missing tip_id", () => {
     expect(() => registerSocialSchema.buildSigningPayload({
-      platform: "twitter", profile_url: "https://x.com/alice", claimed_at: 1748000000000,
+      platform: "twitter", profile_url: "https://x.com/alice",
+      claimed_at: 1748000000000,
     })).toThrow();
   });
 
   test("buildSigningPayload throws on missing profile_url", () => {
     expect(() => registerSocialSchema.buildSigningPayload({
-      tip_id: "tip://id/US-aabbccdd11223344", platform: "twitter", claimed_at: 1748000000000,
+      tip_id: "tip://id/US-aabbccdd11223344", platform: "twitter",
+      claimed_at: 1748000000000,
     })).toThrow();
   });
 
@@ -166,6 +173,7 @@ describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
 
   function makeTx(overrides = {}) {
     const claimSig = makeClaimSig();
+    const { SIGNED_BY_KIND: SBK } = require("../../shared/constants");
     // Build a valid base payload first (for signing), then apply overrides to tx.data
     const baseData = {
       tip_id: testTipId,
@@ -175,7 +183,11 @@ describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
       claimed_at: 1748000000000,
       verified_at: nowMs(),
       node_id: "tip://node/n1",
-      claim_signature: claimSig,
+      cosignatures: [{
+        signer_kind: SBK.SUBJECT,
+        signer_ref:  testTipId,
+        signature:   claimSig,
+      }],
     };
     const payload = linkPlatformSchema.buildSigningPayload(baseData);
     const nodeSig = linkPlatformSchema.sign(payload, nodePriv);
@@ -203,11 +215,11 @@ describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
     expect(result.errors.join("\n")).toMatch(/profile_url/);
   });
 
-  test("missing claim_signature fails shape validation", () => {
-    const tx = makeTx({ claim_signature: "" });
+  test("missing cosignatures fails shape validation", () => {
+    const tx = makeTx({ cosignatures: [] });
     const result = validateTransaction(tx, dag, { skipPrevCheck: true });
     expect(result.valid).toBe(false);
-    expect(result.errors.join("\n")).toMatch(/claim_signature/);
+    expect(result.errors.join("\n")).toMatch(/cosignature/);
   });
 
   test("unknown tip_id fails state validation", () => {
@@ -250,6 +262,8 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
       submitTx: (tx) => {
         submitted.push(tx);
         if (tx.tx_type === TX_TYPES.LINK_PLATFORM) {
+          // Mirror what commit-handler writes — display state + tx_id.
+          // Signatures are reachable via tx_id from the transactions table.
           dag2.savePlatformLink({
             id: `${tx.data.tip_id}::${tx.data.platform}`,
             tip_id: tx.data.tip_id,
@@ -260,8 +274,6 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
             linked_at: tx.data.verified_at,
             verified_at: tx.data.verified_at,
             node_id: tx.data.node_id,
-            claim_signature: tx.data.claim_signature,
-            node_signature: tx.signature,
             tx_id: tx.tx_id,
           });
         }
@@ -271,7 +283,8 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
 
   function makeClaimSig(platform, profileUrl, claimedAt) {
     const payload = registerSocialSchema.buildSigningPayload({
-      tip_id: userTipId, platform, profile_url: profileUrl, claimed_at: claimedAt,
+      tip_id: userTipId, platform, profile_url: profileUrl,
+      claimed_at: claimedAt,
     });
     return registerSocialSchema.sign(payload, userPriv);
   }
@@ -304,6 +317,12 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     expect(submitted[0].tx_type).toBe(TX_TYPES.LINK_PLATFORM);
     expect(submitted[1].tx_type).toBe(TX_TYPES.SCORE_UPDATE);
     expect(submitted[1].data.delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    // Cosignatures shape — user's claim sig rides as a SUBJECT cosig.
+    expect(Array.isArray(submitted[0].data.cosignatures)).toBe(true);
+    expect(submitted[0].data.cosignatures).toHaveLength(1);
+    expect(submitted[0].data.cosignatures[0].signer_kind).toBe("subject");
+    expect(submitted[0].data.cosignatures[0].signer_ref).toBe(userTipId);
+    expect(submitted[0].data.claim_signature).toBeUndefined();
   });
 
   test("linkPlatform throws 409 on duplicate platform", async () => {
@@ -372,12 +391,10 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     expect(caught.code).toBe("oauth_required");
   });
 
-  test("linkPlatform OAuth path: handle invariant + tx.data carries OAuth bundle + verifyTx re-verifies", async () => {
+  test("linkPlatform OAuth path: tx.data carries OAuth bundle + verifyTx re-verifies", async () => {
     submitted.length = 0;
     // Register a separate OAuth-attesting VP so we have a private key
-    // to sign the OAuth proof with. The base setup VP shares its key
-    // with the test node, which is fine for those tests but conflates
-    // identities here.
+    // to sign the OAuth proof with.
     const oauthVpKeys = await generateMLDSAKeypair();
     const oauthVpId = "tip://vp/oauth-test";
     dag2.saveVP({ vp_id: oauthVpId, public_key: oauthVpKeys.publicKey, status: "active", tx_id: "g-vp-oauth" });
@@ -387,9 +404,8 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     const vpOauthVerifiedAt = nowMs();
     const vpOauthHandle = "alice_oauth";
 
-    // VP signs the canonical 7-field OAuth attestation. handle and
-    // verified_at slots are what the VP observed via OAuth — distinct
-    // from the node's verified_at stamped later when the tx is built.
+    // VP signs the canonical 7-field OAuth attestation. Handle is the
+    // VP's observation from the OAuth callback.
     const oauthProof = {
       claimed_at: claimedAt,
       handle: vpOauthHandle,
@@ -417,10 +433,7 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     const linkTx = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
     expect(linkTx).toBeDefined();
 
-    // Invariant guard — tx.data.handle IS what the VP attested to.
-    // If a future change canonicalizes / rewrites handle between
-    // input and tx.data, the OAuth signature would silently fail to
-    // re-verify at replay. This assertion catches that drift.
+    // tx.data.handle is the VP-attested handle (vp_oauth_handle).
     expect(linkTx.data.handle).toBe(vpOauthHandle);
 
     // OAuth bundle persisted into tx.data so replay can re-verify.
@@ -429,13 +442,13 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     expect(linkTx.data.vp_oauth_verified_at).toBe(vpOauthVerifiedAt);
     // Node's own verified_at is a distinct timestamp from the VP's.
     expect(typeof linkTx.data.verified_at).toBe("number");
+    // Claim sig lives in cosignatures array (canonical pattern), not as
+    // a flat tx.data.claim_signature field.
+    expect(linkTx.data.claim_signature).toBeUndefined();
+    expect(linkTx.data.cosignatures).toHaveLength(1);
 
-    // Replay round-trip — verifyTx must re-verify the VP OAuth signature
-    // using tx.data alone (no off-chain artifacts needed). The test
-    // mock's submitTx eagerly wrote the active row above; in real
-    // consensus the row is written by _applyDerivedState AFTER
-    // verifyTx, so flip the existing row's status to simulate the
-    // pre-apply state the verifier actually sees.
+    // Replay round-trip — verifyTx must re-verify both the subject
+    // cosignature AND the VP OAuth signature using tx.data alone.
     dag2.updatePlatformLinkStatus(userTipId, "tiktok", { status: "unlinked" });
     const verifyResult = linkPlatformSchema.verifyTx(linkTx, dag2);
     expect(verifyResult.ok).toBe(true);
@@ -549,11 +562,7 @@ describe("dag platform_links CRUD", () => {
       status: "active",
       linked_at: 1748000000000,
       verified_at: 1748000000001,
-      expires_at: 1748000000001 + 365 * 24 * 3600 * 1000,
-      consecutive_failures: 0,
       node_id: "tip://node/n1",
-      claim_signature: "aaa",
-      node_signature: "bbb",
       tx_id: "tx-1",
     });
     const row = dag.getPlatformLink("tip://id/US-aabb", "twitter");
@@ -571,11 +580,7 @@ describe("dag platform_links CRUD", () => {
       status: "active",
       linked_at: 1748000000000,
       verified_at: 1748000000001,
-      expires_at: 1748000000001 + 365 * 24 * 3600 * 1000,
-      consecutive_failures: 0,
       node_id: "tip://node/n1",
-      claim_signature: "aaa",
-      node_signature: "bbb",
       tx_id: "tx-x",
     };
     dag.savePlatformLink({ ...base, id: "tip://id/US-ccdd::youtube", platform: "youtube", tx_id: "tx-1" });
@@ -615,7 +620,8 @@ describe("social link score cap — 7th platform earns no bonus", () => {
 
   function makeClaimSig3(platform, profileUrl, claimedAt) {
     const payload = registerSocialSchema.buildSigningPayload({
-      tip_id: uid3, platform, profile_url: profileUrl, claimed_at: claimedAt,
+      tip_id: uid3, platform, profile_url: profileUrl,
+      claimed_at: claimedAt,
     });
     return registerSocialSchema.sign(payload, userPriv3);
   }
@@ -678,8 +684,8 @@ describe("POST /v1/identity/:tipId/link-platform route", () => {
       getScore:        () => {},
       getHistory:      () => {},
       getActivity:     () => {},
-      linkPlatform: ({ tipId, platform, handle }) => ({
-        tip_id: tipId, platform, handle,
+      linkPlatform: ({ tipId, platform }) => ({
+        tip_id: tipId, platform, handle: null,
         tx_id: "mock-tx-id", score_tx_id: "mock-score-tx",
         score_delta: 5, confirmation: "proposed",
         linked_at: nowMs(),
@@ -691,7 +697,7 @@ describe("POST /v1/identity/:tipId/link-platform route", () => {
   test("POST /v1/identity/:tipId/link-platform returns 202 with proposed", async () => {
     const res = await request(app)
       .post("/v1/identity/tip:%2F%2Fid%2FIN-aabbccdd11223344/link-platform")
-      .send({ tip_id: "tip://id/IN-aabbccdd11223344", platform: "youtube", handle: "@ch", vp_id: "tip://vp/test", vp_signature: "abc" });
+      .send({ tip_id: "tip://id/IN-aabbccdd11223344", platform: "youtube", vp_id: "tip://vp/test", vp_signature: "abc" });
     expect(res.status).toBe(202);
     expect(res.body.confirmation).toBe("proposed");
     expect(res.body.score_delta).toBe(5);

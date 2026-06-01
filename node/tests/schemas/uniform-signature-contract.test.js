@@ -41,6 +41,8 @@ const prescanReviewRecused = require(path.join(SRC, "schemas", "prescan-review-r
 const keyRotatedSchema = require(path.join(SRC, "schemas", "key-rotated"));
 const keyRecoverySchema = require(path.join(SRC, "schemas", "key-recovery"));
 const interestRegisteredSchema = require(path.join(SRC, "schemas", "interest-registered"));
+const linkPlatformSchema = require(path.join(SRC, "schemas", "link-platform"));
+const unlinkPlatformSchema = require(path.join(SRC, "schemas", "unlink-platform"));
 
 const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
@@ -54,6 +56,8 @@ const SCHEMA_FOR_TX_TYPE = {
   [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
+  [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
+  [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
 };
 
 // Tx types intentionally not yet on the unified contract — accounted for
@@ -61,8 +65,6 @@ const SCHEMA_FOR_TX_TYPE = {
 // "deliberately deferred (planned)". Each entry needs a tracking note.
 const UNIMPLEMENTED = new Set([
   TX_TYPES.UPDATE_DEVICE_BINDING,   // device-binding work deferred
-  TX_TYPES.LINK_PLATFORM,           // cross-platform link not yet implemented
-  TX_TYPES.UNLINK_PLATFORM,         // cross-platform unlink not yet implemented
   TX_TYPES.VP_SUSPENDED,            // VP lifecycle suspension not yet implemented
 ]);
 

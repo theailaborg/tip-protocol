@@ -34,7 +34,9 @@
 
 "use strict";
 
-const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
+const {
+  signPayload, verifyPayload, schemaError, canonicalJson, verifyCosignatures,
+} = require("./_common");
 const {
   TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND,
   ALLOWED_PLATFORMS, OAUTH_REQUIRED_PLATFORMS, PLATFORM_MAX_LENGTH, CLAIM_MAX_AGE_MS,
@@ -158,8 +160,9 @@ function validateRequest(body, deps) {
     }
   }
 
-  // User's claim_signature — proves the subject TIP-ID attested to the
-  // link before the node was asked to verify it.
+  // User's claim_signature — proves the subject TIP-ID attested to
+  // the link. Handle is verifier-derived (bio-fetcher on bio path,
+  // VP attestation on OAuth path), so it's not part of this claim.
   const claimPayload = registerSocialSchema.buildSigningPayload({
     tip_id: body.tip_id,
     platform: body.platform,
@@ -171,7 +174,8 @@ function validateRequest(body, deps) {
   }
 
   // VP OAuth proof — alternative to bio-check for platforms that block
-  // static scraping. Verified here so the service can skip the bio call.
+  // static scraping. The VP attests {handle, ...} from its OAuth
+  // callback; vp_oauth_handle carries that handle on the request.
   if (body.vp_oauth_signature && body.vp_id) {
     if (!isValidMs(body.vp_oauth_verified_at)) {
       throw schemaError(400, "vp_oauth_verified_at must be a valid epoch ms timestamp", "vp_oauth_verified_at_invalid");
@@ -193,13 +197,15 @@ function validateRequest(body, deps) {
 }
 
 /**
- * Build the canonical signed payload for a LINK_PLATFORM tx. The 8 core
- * fields are always present; when the OAuth path was used, three more
- * fields (vp_id, vp_oauth_signature, vp_oauth_verified_at) are appended
- * so the node's body signature covers them and replay verification can
- * re-check the VP attestation. vp_oauth_handle is intentionally NOT in
- * the payload — tx.data.handle is the canonical handle for the OAuth
- * path too, asserted by an explicit invariant test.
+ * Build the canonical signed payload for a LINK_PLATFORM tx — the node's
+ * body signature scope. 7 core fields always present; OAuth path appends
+ * 3 more (vp_id, vp_oauth_signature, vp_oauth_verified_at) so the node's
+ * body sig covers them and replay can re-check the VP attestation.
+ *
+ * The user's claim signature is NOT in this payload — it rides as a
+ * cosignature on tx.data.cosignatures per the unified pattern
+ * (see getCosignatureContract). vp_oauth_handle is also NOT here —
+ * tx.data.handle is the canonical handle (user-attested via cosig).
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
@@ -223,9 +229,6 @@ function buildSigningPayload(input) {
   if (typeof input.node_id !== "string" || input.node_id.length === 0) {
     throw schemaError(400, "node_id is required", "node_id_required");
   }
-  if (typeof input.claim_signature !== "string" || input.claim_signature.length === 0) {
-    throw schemaError(400, "claim_signature is required", "claim_signature_required");
-  }
   if (!isValidMs(input.claimed_at)) {
     throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
@@ -234,7 +237,6 @@ function buildSigningPayload(input) {
   }
 
   const payload = {
-    claim_signature: input.claim_signature,
     claimed_at: input.claimed_at,
     handle: input.handle ?? null,
     node_id: input.node_id,
@@ -266,6 +268,31 @@ function buildSigningPayload(input) {
   return payload;
 }
 
+/**
+ * Cosignature contract — the user's prior register-social claim sig
+ * carried forward on tx.data.cosignatures. Signer is the subject
+ * (resolved via dag, time-anchored at tx.timestamp), signing the
+ * canonical register-social body (4 fields — handle is intentionally
+ * NOT in the user's claim; it's verifier-derived).
+ *
+ * Mirrors BIND_DOMAIN's getCosignatureContract: schema reconstructs
+ * the cosigner's body from tx.data fields, dispatcher verifies.
+ */
+function getCosignatureContract(tx) {
+  const d = tx?.data || {};
+  if (!d.tip_id) return [];
+  return [{
+    kind: SIGNED_BY_KIND.SUBJECT,
+    ref:  d.tip_id,
+    body: registerSocialSchema.buildSigningPayload({
+      claimed_at:  d.claimed_at,
+      platform:    d.platform,
+      profile_url: d.profile_url,
+      tip_id:      d.tip_id,
+    }),
+  }];
+}
+
 function sign(payload, nodePrivateKeyHex, opts) {
   return signPayload(payload, nodePrivateKeyHex, opts);
 }
@@ -276,15 +303,17 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
 
 /**
  * State-level verification at consensus replay. The node's attestation is
- * verified by the unified dispatcher (tx.signature). This function enforces
- * the state-machine invariants the dispatcher doesn't know about:
+ * verified by the unified dispatcher (tx.signature). The user's claim
+ * sig is verified via the cosignatures dispatcher (getCosignatureContract).
+ * This function enforces the state-machine invariants:
  *
  *   1. Emitting node is registered + active
  *   2. Claimant TIP-ID is registered, not revoked
  *   3. No existing active link for (tip_id, platform) — first-wins gate
  *      against gossip-bypass and racing nodes
- *   4. User's claim_signature (attestation by the subject) verifies over
- *      the embedded register-social sub-payload
+ *   4. User's cosignature verifies over the 5-field register-social claim
+ *   5. For OAuth-required platforms, the VP OAuth bundle is present and
+ *      vp_oauth_signature re-verifies against the VP's on-chain key
  *
  * Returns { ok: true } on success, or
  * { ok: false, status, error, code } on any failure.
@@ -326,24 +355,12 @@ function verifyTx(tx, dag) {
     }
   }
 
-  // The original user-signed claim is bound into the LINK_PLATFORM tx so
-  // replay-time verification re-establishes the full trust chain (user
-  // → node) without needing the off-chain register call to still exist.
-  let claimPayload;
-  try {
-    claimPayload = registerSocialSchema.buildSigningPayload({
-      claimed_at: d.claimed_at,
-      platform: d.platform,
-      profile_url: d.profile_url,
-      tip_id: d.tip_id,
-    });
-  } catch (err) {
-    if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
-    throw err;
-  }
-
-  if (!registerSocialSchema.verifySignature(claimPayload, d.claim_signature, identity.public_key)) {
-    return { ok: false, status: 403, error: "User claim signature verification failed", code: "claim_signature_invalid" };
+  // User's cosignature over the 5-field register-social claim. Same
+  // mechanism BIND_DOMAIN uses for the user's domain claim — schema
+  // declares the contract, dispatcher verifies.
+  const cosigResult = verifyCosignatures(tx, getCosignatureContract(tx), dag);
+  if (!cosigResult.ok) {
+    return { ok: false, status: 403, error: cosigResult.error, code: cosigResult.code };
   }
 
   // VP OAuth proof — for platforms that can't be bio-scraped, the VP's
@@ -371,10 +388,10 @@ function verifyTx(tx, dag) {
       if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
       throw err;
     }
-    // tx.data.handle IS the OAuth-attested handle (enforced by the
-    // service-layer invariant `handle = vpOauthHandle ?? null` on the
-    // OAuth path, asserted by test). Reusing it here avoids an extra
-    // tx.data field while keeping the OAuth signature reproducible.
+    // tx.data.handle IS the user-attested handle (verified by the
+    // subject's cosignature above). The VP attestation must sign the
+    // same value — that's the cross-check between user-claim and
+    // VP-attested ownership.
     const oauthProof = {
       claimed_at: d.claimed_at,
       handle: d.handle ?? null,
@@ -401,6 +418,7 @@ module.exports = {
   PLATFORM_MAX_LENGTH,
   validateRequest,
   buildSigningPayload,
+  getCosignatureContract,
   sign,
   verifySignature,
   verifyTx,

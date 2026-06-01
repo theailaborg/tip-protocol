@@ -500,8 +500,8 @@ function validateBusinessRules(tx, dag = null) {
       if (typeof d.profile_url !== "string" || !d.profile_url.startsWith("https://")) {
         errors.push("LINK_PLATFORM: profile_url is required (https:// URL)");
       }
-      if (typeof d.claim_signature !== "string" || d.claim_signature.length === 0) {
-        errors.push("LINK_PLATFORM: claim_signature is required");
+      if (!Array.isArray(d.cosignatures) || d.cosignatures.length === 0) {
+        errors.push("LINK_PLATFORM: cosignatures[] is required (subject claim sig)");
       }
       if (typeof d.node_id !== "string" || d.node_id.length === 0) {
         errors.push("LINK_PLATFORM: node_id is required");
@@ -522,23 +522,29 @@ function validateBusinessRules(tx, dag = null) {
     }
 
     case TX_TYPES.UNLINK_PLATFORM: {
+      // SUBJECT-signed: 4 canonical fields. No claim_signature flat field,
+      // no node_id (user signs body directly; tx.signature carries the sig).
+      // link_tx_id binds the signature to a specific LINK instance —
+      // defeats replay against a re-linked active row.
       if (typeof d.tip_id !== "string" || d.tip_id.length === 0) {
         errors.push("UNLINK_PLATFORM: tip_id is required");
       }
       if (typeof d.platform !== "string" || d.platform.length === 0) {
         errors.push("UNLINK_PLATFORM: platform is required");
       }
-      if (typeof d.claim_signature !== "string" || d.claim_signature.length === 0) {
-        errors.push("UNLINK_PLATFORM: claim_signature is required");
+      if (typeof d.link_tx_id !== "string" || d.link_tx_id.length === 0) {
+        errors.push("UNLINK_PLATFORM: link_tx_id is required");
       }
-      if (typeof d.node_id !== "string" || d.node_id.length === 0) {
-        errors.push("UNLINK_PLATFORM: node_id is required");
+      if (typeof d.claimed_at !== "number" || !Number.isFinite(d.claimed_at)) {
+        errors.push("UNLINK_PLATFORM: claimed_at is required");
       }
       if (errors.length > 0) break;
 
       const link = dag.getPlatformLink(d.tip_id, d.platform);
       if (!link || link.status !== "active") {
         errors.push(`Platform "${d.platform}" is not actively linked for ${d.tip_id}`);
+      } else if (link.tx_id !== d.link_tx_id) {
+        errors.push(`UNLINK_PLATFORM: link_tx_id does not match active link instance for (${d.tip_id}, ${d.platform})`);
       }
       break;
     }

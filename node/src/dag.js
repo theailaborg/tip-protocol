@@ -169,6 +169,10 @@ function _canonDomainBinding(r) {
 }
 // Platform links: every column participates in state_merkle_root.
 // handle may be null for platforms where the identifier is the profile_url.
+// Signatures (user's claim cosig + node's body sig) are NOT stored here —
+// both are reachable via tx_id from the transactions table (cosig is
+// in tx.data.cosignatures[], node sig is tx.signature). Avoids
+// duplicating crypto blobs and keeps the row focused on display state.
 function _canonPlatformLink(r) {
   return {
     id: r.id,
@@ -182,8 +186,6 @@ function _canonPlatformLink(r) {
     unlinked_at: r.unlinked_at ?? null,
     unlink_tx_id: r.unlink_tx_id ?? null,
     node_id: r.node_id,
-    claim_signature: r.claim_signature,
-    node_signature: r.node_signature,
     tx_id: r.tx_id,
   };
 }
@@ -1615,9 +1617,7 @@ class SQLiteStore {
         unlinked_at    INTEGER,
         unlink_tx_id   TEXT,
         node_id        TEXT NOT NULL,
-        claim_signature TEXT NOT NULL,
-        node_signature  TEXT NOT NULL,
-        tx_id           TEXT NOT NULL
+        tx_id          TEXT NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_links_tip_plat ON platform_links(tip_id, platform);
       CREATE INDEX IF NOT EXISTS idx_platform_links_tip_id ON platform_links(tip_id);
@@ -2223,10 +2223,9 @@ class SQLiteStore {
       savePlatformLink: this.db.prepare(
         `INSERT OR REPLACE INTO platform_links
          (id, tip_id, platform, handle, profile_url, status, linked_at, verified_at,
-          unlinked_at, unlink_tx_id, node_id, claim_signature, node_signature, tx_id)
+          unlinked_at, unlink_tx_id, node_id, tx_id)
          VALUES (@id, @tip_id, @platform, @handle, @profile_url, @status, @linked_at,
-                 @verified_at, @unlinked_at, @unlink_tx_id, @node_id,
-                 @claim_signature, @node_signature, @tx_id)`
+                 @verified_at, @unlinked_at, @unlink_tx_id, @node_id, @tx_id)`
       ),
       updatePlatformLinkStatus: this.db.prepare(
         `UPDATE platform_links SET status=@status, unlinked_at=@unlinked_at, unlink_tx_id=@unlink_tx_id

@@ -1,21 +1,30 @@
 /**
  * @file @tip-protocol/node/src/schemas/unlink-platform.js
- * @description Canonical schema for `UNLINK_PLATFORM` — user-initiated social
- * account unlinking. The user signs a 3-field claim; the node verifies and
- * attests the unlink on-chain. No score change on unlink.
+ * @description Canonical schema for `UNLINK_PLATFORM` — user-initiated
+ * revocation of a previously-linked social account.
  *
- * User-signed claim (3 fields, alphabetical):
- *   claimed_at  number   epoch ms
- *   platform    string   platform name
- *   tip_id      string   tip://id/... owner
+ * Trust model: SUBJECT-signed. There is no external verifier here (no
+ * bio fetch, no OAuth, no DNS) — the user is revoking their own row.
+ * Same shape as UPDATE_PROFILE: the user signs the canonical body
+ * directly, no node attestation, no VP, no cosignatures.
  *
- * Node-signed body payload (6 fields, alphabetical):
- *   claim_signature  string   user's ML-DSA hex over the 3-field claim
- *   claimed_at       number   epoch ms
- *   node_id          string   verifying node
- *   platform         string   platform name
- *   tip_id           string   owner
- *   unlinked_at      number   epoch ms when processed
+ * Replay protection — two layers:
+ *   1. link_tx_id binds the signature to a specific LINK_PLATFORM tx.
+ *      If the user re-links after unlinking, the new active link has a
+ *      different tx_id; the old signature won't match → reject. Closes
+ *      the toggle-within-window replay (unlink→relink→replay-old-unlink).
+ *   2. claimed_at + CLAIM_MAX_AGE_MS freshness window. Leaked sigs
+ *      older than the window are rejected even against the same
+ *      still-active link.
+ *
+ * Signed canonical payload (4 fields, alphabetical):
+ *   claimed_at   number  epoch ms — freshness window enforcer
+ *   link_tx_id   string  tx_id of the LINK_PLATFORM being revoked
+ *   platform     string  platform name (sanity / display)
+ *   tip_id       string  tip://id/... owner of the link being revoked
+ *
+ * Signature scope: BODY. tx.timestamp on the envelope is the API-receipt
+ * time and is what populates platform_links.unlinked_at on apply.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -25,21 +34,21 @@
 
 const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
 const {
-  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND,
+  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PLATFORM_MAX_LENGTH, CLAIM_MAX_AGE_MS,
 } = require("../../../shared/constants");
 const { isValidMs, nowMs } = require("../../../shared/time");
 
 const TX_TYPE = TX_TYPES.UNLINK_PLATFORM;
+const SIGNATURE_SCOPE_VALUE = SIGNATURE_SCOPE.BODY;
+const SIGNED_BY = SIGNED_BY_KIND.SUBJECT;
+const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.TIP_ID;
 
 /**
  * Request-envelope validator for POST /v1/identity/:tipId/unlink-platform.
- * Mirrors link-platform.validateRequest — owns every request-time check
- * (shape, claim age, identity exists, active link present, user
- * claim_signature verify) so the service stays thin.
  *
  * Body shape (snake_case):
- *   tip_id, platform, claim_signature, claimed_at  required
+ *   tip_id, platform, link_tx_id, claimed_at, signature   required
  *
  * deps: { dag, urlTipId?, now? }
  */
@@ -50,10 +59,10 @@ function validateRequest(body, deps) {
   if (deps && deps.urlTipId !== undefined && body.tip_id !== deps.urlTipId) {
     throw schemaError(400, "URL tip_id does not match body.tip_id", "tip_id_mismatch");
   }
-  if (!body.tip_id || !body.platform || !body.claim_signature || !body.claimed_at) {
+  if (!body.tip_id || !body.platform || !body.link_tx_id || !body.signature || !body.claimed_at) {
     throw schemaError(
       400,
-      "tip_id, platform, claim_signature, claimed_at are required",
+      "tip_id, platform, link_tx_id, signature, claimed_at are required",
       "missing_fields",
     );
   }
@@ -66,8 +75,11 @@ function validateRequest(body, deps) {
   if (body.platform.length > PLATFORM_MAX_LENGTH) {
     throw schemaError(400, `platform must be <= ${PLATFORM_MAX_LENGTH} chars`, "platform_too_long");
   }
-  if (typeof body.claim_signature !== "string" || body.claim_signature.length === 0) {
-    throw schemaError(400, "claim_signature is required", "claim_signature_required");
+  if (typeof body.link_tx_id !== "string" || body.link_tx_id.length === 0) {
+    throw schemaError(400, "link_tx_id is required (tx_id of the LINK_PLATFORM being revoked)", "link_tx_id_required");
+  }
+  if (typeof body.signature !== "string" || body.signature.length === 0) {
+    throw schemaError(400, "signature is required", "signature_required");
   }
   if (!isValidMs(body.claimed_at)) {
     throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
@@ -85,7 +97,11 @@ function validateRequest(body, deps) {
   if (!identity) {
     throw schemaError(412, `TIP-ID not found: ${body.tip_id}`, "tip_id_not_found");
   }
+  if (typeof dag.isRevoked === "function" && dag.isRevoked(body.tip_id)) {
+    throw schemaError(403, `TIP-ID is revoked: ${body.tip_id}`, "tip_id_revoked");
+  }
 
+  // Active link must still exist at submit time.
   const existingLink = typeof dag.getPlatformLink === "function"
     ? dag.getPlatformLink(body.tip_id, body.platform)
     : null;
@@ -96,67 +112,90 @@ function validateRequest(body, deps) {
       "platform_not_linked",
     );
   }
+  // Instance binding — the signed link_tx_id must match the CURRENT
+  // active link's tx_id. A re-link after unlinking produces a new
+  // tx_id, so an old signature won't match the new instance.
+  if (existingLink.tx_id !== body.link_tx_id) {
+    throw schemaError(
+      409,
+      `link_tx_id does not match active link instance for (${body.tip_id}, ${body.platform})`,
+      "stale_unlink_signature",
+    );
+  }
 
-  const claimPayload = buildUnlinkClaimPayload({
-    claimed_at: body.claimed_at, platform: body.platform, tip_id: body.tip_id,
-  });
-  if (!verifyPayload(claimPayload, body.claim_signature, identity.public_key)) {
-    throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
+  // User signs the canonical body directly (SUBJECT-signed). Verify
+  // the sig against the subject's identity pubkey.
+  const canonicalPayload = buildSigningPayload(body);
+  if (!verifyPayload(canonicalPayload, body.signature, identity.public_key)) {
+    throw schemaError(403, "Signature verification failed", "signature_invalid");
   }
 }
 
-function buildUnlinkClaimPayload(input) {
-  if (!input || typeof input !== "object") throw schemaError(400, "input must be an object", "input_invalid");
-  if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) throw schemaError(400, "tip_id is required (tip://id/...)", "tip_id_required");
-  if (typeof input.platform !== "string" || input.platform.length === 0) throw schemaError(400, "platform is required", "platform_required");
-  if (input.platform.length > PLATFORM_MAX_LENGTH) throw schemaError(400, `platform must be <= ${PLATFORM_MAX_LENGTH} chars`, "platform_too_long");
-  if (!isValidMs(input.claimed_at)) throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
-  return {
-    claimed_at: input.claimed_at,
-    platform: input.platform,
-    tip_id: input.tip_id,
-  };
-}
-
+/**
+ * Build the canonical 4-field signed payload. User signs this and the
+ * resulting hex sig becomes tx.signature on the envelope.
+ */
 function buildSigningPayload(input) {
-  if (!input || typeof input !== "object") throw schemaError(400, "input must be an object", "input_invalid");
-  if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) throw schemaError(400, "tip_id is required", "tip_id_required");
-  if (typeof input.platform !== "string" || input.platform.length === 0) throw schemaError(400, "platform is required", "platform_required");
-  if (typeof input.node_id !== "string" || input.node_id.length === 0) throw schemaError(400, "node_id is required", "node_id_required");
-  if (typeof input.claim_signature !== "string" || input.claim_signature.length === 0) throw schemaError(400, "claim_signature is required", "claim_signature_required");
-  if (!isValidMs(input.claimed_at)) throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
-  if (!isValidMs(input.unlinked_at)) throw schemaError(400, "unlinked_at must be a valid epoch ms timestamp", "unlinked_at_invalid");
+  if (!input || typeof input !== "object") {
+    throw schemaError(400, "input must be an object", "input_invalid");
+  }
+  if (typeof input.tip_id !== "string" || !input.tip_id.startsWith("tip://id/")) {
+    throw schemaError(400, "tip_id is required (tip://id/...)", "tip_id_required");
+  }
+  if (typeof input.platform !== "string" || input.platform.length === 0) {
+    throw schemaError(400, "platform is required", "platform_required");
+  }
+  if (input.platform.length > PLATFORM_MAX_LENGTH) {
+    throw schemaError(400, `platform must be <= ${PLATFORM_MAX_LENGTH} chars`, "platform_too_long");
+  }
+  if (typeof input.link_tx_id !== "string" || input.link_tx_id.length === 0) {
+    throw schemaError(400, "link_tx_id is required", "link_tx_id_required");
+  }
+  if (!isValidMs(input.claimed_at)) {
+    throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
+  }
   return {
-    claim_signature: input.claim_signature,
     claimed_at: input.claimed_at,
-    node_id: input.node_id,
+    link_tx_id: input.link_tx_id,
     platform: input.platform,
     tip_id: input.tip_id,
-    unlinked_at: input.unlinked_at,
   };
 }
 
-function sign(payload, nodePrivateKeyHex, opts) {
-  return signPayload(payload, nodePrivateKeyHex, opts);
+function sign(payload, privateKeyHex, opts) {
+  return signPayload(payload, privateKeyHex, opts);
 }
 
 function verifySignature(payload, signatureHex, publicKeyHex) {
   return verifyPayload(payload, signatureHex, publicKeyHex);
 }
 
+/**
+ * State-level verification at consensus replay. The user's body
+ * signature is verified by the unified dispatcher (SUBJECT-signed,
+ * key resolved via SUBJECT_TIP_ID_FIELD). This function enforces the
+ * state-machine invariants:
+ *
+ *   1. Subject TIP-ID is registered, not revoked
+ *   2. An active link exists for (tip_id, platform)
+ *   3. Signed link_tx_id matches the active link's tx_id (instance
+ *      binding — defeats replay against a re-linked instance)
+ */
 function verifyTx(tx, dag) {
   const d = tx.data || {};
 
-  if (!d.node_id) return { ok: false, status: 400, error: "node_id missing", code: "node_id_missing" };
-  const node = dag.getNode(d.node_id);
-  if (!node) return { ok: false, status: 412, error: `Verifying node not registered: ${d.node_id}`, code: "node_not_registered" };
-  if (node.status !== "active") return { ok: false, status: 403, error: `Verifying node not active: ${d.node_id}`, code: "node_inactive" };
+  if (!d.tip_id) {
+    return { ok: false, status: 400, error: "tip_id missing", code: "tip_id_missing" };
+  }
 
   const identity = dag.getIdentity(d.tip_id);
-  if (!identity) return { ok: false, status: 412, error: `TIP-ID not found: ${d.tip_id}`, code: "tip_id_not_found" };
+  if (!identity) {
+    return { ok: false, status: 412, error: `TIP-ID not found: ${d.tip_id}`, code: "tip_id_not_found" };
+  }
+  if (typeof dag.isRevoked === "function" && dag.isRevoked(d.tip_id)) {
+    return { ok: false, status: 403, error: `TIP-ID is revoked: ${d.tip_id}`, code: "tip_id_revoked" };
+  }
 
-  // Must have an active link to unlink. Catches gossip-bypass txs that
-  // would otherwise flip a non-existent or already-unlinked row.
   if (typeof dag.getPlatformLink === "function") {
     const existing = dag.getPlatformLink(d.tip_id, d.platform);
     if (!existing || existing.status !== "active") {
@@ -166,18 +205,13 @@ function verifyTx(tx, dag) {
         code: "platform_not_linked",
       };
     }
-  }
-
-  let claimPayload;
-  try {
-    claimPayload = buildUnlinkClaimPayload({ claimed_at: d.claimed_at, platform: d.platform, tip_id: d.tip_id });
-  } catch (err) {
-    if (err && err.status) return { ok: false, status: err.status, error: err.error, code: err.code };
-    throw err;
-  }
-
-  if (!verifyPayload(claimPayload, d.claim_signature, identity.public_key)) {
-    return { ok: false, status: 403, error: "User claim signature verification failed", code: "claim_signature_invalid" };
+    if (existing.tx_id !== d.link_tx_id) {
+      return {
+        ok: false, status: 409,
+        error: `link_tx_id does not match active link instance for (${d.tip_id}, ${d.platform})`,
+        code: "stale_unlink_signature",
+      };
+    }
   }
 
   return { ok: true };
@@ -187,12 +221,12 @@ module.exports = {
   TX_TYPE,
   PLATFORM_MAX_LENGTH,
   validateRequest,
-  buildUnlinkClaimPayload,
   buildSigningPayload,
   sign,
   verifySignature,
   verifyTx,
   canonicalJson,
-  SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
-  SIGNED_BY: SIGNED_BY_KIND.NODE,
+  SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
+  SIGNED_BY,
+  SUBJECT_TIP_ID_FIELD,
 };

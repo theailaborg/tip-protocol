@@ -453,7 +453,10 @@ class KnexAdapter {
       t.index("expires_at", "idx_dom_bind_expires");
     });
 
-    // Platform links (canonical, in state_merkle_root).
+    // Platform links (canonical, in state_merkle_root). Signatures are
+    // not stored on the row — reachable via tx_id from the transactions
+    // table (user's claim cosig in tx.data.cosignatures[], node body sig
+    // at tx.signature).
     await ensure("platform_links", t => {
       _id(t, "id").primary();
       _id(t, "tip_id").notNullable();
@@ -466,8 +469,6 @@ class KnexAdapter {
       t.bigInteger("unlinked_at").nullable();
       _id(t, "unlink_tx_id").nullable();
       _id(t, "node_id").notNullable();
-      t.text("claim_signature").notNullable();
-      t.text("node_signature").notNullable();
       _id(t, "tx_id").notNullable();
       t.unique(["tip_id", "platform"], "idx_platform_links_tip_plat");
       t.index("tip_id", "idx_platform_links_tip_id");
@@ -1252,8 +1253,6 @@ class KnexAdapter {
       unlinked_at: rec.unlinked_at ?? null,
       unlink_tx_id: rec.unlink_tx_id ?? null,
       node_id: rec.node_id,
-      claim_signature: rec.claim_signature,
-      node_signature: rec.node_signature,
       tx_id: rec.tx_id,
     };
     this._ff(() => this._dbInsert("platform_links", "id", row, "merge"));
