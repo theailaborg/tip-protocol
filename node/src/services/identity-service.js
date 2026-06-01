@@ -5,10 +5,13 @@ const {
 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { verifyDedupProof } = require("../../../shared/zk");
-const { TX_TYPES, TX_TYPE_SET } = require("../../../shared/constants");
-const { SCORE } = require("../../../shared/protocol-constants");
+const { TX_TYPES, TX_TYPE_SET, SIGNED_BY_KIND } = require("../../../shared/constants");
+const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
-const { schemaError, verifyPayload } = require("../schemas/_common");
+const linkPlatformSchema = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
+const bioFetcher = require("./bio-fetcher");
+const { schemaError, verifyPayload, sortCosignatures } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId } = require("./helpers");
@@ -408,7 +411,159 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     };
   }
 
-  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash };
+  async function linkPlatform({ tipId, platform, profileUrl, claimSignature, claimedAt, vpId, vpOauthSignature, vpOauthHandle, vpOauthVerifiedAt }) {
+    // Schema owns every request-time check (shape, allowlist, URL pattern,
+    // claim age, OAuth gate, identity / active-link / mempool state, user
+    // claim signature, VP OAuth proof). Service handles only IO + tx build.
+    const body = {
+      tip_id: tipId, platform, profile_url: profileUrl,
+      claim_signature: claimSignature, claimed_at: claimedAt,
+      vp_id: vpId,
+      vp_oauth_signature: vpOauthSignature,
+      vp_oauth_handle: vpOauthHandle,
+      vp_oauth_verified_at: vpOauthVerifiedAt,
+    };
+    linkPlatformSchema.validateRequest(body, { dag, urlTipId: tipId });
+
+    const existingLinkTxs = dag.getTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    // Re-link after UNLINK is allowed but never earns another bonus. Cap
+    // is per unique platform ever linked (re-links don't consume a slot).
+    const isRelink = existingLinkTxs.some(t => t.data?.platform === platform);
+    const uniqueLinkedPlatforms = new Set(existingLinkTxs.map(t => t.data?.platform));
+
+    // Handle source depends on path:
+    //   OAuth path → VP attestation supplies it (vp_oauth_handle)
+    //   Bio path   → bioFetcher extracts from URL / scraped bio
+    let handle;
+    if (vpOauthSignature && vpId) {
+      handle = vpOauthHandle ?? null;
+      log.info(`VP OAuth verified: ${tipId} -> ${platform} (handle: ${handle ?? "null"}) via VP ${vpId}`);
+    } else {
+      ({ handle } = await bioFetcher.verifyBio({ tipId, profileUrl, platform }));
+    }
+
+    const verifiedAt = nowMs();
+    // User's claim sig rides as a SUBJECT cosignature per the unified
+    // pattern (BIND_DOMAIN, link-platform schema getCosignatureContract).
+    const txData = {
+      tip_id: tipId,
+      platform,
+      profile_url: profileUrl,
+      handle: handle ?? null,
+      claimed_at: claimedAt,
+      verified_at: verifiedAt,
+      node_id: config.nodeRegisteredId || config.nodeId,
+      cosignatures: sortCosignatures([{
+        signer_kind: SIGNED_BY_KIND.SUBJECT,
+        signer_ref:  tipId,
+        signature:   claimSignature,
+      }]),
+    };
+    if (vpOauthSignature && vpId) {
+      txData.vp_id = vpId;
+      txData.vp_oauth_signature = vpOauthSignature;
+      txData.vp_oauth_verified_at = vpOauthVerifiedAt;
+    }
+
+    const canonicalPayload = linkPlatformSchema.buildSigningPayload(txData);
+
+    const nodePrivKey = config.nodePrivateKey;
+    if (!nodePrivKey) throw schemaError(500, "Node private key not configured", "node_key_missing");
+    const nodeSig = linkPlatformSchema.sign(canonicalPayload, nodePrivKey);
+
+    const linkTx = withTxId({
+      tx_type: TX_TYPES.LINK_PLATFORM,
+      timestamp: verifiedAt,
+      signature: nodeSig,
+      prev: dag.getRecentPrev(),
+      data: txData,
+    });
+
+    const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });
+    if (!validation.valid) {
+      throw schemaError(400, validation.errors.join("; "), "tx_validation_failed");
+    }
+
+    submitTx(linkTx);
+
+    const scoreEligible = !isRelink && uniqueLinkedPlatforms.size < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
+    let scoreTxId = null;
+    const scoreDelta = scoreEligible ? SOCIAL_LINK.SOCIAL_LINK_BONUS : 0;
+
+    if (scoreEligible) {
+      const scoreTx = scoring.buildScoreUpdateTx({
+        tipId,
+        delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
+        reason: `Social account linked: ${platform}`,
+        relatedTxId: linkTx.tx_id,
+        timestamp: verifiedAt,
+        getRecentPrev: () => dag.getRecentPrev(),
+        config,
+        extraData: { link_tx_id: linkTx.tx_id },
+      });
+      submitTx(scoreTx);
+      scoreTxId = scoreTx.tx_id;
+    }
+
+    log.info(`Social account linked: ${tipId} -> ${platform} (${handle || "no-handle"})${scoreEligible ? "" : " [no bonus - cap reached]"}`);
+    return {
+      tip_id: tipId, platform, handle: handle ?? null,
+      tx_id: linkTx.tx_id, score_tx_id: scoreTxId,
+      score_delta: scoreDelta,
+      profile_url: profileUrl,
+      verified_at: verifiedAt,
+      confirmation: "proposed",
+    };
+  }
+
+  function getPlatformLinks(tipId) {
+    const links = dag.getPlatformLinksByTipId(tipId) || [];
+    return { tip_id: tipId, platform_links: links };
+  }
+
+  async function unlinkPlatform({ tipId, platform, linkTxId, signature, claimedAt }) {
+    // SUBJECT-signed: the user signs the canonical 4-field body
+    // client-side and the resulting signature becomes tx.signature
+    // directly. Service is a thin relay — no node attestation, no
+    // cosignatures. Same shape as UPDATE_PROFILE.
+    const body = {
+      tip_id: tipId, platform, link_tx_id: linkTxId,
+      signature, claimed_at: claimedAt,
+    };
+    unlinkPlatformSchema.validateRequest(body, { dag, urlTipId: tipId });
+
+    const timestamp = nowMs();
+    const unlinkTx = withTxId({
+      tx_type: TX_TYPES.UNLINK_PLATFORM,
+      timestamp,
+      prev: dag.getRecentPrev(),
+      data: {
+        tip_id: tipId,
+        platform,
+        link_tx_id: linkTxId,
+        claimed_at: claimedAt,
+      },
+      signature,
+    });
+
+    const validation = validateTransaction(unlinkTx, dag, { skipPrevCheck: true });
+    if (!validation.valid) {
+      throw schemaError(400, validation.errors.join("; "), "tx_validation_failed");
+    }
+
+    submitTx(unlinkTx);
+
+    log.info(`Social account unlinked: ${tipId} -> ${platform}`);
+    return {
+      tip_id: tipId,
+      platform,
+      tx_id: unlinkTx.tx_id,
+      unlinked_at: timestamp,
+      confirmation: "proposed",
+    };
+  }
+
+  return { register, resolve, verifyOwnership, getScore, getHistory, getActivity, findByDedupHash, linkPlatform, unlinkPlatform, getPlatformLinks };
 }
 
 module.exports = { createIdentityService };

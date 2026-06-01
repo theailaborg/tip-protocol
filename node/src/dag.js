@@ -167,6 +167,28 @@ function _canonDomainBinding(r) {
     tx_id: r.tx_id,
   };
 }
+// Platform links: every column participates in state_merkle_root.
+// handle may be null for platforms where the identifier is the profile_url.
+// Signatures (user's claim cosig + node's body sig) are NOT stored here —
+// both are reachable via tx_id from the transactions table (cosig is
+// in tx.data.cosignatures[], node sig is tx.signature). Avoids
+// duplicating crypto blobs and keeps the row focused on display state.
+function _canonPlatformLink(r) {
+  return {
+    id: r.id,
+    tip_id: r.tip_id,
+    platform: r.platform,
+    handle: r.handle || null,
+    profile_url: r.profile_url,
+    status: r.status,
+    linked_at: r.linked_at,
+    verified_at: r.verified_at,
+    unlinked_at: r.unlinked_at ?? null,
+    unlink_tx_id: r.unlink_tx_id ?? null,
+    node_id: r.node_id,
+    tx_id: r.tx_id,
+  };
+}
 function _canonVP(r) {
   // GH #60: public_key in entity_keys, not here.
   return {
@@ -333,6 +355,7 @@ class MemoryStore {
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
+    this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -579,6 +602,22 @@ class MemoryStore {
     return [...this._domainBindings.values()];
   }
 
+  // ── Platform links (canonical, in state_merkle_root) ─────────────────────
+  savePlatformLink(rec) {
+    this._platformLinks.set(rec.id, { ...rec });
+  }
+  updatePlatformLinkStatus(tipId, platform, update) {
+    const key = `${tipId}::${platform}`;
+    const existing = this._platformLinks.get(key);
+    if (existing) this._platformLinks.set(key, { ...existing, ...update });
+  }
+  getPlatformLink(tipId, platform) {
+    return this._platformLinks.get(`${tipId}::${platform}`) || null;
+  }
+  getPlatformLinksByTipId(tipId) {
+    return [...this._platformLinks.values()].filter(r => r.tip_id === tipId);
+  }
+
   // ── Domain pending claims (local-only; NOT canonical, NOT in merkle root) ─
   // Stores the user-signed claim between POST /register and POST /verify.
   // Only the receiving node has the claim — verification re-establishes
@@ -748,6 +787,7 @@ class MemoryStore {
     this._nodes.clear();
     // GH #60 — entity_keys is canonical state too.
     this._entityKeys.clear();
+    this._platformLinks.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -1148,6 +1188,10 @@ class MemoryStore {
     for (const r of [...this._domainBindings.values()]
       .sort((a, b) => a.domain.localeCompare(b.domain))) {
       yield { table: "domain_bindings", row: _canonDomainBinding(r) };
+    }
+    for (const r of [...this._platformLinks.values()]
+      .sort((a, b) => a.id.localeCompare(b.id))) {
+      yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
     for (const r of [...this._vps.values()]
       .sort((a, b) => a.vp_id.localeCompare(b.vp_id))) {
@@ -1556,6 +1600,28 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id  ON domain_bindings(tip_id);
       CREATE INDEX IF NOT EXISTS idx_dom_bind_state   ON domain_bindings(binding_state);
       CREATE INDEX IF NOT EXISTS idx_dom_bind_expires ON domain_bindings(expires_at);
+
+      -- ── Platform links (canonical, in state_merkle_root) ─────────────
+      -- One row per (tip_id, platform) pair. Written by commit-handler on
+      -- every committed LINK_PLATFORM tx. node_signature is the node's
+      -- ML-DSA attestation over the canonical link payload.
+      CREATE TABLE IF NOT EXISTS platform_links (
+        id             TEXT PRIMARY KEY,
+        tip_id         TEXT NOT NULL,
+        platform       TEXT NOT NULL,
+        handle         TEXT,
+        profile_url    TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'active',
+        linked_at      INTEGER NOT NULL,
+        verified_at    INTEGER NOT NULL,
+        unlinked_at    INTEGER,
+        unlink_tx_id   TEXT,
+        node_id        TEXT NOT NULL,
+        tx_id          TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_links_tip_plat ON platform_links(tip_id, platform);
+      CREATE INDEX IF NOT EXISTS idx_platform_links_tip_id ON platform_links(tip_id);
+      CREATE INDEX IF NOT EXISTS idx_platform_links_status ON platform_links(status);
 
       -- ── Pending domain claims (local-only; NOT in state_merkle_root) ─
       -- Stores the user-signed claim between POST /v1/domain/register
@@ -2154,6 +2220,24 @@ class SQLiteStore {
       getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
       getAllDomainBindings: this.db.prepare("SELECT * FROM domain_bindings"),
 
+      savePlatformLink: this.db.prepare(
+        `INSERT OR REPLACE INTO platform_links
+         (id, tip_id, platform, handle, profile_url, status, linked_at, verified_at,
+          unlinked_at, unlink_tx_id, node_id, tx_id)
+         VALUES (@id, @tip_id, @platform, @handle, @profile_url, @status, @linked_at,
+                 @verified_at, @unlinked_at, @unlink_tx_id, @node_id, @tx_id)`
+      ),
+      updatePlatformLinkStatus: this.db.prepare(
+        `UPDATE platform_links SET status=@status, unlinked_at=@unlinked_at, unlink_tx_id=@unlink_tx_id
+         WHERE tip_id=@tip_id AND platform=@platform`
+      ),
+      getPlatformLink: this.db.prepare(
+        "SELECT * FROM platform_links WHERE tip_id=? AND platform=?"
+      ),
+      getPlatformLinksByTipId: this.db.prepare(
+        "SELECT * FROM platform_links WHERE tip_id=?"
+      ),
+
       savePendingDomainClaim: this.db.prepare(
         `INSERT OR REPLACE INTO pending_domain_claims
            (domain,tip_id,method,claimed_at,signature,received_at)
@@ -2732,6 +2816,18 @@ class SQLiteStore {
   getDomainBindingsByTipId(tipId) { return this._stmts.getDomainBindingsByTipId.all(tipId); }
   getAllDomainBindings() { return this._stmts.getAllDomainBindings.all(); }
 
+  // ── Platform links (canonical) ───────────────────────────────────────────
+  savePlatformLink(rec) { this._stmts.savePlatformLink.run(rec); }
+  updatePlatformLinkStatus(tipId, platform, update) {
+    this._stmts.updatePlatformLinkStatus.run({ tip_id: tipId, platform, ...update });
+  }
+  getPlatformLink(tipId, platform) {
+    return this._stmts.getPlatformLink.get(tipId, platform) || null;
+  }
+  getPlatformLinksByTipId(tipId) {
+    return this._stmts.getPlatformLinksByTipId.all(tipId);
+  }
+
   // ── Pending domain claims (local-only) ───────────────────────────────────
   savePendingDomainClaim(rec) {
     this._stmts.savePendingDomainClaim.run(
@@ -3137,6 +3233,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM domain_bindings ORDER BY domain").iterate()) {
       yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
+    for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
+      yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
     for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
@@ -3168,6 +3267,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM nodes").run();
       // GH #60 — entity_keys is canonical state too.
       this.db.prepare("DELETE FROM entity_keys").run();
+      this.db.prepare("DELETE FROM platform_links").run();
     })();
   }
 
@@ -3459,6 +3559,12 @@ function _buildDagHandle(store, config) {
     savePendingDomainClaim: (rec) => store.savePendingDomainClaim(rec),
     getPendingDomainClaim: (domain) => store.getPendingDomainClaim(domain),
     deletePendingDomainClaim: (domain) => store.deletePendingDomainClaim(domain),
+
+    // ── Platform links (canonical) ────────────────────────────────────────
+    savePlatformLink: (rec) => store.savePlatformLink(rec),
+    updatePlatformLinkStatus: (tipId, platform, update) => store.updatePlatformLinkStatus(tipId, platform, update),
+    getPlatformLink: (tipId, platform) => store.getPlatformLink(tipId, platform),
+    getPlatformLinksByTipId: (tipId) => store.getPlatformLinksByTipId(tipId),
 
     // ── Verification Providers ────────────────────────────────────────────
     saveVP: (rec) => store.saveVP(rec),

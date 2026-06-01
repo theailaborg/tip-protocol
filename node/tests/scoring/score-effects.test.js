@@ -248,6 +248,19 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(next.delta).toBe(0);
     expect(next.offense_count).toBe(1);
   });
+
+  test("LINK_PLATFORM → scoreTargetTipId returns tip_id", () => {
+    const tx = { tx_type: TX_TYPES.LINK_PLATFORM, data: { tip_id: "tip://id/IN-abc", platform: "youtube", handle: "@ch" } };
+    expect(scoreTargetTipId(tx)).toBe("tip://id/IN-abc");
+  });
+
+  test("LINK_PLATFORM → applyScoreEffect has delta=0 (SCORE_UPDATE paired tx owns the +5)", () => {
+    const tx = { tx_type: TX_TYPES.LINK_PLATFORM, data: { tip_id: "tip://id/IN-abc", platform: "youtube", handle: "@ch" } };
+    const next = applyScoreEffect(tx, initialState());
+    expect(next.delta).toBe(0);
+    expect(next.score).toBe(500);
+    expect(next.reason).toBe("Social account linked");
+  });
 });
 
 // ─── adjudicationDelta — offense-tier table coverage ──────────────────────

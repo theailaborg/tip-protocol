@@ -308,6 +308,52 @@ const INTEREST_CATEGORIES = Object.freeze({
 });
 const INTEREST_CATEGORY_VALUES = Object.freeze(new Set(Object.values(INTEREST_CATEGORIES)));
 
+// ─── Platform-link (social account linking) ─────────────────────────────────
+// Used by schemas/link-platform.validateRequest + schemas/unlink-platform.
+// Adding a new platform here lets users link it without any other code
+// change; handle extraction also needs a regex entry in
+// services/bio-fetcher.EXTRACTORS.
+const PLATFORM_MAX_LENGTH = 50;
+
+// Server-side replay-attack window. The user's signed claim's claimed_at
+// must be within this many ms of the API node's nowMs() — older claims
+// are rejected at validateRequest.
+const CLAIM_MAX_AGE_MS = 15 * 60 * 1000;
+
+const ALLOWED_PLATFORMS = Object.freeze({
+  twitter: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  x: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
+  linkedin: [/^https?:\/\/(www\.)?linkedin\.com\/in\/[^/?#]/i],
+  youtube: [
+    /^https?:\/\/(www\.)?youtube\.com\/@[^/?#]/i,
+    /^https?:\/\/(www\.)?youtube\.com\/c\/[^/?#]/i,
+    /^https?:\/\/(www\.)?youtube\.com\/channel\/[^/?#]/i,
+  ],
+  facebook: [/^https?:\/\/(www\.)?facebook\.com\/[^/?#]/i],
+  instagram: [/^https?:\/\/(www\.)?instagram\.com\/[^/?#]/i],
+  reddit: [/^https?:\/\/(www\.)?reddit\.com\/u(?:ser)?\/[^/?#]/i],
+  github: [/^https?:\/\/(www\.)?github\.com\/[^/?#]/i],
+  medium: [
+    /^https?:\/\/(www\.)?medium\.com\/@[^/?#]/i,
+    /^https?:\/\/[^.]+\.medium\.com/i,
+  ],
+  soundcloud: [/^https?:\/\/(www\.)?soundcloud\.com\/[^/?#]/i],
+  tiktok: [/^https?:\/\/(www\.)?tiktok\.com\/@[^/?#]/i],
+  spotify: [/^https?:\/\/open\.spotify\.com\/[^/?#]/i],
+  substack: [/^https?:\/\/[^.]+\.substack\.com/i],
+  devto: [/^https?:\/\/(www\.)?dev\.to\/[^/?#]/i],
+  bluesky: [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
+  threads: [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
+  mastodon: [/^https?:\/\/[^/]+\/@[^/?#]/i],
+});
+
+// Platforms that render bios with JavaScript or are login-gated — static
+// HTML scraping cannot verify ownership. Linking these requires a VP
+// OAuth proof on the link request (vp_oauth_signature + vp_id).
+const OAUTH_REQUIRED_PLATFORMS = Object.freeze(new Set([
+  "twitter", "x", "instagram", "tiktok", "threads", "facebook", "linkedin", "youtube",
+]));
+
 const INITIAL_INTERESTS_SEED = Object.freeze([
   // Tech
   { slug: "ai-ml", label: "AI & Machine Learning", category: "tech" },
@@ -354,6 +400,7 @@ const TX_TYPES = Object.freeze({
   UPDATE_DEVICE_BINDING: "UPDATE_DEVICE_BINDING",
   UPDATE_PROFILE: "UPDATE_PROFILE",
   LINK_PLATFORM: "LINK_PLATFORM",
+  UNLINK_PLATFORM: "UNLINK_PLATFORM",
   // GH #60 — key rotation + recovery. Both append a new entity_keys row
   // and close the prior active one atomically at commit. KEY_ROTATED is
   // signed by the OLD key (user proves possession); KEY_RECOVERY is
@@ -718,4 +765,8 @@ module.exports = {
   INTEREST_CATEGORIES,
   INTEREST_CATEGORY_VALUES,
   INITIAL_INTERESTS_SEED,
+  PLATFORM_MAX_LENGTH,
+  CLAIM_MAX_AGE_MS,
+  ALLOWED_PLATFORMS,
+  OAUTH_REQUIRED_PLATFORMS,
 };

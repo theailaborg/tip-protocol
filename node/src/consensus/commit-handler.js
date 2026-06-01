@@ -37,6 +37,8 @@ const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
 const keyRotatedSchema = require("../schemas/key-rotated");
 const keyRecoverySchema = require("../schemas/key-recovery");
 const interestRegisteredSchema = require("../schemas/interest-registered");
+const linkPlatformSchema = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const { verifyTxSignature: unifiedVerifyTxSignature, verifyCosignatures } = require("../schemas/_common");
 const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 
@@ -58,6 +60,9 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
   // Interest taxonomy registry — VP-attested.
   [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
+  // Social account linking/unlinking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
+  [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
+  [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
 });
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
@@ -410,6 +415,30 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.LINK_PLATFORM: {
+        // In-batch dedup. The committed-history first-wins guard lives in
+        // linkPlatformSchema.verifyTx (active-link check); two siblings in
+        // the same batch both see no committed row, so drop the second
+        // here before _applyDerivedState's upsert silently overwrites.
+        if (!d.tip_id || !d.platform) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.LINK_PLATFORM
+          && t.data?.tip_id === d.tip_id
+          && t.data?.platform === d.platform);
+        if (inBatch) return { valid: false, error: `duplicate LINK_PLATFORM in batch for (${d.tip_id}, ${d.platform})` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        if (!d.tip_id || !d.platform) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UNLINK_PLATFORM
+          && t.data?.tip_id === d.tip_id
+          && t.data?.platform === d.platform);
+        if (inBatch) return { valid: false, error: `duplicate UNLINK_PLATFORM in batch for (${d.tip_id}, ${d.platform})` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
@@ -606,6 +635,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // First-wins dedup: if two VPs race to register the same slug, the
         // second one 409s here in canonical consensus order.
         const r = interestRegisteredSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      // Social account linking — schema enforces verifying-node active,
+      // subject registered + unrevoked, no existing active link, and the
+      // user's claim_signature attestation. Closes the gossip-bypass gap
+      // for peer-submitted txs that never hit the API service's predicates.
+      case TX_TYPES.LINK_PLATFORM: {
+        const r = linkPlatformSchema.verifyTx(tx, dag);
+        return r.ok ? { valid: true } : { valid: false, error: r.error };
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        const r = unlinkPlatformSchema.verifyTx(tx, dag);
         return r.ok ? { valid: true } : { valid: false, error: r.error };
       }
 
@@ -895,6 +938,45 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           }
         }
         break;
+
+      // ── Social account linking / unlinking ───────────────────────────
+      case TX_TYPES.LINK_PLATFORM: {
+        if (d.tip_id && d.platform) {
+          // Signatures live on the tx envelope (tx.signature = node body
+          // sig; tx.data.cosignatures[] = user claim sig). The row stores
+          // only display state + tx_id so verifiers can join back.
+          dag.savePlatformLink({
+            id: `${d.tip_id}::${d.platform}`,
+            tip_id: d.tip_id,
+            platform: d.platform,
+            handle: d.handle ?? null,
+            profile_url: d.profile_url,
+            status: "active",
+            linked_at: d.claimed_at,
+            verified_at: d.verified_at,
+            unlinked_at: null,
+            unlink_tx_id: null,
+            node_id: d.node_id,
+            tx_id: tx.tx_id,
+          });
+        }
+        break;
+      }
+
+      case TX_TYPES.UNLINK_PLATFORM: {
+        if (d.tip_id && d.platform) {
+          // SUBJECT-signed: the canonical body has no unlinked_at field
+          // (only claimed_at, platform, tip_id). tx.timestamp is the
+          // user-signed envelope time — use it as the on-chain unlink
+          // moment so platform_links carries a deterministic value.
+          dag.updatePlatformLinkStatus(d.tip_id, d.platform, {
+            status: "unlinked",
+            unlinked_at: tx.timestamp,
+            unlink_tx_id: tx.tx_id,
+          });
+        }
+        break;
+      }
 
       // ── Verification ──────────────────────────────────────────────────
       case TX_TYPES.CONTENT_VERIFIED:

@@ -453,6 +453,37 @@ class KnexAdapter {
       t.index("expires_at", "idx_dom_bind_expires");
     });
 
+    // Platform links (canonical, in state_merkle_root). Signatures are
+    // not stored on the row — reachable via tx_id from the transactions
+    // table (user's claim cosig in tx.data.cosignatures[], node body sig
+    // at tx.signature).
+    await ensure("platform_links", t => {
+      _id(t, "id").primary();
+      _id(t, "tip_id").notNullable();
+      t.string("platform", 50).notNullable();
+      t.string("handle", 255).nullable();
+      t.text("profile_url").notNullable();
+      t.string("status", 32).notNullable().defaultTo("active");
+      t.bigInteger("linked_at").notNullable();
+      t.bigInteger("verified_at").notNullable();
+      t.bigInteger("unlinked_at").nullable();
+      _id(t, "unlink_tx_id").nullable();
+      _id(t, "node_id").notNullable();
+      _id(t, "tx_id").notNullable();
+      t.unique(["tip_id", "platform"], "idx_platform_links_tip_plat");
+      t.index("tip_id", "idx_platform_links_tip_id");
+      t.index("status", "idx_platform_links_status");
+    });
+    // Migration: replace expires_at / consecutive_failures with unlinked_at / unlink_tx_id
+    if (await db.schema.hasColumn("platform_links", "expires_at")) {
+      await db.schema.alterTable("platform_links", t => {
+        t.dropColumn("expires_at");
+        t.dropColumn("consecutive_failures");
+        t.bigInteger("unlinked_at").nullable();
+        t.string("unlink_tx_id", 128).nullable();
+      });
+    }
+
     // Pending domain claims (NOT canonical; per-node storage between
     // POST /register and POST /verify).
     await ensure("pending_domain_claims", t => {
@@ -780,6 +811,13 @@ class KnexAdapter {
     const bindingRows = await this.knex("domain_bindings").select("*");
     for (const row of bindingRows) {
       this.mirror._domainBindings.set(row.domain, { ...row });
+    }
+
+    // Platform links (canonical)
+    const plRows = await this.knex("platform_links").select("*");
+    if (!this.mirror._platformLinks) this.mirror._platformLinks = new Map();
+    for (const row of plRows) {
+      this.mirror._platformLinks.set(row.id, { ...row });
     }
 
     // Pending domain claims (per-node local)
@@ -1159,6 +1197,7 @@ class KnexAdapter {
       this.knex("nodes").delete(),
       // GH #60 — entity_keys is canonical state too.
       this.knex("entity_keys").delete(),
+      this.knex("platform_links").delete(),
     ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
   }
 
@@ -1197,6 +1236,35 @@ class KnexAdapter {
   getDomainBinding(domain) { return this.mirror.getDomainBinding(domain); }
   getDomainBindingsByTipId(tipId) { return this.mirror.getDomainBindingsByTipId(tipId); }
   getAllDomainBindings() { return this.mirror.getAllDomainBindings(); }
+
+  // ── Platform links (canonical, in state_merkle_root) ─────────────────────
+
+  savePlatformLink(rec) {
+    this.mirror.savePlatformLink(rec);
+    const row = {
+      id: rec.id,
+      tip_id: rec.tip_id,
+      platform: rec.platform,
+      handle: rec.handle ?? null,
+      profile_url: rec.profile_url,
+      status: rec.status || "active",
+      linked_at: rec.linked_at,
+      verified_at: rec.verified_at,
+      unlinked_at: rec.unlinked_at ?? null,
+      unlink_tx_id: rec.unlink_tx_id ?? null,
+      node_id: rec.node_id,
+      tx_id: rec.tx_id,
+    };
+    this._ff(() => this._dbInsert("platform_links", "id", row, "merge"));
+  }
+
+  updatePlatformLinkStatus(tipId, platform, update) {
+    this.mirror.updatePlatformLinkStatus(tipId, platform, update);
+    this._ff(() => this.knex("platform_links").where({ tip_id: tipId, platform }).update(update));
+  }
+
+  getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
+  getPlatformLinksByTipId(tipId) { return this.mirror.getPlatformLinksByTipId(tipId); }
 
   savePendingDomainClaim(rec) {
     this.mirror.savePendingDomainClaim(rec);

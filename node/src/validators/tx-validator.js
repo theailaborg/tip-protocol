@@ -25,8 +25,11 @@ const {
   DOMAIN_VERIFICATION_METHOD_VALUES, DOMAIN_UNBIND_REASON_VALUES,
 } = require("../../../shared/constants");
 const { isValidDomain } = require("../schemas/register-domain");
+const { PLATFORM_MAX_LENGTH: LINK_PLATFORM_MAX_LENGTH } = require("../schemas/link-platform");
+const unlinkPlatformSchema = require("../schemas/unlink-platform");
 const { getFoundingVP, getGenesisCommittee, getGenesisRing } = require("../genesis");
 const { nowMs, isValidMs } = require("../../../shared/time");
+const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
 
 // Validator accepts every tx type from the shared frozen set plus the
 // "GENESIS" pseudo-type used only for the genesis bootstrap row, which
@@ -384,6 +387,12 @@ function validateBusinessRules(tx, dag = null) {
       if (d.score_after !== undefined && (d.score_after < 0 || d.score_after > 1000)) {
         errors.push(`score_after must be 0–1000, got ${d.score_after}`);
       }
+      if (d.link_tx_id) {
+        const linkedTx = dag.getTx(d.link_tx_id);
+        if (!linkedTx) {
+          return { valid: false, errors: [`SCORE_UPDATE: linked LINK_PLATFORM tx not committed: ${d.link_tx_id}`] };
+        }
+      }
       break;
     }
 
@@ -475,6 +484,67 @@ function validateBusinessRules(tx, dag = null) {
       // verifyTx at consensus replay.
       if (d.tip_id && !/^tip:\/\/id\/[A-Z]{2,}-[0-9a-f]{16}$/.test(d.tip_id)) {
         errors.push(`Invalid TIP-ID format: "${d.tip_id}". Expected: tip://id/[REGION]-[16hex]`);
+      }
+      break;
+    }
+
+    case TX_TYPES.LINK_PLATFORM: {
+      if (typeof d.tip_id !== "string" || d.tip_id.length === 0) {
+        errors.push("LINK_PLATFORM: tip_id is required");
+      }
+      if (typeof d.platform !== "string" || d.platform.length === 0) {
+        errors.push("LINK_PLATFORM: platform is required");
+      } else if (d.platform.length > LINK_PLATFORM_MAX_LENGTH) {
+        errors.push(`LINK_PLATFORM: platform must be <= ${LINK_PLATFORM_MAX_LENGTH} chars`);
+      }
+      if (typeof d.profile_url !== "string" || !d.profile_url.startsWith("https://")) {
+        errors.push("LINK_PLATFORM: profile_url is required (https:// URL)");
+      }
+      if (!Array.isArray(d.cosignatures) || d.cosignatures.length === 0) {
+        errors.push("LINK_PLATFORM: cosignatures[] is required (subject claim sig)");
+      }
+      if (typeof d.node_id !== "string" || d.node_id.length === 0) {
+        errors.push("LINK_PLATFORM: node_id is required");
+      }
+      if (errors.length > 0) break;
+
+      const identity = dag.getIdentity(d.tip_id);
+      if (!identity) {
+        errors.push(`Cannot link platform: TIP-ID not found: ${d.tip_id}`);
+        break;
+      }
+
+      const existingLink = dag.getPlatformLink(d.tip_id, d.platform);
+      if (existingLink && existingLink.status === "active") {
+        errors.push(`Platform "${d.platform}" already linked for ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UNLINK_PLATFORM: {
+      // SUBJECT-signed: 4 canonical fields. No claim_signature flat field,
+      // no node_id (user signs body directly; tx.signature carries the sig).
+      // link_tx_id binds the signature to a specific LINK instance —
+      // defeats replay against a re-linked active row.
+      if (typeof d.tip_id !== "string" || d.tip_id.length === 0) {
+        errors.push("UNLINK_PLATFORM: tip_id is required");
+      }
+      if (typeof d.platform !== "string" || d.platform.length === 0) {
+        errors.push("UNLINK_PLATFORM: platform is required");
+      }
+      if (typeof d.link_tx_id !== "string" || d.link_tx_id.length === 0) {
+        errors.push("UNLINK_PLATFORM: link_tx_id is required");
+      }
+      if (typeof d.claimed_at !== "number" || !Number.isFinite(d.claimed_at)) {
+        errors.push("UNLINK_PLATFORM: claimed_at is required");
+      }
+      if (errors.length > 0) break;
+
+      const link = dag.getPlatformLink(d.tip_id, d.platform);
+      if (!link || link.status !== "active") {
+        errors.push(`Platform "${d.platform}" is not actively linked for ${d.tip_id}`);
+      } else if (link.tx_id !== d.link_tx_id) {
+        errors.push(`UNLINK_PLATFORM: link_tx_id does not match active link instance for (${d.tip_id}, ${d.platform})`);
       }
       break;
     }
@@ -655,6 +725,20 @@ function validateState(tx, dag) {
       }
       if (d.tip_id && dag.isRevoked(d.tip_id)) {
         errors.push(`Cannot update profile: TIP-ID is revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.LINK_PLATFORM: {
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`TIP-ID is revoked: ${d.tip_id}`);
+      }
+      break;
+    }
+
+    case TX_TYPES.UNLINK_PLATFORM: {
+      if (d.tip_id && dag.isRevoked(d.tip_id)) {
+        errors.push(`TIP-ID is revoked: ${d.tip_id}`);
       }
       break;
     }

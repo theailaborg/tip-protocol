@@ -201,6 +201,7 @@ async function main() {
 
   // 5. Sign registration with founding VP key
   const registrationFields = {
+    algorithm: "ml-dsa-65",
     name,
     public_key: keypair.publicKey,
     approving_vp_id: foundingVpId,
