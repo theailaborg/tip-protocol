@@ -35,12 +35,162 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError, canonicalJson } = require("./_common");
-const { TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND } = require("../../../shared/constants");
-const { isValidMs } = require("../../../shared/time");
+const {
+  TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND,
+  ALLOWED_PLATFORMS, OAUTH_REQUIRED_PLATFORMS, PLATFORM_MAX_LENGTH, CLAIM_MAX_AGE_MS,
+} = require("../../../shared/constants");
+const { isValidMs, nowMs } = require("../../../shared/time");
 const registerSocialSchema = require("./register-social");
+const registerIdentitySchema = require("./register-identity");
 
 const TX_TYPE = TX_TYPES.LINK_PLATFORM;
-const PLATFORM_MAX_LENGTH = 50;
+
+/**
+ * Request-envelope validator for POST /v1/identity/:tipId/link-platform.
+ * Runs before any IO. Owns every request-time check so the service stays
+ * thin (matches the update-profile / register-content pattern).
+ *
+ * Body shape (snake_case as received over HTTP):
+ *   tip_id, platform, profile_url, claim_signature, claimed_at         required
+ *   vp_id, vp_oauth_signature, vp_oauth_handle, vp_oauth_verified_at   optional
+ *
+ * deps:
+ *   dag        — DAG store (identity / platform-link / mempool lookups)
+ *   urlTipId   — when provided, body.tip_id must match
+ *   now        — clock for the claim-age check (default nowMs())
+ */
+function validateRequest(body, deps) {
+  if (!body || typeof body !== "object") {
+    throw schemaError(400, "request body is required", "body_invalid");
+  }
+  if (deps && deps.urlTipId !== undefined && body.tip_id !== deps.urlTipId) {
+    throw schemaError(400, "URL tip_id does not match body.tip_id", "tip_id_mismatch");
+  }
+  if (!body.tip_id || !body.platform || !body.profile_url || !body.claim_signature || !body.claimed_at) {
+    throw schemaError(
+      400,
+      "tip_id, platform, profile_url, claim_signature, claimed_at are required",
+      "missing_fields",
+    );
+  }
+  if (typeof body.tip_id !== "string" || !body.tip_id.startsWith("tip://id/")) {
+    throw schemaError(400, "tip_id is required (tip://id/...)", "tip_id_required");
+  }
+  if (typeof body.platform !== "string" || body.platform.length === 0) {
+    throw schemaError(400, "platform is required", "platform_required");
+  }
+  if (body.platform.length > PLATFORM_MAX_LENGTH) {
+    throw schemaError(400, `platform must be <= ${PLATFORM_MAX_LENGTH} chars`, "platform_too_long");
+  }
+  if (typeof body.profile_url !== "string" || !body.profile_url.startsWith("https://")) {
+    throw schemaError(400, "profile_url is required (https:// URL)", "profile_url_required");
+  }
+  if (typeof body.claim_signature !== "string" || body.claim_signature.length === 0) {
+    throw schemaError(400, "claim_signature is required", "claim_signature_required");
+  }
+  if (!isValidMs(body.claimed_at)) {
+    throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
+  }
+
+  const platformKey = body.platform.toLowerCase();
+  const platformPatterns = ALLOWED_PLATFORMS[platformKey];
+  if (!platformPatterns) {
+    throw schemaError(400, `Unknown or unsupported platform: "${body.platform}"`, "unknown_platform");
+  }
+  if (!platformPatterns.some((re) => re.test(body.profile_url))) {
+    throw schemaError(
+      400,
+      `profile_url does not match expected domain for platform "${body.platform}"`,
+      "invalid_profile_url",
+    );
+  }
+
+  const now = deps && typeof deps.now === "number" ? deps.now : nowMs();
+  if (now - body.claimed_at > CLAIM_MAX_AGE_MS) {
+    throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
+  }
+
+  if (OAUTH_REQUIRED_PLATFORMS.has(platformKey) && !(body.vp_oauth_signature && body.vp_id)) {
+    throw schemaError(
+      403,
+      `Platform "${body.platform}" requires VP OAuth verification`,
+      "oauth_required",
+    );
+  }
+
+  if (!deps || !deps.dag) return;
+  const { dag } = deps;
+
+  const identity = dag.getIdentity(body.tip_id);
+  if (!identity) {
+    throw schemaError(412, `TIP-ID not found: ${body.tip_id}`, "tip_id_not_found");
+  }
+  if (typeof dag.isRevoked === "function" && dag.isRevoked(body.tip_id)) {
+    throw schemaError(403, `TIP-ID is revoked: ${body.tip_id}`, "tip_id_revoked");
+  }
+
+  // First-wins guard against committed history. Relink after UNLINK is
+  // allowed (existing row flips to "unlinked"); a second active link is
+  // rejected so racing nodes / gossip-bypass txs can't double-write.
+  const existingLink = typeof dag.getPlatformLink === "function"
+    ? dag.getPlatformLink(body.tip_id, body.platform)
+    : null;
+  if (existingLink && existingLink.status === "active") {
+    throw schemaError(
+      409,
+      `Platform "${body.platform}" already linked for ${body.tip_id}`,
+      "platform_already_linked",
+    );
+  }
+
+  // Mempool guard — block while another LINK_PLATFORM for the same
+  // (tip_id, platform) is pending commit, otherwise the user gets two
+  // committed txs that race on _applyDerivedState's upsert.
+  if (typeof dag.getMempoolTxsByTipId === "function") {
+    const pending = dag.getMempoolTxsByTipId(body.tip_id)
+      .filter((t) => t.tx_type === TX_TYPE && t.data?.platform === body.platform);
+    if (pending.length > 0) {
+      throw schemaError(
+        409,
+        `Platform "${body.platform}" already linked for ${body.tip_id}`,
+        "platform_already_linked",
+      );
+    }
+  }
+
+  // User's claim_signature — proves the subject TIP-ID attested to the
+  // link before the node was asked to verify it.
+  const claimPayload = registerSocialSchema.buildSigningPayload({
+    tip_id: body.tip_id,
+    platform: body.platform,
+    profile_url: body.profile_url,
+    claimed_at: body.claimed_at,
+  });
+  if (!registerSocialSchema.verifySignature(claimPayload, body.claim_signature, identity.public_key)) {
+    throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
+  }
+
+  // VP OAuth proof — alternative to bio-check for platforms that block
+  // static scraping. Verified here so the service can skip the bio call.
+  if (body.vp_oauth_signature && body.vp_id) {
+    if (!isValidMs(body.vp_oauth_verified_at)) {
+      throw schemaError(400, "vp_oauth_verified_at must be a valid epoch ms timestamp", "vp_oauth_verified_at_invalid");
+    }
+    const vp = registerIdentitySchema.resolveVP(body.vp_id, dag);
+    const oauthProof = {
+      claimed_at: body.claimed_at,
+      handle: body.vp_oauth_handle ?? null,
+      platform: body.platform,
+      profile_url: body.profile_url,
+      tip_id: body.tip_id,
+      verified_at: body.vp_oauth_verified_at,
+      vp_id: body.vp_id,
+    };
+    if (!verifyPayload(oauthProof, body.vp_oauth_signature, vp.public_key)) {
+      throw schemaError(403, "VP OAuth signature verification failed", "vp_oauth_signature_invalid");
+    }
+  }
+}
 
 /**
  * Build the canonical 8-field signed payload for a LINK_PLATFORM tx. All
@@ -176,12 +326,13 @@ function verifyTx(tx, dag) {
 module.exports = {
   TX_TYPE,
   PLATFORM_MAX_LENGTH,
+  validateRequest,
   buildSigningPayload,
   sign,
   verifySignature,
   verifyTx,
   canonicalJson,
-  // GH #51 — unified signature contract
+  // Unified signature contract.
   SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
   SIGNED_BY: SIGNED_BY_KIND.NODE,
 };

@@ -10,7 +10,6 @@ const { SCORE, SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const registerIdentitySchema = require("../schemas/register-identity");
 const linkPlatformSchema = require("../schemas/link-platform");
 const unlinkPlatformSchema = require("../schemas/unlink-platform");
-const registerSocialSchema = require("../schemas/register-social");
 const bioFetcher = require("./bio-fetcher");
 const { schemaError, verifyPayload } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
@@ -21,38 +20,6 @@ const { log } = require("../logger");
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
-
-const CLAIM_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes — replay-attack window
-
-// profile_url must match at least one pattern for the stated platform.
-const ALLOWED_PLATFORMS = {
-  twitter: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
-  x: [/^https?:\/\/(www\.)?(twitter|x)\.com\/[^/?#]/i],
-  linkedin: [/^https?:\/\/(www\.)?linkedin\.com\/in\/[^/?#]/i],
-  youtube: [/^https?:\/\/(www\.)?youtube\.com\/@[^/?#]/i,
-    /^https?:\/\/(www\.)?youtube\.com\/c\/[^/?#]/i,
-    /^https?:\/\/(www\.)?youtube\.com\/channel\/[^/?#]/i],
-  facebook: [/^https?:\/\/(www\.)?facebook\.com\/[^/?#]/i],
-  instagram: [/^https?:\/\/(www\.)?instagram\.com\/[^/?#]/i],
-  reddit: [/^https?:\/\/(www\.)?reddit\.com\/u(?:ser)?\/[^/?#]/i],
-  github: [/^https?:\/\/(www\.)?github\.com\/[^/?#]/i],
-  medium: [/^https?:\/\/(www\.)?medium\.com\/@[^/?#]/i,
-    /^https?:\/\/[^.]+\.medium\.com/i],
-  soundcloud: [/^https?:\/\/(www\.)?soundcloud\.com\/[^/?#]/i],
-  tiktok: [/^https?:\/\/(www\.)?tiktok\.com\/@[^/?#]/i],
-  spotify: [/^https?:\/\/open\.spotify\.com\/[^/?#]/i],
-  substack: [/^https?:\/\/[^.]+\.substack\.com/i],
-  devto: [/^https?:\/\/(www\.)?dev\.to\/[^/?#]/i],
-  bluesky: [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
-  threads: [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
-  mastodon: [/^https?:\/\/[^/]+\/@[^/?#]/i],
-};
-
-// These platforms render bios with JavaScript or are login-gated — static
-// HTML scraping cannot verify ownership. Must use VP OAuth proof.
-const OAUTH_REQUIRED_PLATFORMS = new Set([
-  "twitter", "x", "instagram", "tiktok", "threads", "facebook", "linkedin", "youtube",
-]);
 
 // Statuses the activity feed can include. Default is "committed" only —
 // preserves back-compat for clients that pre-date the no-loss work.
@@ -445,70 +412,29 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
   }
 
   async function linkPlatform({ tipId, platform, profileUrl, claimSignature, claimedAt, vpId, vpOauthSignature, vpOauthHandle, vpOauthVerifiedAt }) {
-    if (!tipId || !platform || !profileUrl || !claimSignature || !claimedAt) {
-      throw schemaError(400, "tipId, platform, profileUrl, claimSignature, claimedAt are required", "missing_fields");
-    }
+    // Schema owns every request-time check (shape, allowlist, URL pattern,
+    // claim age, OAuth gate, identity / active-link / mempool state, user
+    // claim signature, VP OAuth proof). Service handles only IO + tx build.
+    const body = {
+      tip_id: tipId, platform, profile_url: profileUrl,
+      claim_signature: claimSignature, claimed_at: claimedAt,
+      vp_id: vpId,
+      vp_oauth_signature: vpOauthSignature,
+      vp_oauth_handle: vpOauthHandle,
+      vp_oauth_verified_at: vpOauthVerifiedAt,
+    };
+    linkPlatformSchema.validateRequest(body, { dag, urlTipId: tipId });
 
-    const platformKey = platform.toLowerCase();
-    const platformPatterns = ALLOWED_PLATFORMS[platformKey];
-    if (!platformPatterns) {
-      throw schemaError(400, `Unknown or unsupported platform: "${platform}"`, "unknown_platform");
-    }
-    if (!platformPatterns.some(re => re.test(profileUrl))) {
-      throw schemaError(400, `profile_url does not match expected domain for platform "${platform}"`, "invalid_profile_url");
-    }
-    if (nowMs() - claimedAt > CLAIM_MAX_AGE_MS) {
-      throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
-    }
-    if (OAUTH_REQUIRED_PLATFORMS.has(platformKey) && !(vpOauthSignature && vpId)) {
-      throw schemaError(403, `Platform "${platform}" requires VP OAuth verification`, "oauth_required");
-    }
-
-    const identity = dag.getIdentity(tipId);
-    if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
-
-    const existingLink = dag.getPlatformLink(tipId, platform);
-    if (existingLink && existingLink.status === "active") {
-      throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
-    }
-    // Also block if there is a pending LINK_PLATFORM in mempool (not yet committed)
-    const pending = typeof dag.getMempoolTxsByTipId === "function"
-      ? dag.getMempoolTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM && t.data?.platform === platform)
-      : [];
-    if (pending.length > 0) {
-      throw schemaError(409, `Platform "${platform}" already linked for ${tipId}`, "platform_already_linked");
-    }
     const existingLinkTxs = dag.getTxsByTipId(tipId).filter(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
-    // A re-link is when this specific platform already has a committed LINK_PLATFORM tx.
-    // Re-links are allowed (after unlink) but never earn another +5.
+    // Re-link after UNLINK is allowed but never earns another bonus. Cap
+    // is per unique platform ever linked (re-links don't consume a slot).
     const isRelink = existingLinkTxs.some(t => t.data?.platform === platform);
-    // Cap is per unique platform ever linked, not per tx (re-links don't consume a new slot).
     const uniqueLinkedPlatforms = new Set(existingLinkTxs.map(t => t.data?.platform));
 
-    const claimPayload = registerSocialSchema.buildSigningPayload({
-      tip_id: tipId, platform, profile_url: profileUrl, claimed_at: claimedAt,
-    });
-    if (!registerSocialSchema.verifySignature(claimPayload, claimSignature, identity.public_key)) {
-      throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
-    }
-
-    // VP OAuth proof path — VP verified social ownership via OAuth; skip bio check.
-    // Falls back to bio check when no VP proof is provided.
+    // OAuth path skips the bio fetch — the VP already proved ownership
+    // off-chain. Bio path is the default for scrapeable platforms.
     let handle;
     if (vpOauthSignature && vpId) {
-      const vp = registerIdentitySchema.resolveVP(vpId, dag);
-      const oauthProof = {
-        claimed_at: claimedAt,
-        handle: vpOauthHandle ?? null,
-        platform,
-        profile_url: profileUrl,
-        tip_id: tipId,
-        verified_at: vpOauthVerifiedAt,
-        vp_id: vpId,
-      };
-      if (!verifyPayload(oauthProof, vpOauthSignature, vp.public_key)) {
-        throw schemaError(403, "VP OAuth signature verification failed", "vp_oauth_signature_invalid");
-      }
       handle = vpOauthHandle ?? null;
       log.info(`VP OAuth verified: ${tipId} -> ${platform} (handle: ${handle}) via VP ${vpId}`);
     } else {
@@ -591,25 +517,13 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
   }
 
   async function unlinkPlatform({ tipId, platform, claimSignature, claimedAt }) {
-    if (!tipId || !platform || !claimSignature || !claimedAt) {
-      throw schemaError(400, "tipId, platform, claimSignature, claimedAt are required", "missing_fields");
-    }
-    if (nowMs() - claimedAt > CLAIM_MAX_AGE_MS) {
-      throw schemaError(400, "Claim has expired (max 15 minutes)", "claim_expired");
-    }
-
-    const identity = dag.getIdentity(tipId);
-    if (!identity) throw schemaError(412, `TIP-ID not found: ${tipId}`, "tip_id_not_found");
-
-    const existingLink = dag.getPlatformLink(tipId, platform);
-    if (!existingLink || existingLink.status !== "active") {
-      throw schemaError(409, `Platform "${platform}" is not actively linked for ${tipId}`, "platform_not_linked");
-    }
-
-    const claimPayload = unlinkPlatformSchema.buildUnlinkClaimPayload({ claimed_at: claimedAt, platform, tip_id: tipId });
-    if (!unlinkPlatformSchema.verifySignature(claimPayload, claimSignature, identity.public_key)) {
-      throw schemaError(403, "User claim signature verification failed", "claim_signature_invalid");
-    }
+    // Schema owns shape, claim age, identity present, active-link state,
+    // and user claim_signature verification.
+    const body = {
+      tip_id: tipId, platform,
+      claim_signature: claimSignature, claimed_at: claimedAt,
+    };
+    unlinkPlatformSchema.validateRequest(body, { dag, urlTipId: tipId });
 
     const unlinkedAt = nowMs();
     const nodeId = config.nodeRegisteredId || config.nodeId;
