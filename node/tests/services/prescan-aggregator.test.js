@@ -235,30 +235,72 @@ describe("aggregate — multi content_type uses weighted average", () => {
 
 // ── Degraded handling ──────────────────────────────────────────────────────
 describe("aggregate — degraded signal handling", () => {
-  test("degraded primary falls back to weighted average over non-degraded", () => {
-    // primary text degraded (0.5), secondaries clean
+  test("FIXED content type + hard-degraded primary (forced 0.5) → no-signal neutral, no secondary substitution", () => {
+    // contentType=text, text=0.5 (forced neutral = hard-degraded), image=0.20.
+    // Refined behavior: we don't substitute the image's verdict for the
+    // missing text signal — the verdict is about the text, not the image.
     const r = aggregate(
       [M("text", 0.5), M("image", 0.20)],
       "text",
     );
+    expect(r.probability).toBe(0.5);
     expect(r.overall_degraded).toBe(true);
-    // text is degraded so half-weight; image clean.
-    // But — wait: this falls back to weightedAverage where weights[text]=1.00, weights[image]=0.30.
-    // Degraded text gets w/2 = 0.50. Clean image = 0.30. So:
-    // (0.5 × 0.50 + 0.20 × 0.30) / (0.50 + 0.30) = (0.25 + 0.06) / 0.80 = 0.3875
-    expect(close(r.probability, 0.3875, 1e-6)).toBe(true);
+    expect(r.overall_hard_degraded).toBe(true);
   });
 
-  test("primary degraded + only image present → use image alone (degraded primary skipped)", () => {
+  test("FIXED content type + hard-degraded primary (error) → no-signal neutral", () => {
+    // contentType=text, text errored, image clean. Same refinement: image
+    // is NOT a stand-in for the failed text scan.
     const r = aggregate(
       [M("text", 0.5, { error: "fail" }), M("image", 0.20)],
       "text",
     );
+    expect(r.probability).toBe(0.5);
     expect(r.overall_degraded).toBe(true);
-    // Degraded text excluded by fallback weighted_average half-weight.
-    // Same math as above, slightly different because error is also explicit.
-    expect(r.probability).toBeGreaterThan(0);
-    expect(r.probability).toBeLessThan(1);
+    expect(r.overall_hard_degraded).toBe(true);
+  });
+
+  test("FIXED content type=image + hard-degraded image + clean text caption → no-signal neutral (caption isn't a stand-in)", () => {
+    // The motivating case: an Instagram-style post where the image fails
+    // to scan but the caption text scans clean. We must NOT report the
+    // caption's verdict as the post's verdict — the work is the image.
+    const r = aggregate(
+      [M("image", 0.5, { error: "model_crash" }), M("text", 0.05)],
+      "image",
+    );
+    expect(r.probability).toBe(0.5);
+    expect(r.overall_degraded).toBe(true);
+    expect(r.overall_hard_degraded).toBe(true);
+  });
+
+  test("multi content_type + hard-degraded modality → still uses weighted_average (multi is intrinsically mixed)", () => {
+    // multi differs from FIXED: blending across modalities IS the design
+    // intent. Hard-degraded entries get half-weight via DEGRADED_MULTIPLIER.
+    const r = aggregate(
+      [M("text", 0.42), M("image", 0.5, { error: "fail" })],
+      "multi",
+    );
+    expect(r.probability).not.toBe(0.5);
+    expect(Number.isFinite(r.probability)).toBe(true);
+    expect(r.overall_degraded).toBe(true);
+    expect(r.overall_hard_degraded).toBe(true);
+  });
+
+  test("FIXED content type + SOFT-degraded primary (disagreement_override) → still uses fallback weighted_average", () => {
+    // Soft-degraded primary means we DO have a real number from the
+    // primary — just low confidence. Substituting/blending with
+    // secondaries is fine (we're not pretending; the primary still
+    // contributes). The hard-only short-circuit doesn't fire.
+    const r = aggregate(
+      [
+        M("text", 0.30, { features_used: ["disagreement_override"] }),
+        M("image", 0.20),
+      ],
+      "text",
+    );
+    expect(r.probability).not.toBe(0.5);
+    expect(r.overall_degraded).toBe(true);
+    expect(r.overall_hard_degraded).toBe(false);
   });
 
   test("all modalities degraded → returns 0.5 + overall_degraded=true", () => {
@@ -288,18 +330,22 @@ describe("aggregate — degraded signal handling", () => {
     expect(r.overall_degraded).toBe(true);
   });
 
-  test("malformed primary (NaN probability) routes through degraded path, not a fake 0 verdict", () => {
+  test("malformed primary (NaN probability) routes to no-signal neutral, not a fake 0 verdict", () => {
     // Without isDegraded's finite-probability check, NaN would propagate
     // through _weightedAverage and get masked to 0 by _clamp01 — a verdict
-    // of "definitely human" that the classifier never produced. The
-    // hardening detects NaN as degraded so the result instead reflects
-    // the secondary's clean signal.
+    // of "definitely human" that the classifier never produced.
+    //
+    // Under the FIXED-primary refinement, a hard-degraded primary doesn't
+    // get its verdict substituted by secondaries — for content_type=text,
+    // a NaN-probability text scan returns the no-signal neutral instead
+    // of borrowing the image's clean number.
     const r = aggregate(
       [M("text", NaN), M("image", 0.85)],
       "text",
     );
     expect(r.overall_degraded).toBe(true);
-    expect(close(r.probability, 0.85, 1e-6)).toBe(true);   // fallback weighted-avg over the one clean modality
+    expect(r.overall_hard_degraded).toBe(true);
+    expect(r.probability).toBe(0.5);
   });
 
   test("all modalities malformed (NaN) → 0.5 neutral, NOT 0", () => {

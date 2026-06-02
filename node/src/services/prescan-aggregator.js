@@ -207,6 +207,23 @@ function aggregate(modalityResults, contentType) {
   const useFallback = primary === null || !primaryResult || isDegraded(primaryResult);
 
   if (useFallback) {
+    // Refinement: for FIXED content types (text/image/audio/video), if
+    // the primary modality was scanned but hard-degraded (error / forced
+    // 0.5 / non-finite), don't substitute secondaries. The verdict is
+    // *about* the primary modality — the caption isn't a stand-in for
+    // the image, and the description isn't a stand-in for the video.
+    // Return the no-signal neutral so downstream knows we have no real
+    // verdict on the work itself. Multi content_type keeps fallback
+    // because it's intrinsically mixed-modality.
+    if (primary !== null && primaryResult && isHardDegraded(primaryResult)) {
+      return {
+        probability: 0.5,
+        overall_degraded: true,
+        overall_hard_degraded: true,
+        modality_results: enriched,
+      };
+    }
+
     const probability = _weightedAverage(collapsed, weights);
     return {
       probability: _clamp01(probability),
