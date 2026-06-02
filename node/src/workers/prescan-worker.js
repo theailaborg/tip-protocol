@@ -5,17 +5,19 @@
  * results, builds + signs a PRESCAN_COMPLETED tx, and submits it through
  * consensus.
  *
- * Retry policy (per ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling +
- * the user's choice on what to do after retries exhaust):
+ * Retry policy (per ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling):
  *
- *   1. Classifier returns clean signal (no error, prob ≠ exact 0.5,
- *      no disagreement_override) → emit PRESCAN_COMPLETED with verdict.
- *   2. Classifier returns degraded signal AND job.retries < max
- *      → release back to queue with backoff.
- *   3. Classifier returns degraded signal AND retries exhausted
- *      → fail-open silently: emit PRESCAN_COMPLETED with failed=true,
- *      flagged=false (content moves to REGISTERED, no flag).
- *   4. Hard error (network/5xx/timeout) — same retry-then-fail-open path.
+ *   1. Clean signal → emit PRESCAN_COMPLETED with verdict.
+ *   2. Soft-degraded (e.g. disagreement_override — classifier returned a
+ *      real probability but self-flagged as low-confidence) → emit
+ *      PRESCAN_COMPLETED with overall_degraded=true and the real
+ *      probability. No retry: retrying with the same input yields the
+ *      same low-confidence answer.
+ *   3. Hard-degraded (error / non-finite / forced 0.5 neutral) AND
+ *      retries < max → release back to queue with backoff.
+ *   4. Hard-degraded AND retries exhausted → fail-open with
+ *      overall_degraded=true and failed=true (probability=0 is a
+ *      placeholder; downstream sees the degraded flag and knows).
  *
  * Fan-out: classifier accepts ONE file per call. For posts with N media
  * items, the worker makes N calls (first one includes text, others
@@ -223,20 +225,29 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // off the enqueued payload (resolved at register time).
     const agg = aggregate(modalityResults, contentType);
 
-    // Degraded path: retry if budget remains, else fail-open silently.
-    if (agg.overall_degraded) {
+    // Hard-degraded path: at least one modality produced no usable signal
+    // (error / non-finite / forced 0.5). Retry if budget remains — these
+    // are transient and a re-run may yield a real probability.
+    if (agg.overall_hard_degraded) {
       if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
-        jobs.releaseForRetry(job.job_id, "degraded_signal");
+        jobs.releaseForRetry(job.job_id, "hard_degraded_signal");
         return;
       }
-      // Exhausted — fail-open. Worker chose silent fail-open per design
-      // (Option A): content moves to REGISTERED, no flag, no degraded
-      // marker on chain.
-      _emitFailOpen(job, contentType, "degraded_signal_after_retries");
+      // Exhausted — fail-open. Preserve whatever the aggregator produced
+      // (a non-hard modality may have given a usable number); only fall
+      // back to the no-signal neutral when the aggregator itself has no
+      // probability to share.
+      _emitFailOpen(job, contentType, "hard_degraded_after_retries", {
+        probability: agg.probability,
+        modalityResults: agg.modality_results,
+      });
       return;
     }
 
-    // Clean verdict path.
+    // Soft-degraded OR clean: ship the probability through. Soft cases
+    // (e.g. disagreement_override) carry a real classifier number that
+    // would just repeat on retry — record it with overall_degraded=true
+    // so downstream consumers know it's low-confidence.
     const tier = prescanCompletedSchema.tierFromProbability(agg.probability);
     const flagged = tier === "high" || tier === "critical";
 
@@ -245,7 +256,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       probability: agg.probability,
       tier,
       flagged,
-      overall_degraded: false,
+      overall_degraded: agg.overall_degraded,
       content_type: contentType,
       content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
       modality_results: agg.modality_results,
@@ -290,16 +301,28 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     }
   }
 
-  function _emitFailOpen(job, contentType, reason) {
+  function _emitFailOpen(job, contentType, reason, opts = {}) {
+    // Preserve the classifier's probability when we have one — fail-open
+    // should not overwrite a real number from a modality that actually
+    // worked. Fall back to 0.5 (the canonical "no signal" neutral, matching
+    // the aggregator's _clamp01 fallback and the all-hard-degraded
+    // short-circuit) when the classifier never produced a usable value
+    // (network error, corrupt payload, worker crash). probability=0 is
+    // never used here — that would imply "definitely human," a verdict
+    // the classifier never produced.
+    const probability = Number.isFinite(opts.probability) ? opts.probability : 0.5;
+    const modalityResults = Array.isArray(opts.modalityResults) ? opts.modalityResults : [];
+    const tier = prescanCompletedSchema.tierFromProbability(probability);
+    const flagged = tier === "high" || tier === "critical";
     const data = {
       ctid: job.ctid,
-      probability: 0,
-      tier: "low",
-      flagged: false,
-      overall_degraded: false,        // fail-open hides the degradation from downstream
+      probability,
+      tier,
+      flagged,
+      overall_degraded: true,
       content_type: contentType || "multi",
       content_type_meta: { hint_provided: null, resolution: "fail_open", reason: null },
-      modality_results: [],
+      modality_results: modalityResults,
       classifier_version: "unknown",
       classifier_providers_used: "fail_open",
       completed_at: now(),

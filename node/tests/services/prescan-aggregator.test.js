@@ -11,6 +11,7 @@ PC.init(getGenesisPayload().protocol_constants);
 const {
   aggregate,
   isDegraded,
+  isHardDegraded,
   collapseSameModality,
 } = require(path.resolve(__dirname, "../../src/services/prescan-aggregator"));
 
@@ -57,6 +58,29 @@ describe("isDegraded", () => {
   });
   test("Infinity probability → degraded (defensive)", () => {
     expect(isDegraded(M("text", Infinity))).toBe(true);
+  });
+});
+
+// ── isHardDegraded ─────────────────────────────────────────────────────────
+describe("isHardDegraded", () => {
+  test("explicit error → hard-degraded", () => {
+    expect(isHardDegraded(M("text", 0.3, { error: "fail" }))).toBe(true);
+  });
+  test("forced 0.5 neutral → hard-degraded", () => {
+    expect(isHardDegraded(M("text", 0.5))).toBe(true);
+  });
+  test("non-finite probability → hard-degraded", () => {
+    expect(isHardDegraded(M("text", NaN))).toBe(true);
+    expect(isHardDegraded(M("text", Infinity))).toBe(true);
+    expect(isHardDegraded({ modality: "text" })).toBe(true);
+  });
+  test("disagreement_override is soft-degraded, NOT hard-degraded", () => {
+    const m = M("text", 0.21, { features_used: ["provider_ensemble", "disagreement_override"] });
+    expect(isHardDegraded(m)).toBe(false);
+    expect(isDegraded(m)).toBe(true);
+  });
+  test("clean result → not hard-degraded", () => {
+    expect(isHardDegraded(M("text", 0.42))).toBe(false);
   });
 });
 
@@ -288,6 +312,69 @@ describe("aggregate — degraded signal handling", () => {
     );
     expect(r.overall_degraded).toBe(true);
     expect(r.probability).toBe(0.5);
+  });
+
+  test("soft-only degraded (disagreement_override) ships through with real probability + overall_degraded=true", () => {
+    // Live reproducer: classifier returns prob=0.2113 with
+    // disagreement_override flagged because the statistical provider
+    // skipped (text too short). The aggregator must NOT short-circuit
+    // to 0.5 — the classifier's honest low-confidence answer is the
+    // best we'll ever get for this input.
+    const r = aggregate(
+      [M("text", 0.2113, { features_used: ["provider_ensemble", "disagreement_override"] })],
+      "text",
+    );
+    expect(close(r.probability, 0.2113, 1e-6)).toBe(true);
+    expect(r.overall_degraded).toBe(true);
+    expect(r.overall_hard_degraded).toBe(false);
+  });
+
+  test("overall_hard_degraded splits cleanly from overall_degraded", () => {
+    // Soft only → degraded=true, hard_degraded=false
+    const soft = aggregate(
+      [M("text", 0.21, { features_used: ["disagreement_override"] })],
+      "text",
+    );
+    expect(soft.overall_degraded).toBe(true);
+    expect(soft.overall_hard_degraded).toBe(false);
+
+    // Mixed (one hard + one clean) → both true
+    const mixed = aggregate(
+      [M("text", 0.5), M("image", 0.30)],
+      "text",
+    );
+    expect(mixed.overall_degraded).toBe(true);
+    expect(mixed.overall_hard_degraded).toBe(true);
+
+    // All hard → both true, short-circuit
+    const allHard = aggregate(
+      [M("text", 0.5), M("image", 0.5, { error: "fail" })],
+      "text",
+    );
+    expect(allHard.overall_degraded).toBe(true);
+    expect(allHard.overall_hard_degraded).toBe(true);
+    expect(allHard.probability).toBe(0.5);
+
+    // Clean → both false
+    const clean = aggregate([M("text", 0.42)], "text");
+    expect(clean.overall_degraded).toBe(false);
+    expect(clean.overall_hard_degraded).toBe(false);
+  });
+
+  test("enriched modality entries carry hard_degraded flag", () => {
+    const r = aggregate(
+      [
+        M("text", 0.21, { features_used: ["disagreement_override"] }),
+        M("image", 0.5, { error: "fail" }),
+      ],
+      "multi",
+    );
+    const text = r.modality_results.find(m => m.modality === "text");
+    const image = r.modality_results.find(m => m.modality === "image");
+    expect(text.degraded).toBe(true);
+    expect(text.hard_degraded).toBe(false);
+    expect(image.degraded).toBe(true);
+    expect(image.hard_degraded).toBe(true);
   });
 });
 

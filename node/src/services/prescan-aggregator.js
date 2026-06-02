@@ -46,21 +46,42 @@ const { MODALITY_WEIGHTS } = require("../../../shared/protocol-constants");
 const { primaryModality } = require("./content-type");
 
 /**
- * A modality result is "degraded" when the classifier couldn't decide
- * reliably. Four independent tells, any of which sets the flag:
+ * Hard-degraded: the classifier produced no usable signal for this
+ * modality. Retrying with the same input may yield a different result
+ * (transient error, network blip, model warm-up):
  *
  *   - explicit per-modality error
  *   - non-finite probability (NaN / undefined / Infinity — malformed
  *     classifier response; never trust the value, treat as no-signal)
  *   - exact probability 0.5 (the classifier's "no signal" neutral)
- *   - features_used includes "disagreement_override" (multiple providers
- *     disagreed, classifier picked a neutral default)
+ *
+ * Worker treats hard-degraded as retry-eligible. If retries exhaust,
+ * a fail-open is emitted with overall_degraded=true so downstream
+ * sees the placeholder for what it is.
  */
-function isDegraded(m) {
+function isHardDegraded(m) {
   if (!m || typeof m !== "object") return true;
   if (m.error) return true;
   if (!Number.isFinite(m.probability)) return true;
   if (m.probability === 0.5) return true;
+  return false;
+}
+
+/**
+ * Degraded: hard-degraded OR soft-degraded.
+ *
+ * Soft-degraded means the classifier returned an honest low-confidence
+ * answer (e.g., `disagreement_override` — providers disagreed or only one
+ * fired). The probability is real and worth recording, but downstream
+ * consumers should know it's low-confidence. Retrying won't help — same
+ * input deterministically yields the same response.
+ *
+ * Aggregator weights degraded modalities at half-weight in the fallback
+ * path (DEGRADED_MULTIPLIER); the worker uses isHardDegraded to decide
+ * retries and uses overall_degraded to decide what to record on chain.
+ */
+function isDegraded(m) {
+  if (isHardDegraded(m)) return true;
   if (Array.isArray(m.features_used) && m.features_used.includes("disagreement_override")) return true;
   return false;
 }
@@ -151,7 +172,7 @@ function aggregate(modalityResults, contentType) {
   const weights = MODALITY_WEIGHTS[contentType] || MODALITY_WEIGHTS.multi;
   const primary = primaryModality(contentType);
 
-  // Enrich each modality with applied_weight + degraded flag for audit.
+  // Enrich each modality with applied_weight + degraded flags for audit.
   const enriched = collapsed.map(m => ({
     modality: m.modality,
     probability: m.probability,
@@ -160,20 +181,28 @@ function aggregate(modalityResults, contentType) {
     provider: m.provider || null,
     error: m.error || null,
     degraded: isDegraded(m),
+    hard_degraded: isHardDegraded(m),
   }));
 
-  // All-degraded short-circuit: no real signal anywhere → neutral 0.5,
-  // worker's retry loop will pick this up and re-run later.
-  if (enriched.length === 0 || enriched.every(m => m.degraded)) {
+  const overallDegraded = enriched.some(m => m.degraded);
+  const overallHardDegraded = enriched.some(m => m.hard_degraded);
+
+  // All-hard-degraded short-circuit: no usable signal anywhere → neutral
+  // 0.5, worker's retry loop picks this up. Soft-only degradation does
+  // NOT short-circuit — the classifier's honest low-confidence answer
+  // (e.g., disagreement_override) is preserved.
+  if (enriched.length === 0 || collapsed.every(m => isHardDegraded(m))) {
     return {
       probability: 0.5,
       overall_degraded: true,
+      overall_hard_degraded: true,
       modality_results: enriched,
     };
   }
 
   // No primary (contentType="multi" or primary missing/degraded) → fall
-  // back to weighted average over present non-degraded modalities.
+  // back to weighted average over present modalities (degraded entries
+  // contribute at half-weight via DEGRADED_MULTIPLIER).
   const primaryResult = primary ? collapsed.find(m => m.modality === primary) : null;
   const useFallback = primary === null || !primaryResult || isDegraded(primaryResult);
 
@@ -181,7 +210,8 @@ function aggregate(modalityResults, contentType) {
     const probability = _weightedAverage(collapsed, weights);
     return {
       probability: _clamp01(probability),
-      overall_degraded: enriched.some(m => m.degraded),
+      overall_degraded: overallDegraded,
+      overall_hard_degraded: overallHardDegraded,
       modality_results: enriched,
     };
   }
@@ -192,7 +222,8 @@ function aggregate(modalityResults, contentType) {
 
   return {
     probability: _clamp01(probability),
-    overall_degraded: enriched.some(m => m.degraded),
+    overall_degraded: overallDegraded,
+    overall_hard_degraded: overallHardDegraded,
     modality_results: enriched,
   };
 }
@@ -212,5 +243,6 @@ function _clamp01(p) {
 module.exports = {
   aggregate,
   isDegraded,
+  isHardDegraded,
   collapseSameModality,
 };

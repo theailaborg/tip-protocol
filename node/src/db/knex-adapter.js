@@ -1721,6 +1721,7 @@ class KnexAdapter {
   // round-end and needs O(1) read access); SQL-side equivalents
   // would be redundant.
   getContentsNeedingReview(nowMs) { return this.mirror.getContentsNeedingReview(nowMs); }
+  getContentsStuckInPrescan(failOpenCutoffMs) { return this.mirror.getContentsStuckInPrescan(failOpenCutoffMs); }
   getReviewsNeedingAutoEscalation(nowMs) { return this.mirror.getReviewsNeedingAutoEscalation(nowMs); }
   getReviewsNeedingAutoRecuse(nowMs) { return this.mirror.getReviewsNeedingAutoRecuse(nowMs); }
 

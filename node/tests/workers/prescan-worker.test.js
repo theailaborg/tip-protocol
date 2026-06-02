@@ -225,7 +225,7 @@ describe("tick — happy path", () => {
 
 // ── tick — degraded path ──────────────────────────────────────────────────
 describe("tick — degraded signal handling", () => {
-  test("degraded response → release for retry (under retry budget)", async () => {
+  test("hard-degraded response (forced 0.5) → release for retry (under retry budget)", async () => {
     const clock = makeClock();
     const { jobs, submitter, worker } = await setup({
       now: clock.now,
@@ -240,10 +240,10 @@ describe("tick — degraded signal handling", () => {
     const job = jobs.getByCtid(CTID);
     expect(job.status).toBe("queued");
     expect(job.retries).toBe(1);
-    expect(job.last_error).toBe("degraded_signal");
+    expect(job.last_error).toBe("hard_degraded_signal");
   });
 
-  test("degraded + retries exhausted → silent fail-open", async () => {
+  test("hard-degraded + retries exhausted → fail-open with overall_degraded=true", async () => {
     const clock = makeClock();
     const { jobs, submitter, worker } = await setup({
       now: clock.now,
@@ -253,21 +253,94 @@ describe("tick — degraded signal handling", () => {
       ctid: CTID,
       payload: { text: "x", origin_code: "OH", content_type: "text" },
     });
-    // Burn through the retry budget.
     for (let i = 0; i <= PC.PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED; i++) {
-      // Advance past claim timeout so next tick can re-claim
       clock.advance(PC.PRESCAN_WORKER.CLAIM_TIMEOUT_MS + 1);
       await worker.tick();
     }
-    // Final tick should fail-open (after retries exhausted).
     expect(submitter.txs).toHaveLength(1);
     const tx = submitter.txs[0];
     expect(tx.data.failed).toBe(true);
+    // probability=0.5 is the canonical "no signal" neutral; 0 would have
+    // implied "definitely human." overall_degraded=true surfaces the
+    // placeholder so downstream doesn't treat it as a real verdict.
+    expect(tx.data.probability).toBe(0.5);
+    expect(tx.data.overall_degraded).toBe(true);
+    // Tier + flagged are derived via tierFromProbability(0.5) so the
+    // schema's tier-vs-probability consistency check passes regardless
+    // of threshold tuning. We don't pin the exact tier here.
+    expect(["low", "elevated"]).toContain(tx.data.tier);
     expect(tx.data.flagged).toBe(false);
-    expect(tx.data.probability).toBe(0);
-    expect(tx.data.tier).toBe("low");
-    expect(tx.data.failure_reason).toMatch(/degraded_signal_after_retries/);
+    expect(tx.data.failure_reason).toMatch(/hard_degraded_after_retries/);
     expect(jobs.getByCtid(CTID).status).toBe("failed");
+  });
+
+  test("hard-degraded fail-open preserves classifier's probability when a non-hard modality contributed", async () => {
+    // Mixed result: clean text (0.42) + hard-degraded image (error). The
+    // aggregator's overall_hard_degraded=true (image is hard) triggers the
+    // retry path, but the aggregator's probability comes from the working
+    // text modality. After retries exhaust, fail-open must NOT overwrite
+    // that real number with 0.5 — the classifier did give us something
+    // usable. 0.5 is reserved for the case where the classifier produced
+    // no usable signal at all.
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({
+        modalities: [
+          { modality: "text", probability: 0.42 },
+          { modality: "image", probability: 0.5, error: "no_signals_produced_a_result" },
+        ],
+      }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "hi", origin_code: "OH", content_type: "multi" },
+    });
+    for (let i = 0; i <= PC.PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED; i++) {
+      clock.advance(PC.PRESCAN_WORKER.CLAIM_TIMEOUT_MS + 1);
+      await worker.tick();
+    }
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(true);
+    expect(tx.data.overall_degraded).toBe(true);
+    // The clean text modality's contribution survives the fail-open; we
+    // do not assert the exact number (it depends on weights) but it must
+    // not be the no-signal neutral 0.5 — that would be the failure value.
+    expect(tx.data.probability).not.toBe(0.5);
+    expect(Number.isFinite(tx.data.probability)).toBe(true);
+  });
+
+  test("soft-degraded (disagreement_override) → ships real probability through with overall_degraded=true, no retry", async () => {
+    // Live reproducer: classifier returned prob=0.2113 with
+    // disagreement_override flagged (statistical provider skipped because
+    // text was too short to score). Same input → same response on every
+    // retry, so the worker must record the classifier's honest
+    // low-confidence answer instead of burning the retry budget.
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({
+        modalities: [{
+          modality: "text",
+          probability: 0.2113,
+          features_used: ["provider_ensemble", "disagreement_override"],
+        }],
+      }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "short", origin_code: "OH", content_type: "text" },
+    });
+    await worker.tick();
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(false);
+    expect(tx.data.flagged).toBe(false);
+    expect(tx.data.probability).toBeCloseTo(0.2113, 6);
+    expect(tx.data.tier).toBe("low");
+    expect(tx.data.overall_degraded).toBe(true);
+    expect(jobs.getByCtid(CTID).status).toBe("done");
   });
 });
 
