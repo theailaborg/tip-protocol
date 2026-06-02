@@ -67,8 +67,14 @@ describe("prescan-completion-trigger — fail-open", () => {
     expect(tx.data.ctid).toBe(CTID_STUCK);
     expect(tx.data.failed).toBe(true);
     expect(tx.data.flagged).toBe(false);
-    expect(tx.data.probability).toBe(0);
-    expect(tx.data.tier).toBe("low");
+    // Trigger's synthetic fail-open matches the worker's _emitFailOpen
+    // convention: probability=0.5 (no-signal neutral) + overall_degraded=
+    // true so downstream sees this as a placeholder, not a real verdict.
+    expect(tx.data.probability).toBe(0.5);
+    expect(tx.data.overall_degraded).toBe(true);
+    // Tier is derived via tierFromProbability(0.5); we don't pin the
+    // exact tier to keep tier-threshold tunable.
+    expect(["low", "elevated"]).toContain(tx.data.tier);
     expect(tx.data.classifier_providers_used).toBe("fail_open_failover");
     expect(tx.data.failure_reason).toMatch(/fail_open_deadline/);
   });

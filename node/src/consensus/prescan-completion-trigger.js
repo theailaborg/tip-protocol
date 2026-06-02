@@ -34,6 +34,7 @@ const { nowMs } = require("../../../shared/time");
 const { TX_TYPES } = require("../../../shared/constants");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
+const prescanCompletedSchema = require("../schemas/prescan-completed");
 
 const log = getLogger("tip.prescan-completion-trigger");
 
@@ -102,16 +103,25 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
 
   function _buildFailOpenTx({ ctid, contentType }) {
     const completedAt = nowMs();
+    // Match the worker's _emitFailOpen convention: probability=0.5 is the
+    // canonical "no signal" neutral (matches the aggregator's _clamp01
+    // fallback and the all-hard-degraded short-circuit). overall_degraded=
+    // true surfaces the placeholder so downstream (UI, scoring, dispute
+    // evidence) can downweight or annotate. Tier is derived from
+    // probability so the schema's tier_probability_mismatch check passes.
+    const probability = 0.5;
+    const tier = prescanCompletedSchema.tierFromProbability(probability);
+    const flagged = tier === "high" || tier === "critical";
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
       timestamp: completedAt,
       prev: dag.getRecentPrev(),
       data: {
         ctid,
-        probability: 0,
-        tier: "low",
-        flagged: false,
-        overall_degraded: false,           // silent fail-open: don't surface as degraded
+        probability,
+        tier,
+        flagged,
+        overall_degraded: true,
         content_type: contentType || "multi",
         content_type_meta: {
           hint_provided: null,
