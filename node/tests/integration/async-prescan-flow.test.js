@@ -326,8 +326,13 @@ describe("async-prescan e2e — fail-open via completion trigger", () => {
     fx.commitDrain(clock.now());
 
     const afterFailOpen = fx.contentService.getPrescanStatus(ctid);
+    // Failover trigger uses the worker's _emitFailOpen convention:
+    // probability=0.5 (no-signal neutral) → tier=low (since 0.5 < 0.7
+    // elevated threshold) → flagged=false. overall_degraded=true marks
+    // the placeholder so downstream consumers don't treat it as a real
+    // verdict.
     expect(afterFailOpen.prescan_tier).toBe("low");
-    expect(afterFailOpen.prescan_overall_degraded).toBe(false);
+    expect(afterFailOpen.prescan_overall_degraded).toBe(true);
 
     // Now the worker — long-delayed — finally runs and submits its own
     // PRESCAN_COMPLETED (with the HIGH verdict). Commit-handler must
