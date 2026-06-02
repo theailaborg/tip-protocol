@@ -750,6 +750,27 @@ class KnexAdapter {
       this.mirror._scores.set(row.tip_id, { score: row.score, offense_count: row.offense_count, last_updated: row.last_updated });
     }
 
+    // Prescan jobs — DB column is `tip_ctid` (Postgres reserved-word
+    // workaround); the mirror expects `ctid`. Without this hydration,
+    // any claimed/queued jobs that survived a restart become invisible
+    // to claimPrescanJob() and the queue's stuck-claim recovery never
+    // fires — orphans sit forever.
+    const prescanJobRows = await this.knex("prescan_jobs").select("*");
+    for (const row of prescanJobRows) {
+      this.mirror._prescanJobs.set(row.job_id, {
+        job_id: row.job_id,
+        ctid: row.tip_ctid,
+        payload: row.payload,
+        status: row.status,
+        claimed_at: row.claimed_at,
+        claimed_by: row.claimed_by,
+        retries: row.retries,
+        last_error: row.last_error,
+        created_at: row.created_at,
+        completed_at: row.completed_at,
+      });
+    }
+
     // Dedup registry
     const dedupRows = await this.knex("dedup_registry").select("*");
     if (!this.mirror._dedupCreated) this.mirror._dedupCreated = new Map();
