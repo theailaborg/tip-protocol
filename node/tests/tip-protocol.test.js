@@ -121,10 +121,17 @@ function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCod
   };
 }
 
-// Skip real ZK verification in tests — circuit artifacts not present in test env
-process.env.ZK_SKIP_VERIFY = "true";
+// Stub Groth16 verification at the module level so tests can exercise the
+// register-identity / key-recovery flows without paying real-prover cost
+// (~1-3s per identity). Production code remains free of dev-bypass flags;
+// the substitution lives entirely in this test file.
+jest.mock("../../shared/zk", () => {
+  const actual = jest.requireActual("../../shared/zk");
+  return { ...actual, verifyDedupProof: async () => true };
+});
 
-// Mock Groth16 proof for tests (accepted when ZK_SKIP_VERIFY=true)
+// Shape-only Groth16 proof. Schema validators check structure; the verifier
+// is mocked above so the values inside don't have to be a real proof.
 const MOCK_ZK_PROOF = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
 const MOCK_DEDUP_HASH = "12345678901234567890123456789012345678901234567890123456789012345";
 
