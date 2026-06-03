@@ -104,8 +104,14 @@ const PRESCAN_ELIGIBLE_ORIGINS = new Set([ORIGIN.OH, ORIGIN.AA]);
  *   "high" | "HIGH"           — always returns HIGH
  *   "critical" | "CRITICAL"   — always returns CRITICAL
  *   "random"                  — coin-flip HIGH or CRITICAL per call
+ *
+ * Consumers:
+ *   - Synchronous preScanContent() — used in dispute-service inline checks
+ *   - Async prescan worker — short-circuits classifier when forced; lets
+ *     dev test the review/flagged content UI without needing the classifier
+ *     to actually flag something
  */
-function _devForcedPrescanTier(originCode) {
+function devForcedPrescanTier(originCode) {
   if (process.env.NODE_ENV === "production") return null;
   if (!PRESCAN_ELIGIBLE_ORIGINS.has(originCode)) return null;
   const raw = process.env.TIP_DEV_FORCE_PRESCAN_TIER;
@@ -118,6 +124,9 @@ function _devForcedPrescanTier(originCode) {
   }
   return null;
 }
+
+// Internal alias kept for the sync preScanContent path below — same impl.
+const _devForcedPrescanTier = devForcedPrescanTier;
 
 /**
  * AI pre-scan for content origin mismatch detection.
@@ -360,4 +369,5 @@ module.exports = {
   getTierThresholds,
   adjustTier,
   buildPrescanDescriptor,
+  devForcedPrescanTier,
 };

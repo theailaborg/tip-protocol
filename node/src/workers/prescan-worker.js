@@ -38,7 +38,7 @@ const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { aggregate } = require("../services/prescan-aggregator");
 const prescanCompletedSchema = require("../schemas/prescan-completed");
-const { nodeSignedAuto } = require("../services/helpers");
+const { nodeSignedAuto, devForcedPrescanTier, preScanContent } = require("../services/helpers");
 const { isSkipped, isHeuristicOnly } = require("../services/classifier-client");
 
 const POLL_IDLE_MS = 500;        // how long to sleep when queue is empty
@@ -178,6 +178,34 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       // the chain inconsistent with the queue until the cross-node
       // trigger catches it at FAIL_OPEN_AFTER_MS.
       _safeEmitFailOpen(job, "payload_not_parseable", null);
+      return;
+    }
+
+    // Dev-only short-circuit. When TIP_DEV_FORCE_PRESCAN_TIER is set in a
+    // non-production environment, bypass the external classifier entirely
+    // and use the local heuristic preScanContent (which respects the env
+    // and returns a forced HIGH/CRITICAL verdict). Lets dev iterate on the
+    // prescan-review UI without depending on classifier flagging behavior.
+    // Production paths are physically gated by NODE_ENV inside the helper.
+    if (devForcedPrescanTier(payload.origin_code)) {
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const ps = preScanContent(text, payload.origin_code, {}, payload.content_type);
+      _submitPrescanCompleted({
+        ctid: job.ctid,
+        probability: ps.probability,
+        tier: ps.tier,
+        flagged: ps.flagged,
+        overall_degraded: false,
+        content_type: payload.content_type,
+        content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
+        modality_results: [],
+        classifier_version: "dev_forced_tier",
+        classifier_providers_used: "dev_forced_tier",
+        completed_at: now(),
+        failed: false,
+        failure_reason: null,
+      });
+      jobs.markDone(job.job_id);
       return;
     }
 

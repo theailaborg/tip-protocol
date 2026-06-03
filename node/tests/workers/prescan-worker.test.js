@@ -392,6 +392,71 @@ describe("tick — hard error handling", () => {
 });
 
 // ── tick — unhandled-exception path emits fail-open ───────────────────────
+// ── tick — TIP_DEV_FORCE_PRESCAN_TIER short-circuit ──────────────────────
+describe("tick — dev-forced tier short-circuits classifier", () => {
+  // Dev-only knob: skip the classifier entirely and produce a forced verdict
+  // via preScanContent. Used to iterate on prescan-review UI without depending
+  // on classifier flagging behavior. NODE_ENV gate is inside the helper.
+
+  const originalEnvForce = process.env.TIP_DEV_FORCE_PRESCAN_TIER;
+  const originalNodeEnv = process.env.NODE_ENV;
+  beforeEach(() => { process.env.NODE_ENV = "development"; });
+  afterEach(() => {
+    if (originalEnvForce === undefined) delete process.env.TIP_DEV_FORCE_PRESCAN_TIER;
+    else process.env.TIP_DEV_FORCE_PRESCAN_TIER = originalEnvForce;
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  test("TIP_DEV_FORCE_PRESCAN_TIER=high on OH → emits tier=high without calling classifier", async () => {
+    process.env.TIP_DEV_FORCE_PRESCAN_TIER = "high";
+    const clock = makeClock();
+    let classifierCallCount = 0;
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => { classifierCallCount++; return R({ modalities: [{ modality: "text", probability: 0.1 }] }); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "doesn't matter", origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(classifierCallCount).toBe(0);             // classifier was NOT called
+    expect(submitter.txs).toHaveLength(1);
+    expect(submitter.txs[0].data.tier).toBe("high");
+    expect(submitter.txs[0].data.flagged).toBe(true);
+    expect(submitter.txs[0].data.classifier_providers_used).toBe("dev_forced_tier");
+    expect(submitter.txs[0].data.failed).toBe(false);
+    expect(jobs.getByCtid(CTID).status).toBe("done");
+  });
+
+  test("TIP_DEV_FORCE_PRESCAN_TIER=high on AG (non-eligible) → falls through to normal classifier path", async () => {
+    process.env.TIP_DEV_FORCE_PRESCAN_TIER = "high";
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ skipped: true }),
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "self-disclosed", origin_code: "AG", content_type: "text" } });
+    await worker.tick();
+    // Dev-force only applies to OH/AA; AG takes the locally-skipped path.
+    expect(submitter.txs).toHaveLength(1);
+    expect(submitter.txs[0].data.tier).not.toBe("high");
+    expect(submitter.txs[0].data.classifier_providers_used).toMatch(/skipped/);
+  });
+
+  test("TIP_DEV_FORCE_PRESCAN_TIER unset → normal classifier path runs", async () => {
+    delete process.env.TIP_DEV_FORCE_PRESCAN_TIER;
+    const clock = makeClock();
+    let classifierCallCount = 0;
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => { classifierCallCount++; return R({ modalities: [{ modality: "text", probability: 0.1 }] }); },
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "long enough", origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(classifierCallCount).toBe(1);             // classifier WAS called
+    expect(submitter.txs[0].data.classifier_providers_used).not.toBe("dev_forced_tier");
+  });
+});
+
 describe("tick — unexpected errors → fail-open (not just markFailed)", () => {
   // The worker's catch handlers previously called jobs.markFailed without
   // submitting any tx, leaving the chain in PENDING_PRESCAN until the
