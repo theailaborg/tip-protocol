@@ -69,6 +69,10 @@ function _seedContent(dag, opts) {
     prescan_flagged: opts.flagged === undefined ? false : opts.flagged,
     prescan_probability: opts.probability || 0,
     prescan_tier: opts.tier || PRESCAN_TIERS.LOW,
+    // Async-prescan: tests pre-date the new flow; simulate a completed
+    // verdict at the same time the content was registered.
+    prescan_status: "completed",
+    prescan_completed_at: REGISTERED_AT,
     override: opts.override === undefined ? false : opts.override,
     registered_at: REGISTERED_AT,
     registered_urls: [],
@@ -217,11 +221,12 @@ describe("canUpdateOrigin — grace window dispatch", () => {
         ctid: CTID, tier: PRESCAN_TIERS.HIGH,
         probability: 0.92, flagged: true, override: true,
       });
-      // Override registered_at to "now" so the 48h grace-window branch
-      // wouldn't reject by itself — the only failure path under test
-      // here is the open-review gate.
+      // Override registered_at + prescan_completed_at to "now" so the
+      // 48h grace-window branch wouldn't reject by itself — the only
+      // failure path under test here is the open-review gate.
       const seeded = dag.getContent(CTID);
-      dag.saveContent({ ...seeded, registered_at: nowMs() });
+      const t = nowMs();
+      dag.saveContent({ ...seeded, registered_at: t, prescan_completed_at: t });
       dag.savePrescanReview({
         review_id: "rv_open", ctid: CTID, creator_tip_id: AUTHOR_ID,
         assigned_reviewer: "tip://id/US-rrrrrrrrrrrrrrrr",

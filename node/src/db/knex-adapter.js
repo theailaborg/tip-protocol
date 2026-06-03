@@ -399,6 +399,12 @@ class KnexAdapter {
       t.integer("prescan_flagged").notNullable().defaultTo(0);
       t.float("prescan_probability").notNullable().defaultTo(0);          // raw classifier output
       t.string("prescan_tier", 16).notNullable().defaultTo("low");        // low|elevated|high|critical
+      t.string("prescan_status", 16).notNullable().defaultTo("completed"); // 'pending' | 'completed'
+      t.bigInteger("prescan_completed_at").nullable();                    // ms; null for legacy rows
+      _id(t, "prescan_assigned_node_id").nullable();                      // node_reg_id of the API node that received the registration
+      t.string("prescan_content_type", 16).nullable();                    // text|image|audio|video|multi; null until PRESCAN_COMPLETED
+      t.integer("prescan_overall_degraded").notNullable().defaultTo(0);   // 1 if any modality reported error / disagreement / 0.5 neutral
+      t.string("content_type_hint", 16).nullable();                       // publisher's signed declaration at register time
       t.integer("override").notNullable().defaultTo(0);                   // creator confirmed OH despite HIGH/CRITICAL warning
       t.bigInteger("registered_at").notNullable();
       t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
@@ -407,6 +413,7 @@ class KnexAdapter {
       t.index("signer_tip_id", "idx_content_signer");
       t.index("origin_code", "idx_content_origin");
       t.index("status", "idx_content_status");
+      t.index("prescan_status", "idx_content_prescan_status");
     });
 
     await ensure("scores", t => {
@@ -666,6 +673,26 @@ class KnexAdapter {
       // Off-chain store by design; no chain-time exists for this row.
       t.bigInteger("local_inserted_at").notNullable();
     });
+
+    // Prescan jobs — node-local async classifier queue. NOT consensus
+    // state. Worker on the API node polls this table; result lands on
+    // chain as a PRESCAN_COMPLETED tx that every node applies.
+    await ensure("prescan_jobs", t => {
+      t.string("job_id", 128).primary();
+      // Column named `tip_ctid` (not `ctid`) because `ctid` is a Postgres
+      // reserved system column (physical tuple identifier). Same pattern
+      // as the `content` table.
+      t.string("tip_ctid", 512).notNullable().unique();
+      t.binary("payload").notNullable();              // canonical JSON of classifier input
+      t.string("status", 16).notNullable();           // 'queued' | 'claimed' | 'done' | 'failed'
+      t.bigInteger("claimed_at").nullable();          // ms; null while queued
+      t.string("claimed_by", 128).nullable();         // worker pid / node_reg_id
+      t.integer("retries").notNullable().defaultTo(0);
+      t.text("last_error").nullable();
+      t.bigInteger("created_at").notNullable();
+      t.bigInteger("completed_at").nullable();
+      t.index(["status", "created_at"], "idx_prescan_jobs_status");
+    });
   }
 
   async _hydrate() {
@@ -707,6 +734,7 @@ class KnexAdapter {
         ...row,
         ctid: row.tip_ctid,
         prescan_flagged: !!row.prescan_flagged,
+        prescan_overall_degraded: !!row.prescan_overall_degraded,
         override: !!row.override,
         registered_urls: Array.isArray(urls) ? urls : [],
         authors: Array.isArray(authors) ? authors : [],
@@ -720,6 +748,27 @@ class KnexAdapter {
     const scoreRows = await this.knex("scores").select("*");
     for (const row of scoreRows) {
       this.mirror._scores.set(row.tip_id, { score: row.score, offense_count: row.offense_count, last_updated: row.last_updated });
+    }
+
+    // Prescan jobs — DB column is `tip_ctid` (Postgres reserved-word
+    // workaround); the mirror expects `ctid`. Without this hydration,
+    // any claimed/queued jobs that survived a restart become invisible
+    // to claimPrescanJob() and the queue's stuck-claim recovery never
+    // fires — orphans sit forever.
+    const prescanJobRows = await this.knex("prescan_jobs").select("*");
+    for (const row of prescanJobRows) {
+      this.mirror._prescanJobs.set(row.job_id, {
+        job_id: row.job_id,
+        ctid: row.tip_ctid,
+        payload: row.payload,
+        status: row.status,
+        claimed_at: row.claimed_at,
+        claimed_by: row.claimed_by,
+        retries: row.retries,
+        last_error: row.last_error,
+        created_at: row.created_at,
+        completed_at: row.completed_at,
+      });
     }
 
     // Dedup registry
@@ -1107,6 +1156,12 @@ class KnexAdapter {
       prescan_flagged: rec.prescan_flagged ? 1 : 0,
       prescan_probability: typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
       prescan_tier: rec.prescan_tier || "low",
+      prescan_status: rec.prescan_status || "completed",
+      prescan_completed_at: typeof rec.prescan_completed_at === "number" ? rec.prescan_completed_at : null,
+      prescan_assigned_node_id: rec.prescan_assigned_node_id || null,
+      prescan_content_type: rec.prescan_content_type || null,
+      prescan_overall_degraded: rec.prescan_overall_degraded ? 1 : 0,
+      content_type_hint: rec.content_type_hint || null,
       override: rec.override ? 1 : 0,
       registered_at: rec.registered_at,
       registered_urls: JSON.stringify(urls),
@@ -1146,6 +1201,78 @@ class KnexAdapter {
       this._ff(() => this.knex("dispute_details").where("evidence_hash", hash).del());
     }
     return removed;
+  }
+
+  // ── Prescan jobs (node-local async classifier queue) ────────────────────
+  // Per-node store, NOT consensus state. Mirrors the in-memory map and
+  // writes through to Knex so jobs survive worker / API restart.
+  enqueuePrescanJob(rec) {
+    const fresh = this.mirror.enqueuePrescanJob(rec);
+    if (fresh) {
+      this._ff(() => this._dbInsert("prescan_jobs", "job_id", {
+        job_id: rec.job_id,
+        tip_ctid: rec.ctid,
+        payload: rec.payload,
+        status: "queued",
+        claimed_at: null,
+        claimed_by: null,
+        retries: 0,
+        last_error: null,
+        created_at: rec.created_at,
+        completed_at: null,
+      }, "ignore"));
+    }
+    return fresh;
+  }
+  getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
+  getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
+  claimPrescanJob(opts) {
+    const claimed = this.mirror.claimPrescanJob(opts);
+    if (claimed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", claimed.job_id)
+        .update({
+          status: "claimed",
+          claimed_at: claimed.claimed_at,
+          claimed_by: claimed.claimed_by,
+        }));
+    }
+    return claimed;
+  }
+  markPrescanJobDone(jobId, opts) {
+    const changed = this.mirror.markPrescanJobDone(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ status: "done", completed_at: opts.completedAt, last_error: null }));
+    }
+    return changed;
+  }
+  markPrescanJobFailed(jobId, opts) {
+    const changed = this.mirror.markPrescanJobFailed(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({ status: "failed", completed_at: opts.completedAt, last_error: opts.lastError || null }));
+    }
+    return changed;
+  }
+  releasePrescanJobForRetry(jobId, opts) {
+    const changed = this.mirror.releasePrescanJobForRetry(jobId, opts);
+    if (changed) {
+      this._ff(() => this.knex("prescan_jobs")
+        .where("job_id", jobId)
+        .update({
+          status: "queued",
+          claimed_at: null,
+          claimed_by: null,
+          last_error: opts.lastError || null,
+        })
+        .then(() => this.knex("prescan_jobs")
+          .where("job_id", jobId)
+          .increment("retries", 1)));
+    }
+    return changed;
   }
 
   updateContentStatus(ctid, status) {
@@ -1615,6 +1742,7 @@ class KnexAdapter {
   // round-end and needs O(1) read access); SQL-side equivalents
   // would be redundant.
   getContentsNeedingReview(nowMs) { return this.mirror.getContentsNeedingReview(nowMs); }
+  getContentsStuckInPrescan(failOpenCutoffMs) { return this.mirror.getContentsStuckInPrescan(failOpenCutoffMs); }
   getReviewsNeedingAutoEscalation(nowMs) { return this.mirror.getReviewsNeedingAutoEscalation(nowMs); }
   getReviewsNeedingAutoRecuse(nowMs) { return this.mirror.getReviewsNeedingAutoRecuse(nowMs); }
 
@@ -1658,6 +1786,21 @@ class KnexAdapter {
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+  /**
+   * Wait for all fire-and-forget DB writes (_ff chain) to settle. Called
+   * during shutdown so the last few writes from in-flight workers (e.g.
+   * prescan_jobs.markDone) actually land in Postgres before the process
+   * exits. Without this, a worker that finished a classifier call milliseconds
+   * before SIGTERM would emit PRESCAN_COMPLETED but the queue's "done" mark
+   * would race with process exit and lose, leaving an orphaned 'claimed' row
+   * for the claim-timeout safety net to recover.
+   */
+  async flush() {
+    if (this._ffChain) {
+      try { await this._ffChain; } catch { /* per-write errors already logged */ }
+    }
+  }
 
   close() {
     try { this.knex.destroy(); } catch { /* ignore */ }

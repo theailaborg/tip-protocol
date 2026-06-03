@@ -1,19 +1,19 @@
 /**
  * @file tests/integration/content-register-tier.test.js
- * @description End-to-end tier flow through content-service.register():
+ * @description LEGACY — this suite covered the synchronous prescan flow
+ * where register() ran the classifier inline and embedded the verdict
+ * (prescan_flagged / probability / tier) into REGISTER_CONTENT.data and
+ * the response.
  *
- *   - LOW tier  → registers normally; prescan_note=null
- *   - ELEVATED  → registers normally; soft prescan_note
- *   - HIGH      → registers silently; tier + prescan_note carried in response
- *               so the client can show a post-registration warning
- *   - CRITICAL  → registers silently; tier-aware prescan_note in response
- *   - override field on tx.data is a passthrough from body.override
- *   - commit-handler persists prescan_tier + override on the content row
+ * That flow was replaced by the async-prescan architecture: register()
+ * now returns 202 with prescan_status="pending"; the worker emits a
+ * separate PRESCAN_COMPLETED tx; the verdict lands on the content row
+ * via commit-handler's PRESCAN_COMPLETED case (not REGISTER_CONTENT).
  *
- * preScanContent is spy-mocked per test to drive specific tiers, since the
- * current heuristic's output range can't reach HIGH/CRITICAL on its own.
- * When a real classifier lands, those tests will still hold via the same
- * dispatch contract (tier in → tier out + matching note).
+ * Skipped pending replacement by the end-to-end suite in Step 13
+ * (register → enqueue → worker → PRESCAN_COMPLETED → poll status).
+ * Kept here for reference until that suite lands. See
+ * my-notes/ASYNC_PRESCAN_ARCHITECTURE.md.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -115,7 +115,7 @@ function _registerWith(fx, opts) {
   return { tipId, body };
 }
 
-describe("content register — prescan tier dispatch", () => {
+describe.skip("[legacy sync-prescan] content register — prescan tier dispatch", () => {
 
   test("LOW tier → registers cleanly; prescan_note is null; prescan minimal", () => {
     const fx = _setup();
@@ -239,7 +239,7 @@ describe("content register — prescan tier dispatch", () => {
   });
 });
 
-describe("commit-handler — prescan_tier + override persisted on content row", () => {
+describe.skip("[legacy sync-prescan] commit-handler — prescan_tier + override persisted on content row", () => {
 
   test("HIGH-tier registration with override → content row has tier=high, override=1", () => {
     const fx = _setup();

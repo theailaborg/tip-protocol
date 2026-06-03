@@ -134,7 +134,13 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
   const rec = dag.getContent(ctid);
   if (!rec) return fail(404, "Content record not found");
   if (author_tip_id !== rec.author_tip_id) return fail(403, "Only the content author can update the origin code");
-  if (rec.status !== CONTENT_STATUS.REGISTERED && rec.status !== CONTENT_STATUS.PENDING_REVIEW) {
+  // PENDING_PRESCAN is allowed: while the worker hasn't returned a
+  // verdict, there's no flag to defend against — let the creator
+  // freely change the origin (PRESCAN_COMPLETED will classify against
+  // whatever origin is recorded when it lands).
+  if (rec.status !== CONTENT_STATUS.REGISTERED
+      && rec.status !== CONTENT_STATUS.PENDING_REVIEW
+      && rec.status !== CONTENT_STATUS.PENDING_PRESCAN) {
     return fail(403, `Cannot update origin — content status is '${rec.status}'`);
   }
   if (!ORIGIN_CODES.includes(new_origin_code)) {
@@ -178,16 +184,28 @@ function canUpdateOrigin(dag, { ctid, author_tip_id, new_origin_code }, { now })
       "Cannot update origin while a reviewer is evaluating this content. Wait for the reviewer's decision.",
     );
   } else {
-    const registeredAt = rec.registered_at;
-    const isFlaggedWithOverride =
-      (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
-      && !!rec.override;
-    const graceMs = isFlaggedWithOverride
-      ? CONTENT_GRACE.FLAGGED_MS
-      : CONTENT_GRACE.UNFLAGGED_MS;
-    if (now - registeredAt > graceMs) {
-      const hours = Math.round(graceMs / (60 * 60 * 1000));
-      return fail(403, `${hours}-hour grace period has expired.`);
+    // Async-prescan: while the worker hasn't returned a verdict, allow
+    // updates freely — there's no flag to defend against, and
+    // PRESCAN_COMPLETED will classify against whatever origin is in
+    // place when it eventually lands.
+    const prescanCompleted = (rec.prescan_status || "completed") === "completed";
+    if (prescanCompleted && Number.isFinite(rec.prescan_completed_at)) {
+      // Strict anchor: require prescan_completed_at. If status says
+      // completed but completed_at is missing, the row is either a
+      // legacy pre-async write or a data bug — either way, don't infer
+      // the grace clock from registered_at (which can be much older
+      // than when the creator saw the verdict).
+      const isFlaggedWithOverride =
+        (rec.prescan_tier === PRESCAN_TIERS.HIGH || rec.prescan_tier === PRESCAN_TIERS.CRITICAL)
+        && !!rec.override
+        && !rec.prescan_overall_degraded;
+      const graceMs = isFlaggedWithOverride
+        ? CONTENT_GRACE.FLAGGED_MS
+        : CONTENT_GRACE.UNFLAGGED_MS;
+      if (now - rec.prescan_completed_at > graceMs) {
+        const hours = Math.round(graceMs / (60 * 60 * 1000));
+        return fail(403, `${hours}-hour grace period has expired.`);
+      }
     }
   }
 
@@ -237,6 +255,12 @@ function canDispute(dag, scoring, { ctid, disputer_tip_id, evidence_hash, reason
   if (rec.status === CONTENT_STATUS.RETRACTED) return fail(403, "Content has been retracted — dispute not allowed");
   if (rec.status === CONTENT_STATUS.DISPUTED) return fail(403, "Content is already under dispute — wait for adjudication result");
   if (rec.status === CONTENT_STATUS.PENDING_REVIEW) return fail(403, "Content is pending review — wait for 24-hour grace period");
+  // Async-prescan: the classifier verdict drives the disputer's
+  // evidence panel (AI signal). Wait for PRESCAN_COMPLETED before
+  // accepting the dispute.
+  if ((rec.prescan_status || "completed") !== "completed") {
+    return fail(409, "Content prescan still pending — retry in a few seconds");
+  }
 
   const disputer = dag.getIdentity(disputer_tip_id);
   if (!disputer) return fail(404, "Disputer TIP-ID not found");

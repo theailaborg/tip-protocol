@@ -772,6 +772,20 @@ function validateState(tx, dag) {
       }
       break;
     }
+
+    case TX_TYPES.PRESCAN_COMPLETED: {
+      // Content row must exist (REGISTER_CONTENT applied first) — but
+      // network reordering can deliver PRESCAN_COMPLETED before the
+      // REGISTER_CONTENT for the same ctid. Commit-handler's apply
+      // case is idempotent and defers gracefully, but at validate time
+      // we reject so the tx returns to mempool and is reattempted next
+      // round. node-existence + tier/probability consistency are checked
+      // in schemas/prescan-completed.verifyTx via the unified dispatcher.
+      if (d.ctid && !dag.getContent(d.ctid)) {
+        errors.push(`Cannot apply PRESCAN_COMPLETED: content not found: ${d.ctid}`);
+      }
+      break;
+    }
   }
 
   return errors.length ? fail(...errors) : pass();

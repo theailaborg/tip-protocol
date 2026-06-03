@@ -228,6 +228,49 @@ const CALIBRATION_THRESHOLDS = {
   get VETERAN_MIN() { return _ps().calibration.veteran_min; },
 };
 
+// Async-prescan worker config + content-type taxonomy + modality weights.
+// Read from genesis so they're consensus-aligned across the federation.
+// See my-notes/ASYNC_PRESCAN_ARCHITECTURE.md for the full design.
+const PRESCAN_WORKER = {
+  get MAX_RETRIES_ON_DEGRADED() { return _ps().worker_max_retries_on_degraded; },
+  get MAX_RETRIES_ON_ERROR() { return _ps().worker_max_retries_on_error; },
+  get RETRY_BACKOFF_MS() { return _ps().worker_retry_backoff_ms; },
+  get CLAIM_TIMEOUT_MS() { return _ps().worker_claim_timeout_ms; },
+  get TAKEOVER_AFTER_MS() { return _ps().takeover_after_ms; },
+  get FAIL_OPEN_AFTER_MS() { return _ps().fail_open_after_ms; },
+  get POLL_AFTER_MS() { return _ps().poll_after_ms; },
+  get POLL_MAX_ATTEMPTS() { return _ps().poll_max_attempts; },
+};
+
+const CONTENT_TYPE = {
+  get VALID_TYPES() { return _ps().valid_content_types; },
+  get ARTICLE_TEXT_THRESHOLD_CHARS() { return _ps().article_text_threshold_chars; },
+};
+
+// Per-content-type lift coefficients for the primary-floor aggregator.
+// Primary modality (matches content_type) is the floor; values listed
+// are lift coefficients for non-primary modalities — only positive
+// secondary-vs-primary gaps contribute. See genesis.js comment for the
+// per-row reasoning.
+const MODALITY_WEIGHTS = {
+  get text()  { return _ps().modality_weights.text; },
+  get image() { return _ps().modality_weights.image; },
+  get audio() { return _ps().modality_weights.audio; },
+  get video() { return _ps().modality_weights.video; },
+  get multi() { return _ps().modality_weights.multi; },
+  get DEGRADED_MULTIPLIER() { return _ps().degraded_weight_multiplier; },
+};
+
+const _cl = () => get().content_limits;
+const CONTENT_LIMITS = {
+  get TEXT_MAX_BYTES() { return _cl().text_max_bytes; },
+  get IMAGE_MAX_BYTES() { return _cl().image_max_bytes; },
+  get AUDIO_MAX_BYTES() { return _cl().audio_max_bytes; },
+  get VIDEO_MAX_BYTES() { return _cl().video_max_bytes; },
+  get MEDIA_ITEMS_MAX() { return _cl().media_items_max; },
+  get REQUEST_BODY_MAX_BYTES() { return _cl().request_body_max_bytes; },
+};
+
 const _rv = () => get().reviewer;
 const REVIEWER = {
   get MIN_SCORE() { return _rv().min_score; },
@@ -420,6 +463,7 @@ module.exports = {
   // Backward-compatible accessors (import these instead of shared/constants.js)
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
   PRESCAN_THRESHOLDS, PRESCAN_TIER_THRESHOLDS, CALIBRATION_THRESHOLDS,
+  PRESCAN_WORKER, CONTENT_TYPE, MODALITY_WEIGHTS, CONTENT_LIMITS,
   REVIEWER, CONTENT_GRACE,
   CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, SOCIAL_LINK, getTier,
 };

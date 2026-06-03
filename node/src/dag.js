@@ -93,6 +93,12 @@ function _canonContent(r) {
     prescan_flagged: r.prescan_flagged ? 1 : 0,
     prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
     prescan_tier: r.prescan_tier || "low",
+    prescan_status: r.prescan_status || "completed",
+    prescan_completed_at: typeof r.prescan_completed_at === "number" ? r.prescan_completed_at : null,
+    prescan_assigned_node_id: r.prescan_assigned_node_id || null,
+    prescan_content_type: r.prescan_content_type || null,
+    prescan_overall_degraded: r.prescan_overall_degraded ? 1 : 0,
+    content_type_hint: r.content_type_hint || null,
     override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
@@ -290,12 +296,12 @@ function _canonPrescanReview(r) {
 // registered_by_vp_id=null + tx_id=null on every node.
 function _canonInterest(r) {
   return {
-    slug:                r.slug,
-    label:               r.label,
-    category:            r.category,
-    registered_at:       r.registered_at,
+    slug: r.slug,
+    label: r.label,
+    category: r.category,
+    registered_at: r.registered_at,
     registered_by_vp_id: r.registered_by_vp_id || null,
-    tx_id:               r.tx_id || null,
+    tx_id: r.tx_id || null,
   };
 }
 
@@ -353,6 +359,7 @@ class MemoryStore {
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
+    this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
@@ -1062,12 +1069,39 @@ class MemoryStore {
     for (const c of this._content.values()) {
       if (c.status !== "registered") continue;
       if (c.origin_code !== "OH") continue;
+      // Async-prescan gates: only act on completed, non-degraded verdicts.
+      // PENDING_PRESCAN rows wait; degraded verdicts get the
+      // unflagged-content treatment downstream.
+      if ((c.prescan_status || "completed") !== "completed") continue;
+      if (c.prescan_overall_degraded) continue;
       if (c.prescan_tier !== "high" && c.prescan_tier !== "critical") continue;
-      const registeredMs = c.registered_at ? c.registered_at : NaN;
-      if (!Number.isFinite(registeredMs) || registeredMs > cutoff) continue;
+      // Strict anchor: require prescan_completed_at. Falling back to
+      // registered_at would silently grandfather data bugs (status
+      // marked completed without a verdict time) and fire prematurely.
+      // Legacy pre-async rows are excluded by design.
+      const anchorMs = c.prescan_completed_at;
+      if (!Number.isFinite(anchorMs) || anchorMs > cutoff) continue;
       const prior = [...this._prescanReviews.values()].filter(r =>
         r.ctid === c.ctid && r.state !== PRESCAN_REVIEW_STATES.RECUSED);
       if (prior.length > 0) continue;
+      out.push({ ...c });
+    }
+    return out;
+  }
+
+  // Content rows still stuck in prescan_status='pending' past the
+  // fail-open deadline. Surfaces the rows where the failover trigger
+  // should emit a fail-open PRESCAN_COMPLETED so content can't get
+  // stuck in PENDING_PRESCAN forever (API node dead, worker dead,
+  // classifier permanently unreachable, etc.). Anchor is
+  // registered_at — that's when the clock starts for "should have
+  // had a verdict by now."
+  getContentsStuckInPrescan(failOpenCutoffMs) {
+    const out = [];
+    for (const c of this._content.values()) {
+      if (c.prescan_status !== "pending") continue;
+      if (!Number.isFinite(c.registered_at)) continue;
+      if (c.registered_at > failOpenCutoffMs) continue;
       out.push({ ...c });
     }
     return out;
@@ -1360,12 +1394,91 @@ class MemoryStore {
     return this._disputeDetails.delete(hash);
   }
 
+  // ── Prescan jobs (node-local async classifier queue) ────────────────────
+  // Worker queue. Per-node — NOT in state_merkle_root. Same pattern as
+  // dispute_details: each node stores what it received locally. See
+  // my-notes/ASYNC_PRESCAN_ARCHITECTURE.md § Worker process.
+  enqueuePrescanJob(rec) {
+    if (this._prescanJobs.has(rec.job_id)) return false;
+    this._prescanJobs.set(rec.job_id, {
+      job_id: rec.job_id,
+      ctid: rec.ctid,
+      payload: rec.payload,
+      status: rec.status || "queued",
+      claimed_at: null,
+      claimed_by: null,
+      retries: 0,
+      last_error: null,
+      created_at: rec.created_at,
+      completed_at: null,
+    });
+    return true;
+  }
+  getPrescanJob(jobId) {
+    return this._prescanJobs.get(jobId) || null;
+  }
+  getPrescanJobByCtid(ctid) {
+    for (const row of this._prescanJobs.values()) {
+      if (row.ctid === ctid) return row;
+    }
+    return null;
+  }
+  // Atomic claim: prefer queued jobs (oldest first), then recover stuck
+  // claimed jobs whose claimed_at is past the timeout. Returns the
+  // claimed row or null if no work is available.
+  claimPrescanJob({ workerId, now, claimTimeoutMs }) {
+    const queued = [];
+    const stuck = [];
+    for (const row of this._prescanJobs.values()) {
+      if (row.status === "queued") queued.push(row);
+      else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
+    }
+    queued.sort((a, b) => a.created_at - b.created_at);
+    stuck.sort((a, b) => a.created_at - b.created_at);
+    const next = queued[0] || stuck[0] || null;
+    if (!next) return null;
+    next.status = "claimed";
+    next.claimed_at = now;
+    next.claimed_by = workerId;
+    return { ...next };
+  }
+  markPrescanJobDone(jobId, { completedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "done";
+    row.completed_at = completedAt;
+    row.last_error = null;
+    return true;
+  }
+  markPrescanJobFailed(jobId, { lastError, completedAt }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "failed";
+    row.last_error = lastError || null;
+    row.completed_at = completedAt;
+    return true;
+  }
+  releasePrescanJobForRetry(jobId, { lastError }) {
+    const row = this._prescanJobs.get(jobId);
+    if (!row) return false;
+    row.status = "queued";
+    row.claimed_at = null;
+    row.claimed_by = null;
+    row.last_error = lastError || null;
+    row.retries = (row.retries || 0) + 1;
+    return true;
+  }
+
   // No-op for parity with SQLiteStore.backfillSubjectTipId. MemoryStore
   // writes always populate the column at save time; nothing to retrofit.
   backfillSubjectTipId(_subjectTipId) {
     return { transactions: 0, mempool: 0, tx_rejections: 0 };
   }
 
+  // No-op on the in-memory mirror: writes are synchronous, no chain to drain.
+  // Matches the knex-adapter's `flush()` contract so the facade can call it
+  // uniformly across all stores during shutdown.
+  async flush() { /* no-op */ }
   close() { /* no-op for in-memory */ }
 }
 
@@ -1514,32 +1627,51 @@ class SQLiteStore {
         ON entity_keys(entity_type, entity_id, valid_from_ts);
 
       -- ── Content ───────────────────────────────────────────────────────
+      -- Async-prescan fields: prescan_status flips from 'pending' (set at
+      -- REGISTER_CONTENT) to 'completed' when the worker emits
+      -- PRESCAN_COMPLETED. prescan_completed_at is the worker's submit
+      -- timestamp; downstream consumers (h=48 reviewer trigger, grace
+      -- windows) anchor to it rather than registered_at so the clock
+      -- starts when the creator sees the verdict, not when they pressed
+      -- publish. prescan_content_type is the resolved primary modality
+      -- (text/image/audio/video/multi) used by the modality-weight
+      -- aggregator. content_type_hint is the publisher's signed
+      -- declaration; the worker may override at PRESCAN_COMPLETED time.
+      -- Default 'completed' on prescan_status keeps existing/legacy rows
+      -- valid without a migration.
       CREATE TABLE IF NOT EXISTS content (
-        ctid                TEXT PRIMARY KEY,
-        origin_code         TEXT NOT NULL,
-        content_hash        TEXT NOT NULL,
-        perceptual_hash     TEXT,
-        author_tip_id       TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
-        signer_tip_id       TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
-        authors             TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
-        attribution_mode    TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
-        extras              TEXT,                            -- JSON-encoded extension data
-        cna_version         TEXT NOT NULL,                   -- CNA version this content was signed under
-        status              TEXT NOT NULL DEFAULT 'verified',
-        dispute_count       INTEGER NOT NULL DEFAULT 0,
-        verification_count  INTEGER NOT NULL DEFAULT 0,
-        prescan_flagged     INTEGER NOT NULL DEFAULT 0,
-        prescan_probability REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
-        prescan_tier        TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
-        override            INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
-        registered_at INTEGER NOT NULL,
-        registered_urls     TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
-        tx_id               TEXT
+        ctid                       TEXT PRIMARY KEY,
+        origin_code                TEXT NOT NULL,
+        content_hash               TEXT NOT NULL,
+        perceptual_hash            TEXT,
+        author_tip_id              TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
+        signer_tip_id              TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
+        authors                    TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
+        attribution_mode           TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
+        extras                     TEXT,                            -- JSON-encoded extension data
+        cna_version                TEXT NOT NULL,                   -- CNA version this content was signed under
+        status                     TEXT NOT NULL DEFAULT 'verified',
+        dispute_count              INTEGER NOT NULL DEFAULT 0,
+        verification_count         INTEGER NOT NULL DEFAULT 0,
+        prescan_flagged            INTEGER NOT NULL DEFAULT 0,
+        prescan_probability        REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
+        prescan_tier               TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
+        prescan_status             TEXT NOT NULL DEFAULT 'completed', -- 'pending' | 'completed'
+        prescan_completed_at       INTEGER,                          -- ms epoch; null for legacy rows
+        prescan_assigned_node_id   TEXT,                             -- node_reg_id of the API node that received the registration
+        prescan_content_type       TEXT,                             -- 'text'|'image'|'audio'|'video'|'multi'; null until PRESCAN_COMPLETED applies
+        prescan_overall_degraded   INTEGER NOT NULL DEFAULT 0,       -- 1 if any modality returned error / disagreement / 0.5 neutral
+        content_type_hint          TEXT,                             -- publisher's declared hint at register time
+        override                   INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
+        registered_at              INTEGER NOT NULL,
+        registered_urls            TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
+        tx_id                      TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
       CREATE INDEX IF NOT EXISTS idx_content_signer ON content(signer_tip_id);
       CREATE INDEX IF NOT EXISTS idx_content_origin ON content(origin_code);
       CREATE INDEX IF NOT EXISTS idx_content_status ON content(status);
+      CREATE INDEX IF NOT EXISTS idx_content_prescan_status ON content(prescan_status);
 
       -- ── Trust Scores ──────────────────────────────────────────────────
       CREATE TABLE IF NOT EXISTS scores (
@@ -1951,6 +2083,29 @@ class SQLiteStore {
         -- Off-chain store by design; no chain-time exists for this row.
         local_inserted_at  INTEGER NOT NULL
       );
+
+      -- ── Prescan jobs (node-local async queue; NOT in state_merkle_root) ─
+      -- Worker-process queue for outbound classifier calls. One row per
+      -- registered content awaiting prescan. The API node that received
+      -- the registration enqueues; its sibling worker process polls,
+      -- calls the classifier, and emits PRESCAN_COMPLETED. Stuck claims
+      -- past claimed_at + worker_claim_timeout_ms are reclaimable by
+      -- another worker on the same node. Per-node by design — other
+      -- nodes never see these rows, only the PRESCAN_COMPLETED tx that
+      -- eventually commits.
+      CREATE TABLE IF NOT EXISTS prescan_jobs (
+        job_id        TEXT PRIMARY KEY,
+        ctid          TEXT NOT NULL UNIQUE,
+        payload       BLOB NOT NULL,                       -- canonical JSON of classifier input
+        status        TEXT NOT NULL,                       -- 'queued' | 'claimed' | 'done' | 'failed'
+        claimed_at    INTEGER,                              -- ms; null while queued
+        claimed_by    TEXT,                                  -- worker pid / node_reg_id; null while queued
+        retries       INTEGER NOT NULL DEFAULT 0,
+        last_error    TEXT,
+        created_at    INTEGER NOT NULL,                     -- ms; enqueue time
+        completed_at  INTEGER                                -- ms; null while incomplete
+      );
+      CREATE INDEX IF NOT EXISTS idx_prescan_jobs_status ON prescan_jobs(status, created_at);
     `);
 
     // Backfill creator_name column for pre-existing identities tables
@@ -2163,9 +2318,11 @@ class SQLiteStore {
         `INSERT OR REPLACE INTO content
            (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
-            status,prescan_flagged,prescan_probability,prescan_tier,override,
-            registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            status,prescan_flagged,prescan_probability,prescan_tier,
+            prescan_status,prescan_completed_at,prescan_assigned_node_id,
+            prescan_content_type,prescan_overall_degraded,content_type_hint,
+            override,registered_at,registered_urls,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -2449,9 +2606,24 @@ class SQLiteStore {
            ON r.ctid = c.ctid AND r.state != 'recused'
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
+           AND c.prescan_status = 'completed'
+           AND c.prescan_overall_degraded = 0
            AND c.prescan_tier IN ('high','critical')
            AND r.review_id IS NULL
-           AND c.registered_at <= ?`
+           AND c.prescan_completed_at IS NOT NULL
+           AND c.prescan_completed_at <= ?`
+      ),
+      // Content rows stuck in prescan_status='pending' past the
+      // fail-open deadline. Caller passes (now - prescan.fail_open_after_ms)
+      // as the cutoff; rows registered before that haven't produced a
+      // verdict and need a synthesised fail-open completion so they
+      // don't sit in PENDING_PRESCAN forever (e.g. API node died after
+      // enqueueing but before the worker emitted PRESCAN_COMPLETED).
+      getContentsStuckInPrescan: this.db.prepare(
+        `SELECT * FROM content
+          WHERE prescan_status = 'pending'
+            AND registered_at IS NOT NULL
+            AND registered_at <= ?`
       ),
       // Reviews in state=confirmed whose 24h creator-decision window has
       // elapsed. confirmed_at_ms is set on CONFIRMED apply from cert.ts.
@@ -2583,6 +2755,51 @@ class SQLiteStore {
       deleteDisputeDetails: this.db.prepare(
         "DELETE FROM dispute_details WHERE evidence_hash=?"
       ),
+
+      // Prescan jobs (node-local async classifier queue). INSERT OR IGNORE
+      // on job_id PK keeps the API node's enqueue idempotent if it
+      // re-fires for the same registration. Atomic claim primitive runs
+      // a single UPDATE…RETURNING — SQLite's row-level locking handles
+      // concurrent workers correctly.
+      enqueuePrescanJob: this.db.prepare(
+        `INSERT OR IGNORE INTO prescan_jobs
+           (job_id, ctid, payload, status, claimed_at, claimed_by, retries, last_error, created_at, completed_at)
+         VALUES (?, ?, ?, 'queued', NULL, NULL, 0, NULL, ?, NULL)`
+      ),
+      getPrescanJob: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE job_id=?"
+      ),
+      getPrescanJobByCtid: this.db.prepare(
+        "SELECT * FROM prescan_jobs WHERE ctid=?"
+      ),
+      claimPrescanJob: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='claimed', claimed_at=?, claimed_by=?
+          WHERE job_id = (
+            SELECT job_id FROM prescan_jobs
+             WHERE status='queued'
+                OR (status='claimed' AND claimed_at < ?)
+             ORDER BY created_at
+             LIMIT 1
+          )
+          RETURNING *`
+      ),
+      markPrescanJobDone: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='done', completed_at=?, last_error=NULL
+          WHERE job_id=?`
+      ),
+      markPrescanJobFailed: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='failed', completed_at=?, last_error=?
+          WHERE job_id=?`
+      ),
+      releasePrescanJobForRetry: this.db.prepare(
+        `UPDATE prescan_jobs
+            SET status='queued', claimed_at=NULL, claimed_by=NULL,
+                last_error=?, retries=retries+1
+          WHERE job_id=?`
+      ),
     };
   }
 
@@ -2690,6 +2907,12 @@ class SQLiteStore {
       rec.prescan_flagged ? 1 : 0,
       typeof rec.prescan_probability === "number" ? rec.prescan_probability : 0,
       rec.prescan_tier || "low",
+      rec.prescan_status || "completed",
+      typeof rec.prescan_completed_at === "number" ? rec.prescan_completed_at : null,
+      rec.prescan_assigned_node_id || null,
+      rec.prescan_content_type || null,
+      rec.prescan_overall_degraded ? 1 : 0,
+      rec.content_type_hint || null,
       rec.override ? 1 : 0,
       rec.registered_at, JSON.stringify(urls), rec.tx_id || null
     );
@@ -3076,12 +3299,12 @@ class SQLiteStore {
   interestCount() { return this._stmts.interestCount.get().n; }
   _parseInterest(row) {
     return {
-      slug:                row.slug,
-      label:               row.label,
-      category:            row.category,
-      registered_at:       row.registered_at,
+      slug: row.slug,
+      label: row.label,
+      category: row.category,
+      registered_at: row.registered_at,
       registered_by_vp_id: row.registered_by_vp_id || null,
-      tx_id:               row.tx_id || null,
+      tx_id: row.tx_id || null,
     };
   }
 
@@ -3116,6 +3339,9 @@ class SQLiteStore {
   }
   getContentsNeedingReview(nowMs) {
     return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS);
+  }
+  getContentsStuckInPrescan(failOpenCutoffMs) {
+    return this._stmts.getContentsStuckInPrescan.all(failOpenCutoffMs);
   }
   getReviewsNeedingAutoEscalation(nowMs) {
     return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
@@ -3381,6 +3607,33 @@ class SQLiteStore {
   // ── Dispute details (off-chain dispute body) ────────────────────────────
   // Mirrors MemoryStore.saveDisputeDetails. Idempotent on evidence_hash —
   // re-uploads of the same payload are a silent no-op.
+  // ── Prescan jobs (node-local async classifier queue) ───────────────────
+  enqueuePrescanJob(rec) {
+    // payload is canonical JSON; pass as-is (SQLite BLOB column).
+    const res = this._stmts.enqueuePrescanJob.run(
+      rec.job_id, rec.ctid, rec.payload, rec.created_at,
+    );
+    return res.changes > 0;
+  }
+  getPrescanJob(jobId) {
+    return this._stmts.getPrescanJob.get(jobId) || null;
+  }
+  getPrescanJobByCtid(ctid) {
+    return this._stmts.getPrescanJobByCtid.get(ctid) || null;
+  }
+  claimPrescanJob({ workerId, now, claimTimeoutMs }) {
+    return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
+  }
+  markPrescanJobDone(jobId, { completedAt }) {
+    return this._stmts.markPrescanJobDone.run(completedAt, jobId).changes > 0;
+  }
+  markPrescanJobFailed(jobId, { lastError, completedAt }) {
+    return this._stmts.markPrescanJobFailed.run(completedAt, lastError || null, jobId).changes > 0;
+  }
+  releasePrescanJobForRetry(jobId, { lastError }) {
+    return this._stmts.releasePrescanJobForRetry.run(lastError || null, jobId).changes > 0;
+  }
+
   saveDisputeDetails(rec) {
     const res = this._stmts.saveDisputeDetails.run(
       rec.evidence_hash,
@@ -3410,6 +3663,11 @@ class SQLiteStore {
   runInTransaction(fn) {
     return this.db.transaction(fn)();
   }
+
+  // No-op on SQLite: better-sqlite3 writes are synchronous, so there's no
+  // background queue to drain. The knex adapter overrides this for Postgres/
+  // MariaDB/MSSQL/Oracle where writes go through a fire-and-forget chain.
+  async flush() { /* no-op */ }
 
   close() {
     try { this.db.close(); } catch { /* ignore */ }
@@ -3669,6 +3927,7 @@ function _buildDagHandle(store, config) {
     getPrescanReviewsByReviewer: (reviewerTipId) => store.getPrescanReviewsByReviewer(reviewerTipId),
     getPrescanReviewsByCtid: (ctid) => store.getPrescanReviewsByCtid(ctid),
     getContentsNeedingReview: (nowMs) => store.getContentsNeedingReview(nowMs),
+    getContentsStuckInPrescan: (cutoffMs) => store.getContentsStuckInPrescan(cutoffMs),
     getReviewsNeedingAutoEscalation: (nowMs) => store.getReviewsNeedingAutoEscalation(nowMs),
     getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
 
@@ -3713,9 +3972,19 @@ function _buildDagHandle(store, config) {
     hasDisputeDetails: (hash) => store.hasDisputeDetails(hash),
     deleteDisputeDetails: (hash) => store.deleteDisputeDetails(hash),
 
+    // ── Prescan jobs (node-local async classifier queue) ────────────────
+    enqueuePrescanJob: (rec) => store.enqueuePrescanJob(rec),
+    getPrescanJob: (jobId) => store.getPrescanJob(jobId),
+    getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
+    claimPrescanJob: (opts) => store.claimPrescanJob(opts),
+    markPrescanJobDone: (jobId, opts) => store.markPrescanJobDone(jobId, opts),
+    markPrescanJobFailed: (jobId, opts) => store.markPrescanJobFailed(jobId, opts),
+    releasePrescanJobForRetry: (jobId, opts) => store.releasePrescanJobForRetry(jobId, opts),
+
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),
 
+    flush: () => store.flush(),
     close: () => store.close(),
   };
 
@@ -3833,12 +4102,12 @@ function _bootstrapInterestsRegistry(store) {
   const { GENESIS_TIMESTAMP } = require("./genesis");
   for (const entry of INITIAL_INTERESTS_SEED) {
     store.saveInterest({
-      slug:                entry.slug,
-      label:               entry.label,
-      category:            entry.category,
-      registered_at:       GENESIS_TIMESTAMP,
+      slug: entry.slug,
+      label: entry.label,
+      category: entry.category,
+      registered_at: GENESIS_TIMESTAMP,
       registered_by_vp_id: null,     // genesis-seeded — no signing VP
-      tx_id:               null,
+      tx_id: null,
     });
   }
 }

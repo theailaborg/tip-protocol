@@ -86,6 +86,9 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   [TX_TYPES.APPEAL_RESULT]: NODE_ENVELOPE,
   [TX_TYPES.JURY_SUMMONS]: NODE_ENVELOPE,
   [TX_TYPES.AI_CLASSIFIER_RESULT]: NODE_ENVELOPE,
+  // Async-prescan worker verdict — node-signed envelope; carries
+  // probability + tier + per-modality breakdown.
+  [TX_TYPES.PRESCAN_COMPLETED]: NODE_ENVELOPE,
 
   // ─── Subject-signed body sigs (CTID-bound replay protection) ─────────────
   [TX_TYPES.CONTENT_VERIFIED]: {

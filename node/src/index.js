@@ -36,6 +36,8 @@ const { loadConfig } = require("./config");
 const { log } = require("./logger");
 const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 const { resolveDriver } = require("./db/index");
+const { createPrescanJobs } = require("./services/prescan-jobs");
+const { initPrescanWorker } = require("./init-prescan-worker");
 
 // Process-level error boundary for the consensus loops + libp2p stream
 // handlers + scheduled timers. Without these, any throw inside a
@@ -134,10 +136,11 @@ async function main() {
   const scoring = initScoring(dag, config);
   log.info("Trust scoring engine ready");
 
-  // 3. Build Express app
+  // 3. Build Express app — prescanJobs queue is node-local and bound to dag.
   const consensusRef = { current: null };
   const networkRef = { current: null };
-  const app = createApp({ dag, scoring, config, consensus: consensusRef, network: networkRef });
+  const prescanJobs = createPrescanJobs({ dag });
+  const app = createApp({ dag, scoring, config, consensus: consensusRef, network: networkRef, prescanJobs });
 
   // 4. HTTP server
   const server = http.createServer(app);
@@ -154,6 +157,12 @@ async function main() {
   // every anchor commit), exposed at GET /v1/state-root.
   const scheduler = createScheduler(network, config);
 
+  // 8a. Prescan worker — claims jobs off the node-local queue, calls the
+  // classifier, aggregates, and emits PRESCAN_COMPLETED via consensus.
+  // Runs in-process for v1; split to a sibling process via docker-compose
+  // / pm2 when classifier traffic justifies it.
+  const prescanWorkers = initPrescanWorker({ dag, prescanJobs, consensusRef, config });
+
   // 9. Start listening
   server.listen(config.port, () => {
     log.notice(`Node listening on http://0.0.0.0:${config.port}`);
@@ -167,16 +176,31 @@ async function main() {
     log.info(`${signal} received — shutting down gracefully`);
     server.close(async () => {
       try { scheduler.stop(); } catch { }
+      // Await prescan worker drain so in-flight classifier calls finish
+      // before the process exits. Without this, the safety net is the
+      // queue's claim-timeout (60s) — recovers correctness, costs latency.
+      try { await prescanWorkers.stopAll(); } catch { }
+      // Drain pending fire-and-forget DB writes. The workers' markDone /
+      // markFailed calls are queued on the knex adapter's _ff chain; without
+      // this flush, the queue row's "done" mark can race with process exit
+      // and lose, leaving an orphaned 'claimed' row that the claim-timeout
+      // safety net has to recover. No-op for in-memory and SQLite stores.
+      try { await dag.flush(); } catch { }
       try { if (consensus) consensus.stop(); } catch { }
       try { if (network) await network.stop(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
       process.exit(0);
     });
+    // 65s timeout matches the classifier's TEXT_TIMEOUT_MS (60s) plus a
+    // few-second buffer for the rest of the shutdown sequence (consensus,
+    // network, dag.close). Anything still in-flight past this is a stuck
+    // process — exit hard. Docker-compose's stop_grace_period should be
+    // ≥ this so the SIGTERM grace window matches.
     setTimeout(() => {
       log.error("Graceful shutdown timed out — forcing exit");
       process.exit(1);
-    }, 10000);
+    }, 65000);
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));

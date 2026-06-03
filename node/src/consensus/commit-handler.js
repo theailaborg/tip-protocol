@@ -31,6 +31,7 @@ const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggere
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
 const prescanReviewConfirmedSchema = require("../schemas/prescan-review-confirmed");
 const prescanReviewRecusedSchema = require("../schemas/prescan-review-recused");
+const prescanCompletedSchema = require("../schemas/prescan-completed");
 const registerDomainSchema = require("../schemas/register-domain");
 const prescanReviewAcceptCorrectionSchema = require("../schemas/prescan-review-accept-correction");
 const prescanReviewDisputeSchema = require("../schemas/prescan-review-dispute");
@@ -54,6 +55,7 @@ const SCHEMA_FOR_TX_TYPE = Object.freeze({
   [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
   [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
   [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
+  [TX_TYPES.PRESCAN_COMPLETED]: prescanCompletedSchema,
   // GH #60 — key rotation + VP-attested recovery. Both append a new
   // entity_keys row + close the prior one atomically.
   [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
@@ -142,7 +144,7 @@ function _mapBusinessRuleReason(error) {
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, config, nodeId }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -281,6 +283,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         prescanReviewTrigger.checkPending(certTimestamp, round);
       } catch (err) {
         log.warn(`Round ${round}: post-round prescan-review trigger failed: ${err.message}`);
+      }
+    }
+    if (prescanCompletionTrigger && certTimestamp > 0) {
+      try {
+        prescanCompletionTrigger.checkPending(certTimestamp, round);
+      } catch (err) {
+        log.warn(`Round ${round}: post-round prescan-completion failover trigger failed: ${err.message}`);
       }
     }
 
@@ -739,6 +748,51 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         break;
       }
 
+      case TX_TYPES.PRESCAN_COMPLETED: {
+        // Worker-emitted (assigned API node or failover leader) once the
+        // classifier returns. Persist the verdict onto the content row
+        // and flip status PENDING_PRESCAN → REGISTERED/PENDING_REVIEW.
+        //
+        // First-wins dedup: if PRESCAN_COMPLETED already applied for
+        // this ctid (race between original assignee + failover leader),
+        // skip — the chronologically-first tx_id wins per consensus
+        // ordering.
+        const existing = dag.getContent(d.ctid);
+        if (!existing) {
+          // REGISTER_CONTENT hasn't applied yet (network reordering).
+          // Defer by no-op; the failover trigger will re-emit when it
+          // sees this ctid stuck in pending past takeover_after_ms.
+          break;
+        }
+        if (existing.prescan_status === "completed") {
+          // Already settled; honour first-wins.
+          break;
+        }
+        // Degraded verdicts must not flag content — even if tier is
+        // HIGH/CRITICAL, signal quality is too low to act on. See
+        // ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling.
+        const shouldFlag = !!d.flagged && !d.overall_degraded;
+        // Status always flips PENDING_PRESCAN → REGISTERED on completion.
+        // PENDING_REVIEW happens later via PRESCAN_REVIEW_TRIGGERED after
+        // the 48h grace window (CONTENT_GRACE.FLAGGED_MS) — see comment at
+        // the PRESCAN_REVIEW_TRIGGERED apply: "amber badge goes live now,
+        // not at registration". Without this, flagged content would skip
+        // the grace window entirely and the trigger's getContentsNeedingReview
+        // (which gates on status=REGISTERED) would never fire.
+        dag.saveContent({
+          ...existing,
+          prescan_flagged: shouldFlag ? 1 : 0,
+          prescan_probability: d.probability,
+          prescan_tier: d.tier,
+          prescan_status: "completed",
+          prescan_completed_at: d.completed_at,
+          prescan_content_type: d.content_type,
+          prescan_overall_degraded: d.overall_degraded ? 1 : 0,
+          status: CONTENT_STATUS.REGISTERED,
+        });
+        break;
+      }
+
       case TX_TYPES.PRESCAN_REVIEW_DISMISSED: {
         // Reviewer said "AI's flag was wrong". Close the review and
         // restore content.status to REGISTERED — green badge comes back,
@@ -827,14 +881,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             attribution_mode: d.attribution_mode || "self",
             extras: (d.extras && typeof d.extras === "object" && !Array.isArray(d.extras)) ? d.extras : {},
             cna_version: d.cna_version,
-            // Phase 2.3: registration always lands as REGISTERED (green
-            // badge). For HIGH/CRITICAL tier + override, the creator has
-            // a 48h self-correction window; PENDING_REVIEW status is
-            // applied only when PRESCAN_REVIEW_TRIGGERED fires at h=48.
-            status: CONTENT_STATUS.REGISTERED,
+            // Async-prescan: when REGISTER_CONTENT carries
+            // prescan_status='pending' the row lands as PENDING_PRESCAN
+            // and waits for PRESCAN_COMPLETED to flip it to
+            // REGISTERED/PENDING_REVIEW. Legacy (sync-prescan) txs that
+            // didn't carry the field default to "completed", preserving
+            // pre-async behaviour where the row is immediately usable.
+            status: d.prescan_status === "pending"
+              ? CONTENT_STATUS.PENDING_PRESCAN
+              : CONTENT_STATUS.REGISTERED,
             prescan_flagged: !!d.prescan_flagged,
             prescan_probability: typeof d.prescan_probability === "number" ? d.prescan_probability : 0,
             prescan_tier: d.prescan_tier || "low",
+            prescan_status: d.prescan_status || "completed",
+            prescan_assigned_node_id: d.prescan_assigned_node_id || null,
+            content_type_hint: d.content_type_hint || null,
             override: !!d.override,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
@@ -1109,12 +1170,12 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.INTEREST_REGISTERED:
         if (d.slug && d.label && d.category && d.approving_vp_id) {
           dag.saveInterest({
-            slug:                d.slug,
-            label:               d.label,
-            category:            d.category,
-            registered_at:       tx.timestamp,
+            slug: d.slug,
+            label: d.label,
+            category: d.category,
+            registered_at: tx.timestamp,
             registered_by_vp_id: d.approving_vp_id,
-            tx_id:               tx.tx_id,
+            tx_id: tx.tx_id,
           });
         }
         break;
@@ -1358,8 +1419,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       const cosigSource = schema && typeof schema.getCosignatureContract === "function"
         ? schema
         : (TX_SIGNATURE_REGISTRY[tt] && typeof TX_SIGNATURE_REGISTRY[tt].getCosignatureContract === "function"
-            ? TX_SIGNATURE_REGISTRY[tt]
-            : null);
+          ? TX_SIGNATURE_REGISTRY[tt]
+          : null);
       if (cosigSource) {
         const contract = cosigSource.getCosignatureContract(tx) || [];
         if (contract.length > 0) {

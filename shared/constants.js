@@ -46,6 +46,22 @@ const CONTENT_STATUS = Object.freeze({
   PENDING_REVIEW: "pending_review",
   DISPUTED: "disputed",
   RETRACTED: "retracted",
+  // Async prescan: content has been registered but the classifier
+  // verdict hasn't landed yet. Flips to REGISTERED or PENDING_REVIEW
+  // when PRESCAN_COMPLETED applies. Downstream consumers (h=48 reviewer
+  // trigger, grace windows, disputes) gate on prescan_status='completed'
+  // and don't act on PENDING_PRESCAN rows.
+  PENDING_PRESCAN: "pending_prescan",
+});
+
+// ─── Classifier client (outbound HTTP) ─────────────────────────────────────
+// Per-call ceilings for the prescan worker's classifier HTTP calls. Same
+// on every node — they affect operational timing, not consensus output.
+// Text-only cold start (ollama) is ~33s; file-bearing cold start (ONNX
+// vision) is ~118s — both warm to a few seconds.
+const CLASSIFIER_CLIENT = Object.freeze({
+  TEXT_TIMEOUT_MS: 60_000,
+  FILE_TIMEOUT_MS: 180_000,
 });
 
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
@@ -417,6 +433,10 @@ const TX_TYPES = Object.freeze({
   PRESCAN_REVIEW_DISMISSED: "PRESCAN_REVIEW_DISMISSED",
   PRESCAN_REVIEW_CONFIRMED: "PRESCAN_REVIEW_CONFIRMED",
   PRESCAN_REVIEW_RECUSED: "PRESCAN_REVIEW_RECUSED",
+  // Async prescan: emitted by the worker on the assigned API node (or a
+  // failover leader) once the classifier call returns. Carries the
+  // probability/tier/modality breakdown for downstream consumers.
+  PRESCAN_COMPLETED: "PRESCAN_COMPLETED",
   // Domain binding (org-only)
   BIND_DOMAIN: "BIND_DOMAIN",
   UNBIND_DOMAIN: "UNBIND_DOMAIN",
@@ -705,6 +725,7 @@ module.exports = {
   JURY_VOTES,
   VERDICT,
   CONTENT_STATUS,
+  CLASSIFIER_CLIENT,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,
