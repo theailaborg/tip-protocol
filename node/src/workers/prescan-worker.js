@@ -198,15 +198,26 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
 
     const contentType = payload.content_type;
 
-    // Locally-skipped (non-OH origin): emit clean verdict directly.
-    // No real verdict to produce — classifier deliberately didn't run.
-    // Content moves to REGISTERED with probability 0.
+    // Locally-skipped (non-OH origin OR classifier-side skip): emit clean
+    // verdict directly. No real verdict to produce — classifier deliberately
+    // didn't run.
+    //
+    // probability=0.5 is the canonical "no signal" neutral (same convention
+    // as fail-open and the aggregator's _clamp01 fallback). probability=0
+    // would imply "definitely human" which contradicts AG/AA self-disclosure
+    // and is misleading for any consumer that doesn't check the providers
+    // field. overall_degraded=false: this is NOT a degraded scan, it's an
+    // intentional policy skip — downstream distinguishes via
+    // classifier_providers_used="skipped_locally" instead.
     if (skipped) {
+      const probability = 0.5;
+      const tier = prescanCompletedSchema.tierFromProbability(probability);
+      const flagged = tier === "high" || tier === "critical";
       _submitPrescanCompleted({
         ctid: job.ctid,
-        probability: 0,
-        tier: "low",
-        flagged: false,
+        probability,
+        tier,
+        flagged,
         overall_degraded: false,
         content_type: contentType,
         content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },

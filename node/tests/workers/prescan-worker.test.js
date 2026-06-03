@@ -156,11 +156,18 @@ describe("tick — happy path", () => {
       payload: { text: "x", origin_code: "AG", content_type: "text" },
     });
     await worker.tick();
-    expect(submitter.txs[0].data.probability).toBe(0);
-    expect(submitter.txs[0].data.tier).toBe("low");
-    expect(submitter.txs[0].data.flagged).toBe(false);
+    // Locally-skipped shape: probability=0.5 (no-signal neutral, matching
+    // fail-open + aggregator convention — not 0 which would imply
+    // "definitely human" and contradict AG self-disclosure). degraded=false
+    // because this is an INTENTIONAL skip, not a classifier failure;
+    // downstream tells the difference via classifier_providers_used.
+    expect(submitter.txs[0].data.probability).toBe(0.5);
+    expect(submitter.txs[0].data.overall_degraded).toBe(false);
     expect(submitter.txs[0].data.failed).toBe(false);
+    expect(["low", "elevated"]).toContain(submitter.txs[0].data.tier);
+    expect(submitter.txs[0].data.flagged).toBe(false);
     expect(submitter.txs[0].data.modality_results).toEqual([]);
+    expect(submitter.txs[0].data.classifier_providers_used).toMatch(/skipped/);
   });
 
   test("multimodal text + image → single classifier call, both modalities in tx", async () => {

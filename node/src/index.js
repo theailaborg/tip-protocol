@@ -176,17 +176,31 @@ async function main() {
     log.info(`${signal} received — shutting down gracefully`);
     server.close(async () => {
       try { scheduler.stop(); } catch { }
-      try { prescanWorkers.stopAll(); } catch { }
+      // Await prescan worker drain so in-flight classifier calls finish
+      // before the process exits. Without this, the safety net is the
+      // queue's claim-timeout (60s) — recovers correctness, costs latency.
+      try { await prescanWorkers.stopAll(); } catch { }
+      // Drain pending fire-and-forget DB writes. The workers' markDone /
+      // markFailed calls are queued on the knex adapter's _ff chain; without
+      // this flush, the queue row's "done" mark can race with process exit
+      // and lose, leaving an orphaned 'claimed' row that the claim-timeout
+      // safety net has to recover. No-op for in-memory and SQLite stores.
+      try { await dag.flush(); } catch { }
       try { if (consensus) consensus.stop(); } catch { }
       try { if (network) await network.stop(); } catch { }
       try { dag.close(); } catch { }
       log.info("Shutdown complete");
       process.exit(0);
     });
+    // 65s timeout matches the classifier's TEXT_TIMEOUT_MS (60s) plus a
+    // few-second buffer for the rest of the shutdown sequence (consensus,
+    // network, dag.close). Anything still in-flight past this is a stuck
+    // process — exit hard. Docker-compose's stop_grace_period should be
+    // ≥ this so the SIGTERM grace window matches.
     setTimeout(() => {
       log.error("Graceful shutdown timed out — forcing exit");
       process.exit(1);
-    }, 10000);
+    }, 65000);
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));

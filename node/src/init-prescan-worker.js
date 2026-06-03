@@ -78,11 +78,17 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
   const count = _resolveWorkerCount();
   const concurrency = process.env.TIP_PRESCAN_CONCURRENCY || 1;
   const workers = [];
+  // Track each worker's run() promise so stopAll() can await drain.
+  // Without this, shutdown signals stop() but doesn't wait for in-flight
+  // classifier calls to settle — the queue's claim-timeout safety net
+  // catches orphans but adds latency for the affected jobs.
+  const runPromises = [];
 
   for (let i = 0; i < count; i++) {
     try {
-      const worker = _spawnWorker({ dag, prescanJobs, consensusRef, config, index: i });
+      const { worker, runPromise } = _spawnWorker({ dag, prescanJobs, consensusRef, config, index: i });
       workers.push(worker);
+      runPromises.push(runPromise);
     } catch (err) {
       log.error(
         `Prescan worker #${i} failed to start: ${err?.message || err} — ` +
@@ -99,10 +105,13 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
     );
   }
 
-  function stopAll() {
+  async function stopAll() {
     for (const w of workers) {
       try { w.stop(); } catch { /* nothing we can do */ }
     }
+    // Wait for each worker's run loop to exit AND drain its in-flight
+    // pool. allSettled so one stuck worker doesn't block the others.
+    await Promise.allSettled(runPromises);
   }
 
   return { workers, stopAll };
@@ -120,8 +129,10 @@ function _spawnWorker({ dag, prescanJobs, consensusRef, config, index }) {
     submitTx, config, log,
     workerTag: `#${index}`,
   });
-  worker.run().catch(err => log.error(`prescan-worker #${index} exited: ${err?.stack || err}`));
-  return worker;
+  const runPromise = worker.run().catch(err => {
+    log.error(`prescan-worker #${index} exited: ${err?.stack || err}`);
+  });
+  return { worker, runPromise };
 }
 
 module.exports = { initPrescanWorker };

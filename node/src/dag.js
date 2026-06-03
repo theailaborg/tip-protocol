@@ -1475,6 +1475,10 @@ class MemoryStore {
     return { transactions: 0, mempool: 0, tx_rejections: 0 };
   }
 
+  // No-op on the in-memory mirror: writes are synchronous, no chain to drain.
+  // Matches the knex-adapter's `flush()` contract so the facade can call it
+  // uniformly across all stores during shutdown.
+  async flush() { /* no-op */ }
   close() { /* no-op for in-memory */ }
 }
 
@@ -3660,6 +3664,11 @@ class SQLiteStore {
     return this.db.transaction(fn)();
   }
 
+  // No-op on SQLite: better-sqlite3 writes are synchronous, so there's no
+  // background queue to drain. The knex adapter overrides this for Postgres/
+  // MariaDB/MSSQL/Oracle where writes go through a fire-and-forget chain.
+  async flush() { /* no-op */ }
+
   close() {
     try { this.db.close(); } catch { /* ignore */ }
   }
@@ -3975,6 +3984,7 @@ function _buildDagHandle(store, config) {
     // ── DB Transactions ──────────────────────────────────────────────────
     runInTransaction: (fn) => store.runInTransaction(fn),
 
+    flush: () => store.flush(),
     close: () => store.close(),
   };
 

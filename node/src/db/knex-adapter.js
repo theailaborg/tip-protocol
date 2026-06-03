@@ -1787,6 +1787,21 @@ class KnexAdapter {
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
+  /**
+   * Wait for all fire-and-forget DB writes (_ff chain) to settle. Called
+   * during shutdown so the last few writes from in-flight workers (e.g.
+   * prescan_jobs.markDone) actually land in Postgres before the process
+   * exits. Without this, a worker that finished a classifier call milliseconds
+   * before SIGTERM would emit PRESCAN_COMPLETED but the queue's "done" mark
+   * would race with process exit and lose, leaving an orphaned 'claimed' row
+   * for the claim-timeout safety net to recover.
+   */
+  async flush() {
+    if (this._ffChain) {
+      try { await this._ffChain; } catch { /* per-write errors already logged */ }
+    }
+  }
+
   close() {
     try { this.knex.destroy(); } catch { /* ignore */ }
   }

@@ -223,9 +223,14 @@ const SCENARIOS = [
     expectedContentType: "text",
   }),
   // Test 7 — Non-OH origin locally-skipped (no classifier call, clean verdict).
+  // Skip shape: probability=0.5 (no-signal neutral, matches fail-open and
+  // aggregator convention — not 0 which would imply "definitely human" and
+  // contradict AG self-disclosure). overall_degraded=false because this is
+  // an intentional policy skip, not a classifier failure; downstream
+  // distinguishes via classifier_providers_used="skipped_locally".
   {
     name: "origin-ag-locally-skipped",
-    description: "origin_code=AG → worker skips classifier, emits prob=0, degraded=false",
+    description: "origin_code=AG → worker skips classifier, emits prob=0.5, degraded=false",
     run: async () => {
       const nonce = crypto.randomBytes(4).toString("hex");
       const reg = await registerContent({
@@ -238,10 +243,9 @@ const SCENARIOS = [
       const poll = await pollPrescanStatus(ctid);
       if (!poll.ok) return { fail: `prescan didn't complete in ${POLL_MAX * POLL_MS / 1000}s` };
       const d = poll.data || {};
-      if (d.prescan_probability !== 0) return { fail: `expected prob=0 (locally-skipped), got ${d.prescan_probability}` };
-      if (d.prescan_overall_degraded !== false) return { fail: `expected overall_degraded=false (locally-skipped), got ${d.prescan_overall_degraded}` };
+      if (d.prescan_probability !== 0.5) return { fail: `expected prob=0.5 (locally-skipped no-signal neutral), got ${d.prescan_probability}` };
+      if (d.prescan_overall_degraded !== false) return { fail: `expected overall_degraded=false (intentional skip, not degradation), got ${d.prescan_overall_degraded}` };
       if (d.prescan_flagged !== false) return { fail: `expected flagged=false, got ${d.prescan_flagged}` };
-      if (d.prescan_tier !== "low") return { fail: `expected tier=low, got ${d.prescan_tier}` };
       return { pass: true, ctid, attempts: poll.attempts, probability: d.prescan_probability, degraded: d.prescan_overall_degraded };
     },
   },
