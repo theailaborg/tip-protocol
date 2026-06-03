@@ -237,7 +237,7 @@ describe("async-prescan e2e — happy path", () => {
     expect(row.prescan_status).toBe("completed");
   });
 
-  test("HIGH tier verdict flips status to PENDING_REVIEW", async () => {
+  test("HIGH tier verdict sets prescan_flagged=true but keeps status=REGISTERED (grace window before review)", async () => {
     const clock = makeClock();
     const fx = setup({
       now: clock.now,
@@ -255,7 +255,11 @@ describe("async-prescan e2e — happy path", () => {
     const final = fx.contentService.getPrescanStatus(ctid);
     expect(final.prescan_tier).toBe("high");
     expect(final.prescan_flagged).toBe(true);
-    expect(fx.dag.getContent(ctid).status).toBe(CONTENT_STATUS.PENDING_REVIEW);
+    // Status stays REGISTERED until the prescan-review-trigger fires after
+    // the FLAGGED_MS grace window — it's the trigger that flips status to
+    // PENDING_REVIEW and emits PRESCAN_REVIEW_TRIGGERED. PRESCAN_COMPLETED
+    // by itself never moves status to PENDING_REVIEW directly.
+    expect(fx.dag.getContent(ctid).status).toBe(CONTENT_STATUS.REGISTERED);
   });
 });
 

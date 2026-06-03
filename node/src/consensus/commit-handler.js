@@ -772,7 +772,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // HIGH/CRITICAL, signal quality is too low to act on. See
         // ASYNC_PRESCAN_ARCHITECTURE.md § Degraded handling.
         const shouldFlag = !!d.flagged && !d.overall_degraded;
-        const nextStatus = shouldFlag ? CONTENT_STATUS.PENDING_REVIEW : CONTENT_STATUS.REGISTERED;
+        // Status always flips PENDING_PRESCAN → REGISTERED on completion.
+        // PENDING_REVIEW happens later via PRESCAN_REVIEW_TRIGGERED after
+        // the 48h grace window (CONTENT_GRACE.FLAGGED_MS) — see comment at
+        // the PRESCAN_REVIEW_TRIGGERED apply: "amber badge goes live now,
+        // not at registration". Without this, flagged content would skip
+        // the grace window entirely and the trigger's getContentsNeedingReview
+        // (which gates on status=REGISTERED) would never fire.
         dag.saveContent({
           ...existing,
           prescan_flagged: shouldFlag ? 1 : 0,
@@ -782,7 +788,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           prescan_completed_at: d.completed_at,
           prescan_content_type: d.content_type,
           prescan_overall_degraded: d.overall_degraded ? 1 : 0,
-          status: nextStatus,
+          status: CONTENT_STATUS.REGISTERED,
         });
         break;
       }
