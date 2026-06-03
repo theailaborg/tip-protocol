@@ -1314,6 +1314,9 @@ class KnexAdapter {
     this.mirror.clearCanonicalState();
     // Fire DB deletes before snapshot rows arrive. Mirror is the authoritative
     // source for computeStateMerkleRoot; DB cleanup is for restart persistence.
+    // Every table that iterateCanonicalState yields MUST be deleted here,
+    // otherwise leftover rows survive a snapshot install and contribute
+    // to state_merkle_root → permanent Merkle divergence.
     Promise.all([
       this.knex("identities").delete(),
       this.knex("content").delete(),
@@ -1325,6 +1328,9 @@ class KnexAdapter {
       // GH #60 — entity_keys is canonical state too.
       this.knex("entity_keys").delete(),
       this.knex("platform_links").delete(),
+      this.knex("domain_bindings").delete(),
+      this.knex("prescan_reviews").delete(),
+      this.knex("interests_registry").delete(),
     ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
   }
 

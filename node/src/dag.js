@@ -795,6 +795,12 @@ class MemoryStore {
     // GH #60 — entity_keys is canonical state too.
     this._entityKeys.clear();
     this._platformLinks.clear();
+    // Every table that iterateCanonicalState yields MUST be cleared here,
+    // otherwise leftover rows survive a snapshot install and contribute to
+    // state_merkle_root → permanent Merkle divergence vs the snapshot author.
+    this._domainBindings.clear();
+    this._prescanReviews.clear();
+    this._interestsRegistry.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -3494,6 +3500,12 @@ class SQLiteStore {
       // GH #60 — entity_keys is canonical state too.
       this.db.prepare("DELETE FROM entity_keys").run();
       this.db.prepare("DELETE FROM platform_links").run();
+      // Every table that iterateCanonicalState yields MUST be cleared here,
+      // otherwise leftover rows survive a snapshot install and contribute
+      // to state_merkle_root → permanent Merkle divergence.
+      this.db.prepare("DELETE FROM domain_bindings").run();
+      this.db.prepare("DELETE FROM prescan_reviews").run();
+      this.db.prepare("DELETE FROM interests_registry").run();
     })();
   }
 
