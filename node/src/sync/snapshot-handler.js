@@ -857,7 +857,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     _snapServing = true;
     try {
       return dag.runInTransaction(() => {
-        // Wipe the 7 canonical-state tables before installing the peer's rows.
+        // Wipe all canonical-state tables before installing the peer's rows.
         // Without this, extra rows from this node's divergent history survive
         // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
         // never overwrites dedup_registry at all), so computeStateMerkleRoot
