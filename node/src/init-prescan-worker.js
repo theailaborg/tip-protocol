@@ -63,7 +63,7 @@ function _resolveWorkerCount() {
  * @param {Object} deps.config        Node config (signing key + reg id)
  * @returns {Object}                  { workers: Worker[], stopAll(): void }
  */
-function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
+function initPrescanWorker({ dag, prescanJobs, consensusRef, config, mediaService }) {
   const empty = { workers: [], stopAll() { /* no-op */ } };
 
   if (process.env.TIP_PRESCAN_WORKER_DISABLE === "1") {
@@ -86,7 +86,7 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
 
   for (let i = 0; i < count; i++) {
     try {
-      const { worker, runPromise } = _spawnWorker({ dag, prescanJobs, consensusRef, config, index: i });
+      const { worker, runPromise } = _spawnWorker({ dag, prescanJobs, consensusRef, config, mediaService, index: i });
       workers.push(worker);
       runPromises.push(runPromise);
     } catch (err) {
@@ -117,7 +117,7 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
   return { workers, stopAll };
 }
 
-function _spawnWorker({ dag, prescanJobs, consensusRef, config, index }) {
+function _spawnWorker({ dag, prescanJobs, consensusRef, config, mediaService, index }) {
   const classifierClient = createClassifierClient({ config });
   const { submitTx } = createTxSubmitter(consensusRef);
   // Pass `config` unmodified — `nodeRegisteredId` flows into the on-chain
@@ -126,7 +126,7 @@ function _spawnWorker({ dag, prescanJobs, consensusRef, config, index }) {
   // via worker.tag (claim debugging only, no on-chain effect).
   const worker = createPrescanWorker({
     dag, jobs: prescanJobs, classifierClient,
-    submitTx, config, log,
+    submitTx, config, log, mediaService,
     workerTag: `#${index}`,
   });
   const runPromise = worker.run().catch(err => {

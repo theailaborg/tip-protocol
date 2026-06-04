@@ -214,3 +214,92 @@ describe("media-service — content-addressed dedup", () => {
     }
   });
 });
+
+// ─── M3: resolveRefs (used by content-service to validate REGISTER refs) ────
+
+describe("media-service.resolveRefs", () => {
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-eeeeeeeeeeeeeeee", public_key: kp.publicKey, status: "active" };
+    service = createMediaService({ storage, dag: _fakeDag(identity) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("empty / missing media → []", async () => {
+    expect(await service.resolveRefs([])).toEqual([]);
+    expect(await service.resolveRefs(undefined)).toEqual([]);
+    expect(await service.resolveRefs(null)).toEqual([]);
+  });
+
+  test("missing ref → 404 media_not_found", async () => {
+    const ghost = "0".repeat(64);
+    await expect(service.resolveRefs([{ media_id: ghost, mime: "image/png" }]))
+      .rejects.toMatchObject({ status: 404, code: "media_not_found" });
+  });
+
+  test("mime mismatch → 400 media_mime_mismatch", async () => {
+    const r = await service.upload(_signedUpload(Buffer.from("png-bytes"), "image/png", identity.tip_id, kp));
+    await expect(service.resolveRefs([{ media_id: r.media_id, mime: "image/jpeg" }]))
+      .rejects.toMatchObject({ status: 400, code: "media_mime_mismatch" });
+  });
+
+  test("happy path: returns canonical [{media_id, mime}], mime lowercased", async () => {
+    const r = await service.upload(_signedUpload(Buffer.from("png-1"), "image/png", identity.tip_id, kp));
+    const out = await service.resolveRefs([{ media_id: r.media_id, mime: "IMAGE/PNG" }]);
+    expect(out).toEqual([{ media_id: r.media_id, mime: "image/png" }]);
+  });
+
+  test("dedups on media_id — duplicate refs collapse to one entry", async () => {
+    const r = await service.upload(_signedUpload(Buffer.from("dup-bytes"), "image/png", identity.tip_id, kp));
+    const out = await service.resolveRefs([
+      { media_id: r.media_id, mime: "image/png" },
+      { media_id: r.media_id, mime: "image/png" },
+    ]);
+    expect(out).toHaveLength(1);
+  });
+});
+
+// ─── M3: fetchForClassifier (used by the prescan worker fan-out) ────────────
+
+describe("media-service.fetchForClassifier", () => {
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-ffffffffffffffff", public_key: kp.publicKey, status: "active" };
+    service = createMediaService({ storage, dag: _fakeDag(identity) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("empty media → []", async () => {
+    expect(await service.fetchForClassifier([])).toEqual([]);
+  });
+
+  test("returns {base64, mime} per ref, preserving order", async () => {
+    const a = await service.upload(_signedUpload(Buffer.from("alpha"), "image/png", identity.tip_id, kp));
+    const b = await service.upload(_signedUpload(Buffer.from("beta"),  "image/jpeg", identity.tip_id, kp));
+    const out = await service.fetchForClassifier([
+      { media_id: a.media_id, mime: "image/png" },
+      { media_id: b.media_id, mime: "image/jpeg" },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(Buffer.from(out[0].base64, "base64").toString()).toBe("alpha");
+    expect(out[0].mime).toBe("image/png");
+    expect(Buffer.from(out[1].base64, "base64").toString()).toBe("beta");
+    expect(out[1].mime).toBe("image/jpeg");
+  });
+
+  test("missing media_id in storage → throws (worker treats as hard failure)", async () => {
+    const ghost = "0".repeat(64);
+    await expect(service.fetchForClassifier([{ media_id: ghost, mime: "image/png" }]))
+      .rejects.toThrow(/not found in storage/);
+  });
+});

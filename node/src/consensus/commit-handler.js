@@ -982,6 +982,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             registered_urls: Array.isArray(d.registered_urls) ? d.registered_urls : [],
+            // M3 — media refs + canonical hash. Not signed individually:
+            // content_hash binds them via CNA-MIX-1 (mch + textHash).
+            media: Array.isArray(d.media) ? d.media : [],
+            media_canonical_hash: typeof d.media_canonical_hash === "string" ? d.media_canonical_hash : null,
           });
         }
         break;

@@ -6,8 +6,8 @@ const { asyncHandler } = require("../middleware/error-handler");
 function createRouter({ contentService }) {
   const router = express.Router();
 
-  router.post("/content/register", asyncHandler((req, res) => {
-    const result = contentService.register(req.body);
+  router.post("/content/register", asyncHandler(async (req, res) => {
+    const result = await contentService.register(req.body);
     res.status(202).json(result);
   }));
 

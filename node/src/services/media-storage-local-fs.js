@@ -21,6 +21,7 @@
 const fs = require("fs/promises");
 const path = require("path");
 const { shake256 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 
 const DEFAULT_ROOT = path.join(process.cwd(), "data/media");
 
@@ -62,7 +63,7 @@ function createLocalFsBackend(config = {}) {
     if (await _exists(bin)) {
       if (!(await _exists(meta))) {
         await fs.writeFile(meta, JSON.stringify({
-          mime: opts.mime, size: buf.length, created_at: Date.now(),
+          mime: opts.mime, size: buf.length, created_at: nowMs(),
         }));
       }
       return { media_id: mediaId, size: buf.length };
@@ -75,7 +76,7 @@ function createLocalFsBackend(config = {}) {
     const tmpMeta = `${meta}.tmp`;
     await fs.writeFile(tmpBin, buf);
     await fs.writeFile(tmpMeta, JSON.stringify({
-      mime: opts.mime, size: buf.length, created_at: Date.now(),
+      mime: opts.mime, size: buf.length, created_at: nowMs(),
     }));
     await fs.rename(tmpBin, bin);
     await fs.rename(tmpMeta, meta);

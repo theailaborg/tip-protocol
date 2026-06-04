@@ -101,7 +101,7 @@ function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https
 // ─── 1. Happy path with DAG-registered signer ─────────────────────────────
 
 describe("content register — DAG-registered signer (canonical happy path)", () => {
-  test("registers cleanly; CNA-2.2 fields persisted on tx.data; no public_key", () => {
+  test("registers cleanly; CNA-2.2 fields persisted on tx.data; no public_key", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("dag-signer").slice(0, 16)}`;
@@ -111,7 +111,7 @@ describe("content register — DAG-registered signer (canonical happy path)", ()
       tipId, privKey: kp.privateKey,
       content: "Hello from a DAG-registered publisher",
     });
-    const out = fx.contentService.register(body);
+    const out = await fx.contentService.register(body);
     expect(out.confirmation).toBe("proposed");
 
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
@@ -130,7 +130,7 @@ describe("content register — DAG-registered signer (canonical happy path)", ()
 // ─── 2. Off-DAG signer — must be rejected per spec §1 ─────────────────────
 
 describe("content register — off-DAG signer is rejected (no fallback)", () => {
-  test("signer with no DAG identity → 412 signer_not_registered", () => {
+  test("signer with no DAG identity → 412 signer_not_registered", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("offdag-signer").slice(0, 16)}`;
@@ -139,15 +139,15 @@ describe("content register — off-DAG signer is rejected (no fallback)", () => 
       tipId, privKey: kp.privateKey,
       content: "Hello from an off-DAG signer",
     });
-    expect(() => fx.contentService.register(body))
-      .toThrow(expect.objectContaining({ status: 412, code: "signer_not_registered" }));
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 412, code: "signer_not_registered" });
   });
 });
 
 // ─── 3. Tamper detection ──────────────────────────────────────────────────
 
 describe("content register — tamper rejection", () => {
-  test("flipping origin_code after signing → 403 signature_invalid", () => {
+  test("flipping origin_code after signing → 403 signature_invalid", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("tamper-signer").slice(0, 16)}`;
@@ -159,11 +159,11 @@ describe("content register — tamper rejection", () => {
     });
     body.origin_code = "AG";  // tampered after signing
 
-    expect(() => fx.contentService.register(body))
-      .toThrow(expect.objectContaining({ status: 403, code: "signature_invalid" }));
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 403, code: "signature_invalid" });
   });
 
-  test("appending an extra DAG-resident author after signing → 403 signature_invalid", () => {
+  test("appending an extra DAG-resident author after signing → 403 signature_invalid", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("tamper-author").slice(0, 16)}`;
@@ -183,11 +183,11 @@ describe("content register — tamper rejection", () => {
     body.authors.push({ key_mode: "attribution", role: "byline", signed: false,
                        tip_id: injectedTipId, tip_id_type: "personal" });
 
-    expect(() => fx.contentService.register(body))
-      .toThrow(expect.objectContaining({ status: 403, code: "signature_invalid" }));
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 403, code: "signature_invalid" });
   });
 
-  test("appending an off-DAG author after signing → 412 author_not_registered (caught by validateRequest)", () => {
+  test("appending an off-DAG author after signing → 412 author_not_registered (caught by validateRequest)", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("tamper-offdag").slice(0, 16)}`;
@@ -200,15 +200,15 @@ describe("content register — tamper rejection", () => {
     body.authors.push({ key_mode: "attribution", role: "byline", signed: false,
                        tip_id: "tip://id/US-not-on-dag", tip_id_type: "personal" });
 
-    expect(() => fx.contentService.register(body))
-      .toThrow(expect.objectContaining({ status: 412, code: "author_not_registered" }));
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 412, code: "author_not_registered" });
   });
 });
 
 // ─── 4. registered_urls — array passthrough ──────────────────────────────
 
 describe("content register — registered_urls handling", () => {
-  test("array registered_urls passes through verbatim — supports syndication", () => {
+  test("array registered_urls passes through verbatim — supports syndication", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("syndicated-signer").slice(0, 16)}`;
@@ -220,14 +220,14 @@ describe("content register — registered_urls handling", () => {
       content: "syndicated content test",
       registered_urls: urls,
     });
-    const out = fx.contentService.register(body);
+    const out = await fx.contentService.register(body);
     expect(out.confirmation).toBe("proposed");
 
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
     expect(tx.data.registered_urls).toEqual(urls);
   });
 
-  test("empty registered_urls array — content not yet published", () => {
+  test("empty registered_urls array — content not yet published", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("unpublished-signer").slice(0, 16)}`;
@@ -238,7 +238,7 @@ describe("content register — registered_urls handling", () => {
       content: "unpublished content test",
       registered_urls: [],
     });
-    const out = fx.contentService.register(body);
+    const out = await fx.contentService.register(body);
     expect(out.confirmation).toBe("proposed");
 
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
@@ -249,7 +249,7 @@ describe("content register — registered_urls handling", () => {
 // ─── 5. Reject-on-extra ────────────────────────────────────────────────────
 
 describe("content register — reject-on-extra (junk fields don't get bound to signature)", () => {
-  test("a top-level garbage field is stripped before hashing; signature still verifies", () => {
+  test("a top-level garbage field is stripped before hashing; signature still verifies", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("extra-junk-signer").slice(0, 16)}`;
@@ -261,7 +261,7 @@ describe("content register — reject-on-extra (junk fields don't get bound to s
     });
     body.malicious_field = "this should be stripped";
 
-    const out = fx.contentService.register(body);
+    const out = await fx.contentService.register(body);
     expect(out.confirmation).toBe("proposed");
 
     const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");

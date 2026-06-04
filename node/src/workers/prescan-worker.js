@@ -61,7 +61,7 @@ const STAGE_AUDIO = "audio";
  * @param {() => number} [deps.now]         Time source for tests.
  * @param {() => Promise<void>} [deps.sleep] Sleep impl for tests.
  */
-function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "" }) {
+function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "", mediaService }) {
   if (!dag) throw new Error("prescan-worker: dag required");
   if (!jobs) throw new Error("prescan-worker: jobs required");
   if (!classifierClient) throw new Error("prescan-worker: classifierClient required");
@@ -400,17 +400,24 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     if (media.length === 0) {
       calls.push(classifierClient.prescan({ originCode, text, creatorClearedCount: cleared, authorTipId: authorTip }));
     } else {
+      if (!mediaService) {
+        throw new Error("prescan-worker: mediaService not wired but payload carries media[]");
+      }
+      // Fetch bytes for all refs in parallel — storage IO overlaps before
+      // we issue classifier calls. fetchForClassifier returns the
+      // {base64, mime} shape the classifier-client expects.
+      const files = await mediaService.fetchForClassifier(media);
       // First call carries the text alongside media[0].
       calls.push(classifierClient.prescan({
         originCode, text,
-        file: { base64: media[0].base64, mime: media[0].mime },
+        file: files[0],
         creatorClearedCount: cleared, authorTipId: authorTip,
       }));
       // Remaining media files alone (empty text).
-      for (let i = 1; i < media.length; i++) {
+      for (let i = 1; i < files.length; i++) {
         calls.push(classifierClient.prescan({
           originCode, text: "",
-          file: { base64: media[i].base64, mime: media[i].mime },
+          file: files[i],
           creatorClearedCount: cleared, authorTipId: authorTip,
         }));
       }

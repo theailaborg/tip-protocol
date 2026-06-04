@@ -19,7 +19,7 @@ const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
+function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService }) {
 
   // Enqueue the prescan job for the worker. The job payload carries
   // everything the worker needs (text, origin_code, resolved content_type,
@@ -29,7 +29,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
   // succeeds; the failover trigger will eventually pick the content up
   // if PRESCAN_COMPLETED never arrives. No-op when prescanJobs isn't
   // wired (legacy paths / certain test setups).
-  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution }) {
+  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution, media }) {
     if (!prescanJobs) return;
     try {
       const verifiedOhCount = dag.getContentByAuthor(signer_tip_id)
@@ -48,6 +48,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
           },
           creator_cleared_count: verifiedOhCount,
           author_tip_id: signer_tip_id,
+          // M3 — media references (media_id + mime). Worker fetches bytes
+          // from mediaStorage at scan time; refs keep the queue row small.
+          media: Array.isArray(media) ? media : [],
         },
       });
     } catch (err) {
@@ -55,16 +58,37 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     }
   }
 
-  function register(body) {
+  async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
     const {
-      signer_tip_id, origin_code, content, signature, media_canonical_hash,
+      signer_tip_id, origin_code, content, signature,
     } = body;
     const identity = contentRegisterSchema.resolveSigner(signer_tip_id, dag);
 
-    // CNA-MIX-1: when media hash is present, combine media + text hashes.
-    // The client signs the combined hash, so the node must reproduce it.
+    // M3 — validate each media[] reference exists in storage with matching
+    // mime, dedup on media_id, return canonical list for downstream use.
+    // Throws 404 / 400 before signature verify so clients see a clear error.
+    const resolvedMedia = mediaService
+      ? await mediaService.resolveRefs(body.media)
+      : (Array.isArray(body.media) ? body.media.map(m => ({ media_id: m.media_id, mime: String(m.mime).toLowerCase() })) : []);
+
+    // CNA-MIX-1: derive the media canonical hash from the resolved media[]
+    // when present; fall back to client-supplied legacy field. The derived
+    // value MUST match what the client signed — if both are sent and
+    // differ, reject as a tampering signal.
+    const derivedMch = contentRegisterSchema.mediaCanonicalHash(resolvedMedia);
+    if (body.media_canonical_hash && derivedMch && body.media_canonical_hash !== derivedMch) {
+      throw schemaError(
+        400,
+        "media_canonical_hash does not match shake256 of media[].media_id concatenation",
+        "media_canonical_hash_mismatch",
+      );
+    }
+    const media_canonical_hash = derivedMch || body.media_canonical_hash || null;
+
+    // The client signs over content_hash, which combines media + text per
+    // CNA-MIX-1. Server reproduces the same formula deterministically.
     const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
     const contentHashFull = media_canonical_hash
       ? shake256(media_canonical_hash + textHashFull)
@@ -86,7 +110,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     // REGISTER_CONTENT only carries the hint (publisher's declaration).
     const ctypeResolution = contentType.resolve({
       text: content,
-      // media[] is plumbed in a follow-up step; for now there's only text.
+      media: resolvedMedia,
       content_type_hint: body.content_type_hint || null,
       // First registered URL drives platform-based resolution
       // (twitter.com → MIXED, youtube.com → video, etc.). See
@@ -135,6 +159,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
         extras: canonicalPayload.extras,
         registered_urls: canonicalPayload.registered_urls,
         signer_tip_id: canonicalPayload.signer_tip_id,
+        // ── M3 media references. Not in the signed payload — content_hash
+        //    already commits to media via CNA-MIX-1 (shake256(mch + textHash)).
+        //    Persisted on tx.data so commit-handler can mirror onto the
+        //    content row and the worker can resolve bytes from storage.
+        media: resolvedMedia,
+        media_canonical_hash,
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -147,6 +177,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,
+      media: resolvedMedia,
     });
 
     const status = CONTENT_STATUS.PENDING_PRESCAN;

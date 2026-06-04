@@ -102,6 +102,8 @@ function _canonContent(r) {
     override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
+    media: Array.isArray(r.media) ? r.media : [],
+    media_canonical_hash: typeof r.media_canonical_hash === "string" ? r.media_canonical_hash : null,
     tx_id: r.tx_id || null,
   };
 }
@@ -1686,6 +1688,8 @@ class SQLiteStore {
         override                   INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
         registered_at              INTEGER NOT NULL,
         registered_urls            TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
+        media                      TEXT,                            -- JSON-encoded [{media_id, mime}, ...]; ordered (matches mch derivation)
+        media_canonical_hash       TEXT,                            -- shake256 of media[].media_id concat; null when no media
         tx_id                      TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
@@ -2342,8 +2346,8 @@ class SQLiteStore {
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
-            override,registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -2916,6 +2920,7 @@ class SQLiteStore {
     const urls = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
     const authors = Array.isArray(rec.authors) ? rec.authors : [];
     const extras = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
+    const media = Array.isArray(rec.media) ? rec.media : [];
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
       rec.content_hash, rec.perceptual_hash || null,
@@ -2935,7 +2940,10 @@ class SQLiteStore {
       rec.prescan_overall_degraded ? 1 : 0,
       rec.content_type_hint || null,
       rec.override ? 1 : 0,
-      rec.registered_at, JSON.stringify(urls), rec.tx_id || null
+      rec.registered_at, JSON.stringify(urls),
+      JSON.stringify(media),
+      typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
+      rec.tx_id || null
     );
   }
   // SQL returns array/object columns as JSON-encoded TEXT. Decode all
@@ -2951,6 +2959,7 @@ class SQLiteStore {
       registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
       authors: (() => { const v = decode(row.authors, []); return Array.isArray(v) ? v : []; })(),
       extras: (() => { const v = decode(row.extras, {}); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
+      media: (() => { const v = decode(row.media, []); return Array.isArray(v) ? v : []; })(),
     };
   }
   getContent(ctid) { return this._hydrateContent(this._stmts.getContent.get(ctid)); }

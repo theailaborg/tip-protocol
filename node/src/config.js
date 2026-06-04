@@ -13,6 +13,7 @@
 
 const path = require("path");
 const { MEDIA_LIMITS } = require("../../shared/constants");
+const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
 function loadConfig() {
   // Generate a stable node ID from hostname + a fixed seed if not set
@@ -96,6 +97,10 @@ function loadConfig() {
       max_image_bytes:  parseInt(process.env.TIP_MAX_IMAGE_BYTES  || MEDIA_LIMITS.max_image_bytes, 10),
       max_audio_bytes:  parseInt(process.env.TIP_MAX_AUDIO_BYTES  || MEDIA_LIMITS.max_audio_bytes, 10),
       max_text_bytes:   parseInt(process.env.TIP_MAX_TEXT_BYTES   || MEDIA_LIMITS.max_text_bytes, 10),
+      // Per-post media[] item ceiling. Comes from protocol-constants
+      // (CONTENT_LIMITS.media_items_max), surfaced here so the schema
+      // validator gates request size before storage IO.
+      media_items_max:  CONTENT_LIMITS.MEDIA_ITEMS_MAX,
     },
 
     // ── CORS ──────────────────────────────────────────────────────────────────

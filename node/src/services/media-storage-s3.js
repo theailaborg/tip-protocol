@@ -23,6 +23,7 @@
 "use strict";
 
 const { shake256 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
 const {
   S3Client,
   PutObjectCommand,
@@ -98,7 +99,7 @@ function createS3Backend(config = {}) {
       ContentType: opts.mime,
       Metadata: {
         mime: opts.mime,
-        "created-at": String(Date.now()),
+        "created-at": String(nowMs()),
         ...(opts.contentHash ? { "content-hash": opts.contentHash } : {}),
       },
       ...(_encryptionArgs()),

@@ -43,6 +43,7 @@ const {
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
 } = require("../../../shared/constants");
+const { shake256 } = require("../../../shared/crypto");
 const { validateContentSize } = require("../middleware/validate");
 
 const TX_TYPE = TX_TYPES.REGISTER_CONTENT;
@@ -124,10 +125,35 @@ function validateRequest(body, deps) {
   if (typeof body.signature !== "string" || body.signature.length === 0) {
     throw schemaError(400, "signature is required", "signature_required");
   }
-  if (!body.content && !body.media_canonical_hash) {
-    throw schemaError(400, "content or media_canonical_hash required", "content_required");
+  if (!body.content && !body.media_canonical_hash && !Array.isArray(body.media)) {
+    throw schemaError(400, "content, media_canonical_hash, or media[] required", "content_required");
   }
   if (body.content) validateContentSize(body.content, body.content_type, deps.mediaLimits);
+
+  // M3 — media[] references to uploaded media (POST /v1/media/upload).
+  // Each entry is { media_id, mime, role? } pointing at a pre-uploaded
+  // object. The worker fetches bytes from storage at scan time so the
+  // prescan_jobs payload stays small (refs only, no inlined base64).
+  if (body.media !== undefined) {
+    if (!Array.isArray(body.media)) {
+      throw schemaError(400, "media must be an array", "media_invalid");
+    }
+    if (body.media.length > (deps.mediaLimits?.media_items_max ?? Infinity)) {
+      throw schemaError(400, `media[] exceeds max ${deps.mediaLimits.media_items_max}`, "media_items_max");
+    }
+    for (let i = 0; i < body.media.length; i++) {
+      const m = body.media[i];
+      if (!m || typeof m !== "object") {
+        throw schemaError(400, `media[${i}] must be an object`, "media_entry_invalid");
+      }
+      if (typeof m.media_id !== "string" || !/^[0-9a-f]{64}$/.test(m.media_id)) {
+        throw schemaError(400, `media[${i}].media_id must be 64-char lowercase hex`, "media_id_invalid");
+      }
+      if (typeof m.mime !== "string" || !/^(image|audio|video)\/[a-z0-9.+\-]+$/i.test(m.mime)) {
+        throw schemaError(400, `media[${i}].mime must be image/*, audio/*, or video/*`, "media_mime_invalid");
+      }
+    }
+  }
 
   // authors[] shape — ≥1 entry, each carrying a tip://id/... string —
   // checked here so we can confidently DAG-look-up every author below.
@@ -366,6 +392,22 @@ function verifyTx(tx, dag) {
   return { ok: true };
 }
 
+/**
+ * Derive the canonical media hash from an ordered media[] array. Both
+ * client and server compute this from the SAME formula so signature
+ * verification stays deterministic.
+ *
+ *   media_canonical_hash = shake256(media[0].media_id + media[1].media_id + …)
+ *
+ * Order matters — preserves role positions (e.g. cover image first, then
+ * gallery). Returns null when media[] is empty/missing — caller treats
+ * "no media" as "no media_canonical_hash" (text-only content path).
+ */
+function mediaCanonicalHash(media) {
+  if (!Array.isArray(media) || media.length === 0) return null;
+  return shake256(media.map(m => m.media_id).join(""));
+}
+
 module.exports = {
   TX_TYPE,
   CURRENT_CNA_VERSION,
@@ -375,6 +417,7 @@ module.exports = {
   validateRequest,
   resolveSigner,
   buildSigningPayload,
+  mediaCanonicalHash,
   sign,
   verifySignature,
   verifyTx,

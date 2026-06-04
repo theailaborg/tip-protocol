@@ -25,10 +25,59 @@ const mediaUploadSchema = require("../schemas/media-upload");
 
 function createMediaService({ storage, dag, log }) {
   if (!storage) throw new Error("media-service: storage required");
-  if (!dag) throw new Error("media-service: dag required");
+  // dag is optional: read-only callers (worker fetch path) don't need
+  // identity / revocation lookups. upload() will assert dag itself.
   const logger = log || console;
 
+  // Existence + mime-match validation for a media[] list referenced by
+  // a REGISTER_CONTENT request. Dedupes on media_id (HEAD already cheap,
+  // but skipping the re-check keeps the canonical list 1:1 with the
+  // signed media_canonical_hash derivation). Returns the canonical
+  // [{media_id, mime}] form callers persist to tx.data + queue payload.
+  // Throws structured 404/400 so the HTTP layer surfaces clean codes.
+  async function resolveRefs(media) {
+    if (!Array.isArray(media) || media.length === 0) return [];
+    const resolved = [];
+    const seen = new Set();
+    for (let i = 0; i < media.length; i++) {
+      const m = media[i];
+      if (seen.has(m.media_id)) continue;
+      seen.add(m.media_id);
+      const head = await storage.head(m.media_id);
+      if (!head || !head.exists) {
+        throw schemaError(404, `media[${i}] not found in storage: ${m.media_id}`, "media_not_found");
+      }
+      const claimed = String(m.mime).toLowerCase();
+      const actual  = String(head.mime).toLowerCase();
+      if (claimed !== actual) {
+        throw schemaError(
+          400,
+          `media[${i}] mime mismatch: client claims "${m.mime}" but stored object is "${head.mime}"`,
+          "media_mime_mismatch",
+        );
+      }
+      resolved.push({ media_id: m.media_id, mime: actual });
+    }
+    return resolved;
+  }
+
+  // Fetch bytes for each ref and return [{base64, mime}] — the shape the
+  // classifier-client's `file` param expects. Order preserved so the
+  // worker's text+media[0] convention still holds. Throws on the first
+  // missing object — worker treats this as hard failure (retry/fail-open).
+  async function fetchForClassifier(media) {
+    if (!Array.isArray(media) || media.length === 0) return [];
+    return Promise.all(media.map(async (m, i) => {
+      const got = await storage.get(m.media_id);
+      if (!got || !got.bytes) {
+        throw new Error(`media-service: media[${i}] not found in storage: ${m.media_id}`);
+      }
+      return { base64: got.bytes.toString("base64"), mime: m.mime || got.mime };
+    }));
+  }
+
   async function upload(input) {
+    if (!dag) throw new Error("media-service.upload: dag required");
     // ALL request-level validation lives in the schema module (shape, mime
     // family, size limit, replay window). Service handles only the
     // business-rule checks that need DAG / crypto state.
@@ -80,7 +129,7 @@ function createMediaService({ storage, dag, log }) {
     return storage.delete(mediaId);
   }
 
-  return { upload, fetchBytes, presignedGet, head, delete: deleteMedia };
+  return { upload, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier };
 }
 
 module.exports = { createMediaService };

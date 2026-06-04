@@ -161,7 +161,10 @@ async function main() {
   // classifier, aggregates, and emits PRESCAN_COMPLETED via consensus.
   // Runs in-process for v1; split to a sibling process via docker-compose
   // / pm2 when classifier traffic justifies it.
-  const prescanWorkers = initPrescanWorker({ dag, prescanJobs, consensusRef, config });
+  const prescanWorkers = initPrescanWorker({
+    dag, prescanJobs, consensusRef, config,
+    mediaService: app.locals.mediaService,
+  });
 
   // 9. Start listening
   server.listen(config.port, () => {
