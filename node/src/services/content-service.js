@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  shake256, hashContent, perceptualHashText, tipNormalize,
+  shake256, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
@@ -93,7 +93,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const contentHashFull = media_canonical_hash
       ? shake256(media_canonical_hash + textHashFull)
       : textHashFull;
-    const contentHashShort = hashContent(content || media_canonical_hash || "");
+    // CTID short hash derives from the full canonical hash so it covers
+    // every modality (text, media, mixed). Earlier branching on raw inputs
+    // collided on same-text-different-media posts. shake256 output is
+    // already uniformly distributed hex, so a 14-char prefix is fine.
+    const contentHashShort = contentHashFull.slice(0, 14);
 
     // ── Signature verification ─────────────────────────────────────────────
     const canonicalPayload = contentRegisterSchema.buildSigningPayload(body, contentHashFull);
