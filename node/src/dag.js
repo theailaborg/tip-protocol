@@ -3019,8 +3019,10 @@ class SQLiteStore {
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
-    this._stmts.addRevoc.run(tipId, txType, timestamp, txId);
-    this._stmts.revokeIdent.run(tipId);
+    this.db.transaction(() => {
+      this._stmts.addRevoc.run(tipId, txType, timestamp, txId);
+      this._stmts.revokeIdent.run(tipId);
+    })();
   }
   isRevoked(tipId) { return !!this._stmts.isRevoked.get(tipId); }
   getRevocation(tipId) { return this._stmts.getRevoc.get(tipId) || null; }
@@ -3114,17 +3116,19 @@ class SQLiteStore {
 
   // ── entity_keys (GH #60) ─────────────────────────────────────────────────
   _saveActiveEntityKey({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
-    const prev = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
-    if (prev) {
-      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
-        return;  // idempotent re-write (snapshot install replay)
+    this.db.transaction(() => {
+      const prev = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
+      if (prev) {
+        if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+          return;  // idempotent re-write (snapshot install replay)
+        }
+        this._stmts.closeActiveEntityKey.run(valid_from_ts, entity_type, entity_id);
       }
-      this._stmts.closeActiveEntityKey.run(valid_from_ts, entity_type, entity_id);
-    }
-    this._stmts.saveEntityKey.run(
-      entity_type, entity_id, public_key, algorithm,
-      valid_from_ts, null, source_tx_id,
-    );
+      this._stmts.saveEntityKey.run(
+        entity_type, entity_id, public_key, algorithm,
+        valid_from_ts, null, source_tx_id,
+      );
+    })();
   }
   saveEntityKey(rec) {
     // Generalised save (used by snapshot install + KEY_ROTATED/KEY_RECOVERY
