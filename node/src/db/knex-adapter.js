@@ -1635,9 +1635,13 @@ class KnexAdapter {
 
   // ── DB Transactions ────────────────────────────────────────────────────────
   // Mirror is already atomic (Map operations). DB writes from inside fn() are
-  // individually fire-and-forgetted. Eventual consistency to DB is acceptable.
+  // individually fire-and-forgetted via _ff(). Wrapping in knex.transaction()
+  // holds a pool connection for the entire callback while the callback's own
+  // _ff() writes also acquire pool connections → pool exhaustion. Proper
+  // atomicity requires threading `trx` through every write method (C-2).
+  // TODO(C-2): thread trx through _ff() so snapshot installs are truly atomic.
 
-  runInTransaction(fn) { return this.knex.transaction(fn); }
+  runInTransaction(fn) { return fn(); }
 
   // ── Backfill ──────────────────────────────────────────────────────────────
   // Mirror is hydrated with correct subject_tip_ids during migrate().

@@ -1,11 +1,14 @@
 /**
  * @file tests/db/knex-adapter-transaction.test.js
- * @description Unit tests for KnexAdapter.runInTransaction — C-2 bug fix.
+ * @description Unit tests for KnexAdapter.runInTransaction — C-2 known limitation.
  *
- * These tests verify that runInTransaction delegates to knex.transaction(fn)
- * rather than calling fn() directly (the pre-fix no-op). A real DB connection
- * is not required: we replace adapter.knex with a stub after construction so
- * the pool never establishes a real connection.
+ * runInTransaction is currently a pass-through (`return fn()`). Wrapping in
+ * knex.transaction() caused connection-pool exhaustion because the callback's
+ * internal _ff() writes also acquire pool connections while the transaction
+ * holds one open. True atomicity requires threading `trx` through every write
+ * method (TODO C-2).
+ *
+ * These tests document the current behavior and guard the pass-through contract.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -28,40 +31,28 @@ describe("KnexAdapter.runInTransaction", () => {
       dbName: "tip_test",
       dbUser: "tip",
       dbPassword: "tip",
-      dbPoolMin: 0, // prevents eager connection attempts against a non-existent DB
+      dbPoolMin: 0,
       dbPoolMax: 1,
     });
     realKnex = adapter.knex;
   });
 
   afterEach(async () => {
-    // Tear down the pool so idle-connection errors don't bleed into other tests.
     await realKnex.destroy().catch(() => {});
   });
 
-  test("delegates to knex.transaction(fn) rather than calling fn() directly", async () => {
-    const sentinel = Symbol("trx-result");
-    adapter.knex = {
-      transaction: jest.fn(() => Promise.resolve(sentinel)),
-    };
+  test("calls fn() directly and returns its result (pass-through)", async () => {
+    const sentinel = Symbol("fn-result");
+    const fn = jest.fn(() => sentinel);
 
-    const fn = jest.fn();
-    const result = await adapter.runInTransaction(fn);
+    const result = adapter.runInTransaction(fn);
 
-    // With the pre-fix no-op `return fn()`, knex.transaction is never reached.
-    // With the fix `return this.knex.transaction(fn)`, it is called with fn.
-    expect(adapter.knex.transaction).toHaveBeenCalledTimes(1);
-    expect(adapter.knex.transaction).toHaveBeenCalledWith(fn);
+    expect(fn).toHaveBeenCalledTimes(1);
     expect(result).toBe(sentinel);
   });
 
-  test("propagates the rejection from knex.transaction to the caller", async () => {
-    const dbErr = new Error("DB connection lost");
-    adapter.knex = {
-      transaction: jest.fn(() => Promise.reject(dbErr)),
-    };
-
-    await expect(adapter.runInTransaction(() => {})).rejects.toBe(dbErr);
-    expect(adapter.knex.transaction).toHaveBeenCalledTimes(1);
+  test("propagates synchronous throw from fn", () => {
+    const err = new Error("inner failure");
+    expect(() => adapter.runInTransaction(() => { throw err; })).toThrow(err);
   });
 });
