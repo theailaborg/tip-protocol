@@ -22,7 +22,7 @@
 
 "use strict";
 
-const crypto = require("crypto");
+const { shake256 } = require("../../../shared/crypto");
 const {
   S3Client,
   PutObjectCommand,
@@ -56,13 +56,6 @@ function createS3Backend(config = {}) {
     return `media/${mediaId.slice(0, 2)}/${mediaId.slice(2)}.bin`;
   }
 
-  function _computeMediaId(bytes) {
-    // See notes in media-storage-local-fs.js — SHA3-256 fixed-output for
-    // content-addressing at this layer. content_hash (shake256) is the
-    // protocol-level hash and is stored separately on tx.data.
-    return crypto.createHash("sha3-256").update(bytes).digest("hex");
-  }
-
   function _encryptionArgs() {
     if (kmsKeyId) {
       return { ServerSideEncryption: "aws:kms", SSEKMSKeyId: kmsKeyId };
@@ -79,7 +72,10 @@ function createS3Backend(config = {}) {
       throw new Error("media-storage(s3): put requires opts.mime");
     }
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-    const mediaId = _computeMediaId(buf);
+    // media_id IS the content_hash (SHAKE-256). Caller may pass it via
+    // opts.contentHash to skip rehashing; otherwise compute here. Same
+    // contract as the fs backend so the factory is interchangeable.
+    const mediaId = opts.contentHash || shake256(buf);
     const key = _objectKey(mediaId);
 
     // Content-addressed dedup: HEAD before PUT. Saves the cost of a redundant

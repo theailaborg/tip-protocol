@@ -20,7 +20,7 @@
 
 const fs = require("fs/promises");
 const path = require("path");
-const crypto = require("crypto");
+const { shake256 } = require("../../../shared/crypto");
 
 const DEFAULT_ROOT = path.join(process.cwd(), "data/media");
 
@@ -36,16 +36,6 @@ function createLocalFsBackend(config = {}) {
     return { dir, bin: path.join(dir, `${base}.bin`), meta: path.join(dir, `${base}.meta.json`) };
   }
 
-  async function _computeMediaId(bytes) {
-    // SHAKE-256 isn't in Node's crypto, but SHA3-256 fixed-256-output is
-    // functionally equivalent for content-addressing here. Both give 64-hex
-    // content-deterministic ids. We use SHA3-256 to avoid a snarkjs dep at
-    // this layer — content-hash (which IS shake256) is computed elsewhere
-    // and stored in the sidecar / passed as opts.contentHash.
-    const h = crypto.createHash("sha3-256").update(bytes).digest("hex");
-    return h;
-  }
-
   async function _exists(p) {
     try { await fs.access(p); return true; } catch { return false; }
   }
@@ -58,7 +48,11 @@ function createLocalFsBackend(config = {}) {
       throw new Error("media-storage(fs): put requires opts.mime");
     }
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-    const mediaId = await _computeMediaId(buf);
+    // media_id IS the content_hash (SHAKE-256, 32 bytes). Use the caller-
+    // supplied value when present (saves a rehash — media-service already
+    // computes it for the upload-challenge signature check), otherwise
+    // compute it here. Single hash function across the project.
+    const mediaId = opts.contentHash || shake256(buf);
     const { dir, bin, meta } = _objectKeys(mediaId);
 
     // Content-addressed dedup: if the bin already exists with our id, the
