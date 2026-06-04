@@ -713,9 +713,15 @@ class MemoryStore {
     // insert the new active row with valid_to_ts = null.
     const prev = this._getActiveEntityKey(entity_type, entity_id);
     if (prev) {
-      // Idempotent: re-saving the same active key (same pubkey + alg +
-      // valid_from_ts) is a no-op. Happens on snapshot install replay.
-      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+      // Skip if the active key is already this key — regardless of valid_from_ts.
+      // saveIdentity passes valid_from_ts = registered_at (original registration
+      // time) but entity_keys are managed by saveEntityKey after the first write;
+      // KEY_ROTATED / KEY_RECOVERY set valid_from_ts = effectiveAt which never
+      // equals registered_at. Requiring valid_from_ts to match would cause
+      // UPDATE_PROFILE commits to close the correctly-placed active row and
+      // insert a duplicate at valid_from_ts=registered_at, corrupting the mirror
+      // state that KEY_RECOVERY reads to find which row to close.
+      if (prev.public_key === public_key && prev.algorithm === algorithm) {
         return;
       }
       const prevKey = this._entityKeyId(entity_type, entity_id, prev.valid_from_ts);

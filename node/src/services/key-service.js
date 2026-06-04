@@ -149,10 +149,10 @@ function createKeyService({ dag, submitTx }) {
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
-    log.info(`Key recovery proposed: ${normalised.tip_id} via vp=${normalised.vp_id} (effective_at=${canonicalPayload.effective_at})`);
+    log.info(`Key recovery proposed: ${normalised.tip_id} via vp=${normalised.vp_id} (effective_at=${timestamp})`);
     return {
       tx_id: signedTx.tx_id, tip_id: normalised.tip_id, vp_id: normalised.vp_id,
-      effective_at: canonicalPayload.effective_at,
+      effective_at: timestamp,
       confirmation: "proposed",
     };
   }

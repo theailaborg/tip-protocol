@@ -1076,35 +1076,26 @@ class KnexAdapter {
   getAllIdentities() { return this.mirror.getAllIdentities(); }
 
   // ── entity_keys (GH #60) ─────────────────────────────────────────────────
-  // PG/MariaDB write path. Closes any currently-active row for the
-  // entity (sets valid_to_ts = new row's valid_from_ts) and inserts the
-  // new active row (valid_to_ts = null). Idempotent on re-save of the
-  // same active key. Used by saveIdentity/saveVP/saveNode auto-routing
-  // AND by KEY_ROTATED / KEY_RECOVERY commit-handler apply.
+  // Insert-only write for initial entity registration (REGISTER_IDENTITY,
+  // VP_REGISTERED, NODE_REGISTERED). Uses ON CONFLICT DO NOTHING so
+  // concurrent fire-and-forgets from UPDATE_PROFILE or snapshot-replay
+  // are silently dropped — those call saveIdentity with the current active
+  // key and registered_at, but entity_keys are already correct (managed by
+  // saveEntityKey from the KEY_ROTATED / KEY_RECOVERY commit handler).
+  //
+  // The old "close active row + insert new" pattern here raced with
+  // saveEntityKey fire-and-forgets: if this ff executed before the
+  // saveEntityKey writes landed in Postgres it found the pre-rotation key
+  // as the only active row, decided the key had changed, and inserted a
+  // duplicate active row at valid_from_ts=registered_at. Using "ignore"
+  // eliminates the race — the first write wins, all later ones are no-ops.
   _saveActiveEntityKeyToDb({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
-    this._ff(async () => {
-      // Idempotency: if an active row exists with the same key+alg+valid_from_ts, skip.
-      const existing = await this.knex("entity_keys")
-        .where({ entity_type, entity_id })
-        .whereNull("valid_to_ts")
-        .first();
-      if (existing
-        && existing.public_key === public_key
-        && existing.algorithm === algorithm
-        && Number(existing.valid_from_ts) === Number(valid_from_ts)) {
-        return;
-      }
-      await this.knex.transaction(async (trx) => {
-        await trx("entity_keys")
-          .where({ entity_type, entity_id })
-          .whereNull("valid_to_ts")
-          .update({ valid_to_ts: valid_from_ts });
-        await trx("entity_keys").insert({
-          entity_type, entity_id, public_key, algorithm,
-          valid_from_ts, valid_to_ts: null, source_tx_id,
-        });
-      });
-    });
+    this._ff(() => this._dbInsert(
+      "entity_keys",
+      ["entity_type", "entity_id", "valid_from_ts"],
+      { entity_type, entity_id, public_key, algorithm, valid_from_ts, valid_to_ts: null, source_tx_id },
+      "ignore",
+    ));
   }
 
   saveEntityKey(rec) {
@@ -1339,6 +1330,11 @@ class KnexAdapter {
   addRevocation(id, type, ts, txId) {
     this.mirror.addRevocation(id, type, ts, txId);
     this._ff(() => this._dbInsert("revocations", "tip_id", { tip_id: id, tx_type: type, timestamp: ts, tx_id: txId }, "ignore"));
+    // Keep identities.status in sync with the revocations table so Postgres
+    // reflects the same state as the in-memory mirror (which tracks revocations
+    // separately). Without this, nodes that didn't originate the REVOKE_* tx
+    // would show status='active' even after a revocation committed.
+    this._ff(() => this.knex("identities").where({ tip_id: id }).update({ status: "revoked" }));
   }
 
   isRevoked(id) { return this.mirror.isRevoked(id); }

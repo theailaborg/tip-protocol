@@ -258,7 +258,7 @@ async function main() {
 
   if ([200, 201, 202].includes(recoverRes.status)) {
     const recoverTxId = recoverRes.body.data.tx_id;
-    const tx = await _getTx(recoverTxId);
+    const tx = await _getTx(recoverTxId, { timeoutMs: 10000 });
     expect(!!tx, "KEY_RECOVERY tx committed", tx?.tx_id?.slice(0, 16));
     if (tx) assertUnifiedSig("KEY_RECOVERY", tx);
 
