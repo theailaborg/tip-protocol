@@ -1637,7 +1637,7 @@ class KnexAdapter {
   // Mirror is already atomic (Map operations). DB writes from inside fn() are
   // individually fire-and-forgetted. Eventual consistency to DB is acceptable.
 
-  runInTransaction(fn) { return fn(); }
+  runInTransaction(fn) { return this.knex.transaction(fn); }
 
   // ── Backfill ──────────────────────────────────────────────────────────────
   // Mirror is hydrated with correct subject_tip_ids during migrate().
