@@ -21,6 +21,8 @@ const { nowMs } = require(path.join(SHARED, "time"));
 const { createMediaStorage } = require(path.join(SRC, "services/media-storage"));
 const { createMediaService } = require(path.join(SRC, "services/media-service"));
 const mediaUploadSchema = require(path.join(SRC, "schemas/media-upload"));
+const mediaAccessSchema = require(path.join(SRC, "schemas/media-access"));
+const { PRESCAN_REVIEW_STATES } = require(path.join(SHARED, "constants"));
 
 // Initialise protocol constants so CONTENT_LIMITS getters return real values.
 const PC = require(path.join(SHARED, "protocol-constants"));
@@ -301,5 +303,210 @@ describe("media-service.fetchForClassifier", () => {
     const ghost = "0".repeat(64);
     await expect(service.fetchForClassifier([{ media_id: ghost, mime: "image/png" }]))
       .rejects.toThrow(/not found in storage/);
+  });
+});
+
+// ─── M4: fetchForReviewer ────────────────────────────────────────────────
+
+const CTID = "tip://c/OH-aabbccddeeff11-1234";
+const ORIGIN_NODE = "tip://node/efbe3707224fb785";
+
+function _accessDag({ identity, content, openReview = null, disputerSet = new Set(), isRevoked = false }) {
+  return {
+    getIdentity: (tipId) => (tipId === identity.tip_id ? identity : null),
+    isRevoked: () => isRevoked,
+    getContent: (ctid) => (content && content.ctid === ctid ? content : null),
+    getOpenPrescanReviewByCtid: (ctid) => (openReview && openReview.ctid === ctid ? openReview : null),
+    hasDispute: (ctid, tipId) => disputerSet.has(`${ctid}|${tipId}`),
+  };
+}
+
+function _signedAccess(ctid, idx, requesterTipId, kp, timestamp = nowMs()) {
+  const challenge = mediaAccessSchema.buildChallenge({ ctid, idx, timestamp, requester_tip_id: requesterTipId });
+  const signature = mldsaSign(challenge, kp.privateKey);
+  return { ctid, idx, requester_tip_id: requesterTipId, signature, timestamp };
+}
+
+describe("media-service.fetchForReviewer — happy path", () => {
+  let storage, service, root, kp, identity, mediaId;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-1111111111111111", public_key: kp.publicKey, status: "active" };
+
+    // Pre-load a media object on the local backend so the route serves
+    // bytes (not a redirect).
+    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    mediaId = up.media_id;
+
+    const content = {
+      ctid: CTID,
+      signer_tip_id: identity.tip_id,
+      media: [{ media_id: mediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("author fetches own media → transport=stream, bytes returned", async () => {
+    const out = await service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp));
+    expect(out.transport).toBe("stream");
+    expect(out.role).toBe("author");
+    expect(out.bytes.toString()).toBe("png-bytes");
+    expect(out.mime).toBe("image/png");
+  });
+});
+
+describe("media-service.fetchForReviewer — validation + auth", () => {
+  let storage, service, root, kp, identity, mediaId, content;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-2222222222222222", public_key: kp.publicKey, status: "active" };
+    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    mediaId = up.media_id;
+    content = {
+      ctid: CTID,
+      signer_tip_id: identity.tip_id,
+      media: [{ media_id: mediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("schema validation fires before service work (e.g. malformed ctid)", async () => {
+    // Sanity-check: the service forwards into schema.validateRequest. Full
+    // shape + DAG-presence coverage lives in tests/schemas/media-access.test.js.
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+    const input = _signedAccess(CTID, 0, identity.tip_id, kp);
+    input.ctid = "not-a-ctid";
+    await expect(service.fetchForReviewer(input)).rejects.toMatchObject({ code: "ctid_invalid" });
+  });
+
+  test("wrong signature → 403 signature_invalid", async () => {
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+    const decoyKp = generateMLDSAKeypair();
+    const input = _signedAccess(CTID, 0, identity.tip_id, decoyKp);  // signed by wrong key
+    await expect(service.fetchForReviewer(input)).rejects.toMatchObject({ code: "signature_invalid" });
+  });
+});
+
+describe("media-service.fetchForReviewer — policy gate", () => {
+  let storage, service, root, kp, identity, mediaId;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-3333333333333333", public_key: kp.publicKey, status: "active" };
+    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    mediaId = up.media_id;
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("outsider (no role) → 403 forbidden", async () => {
+    const author = { tip_id: "tip://id/US-aaaaaaaaaaaaaaaa", public_key: "ff".repeat(32), status: "active" };
+    const content = {
+      ctid: CTID, signer_tip_id: author.tip_id,
+      media: [{ media_id: mediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+
+    const input = _signedAccess(CTID, 0, identity.tip_id, kp);
+    await expect(service.fetchForReviewer(input)).rejects.toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  test("assigned reviewer with open TRIGGERED review → allowed, role=assigned_reviewer", async () => {
+    const author = { tip_id: "tip://id/US-bbbbbbbbbbbbbbbb", public_key: "ff".repeat(32), status: "active" };
+    const content = {
+      ctid: CTID, signer_tip_id: author.tip_id,
+      media: [{ media_id: mediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    const openReview = { ctid: CTID, assigned_reviewer: identity.tip_id, state: PRESCAN_REVIEW_STATES.TRIGGERED };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content, openReview }) });
+
+    const out = await service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp));
+    expect(out.role).toBe("assigned_reviewer");
+    expect(out.transport).toBe("stream");
+  });
+
+  test("disputer (hasDispute true) → allowed, role=disputer", async () => {
+    const author = { tip_id: "tip://id/US-cccccccccccccccc", public_key: "ff".repeat(32), status: "active" };
+    const content = {
+      ctid: CTID, signer_tip_id: author.tip_id,
+      media: [{ media_id: mediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    const disputerSet = new Set([`${CTID}|${identity.tip_id}`]);
+    service = createMediaService({ storage, dag: _accessDag({ identity, content, disputerSet }) });
+
+    const out = await service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp));
+    expect(out.role).toBe("disputer");
+  });
+});
+
+describe("media-service.fetchForReviewer — idx + cross-node", () => {
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-4444444444444444", public_key: kp.publicKey, status: "active" };
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("idx out of range → 404 media_idx_out_of_range", async () => {
+    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    const content = {
+      ctid: CTID, signer_tip_id: identity.tip_id,
+      media: [{ media_id: up.media_id, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+
+    await expect(service.fetchForReviewer(_signedAccess(CTID, 5, identity.tip_id, kp)))
+      .rejects.toMatchObject({ status: 404, code: "media_idx_out_of_range" });
+  });
+
+  test("bytes not held locally → redirect with origin_node_id", async () => {
+    // Content references a media_id that storage does NOT have. Simulates
+    // a juror hitting a node that wasn't the upload-receiver, in a federation
+    // without shared S3.
+    const ghostMediaId = "9".repeat(64);
+    const content = {
+      ctid: CTID, signer_tip_id: identity.tip_id,
+      media: [{ media_id: ghostMediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+
+    const out = await service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp));
+    expect(out.transport).toBe("redirect");
+    expect(out.origin_node_id).toBe(ORIGIN_NODE);
+  });
+
+  test("bytes not held locally AND origin unknown → 410 media_unavailable", async () => {
+    const ghostMediaId = "9".repeat(64);
+    const content = {
+      ctid: CTID, signer_tip_id: identity.tip_id,
+      media: [{ media_id: ghostMediaId, mime: "image/png" }],
+      prescan_assigned_node_id: null,  // unknown — can't redirect
+    };
+    service = createMediaService({ storage, dag: _accessDag({ identity, content }) });
+
+    await expect(service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp)))
+      .rejects.toMatchObject({ status: 410, code: "media_unavailable" });
   });
 });

@@ -22,6 +22,8 @@ const { shake256, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
+const mediaAccessSchema = require("../schemas/media-access");
+const { canAccessMedia } = require("./media-access-policy");
 
 function createMediaService({ storage, dag, log }) {
   if (!storage) throw new Error("media-service: storage required");
@@ -48,7 +50,7 @@ function createMediaService({ storage, dag, log }) {
         throw schemaError(404, `media[${i}] not found in storage: ${m.media_id}`, "media_not_found");
       }
       const claimed = String(m.mime).toLowerCase();
-      const actual  = String(head.mime).toLowerCase();
+      const actual = String(head.mime).toLowerCase();
       if (claimed !== actual) {
         throw schemaError(
           400,
@@ -129,7 +131,98 @@ function createMediaService({ storage, dag, log }) {
     return storage.delete(mediaId);
   }
 
-  return { upload, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier };
+  // Reviewer / juror / disputer / author fetch path. Returns one of:
+  //
+  //   { transport: "redirect", origin_node_id }
+  //     — this node does not have the bytes; caller (route) should 307
+  //       to that node so the requester re-presents the same signed
+  //       request there. Cross-node fallback for fs-backed federations.
+  //
+  //   { transport: "stream", media_id, mime, bytes }
+  //     — fs backend (or s3 with presigning disabled). Caller streams.
+  //
+  //   { transport: "presigned", media_id, mime, presigned_url, expires_at }
+  //     — s3 backend. Caller returns the URL; reviewer fetches direct.
+  //
+  // Throws schemaError on validation / auth / policy failure. dag is
+  // required for this path (identity + revocation + content lookups).
+  async function fetchForReviewer(input) {
+    if (!dag) throw new Error("media-service.fetchForReviewer: dag required");
+    // Schema owns ALL request-level checks: shape, replay window, and
+    // DAG presence (identity exists / active / not revoked). Service
+    // only does the things that genuinely need both — signature verify
+    // (canonical challenge + public_key lookup) and the policy gate.
+    mediaAccessSchema.validateRequest(input, { dag });
+
+    const { ctid, idx, requester_tip_id, signature, timestamp } = input;
+    const identity = dag.getIdentity(requester_tip_id);  // guaranteed by schema
+
+    const challenge = mediaAccessSchema.buildChallenge({ ctid, idx, timestamp, requester_tip_id });
+    if (!mldsaVerify(challenge, signature, identity.public_key)) {
+      throw schemaError(403, "Access signature verification failed", "signature_invalid");
+    }
+
+    // Policy: only authorized roles get past this point. Returns the role
+    // tag for logging / observability when ops enable storage-layer logs.
+    const policy = canAccessMedia(dag, ctid, requester_tip_id);
+    if (!policy.ok) {
+      throw schemaError(policy.status || 403, "Not authorised to fetch this media", policy.code);
+    }
+
+    const content = dag.getContent(ctid);
+    const media = Array.isArray(content.media) ? content.media : [];
+    if (idx >= media.length) {
+      throw schemaError(404, `media index ${idx} out of range (have ${media.length})`, "media_idx_out_of_range");
+    }
+    const ref = media[idx];
+
+    // Local probe first. If this node has the bytes, serve. If not, fall
+    // back to a cross-node redirect using the node the content was first
+    // registered on. content.prescan_assigned_node_id is set on every
+    // REGISTER_CONTENT and replicated through consensus, so every node
+    // can compute the same redirect target deterministically.
+    const localHead = await storage.head(ref.media_id);
+    if (!localHead || !localHead.exists) {
+      const origin = content.prescan_assigned_node_id || null;
+      if (!origin) {
+        throw schemaError(410, "Media not present locally and origin node unknown", "media_unavailable");
+      }
+      return { transport: "redirect", origin_node_id: origin, role: policy.role };
+    }
+
+    // s3 backend serves bytes via short-TTL presigned URL — saves the
+    // node's bandwidth and lets clients pull directly from object store.
+    // fs backend has no presigning; presignedGet returns null, caller
+    // falls through to streaming.
+    const presigned = await storage.presignedGet(ref.media_id);
+    if (presigned) {
+      return {
+        transport: "presigned",
+        media_id: ref.media_id,
+        mime: localHead.mime,
+        presigned_url: presigned,
+        expires_at: nowMs() + ((storage.presignTtlSec || 300) * 1000),
+        role: policy.role,
+      };
+    }
+
+    const got = await storage.get(ref.media_id);
+    if (!got || !got.bytes) {
+      // Race: object disappeared between HEAD and GET (retention sweep
+      // mid-request, or fs corruption). Surface as 410 — the content row
+      // referenced media that's no longer available.
+      throw schemaError(410, "Media bytes not available", "media_unavailable");
+    }
+    return {
+      transport: "stream",
+      media_id: ref.media_id,
+      mime: got.mime,
+      bytes: got.bytes,
+      role: policy.role,
+    };
+  }
+
+  return { upload, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, fetchForReviewer };
 }
 
 module.exports = { createMediaService };
