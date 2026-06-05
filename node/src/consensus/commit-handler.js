@@ -21,6 +21,7 @@
 const { nowMs } = require("../../../shared/time");
 
 const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -382,6 +383,26 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (existing) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already applied` };
         const inBatch = validated.find(t => t.tx_type === TX_TYPES.SCORE_UPDATE && tipMatch(t));
         if (inBatch) return { valid: false, error: `SCORE_UPDATE for (${d.tip_id}, ${d.ctid || "—"}, ${d.reason}) already in this batch` };
+
+        // C-8: cap social-link score bonuses at MAX_SOCIAL_ACCOUNTS. The API
+        // service already guards this at submission time, but gossip-injected
+        // txs bypass the API entirely. Closing this gap here ensures the cap
+        // is enforced at consensus commit time on every node regardless of
+        // origin. Linking itself is unrestricted — only the score bonus is
+        // capped. Non-social SCORE_UPDATEs (jury verdicts, clean-record, etc.)
+        // are unaffected.
+        const SOCIAL_LINK_PREFIX = "Social account linked:";
+        if (d.reason.startsWith(SOCIAL_LINK_PREFIX)) {
+          const isSocialBonus = (t) =>
+            t.data?.tip_id === d.tip_id &&
+            t.data?.reason?.startsWith(SOCIAL_LINK_PREFIX);
+          const committedCount = dag.getTxsByType(TX_TYPES.SCORE_UPDATE).filter(isSocialBonus).length;
+          const inBatchCount   = validated.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE && isSocialBonus(t)).length;
+          if (committedCount + inBatchCount >= SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS) {
+            return { valid: false, error: `Social link score cap (${SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS}) reached for ${d.tip_id}` };
+          }
+        }
+
         return { valid: true };
       }
 
