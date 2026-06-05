@@ -14,9 +14,9 @@
 "use strict";
 
 const path = require("path");
-const fs   = require("fs/promises");
-const os   = require("os");
-const SRC  = path.resolve(__dirname, "../../src");
+const fs = require("fs/promises");
+const os = require("os");
+const SRC = path.resolve(__dirname, "../../src");
 const { createMediaStorage } = require(path.join(SRC, "services/media-storage"));
 
 async function _scratch() {
@@ -63,7 +63,7 @@ describe("media-storage — local fs backend", () => {
 
   test("different bytes → different media_id", async () => {
     const a = await storage.put(Buffer.from("alpha"), { mime: "image/png" });
-    const b = await storage.put(Buffer.from("beta"),  { mime: "image/png" });
+    const b = await storage.put(Buffer.from("beta"), { mime: "image/png" });
     expect(a.media_id).not.toBe(b.media_id);
   });
 
@@ -112,7 +112,7 @@ describe("media-storage — local fs backend", () => {
 
   test("malformed media_id is rejected (defensive)", async () => {
     await expect(storage.get("not-a-hash")).rejects.toThrow(/64-char/);
-    await expect(storage.head("00ff"))     .rejects.toThrow(/64-char/);
+    await expect(storage.head("00ff")).rejects.toThrow(/64-char/);
     await expect(storage.delete("ZZ".repeat(32))).rejects.toThrow(/64-char/);
   });
 
@@ -154,5 +154,59 @@ describe("media-storage — factory selection", () => {
   test("createMediaStorage s3 throws without bucket configured", () => {
     delete process.env.TIP_MEDIA_S3_BUCKET;
     expect(() => createMediaStorage({ backend: "s3" })).toThrow(/TIP_MEDIA_S3_BUCKET/);
+  });
+});
+
+describe("media-storage (fs) — list()", () => {
+  let root, storage;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+  });
+
+  afterEach(async () => { await _cleanup(root); });
+
+  async function _drain(it) {
+    const out = [];
+    for await (const e of it) out.push(e);
+    return out;
+  }
+
+  test("empty store → no entries", async () => {
+    const entries = await _drain(storage.list());
+    expect(entries).toEqual([]);
+  });
+
+  test("list returns one entry per stored object with media_id + created_at", async () => {
+    const a = await storage.put(Buffer.from("alpha"), { mime: "image/png" });
+    const b = await storage.put(Buffer.from("beta"), { mime: "image/jpeg" });
+
+    const entries = await _drain(storage.list());
+    expect(entries).toHaveLength(2);
+    const byId = Object.fromEntries(entries.map(e => [e.media_id, e]));
+    expect(byId[a.media_id].created_at).toEqual(expect.any(Number));
+    expect(byId[b.media_id].created_at).toEqual(expect.any(Number));
+  });
+
+  test("list survives missing sidecar (emits created_at: null)", async () => {
+    const r = await storage.put(Buffer.from("orphan-meta"), { mime: "image/png" });
+    // Simulate a partial-write recovery where the .bin survived but the
+    // sidecar was wiped — sweep still needs to see the orphan.
+    const metaPath = path.join(root, r.media_id.slice(0, 2), `${r.media_id.slice(2)}.meta.json`);
+    await fs.unlink(metaPath);
+
+    const entries = await _drain(storage.list());
+    expect(entries).toEqual([{ media_id: r.media_id, created_at: null }]);
+  });
+
+  test("list ignores .tmp files (in-flight writes from another process)", async () => {
+    const r = await storage.put(Buffer.from("payload"), { mime: "image/png" });
+    const shardDir = path.join(root, r.media_id.slice(0, 2));
+    await fs.writeFile(path.join(shardDir, "deadbeef.bin.tmp"), "junk");
+
+    const entries = await _drain(storage.list());
+    expect(entries).toHaveLength(1);
+    expect(entries[0].media_id).toBe(r.media_id);
   });
 });

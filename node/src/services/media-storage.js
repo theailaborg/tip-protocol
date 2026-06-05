@@ -27,7 +27,7 @@
 "use strict";
 
 const { createLocalFsBackend } = require("./media-storage-local-fs");
-const { createS3Backend }      = require("./media-storage-s3");
+const { createS3Backend } = require("./media-storage-s3");
 
 /**
  * Build a media-storage instance. Returns the same interface regardless of
@@ -46,6 +46,7 @@ const { createS3Backend }      = require("./media-storage-s3");
  *   head: (media_id: string) => Promise<{exists: boolean, mime: string, size: number, created_at: number} | null>,
  *   presignedGet: (media_id: string, opts?: {ttlSec?: number}) => Promise<string | null>,
  *   delete: (media_id: string) => Promise<{deleted: boolean}>,
+ *   list: () => AsyncIterable<{media_id: string, created_at: number | null}>,
  *   backend: string,
  * }}
  */

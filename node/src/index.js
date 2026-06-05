@@ -38,6 +38,8 @@ const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 const { resolveDriver } = require("./db/index");
 const { createPrescanJobs } = require("./services/prescan-jobs");
 const { initPrescanWorker } = require("./init-prescan-worker");
+const { initMediaRetention } = require("./init-media-retention");
+const { createMediaStorage } = require("./services/media-storage");
 
 // Process-level error boundary for the consensus loops + libp2p stream
 // handlers + scheduled timers. Without these, any throw inside a
@@ -166,6 +168,14 @@ async function main() {
     mediaService: app.locals.mediaService,
   });
 
+  // 8b. Media retention sweep — periodic deletion of expired content
+  // media and orphan uploads. Disabled in tests and via env. Shares the
+  // mediaStorage instance with the API (createApp built it).
+  const mediaRetention = initMediaRetention({
+    dag,
+    mediaStorage: app.locals.mediaStorage,
+  });
+
   // 9. Start listening
   server.listen(config.port, () => {
     log.notice(`Node listening on http://0.0.0.0:${config.port}`);
@@ -179,6 +189,7 @@ async function main() {
     log.info(`${signal} received — shutting down gracefully`);
     server.close(async () => {
       try { scheduler.stop(); } catch { }
+      try { mediaRetention.stop(); } catch { }
       // Await prescan worker drain so in-flight classifier calls finish
       // before the process exits. Without this, the safety net is the
       // queue's claim-timeout (60s) — recovers correctness, costs latency.

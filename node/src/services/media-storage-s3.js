@@ -30,6 +30,7 @@ const {
   GetObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
@@ -167,7 +168,35 @@ function createS3Backend(config = {}) {
     }
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, backend: "s3" };
+  // Async generator over every object under the `media/` prefix. Used by
+  // the retention sweep to find orphans. Pages via ContinuationToken so a
+  // bucket with millions of objects doesn't blow heap. created_at comes
+  // from the object's LastModified — we don't HEAD each key (would cost
+  // one HEAD per object); LastModified is set by S3 on put and is what
+  // the lifecycle rules also key off, so it's the right source of truth
+  // for age regardless of what's in our custom metadata.
+  async function* list() {
+    let continuationToken;
+    while (true) {
+      const res = await client.send(new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: "media/",
+        ContinuationToken: continuationToken,
+      }));
+      for (const obj of res.Contents || []) {
+        // key format: media/{shard}/{rest}.bin
+        const m = obj.Key && obj.Key.match(/^media\/([0-9a-f]{2})\/([0-9a-f]{62})\.bin$/);
+        if (!m) continue;
+        const mediaId = m[1] + m[2];
+        const createdAt = obj.LastModified instanceof Date ? obj.LastModified.getTime() : null;
+        yield { media_id: mediaId, created_at: createdAt };
+      }
+      if (!res.IsTruncated) return;
+      continuationToken = res.NextContinuationToken;
+    }
+  }
+
+  return { put, get, head, presignedGet, delete: deleteMedia, list, backend: "s3" };
 }
 
 module.exports = { createS3Backend };

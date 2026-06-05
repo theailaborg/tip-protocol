@@ -116,7 +116,43 @@ function createLocalFsBackend(config = {}) {
     return { deleted: true };
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, backend: "fs" };
+  // Walk the sharded {root}/{ab}/{cdef…}.bin layout and emit one entry per
+  // stored object. Used by the retention sweep to find orphans (bytes
+  // present in storage that no content row references). Each entry pairs
+  // the media_id with the sidecar's `created_at` so the sweep can age
+  // objects out by upload time.
+  //
+  // Yields entries as it walks rather than buffering everything — keeps
+  // memory flat even for buckets with millions of objects. Skips half-
+  // written .tmp files and any sidecar without a matching .bin.
+  async function* list() {
+    let topEntries;
+    try { topEntries = await fs.readdir(root, { withFileTypes: true }); }
+    catch (err) {
+      if (err.code === "ENOENT") return;
+      throw err;
+    }
+    for (const top of topEntries) {
+      if (!top.isDirectory() || !/^[0-9a-f]{2}$/.test(top.name)) continue;
+      const shardDir = path.join(root, top.name);
+      const files = await fs.readdir(shardDir);
+      for (const f of files) {
+        if (!f.endsWith(".bin")) continue;
+        const rest = f.slice(0, -4);                  // strip ".bin"
+        if (!/^[0-9a-f]{62}$/.test(rest)) continue;   // ignore .tmp / junk
+        const mediaId = top.name + rest;
+        const metaPath = path.join(shardDir, `${rest}.meta.json`);
+        let createdAt = null;
+        try {
+          const m = JSON.parse(await fs.readFile(metaPath, "utf8"));
+          createdAt = typeof m.created_at === "number" ? m.created_at : null;
+        } catch { /* missing/corrupt sidecar — emit with null timestamp */ }
+        yield { media_id: mediaId, created_at: createdAt };
+      }
+    }
+  }
+
+  return { put, get, head, presignedGet, delete: deleteMedia, list, backend: "fs" };
 }
 
 module.exports = { createLocalFsBackend };

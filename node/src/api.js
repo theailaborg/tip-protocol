@@ -193,10 +193,11 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
 
   // Expose select services on the app for out-of-band consumers (e.g. the
   // domain re-verify scheduler in index.js, the prescan worker's media
-  // fetch path). The app stays Express-shaped; these are tucked under
-  // `app.locals` so they don't collide with routes.
+  // fetch path, the media-retention sweep). The app stays Express-shaped;
+  // these are tucked under `app.locals` so they don't collide with routes.
   app.locals.domainService = domainService;
   app.locals.mediaService = mediaService;
+  app.locals.mediaStorage = mediaStorage;
 
   return app;
 }

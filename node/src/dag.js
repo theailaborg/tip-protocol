@@ -480,6 +480,29 @@ class MemoryStore {
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
+  // M6 retention sweep — parity with SqliteStore.getContentWithMediaBefore.
+  getContentWithMediaBefore(cutoffMs) {
+    return [...this._content.values()].filter(c =>
+      typeof c.registered_at === "number"
+      && c.registered_at < cutoffMs
+      && Array.isArray(c.media)
+      && c.media.length > 0
+    );
+  }
+  // M6 — Map<media_id, reference_count> across every content row. See
+  // SqliteStore.getReferencedMediaIds for the contract.
+  getReferencedMediaIds() {
+    const out = new Map();
+    for (const c of this._content.values()) {
+      if (!Array.isArray(c.media)) continue;
+      for (const m of c.media) {
+        if (m && typeof m.media_id === "string") {
+          out.set(m.media_id, (out.get(m.media_id) || 0) + 1);
+        }
+      }
+    }
+    return out;
+  }
   getCleanRecordEligible(cutoff) {
     const txs = [...this._txs.values()];
     return [...this._identities.values()]
@@ -2354,6 +2377,24 @@ class SQLiteStore {
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
+      // M6 retention — content rows with media[] that pre-date a cutoff,
+      // so the sweep walks only what could possibly be expired. Empty
+      // `media` (JSON-encoded "[]" or NULL) is filtered out at the SQL
+      // layer because text-only content carries no bytes to delete.
+      contentWithMediaBefore: this.db.prepare(
+        `SELECT * FROM content
+         WHERE registered_at < ?
+           AND media IS NOT NULL
+           AND media <> '[]'`
+      ),
+      // Returns just the media JSON column for every content row — used
+      // by the orphan sweep to build the "referenced media_id" set
+      // without hydrating the full rows.
+      contentMediaRefs: this.db.prepare(
+        `SELECT media FROM content
+         WHERE media IS NOT NULL
+           AND media <> '[]'`
+      ),
       hasVerification: this.db.prepare(
         `SELECT 1 FROM transactions
          WHERE tx_type='CONTENT_VERIFIED'
@@ -2967,6 +3008,32 @@ class SQLiteStore {
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
+  // M6 — content rows registered before `cutoffMs` that carry media[].
+  getContentWithMediaBefore(cutoffMs) {
+    return this._stmts.contentWithMediaBefore.all(cutoffMs).map(r => this._hydrateContent(r));
+  }
+  // M6 — Map<media_id, reference_count> across every content row.
+  //   - Orphan sweep checks `.has(mediaId)` to decide if a stored object
+  //     is referenced at all.
+  //   - Content-retention sweep checks the count so dedup'd media (same
+  //     bytes referenced by multiple ctids) only gets deleted when ALL
+  //     referring rows are expired in the same pass.
+  getReferencedMediaIds() {
+    const out = new Map();
+    for (const row of this._stmts.contentMediaRefs.iterate()) {
+      try {
+        const arr = JSON.parse(row.media);
+        if (Array.isArray(arr)) {
+          for (const m of arr) {
+            if (m && typeof m.media_id === "string") {
+              out.set(m.media_id, (out.get(m.media_id) || 0) + 1);
+            }
+          }
+        }
+      } catch { /* corrupt row — skip */ }
+    }
+    return out;
+  }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
@@ -3823,6 +3890,9 @@ function _buildDagHandle(store, config) {
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
+    // M6 — used by the periodic media-retention sweep.
+    getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),
+    getReferencedMediaIds: () => store.getReferencedMediaIds(),
     getCleanRecordEligible: (cutoff) => store.getCleanRecordEligible(cutoff),
     hasVerification: (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute: (ctid, tipId) => store.hasDispute(ctid, tipId),
