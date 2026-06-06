@@ -469,6 +469,67 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      // AG-7: in-batch dedup for registration tx types. Phase 1 validates
+      // all txs before Phase 2 writes anything, so two competing txs for the
+      // same entity both see "not yet registered" in _statefulCheck and both
+      // pass. Without this check both land in `validated` and Phase 2 commits
+      // them. The _applyDerivedState guards skip the second entity write, but
+      // the second tx is an orphaned committed tx with no effect — and for
+      // REGISTER_IDENTITY the dedup_hash guard skips recording the hash while
+      // the identity guard still passes (different tip_id), creating two
+      // identities for one human. Drop the second tx here in canonical order.
+
+      case TX_TYPES.REGISTER_IDENTITY: {
+        if (!d.tip_id) return { valid: true };
+        const inBatchByTipId = validated.find(t =>
+          t.tx_type === TX_TYPES.REGISTER_IDENTITY && t.data?.tip_id === d.tip_id
+        );
+        if (inBatchByTipId) return { valid: false, error: `REGISTER_IDENTITY already in this batch for ${d.tip_id}` };
+        if (d.dedup_hash) {
+          const inBatchByDedup = validated.find(t =>
+            t.tx_type === TX_TYPES.REGISTER_IDENTITY && t.data?.dedup_hash === d.dedup_hash
+          );
+          if (inBatchByDedup) return { valid: false, error: `REGISTER_IDENTITY in-batch dedup_hash collision for ${d.tip_id}` };
+        }
+        return { valid: true };
+      }
+
+      case TX_TYPES.REGISTER_CONTENT: {
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data?.ctid === d.ctid
+        );
+        if (inBatch) return { valid: false, error: `REGISTER_CONTENT already in this batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.VP_REGISTERED: {
+        if (!d.vp_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.VP_REGISTERED && t.data?.vp_id === d.vp_id
+        );
+        if (inBatch) return { valid: false, error: `VP_REGISTERED already in this batch for ${d.vp_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.NODE_REGISTERED: {
+        if (!d.node_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.NODE_REGISTERED && t.data?.node_id === d.node_id
+        );
+        if (inBatch) return { valid: false, error: `NODE_REGISTERED already in this batch for ${d.node_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.INTEREST_REGISTERED: {
+        if (!d.slug) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.INTEREST_REGISTERED && t.data?.slug === d.slug
+        );
+        if (inBatch) return { valid: false, error: `INTEREST_REGISTERED already in this batch for slug ${d.slug}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
