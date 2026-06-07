@@ -18,8 +18,12 @@ spec changed or the genesis is misconfigured.
 | `OVERTURN_BONUS` | **10** | Appellant's appeal-win bonus |
 | `JUROR_MAJORITY_BONUS` | **3** | Stage-2 juror majority-vote reward |
 | `EXPERT_MAJORITY_BONUS` | **7** | Stage-3 expert majority-vote reward (higher than juror because experts require score ≥850) |
-| `MINORITY_PENALTY` | **10** | Juror/expert minority-vote forfeit |
-| `NO_SHOW_PENALTY` | **10** | Summoned but didn't reveal |
+| `JUROR_MINORITY_PENALTY` | **8** | Stage-2 juror minority-vote forfeit |
+| `EXPERT_MINORITY_PENALTY` | **10** | Stage-3 expert minority-vote forfeit (heavier — expert tier carries the final word) |
+| `JUROR_NO_COMMIT_PENALTY` | **1** | Juror summoned but never committed (small signal — didn't engage at all) |
+| `JUROR_NO_REVEAL_PENALTY` | **8** | Juror committed but failed to reveal (heavier — engaged then bailed mid-process) |
+| `EXPERT_NO_COMMIT_PENALTY` | **1** | Expert summoned but never committed |
+| `EXPERT_NO_REVEAL_PENALTY` | **10** | Expert committed but failed to reveal |
 | `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
 
 **Author penalty (UPHELD only)** — per-pair escalation `base × [1, 2, 3]`
@@ -70,13 +74,20 @@ the penalty table above for other origin pairs.
 
 ### Jurors (any verdict)
 
-| Reveal | Δ |
+| Action | Δ |
 |---|---:|
 | Voted with majority | **+3** |
-| Voted against majority | **-10** |
-| Abstained | **0** |
-| Tie (3 MATCH = 3 MISMATCH): all revealers | **0** (short-circuit) |
-| No-show (summoned, didn't reveal) | **-10** |
+| Voted against majority | **-8** |
+| Abstained (valid reveal) | **0** |
+| Tie (MATCH = MISMATCH): all revealers | **0** (short-circuit) |
+| Summoned, never committed | **-1** |
+| Committed but missed reveal (or commit-reveal mismatch) | **-8** |
+
+The split between `-1` and `-8` on the no-reveal side reflects intent.
+A juror who never commits is just unresponsive — small signal. A juror
+who commits and then bails actively hurt the panel: their commitment
+was counted toward quorum expectations and other revealers may have
+calibrated to it.
 
 ---
 
@@ -151,7 +162,8 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 |---|---:|
 | Appellant | 0 (filing-time -25 stays forfeited) |
 | Other party | 0 |
-| No-show experts | -10 each |
+| Experts who never committed | -1 each |
+| Experts who committed but missed reveal | -10 each |
 
 ### Stage-3 on Stage-2 NO_QUORUM (auto-escalation)
 
@@ -168,8 +180,17 @@ appellant settlement event.
 
 ### Experts (any Stage-3 verdict)
 
-Same as Stage-2 jurors: majority +3, minority -10, abstain 0, tie 0
-all-revealers, no-show -10.
+Same shape as Stage-2 jurors but with heavier values across the board
+(reflecting the final-word weight of Stage 3):
+
+| Action | Δ |
+|---|---:|
+| Voted with majority | **+7** |
+| Voted against majority | **-10** |
+| Abstained (valid reveal) | **0** |
+| Tie: all revealers | **0** (short-circuit) |
+| Summoned, never committed | **-1** |
+| Committed but missed reveal | **-10** |
 
 ---
 
@@ -344,8 +365,8 @@ What this means in practice:
 
 | Role | Spec (informational) | Implementation |
 |---|---|---|
-| Juror | stake 10 at summons | no debit; just `+3` majority / `-10` minority / `-10` no-show at verdict |
-| Expert | stake 15 at summons | no debit; same `+3 / -10 / -10` pattern |
+| Juror | stake 10 at summons | no debit; `+3` majority / `-8` minority / `-1` no-commit / `-8` no-reveal at verdict |
+| Expert | stake 15 at summons | no debit; `+7` majority / `-10` minority / `-1` no-commit / `-10` no-reveal at verdict |
 | Reviewer (review work) | stake 10 at accept | no debit; `+5 REVIEWER.CORRECT_BONUS` on closed paths only |
 
 The `stake` field on `JURY_SUMMONS.data` and the genesis
@@ -362,12 +383,16 @@ become the formal disputer and the standard −15 disputer stake
 applies (reviewer-as-disputer pattern). That is intentional and
 remains in place.
 
-The net economics for jurors / experts are equivalent to the spec
-in both terminal states (`+3` on win matches "stake refunded + 3
-bonus", `-10` on no-show matches "stake forfeited"). Only the
-in-flight visibility differs — with our model, the participant's
-score is unchanged while voting; with the spec, it would be locked
-−10. The simpler model wins.
+The net economics retain the same shape as the spec at terminal
+states (`+3` / `+7` on win matches "stake refunded + bonus"), but
+penalties now split two ways: by role (juror `-8` vs expert `-10`
+minority) and by engagement (`-1` for never committing, `-8` / `-10`
+for committing-then-bailing). The asymmetry is deliberate — a juror
+who never opened the case is just unresponsive (small signal); one
+who committed and walked away mid-process took up a slot and
+disrupted the panel's quorum math. Only the in-flight visibility
+differs from the spec — with our model the participant's score is
+unchanged while voting; with the spec, it would be locked.
 
 ---
 

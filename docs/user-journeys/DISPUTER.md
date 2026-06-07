@@ -191,7 +191,7 @@ You file APPEAL_FILED within 48h
        ↓
 3 Experts get summoned (Stage 3)
        ↓
-You wait 78h
+You wait 84h
        ↓
         ┌──────────────────┬──────────────────┐
         ↓                                     ↓

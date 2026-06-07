@@ -136,11 +136,14 @@ Use this when you genuinely lack info. **Don't use it just to dodge** — if you
 Nothing is held in escrow at summons time — your score doesn't move until the verdict batch lands. But the verdict applies a flat reward or penalty based on what you did:
 
 - **Vote with the majority + reveal on time** → **+3** trust score (majority bonus)
-- **Vote against the majority + reveal on time** → **-10** trust score (minority penalty)
+- **Vote against the majority + reveal on time** → **-8** trust score (minority penalty)
 - **ABSTAIN + reveal on time** → **0** (neutral — neither bonus nor penalty)
-- **Miss the reveal phase** (whether you committed or not) → **-10** (no-show penalty, only applies if the jury still reached quorum)
+- **Summoned but never committed** → **-1** (small signal — you didn't engage at all)
+- **Committed but missed the reveal** → **-8** (heavier — you engaged with the case then walked away mid-process)
 
-The asymmetric math (-10 to lose vs +3 to win) is deliberate: it makes "vote anyway, hope for the best" worse than "ABSTAIN if you're not sure." Voting carefully is the right strategy.
+(Both no-show penalties only apply if the jury reaches quorum without you. NO_QUORUM zeros everyone out.)
+
+The asymmetric math (-8 to lose vs +3 to win) is deliberate: it makes "vote anyway, hope for the best" worse than "ABSTAIN if you're not sure." Voting carefully is the right strategy. And the split between -1 (never committed) and -8 (committed-but-bailed) reflects intent — a juror who never opens the case is unresponsive; one who commits and walks away actively disrupted the panel's quorum math.
 
 ---
 
@@ -149,7 +152,7 @@ The asymmetric math (-10 to lose vs +3 to win) is deliberate: it makes "vote any
 ```
 HOUR 0:
    JURY_SUMMONS lands. Push notification: "You're a juror on dispute #ds_7b3f"
-   Your score doesn't move yet — settlement happens at verdict time (hour 78).
+   Your score doesn't move yet — settlement happens at verdict time (hour 84).
 
 HOURS 0 – 72:
    COMMIT PHASE — vote in private.
@@ -165,7 +168,7 @@ HOURS 0 – 72:
 HOUR 72:
    COMMIT PHASE ENDS. Reveal phase opens.
 
-HOURS 72 – 78:
+HOURS 72 – 84:
    REVEAL PHASE — confirm your vote in public.
         ↓
    Open the case again. Click "Reveal my vote".
@@ -195,9 +198,10 @@ HOUR 84:
 HOUR 84+:
    With quorum reached:
    - Voted with majority + revealed on time → +3
-   - Voted minority + revealed on time       → -10
+   - Voted minority + revealed on time       → -8
    - ABSTAINED + revealed on time            → 0
-   - Missed the reveal (any reason)          → -10 (no-show)
+   - Never committed                         → -1
+   - Committed but missed reveal             → -8
    With NO_QUORUM:
    - Every juror's score impact is 0 — the case moves to Stage 3 unaffected.
    Outcome lands in your activity feed.
@@ -209,11 +213,11 @@ HOUR 84+:
 
 | What you missed | Consequence |
 |---|---|
-| Missed the COMMIT phase (didn't submit anything in 72h) | Treated as a no-show. **-10 trust score** if the jury reaches quorum without you (5+ reveals, 3+ non-abstain). 0 if the jury fails quorum (NO_QUORUM auto-escalates without scoring anyone). |
-| Submitted COMMIT but missed REVEAL phase (didn't reveal in the 12h window) | Same no-show rules apply. **-10** if quorum reached, 0 otherwise. The chain has no way to score what's still hidden inside the commit. |
-| Submitted both — but the reveal didn't match the commit | Same as no-show. The system can't verify you voted in good faith. (App handles the salt automatically — this won't happen if you use the app correctly.) |
+| Missed the COMMIT phase (didn't submit anything in 72h) | **-1 trust score** if the jury reaches quorum without you (5+ reveals, 3+ non-abstain). Small signal — you didn't engage at all. 0 if the jury fails quorum (NO_QUORUM auto-escalates without scoring anyone). |
+| Submitted COMMIT but missed REVEAL phase (didn't reveal in the 12h window) | **-8** if quorum reached, 0 otherwise. Heavier than no-commit because you engaged with the case then walked away mid-process — the rest of the panel was counting on you. The chain has no way to score what's still hidden inside the commit. |
+| Submitted both — but the reveal didn't match the commit | Same as missed-reveal: **-8**. The system can't verify you voted in good faith. (App handles the salt automatically — this won't happen if you use the app correctly.) |
 
-The bottom line: **come back and reveal.** The jury can't tell who committed and who didn't; both look the same to the verdict logic.
+The bottom line: **if you commit, come back and reveal.** Once you've committed, the panel's quorum math counts on you — bailing is a heavier penalty than never showing up.
 
 ---
 
@@ -242,10 +246,10 @@ So if the jury collapses into NO_QUORUM, **nobody is penalised** — not even th
 | Your action | Effect |
 |---|---|
 | Commit + reveal + vote with majority | **+3 trust score** |
-| Commit + reveal + vote with minority | **-10 trust score** |
+| Commit + reveal + vote with minority | **-8 trust score** |
 | Commit + reveal + ABSTAIN | **0 — neutral** |
-| Commit + miss reveal | **-10 trust score** (no-show) |
-| Didn't commit at all | **-10 trust score** (still counts as no-show) |
+| Commit + miss reveal | **-8 trust score** |
+| Didn't commit at all | **-1 trust score** |
 
 ---
 
@@ -287,7 +291,7 @@ Your dashboard feed surfaces these juror-facing types, each tied to a phase of t
 │  Title:    "Reveal your jury vote ({remaining} left)"          │
 │  Summary:  "Dispute on {ctid} is in reveal phase."             │
 │  Action:   [ Reveal vote ] → /disputes/{disputeId}/reveal      │
-│  Deadline: summons.reveal_deadline (78h after summons)         │
+│  Deadline: summons.reveal_deadline (84h after summons)         │
 └────────────────────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────────────────────┐
@@ -311,14 +315,14 @@ Your dashboard feed surfaces these juror-facing types, each tied to a phase of t
 
 The feed only carries one item per case at a time — as you commit, the COMMIT card flips to AWAITING_REVEAL_WINDOW; when the reveal phase opens, it flips to REVEAL_REQUIRED; after you reveal, it becomes AWAITING_VERDICT; and once the verdict batch settles, you see VERDICT_ON_MY_JURY for 24h before it drops off the dashboard (still visible in your history).
 
-If you miss commit or reveal, no terminal notification fires — the chain doesn't replay your no-show to your dashboard. Your jury-history endpoint shows `status: missed_*` and the -10 in your activity feed.
+If you miss commit or reveal, no terminal notification fires — the chain doesn't replay your no-show to your dashboard. Your jury-history endpoint shows `status: missed_*` and the corresponding penalty (-1 if you never committed, -8 if you committed but missed reveal) in your activity feed.
 
 ---
 
 ## Things people ask
 
 **Why a penalty? I don't want to risk anything.**
-The -10 minority/no-show penalty is what makes jurors take it seriously. If voting were free, people would vote randomly or follow whoever votes first. The downside risk forces you to vote based on what you actually believe — or abstain if you genuinely can't tell.
+The -8 minority penalty is what makes jurors take voting seriously — if it were free, people would vote randomly or follow whoever revealed first. The split between -1 (never engaged) and -8 (committed then bailed) reflects intent: a juror who never opened the case is just unresponsive, while one who committed and walked away mid-process took up a slot and disrupted the panel's quorum math. The downside forces you to vote based on what you actually believe — or abstain if you genuinely can't tell.
 
 **What's MATCH/MISMATCH again?**
 MATCH = "the creator's label is right." MISMATCH = "the creator's label is wrong, and I think it should be [X]." Match the creator's claim, or mismatch it.
@@ -336,7 +340,7 @@ Yes — the disputer can attach it as evidence. You'll see the AI confidence in 
 That's exactly why the disputer ALSO stakes 15 points. If the jury DISMISSES (creator wins), the disputer loses those 15. So abusive disputes self-discipline through the stake.
 
 **What about emergencies — can someone bail me out?**
-No. Once you commit, only YOU can reveal (because only you have the salt). If life happens and you can't reveal in the 6h window, you take the -10. Plan accordingly: don't commit on Monday if you'll be off-grid Thursday-Sunday.
+No. Once you commit, only YOU can reveal (because only you have the salt). If life happens and you can't reveal in the 12h window, you take the -8 (committed-but-no-reveal). Plan accordingly: don't commit on Monday if you'll be off-grid Thursday-Sunday. If you know up front you won't be around, *don't commit at all* — the no-commit penalty is only -1.
 
 **How often will I be picked?**
 Depends on dispute volume + how many qualified jurors are active. Likely a few times a year initially. Higher score = larger pool = a bit more often.
