@@ -143,12 +143,13 @@ Effect on you:
 
 ## What's at stake
 
-Nothing is held in escrow at summons time — your score only moves once the appeal verdict batch lands. The deltas are similar to a regular juror, but the majority bonus is higher at Stage 3 because expert participation is reserved for higher-trust holders (≥850) making the harder calls:
+Nothing is held in escrow at summons time — your score only moves once the appeal verdict batch lands. Deltas are heavier than a Juror's at Stage 3 because expert participation is reserved for higher-trust holders (≥850) making the final calls:
 
 - **Vote with the majority + reveal on time** → **+7** trust score
 - **Vote against the majority + reveal on time** → **-10** trust score
 - **ABSTAIN + reveal on time** → **0**
-- **Miss the reveal phase** → **-10** (no-show)
+- **Summoned, never committed** → **-1** (small signal — you didn't engage at all)
+- **Committed but missed reveal** → **-10** (heavier — you engaged with the case then walked away mid-process)
 
 The big stake on the table at Stage 3 is the **appellant's 25 + the original Stage-2 settlement** — that's what your three-person vote moves around. Your own personal delta is small; the impact of your vote on others is enormous. Treat the latter as the part that matters.
 
@@ -173,7 +174,7 @@ HOUR 0:
    APPEAL_FILED tx commits on chain.
    System runs deterministic selection — 3 experts picked.
    You're one. Push notification lands.
-   Your score doesn't move yet — settlement happens at hour 78.
+   Your score doesn't move yet — settlement happens at hour 84.
 
 HOURS 0 – 72:
    COMMIT PHASE.
@@ -189,7 +190,7 @@ HOURS 0 – 72:
 HOUR 72:
    COMMIT phase ends. REVEAL phase opens.
 
-HOURS 72 – 78:
+HOURS 72 – 84:
    REVEAL PHASE.
         ↓
    Open the case. Tap "Reveal my vote."
@@ -213,10 +214,11 @@ HOUR 84:
    - Fewer than 2 non-abstain reveals           → Defaults to DISMISSED. Stage 2 stands.
 
 HOUR 84+:
-   - You voted with majority + revealed → +7
-   - You voted minority + revealed       → -10
-   - You ABSTAINED + revealed            → 0
-   - Missed reveal                       → -10 (no-show)
+   - Voted with majority + revealed → +7
+   - Voted minority + revealed       → -10
+   - ABSTAINED + revealed            → 0
+   - Never committed                → -1
+   - Committed but missed reveal    → -10
    - Verdict is FINAL. No further appeal.
 ```
 
@@ -228,11 +230,11 @@ Same constants as Juror — there's no special expert escrow.
 
 | What you missed | Consequence |
 |---|---|
-| Didn't commit at all (no submission in 72h) | Counted as a no-show. **-10 trust score.** No-shows still take the hit even if the panel falls under quorum (see "Quorum failure" below). |
-| Committed but missed reveal | Treated the same as no-commit. **-10 trust score.** The chain can't see what's inside a sealed commit. |
-| Committed + revealed but salts don't match | Same as miss: **-10**. App handles this correctly so it won't happen if you use the app. |
+| Didn't commit at all (no submission in 72h) | **-1 trust score** — small signal that you didn't engage at all. Still applies even if the panel falls under quorum (see "Quorum failure" below). |
+| Committed but missed reveal | **-10 trust score** — heavier than no-commit because you engaged with the case then walked away mid-process. The chain can't see what's inside a sealed commit. |
+| Committed + revealed but salts don't match | Same as missed reveal: **-10**. App handles this correctly so it won't happen if you use the app. |
 
-**If you can't reveal, don't commit.** The downside on a missed reveal is the same -10 as voting minority — and you didn't even get credit for trying.
+**If you can't reveal, don't commit.** The downside on a missed reveal (-10) is the same as voting minority — and you didn't even get credit for trying. If you commit-then-bail you take the full -10; if you never commit at all you take only -1.
 
 ---
 
@@ -247,11 +249,13 @@ Fewer than 2 non-abstain reveals
    Stage-2 outcome stays in force
    Appellant's 25-point filing stake stays forfeited
             ↓
-   No-show experts STILL take -10
+   No-show experts STILL take their penalty:
+      - Never committed             → -1
+      - Committed but missed reveal → -10
    Experts who revealed (including ABSTAIN) take 0
 ```
 
-**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum, it auto-escalates to Stage 3 and nobody is penalised — there's somewhere to go. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take the -10 hit for not showing up.
+**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum, it auto-escalates to Stage 3 and nobody is penalised — there's somewhere to go. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
 
 In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 
@@ -266,8 +270,8 @@ In practice this is rare. The 850+ expert pool is small but reliable, and select
 | Commit + reveal + vote with majority | **+7** |
 | Commit + reveal + vote with minority | **-10** |
 | Commit + reveal + ABSTAIN | **0 — neutral** |
-| Commit + miss reveal | **-10 (no-show)** |
-| Didn't commit at all | **-10 (no-show)** |
+| Commit + miss reveal | **-10** |
+| Didn't commit at all | **-1** |
 
 ---
 
@@ -311,7 +315,7 @@ Your dashboard feed surfaces these expert-facing notification types — mirror o
 │  Summary:  "Dispute on {ctid} is in reveal phase."             │
 │  Action:   [ Reveal vote ] →                                   │
 │            /disputes/{disputeId}/appeal/reveal                 │
-│  Deadline: summons.reveal_deadline (78h after appeal summons)  │
+│  Deadline: summons.reveal_deadline (84h after appeal summons)  │
 └────────────────────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────────────────────┐
@@ -336,7 +340,7 @@ Your dashboard feed surfaces these expert-facing notification types — mirror o
 
 The feed carries one item per appeal at a time — each card flips to the next phase as your commit / reveal lands, and the final VERDICT card stays visible for 24h before falling off the dashboard (your activity history keeps it forever). Appeals are final, so there's no follow-on `appeal_available` notification after this — the case is closed.
 
-If you miss commit or reveal, no terminal notification fires; you just see `status: missed_*` in your jury-history endpoint and the -10 in your activity feed.
+If you miss commit or reveal, no terminal notification fires; you just see `status: missed_*` in your jury-history endpoint and the corresponding penalty (-1 if you never committed, -10 if you committed but missed reveal) in your activity feed.
 
 ---
 
@@ -349,7 +353,9 @@ You're at a higher tier, so:
 | Minimum trust score | 700 | **850** |
 | Panel size | 7 | **3** |
 | Personal majority bonus | +3 | **+7** |
-| Personal minority penalty | -10 | -10 |
+| Personal minority penalty | **-8** | **-10** |
+| Never-committed penalty | -1 | -1 |
+| Committed-but-no-reveal penalty | **-8** | **-10** |
 | Quorum thresholds | ≥5 reveals AND ≥3 non-abstain | ≥2 non-abstain reveals |
 | What you're judging | "Is the dispute right?" — looking at the content fresh | "Was the Stage-2 jury right?" — reviewing their verdict |
 | Verdict can be appealed | Yes (to Expert panel) | **No. Final.** |
@@ -365,7 +371,7 @@ Three experts, three votes, two-out-of-three wins. You're the final word.
 Because the pool of 850+ trust score users is much smaller. Statistically, 3 high-trust experts at the appeal stage carry similar signal to 7 jurors at the dispute stage — and they're settling, not initiating.
 
 **Is the stake higher at the expert tier?**
-The downside side is the same as Juror (-10 minority, -10 no-show). The upside is bigger — your majority bonus is **+7** here vs +3 for jurors, calibrating for the higher-trust 850+ score floor and the harder Stage-3 calls. What's much bigger though is the *case-level* stake — the appellant's 25-point filing fee and the full Stage-2 settlement that flips on overturn. Your call is final, and reversing it isn't possible — so the impact on others is what makes this tier weighty, not just your own score delta.
+Yes, on both sides. The downside is heavier than Juror at Stage 3: -10 minority and -10 committed-but-no-reveal (vs -8 and -8 for jurors), reflecting the final-word weight of the expert tier. The no-commit penalty is the same -1 for both roles — never engaging reads the same at either tier. The upside is also bigger — your majority bonus is **+7** here vs +3 for jurors, calibrating for the higher-trust 850+ score floor and the harder Stage-3 calls. What's much bigger though is the *case-level* stake — the appellant's 25-point filing fee and the full Stage-2 settlement that flips on overturn. Your call is final, and reversing it isn't possible — so the impact on others is what makes this tier weighty, not just your own score delta.
 
 **Should I just rubber-stamp the Stage 2 verdict?**
 No. You're not there to confirm — you're there to review. Read the appellant's argument. If they make a good case the jury missed something, OVERTURN. If they're just sore about losing, UPHOLD.

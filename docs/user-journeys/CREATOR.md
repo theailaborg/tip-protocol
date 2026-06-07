@@ -183,7 +183,7 @@ Public CONTENT_DISPUTED tx fires automatically (with your authorization)
        ↓
 7 jurors get summoned (Stage 2 begins)
        ↓
-You wait 72h-78h for verdict
+You wait 72h-84h for verdict
        ↓
         ┌──────────────────┬──────────────────┬──────────────────┐
         ↓                  ↓                  ↓                  ↓
@@ -513,7 +513,7 @@ Most cases close inside the grace window (you self-correct or AI is wrong). Stag
 ### A reviewer confirmed against you
 
 4. Honestly evaluate: was the reviewer right? If yes, **accept correction privately**. Cheap, no public dispute.
-5. If you genuinely believe the reviewer was wrong AND you have evidence, take it to public Jury. Be ready for a 78h wait + potential heavy penalty if 4 jurors disagree.
+5. If you genuinely believe the reviewer was wrong AND you have evidence, take it to public Jury. Be ready for an 84h wait + potential heavy penalty if 4 jurors disagree.
 
 ### Jury voted against you
 

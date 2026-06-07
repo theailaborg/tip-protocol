@@ -1617,7 +1617,7 @@ A holder may file at most five disputes per rolling 30 days (DISPUTER_FREQUENCY_
 
 The losing party of Stage 2 (the Disputer if DISMISSED, the Creator if UPHELD) may appeal to Stage 3 by signing an APPEAL_FILED transaction. The appellant stakes an additional 25 score points (APPELLANT_STAKE).
 
-Three Community Expert Panelists (Section 29.3) are summoned. Each Expert has score at least 850 and has not opted out. The Experts vote under the same commit-reveal protocol as the Jury (72 hours commit, 6 hours reveal). Quorum requires at least 2 of 3 to reveal non-abstain votes.
+Three Community Expert Panelists (Section 29.3) are summoned. Each Expert has score at least 850 and has not opted out. The Experts vote under the same commit-reveal protocol as the Jury (72 hours commit, 12 hours reveal). Quorum requires at least 2 of 3 to reveal non-abstain votes.
 
 The verdict options are the same as Stage 2 (UPHELD, CONSERVATIVE_LABEL, DISMISSED) but the verdict applies as a final, non-appealable outcome and reverses any Stage 2 settlement that conflicts with the Stage 3 finding.
 
@@ -1685,10 +1685,13 @@ The three Community Adjudication Roles (Reviewer, Juror, Expert Panelist) are st
 | Action | Score effect |
 |---|---|
 | Vote with the majority of revealed non-abstain votes, valid reveal | +3 |
-| Vote against the majority of revealed non-abstain votes, valid reveal | -10 |
+| Vote against the majority of revealed non-abstain votes, valid reveal | -8 |
 | Abstain with valid reveal | 0 |
-| No-show (failed to commit OR failed to reveal OR commit-reveal mismatch) | -10 |
+| Summoned but never committed | -1 |
+| Committed but failed to reveal (or commit-reveal mismatch) | -8 |
 | Jury fails to reach quorum | 0 (no juror score effects applied; case auto-escalates to Stage 3) |
+
+The split between -1 (never committed) and -8 (committed but failed to reveal) reflects intent: a Juror who never committed did not engage with the case at all, while a Juror who committed and failed to reveal took up a panel slot and was counted toward quorum expectations, then walked away mid-process.
 
 ### 29.3 Community Expert Panelist
 
@@ -1698,7 +1701,7 @@ The three Community Adjudication Roles (Reviewer, Juror, Expert Panelist) are st
 
 **Time window:** 72-hour commit phase, 12-hour reveal phase. Total 84 hours.
 
-**Scoring:** +7 majority, -10 minority, 0 abstain, -10 no-show. Expert majority bonus is higher than the Juror's +3 because expert participation is reserved for higher-trust (≥850) holders and the bigger reward calibrates incentives for the harder Stage-3 calls.
+**Scoring:** +7 majority, -10 minority, 0 abstain, -1 if summoned but never committed, -10 if committed but failed to reveal. Expert minority and committed-but-failed-to-reveal penalties are heavier than the Juror's -8 to reflect the final-word weight of Stage 3; the no-commit penalty (-1) is identical across both roles because absence of engagement reads the same at either tier. Majority bonus is +7 vs the Juror's +3 because expert participation is reserved for higher-trust (≥850) holders and the bigger reward calibrates incentives for the harder Stage-3 calls.
 
 ### 29.4 Default-enabled enrollment
 
@@ -1747,8 +1750,12 @@ The following constants are recorded in the Genesis Block (Section 33) and gover
 | OVERTURN_BONUS | 10 | Appellant's appeal-win bonus |
 | JUROR_MAJORITY_BONUS | 3 | Stage-2 juror majority-vote reward |
 | EXPERT_MAJORITY_BONUS | 7 | Stage-3 expert majority-vote reward (higher than juror because expert participation requires score ≥850) |
-| MINORITY_PENALTY | 10 | Juror or expert minority-vote forfeit |
-| NO_SHOW_PENALTY | 10 | Summoned but did not reveal |
+| JUROR_MINORITY_PENALTY | 8 | Stage-2 juror minority-vote forfeit |
+| EXPERT_MINORITY_PENALTY | 10 | Stage-3 expert minority-vote forfeit (heavier than juror — expert tier carries final word) |
+| JUROR_NO_COMMIT_PENALTY | 1 | Juror summoned but never committed (small signal — no engagement) |
+| JUROR_NO_REVEAL_PENALTY | 8 | Juror committed but failed to reveal (heavier — engaged then walked away) |
+| EXPERT_NO_COMMIT_PENALTY | 1 | Expert summoned but never committed |
+| EXPERT_NO_REVEAL_PENALTY | 10 | Expert committed but failed to reveal |
 | REVIEWER_CORRECT_BONUS | 5 | Pre-scan reviewer's case-closed-cleanly bonus |
 | CLEAN_RECORD_DAYS | 90 | Time without offense to earn clean-record bonus |
 | CLEAN_RECORD_BONUS | 10 | Awarded after 90 days without offense |
@@ -1808,9 +1815,9 @@ The complete enumeration of score effect events is maintained at `docs/DISPUTE_S
 | Origin updated within 48h grace (HIGH/CRITICAL) | 0 | n/a | n/a |
 | Reviewer assigned, creator accepts correction privately | -10 | n/a (reviewer +5) | n/a |
 | Content retracted by creator | -50 | n/a | n/a |
-| Stage 2 DISMISSED | +5 vindication | -15 stake forfeit | majority +3 / minority -10 / no-show -10 |
-| Stage 2 CONSERVATIVE_LABEL | 0 | +15 refund (no bonus) | majority +3 / minority -10 / no-show -10 |
-| Stage 2 UPHELD (OHtoAG 1st) | -100 | +20 (refund + bonus) | majority +3 / minority -10 / no-show -10 |
+| Stage 2 DISMISSED | +5 vindication | -15 stake forfeit | majority +3 / minority -8 / no-commit -1 / no-reveal -8 |
+| Stage 2 CONSERVATIVE_LABEL | 0 | +15 refund (no bonus) | majority +3 / minority -8 / no-commit -1 / no-reveal -8 |
+| Stage 2 UPHELD (OHtoAG 1st) | -100 | +20 (refund + bonus) | majority +3 / minority -8 / no-commit -1 / no-reveal -8 |
 | Stage 2 NO_QUORUM | 0 (pending Stage 3) | locked stake | 0 |
 | Stage 3 confirm Stage 2 | (no further change) | 0 (stake or refund stands) | expert delta same as juror |
 | Stage 3 overturn Stage 2 | Stage 2 reversed | Stage 2 reversed | expert delta same as juror |
@@ -3082,8 +3089,12 @@ OVERTURN_BONUS:             10
 
 JUROR_MAJORITY_BONUS:       3
 EXPERT_MAJORITY_BONUS:      7
-MINORITY_PENALTY:           10
-NO_SHOW_PENALTY:            10
+JUROR_MINORITY_PENALTY:     8
+EXPERT_MINORITY_PENALTY:    10
+JUROR_NO_COMMIT_PENALTY:    1
+JUROR_NO_REVEAL_PENALTY:    8
+EXPERT_NO_COMMIT_PENALTY:   1
+EXPERT_NO_REVEAL_PENALTY:   10
 REVIEWER_CORRECT_BONUS:     5
 
 DISPUTE_AUTO_ESCALATE:      0.90
