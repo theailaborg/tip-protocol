@@ -1576,7 +1576,7 @@ Jurors vote in a commit-reveal scheme to prevent vote-following:
 
 - **Commit phase (72 hours).** Each Juror computes a commitment `H = SHAKE-256(vote || salt)` for their vote and a random salt, signs the commitment, and publishes a JURY_VOTE_COMMIT transaction.
 
-- **Reveal phase (6 hours).** Each Juror publishes a JURY_VOTE_REVEAL transaction with the vote and salt. The Verifier checks that the SHAKE-256 of the revealed vote-plus-salt matches the earlier commitment.
+- **Reveal phase (12 hours).** Each Juror publishes a JURY_VOTE_REVEAL transaction with the vote and salt. The Verifier checks that the SHAKE-256 of the revealed vote-plus-salt matches the earlier commitment.
 
 The vote options are:
 
@@ -1678,7 +1678,7 @@ The three Community Adjudication Roles (Reviewer, Juror, Expert Panelist) are st
 
 **Role:** Stage 2 jury panel member. Panel size 7.
 
-**Time window:** 72-hour commit phase, 6-hour reveal phase. Total 78 hours.
+**Time window:** 72-hour commit phase, 12-hour reveal phase. Total 84 hours.
 
 **Scoring:**
 
@@ -1696,9 +1696,9 @@ The three Community Adjudication Roles (Reviewer, Juror, Expert Panelist) are st
 
 **Role:** Stage 3 expert panel member. Panel size 3.
 
-**Time window:** 72-hour commit phase, 6-hour reveal phase. Total 78 hours.
+**Time window:** 72-hour commit phase, 12-hour reveal phase. Total 84 hours.
 
-**Scoring:** Same as Juror (Section 29.2): +3 majority, -10 minority, 0 abstain, -10 no-show.
+**Scoring:** +7 majority, -10 minority, 0 abstain, -10 no-show. Expert majority bonus is higher than the Juror's +3 because expert participation is reserved for higher-trust (≥850) holders and the bigger reward calibrates incentives for the harder Stage-3 calls.
 
 ### 29.4 Default-enabled enrollment
 
@@ -1745,7 +1745,8 @@ The following constants are recorded in the Genesis Block (Section 33) and gover
 | VINDICATION_BONUS | 5 | Author's "content cleared" bonus |
 | APPELLANT_STAKE | 25 | Deducted at file-appeal time |
 | OVERTURN_BONUS | 10 | Appellant's appeal-win bonus |
-| MAJORITY_BONUS | 3 | Juror or expert majority-vote reward |
+| JUROR_MAJORITY_BONUS | 3 | Stage-2 juror majority-vote reward |
+| EXPERT_MAJORITY_BONUS | 7 | Stage-3 expert majority-vote reward (higher than juror because expert participation requires score ≥850) |
 | MINORITY_PENALTY | 10 | Juror or expert minority-vote forfeit |
 | NO_SHOW_PENALTY | 10 | Summoned but did not reveal |
 | REVIEWER_CORRECT_BONUS | 5 | Pre-scan reviewer's case-closed-cleanly bonus |

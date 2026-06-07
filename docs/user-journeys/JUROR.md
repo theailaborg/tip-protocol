@@ -38,7 +38,7 @@ Someone publicly disputed a piece of content
 
 Each chosen juror gets a push notification + an item in their queue. Same moment, same content, 6 others picked too. You don't see who the others are.
 
-The clock starts. You have **72 hours to vote** and then **6 hours to reveal**. Total commitment: 3 days + 6 hours.
+The clock starts. You have **72 hours to vote** and then **12 hours to reveal**. Total commitment: 3 days + 12 hours.
 
 ---
 
@@ -48,7 +48,7 @@ To prevent jurors from copying each other's votes.
 
 **Phase 1 (commit, 72h):** You decide your vote in private and submit a SCRAMBLED version of it. The system stores the scrambled version. Nobody — including you — can verify what anyone voted yet.
 
-**Phase 2 (reveal, 6h):** You submit your real vote + the unscrambling key. The system checks that your reveal matches your earlier commit. Everyone's reveal is now public.
+**Phase 2 (reveal, 12h):** You submit your real vote + the unscrambling key. The system checks that your reveal matches your earlier commit. Everyone's reveal is now public.
 
 This way, juror #5 can't watch juror #1's vote and copy it. Everyone votes blind.
 
@@ -173,7 +173,7 @@ HOURS 72 – 78:
         ↓
    Your vote is now public on-chain.
 
-HOUR 78:
+HOUR 84:
    REVEAL PHASE ENDS. Verdict computed automatically.
         ↓
    System counts revealed votes. Verdict needs at LEAST 5 total reveals
@@ -190,7 +190,7 @@ HOUR 78:
           ↳ Auto-escalates to Stage 3 (Expert panel)
           ↳ No juror score effects fire — neither bonuses nor no-show penalties
 
-HOUR 78+:
+HOUR 84+:
    With quorum reached:
    - Voted with majority + revealed on time → +3
    - Voted minority + revealed on time       → -10
@@ -208,7 +208,7 @@ HOUR 78+:
 | What you missed | Consequence |
 |---|---|
 | Missed the COMMIT phase (didn't submit anything in 72h) | Treated as a no-show. **-10 trust score** if the jury reaches quorum without you (5+ reveals, 3+ non-abstain). 0 if the jury fails quorum (NO_QUORUM auto-escalates without scoring anyone). |
-| Submitted COMMIT but missed REVEAL phase (didn't reveal in the 6h window) | Same no-show rules apply. **-10** if quorum reached, 0 otherwise. The chain has no way to score what's still hidden inside the commit. |
+| Submitted COMMIT but missed REVEAL phase (didn't reveal in the 12h window) | Same no-show rules apply. **-10** if quorum reached, 0 otherwise. The chain has no way to score what's still hidden inside the commit. |
 | Submitted both — but the reveal didn't match the commit | Same as no-show. The system can't verify you voted in good faith. (App handles the salt automatically — this won't happen if you use the app correctly.) |
 
 The bottom line: **come back and reveal.** The jury can't tell who committed and who didn't; both look the same to the verdict logic.

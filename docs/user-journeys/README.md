@@ -19,8 +19,8 @@ Written for people who use the app, not for engineers.
 | Role | When you're called | Time commitment |
 |---|---|---|
 | **[Reviewer](REVIEWER.md)** | When AI flags content as possibly AI-generated. You decide: was the AI right or wrong? Score 800+, opt-in. | Up to 48 hours per case |
-| **[Juror](JUROR.md)** | When a community member publicly disputes a piece of content. You're one of 7 jurors who vote on it. Score 700+, opt-in. | 72 hours to vote + 6 hours to reveal |
-| **[Expert](EXPERT.md)** | When someone challenges a jury's verdict (appeals). You're one of 3 experts who make the final call. Score 850+, opt-in. | 72 hours to vote + 6 hours to reveal |
+| **[Juror](JUROR.md)** | When a community member publicly disputes a piece of content. You're one of 7 jurors who vote on it. Score 700+, opt-in. | 72 hours to vote + 12 hours to reveal |
+| **[Expert](EXPERT.md)** | When someone challenges a jury's verdict (appeals). You're one of 3 experts who make the final call. Score 850+, opt-in. | 72 hours to vote + 12 hours to reveal |
 
 ## How they fit together
 
