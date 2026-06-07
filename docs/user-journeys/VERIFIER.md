@@ -141,7 +141,7 @@ You click Verify. The app builds the canonical signed body (`verifier_tip_id`, `
 
 ### Step 3: Done
 
-No follow-up. No commit/reveal phase. No 78-hour wait. Verifications are one-shot: you sign, the chain commits, the author's score moves (subject to caps), and you walk away.
+No follow-up. No commit/reveal phase. No 84-hour wait. Verifications are one-shot: you sign, the chain commits, the author's score moves (subject to caps), and you walk away.
 
 You can verify another piece immediately — subject to the per-day / per-month / per-author caps.
 

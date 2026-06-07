@@ -141,9 +141,9 @@ Effect on you:
 
 ## What's at stake
 
-Nothing is held in escrow at summons time — your score only moves once the appeal verdict batch lands. The deltas are the same as a regular juror (the chain uses the same MAJORITY_BONUS / MINORITY_PENALTY / NO_SHOW_PENALTY constants for both tiers):
+Nothing is held in escrow at summons time — your score only moves once the appeal verdict batch lands. The deltas are similar to a regular juror, but the majority bonus is higher at Stage 3 because expert participation is reserved for higher-trust holders (≥850) making the harder calls:
 
-- **Vote with the majority + reveal on time** → **+3** trust score
+- **Vote with the majority + reveal on time** → **+7** trust score
 - **Vote against the majority + reveal on time** → **-10** trust score
 - **ABSTAIN + reveal on time** → **0**
 - **Miss the reveal phase** → **-10** (no-show)
@@ -158,7 +158,7 @@ Same as Jury — but the stakes are higher.
 
 **Phase 1 (commit, 72h):** Vote in private. App scrambles your vote with a salt and submits the hash. Nobody can see your vote yet, including you.
 
-**Phase 2 (reveal, 6h):** Submit the actual vote + salt. Chain verifies the reveal matches the earlier commit. Everyone's vote is now public.
+**Phase 2 (reveal, 12h):** Submit the actual vote + salt. Chain verifies the reveal matches the earlier commit. Everyone's vote is now public.
 
 Prevents bandwagoning. Each expert votes blind.
 
@@ -197,7 +197,7 @@ HOURS 72 – 78:
         ↓
    Your vote is now public on-chain.
 
-HOUR 78:
+HOUR 84:
    Reveal phase ends. Verdict computed automatically.
         ↓
    Need at least 2 non-abstain reveals (MIN_VOTES = 2). Otherwise
@@ -210,8 +210,8 @@ HOUR 78:
                                                    Full Stage-2 settlement reversed (creator + disputer + reviewer).
    - Fewer than 2 non-abstain reveals           → Defaults to DISMISSED. Stage 2 stands.
 
-HOUR 78+:
-   - You voted with majority + revealed → +3
+HOUR 84+:
+   - You voted with majority + revealed → +7
    - You voted minority + revealed       → -10
    - You ABSTAINED + revealed            → 0
    - Missed reveal                       → -10 (no-show)
@@ -372,7 +372,7 @@ Rarely. Only when (a) a dispute makes it to Stage 2, AND (b) the loser stakes 25
 4. **Look at the Stage-2 split.** Was it 5-2 (lopsided, jury was confident)? Or 4-3 (close call)? Closer split = more weight to the appellant's argument.
 5. **Decide:** UPHOLD if the jury seems right. OVERTURN if you believe they missed something. ABSTAIN if you genuinely can't tell.
 6. **Commit your vote.** Your score doesn't move yet — settlement waits for the verdict.
-7. **Calendar a hard reminder for 72h later.** The 6h reveal window is unforgiving.
+7. **Calendar a hard reminder for 72h later.** The 12h reveal window is unforgiving.
 8. **Reveal on time.** Tap-and-sign.
 9. **Watch the activity feed** for the panel verdict + your stake outcome.
 

@@ -216,7 +216,7 @@ You file APPEAL_FILED within 48h
        ↓
 3 Experts get summoned (Stage 3)
        ↓
-       72h commit + 6h reveal (need ≥2 non-abstain reveals)
+       72h commit + 12h reveal (need ≥2 non-abstain reveals)
        ↓
         ┌──────────────────┬──────────────────┐
         ↓                                     ↓
@@ -397,7 +397,7 @@ Done.               ↓         ↓
                                  (-10)         (Stage 2)
                                                 ↓
                                         7 jurors vote
-                                        (72h commit + 6h reveal)
+                                        (72h commit + 12h reveal)
                                                 ↓
                                     ┌───────────┼────────┐
                                     ↓           ↓        ↓
@@ -491,9 +491,9 @@ You see their TIP ID. Not their legal name.
 ~48h   grace window (HIGH/CRITICAL flagged content)
 ~48h   reviewer SLA
 ~24h   creator decision window after reviewer CONFIRM
-~78h   Stage 2 jury (72h commit + 6h reveal)
+~84h   Stage 2 jury (72h commit + 12h reveal)
 ~48h   appeal window
-~78h   Stage 3 expert panel
+~84h   Stage 3 expert panel
 ─────
 ~13–14 days worst case
 ```

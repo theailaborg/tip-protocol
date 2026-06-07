@@ -16,7 +16,8 @@ spec changed or the genesis is misconfigured.
 | `VINDICATION_BONUS` | **5** | Author's "content cleared" bonus |
 | `APPELLANT_STAKE` | **25** | Deducted at file-appeal time |
 | `OVERTURN_BONUS` | **10** | Appellant's appeal-win bonus |
-| `MAJORITY_BONUS` | **3** | Juror/expert majority-vote reward |
+| `JUROR_MAJORITY_BONUS` | **3** | Stage-2 juror majority-vote reward |
+| `EXPERT_MAJORITY_BONUS` | **7** | Stage-3 expert majority-vote reward (higher than juror because experts require score ≥850) |
 | `MINORITY_PENALTY` | **10** | Juror/expert minority-vote forfeit |
 | `NO_SHOW_PENALTY` | **10** | Summoned but didn't reveal |
 | `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
@@ -100,7 +101,7 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 | Author | **+5** | Vindication (Stage-2 wrongly UPHELD; now cleared) |
 | Author offense_count | -1 | Stage-2 increment reversed |
 | Disputer | **-20** | Stage-2 +20 settlement reversed (un-refund -15, un-bonus -5) |
-| Stage-3 majority experts | +3 each | |
+| Stage-3 majority experts | +7 each | |
 
 **Author from start of dispute:** -100 (Stage-2) -25 (appeal stake) +35 +100 +5 = **+15**
 **Disputer from start of dispute:** -15 +20 -20 = **-15**
@@ -115,7 +116,7 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 | Author | **-100** | Fresh UPHELD penalty (Stage-3 is the first verdict to penalise) |
 | Author | **-5** | Vindication retracted (Stage-2's vindication was wrong) |
 | Author offense_count | +1 | Fresh increment |
-| Stage-3 majority experts | +3 each | |
+| Stage-3 majority experts | +7 each | |
 
 **Disputer from start of dispute:** -15 -25 +35 +20 = **+15**
 **Author from start of dispute:** +5 -100 -5 = **-100**
@@ -127,7 +128,7 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 |---|---:|
 | Author | **0** (filing-time -25 stays forfeited) |
 | Disputer | **0** (Stage-2 settlement stands) |
-| Stage-3 majority experts | +3 each |
+| Stage-3 majority experts | +7 each |
 
 **Author from start:** -100 -25 = **-125**
 **Disputer from start:** -15 +20 = **+5**
@@ -139,7 +140,7 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 |---|---:|
 | Disputer | **0** (filing-time -25 stays forfeited) |
 | Author | **0** (Stage-2 vindication +5 stands) |
-| Stage-3 majority experts | +3 each |
+| Stage-3 majority experts | +7 each |
 
 **Disputer from start:** -15 -25 = **-40**
 **Author from start:** **+5** (vindication unchanged)

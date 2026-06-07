@@ -154,12 +154,12 @@ The AI signal helps jurors but doesn't replace them. Every filed dispute reaches
        ↓
 You wait through their 72h commit phase
        ↓
-Then their 6h reveal phase
+Then their 12h reveal phase
        ↓
 Verdict computed
 ```
 
-You're not involved during these 78 hours. You watch your "Disputes" feed for the result.
+You're not involved during these 84 hours. You watch your "Disputes" feed for the result.
 
 ### Step 6: Read the verdict
 
@@ -232,23 +232,23 @@ HOUR 0:
 HOURS 0 – 72:
    Stage 2 Jury COMMIT phase.
 
-HOURS 72 – 78:
+HOURS 72 – 84:
    Stage 2 Jury REVEAL phase.
 
-HOUR ~78:
+HOUR ~84:
    Stage 2 verdict lands. Settlement applied:
        UPHELD             → you get +15 stake refund + 5 upheld bonus
        CONSERVATIVE_LABEL → you get +15 stake refund (no bonus)
        DISMISSED          → no event (your -15 stays forfeited)
        NO_QUORUM          → auto-escalates to Stage 3 immediately; your 15 stays on file
 
-HOURS 78 – 126 (if you lost or want to challenge):
+HOURS 84 – 132 (if you lost or want to challenge):
    Appeal window — 48h to file. Filing costs an additional -25.
 
-HOURS 126 – 204 (if you appealed):
-   Stage 3 Experts. 72h commit + 6h reveal.
+HOURS 132 – 216 (if you appealed):
+   Stage 3 Experts. 72h commit + 12h reveal.
 
-HOUR 204:
+HOUR 216:
    Final verdict. Whatever it is, that's the end. No further appeal.
 ```
 
@@ -311,7 +311,7 @@ You sit on the disputer side of the same feed creators read. Two notification ty
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**What you DON'T see:** the in-flight jury phases (`juror_commit_required`, `juror_reveal_required`, etc.) are juror-scoped — they only fire for the seven people elected to your case. As the disputer you sit in passive-waiting mode through the 78h commit+reveal window. The dashboard doesn't surface progress because there's nothing you can do during that phase; only the final `verdict_landed` lands when the case settles.
+**What you DON'T see:** the in-flight jury phases (`juror_commit_required`, `juror_reveal_required`, etc.) are juror-scoped — they only fire for the seven people elected to your case. As the disputer you sit in passive-waiting mode through the 84h commit+reveal window. The dashboard doesn't surface progress because there's nothing you can do during that phase; only the final `verdict_landed` lands when the case settles.
 
 The author's `dispute_filed_against_me` notification fires the moment you file — but that's their dashboard, not yours.
 
@@ -342,7 +342,7 @@ Stake:   15 (on file)
 
 ```
 Status: Going to Jury — 7 jurors summoned
-Verdict expected in ~78 hours
+Verdict expected in ~84 hours
 ```
 
 ### Moment 4: Stage 2 in progress
@@ -430,7 +430,7 @@ Before clicking "Dispute":
 3. **Check the AI prescan tier** on the content. If AI also says HIGH/CRITICAL, your dispute has air support. If AI said LOW and you disagree, you need more evidence.
 4. **Check your own score and budget.** You're risking 15 points (or up to 40 with appeal). If your score is 410 and you can't afford to drop to 395, don't dispute.
 5. **Confirm you don't have a personal beef** with the creator. Disputes are about origin labels, not personalities.
-6. **Click File. Stake. Wait 78 hours.** Don't doom-scroll the dispute feed — verdict will come.
+6. **Click File. Stake. Wait 84 hours.** Don't doom-scroll the dispute feed — verdict will come.
 7. **If you lose, accept it.** Appeals only make sense when you have NEW evidence or the jury clearly missed something. Don't appeal out of spite.
 
 Two clean outcomes:
