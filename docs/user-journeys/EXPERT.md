@@ -18,7 +18,9 @@ You qualify if **all** are true:
 | You weren't on the original Stage 2 jury | The same person can't judge the same case twice — system filters automatically |
 | You're not the creator, the disputer, or the appellant | Conflict-of-interest filter |
 
-You can turn the toggle off any time. You stop being picked, immediately.
+**Where to find the toggle:** Profile → Settings → Adjudication participation → "I want to help adjudicate". Same toggle as Juror — if it's ON, you're eligible for both roles whenever your score and the case match. You can turn it off any time and stop being picked immediately.
+
+**How often you'll be picked:** Rarely — only when (a) a dispute makes it to Stage 2, AND (b) the loser stakes 25 points to file an appeal. On a federation with thousands of users, expect a handful of expert summonses per quarter at most.
 
 ---
 
@@ -226,11 +228,32 @@ Same constants as Juror — there's no special expert escrow.
 
 | What you missed | Consequence |
 |---|---|
-| Didn't commit at all (no submission in 72h) | Counted as a no-show. **-10 trust score** (unless the panel falls under MIN_VOTES = 2 non-abstain, in which case the appeal defaults to DISMISSED but no-shows still take the hit — same as Stage 2 quorum logic). |
+| Didn't commit at all (no submission in 72h) | Counted as a no-show. **-10 trust score.** No-shows still take the hit even if the panel falls under quorum (see "Quorum failure" below). |
 | Committed but missed reveal | Treated the same as no-commit. **-10 trust score.** The chain can't see what's inside a sealed commit. |
 | Committed + revealed but salts don't match | Same as miss: **-10**. App handles this correctly so it won't happen if you use the app. |
 
 **If you can't reveal, don't commit.** The downside on a missed reveal is the same -10 as voting minority — and you didn't even get credit for trying.
+
+---
+
+## What if the panel doesn't reach quorum?
+
+The expert panel needs at least **2 non-abstain reveals** to compute a verdict. If fewer than 2 experts make a valid non-abstain reveal — for example two miss the reveal and the third abstains — the appeal **defaults to DISMISSED**: the Stage-2 verdict stands.
+
+```
+Fewer than 2 non-abstain reveals
+            ↓
+   APPEAL_RESULT: defaults to DISMISSED
+   Stage-2 outcome stays in force
+   Appellant's 25-point filing stake stays forfeited
+            ↓
+   No-show experts STILL take -10
+   Experts who revealed (including ABSTAIN) take 0
+```
+
+**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum, it auto-escalates to Stage 3 and nobody is penalised — there's somewhere to go. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take the -10 hit for not showing up.
+
+In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 
 ---
 
@@ -240,7 +263,7 @@ Same constants as Juror — there's no special expert escrow.
 
 | Your action | Effect |
 |---|---|
-| Commit + reveal + vote with majority | **+3** |
+| Commit + reveal + vote with majority | **+7** |
 | Commit + reveal + vote with minority | **-10** |
 | Commit + reveal + ABSTAIN | **0 — neutral** |
 | Commit + miss reveal | **-10 (no-show)** |
@@ -325,7 +348,7 @@ You're at a higher tier, so:
 |---|---|---|
 | Minimum trust score | 700 | **850** |
 | Panel size | 7 | **3** |
-| Personal majority bonus | +3 | +3 |
+| Personal majority bonus | +3 | **+7** |
 | Personal minority penalty | -10 | -10 |
 | Quorum thresholds | ≥5 reveals AND ≥3 non-abstain | ≥2 non-abstain reveals |
 | What you're judging | "Is the dispute right?" — looking at the content fresh | "Was the Stage-2 jury right?" — reviewing their verdict |
@@ -342,7 +365,7 @@ Three experts, three votes, two-out-of-three wins. You're the final word.
 Because the pool of 850+ trust score users is much smaller. Statistically, 3 high-trust experts at the appeal stage carry similar signal to 7 jurors at the dispute stage — and they're settling, not initiating.
 
 **Is the stake higher at the expert tier?**
-Your personal stake is actually the same as a juror (-10 / +3 / -10). What's higher at this tier is the *case-level* stake — the appellant's 25-point filing fee and the full Stage-2 settlement that flips on overturn. Your call is final, and reversing it isn't possible — so the impact on others is what makes this tier weighty, not your own score delta.
+The downside side is the same as Juror (-10 minority, -10 no-show). The upside is bigger — your majority bonus is **+7** here vs +3 for jurors, calibrating for the higher-trust 850+ score floor and the harder Stage-3 calls. What's much bigger though is the *case-level* stake — the appellant's 25-point filing fee and the full Stage-2 settlement that flips on overturn. Your call is final, and reversing it isn't possible — so the impact on others is what makes this tier weighty, not just your own score delta.
 
 **Should I just rubber-stamp the Stage 2 verdict?**
 No. You're not there to confirm — you're there to review. Read the appellant's argument. If they make a good case the jury missed something, OVERTURN. If they're just sore about losing, UPHOLD.

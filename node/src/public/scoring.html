@@ -137,7 +137,8 @@
     <h3>As a reviewer / juror / expert</h3>
     <ul>
       <li>Reviewer makes a correct call: <span class="pos">+5</span></li>
-      <li>Juror or expert votes with the majority: <span class="pos">+3</span></li>
+      <li>Juror votes with the majority (Stage 2): <span class="pos">+3</span></li>
+      <li>Expert votes with the majority (Stage 3 appeal): <span class="pos">+7</span></li>
       <li>Disputer or appellant wins their case: stake refunded + bonus (see below)</li>
     </ul>
   </div>
@@ -200,7 +201,8 @@
     <tr><td>Win the appeal (overturn)</td><td class="num pos">+35</td><td>Stake (25) refunded + OVERTURN_BONUS (+10).</td></tr>
     <tr><td>Your content is cleared (vindication)</td><td class="num pos">+5</td><td>Once per resolution. Retracted if a later overturn reverses it.</td></tr>
     <tr><td>Reviewer makes a correct call</td><td class="num pos">+5</td><td>On DISMISS or accept-private.</td></tr>
-    <tr><td>Juror / expert majority vote</td><td class="num pos">+3</td><td>Per case.</td></tr>
+    <tr><td>Juror majority vote (Stage 2)</td><td class="num pos">+3</td><td>Per case.</td></tr>
+    <tr><td>Expert majority vote (Stage 3 appeal)</td><td class="num pos">+7</td><td>Per case. Higher than juror because the expert pool requires score ≥850.</td></tr>
     <tr><td>Juror / expert minority vote</td><td class="num neg">-10</td><td>Per case.</td></tr>
     <tr><td>Summoned but didn't vote</td><td class="num neg">-10</td><td>Per case.</td></tr>
     <tr><td>Verification (you verify someone's content)</td><td class="num pos">+2 to +5</td><td>+5 if your score is ≥ 800.</td></tr>
@@ -245,7 +247,7 @@
 <h2>What's NOT scored (and why)</h2>
 <p>If you've seen our internal spec doc and wonder why certain things aren't here — these are deliberate choices we made during implementation:</p>
 <ul>
-  <li><strong>No stake from jurors, experts, or reviewers.</strong> The spec said each role should stake points up front, refunded if their decision held up. We removed that. They earn at verdict time (<span class="pos">+3</span> majority / <span class="pos">+5</span> correct call) or lose (<span class="neg">-10</span> minority, <span class="neg">-10</span> no-show). Cleaner, same final economics, no in-flight escrow to track. <em>Disputers and appellants still stake — that's anti-spam pressure on filing, a different problem.</em></li>
+  <li><strong>No stake from jurors, experts, or reviewers.</strong> The spec said each role should stake points up front, refunded if their decision held up. We removed that. They earn at verdict time (<span class="pos">+3</span> juror majority / <span class="pos">+7</span> expert majority / <span class="pos">+5</span> reviewer correct call) or lose (<span class="neg">-10</span> minority, <span class="neg">-10</span> no-show). Cleaner, same final economics, no in-flight escrow to track. <em>Disputers and appellants still stake — that's anti-spam pressure on filing, a different problem.</em></li>
   <li><strong>No milestone bonuses.</strong> "+15 at 10 reviews, +30 at 50, badges at 200" — we decided reputation already accumulates naturally from correct decisions. No separate streak rewards.</li>
   <li><strong>No retroactive DISMISS penalty.</strong> If a reviewer dismisses a case and a separate later dispute proves it was actually mislabeling, we don't go back and dock them. The eligibility gate (overturn rate ≤ 30%) handles consistently-bad reviewers automatically.</li>
   <li><strong>No 90-day clean-record reset (yet).</strong> Your offense count doesn't decay to zero after 90 clean days — it stays. We're holding on this until we see real offense-distribution data in production.</li>

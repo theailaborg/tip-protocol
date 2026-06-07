@@ -1,6 +1,6 @@
 # Juror Journey
 
-You're a **Juror**. Someone publicly disputed a piece of content. You're one of **7 jurors** picked at random to vote on it. The majority of those who actually vote decides the outcome.
+You're a **Juror**. Someone publicly disputed a piece of content — they're claiming the creator's origin label is wrong. You're one of **7 jurors** picked at random to decide who's right: the creator or the disputer. The majority of those who actually vote sets the outcome.
 
 This is Stage 2 — the public phase. Stage 1 (Reviewer) already happened or got skipped. Now it's the community's turn.
 
@@ -17,7 +17,9 @@ You qualify if **all** are true:
 | You turned ON **"I want to help adjudicate"** in your profile | Opt-in only |
 | You're not the creator, the disputer, or anyone on the original review | Conflict-of-interest filter, applied automatically |
 
-You can turn the toggle off any time. You stop getting picked, immediately.
+**Where to find the toggle:** Profile → Settings → Adjudication participation → "I want to help adjudicate". ON by default at registration. You can turn it off any time — you stop getting picked immediately.
+
+**How often you'll be picked:** A few times a year initially, depending on dispute volume and the active eligible-juror pool. Higher trust scores qualify for a bigger pool but the random selection is uniform — your trust score doesn't bias the picker, only the eligibility floor does.
 
 ---
 
