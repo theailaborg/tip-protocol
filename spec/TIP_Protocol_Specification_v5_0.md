@@ -254,7 +254,7 @@ The following definitions are normative for this specification.
 
 **CTID**: The Content TIP Identifier. A URI of the form `tip://c/{OriginCode}-{Hash14}-{Author4}` that uniquely identifies a content registration on the DAG. See Section 18.
 
-**Disputer**: A TIP-ID holder with trust score at least 400 who has filed a CONTENT_DISPUTED transaction against another party's content registration. See Section 28.4.
+**Disputer**: A TIP-ID holder with trust score at least 550 who has filed a CONTENT_DISPUTED transaction against another party's content registration. See Section 28.4.
 
 **Effective Date**: The date on which a transaction or signed payload takes effect on the DAG. Distinct from the timestamp encoded in the signed payload.
 
@@ -1548,7 +1548,7 @@ A dispute is triggered by one of three events:
 
 - **Creator does not clear a Pre-Scan flag.** Content registered with `status: pending_review` (Section 21.2) enters the pre-scan review pipeline after the 48-hour grace window.
 
-- **Disputer files a public dispute.** Any TIP-ID holder with score at least 400 may file a CONTENT_DISPUTED transaction against another party's content (Section 28.4).
+- **Disputer files a public dispute.** Any TIP-ID holder with score at least 550 may file a CONTENT_DISPUTED transaction against another party's content (Section 28.4).
 
 - **VP escalates a fraud finding.** A REVOKE_VP transaction (Section 37.2) cascades dispute initiation for content the revoked party registered within the preceding 90 days.
 
@@ -1598,7 +1598,7 @@ The verdict is computed after the reveal phase:
 
 ### 28.4 Filing a Stage 2 dispute directly
 
-Any TIP-ID holder with score at least 400 may file a Stage 2 dispute directly (without a Reviewer's CONFIRM) by signing a CONTENT_DISPUTED transaction against another party's content. The filer becomes the formal Disputer.
+Any TIP-ID holder with score at least 550 may file a Stage 2 dispute directly (without a Reviewer's CONFIRM) by signing a CONTENT_DISPUTED transaction against another party's content. The filer becomes the formal Disputer.
 
 Filing a dispute stakes 15 score points (DISPUTER_STAKE). The stake is held in escrow. The dispute follows the Stage 2 procedure above.
 

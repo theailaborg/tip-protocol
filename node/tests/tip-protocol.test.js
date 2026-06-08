@@ -898,6 +898,7 @@ describe("REST API", () => {
       tip_id: disputerId, region: "US", public_key: disputerKp.publicKey,
       status: "active", vp_id: testVpId, verified_at: nowMs(),
     });
+    dag.setScore(disputerId, 600, 0, nowMs());  // above dispute filing floor (550)
     const body = _buildDisputeBody({
       disputerTipId: disputerId, disputerPriv: disputerKp.privateKey,
       claimedOrigin: "AG", description: "Test 6.13 dispute body — classifier flagged AI generation",
@@ -1211,6 +1212,7 @@ describe("Gossip Broadcast Wiring", () => {
       .send({ ...disputerIdFields, vp_signature: _signIdentity(disputerIdFields, gFoundingVpKp.privateKey) });
     const disputerTipId = disputerRes.body.data.tip_id;
     const disputerPriv = kp85d.privateKey;
+    gossipDag.setScore(disputerTipId, 600, 0, nowMs());  // above dispute filing floor (550)
 
     const content = "Dispute gossip broadcast test article.";
     const cRes = await request(gossipApp)
