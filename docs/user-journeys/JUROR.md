@@ -147,6 +147,21 @@ The asymmetric math (-8 to lose vs +3 to win) is deliberate: it makes "vote anyw
 
 ---
 
+## The bigger picture: what your vote moves
+
+Your own +3 / -8 is small. The case-level economics your vote drives are much bigger — your jury decides how points move between the creator and the disputer:
+
+| Verdict | Creator | Disputer |
+|---|---|---|
+| DISMISSED (MATCH wins) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
+| UPHELD (MISMATCH wins) | **-100** for OH→AG 1st offense (smaller for AA→AG or OH→AA; up to **-300** for repeat offenders — see the mislabeling table) | **+20** (filing stake refunded + upheld bonus) |
+| CONSERVATIVE_LABEL (jurors agreed origin was wrong but split on the new label) | **0** (no penalty — under-disclosure was honest) | **+15** (refund only, no bonus) |
+| NO_QUORUM (fewer than 5 reveals or fewer than 3 non-abstain) | 0 (pending Stage 3) | 0 (stake locked until Stage 3) |
+
+A jury that gets it wrong moves real points across the federation. **Your personal +3 / -8 delta is the smallest thing in the room** — the case-level impact is what the protocol is asking you to take seriously.
+
+---
+
 ## The full journey, hour by hour
 
 ```
