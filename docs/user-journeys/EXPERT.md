@@ -380,7 +380,7 @@ No. You're not there to confirm — you're there to review. Read the appellant's
 You see the vote breakdown (e.g. "4 MISMATCH / 2 MATCH / 1 ABSTAIN") and the chosen origin if MISMATCH won. You don't see individual juror TIP IDs in the UI, but the chain has the data publicly.
 
 **What's "CONSERVATIVE_LABEL" if I see it on the case?**
-Means the Stage 2 jury agreed something was wrong but disagreed on what label to apply. The chain picked the smallest-penalty option. If you overturn, you're saying the whole thing was wrong.
+Means the creator declared AG (AI-Generated) but the Stage 2 jury confirmed the content is actually OH (Original Human). The creator was being conservative by over-declaring AI involvement — no penalty, just a relabel to OH. If you overturn, you're saying the Stage 2 jury was wrong about the relabel.
 
 **Can I deliberate with the other 2 experts?**
 No. All three of you vote independently and blind during COMMIT phase. After REVEAL, the votes are public — but by then it's settled.

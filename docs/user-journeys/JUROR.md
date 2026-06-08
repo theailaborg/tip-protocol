@@ -25,11 +25,9 @@ You qualify if **all** are true:
 
 ## How a case lands on you
 
+A dispute has been publicly filed — either by a user with trust score 550+ who challenged verified content directly, or auto-escalated from a reviewer's CONFIRM that the creator didn't accept. Either way, the disputer is that user or that reviewer (the creator is never the disputer on their own content). The protocol then picks 7 jurors:
+
 ```
-Someone publicly disputed a piece of content
-       (could be the creator themselves after a reviewer's CONFIRM,
-        or any user with score 550+ challenging a verified content)
-                 ↓
        System runs a deterministic random selection
        (same algorithm on every node — everyone agrees)
                  ↓
@@ -109,7 +107,7 @@ If you click MISMATCH, the app asks: **"What origin DO you think this is?"** Pic
 ```
 Effect on the case if MISMATCH wins majority:
        ↓
-   Verdict: UPHELD (or CONSERVATIVE_LABEL if jurors disagreed on what label to apply)
+   Verdict: UPHELD (or CONSERVATIVE_LABEL if the creator declared AG and the jury confirmed it's actually OH — over-declaration, no creator penalty)
    Content gets relabeled to the new origin
    Creator's score takes a penalty (size depends on the swap — OH→AG is the heaviest)
    Disputer gets their stake back + a +5 upheld bonus
@@ -155,7 +153,7 @@ Your own +3 / -8 is small. The case-level economics your vote drives are much bi
 |---|---|---|
 | DISMISSED (MATCH wins) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
 | UPHELD (MISMATCH wins) | **-100** for OH→AG 1st offense (smaller for AA→AG or OH→AA; up to **-300** for repeat offenders — see the mislabeling table) | **+20** (filing stake refunded + upheld bonus) |
-| CONSERVATIVE_LABEL (jurors agreed origin was wrong but split on the new label) | **0** (no penalty — under-disclosure was honest) | **+15** (refund only, no bonus) |
+| CONSERVATIVE_LABEL (creator declared AG, jury confirmed it's actually OH — over-declaration) | **0** (no penalty — over-declaration is encouraged) | **+15** (refund only, no bonus) |
 | NO_QUORUM (fewer than 5 reveals or fewer than 3 non-abstain) | 0 (pending Stage 3) | 0 (stake locked until Stage 3) |
 
 A jury that gets it wrong moves real points across the federation. **Your personal +3 / -8 delta is the smallest thing in the room** — the case-level impact is what the protocol is asking you to take seriously.
@@ -201,8 +199,8 @@ HOUR 84:
         ↓
    With quorum:
         - MISMATCH > MATCH (majority of non-abstain)        → UPHELD
-          ↳ If jurors disagreed on the new origin label and
-            declared was AG with confirmed-majority OH       → CONSERVATIVE_LABEL
+          ↳ If creator declared AG and majority confirmed OH → CONSERVATIVE_LABEL
+            (over-declaration: no creator penalty)
         - MATCH ≥ MISMATCH (majority of non-abstain)        → DISMISSED
         - Tie (MATCH == MISMATCH)                            → DISMISSED, no juror bonus/penalty
    Without quorum:
@@ -343,7 +341,7 @@ The -8 minority penalty is what makes jurors take voting seriously — if it wer
 MATCH = "the creator's label is right." MISMATCH = "the creator's label is wrong, and I think it should be [X]." Match the creator's claim, or mismatch it.
 
 **Why does MISMATCH need me to pick an origin?**
-Because the chain has to update the content to the new label. If 4 jurors say MISMATCH but each says a different replacement origin, the system applies the conservative one (CONSERVATIVE_LABEL verdict) — usually the smaller penalty.
+Because the chain has to update the content to the new label. If MISMATCH voters split between different replacement origins (e.g. 3 say AA, 2 say AG), the chain takes the most common one as the new origin. (CONSERVATIVE_LABEL is a separate concept — it's the specific case where the creator declared AG but the jury confirmed it's actually OH, an over-declaration that carries no creator penalty.)
 
 **Can I see who else is on the jury?**
 Only after reveal phase ends. During COMMIT, all 7 are anonymous to each other. After REVEAL, the chain has everyone's vote — so the data is public, but the system never shows you "your fellow jurors" in real-time.

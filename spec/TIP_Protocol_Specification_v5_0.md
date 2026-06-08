@@ -1788,7 +1788,7 @@ When a Stage 2 or Stage 3 verdict yields UPHELD, the author's score is reduced a
 
 The penalty escalates with offense count to deter repeat offenders. The escalation is per-pair: a repeat AAtoAG offender's third offense costs -75 (the AAtoAG ladder), not -300 (the OHtoAG ladder).
 
-CONSERVATIVE_LABEL verdicts (jury agreed origin was wrong but disagreed on the precise alternative) carry zero penalty.
+CONSERVATIVE_LABEL verdicts (creator declared AG and the jury confirmed the content is actually OH — an over-declaration of AI involvement) carry zero penalty. The protocol encourages conservative labeling; penalties apply only to under-declarations of AI involvement.
 
 DISMISSED verdicts (jury found the original claim correct) carry zero penalty for the author and award the VINDICATION_BONUS.
 
