@@ -4,12 +4,12 @@
  *
  *   850-1000  Highly Trusted   (eligible for expert appeal panels)
  *   650-849   Trusted          (jury eligibility at >= 700)
- *   400-649   Verified         (can register, dispute, verify)
+ *   400-649   Verified         (can register, verify; dispute filing requires score >= 550)
  *   200-399   Caution          (register only)
  *   0-199     Not Trusted      (mandatory pre-scan, no dispute / no verify)
  *
  * Action gates checked here:
- *   canDispute  — score >= DISPUTE_FILING_MIN (400)
+ *   canDispute  — score >= DISPUTE_FILING_MIN (550)
  *   isJuryEligible — score >= JURY_MIN_SCORE (700) AND not revoked
  *   selectExperts (pool floor) — score >= MIN_EXPERT_SCORE (850), with
  *                                 fallbacks at 700 then jury_fallback (500).
@@ -65,8 +65,8 @@ describe("tier thresholds — genesis constants match spec", () => {
     expect(PROTO_CONSTANTS.tiers.caution).toBe(200);
   });
 
-  test("DISPUTE_FILING_MIN = 400 (Verified gate)", () => {
-    expect(DISPUTE.MIN_SCORE_TO_DISPUTE).toBe(400);
+  test("DISPUTE_FILING_MIN = 550 (mid-Verified gate)", () => {
+    expect(DISPUTE.MIN_SCORE_TO_DISPUTE).toBe(550);
   });
   test("JURY_MIN_SCORE = 700 (Trusted+ gate)", () => {
     expect(JURY.MIN_SCORE).toBe(700);
@@ -106,7 +106,7 @@ describe("getTier — exact boundaries map to the higher tier", () => {
 
 // ─── canDispute gate ───────────────────────────────────────────────────────
 
-describe("canDispute — score gate (>= 400)", () => {
+describe("canDispute — score gate (>= 550)", () => {
   function _seedDisputable(dag, score) {
     const tipId = "tip://id/disputer";
     _seedIdentity(dag, tipId, score);
@@ -119,9 +119,9 @@ describe("canDispute — score gate (>= 400)", () => {
     return { tipId, ctid };
   }
 
-  test("score = 400 (exact boundary): allowed", () => {
+  test("score = 550 (exact boundary): allowed", () => {
     const fx = _setup();
-    const { tipId, ctid } = _seedDisputable(fx.dag, 400);
+    const { tipId, ctid } = _seedDisputable(fx.dag, 550);
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
@@ -129,16 +129,27 @@ describe("canDispute — score gate (>= 400)", () => {
     expect(r.valid).toBe(true);
   });
 
-  test("score = 399 (one below boundary): rejected with score message", () => {
+  test("score = 549 (one below boundary): rejected with score message", () => {
     const fx = _setup();
-    const { tipId, ctid } = _seedDisputable(fx.dag, 399);
+    const { tipId, ctid } = _seedDisputable(fx.dag, 549);
     const r = rules.canDispute(fx.dag, fx.scoring, {
       ctid, disputer_tip_id: tipId, evidence_hash: null,
       reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
     });
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(403);
-    expect(r.error.message).toMatch(/Score must be >= 400/);
+    expect(r.error.message).toMatch(/Score must be >= 550/);
+  });
+
+  test("score = 400 (lower Verified tier, but below dispute floor): rejected", () => {
+    const fx = _setup();
+    const { tipId, ctid } = _seedDisputable(fx.dag, 400);
+    const r = rules.canDispute(fx.dag, fx.scoring, {
+      ctid, disputer_tip_id: tipId, evidence_hash: null,
+      reason: "origin_mismatch", claimed_origin: ORIGIN.AG,
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
   });
 
   test("score = 0 (Not Trusted): rejected", () => {
