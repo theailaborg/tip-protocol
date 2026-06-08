@@ -404,7 +404,7 @@ A reader who uses a Verifier (a browser extension, a CMS plugin, a mobile reader
 
 ### 6.5 The Community Adjudication Layer
 
-A claim by a signer that their content matches a particular Origin Code may be challenged by any other TIP-ID holder with trust score at least 400 through the dispute mechanism in Section 28.4. The community jury (Stage 2) and expert panel (Stage 3) are themselves trust anchors: a Verifier trusts that a sufficient number of high-trust-score humans, drawn from a pool of opt-out-available volunteers, will exercise reasonable judgment. The trust is partial and bounded. A reader who distrusts the community adjudication outcomes is free to make their own assessment of any registered content; the adjudication outcomes are advisory inputs to the Verifier's display of trust scores, not absolute truths.
+A claim by a signer that their content matches a particular Origin Code may be challenged by any other TIP-ID holder with trust score at least 550 through the dispute mechanism in Section 28.4. The community jury (Stage 2) and expert panel (Stage 3) are themselves trust anchors: a Verifier trusts that a sufficient number of high-trust-score humans, drawn from a pool of opt-out-available volunteers, will exercise reasonable judgment. The trust is partial and bounded. A reader who distrusts the community adjudication outcomes is free to make their own assessment of any registered content; the adjudication outcomes are advisory inputs to the Verifier's display of trust scores, not absolute truths.
 
 ### 6.6 No single point of trust
 
