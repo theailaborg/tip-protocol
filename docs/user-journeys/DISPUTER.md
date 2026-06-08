@@ -42,7 +42,7 @@ You qualify if **all** are true:
 | Outcome | Net effect on your score (cradle-to-grave) |
 |---|---|
 | You win at Stage 2 (Jury UPHELD) | **+5 net** (-15 filing, +15 stake refund, +5 upheld bonus) |
-| You partly win at Stage 2 (CONSERVATIVE_LABEL — jurors agreed origin was wrong but disagreed on the new label) | **0 net** (-15 filing, +15 stake refund, no bonus) |
+| You partly win at Stage 2 (CONSERVATIVE_LABEL — creator declared AG and the jury confirmed OH; over-declaration with no creator penalty) | **0 net** (-15 filing, +15 stake refund, no bonus) |
 | You lose at Stage 2 (DISMISSED) | **-15 net** (filing stake stays forfeited; no settlement event) |
 | Jury fails quorum (NO_QUORUM, auto-escalates to Stage 3 Experts) | Settlement is deferred — net depends on the final Stage-3 verdict. Your 15 stays locked until then. |
 

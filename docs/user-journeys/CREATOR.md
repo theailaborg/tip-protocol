@@ -252,7 +252,7 @@ Same flow if you WON Stage 2 and the disputer appealed — except now you're hop
 | Reviewer is assigned, then confirms, you accept correction privately | **-10** (small relabel penalty — but you avoid a public dispute) |
 | You retract your own content | **-50** |
 | Stage 2 jury sides with you (DISMISSED) | **+5 vindication bonus** |
-| Stage 2 CONSERVATIVE_LABEL (jurors agreed origin was wrong but disagreed on the new label) | **0** — content gets relabeled to the smallest-penalty option, but no score penalty applies (it was an honest under-disclosure) |
+| Stage 2 CONSERVATIVE_LABEL (you declared AG and the jury confirmed OH — over-declaration) | **0** — content gets relabeled to OH and no score penalty applies (the protocol encourages conservative labeling) |
 | Stage 2 jury sides against you (UPHELD) | **Varies — heavy.** Per-pair, per-offense escalation [1st, 2nd, 3rd+]: OH→AG is -100 / -200 / -300. OH→AA is -40 / -80 / -120. AA→AG is -25 / -50 / -75. |
 | Stage 3 experts uphold the Stage 2 verdict against you | Same as Stage 2 — final. Your 25-point appeal stake also stays forfeited. |
 | Stage 3 experts overturn in your favor | **Cradle-to-grave: +15.** At Stage 3 you receive +35 (stake + overturn bonus) + the full Stage-2 penalty reversed + +5 vindication bonus. Subtract the -25 you paid at appeal-filing and the original Stage-2 penalty already taken, and the net comes out to +15. |
