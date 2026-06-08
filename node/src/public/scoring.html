@@ -162,9 +162,9 @@
       <li>File an appeal: <span class="neg">-25</span> held as stake; refunded only if you win</li>
       <li>Juror votes against the majority (Stage 2): <span class="neg">-8</span></li>
       <li>Expert votes against the majority (Stage 3): <span class="neg">-10</span></li>
-      <li>Summoned but never committed (no engagement): <span class="neg">-1</span> &mdash; same for juror or expert</li>
-      <li>Juror committed but missed the reveal: <span class="neg">-8</span></li>
-      <li>Expert committed but missed the reveal: <span class="neg">-10</span></li>
+      <li>Summoned but never committed (no-commit): <span class="neg">-1</span> &mdash; same for juror or expert</li>
+      <li>Juror committed but missed the reveal (no-reveal): <span class="neg">-8</span></li>
+      <li>Expert committed but missed the reveal (no-reveal): <span class="neg">-10</span></li>
     </ul>
   </div>
 </div>
@@ -208,9 +208,9 @@
     <tr><td>Expert majority vote (Stage 3 appeal)</td><td class="num pos">+7</td><td>Per case. Higher than juror because the expert pool requires score ≥850.</td></tr>
     <tr><td>Juror minority vote (Stage 2)</td><td class="num neg">-8</td><td>Per case.</td></tr>
     <tr><td>Expert minority vote (Stage 3)</td><td class="num neg">-10</td><td>Per case. Heavier than juror &mdash; final-word weight.</td></tr>
-    <tr><td>Summoned but never committed</td><td class="num neg">-1</td><td>Small signal. Same for juror or expert &mdash; no engagement reads the same at either tier.</td></tr>
-    <tr><td>Juror committed but missed reveal</td><td class="num neg">-8</td><td>Heavier than no-commit &mdash; engaged then bailed mid-process.</td></tr>
-    <tr><td>Expert committed but missed reveal</td><td class="num neg">-10</td><td>Heavier than no-commit &mdash; engaged then bailed mid-process.</td></tr>
+    <tr><td>No-commit (summoned, never submitted a commit tx)</td><td class="num neg">-1</td><td>Small signal. Same for juror or expert &mdash; no engagement reads the same at either tier.</td></tr>
+    <tr><td>No-reveal (juror committed but missed reveal)</td><td class="num neg">-8</td><td>Heavier than no-commit &mdash; engaged then bailed mid-process.</td></tr>
+    <tr><td>No-reveal (expert committed but missed reveal)</td><td class="num neg">-10</td><td>Heavier than no-commit &mdash; engaged then bailed mid-process.</td></tr>
     <tr><td>Verification (you verify someone's content)</td><td class="num pos">+2 to +5</td><td>+5 if your score is ≥ 800.</td></tr>
   </tbody>
 </table>
@@ -246,14 +246,14 @@
   <li><strong>Honest creators stay safe.</strong> Over-labeling is free. Penalties only fire on confirmed under-declaration.</li>
   <li><strong>Mislabeling is expensive.</strong> A first offense for OH-as-AG (the worst kind) costs -100. Repeat offenses scale up.</li>
   <li><strong>Frivolous disputes are discouraged.</strong> The -15 stake means you only file when you actually believe the content is mislabeled.</li>
-  <li><strong>Reviewers and jurors are rewarded for good work, not punished for trying.</strong> No upfront stake &mdash; only verdict-time settlement (juror +3 / -8 minority, expert +7 / -10 minority). A juror or expert who never engages at all takes only -1; the heavier penalty (-8 or -10) kicks in only when you commit then walk away.</li>
+  <li><strong>Reviewers and jurors are rewarded for good work, not punished for trying.</strong> No upfront stake &mdash; only verdict-time settlement (juror +3 / -8 minority, expert +7 / -10 minority). A juror or expert who never engages at all takes only -1 (no-commit); the heavier penalty (-8 or -10 no-reveal) kicks in only when you commit then walk away.</li>
   <li><strong>Severity scaling is preserved across repeat offenses.</strong> A repeat AA→AG offender doesn't get the OH→AG penalty applied to them.</li>
 </ul>
 
 <h2>What's NOT scored (and why)</h2>
 <p>If you've seen our internal spec doc and wonder why certain things aren't here — these are deliberate choices we made during implementation:</p>
 <ul>
-  <li><strong>No stake from jurors, experts, or reviewers.</strong> The spec said each role should stake points up front, refunded if their decision held up. We removed that. They earn at verdict time (<span class="pos">+3</span> juror majority / <span class="pos">+7</span> expert majority / <span class="pos">+5</span> reviewer correct call) or lose: <span class="neg">-8</span> juror or <span class="neg">-10</span> expert on minority, <span class="neg">-1</span> for never committing, and <span class="neg">-8</span> juror or <span class="neg">-10</span> expert for committing-then-missing-reveal. Cleaner, same final economics shape, no in-flight escrow to track. <em>Disputers and appellants still stake &mdash; that's anti-spam pressure on filing, a different problem.</em></li>
+  <li><strong>No stake from jurors, experts, or reviewers.</strong> The spec said each role should stake points up front, refunded if their decision held up. We removed that. They earn at verdict time (<span class="pos">+3</span> juror majority / <span class="pos">+7</span> expert majority / <span class="pos">+5</span> reviewer correct call) or lose: <span class="neg">-8</span> juror or <span class="neg">-10</span> expert on minority, <span class="neg">-1</span> no-commit (never submitted a commit tx), and <span class="neg">-8</span> juror or <span class="neg">-10</span> expert no-reveal (committed then bailed). Cleaner, same final economics shape, no in-flight escrow to track. <em>Disputers and appellants still stake &mdash; that's anti-spam pressure on filing, a different problem.</em></li>
   <li><strong>No milestone bonuses.</strong> "+15 at 10 reviews, +30 at 50, badges at 200" — we decided reputation already accumulates naturally from correct decisions. No separate streak rewards.</li>
   <li><strong>No retroactive DISMISS penalty.</strong> If a reviewer dismisses a case and a separate later dispute proves it was actually mislabeling, we don't go back and dock them. The eligibility gate (overturn rate ≤ 30%) handles consistently-bad reviewers automatically.</li>
   <li><strong>No 90-day clean-record reset (yet).</strong> Your offense count doesn't decay to zero after 90 clean days — it stays. We're holding on this until we see real offense-distribution data in production.</li>

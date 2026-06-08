@@ -159,9 +159,17 @@ const JURY = {
   get COMMIT_WINDOW_HOURS() { return _j().jury_commit_hours; },
   get REVEAL_WINDOW_HOURS() { return _j().jury_reveal_hours; },
   get QUORUM() { return _j().jury_min_reveals; },
-  get MAJORITY_BONUS() { return _j().jury_majority_bonus; },
-  get MINORITY_PENALTY() { return Math.abs(_j().jury_minority_penalty); }, // genesis stores -10, return 10
-  get NO_SHOW_PENALTY() { return Math.abs(_j().jury_no_show_penalty); },  // genesis stores -10, return 10
+  // Per-role bonuses
+  get JUROR_MAJORITY_BONUS() { return _j().jury_majority_bonus; },          // +3
+  get EXPERT_MAJORITY_BONUS() { return _j().expert_majority_bonus; },        // +7
+  // Per-role minority penalties (genesis stores negative; return positive magnitude)
+  get JUROR_MINORITY_PENALTY() { return Math.abs(_j().jury_minority_penalty); },    // 8
+  get EXPERT_MINORITY_PENALTY() { return Math.abs(_j().expert_minority_penalty); }, // 10
+  // No-show split: no-commit (never submitted commit tx) vs no-reveal (committed, didn't reveal)
+  get JUROR_NO_COMMIT_PENALTY() { return Math.abs(_j().jury_no_commit_penalty); },  // 1
+  get JUROR_NO_REVEAL_PENALTY() { return Math.abs(_j().jury_no_reveal_penalty); },  // 8
+  get EXPERT_NO_COMMIT_PENALTY() { return Math.abs(_j().expert_no_commit_penalty); }, // 1
+  get EXPERT_NO_REVEAL_PENALTY() { return Math.abs(_j().expert_no_reveal_penalty); }, // 10
   get MAX_SAME_COUNTRY() { return _j().jury_max_same_country; },
 };
 

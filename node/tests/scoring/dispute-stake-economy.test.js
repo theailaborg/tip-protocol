@@ -157,11 +157,18 @@ describe("stake economy — constants from genesis match spec", () => {
   test("VINDICATION_BONUS = 5", () => expect(DISPUTE.VINDICATION_BONUS).toBe(5));
 
   test("JUROR_STAKE = 10", () => expect(JURY.JUROR_STAKE).toBe(10));
-  test("MAJORITY_BONUS = 3", () => expect(JURY.MAJORITY_BONUS).toBe(3));
-  test("MINORITY_PENALTY = 10 (positive value; code applies the minus)", () => {
-    expect(JURY.MINORITY_PENALTY).toBe(10);
+  test("JUROR_MAJORITY_BONUS = 3", () => expect(JURY.JUROR_MAJORITY_BONUS).toBe(3));
+  test("EXPERT_MAJORITY_BONUS = 7", () => expect(JURY.EXPERT_MAJORITY_BONUS).toBe(7));
+  test("JUROR_MINORITY_PENALTY = 8 (positive value; code applies the minus)", () => {
+    expect(JURY.JUROR_MINORITY_PENALTY).toBe(8);
   });
-  test("NO_SHOW_PENALTY = 10", () => expect(JURY.NO_SHOW_PENALTY).toBe(10));
+  test("EXPERT_MINORITY_PENALTY = 10 (positive value; code applies the minus)", () => {
+    expect(JURY.EXPERT_MINORITY_PENALTY).toBe(10);
+  });
+  test("JUROR_NO_COMMIT_PENALTY = 1", () => expect(JURY.JUROR_NO_COMMIT_PENALTY).toBe(1));
+  test("JUROR_NO_REVEAL_PENALTY = 8", () => expect(JURY.JUROR_NO_REVEAL_PENALTY).toBe(8));
+  test("EXPERT_NO_COMMIT_PENALTY = 1", () => expect(JURY.EXPERT_NO_COMMIT_PENALTY).toBe(1));
+  test("EXPERT_NO_REVEAL_PENALTY = 10", () => expect(JURY.EXPERT_NO_REVEAL_PENALTY).toBe(10));
 
   test("APPELLANT_STAKE = 25", () => expect(APPEAL.APPELLANT_STAKE).toBe(25));
   test("OVERTURN_BONUS = 10", () => expect(APPEAL.OVERTURN_BONUS).toBe(10));
@@ -288,8 +295,8 @@ describe("Stage-2 verdict — juror score effects", () => {
       const su = _findSU(out.txs, ids.jurors[i]);
       expect(su).toHaveLength(1);
       const expected = votes[i] === VOTE.MISMATCH
-        ? JURY.MAJORITY_BONUS
-        : -JURY.MINORITY_PENALTY;
+        ? JURY.JUROR_MAJORITY_BONUS
+        : -JURY.JUROR_MINORITY_PENALTY;
       expect(su[0].data.delta).toBe(expected);
     }
   });
@@ -324,9 +331,10 @@ describe("Stage-2 verdict — juror score effects", () => {
     expect(out.verdict).toBe(VERDICT.UPHELD);
 
     for (const noShowIdx of [5, 6]) {
-      const su = _findSU(out.txs, ids.jurors[noShowIdx], t => /no-show/i.test(t.data.reason));
+      // No JURY_VOTE_COMMIT in DAG → reason is "no-commit"
+      const su = _findSU(out.txs, ids.jurors[noShowIdx], t => /no-commit|no-reveal/i.test(t.data.reason));
       expect(su).toHaveLength(1);
-      expect(su[0].data.delta).toBe(-JURY.NO_SHOW_PENALTY);
+      expect(su[0].data.delta).toBe(-JURY.JUROR_NO_COMMIT_PENALTY);
     }
   });
 

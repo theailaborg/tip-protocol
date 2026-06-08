@@ -151,18 +151,25 @@ const GENESIS_PAYLOAD = Object.freeze({
       expert_min_votes: 2,
       // Bonuses — positive (always added)
       jury_majority_bonus: 3,
+      expert_majority_bonus: 7,
       appeal_win_bonus: 10,
       vindication_bonus: 5,
       upheld_bonus: 5,
-      // Penalties — negative (always subtracted)
-      jury_minority_penalty: -10,
-      jury_no_show_penalty: -10,
+      // Penalties — negative (always subtracted). Juror/expert split + no-commit/no-reveal split.
+      // no-commit: summoned but never submitted a commit tx (-1 — light penalty, could be a node outage)
+      // no-reveal: committed but didn't reveal (-8/-10 — deliberate non-reveal is more culpable)
+      jury_minority_penalty: -8,
+      expert_minority_penalty: -10,
+      jury_no_commit_penalty: -1,
+      jury_no_reveal_penalty: -8,
+      expert_no_commit_penalty: -1,
+      expert_no_reveal_penalty: -10,
       // Timing
       jury_commit_hours: 72,
-      jury_reveal_hours: 6,
+      jury_reveal_hours: 12,
       appeal_window_hours: 48,
       appeal_commit_hours: 72,
-      appeal_reveal_hours: 6,
+      appeal_reveal_hours: 12,
       // Phase 3 abuse prevention — rolling per-filer rate limit. A
       // disputer can file at most N disputes within the trailing
       // window. v1 picks 5 / 30 days (per spec §5.4). Window is in ms
