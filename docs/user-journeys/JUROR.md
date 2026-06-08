@@ -25,10 +25,16 @@ You qualify if **all** are true:
 
 ## How a case lands on you
 
+A dispute starts when content is publicly challenged. This happens in one of two ways:
+
+1. **Reviewer-initiated.** AI flagged the content, a reviewer was assigned and **CONFIRMED** (agreed the creator's label was wrong). The creator then either rejected the reviewer's correction or let the 24h decision window expire — the case auto-escalates to a public jury with the **reviewer as the formal disputer** on chain.
+2. **User-initiated.** Any user with trust score 550 or higher saw the content and believes the origin label is wrong. They paid a 15-point filing stake and filed the dispute directly — they're the disputer.
+
+(The creator never disputes their own content. In path 1 they trigger the public phase by rejecting the reviewer's call, but the reviewer is the one on the disputer seat.)
+
+Either way, the next step is the same:
+
 ```
-Someone publicly disputed a piece of content
-       (could be the creator themselves after a reviewer's CONFIRM,
-        or any user with score 550+ challenging a verified content)
                  ↓
        System runs a deterministic random selection
        (same algorithm on every node — everyone agrees)

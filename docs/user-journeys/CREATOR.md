@@ -179,7 +179,10 @@ You move on
 ```
 You wait the 24h out, or actively click "Take to public dispute"
        ↓
-Public CONTENT_DISPUTED tx fires automatically (with your authorization)
+Public CONTENT_DISPUTED tx fires automatically (with your authorization).
+The reviewer becomes the formal disputer on chain — their CONFIRM is
+the claim being adjudicated, so they hold the disputer seat and pay
+the -15 disputer stake. You're the author being challenged, not the disputer.
        ↓
 7 jurors get summoned (Stage 2 begins)
        ↓
