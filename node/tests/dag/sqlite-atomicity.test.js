@@ -31,12 +31,13 @@ const Database = require("better-sqlite3");
 const SRC    = path.resolve(__dirname, "../../src");
 const SHARED = path.resolve(__dirname, "../../../shared");
 
-const { initDAG }     = require(path.join(SRC, "dag"));
+const { initDAG } = require(path.join(SRC, "dag"));
+const { nowMs }   = require(path.join(SHARED, "time"));
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function makeTmpDbPath() {
-  return path.join(os.tmpdir(), `tip-atomicity-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return path.join(os.tmpdir(), `tip-atomicity-${nowMs()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 // Minimal identity record — SQLiteStore.saveIdentity handles all defaults.
