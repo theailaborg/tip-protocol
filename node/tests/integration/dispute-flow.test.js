@@ -55,9 +55,14 @@ const STAKES = {
   UPHELD_BONUS: 5,
   APPELLANT: 25,
   OVERTURN_BONUS: 10,
-  MAJORITY: 3,
-  MINORITY: 10,
-  NO_SHOW: 10,
+  JUROR_MAJORITY: 3,
+  EXPERT_MAJORITY: 7,
+  JUROR_MINORITY: 8,
+  EXPERT_MINORITY: 10,
+  JUROR_NO_COMMIT: 1,
+  JUROR_NO_REVEAL: 8,
+  EXPERT_NO_COMMIT: 1,
+  EXPERT_NO_REVEAL: 10,
   OH_AS_AG_1ST: 100,
   OH_AS_AG_2ND: 200,
   OH_AS_AG_3RD: 350,
@@ -71,9 +76,14 @@ beforeAll(() => {
   expect(DISPUTE.UPHELD_BONUS).toBe(STAKES.UPHELD_BONUS);
   expect(APPEAL.APPELLANT_STAKE).toBe(STAKES.APPELLANT);
   expect(APPEAL.OVERTURN_BONUS).toBe(STAKES.OVERTURN_BONUS);
-  expect(JURY.MAJORITY_BONUS).toBe(STAKES.MAJORITY);
-  expect(JURY.MINORITY_PENALTY).toBe(STAKES.MINORITY);
-  expect(JURY.NO_SHOW_PENALTY).toBe(STAKES.NO_SHOW);
+  expect(JURY.JUROR_MAJORITY_BONUS).toBe(STAKES.JUROR_MAJORITY);
+  expect(JURY.EXPERT_MAJORITY_BONUS).toBe(STAKES.EXPERT_MAJORITY);
+  expect(JURY.JUROR_MINORITY_PENALTY).toBe(STAKES.JUROR_MINORITY);
+  expect(JURY.EXPERT_MINORITY_PENALTY).toBe(STAKES.EXPERT_MINORITY);
+  expect(JURY.JUROR_NO_COMMIT_PENALTY).toBe(STAKES.JUROR_NO_COMMIT);
+  expect(JURY.JUROR_NO_REVEAL_PENALTY).toBe(STAKES.JUROR_NO_REVEAL);
+  expect(JURY.EXPERT_NO_COMMIT_PENALTY).toBe(STAKES.EXPERT_NO_COMMIT);
+  expect(JURY.EXPERT_NO_REVEAL_PENALTY).toBe(STAKES.EXPERT_NO_REVEAL);
 });
 
 // ─── Fixture helpers ────────────────────────────────────────────────────────
@@ -269,7 +279,7 @@ describe("Flow 1 — UPHELD → author appeals → overturn (Stage-3 DISMISSED)"
     // Each majority juror +3
     for (const j of ids.jurors) {
       const s = _replay(fx.dag, j, { score: 750, offense_count: 0, frozen: false });
-      expect(s.score).toBe(750 + STAKES.MAJORITY);
+      expect(s.score).toBe(750 + STAKES.JUROR_MAJORITY);
     }
 
     // ── Step 1.4: Author files appeal → -25 stake
@@ -305,10 +315,10 @@ describe("Flow 1 — UPHELD → author appeals → overturn (Stage-3 DISMISSED)"
     expect(_replay(fx.dag, ids.disputerTipId).score)
       .toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
 
-    // Each expert +3 (capped at 1000 in production; not exercised here since seed=900)
+    // Each expert +7 (capped at 1000 in production; not exercised here since seed=900)
     for (const e of experts) {
       const s = _replay(fx.dag, e, { score: 900, offense_count: 0, frozen: false });
-      expect(s.score).toBe(900 + STAKES.MAJORITY);
+      expect(s.score).toBe(900 + STAKES.EXPERT_MAJORITY);
     }
   });
 });
@@ -591,14 +601,14 @@ describe("Flow 7 — NO_QUORUM auto-escalation → Stage-3 UPHELD", () => {
     expect(_replay(fx.dag, ids.disputerTipId).score)
       .toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
 
-    // 3 no-shows (jurors 4,5,6) get -10 each; 4 revealers untouched
+    // 3 no-shows (jurors 4,5,6): no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1); 4 revealers untouched
     for (let i = 0; i < 4; i++) {
       const s = _replay(fx.dag, ids.jurors[i], { score: 750, offense_count: 0, frozen: false });
       expect(s.score).toBe(750);
     }
     for (let i = 4; i < 7; i++) {
       const s = _replay(fx.dag, ids.jurors[i], { score: 750, offense_count: 0, frozen: false });
-      expect(s.score).toBe(750 - STAKES.NO_SHOW);
+      expect(s.score).toBe(750 - STAKES.JUROR_NO_COMMIT);
     }
   });
 
@@ -658,10 +668,10 @@ describe("Flow 8 — zero-participation NO_QUORUM (every juror is a no-show)", (
     expect(stage2.abstainCount).toBe(0);
     _commitBatch(fx.dag, stage2.txs);
 
-    // All 7 jurors penalised
+    // All 7 jurors penalised: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1 each)
     for (const j of ids.jurors) {
       const s = _replay(fx.dag, j, { score: 750, offense_count: 0, frozen: false });
-      expect(s.score).toBe(750 - STAKES.NO_SHOW);
+      expect(s.score).toBe(750 - STAKES.JUROR_NO_COMMIT);
     }
 
     // Auto-escalation still happens
@@ -708,10 +718,10 @@ describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror scor
     for (let i = 0; i < 6; i++) {
       expect(_scoreUpdates(stage2.txs, ids.jurors[i])).toHaveLength(0);
     }
-    // 1 no-show: -10
+    // 1 no-show: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1)
     const noShowSU = _scoreUpdates(stage2.txs, ids.jurors[6]);
     expect(noShowSU).toHaveLength(1);
-    expect(noShowSU[0].data.delta).toBe(-STAKES.NO_SHOW);
+    expect(noShowSU[0].data.delta).toBe(-STAKES.JUROR_NO_COMMIT);
 
     // Total score-updates in batch: 1 no-show + 1 author vindication = 2
     expect(stage2.txs.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE)).toHaveLength(2);
@@ -785,11 +795,11 @@ describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISS
     expect(_scoreUpdates(stage3.txs, ids.authorTipId)).toHaveLength(0);
     expect(_scoreUpdates(stage3.txs, ids.disputerTipId)).toHaveLength(0);
 
-    // 3 experts get -10 no-show each
+    // 3 experts: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1 each)
     _commitBatch(fx.dag, stage3.txs);
     for (const e of experts) {
       const s = _replay(fx.dag, e, { score: 900, offense_count: 0, frozen: false });
-      expect(s.score).toBe(900 - STAKES.NO_SHOW);
+      expect(s.score).toBe(900 - STAKES.EXPERT_NO_COMMIT);
     }
   });
 });

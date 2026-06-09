@@ -239,8 +239,8 @@ describe("replay determinism — Stage-2 UPHELD lifecycle", () => {
       const all = fx.dag.getTxsByTipId(j);
       const final = _replayForSubject(all, j, { score: 750, offense_count: 0, frozen: false });
       const expected = votes[i] === VOTE.MISMATCH
-        ? 750 + JURY.MAJORITY_BONUS
-        : 750 - JURY.MINORITY_PENALTY;
+        ? 750 + JURY.JUROR_MAJORITY_BONUS
+        : 750 - JURY.JUROR_MINORITY_PENALTY;
       expect(final.score).toBe(expected);
     }
   });
