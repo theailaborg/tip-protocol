@@ -159,13 +159,23 @@ data "aws_iam_policy_document" "bucket" {
     }
   }
 
-  # Defense in depth: deny every principal except the node role and the
-  # account root. PrincipalArn check covers all paths (IAM users, roles,
-  # federated identities) without enumerating each.
+  # Defense in depth: deny everyone except the node role from touching the
+  # DATA — object reads/writes and the media listing. Scoped to data
+  # actions ONLY (not s3:*), so bucket administration (policy / lifecycle /
+  # encryption / tagging) stays available to whoever holds IAM admin in the
+  # account. A blanket s3:* deny here would lock the operator (and even
+  # Terraform) out of managing the bucket it just created — the node role
+  # is not an admin principal. Account root is exempt as the break-glass
+  # path, but AWS best practice is to never use root day-to-day.
   statement {
-    sid     = "DenyEveryoneExceptNodeRole"
-    effect  = "Deny"
-    actions = ["s3:*"]
+    sid    = "DenyDataAccessExceptNodeRole"
+    effect = "Deny"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
 
     principals {
       type        = "*"
@@ -193,9 +203,8 @@ data "aws_iam_policy_document" "bucket" {
     sid    = "AllowNodeRole"
     effect = "Allow"
     actions = [
-      "s3:GetObject",
+      "s3:GetObject",   # also authorizes HeadObject — HEAD has no separate IAM action
       "s3:PutObject",
-      "s3:HeadObject",
       "s3:DeleteObject",
     ]
 
@@ -372,18 +381,17 @@ data "aws_iam_policy_document" "node_policy" {
     sid    = "MediaObjectsRW"
     effect = "Allow"
     actions = [
-      "s3:GetObject",
+      "s3:GetObject",   # also authorizes HeadObject — HEAD has no separate IAM action
       "s3:PutObject",
-      "s3:HeadObject",
       "s3:DeleteObject",
     ]
     resources = ["${aws_s3_bucket.media.arn}/media/*"]
   }
 
   statement {
-    sid    = "ListMediaPrefix"
-    effect = "Allow"
-    actions = ["s3:ListBucket"]
+    sid       = "ListMediaPrefix"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.media.arn]
 
     condition {
@@ -495,7 +503,6 @@ resource "aws_vpc_endpoint" "s3" {
       Action = [
         "s3:GetObject",
         "s3:PutObject",
-        "s3:HeadObject",
         "s3:DeleteObject",
         "s3:ListBucket",
       ]

@@ -180,7 +180,7 @@ Attach the inline permission policy (`node_policy.json`):
       "Sid": "MediaObjectsRW",
       "Effect": "Allow",
       "Action": [
-        "s3:GetObject", "s3:PutObject", "s3:HeadObject", "s3:DeleteObject"
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject"
       ],
       "Resource": "arn:aws:s3:::BUCKET/media/*"
     },
@@ -300,7 +300,7 @@ aws kms put-key-policy \
       "Effect": "Allow",
       "Principal": { "AWS": "ROLE_ARN" },
       "Action": [
-        "s3:GetObject", "s3:PutObject", "s3:HeadObject", "s3:DeleteObject"
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject"
       ],
       "Resource": "arn:aws:s3:::BUCKET/media/*"
     },
