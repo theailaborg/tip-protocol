@@ -169,7 +169,7 @@ function selectReviewer(dag, scoring, { reviewId, ctid, round, authorTipId }) {
   const baseline = dag.getAllIdentities()
     .filter(id => _passesHardFilters(dag, id, authorTipId))
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
-    .sort((a, b) => a.tip_id.localeCompare(b.tip_id));
+    .sort((a, b) => (a.tip_id < b.tip_id ? -1 : a.tip_id > b.tip_id ? 1 : 0)); // binary, not locale: selection must be identical on every node
 
   if (baseline.length === 0) {
     return { reviewer: null, seed, poolSize: 0, pass: 0 };
