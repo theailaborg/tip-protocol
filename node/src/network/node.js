@@ -91,6 +91,12 @@ const CONSENSUS_ACK_PROTOCOL = "/tip/consensus-ack/1.0.0";
 // A writes batchHashHex → B looks up its cached ack → B writes ackBuf (or
 // empty if not cached). ~1 KB per exchange vs potentially MBs for batch rebroadcast.
 const CONSENSUS_ACK_REQUEST_PROTOCOL = "/tip/consensus-ack-request/1.0.0";
+// #47: Active peer-liveness probe. Short-lived request/response stream that
+// fires every ~5s between each authorized peer pair. Pong carries the
+// responder's committed_round + state_merkle_root + join_state so anti-entropy
+// gets a free state update without a separate /sync-status round-trip.
+// Two consecutive missed heartbeats (10s) = peer suspect.
+const HEARTBEAT_PROTOCOL = "/tip/heartbeat/1.0.0";
 
 /**
  * Create and start a libp2p network node.
@@ -464,6 +470,7 @@ async function createNetworkNode(options = {}) {
     ROTATION_COORD_PROTOCOL,
     CONSENSUS_ACK_PROTOCOL,
     CONSENSUS_ACK_REQUEST_PROTOCOL,
+    HEARTBEAT_PROTOCOL,
 
     async stop() {
       rateLimiter.stop();
@@ -478,4 +485,4 @@ async function createNetworkNode(options = {}) {
   };
 }
 
-module.exports = { createNetworkNode, TOPICS, CONSENSUS_ACK_PROTOCOL };
+module.exports = { createNetworkNode, TOPICS, CONSENSUS_ACK_PROTOCOL, HEARTBEAT_PROTOCOL };
