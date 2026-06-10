@@ -356,3 +356,89 @@ function _seedAdjudicationVerdict(dag, ctid, verdict) {
   body.tx_id = computeTxId(body);
   dag.addTx(body);
 }
+
+// ─── No-show availability gate ────────────────────────────────────────────────
+// An assignment that dies by node-signed auto-recuse (decision_note =
+// sla_expired) is a no-show. More than MAX_NOSHOW_RECUSALS of them within
+// the last NOSHOW_SAMPLE_SIZE resolved assignments pauses the reviewer —
+// a hard filter, never relaxed by the selection cascade.
+
+const { getReviewerNoShowCount } = require(path.join(SRC, "reviewer-selection"));
+const { RECUSAL_REASONS } = require(path.join(SHARED, "constants"));
+
+let _reviewCounter = 0;
+function _seedReview(dag, reviewerTipId, state, decisionNote = null) {
+  const n = ++_reviewCounter;
+  dag.savePrescanReview({
+    review_id: `rev-noshow-${n}`,
+    ctid: `tip://c/OH-noshow${String(n).padStart(8, "0")}-0001`,
+    creator_tip_id: AUTHOR,
+    assigned_reviewer: reviewerTipId,
+    triggered_at_round: 1000 + n,
+    state,
+    decision_note: decisionNote,
+  });
+}
+
+describe("no-show availability gate", () => {
+
+  test("counts only sla_expired auto-recusals, not manual recusals or other closures", () => {
+    const { dag } = _setup();
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, "conflict of interest");
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, null);
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+    expect(getReviewerNoShowCount(dag, REV_A)).toBe(1);
+  });
+
+  test("at the threshold the reviewer stays eligible; one more no-show pauses them", () => {
+    const { dag, scoring } = _setup();
+    for (let i = 0; i < REVIEWER.MAX_NOSHOW_RECUSALS; i++) {
+      _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    }
+    expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(true);
+
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(false);
+  });
+
+  test("old no-shows roll out of the sample window — reviewer recovers by serving", () => {
+    const { dag, scoring } = _setup();
+    // 4 no-shows, then NOSHOW_SAMPLE_SIZE clean closures on top: the
+    // no-shows fall outside the most-recent window and stop counting.
+    for (let i = 0; i < REVIEWER.MAX_NOSHOW_RECUSALS + 1; i++) {
+      _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    }
+    expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(false);
+
+    for (let i = 0; i < REVIEWER.NOSHOW_SAMPLE_SIZE; i++) {
+      _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+    }
+    expect(getReviewerNoShowCount(dag, REV_A)).toBe(0);
+    expect(isEligibleReviewer(dag, scoring, REV_A, { authorTipId: AUTHOR })).toBe(true);
+  });
+
+  test("open assignments neither count as no-shows nor consume the sample window", () => {
+    const { dag } = _setup();
+    _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    // Newer open assignments must not push the no-show out of the window
+    for (let i = 0; i < REVIEWER.NOSHOW_SAMPLE_SIZE; i++) {
+      _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.TRIGGERED);
+    }
+    expect(getReviewerNoShowCount(dag, REV_A)).toBe(1);
+  });
+
+  test("a paused reviewer is excluded from selectReviewer at every cascade pass", () => {
+    const { dag, scoring } = _setup();
+    for (const rev of [REV_B, REV_C]) {
+      dag.saveIdentity({ ...dag.getIdentity(rev), reviewer_consent: false });
+    }
+    // REV_A is now the only consenting candidate — pause them via no-shows
+    for (let i = 0; i < REVIEWER.MAX_NOSHOW_RECUSALS + 1; i++) {
+      _seedReview(dag, REV_A, PRESCAN_REVIEW_STATES.RECUSED, RECUSAL_REASONS.SLA_EXPIRED);
+    }
+    const r = selectReviewer(dag, scoring, { reviewId: "rv-ns", ctid: CTID, round: 9, authorTipId: AUTHOR });
+    expect(r.reviewer).toBeNull();
+    expect(r.pass).toBe(0);
+  });
+});

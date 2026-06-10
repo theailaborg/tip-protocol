@@ -181,10 +181,16 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
+      // Adjudication opt-in — the same reviewer_consent toggle that gates
+      // reviewer selection covers juror/expert seats ("I want to help
+      // adjudicate"). Drafting non-consenting users seats unaware
+      // panelists and bleeds their score via no-commit penalties.
+      const consent = id.reviewer_consent;
+      if (consent !== true && consent !== 1) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
-    .sort((a, b) => a.tip_id.localeCompare(b.tip_id));
+    .sort((a, b) => (a.tip_id < b.tip_id ? -1 : a.tip_id > b.tip_id ? 1 : 0)); // binary, not locale: selection must be identical on every node
 
   if (candidates.length < JURY.SIZE) {
     return { jurors: candidates.map(c => c.tip_id), insufficient: true, seed, identityCount };
@@ -234,10 +240,13 @@ function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, cti
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
+      // Adjudication opt-in — same contract as selectJury above.
+      const consent = id.reviewer_consent;
+      if (consent !== true && consent !== 1) return false;
       return true;
     })
     .map(id => ({ ...id, score: scoring.getScore(id.tip_id).score }))
-    .sort((a, b) => a.tip_id.localeCompare(b.tip_id));
+    .sort((a, b) => (a.tip_id < b.tip_id ? -1 : a.tip_id > b.tip_id ? 1 : 0)); // binary, not locale: selection must be identical on every node
 
   if (candidates.length < APPEAL.EXPERT_COUNT) {
     return { experts: candidates.map(c => c.tip_id), insufficient: true, seed, identityCount };

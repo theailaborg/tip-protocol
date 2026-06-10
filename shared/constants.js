@@ -155,6 +155,14 @@ const PRESCAN_REVIEW_STATES = Object.freeze({
 
 const PRESCAN_REVIEW_STATE_VALUES = Object.freeze(Object.values(PRESCAN_REVIEW_STATES));
 
+// Machine-set recusal reasons on PRESCAN_REVIEW_RECUSED. SLA_EXPIRED marks
+// node-signed auto-recusals (reviewer went silent past AUTO_RECUSE_AGE_MS) —
+// the no-show signal that reviewer-selection's availability gate counts.
+// Reviewer-written manual recusal notes are free text and never match it.
+const RECUSAL_REASONS = Object.freeze({
+  SLA_EXPIRED: "sla_expired",
+});
+
 // ─── Dispute reasons ────────────────────────────────────────────────────────
 // Protocol vocabulary — enum of accepted values for the `reason` field on a
 // CONTENT_DISPUTED tx. Adding a reason is a code change (new verdict path,
@@ -739,6 +747,7 @@ module.exports = {
   PRESCAN_NEXT_STEPS,
   PRESCAN_REVIEW_STATES,
   PRESCAN_REVIEW_STATE_VALUES,
+  RECUSAL_REASONS,
   DISPUTE_REASON,
   DISPUTE_REASONS,
   CNA_VERSIONS,

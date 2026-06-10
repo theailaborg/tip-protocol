@@ -308,6 +308,12 @@ const REVIEWER = {
   // through Stage-2 (or Stage-3 reversal). Paid alone when the case
   // closes without a public dispute (DISMISS or accept-private).
   get CORRECT_BONUS() { return _rv().reviewer_correct_bonus; },
+  // Availability gate: more than MAX_NOSHOW_RECUSALS sla_expired
+  // auto-recusals within the reviewer's last NOSHOW_SAMPLE_SIZE resolved
+  // assignments pauses them from selection. Hard filter — see
+  // reviewer-selection.getReviewerNoShowCount.
+  get MAX_NOSHOW_RECUSALS() { return _rv().max_noshow_recusals; },
+  get NOSHOW_SAMPLE_SIZE() { return _rv().noshow_sample_size; },
 };
 
 const _cg = () => get().content_grace;
