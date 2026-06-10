@@ -1304,6 +1304,13 @@ describe("Semantic Dedup", () => {
     sdVerifierPriv = vKp.privateKey;
     sdDag.setScore(sdVerifierId, 800, 0, 1767225600000);
 
+    // Adjudication opt-in: selectJury hard-filters non-consenting
+    // identities, so the pool must consent for dispute tests to summon
+    // a jury.
+    for (const id of sdDag.getAllIdentities()) {
+      sdDag.saveIdentity({ ...id, reviewer_consent: 1 });
+    }
+
     // Register content
     const sdContent = "Semantic dedup test content.";
     const ctRes = await request(sdApp)

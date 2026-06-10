@@ -41,7 +41,7 @@
 
 const { shake256, computeTxId, signTransaction } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, RECUSAL_REASONS } = require("../../../shared/constants");
 const { selectReviewer } = require("../reviewer-selection");
 const { getLogger } = require("../logger");
 
@@ -244,7 +244,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         review_id: reviewId,
         auto: true,
         node_id: _myNodeId,
-        recusal_reason: "sla_expired",
+        recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
       },
     };
     txBody.tx_id = computeTxId(txBody);
