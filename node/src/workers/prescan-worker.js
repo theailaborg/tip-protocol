@@ -264,11 +264,21 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // off the enqueued payload (resolved at register time).
     const agg = aggregate(modalityResults, contentType);
 
+    // Local-fallback responses are terminal: the external classifier is
+    // unreachable, so retrying just re-invokes the same down service and
+    // re-derives the same fallback. Skip the retry budget entirely and
+    // commit the fail-open immediately when the bytes had no local signal
+    // (e.g. image content with no local model). Text-only fallback isn't
+    // hard-degraded, so it never reaches this branch — it commits cleanly
+    // below as a local_fallback verdict.
+    const isLocalFallback = typeof providersUsed === "string" && providersUsed.includes("local_fallback");
+
     // Hard-degraded path: at least one modality produced no usable signal
     // (error / non-finite / forced 0.5). Retry if budget remains — these
-    // are transient and a re-run may yield a real probability.
+    // are transient and a re-run may yield a real probability — UNLESS the
+    // signal came from local fallback (retrying a down classifier is futile).
     if (agg.overall_hard_degraded) {
-      if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
+      if (!isLocalFallback && job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
         jobs.releaseForRetry(job.job_id, "hard_degraded_signal");
         return;
       }
@@ -276,7 +286,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       // (a non-hard modality may have given a usable number); only fall
       // back to the no-signal neutral when the aggregator itself has no
       // probability to share.
-      _emitFailOpen(job, contentType, "hard_degraded_after_retries", {
+      _emitFailOpen(job, contentType, isLocalFallback ? "local_fallback_no_media_signal" : "hard_degraded_after_retries", {
         probability: agg.probability,
         modalityResults: agg.modality_results,
       });

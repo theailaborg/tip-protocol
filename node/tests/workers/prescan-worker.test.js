@@ -279,6 +279,33 @@ describe("tick — degraded signal handling", () => {
     expect(job.last_error).toBe("hard_degraded_signal");
   });
 
+  test("local-fallback hard-degraded → fail-open immediately, NO retry (down classifier won't recover on retry)", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      // Image-primary content where the local fallback stubs the image at
+      // 0.5 (no local model). provider_used=local_fallback signals the
+      // external classifier is down — retrying is futile.
+      classifierHandler: () => R({
+        modalities: [{ modality: "image", probability: 0.5 }],
+        provider: "local_fallback",
+      }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "", origin_code: "OH", content_type: "image" },
+    });
+    await worker.tick();
+    // Committed on the FIRST tick — no retry consumed.
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(true);
+    expect(tx.data.failure_reason).toBe("local_fallback_no_media_signal");
+    // No retry was consumed — committed on the first tick (retries=0).
+    const job = jobs.getByCtid(CTID);
+    expect(job.retries).toBe(0);
+  });
+
   test("hard-degraded + retries exhausted → fail-open with overall_degraded=true", async () => {
     const clock = makeClock();
     const { jobs, submitter, worker } = await setup({
