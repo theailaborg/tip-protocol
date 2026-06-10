@@ -214,6 +214,7 @@ function _canonNode(r) {
     node_id: r.node_id,
     name: r.name || null,
     status: r.status,
+    api_endpoint: r.api_endpoint || null,
     registered_at: r.registered_at,
   };
 }
@@ -714,7 +715,11 @@ class MemoryStore {
     }
     const { public_key, algorithm, ...rest } = rec;
     void public_key; void algorithm;
-    this._nodes.set(rec.node_id, { ...rest });
+    this._nodes.set(rec.node_id, { api_endpoint: null, ...rest });
+  }
+  updateNodeEndpoint(nodeId, apiEndpoint) {
+    const row = this._nodes.get(nodeId);
+    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null });
   }
   getNode(nodeId) {
     const row = this._nodes.get(nodeId);
@@ -1835,6 +1840,7 @@ class SQLiteStore {
         node_id         TEXT PRIMARY KEY,
         name            TEXT,
         status          TEXT NOT NULL DEFAULT 'active',
+        api_endpoint    TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
         registered_at INTEGER NOT NULL
       );
 
@@ -2489,8 +2495,11 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,registered_at)
-         VALUES (?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,registered_at)
+         VALUES (?,?,?,?,?)`
+      ),
+      updateNodeEndpoint: this.db.prepare(
+        "UPDATE nodes SET api_endpoint=? WHERE node_id=?"
       ),
       getNode: this.db.prepare(
         `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
@@ -3199,8 +3208,12 @@ class SQLiteStore {
     this._stmts.saveNode.run(
       rec.node_id, rec.name || null,
       rec.status || "active",
+      rec.api_endpoint || null,
       rec.registered_at || nowMs()
     );
+  }
+  updateNodeEndpoint(nodeId, apiEndpoint) {
+    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, nodeId);
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes() { return this._stmts.getAllNodes.all(); }
@@ -3941,6 +3954,7 @@ function _buildDagHandle(store, config) {
 
     // ── Nodes ────────────────────────────────────────────────────────────
     saveNode: (rec) => store.saveNode(rec),
+    updateNodeEndpoint: (nodeId, apiEndpoint) => store.updateNodeEndpoint(nodeId, apiEndpoint),
     getNode: (id) => store.getNode(id),
     getAllNodes: () => store.getAllNodes(),
 

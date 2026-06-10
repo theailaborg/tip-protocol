@@ -52,7 +52,7 @@ function _scratch() {
   return fs.mkdtemp(path.join(os.tmpdir(), "tip-media-route-"));
 }
 
-function _accessDag({ identity, content, isRevoked = false }) {
+function _accessDag({ identity, content, isRevoked = false, nodes = {} }) {
   return {
     getIdentity: (tipId) => (tipId === identity.tip_id ? identity : null),
     isRevoked: () => isRevoked,
@@ -60,6 +60,7 @@ function _accessDag({ identity, content, isRevoked = false }) {
     getOpenPrescanReviewByCtid: () => null,
     hasDispute: () => false,
     getTxsByTypeAndCtid: () => [],
+    getNode: (nodeId) => nodes[nodeId] || null,
   };
 }
 
@@ -198,7 +199,7 @@ describe("GET /v1/content/:ctid/media/:idx — cross-node redirect", () => {
     app = _makeApp({ mediaService: service });
   });
 
-  test("303 with available_at_node_id when bytes live on a different node", async () => {
+  test("303 with available_at_node_id when origin node has no api_endpoint", async () => {
     const sig = _signedAccess(CTID, 0, identity.tip_id, kp);
     const res = await request(app)
       .get(`/v1/content/${encodeURIComponent(CTID)}/media/0`)
@@ -210,6 +211,39 @@ describe("GET /v1/content/:ctid/media/:idx — cross-node redirect", () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.available_at_node_id).toBe(ORIGIN_NODE);
     expect(res.body.data.code).toBe("media_remote");
+  });
+
+  test("real 307 to the origin node's announced api_endpoint", async () => {
+    const root = await _scratch();
+    const storage = createMediaStorage({ backend: "fs", fsPath: root });
+    const ghostMediaId = "9".repeat(64);
+    const content = {
+      ctid: CTID,
+      signer_tip_id: identity.tip_id,
+      media: [{ media_id: ghostMediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    const dag = _accessDag({
+      identity, content,
+      nodes: { [ORIGIN_NODE]: { node_id: ORIGIN_NODE, api_endpoint: "https://node-a.example.com" } },
+    });
+    const service = createMediaService({ storage, dag });
+    const redirectApp = _makeApp({ mediaService: service });
+
+    const sig = _signedAccess(CTID, 0, identity.tip_id, kp);
+    const res = await request(redirectApp)
+      .get(`/v1/content/${encodeURIComponent(CTID)}/media/0`)
+      .set("X-Requester-TipId", sig.requester_tip_id)
+      .set("X-Signature", sig.signature)
+      .set("X-Timestamp", String(sig.timestamp))
+      .redirects(0);
+
+    expect(res.status).toBe(307);
+    expect(res.headers.location).toBe(
+      `https://node-a.example.com/v1/content/${encodeURIComponent(CTID)}/media/0`,
+    );
+
+    await fs.rm(root, { recursive: true, force: true });
   });
 });
 

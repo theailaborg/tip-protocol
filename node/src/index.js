@@ -39,6 +39,7 @@ const { resolveDriver } = require("./db/index");
 const { createPrescanJobs } = require("./services/prescan-jobs");
 const { initPrescanWorker } = require("./init-prescan-worker");
 const { initMediaRetention } = require("./init-media-retention");
+const { initEndpointAnnounce } = require("./init-endpoint-announce");
 const { createMediaStorage } = require("./services/media-storage");
 
 // Process-level error boundary for the consensus loops + libp2p stream
@@ -175,6 +176,10 @@ async function main() {
     dag,
     mediaStorage: app.locals.mediaStorage,
   });
+
+  // 8c. One-shot api_endpoint reconcile — announces TIP_API_ENDPOINT on
+  // chain when the nodes row disagrees. No-op when unconfigured.
+  initEndpointAnnounce({ dag, config, governanceService: app.locals.governanceService });
 
   // 9. Start listening
   server.listen(config.port, () => {

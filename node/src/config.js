@@ -103,6 +103,13 @@ function loadConfig() {
       media_items_max:  CONTENT_LIMITS.MEDIA_ITEMS_MAX,
     },
 
+    // ── Public API endpoint ─────────────────────────────────────────────────
+    // This node's public-facing origin (https://host[:port]). Announced on
+    // chain via NODE_ENDPOINT_UPDATED at boot when it differs from the
+    // nodes row — peers redirect reviewers here for media this node holds.
+    // Optional: nodes without a public surface simply never announce.
+    apiEndpoint: process.env.TIP_API_ENDPOINT || null,
+
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),
 

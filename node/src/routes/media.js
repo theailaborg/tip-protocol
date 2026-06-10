@@ -11,12 +11,14 @@
  * Access challenge (signed by requester):
  *   MEDIA_ACCESS:{ctid}:{idx}:{timestamp}:{requester_tip_id}
  *
- * Cross-node behaviour: when the local node doesn't hold the bytes
- * (fs-backed federation where the upload originated on a different node),
- * the response carries `available_at_node_id` so the client can resolve
- * its directory and re-issue the same signed request to the origin node.
- * With shared S3 in prod, this branch never executes — every node sees
- * the same bucket.
+ * Cross-node behaviour: media storage is PER-NODE — each operator runs
+ * (and pays for) their own bucket, so bytes live only on the node that
+ * received the upload. When this node doesn't hold the bytes, it issues
+ * a real 307 to the origin node's on-chain api_endpoint (announced via
+ * NODE_ENDPOINT_UPDATED); 307 preserves method + headers, so the signed
+ * MEDIA_ACCESS challenge is re-presented there unchanged. When the
+ * origin node hasn't announced an endpoint, the response degrades to a
+ * 303 JSON carrying `available_at_node_id` for client-side resolution.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -69,14 +71,18 @@ function createRouter({ mediaService }) {
     });
 
     if (out.transport === "redirect") {
-      // The bytes live on a different node in this fs-backed federation.
-      // Client uses its node directory to resolve the URL and re-issues
-      // the same signed request there. We deliberately don't return a
-      // URL here — node→URL mapping is a directory concern (added once
-      // REGISTER_NODE carries an api_endpoint field).
+      // Bytes live on the upload-receiving node (per-node buckets).
+      // 307 preserves method + headers, so the requester's signed
+      // challenge arrives at the origin node intact and is re-verified
+      // there. Falls back to a 303 JSON when the origin node hasn't
+      // announced an api_endpoint on chain yet.
+      if (out.origin_endpoint) {
+        const target = `${out.origin_endpoint}/v1/content/${encodeURIComponent(req.params.ctid)}/media/${idx}`;
+        return res.redirect(307, target);
+      }
       return res.status(303).json({
         available_at_node_id: out.origin_node_id,
-        message: "Media not held by this node; retry against origin",
+        message: "Media not held by this node; origin has not announced an api_endpoint — resolve manually",
         code: "media_remote",
       });
     }

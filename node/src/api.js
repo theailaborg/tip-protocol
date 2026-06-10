@@ -198,6 +198,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.locals.domainService = domainService;
   app.locals.mediaService = mediaService;
   app.locals.mediaStorage = mediaStorage;
+  app.locals.governanceService = governanceService;
 
   return app;
 }
