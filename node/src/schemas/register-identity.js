@@ -203,14 +203,9 @@ function buildSigningPayload(input) {
     );
   }
 
-  // creator_name pass-through: typeof check passes strings through
-  // verbatim, null / undefined / non-strings emit `null`. Empty string
-  // is REJECTED at validateRequest, so it never reaches here in normal
-  // flow; the only callers that hit this with `""` are misbehaving
-  // (and their canonical bytes won't match the server's anyway).
-  return {
+  // GH #85 Pattern A: omit creator_name when absent; keep "" as intentional value.
+  const out = {
     algorithm,
-    creator_name: typeof input.creator_name === "string" ? input.creator_name : null,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
     region: typeof input.region === "string" ? input.region.toUpperCase() : "US",
@@ -220,6 +215,10 @@ function buildSigningPayload(input) {
     vp_id: input.vp_id,
     zk_proof: input.zk_proof,
   };
+  if (input.creator_name !== undefined && input.creator_name !== null) {
+    out.creator_name = input.creator_name;
+  }
+  return out;
 }
 
 /**
