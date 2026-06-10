@@ -132,3 +132,33 @@ variable "kms_deletion_window_days" {
   type        = number
   default     = 30
 }
+
+variable "kms_rotation_days" {
+  description = "Automatic rotation period for the media KMS key (90-2560)."
+  type        = number
+  default     = 90
+}
+
+# ── KMS anomaly alarm (opt-in) ─────────────────────────────────────────────
+# Fires when the media KMS key is used by ANY principal other than the
+# node role. Catches stolen-credential / misconfigured-grant scenarios.
+# Requires an account-level CloudTrail that delivers management events to
+# a CloudWatch Logs group (standard org posture; not created here).
+
+variable "enable_kms_alert" {
+  description = "Create the CloudTrail metric filter + alarm for off-role KMS usage."
+  type        = bool
+  default     = false
+}
+
+variable "cloudtrail_log_group_name" {
+  description = "CloudWatch Logs group receiving CloudTrail management events. Required when enable_kms_alert=true."
+  type        = string
+  default     = null
+}
+
+variable "alert_sns_topic_arn" {
+  description = "SNS topic notified when the KMS alarm fires. Optional — alarm still records state without it."
+  type        = string
+  default     = null
+}

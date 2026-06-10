@@ -235,7 +235,7 @@ data "aws_iam_policy_document" "bucket" {
 resource "aws_kms_key" "media" {
   description             = "TIP media SSE-KMS for s3://${var.bucket_name}"
   enable_key_rotation     = true
-  rotation_period_in_days = 365
+  rotation_period_in_days = var.kms_rotation_days
   deletion_window_in_days = var.kms_deletion_window_days
   policy                  = data.aws_iam_policy_document.kms.json
   tags                    = var.tags
@@ -414,6 +414,62 @@ resource "aws_iam_instance_profile" "media_node" {
 
   name = aws_iam_role.media_node.name
   role = aws_iam_role.media_node.name
+}
+
+# ── KMS off-role usage alarm (optional) ────────────────────────────────────
+# CloudTrail logs every KMS API call with the caller's ARN. The metric
+# filter matches calls against THIS key where the caller is neither the
+# node role nor AWS service-linked KMS internals; the alarm fires on the
+# first match. One event = one investigation — there is no legitimate
+# second consumer of this key.
+
+resource "aws_cloudwatch_log_metric_filter" "kms_off_role" {
+  count = var.enable_kms_alert ? 1 : 0
+
+  name           = "${var.bucket_name}-kms-off-role"
+  log_group_name = var.cloudtrail_log_group_name
+
+  # Sessions assumed FROM the node role carry the role ARN in
+  # sessionContext.sessionIssuer.arn — match on that rather than the
+  # per-session assumed-role ARN (which embeds a variable session name).
+  pattern = <<-EOT
+    { ($.eventSource = "kms.amazonaws.com")
+      && ($.resources[0].ARN = "${aws_kms_key.media.arn}")
+      && ($.userIdentity.sessionContext.sessionIssuer.arn != "${aws_iam_role.media_node.arn}") }
+  EOT
+
+  metric_transformation {
+    name          = "${var.bucket_name}-kms-off-role-count"
+    namespace     = "TIP/MediaSecurity"
+    value         = "1"
+    default_value = "0"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.cloudtrail_log_group_name != null
+      error_message = "enable_kms_alert=true requires cloudtrail_log_group_name."
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "kms_off_role" {
+  count = var.enable_kms_alert ? 1 : 0
+
+  alarm_name          = "${var.bucket_name}-kms-off-role-usage"
+  alarm_description   = "Media KMS key used by a principal other than the TIP node role"
+  namespace           = "TIP/MediaSecurity"
+  metric_name         = aws_cloudwatch_log_metric_filter.kms_off_role[0].metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = var.alert_sns_topic_arn != null ? [var.alert_sns_topic_arn] : []
+
+  tags = var.tags
 }
 
 # ── VPC endpoint (optional) ────────────────────────────────────────────────

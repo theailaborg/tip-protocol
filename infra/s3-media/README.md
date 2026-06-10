@@ -1,5 +1,11 @@
 # infra/s3-media — Terraform module for the TIP media S3 backend
 
+Storage is **per-node**: each operator provisions, pays for, and serves
+their own bucket. Bytes live only on the node that received the upload;
+peers reach them through the reviewer-access route's 307 redirect to the
+node's on-chain `api_endpoint`. Recommended bucket naming:
+`tip-node-{node_id_short}-media-{region}`.
+
 Provisions the AWS infrastructure required by `media-storage-s3.js`:
 
 - **S3 bucket** with Block Public Access, SSE-KMS encryption, HTTPS-only,
