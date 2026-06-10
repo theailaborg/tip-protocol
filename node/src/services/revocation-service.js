@@ -30,9 +30,12 @@ function createRevocationService({ dag, submitTx }) {
     }
 
     const timestamp = nowMs();
+    const txData = { tx_type, tip_id, issuing_vp_id };
+    if (reason_code !== undefined && reason_code !== null) txData.reason_code = reason_code;
+    if (evidence_hash !== undefined && evidence_hash !== null) txData.evidence_hash = evidence_hash;
     const revokeTx = withTxId({
       tx_type, timestamp, prev: dag.getRecentPrev(),
-      data: { tx_type, tip_id, reason_code, evidence_hash, issuing_vp_id },
+      data: txData,
       signature,
     });
 

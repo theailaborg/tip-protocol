@@ -354,6 +354,9 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const disputerTipId = disputeData.disputer_tip_id;
   const authorTipId = rec?.author_tip_id;
   const revealedIds = new Set(filteredReveals.map(r => r.data.juror_tip_id));
+  // Pre-fetch Stage-2 commit txs once — determines no-commit vs no-reveal penalty split
+  const jurorCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
+      .filter(c => !c.data?.is_appeal);
 
   // ── NO_QUORUM auto-escalation ─────────────────────────────────────────────
   if (totalVotes < JURY.QUORUM || nonAbstain < JURY.MAJORITY_VOTE) {
@@ -405,12 +408,15 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       }));
     }
 
-    // No-show penalties
+    // No-show penalties — no-commit vs no-reveal distinction
     for (const s of summons) {
       if (!revealedIds.has(s.data.juror_tip_id)) {
+        const hasCommit = jurorCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
+        const delta = hasCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY;
+        const reason = hasCommit ? `Jury no-reveal on ${ctid}` : `Jury no-commit on ${ctid}`;
         txs.push(scoring.buildScoreUpdateTx({
-          tipId: s.data.juror_tip_id, delta: -JURY.NO_SHOW_PENALTY,
-          reason: `Jury no-show on ${ctid}`, ctid, relatedTxId: appealTx.tx_id,
+          tipId: s.data.juror_tip_id, delta,
+          reason, ctid, relatedTxId: appealTx.tx_id,
           timestamp, getRecentPrev, config,
         }));
       }
@@ -493,19 +499,22 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       const isMajority = reveal.data.vote === majorityVote;
       txs.push(scoring.buildScoreUpdateTx({
         tipId: jurorTipId,
-        delta: isMajority ? JURY.MAJORITY_BONUS : -JURY.MINORITY_PENALTY,
+        delta: isMajority ? JURY.JUROR_MAJORITY_BONUS : -JURY.JUROR_MINORITY_PENALTY,
         reason: `Jury ${isMajority ? "majority" : "minority"} vote on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
     }
   }
 
-  // No-show penalties
+  // No-show penalties — no-commit vs no-reveal distinction
   for (const s of summons) {
     if (!revealedIds.has(s.data.juror_tip_id)) {
+      const hasCommit = jurorCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
+      const delta = hasCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY;
+      const reason = hasCommit ? `Jury no-reveal on ${ctid}` : `Jury no-commit on ${ctid}`;
       txs.push(scoring.buildScoreUpdateTx({
-        tipId: s.data.juror_tip_id, delta: -JURY.NO_SHOW_PENALTY,
-        reason: `Jury no-show on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+        tipId: s.data.juror_tip_id, delta,
+        reason, ctid, relatedTxId: resultTx.tx_id,
         timestamp, getRecentPrev, config,
       }));
     }
@@ -639,6 +648,9 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const preStatus = disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED;
 
   const revealedIds = new Set(filteredReveals.map(r => r.data.juror_tip_id));
+  // Pre-fetch Stage-3 commit txs once — determines no-commit vs no-reveal penalty split
+  const expertCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
+      .filter(c => !!c.data?.is_appeal);
 
   // ── Insufficient experts → DISMISSED default ──────────────────────────────
   if (nonAbstain < APPEAL.MIN_VOTES) {
@@ -657,9 +669,12 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
 
     for (const s of summons) {
       if (!revealedIds.has(s.data.juror_tip_id)) {
+        const hasCommit = expertCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
+        const delta = hasCommit ? -JURY.EXPERT_NO_REVEAL_PENALTY : -JURY.EXPERT_NO_COMMIT_PENALTY;
+        const reason = hasCommit ? `Expert no-reveal on ${ctid}` : `Expert no-commit on ${ctid}`;
         txs.push(scoring.buildScoreUpdateTx({
-          tipId: s.data.juror_tip_id, delta: -JURY.NO_SHOW_PENALTY,
-          reason: `Expert no-show on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+          tipId: s.data.juror_tip_id, delta,
+          reason, ctid, relatedTxId: resultTx.tx_id,
           timestamp, getRecentPrev, config,
         }));
       }
@@ -899,19 +914,22 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       const isMajority = reveal.data.vote === majorityVote;
       txs.push(scoring.buildScoreUpdateTx({
         tipId: reveal.data.juror_tip_id,
-        delta: isMajority ? JURY.MAJORITY_BONUS : -JURY.MINORITY_PENALTY,
+        delta: isMajority ? JURY.EXPERT_MAJORITY_BONUS : -JURY.EXPERT_MINORITY_PENALTY,
         reason: `Expert ${isMajority ? "majority" : "minority"} vote on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
       }));
     }
   }
 
-  // No-show experts
+  // No-show experts — no-commit vs no-reveal distinction
   for (const s of summons) {
     if (!revealedIds.has(s.data.juror_tip_id)) {
+      const hasCommit = expertCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
+      const delta = hasCommit ? -JURY.EXPERT_NO_REVEAL_PENALTY : -JURY.EXPERT_NO_COMMIT_PENALTY;
+      const reason = hasCommit ? `Expert no-reveal on ${ctid}` : `Expert no-commit on ${ctid}`;
       txs.push(scoring.buildScoreUpdateTx({
-        tipId: s.data.juror_tip_id, delta: -JURY.NO_SHOW_PENALTY,
-        reason: `Expert no-show on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
+        tipId: s.data.juror_tip_id, delta,
+        reason, ctid, relatedTxId: resultTx.tx_id,
         timestamp, getRecentPrev, config,
       }));
     }

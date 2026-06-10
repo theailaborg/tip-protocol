@@ -165,7 +165,7 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
 
     const tx = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[0],
-      delta: JURY.MAJORITY_BONUS,
+      delta: JURY.JUROR_MAJORITY_BONUS,
       reason: `Jury majority vote on ${fx.ctid}`,
       ctid: fx.ctid,
       relatedTxId: "adj-1",
@@ -174,24 +174,24 @@ describe("commit-handler SCORE_UPDATE: real cache mutation", () => {
     fx.handler.commitOrderedTxs([tx], 100);
 
     const after = fx.dag.getScore(fx.jurorTipIds[0]).score;
-    expect(after).toBe(before + JURY.MAJORITY_BONUS);
+    expect(after).toBe(before + JURY.JUROR_MAJORITY_BONUS);
   });
 
-  test("applies negative delta correctly (no-show penalty)", () => {
+  test("applies negative delta correctly (no-commit penalty)", () => {
     const fx = _setupDisputeFixture();
     const before = fx.dag.getScore(fx.jurorTipIds[1]).score;
 
     const tx = _scoreUpdateTx(fx, {
       tipId: fx.jurorTipIds[1],
-      delta: -JURY.NO_SHOW_PENALTY,
-      reason: `Jury no-show on ${fx.ctid}`,
+      delta: -JURY.JUROR_NO_COMMIT_PENALTY,
+      reason: `Jury no-commit on ${fx.ctid}`,
       ctid: fx.ctid,
     });
 
     fx.handler.commitOrderedTxs([tx], 100);
 
     const after = fx.dag.getScore(fx.jurorTipIds[1]).score;
-    expect(after).toBe(before - JURY.NO_SHOW_PENALTY);
+    expect(after).toBe(before - JURY.JUROR_NO_COMMIT_PENALTY);
   });
 
   test("clamps to [0, 1000] regardless of delta magnitude", () => {
@@ -224,15 +224,15 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     // Two competing nodes submit the SAME logical SCORE_UPDATE — different
     // signers → different tx_ids — but identical (tip_id, ctid, reason)
     // tuple. Dedup at commit-handler must drop one of them.
-    const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });
-    const tx2 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 1 });
+    const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.JUROR_MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });
+    const tx2 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.JUROR_MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 1 });
 
     const result = fx.handler.commitOrderedTxs([tx1, tx2], 100);
     expect(result.committed).toBe(1);
     expect(result.dropped).toBe(1);
 
     const after = fx.dag.getScore(fx.jurorTipIds[0]).score;
-    expect(after).toBe(750 + JURY.MAJORITY_BONUS);  // applied ONCE, not twice
+    expect(after).toBe(750 + JURY.JUROR_MAJORITY_BONUS);  // applied ONCE, not twice
   });
 
   test("same tip_id + ctid + DIFFERENT reason → both apply (legitimately distinct events)", () => {
@@ -240,11 +240,11 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     fx.dag.setScore(fx.jurorTipIds[0], 750, 0, 1767225600000);
 
     const tx1 = _scoreUpdateTx(fx, {
-      tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS,
+      tipId: fx.jurorTipIds[0], delta: JURY.JUROR_MAJORITY_BONUS,
       reason: `Jury majority vote on ${fx.ctid}`, ctid: fx.ctid,
     });
     const tx2 = _scoreUpdateTx(fx, {
-      tipId: fx.jurorTipIds[0], delta: -JURY.MINORITY_PENALTY,
+      tipId: fx.jurorTipIds[0], delta: -JURY.JUROR_MINORITY_PENALTY,
       reason: `Expert minority vote on ${fx.ctid}`, ctid: fx.ctid,
     });
 
@@ -258,12 +258,12 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     fx.dag.setScore(fx.jurorTipIds[0], 750, 0, 1767225600000);
 
     const reason = `Jury majority vote on ${fx.ctid}`;
-    const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });
+    const tx1 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.JUROR_MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 0 });
     fx.handler.commitOrderedTxs([tx1], 100);
     const after1 = fx.dag.getScore(fx.jurorTipIds[0]).score;
 
     // Different node submits same logical SCORE_UPDATE in a later round.
-    const tx2 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 1 });
+    const tx2 = _scoreUpdateTx(fx, { tipId: fx.jurorTipIds[0], delta: JURY.JUROR_MAJORITY_BONUS, reason, ctid: fx.ctid, nodeIndex: 1 });
     const result = fx.handler.commitOrderedTxs([tx2], 101);
     const after2 = fx.dag.getScore(fx.jurorTipIds[0]).score;
 

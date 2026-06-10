@@ -719,9 +719,15 @@ class MemoryStore {
     // insert the new active row with valid_to_ts = null.
     const prev = this._getActiveEntityKey(entity_type, entity_id);
     if (prev) {
-      // Idempotent: re-saving the same active key (same pubkey + alg +
-      // valid_from_ts) is a no-op. Happens on snapshot install replay.
-      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+      // Skip if the active key is already this key — regardless of valid_from_ts.
+      // saveIdentity passes valid_from_ts = registered_at (original registration
+      // time) but entity_keys are managed by saveEntityKey after the first write;
+      // KEY_ROTATED / KEY_RECOVERY set valid_from_ts = effectiveAt which never
+      // equals registered_at. Requiring valid_from_ts to match would cause
+      // UPDATE_PROFILE commits to close the correctly-placed active row and
+      // insert a duplicate at valid_from_ts=registered_at, corrupting the mirror
+      // state that KEY_RECOVERY reads to find which row to close.
+      if (prev.public_key === public_key && prev.algorithm === algorithm) {
         return;
       }
       const prevKey = this._entityKeyId(entity_type, entity_id, prev.valid_from_ts);
@@ -3028,8 +3034,10 @@ class SQLiteStore {
 
   // ── Revocations ───────────────────────────────────────────────────────────
   addRevocation(tipId, txType, timestamp, txId) {
-    this._stmts.addRevoc.run(tipId, txType, timestamp, txId);
-    this._stmts.revokeIdent.run(tipId);
+    this.db.transaction(() => {
+      this._stmts.addRevoc.run(tipId, txType, timestamp, txId);
+      this._stmts.revokeIdent.run(tipId);
+    })();
   }
   isRevoked(tipId) { return !!this._stmts.isRevoked.get(tipId); }
   getRevocation(tipId) { return this._stmts.getRevoc.get(tipId) || null; }
@@ -3123,17 +3131,19 @@ class SQLiteStore {
 
   // ── entity_keys (GH #60) ─────────────────────────────────────────────────
   _saveActiveEntityKey({ entity_type, entity_id, public_key, algorithm, valid_from_ts, source_tx_id }) {
-    const prev = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
-    if (prev) {
-      if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
-        return;  // idempotent re-write (snapshot install replay)
+    this.db.transaction(() => {
+      const prev = this._stmts.getActiveEntityKey.get(entity_type, entity_id);
+      if (prev) {
+        if (prev.public_key === public_key && prev.algorithm === algorithm && prev.valid_from_ts === valid_from_ts) {
+          return;  // idempotent re-write (snapshot install replay)
+        }
+        this._stmts.closeActiveEntityKey.run(valid_from_ts, entity_type, entity_id);
       }
-      this._stmts.closeActiveEntityKey.run(valid_from_ts, entity_type, entity_id);
-    }
-    this._stmts.saveEntityKey.run(
-      entity_type, entity_id, public_key, algorithm,
-      valid_from_ts, null, source_tx_id,
-    );
+      this._stmts.saveEntityKey.run(
+        entity_type, entity_id, public_key, algorithm,
+        valid_from_ts, null, source_tx_id,
+      );
+    })();
   }
   saveEntityKey(rec) {
     // Generalised save (used by snapshot install + KEY_ROTATED/KEY_RECOVERY

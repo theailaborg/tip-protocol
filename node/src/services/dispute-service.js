@@ -968,6 +968,8 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         const resolvedMs = result.timestamp;
         if (now - resolvedMs > DASHBOARD_RECENCY_MS) continue;
 
+        const myCommit = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
+          .find(r => r.data?.juror_tip_id === tipId && (!!r.data?.is_appeal) === isAppeal);
         const myReveal = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_REVEAL, ctid)
           .find(r => r.data?.juror_tip_id === tipId && (!!r.data?.is_appeal) === isAppeal);
         const myVote = myReveal?.data?.vote || null;
@@ -976,9 +978,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         // Outcome derivation: replicate jury.js's score-effect logic so the
         // FE doesn't have to run it. UPHELD = mismatch majority; DISMISSED
         // = match majority. CONSERVATIVE_LABEL counts as mismatch-side.
-        // ABSTAIN is neither side; no reveal at all is no-show.
-        let outcome = "no_show";
-        let scoreImpact = -JURY.NO_SHOW_PENALTY;
+        // ABSTAIN is neither side; no reveal at all is no-commit or no-reveal.
+        let outcome = !!myCommit ? "no_reveal" : "no_commit";
+        let scoreImpact = isAppeal
+          ? (!!myCommit ? -JURY.EXPERT_NO_REVEAL_PENALTY : -JURY.EXPERT_NO_COMMIT_PENALTY)
+          : (!!myCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY);
         if (myVote === VOTE.ABSTAIN) {
           outcome = "abstain";
           scoreImpact = 0;
@@ -986,7 +990,9 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           const isMismatchSide = (verdict === VERDICT.UPHELD) || (verdict === VERDICT.CONSERVATIVE_LABEL);
           const votedMajority = isMismatchSide ? myVote === VOTE.MISMATCH : myVote === VOTE.MATCH;
           outcome = votedMajority ? "majority" : "minority";
-          scoreImpact = votedMajority ? JURY.MAJORITY_BONUS : -JURY.MINORITY_PENALTY;
+          scoreImpact = votedMajority
+            ? (isAppeal ? JURY.EXPERT_MAJORITY_BONUS : JURY.JUROR_MAJORITY_BONUS)
+            : (isAppeal ? -JURY.EXPERT_MINORITY_PENALTY : -JURY.JUROR_MINORITY_PENALTY);
         }
         // NO_QUORUM resolution doesn't penalise/reward — it auto-escalates.
         if (verdict === VERDICT.NO_QUORUM) {
@@ -1269,15 +1275,23 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
   // Shared with verdict_on_my_jury — same outcome derivation rules so the
   // dashboard "score +3 majority" line matches what the history page shows.
-  function _juryOutcome(myVote, verdict) {
+  function _juryOutcome(myVote, verdict, { hasCommit = false, isExpert = false } = {}) {
     if (verdict === VERDICT.NO_QUORUM) return { outcome: "no_quorum", scoreImpact: 0 };
-    if (!myVote) return { outcome: "no_show", scoreImpact: -JURY.NO_SHOW_PENALTY };
+    if (!myVote) {
+      const outcome = hasCommit ? "no_reveal" : "no_commit";
+      const scoreImpact = isExpert
+        ? (hasCommit ? -JURY.EXPERT_NO_REVEAL_PENALTY : -JURY.EXPERT_NO_COMMIT_PENALTY)
+        : (hasCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY);
+      return { outcome, scoreImpact };
+    }
     if (myVote === VOTE.ABSTAIN) return { outcome: "abstain", scoreImpact: 0 };
     const isMismatchSide = verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL;
     const votedMajority = isMismatchSide ? myVote === VOTE.MISMATCH : myVote === VOTE.MATCH;
     return {
       outcome: votedMajority ? "majority" : "minority",
-      scoreImpact: votedMajority ? JURY.MAJORITY_BONUS : -JURY.MINORITY_PENALTY,
+      scoreImpact: votedMajority
+        ? (isExpert ? JURY.EXPERT_MAJORITY_BONUS : JURY.JUROR_MAJORITY_BONUS)
+        : (isExpert ? -JURY.EXPERT_MINORITY_PENALTY : -JURY.JUROR_MINORITY_PENALTY),
     };
   }
 
@@ -1357,7 +1371,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       if (filterStatus && filterStatus !== status) continue;
 
       const { outcome, scoreImpact } = result
-        ? _juryOutcome(myVote, verdict)
+        ? _juryOutcome(myVote, verdict, { hasCommit: !!myCommit, isExpert: isAppeal })
         : { outcome: null, scoreImpact: null };   // pre-verdict — outcome unknown
 
       const ctidDisputes = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid)

@@ -69,9 +69,15 @@ const REVOKE_CONTRACT = Object.freeze({
     const out = {
       tx_type: data.tx_type,                  // distinguishes revoke types
       tip_id: data.tip_id,
-      reason_code: data.reason_code,
       issuing_vp_id: data.issuing_vp_id,
     };
+    // reason_code and evidence_hash are conditional — only added when present.
+    // canonicalJson renders undefined as the literal string "undefined", which
+    // diverges from verifyBodySignature's "skip undefined" behaviour at the
+    // signer and breaks consensus-level signature replay.
+    if (data.reason_code !== undefined && data.reason_code !== null) {
+      out.reason_code = data.reason_code;
+    }
     if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
       out.evidence_hash = data.evidence_hash;
     }

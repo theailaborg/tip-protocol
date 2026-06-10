@@ -57,6 +57,9 @@ function parseArgs(argv) {
     watch: false,
     watchTimeoutSec: 30,
     dryRun: false,
+    skipCommit: new Set(),    // tip_ids excluded from commit submission (drives the no-commit scoring branch)
+    skipReveal: new Set(),    // tip_ids excluded from reveal submission (drives the no-reveal branch)
+    voteOverride: new Map(),  // tip_id → VOTE (overrides --vote-bias for that juror; needed to mix majority + minority)
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -69,6 +72,14 @@ function parseArgs(argv) {
     else if (a === "--watch") args.watch = true;
     else if (a === "--watch-timeout") args.watchTimeoutSec = Number(argv[++i]);
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--skip-commit") args.skipCommit.add(argv[++i]);
+    else if (a === "--skip-reveal") args.skipReveal.add(argv[++i]);
+    else if (a === "--vote") {
+      const spec = argv[++i];
+      const eq = spec.indexOf("=");
+      if (eq < 0) throw new Error(`--vote expects TIP_ID=VOTE, got: ${spec}`);
+      args.voteOverride.set(spec.slice(0, eq), spec.slice(eq + 1).toUpperCase());
+    }
     else if (a === "--help" || a === "-h") {
       console.log("usage: drive-jury.js --ctid <CTID> [opts]");
       console.log("  --ctid CTID              dispute target (required, e.g. tip://c/AA-...)");
@@ -81,6 +92,11 @@ function parseArgs(argv) {
       console.log("  --watch                  after reveal, poll dispute-case until verdict lands");
       console.log("  --watch-timeout SEC      max seconds to watch (default 30)");
       console.log("  --dry-run                print plan, do not submit");
+      console.log("  --skip-commit TIP_ID     juror excluded from commit (no-commit scoring branch); repeatable");
+      console.log("  --skip-reveal TIP_ID     juror commits but does not reveal (no-reveal branch); repeatable");
+      console.log("  --vote TIP_ID=VOTE       per-juror vote override (MATCH|MISMATCH|ABSTAIN); repeatable.");
+      console.log("                           Beats --vote-bias for that juror — used to mix majority/minority");
+      console.log("                           in one dispute.");
       process.exit(0);
     } else throw new Error(`unknown arg: ${a}`);
   }
@@ -88,6 +104,9 @@ function parseArgs(argv) {
   if (!["UPHELD", "DISMISSED", "RANDOM"].includes(args.voteBias)) throw new Error("--vote-bias must be UPHELD | DISMISSED | RANDOM");
   if (args.confirmedOrigin && !ORIGIN_CODES.includes(args.confirmedOrigin)) throw new Error(`--confirmed-origin must be one of ${ORIGIN_CODES.join(",")}`);
   if (args.forcePhase && !["COMMIT", "REVEAL"].includes(args.forcePhase)) throw new Error("--phase must be COMMIT or REVEAL");
+  for (const [tip, v] of args.voteOverride) {
+    if (!JURY_VOTES.includes(v)) throw new Error(`--vote ${tip}=${v}: vote must be one of ${JURY_VOTES.join(",")}`);
+  }
   return args;
 }
 
@@ -246,28 +265,37 @@ async function doCommit(args, block) {
   const planned = jurors.map((j, i) => {
     const cached = existing.jurors[j.juror_tip_id];
     const already = j.status === "committed" || j.status === "revealed";
-    const vote = cached?.vote ?? pickVote(args.voteBias, i, jurors.length);
+    const override = args.voteOverride.get(j.juror_tip_id);
+    const vote = cached?.vote ?? override ?? pickVote(args.voteBias, i, jurors.length);
     const salt = cached?.salt ?? randomSalt();
     const commitment = shake256(`${vote}:${salt}`);
-    return { ...j, vote, salt, commitment, alreadyOnChain: already };
+    const skipped = args.skipCommit.has(j.juror_tip_id);
+    return { ...j, vote, salt, commitment, alreadyOnChain: already, skipped };
   });
 
   console.log(`\nCOMMIT phase — ctid=${args.ctid}`);
-  console.log(`  ${jurors.length} jurors total; vote-bias=${args.voteBias}`);
+  console.log(`  ${jurors.length} jurors total; vote-bias=${args.voteBias}${args.voteOverride.size ? `; ${args.voteOverride.size} vote override(s)` : ""}${args.skipCommit.size ? `; ${args.skipCommit.size} skip-commit` : ""}`);
   for (const p of planned) {
-    console.log(`    ${p.juror_tip_id} (${p.creator_name}) vote=${p.vote} salt=${p.salt.slice(0, 8)}… commit=${p.commitment.slice(0, 12)}…${p.alreadyOnChain ? "  [SKIP — already committed]" : ""}`);
+    const tag = p.skipped ? "  [SKIP-COMMIT — drives no-commit branch]" : p.alreadyOnChain ? "  [SKIP — already committed]" : "";
+    console.log(`    ${p.juror_tip_id} (${p.creator_name}) vote=${p.vote} salt=${p.salt.slice(0, 8)}… commit=${p.commitment.slice(0, 12)}…${tag}`);
   }
 
   if (args.dryRun) { console.log("  --dry-run, no submission"); return; }
 
   // Persist BEFORE submission so a crash mid-commit doesn't strand secrets.
+  // Skip-commit jurors are excluded from the cache — without a commit on-chain
+  // the reveal phase can never accept their reveal anyway.
   const toPersist = { ctid: args.ctid, jurors: { ...existing.jurors } };
-  for (const p of planned) toPersist.jurors[p.juror_tip_id] = { vote: p.vote, salt: p.salt, commitment: p.commitment, name: p.creator_name };
+  for (const p of planned) {
+    if (p.skipped) continue;
+    toPersist.jurors[p.juror_tip_id] = { vote: p.vote, salt: p.salt, commitment: p.commitment, name: p.creator_name };
+  }
   const secretsFile = writeSecrets(args.ctid, toPersist, args.appeal);
   console.log(`  secrets cached → ${path.relative(REPO_ROOT, secretsFile)}`);
 
   let submitted = 0, skipped = 0, failed = 0;
   for (const p of planned) {
+    if (p.skipped) { skipped++; continue; }
     if (p.alreadyOnChain) { skipped++; continue; }
     const key = loadKey(p.juror_tip_id);
     if (!key) { skipped++; console.log(`    ? ${p.creator_name || p.juror_tip_id} no key file — skipping`); continue; }
@@ -299,6 +327,10 @@ async function doReveal(args, block, disputeCase) {
 
   let submitted = 0, skipped = 0, failed = 0, missing = 0;
   for (const j of jurors) {
+    if (args.skipReveal.has(j.juror_tip_id)) {
+      console.log(`    - ${j.creator_name} [SKIP-REVEAL — drives no-reveal branch]`);
+      skipped++; continue;
+    }
     const sec = secrets.jurors[j.juror_tip_id];
     if (!sec) { console.log(`    ? ${j.creator_name} no cached secret — cannot reveal`); missing++; continue; }
     if (j.status === "revealed") { console.log(`    = ${j.creator_name} already revealed`); skipped++; continue; }
