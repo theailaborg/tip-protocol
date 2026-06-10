@@ -24,7 +24,7 @@
 "use strict";
 
 const { shake256 } = require("../../shared/crypto");
-const { TX_TYPES, VERDICT, PRESCAN_REVIEW_STATES, TIP_ID_TYPES } = require("../../shared/constants");
+const { TX_TYPES, VERDICT, PRESCAN_REVIEW_STATES, TIP_ID_TYPES, RECUSAL_REASONS } = require("../../shared/constants");
 const { REVIEWER, JURY } = require("../../shared/protocol-constants");
 
 /**
@@ -101,6 +101,31 @@ function getReviewerAccuracy(dag, reviewerTipId) {
 }
 
 /**
+ * Count a reviewer's no-shows: assignments that died by node-signed
+ * auto-recuse (decision_note = sla_expired, mapped from the tx's
+ * recusal_reason at commit) within their most recent
+ * NOSHOW_SAMPLE_SIZE RESOLVED assignments. Still-open assignments
+ * (TRIGGERED / CONFIRMED) aren't outcomes yet and neither count as a
+ * no-show nor consume the sample window; manual recusals carry a
+ * free-text or null note and never match. Pure read over DAG history —
+ * deterministic on every node, no new state.
+ */
+function getReviewerNoShowCount(dag, reviewerTipId) {
+  const assignments = dag.getPrescanReviewsByReviewer(reviewerTipId) || [];
+  let counted = 0;
+  let noShows = 0;
+  for (const review of assignments) {
+    if (counted >= REVIEWER.NOSHOW_SAMPLE_SIZE) break;
+    if (review.state === PRESCAN_REVIEW_STATES.TRIGGERED
+      || review.state === PRESCAN_REVIEW_STATES.CONFIRMED) continue;
+    counted++;
+    if (review.state === PRESCAN_REVIEW_STATES.RECUSED
+      && review.decision_note === RECUSAL_REASONS.SLA_EXPIRED) noShows++;
+  }
+  return noShows;
+}
+
+/**
  * True iff `tipId` can be assigned to review `authorTipId`'s flagged
  * content. Checks are ordered cheapest → most-expensive so the common
  * "not opted-in" case short-circuits before any score / accuracy work.
@@ -126,6 +151,8 @@ function isEligibleReviewer(dag, scoring, tipId, { authorTipId } = {}) {
   if (consent !== true && consent !== 1) return false;
 
   if (typeof dag.isRevoked === "function" && dag.isRevoked(tipId)) return false;
+
+  if (getReviewerNoShowCount(dag, tipId) > REVIEWER.MAX_NOSHOW_RECUSALS) return false;
 
   const score = scoring.getScore(tipId).score;
   if (score < REVIEWER.MIN_SCORE) return false;
@@ -200,6 +227,10 @@ function _passesHardFilters(dag, identity, authorTipId) {
   const consent = identity.reviewer_consent;
   if (consent !== true && consent !== 1) return false;
   if (typeof dag.isRevoked === "function" && dag.isRevoked(identity.tip_id)) return false;
+  // Availability is an invariant, not a preference: relaxing it in the
+  // cascade would hand the case to someone already ignoring assignments
+  // and burn another AUTO_RECUSE_AGE_MS before reassignment.
+  if (getReviewerNoShowCount(dag, identity.tip_id) > REVIEWER.MAX_NOSHOW_RECUSALS) return false;
   return true;
 }
 
@@ -211,5 +242,6 @@ function _pickFromShuffle(candidates, seed, pass) {
 module.exports = {
   isEligibleReviewer,
   getReviewerAccuracy,
+  getReviewerNoShowCount,
   selectReviewer,
 };
