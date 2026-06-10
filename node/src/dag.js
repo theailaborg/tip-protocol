@@ -326,6 +326,12 @@ function _canonCommitteeRotation(r) {
   };
 }
 
+// Binary string comparator for every ordering that mirrors a SQLite ORDER BY.
+// localeCompare is ICU-locale-dependent ('tip://…' vs 'US-…' flips order vs
+// BINARY collation), so it would diverge from SQLiteStore AND across machines —
+// fatal for iterateCanonicalState / state_merkle_root.
+function cmpBin(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+
 // ══════════════════════════════════════════════════════════════════════════════
 // IN-MEMORY STORE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -379,7 +385,7 @@ class MemoryStore {
   // + receiver hash rows in the same order → same txs_full_root. Mirrors
   // SQLiteStore.iterateAllTransactions for in-memory tests.
   *iterateAllTransactions() {
-    for (const tx of [...this._txs.values()].sort((a, b) => a.tx_id.localeCompare(b.tx_id))) {
+    for (const tx of [...this._txs.values()].sort((a, b) => cmpBin(a.tx_id, b.tx_id))) {
       yield tx;
     }
   }
@@ -789,6 +795,9 @@ class MemoryStore {
     this._scores.clear();
     this._dedup.clear();
     if (this._dedupCreated) this._dedupCreated.clear();
+    // _dedupTipId survives addDedupHash with a falsy tipId, so a stale
+    // mapping here resurfaces in canonical dedup rows after reinstall.
+    if (this._dedupTipId) this._dedupTipId.clear();
     this._revocations.clear();
     this._vps.clear();
     this._nodes.clear();
@@ -809,7 +818,7 @@ class MemoryStore {
   getCertificatesByRound(round) {
     return [...this._certs.values()]
       .filter(c => c.round === round)
-      .sort((a, b) => a.author_node_id.localeCompare(b.author_node_id));
+      .sort((a, b) => cmpBin(a.author_node_id, b.author_node_id));
   }
   getCertificateByAuthorRound(authorNodeId, round) {
     return [...this._certs.values()].find(c => c.author_node_id === authorNodeId && c.round === round) || null;
@@ -833,7 +842,7 @@ class MemoryStore {
   getCertificatesFromRound(fromRound) {
     return [...this._certs.values()]
       .filter(c => c.round >= fromRound)
-      .sort((a, b) => a.round !== b.round ? a.round - b.round : a.author_node_id.localeCompare(b.author_node_id));
+      .sort((a, b) => a.round !== b.round ? a.round - b.round : cmpBin(a.author_node_id, b.author_node_id));
   }
   // §69 — bounded iterator over certs in [fromRound, toRound] inclusive.
   // Yields in canonical (round, author_node_id) order — same as
@@ -844,7 +853,7 @@ class MemoryStore {
       .filter(c => c.round >= fromRound && c.round <= toRound)
       .sort((a, b) => a.round !== b.round
         ? a.round - b.round
-        : a.author_node_id.localeCompare(b.author_node_id));
+        : cmpBin(a.author_node_id, b.author_node_id));
     for (const c of sorted) yield c;
   }
   certificateCount() { return this._certs.size; }
@@ -1005,7 +1014,7 @@ class MemoryStore {
   // validation to check that every user-picked slug exists.
   getAllInterests() {
     return [...this._interestsRegistry.values()]
-      .sort((a, b) => a.slug.localeCompare(b.slug))
+      .sort((a, b) => cmpBin(a.slug, b.slug))
       .map(r => ({ ...r }));
   }
   interestCount() { return this._interestsRegistry.size; }
@@ -1205,15 +1214,15 @@ class MemoryStore {
   // terminal states. Filtering is a view concern, not a state concern.
   *iterateCanonicalState() {
     for (const r of [...this._identities.values()]
-      .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
+      .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
       yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
-      .sort((a, b) => a.ctid.localeCompare(b.ctid))) {
+      .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
       yield { table: "content", row: _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))) {
+      .sort((a, b) => cmpBin(a[0], b[0]))) {
       yield { table: "scores", row: _canonScore(tip_id, v) };
     }
     for (const h of [...this._dedup].sort()) {
@@ -1222,23 +1231,23 @@ class MemoryStore {
       yield { table: "dedup_registry", row: _canonDedup(h, createdAt, tipId) };
     }
     for (const r of [...this._revocations.values()]
-      .sort((a, b) => a.tip_id.localeCompare(b.tip_id))) {
+      .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
       yield { table: "revocations", row: _canonRevocation(r) };
     }
     for (const r of [...this._domainBindings.values()]
-      .sort((a, b) => a.domain.localeCompare(b.domain))) {
+      .sort((a, b) => cmpBin(a.domain, b.domain))) {
       yield { table: "domain_bindings", row: _canonDomainBinding(r) };
     }
     for (const r of [...this._platformLinks.values()]
-      .sort((a, b) => a.id.localeCompare(b.id))) {
+      .sort((a, b) => cmpBin(a.id, b.id))) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
     for (const r of [...this._vps.values()]
-      .sort((a, b) => a.vp_id.localeCompare(b.vp_id))) {
+      .sort((a, b) => cmpBin(a.vp_id, b.vp_id))) {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
     for (const r of [...this._nodes.values()]
-      .sort((a, b) => a.node_id.localeCompare(b.node_id))) {
+      .sort((a, b) => cmpBin(a.node_id, b.node_id))) {
       yield { table: "nodes", row: _canonNode(r) };
     }
     // GH #60 — entity_keys participates in state_merkle_root so the
@@ -1249,11 +1258,11 @@ class MemoryStore {
       yield { table: "entity_keys", row: _canonEntityKey(r) };
     }
     for (const r of [...this._prescanReviews.values()]
-      .sort((a, b) => a.review_id.localeCompare(b.review_id))) {
+      .sort((a, b) => cmpBin(a.review_id, b.review_id))) {
       yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
     }
     for (const r of [...this._interestsRegistry.values()]
-      .sort((a, b) => a.slug.localeCompare(b.slug))) {
+      .sort((a, b) => cmpBin(a.slug, b.slug))) {
       yield { table: "interests_registry", row: _canonInterest(r) };
     }
     // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
@@ -1281,7 +1290,7 @@ class MemoryStore {
     }
     rpRows.sort((a, b) => {
       if (a.rotation_number !== b.rotation_number) return a.rotation_number - b.rotation_number;
-      return a.node_id.localeCompare(b.node_id);
+      return cmpBin(a.node_id, b.node_id);
     });
     for (const r of rpRows) {
       yield _canonRotationParticipation(r);
