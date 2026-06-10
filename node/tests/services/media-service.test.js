@@ -617,4 +617,21 @@ describe("media-service.fetchForReviewer — idx + cross-node", () => {
     await expect(service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp)))
       .rejects.toMatchObject({ status: 410, code: "media_unavailable" });
   });
+
+  test("bytes gone but THIS node IS the origin → 410, not a self-redirect", async () => {
+    // Retention-deletion scenario: the origin node (us) swept the bytes.
+    // Redirecting to ourselves would loop — must be 410 Gone.
+    const ghostMediaId = "9".repeat(64);
+    const content = {
+      ctid: CTID, signer_tip_id: identity.tip_id,
+      media: [{ media_id: ghostMediaId, mime: "image/png" }],
+      prescan_assigned_node_id: ORIGIN_NODE,
+    };
+    service = createMediaService({
+      storage, dag: _accessDag({ identity, content }), selfNodeId: ORIGIN_NODE,
+    });
+
+    await expect(service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp)))
+      .rejects.toMatchObject({ status: 410, code: "media_unavailable" });
+  });
 });

@@ -31,7 +31,7 @@ const mediaUploadSchema = require("../schemas/media-upload");
 const mediaAccessSchema = require("../schemas/media-access");
 const { canAccessMedia } = require("./media-access-policy");
 
-function createMediaService({ storage, dag, log }) {
+function createMediaService({ storage, dag, log, selfNodeId = null }) {
   if (!storage) throw new Error("media-service: storage required");
   // dag is optional: read-only callers (worker fetch path) don't need
   // identity / revocation lookups. upload() will assert dag itself.
@@ -255,8 +255,11 @@ function createMediaService({ storage, dag, log }) {
     const localHead = await storage.head(ref.media_id);
     if (!localHead || !localHead.exists) {
       const origin = content.prescan_assigned_node_id || null;
-      if (!origin) {
-        throw schemaError(410, "Media not present locally and origin node unknown", "media_unavailable");
+      // No origin recorded, OR THIS node IS the origin → the bytes are
+      // genuinely gone (retention sweep / deletion), not "ask another
+      // node". Redirecting to ourselves would loop. Return 410 Gone.
+      if (!origin || origin === selfNodeId) {
+        throw schemaError(410, "Media no longer available (retention-expired or deleted)", "media_unavailable");
       }
       const originNode = typeof dag.getNode === "function" ? dag.getNode(origin) : null;
       return {

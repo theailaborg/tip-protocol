@@ -60,7 +60,10 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // the worker uses fetchForClassifier(); content-service uses
   // resolveRefs(); routes use upload/fetchBytes/head.
   const mediaStorage = createMediaStorage(config.mediaStorage || {});
-  const mediaService = createMediaService({ storage: mediaStorage, dag });
+  const mediaService = createMediaService({
+    storage: mediaStorage, dag,
+    selfNodeId: config.nodeRegisteredId || config.nodeId || null,
+  });
 
   const ctx = {
     dag, scoring, config, submitTx, submitBatch,
