@@ -250,7 +250,9 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
-      algorithm: data.algorithm || "ml-dsa-65",
+      // GH #85: ?? instead of || so algorithm="" is not silently promoted
+      // to the default; only null/undefined fall back to "ml-dsa-65".
+      algorithm: data.algorithm ?? "ml-dsa-65",
       name: data.name,
       jurisdiction: data.jurisdiction,
       jurisdiction_tier: data.jurisdiction_tier,
@@ -263,7 +265,9 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
-      algorithm: data.algorithm || "ml-dsa-65",
+      // GH #85: ?? instead of || so algorithm="" is not silently promoted
+      // to the default; only null/undefined fall back to "ml-dsa-65".
+      algorithm: data.algorithm ?? "ml-dsa-65",
       name: data.name,
       public_key: data.public_key,
       approving_vp_id: data.approving_vp_id,
