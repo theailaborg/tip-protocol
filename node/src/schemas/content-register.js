@@ -389,6 +389,20 @@ function verifyTx(tx, dag) {
     return { ok: false, status: 403, error: "Content signature verification failed", code: "signature_invalid" };
   }
 
+  // media[] integrity — the signature commits to content_hash (which
+  // folds in media_canonical_hash via CNA-MIX-1), but media[] itself is
+  // unsigned tx metadata. Re-derive the mch from media[] so a proposing
+  // node can't attach refs that don't match what the client hashed.
+  if (Array.isArray(d.media) && d.media.length > 0) {
+    if (mediaCanonicalHash(d.media) !== d.media_canonical_hash) {
+      return {
+        ok: false, status: 400,
+        error: "media[] does not match media_canonical_hash",
+        code: "media_canonical_hash_mismatch",
+      };
+    }
+  }
+
   return { ok: true };
 }
 

@@ -422,6 +422,33 @@ describe("verifyTx — DAG-lookup, no fallback", () => {
     expect(schema.verifyTx(tx, dag)).toEqual({ ok: true });
   });
 
+  test("media[] consistent with media_canonical_hash → ok", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-vt-media-ok";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    const tx = _validTx(kp, tipId);
+    const media = [{ media_id: "a".repeat(64), mime: "image/png" }];
+    tx.data.media = media;
+    tx.data.media_canonical_hash = schema.mediaCanonicalHash(media);
+    expect(schema.verifyTx(tx, dag)).toEqual({ ok: true });
+  });
+
+  test("media[] tampered after signing → 400 media_canonical_hash_mismatch", () => {
+    // Proposing node swaps a media ref on the committed tx. The client
+    // signature still verifies (it covers content_hash, not media[]),
+    // so the mch re-derivation is the only thing that catches it.
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-vt-media-bad";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    const tx = _validTx(kp, tipId);
+    const media = [{ media_id: "a".repeat(64), mime: "image/png" }];
+    tx.data.media_canonical_hash = schema.mediaCanonicalHash(media);
+    tx.data.media = [{ media_id: "b".repeat(64), mime: "image/png" }];  // swapped
+    const r = schema.verifyTx(tx, dag);
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("media_canonical_hash_mismatch");
+  });
+
   test("signer NOT on DAG → 412 signer_not_registered (no fallback)", () => {
     const kp = generateMLDSAKeypair();
     const tipId = "tip://id/US-vt-missing";
