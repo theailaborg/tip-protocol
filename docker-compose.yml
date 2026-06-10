@@ -110,14 +110,26 @@ x-node-common: &node-common
     TIP_DEV_ALLOW_LOCALHOST_DOMAINS: ${TIP_DEV_ALLOW_LOCALHOST_DOMAINS:-0}
     TIP_DEV_LOCALHOST_FETCH_HOST: ${TIP_DEV_LOCALHOST_FETCH_HOST:-}
     TIP_DEV_FORCE_PRESCAN_TIER: ${TIP_DEV_FORCE_PRESCAN_TIER:-}
-    # AI prescan classifier — base URL of the FastAPI service. Required at
-    # boot for the prescan worker. See .env.example for full description.
+    # AI prescan classifier — base URL of the FastAPI service. When unset
+    # or unreachable, prescan runs in LOCAL FALLBACK mode (heuristic text,
+    # stub media) unless TIP_CLASSIFIER_FALLBACK=0. See .env.example.
     TIP_CLASSIFIER_URL:          ${TIP_CLASSIFIER_URL:-}
+    TIP_CLASSIFIER_FALLBACK:     ${TIP_CLASSIFIER_FALLBACK:-1}
     TIP_CLASSIFIER_KEY:          ${TIP_CLASSIFIER_KEY:-}
     TIP_CLASSIFIER_SCAN_NON_OH:  ${TIP_CLASSIFIER_SCAN_NON_OH:-false}
     TIP_PRESCAN_CONCURRENCY:     ${TIP_PRESCAN_CONCURRENCY:-1}
     TIP_PRESCAN_WORKER_COUNT:    ${TIP_PRESCAN_WORKER_COUNT:-1}
     TIP_PRESCAN_WORKER_DISABLE:  ${TIP_PRESCAN_WORKER_DISABLE:-}
+    # ── Media storage passthrough — see .env.example for descriptions.
+    TIP_MEDIA_BACKEND:           ${TIP_MEDIA_BACKEND:-fs}
+    TIP_MEDIA_FS_PATH:           /app/data/media
+    TIP_MEDIA_S3_BUCKET:         ${TIP_MEDIA_S3_BUCKET:-}
+    TIP_MEDIA_S3_REGION:         ${TIP_MEDIA_S3_REGION:-}
+    TIP_MEDIA_S3_KMS_KEY_ID:     ${TIP_MEDIA_S3_KMS_KEY_ID:-}
+    TIP_MEDIA_PRESIGN_TTL_SEC:   ${TIP_MEDIA_PRESIGN_TTL_SEC:-300}
+    TIP_MEDIA_RETENTION_DISABLE: ${TIP_MEDIA_RETENTION_DISABLE:-}
+    TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS: ${TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS:-}
+    TIP_API_ENDPOINT:            ${TIP_API_ENDPOINT:-}
     # Dev-only ZK skip — when set to "true" the dedup-proof verifier
     # returns true unconditionally. Production deployments leave this
     # unset; the var only takes effect when the operator opts in.
