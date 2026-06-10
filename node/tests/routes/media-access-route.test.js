@@ -247,6 +247,34 @@ describe("GET /v1/content/:ctid/media/:idx — cross-node redirect", () => {
   });
 });
 
+describe("POST /v1/media/upload — body-parser size cap", () => {
+  test("body above REQUEST_BODY_MAX_BYTES → 413 file_too_large (not 500)", async () => {
+    const kp = generateMLDSAKeypair();
+    const identity = { tip_id: "tip://id/US-5555555555555555", public_key: kp.publicKey, status: "active" };
+    const root = await _scratch();
+    const storage = createMediaStorage({ backend: "fs", fsPath: root });
+    const service = createMediaService({ storage, dag: _accessDag({ identity, content: null }) });
+    const app = _makeApp({ mediaService: service });
+
+    // 26MB > the 25MB express.raw cap — body-parser aborts before any
+    // schema/service code runs; errorHandler must map entity.too.large.
+    const big = Buffer.alloc(26 * 1024 * 1024, 1);
+    const res = await request(app)
+      .post("/v1/media/upload")
+      .set("Content-Type", "application/octet-stream")
+      .set("X-Media-Mime", "image/png")
+      .set("X-Signer-TipId", identity.tip_id)
+      .set("X-Signer-Signature", "deadbeef")
+      .set("X-Timestamp", String(nowMs()))
+      .send(big);
+
+    expect(res.status).toBe(413);
+    expect(res.body.error?.code).toBe("file_too_large");
+
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});
+
 describe("GET /v1/content/:ctid/media/:idx — error envelopes", () => {
   let app, kp, identity, otherKp, otherTip;
 
