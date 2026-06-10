@@ -3,15 +3,16 @@
  * @description Request validation for POST /v1/media/upload.
  *
  * Owns ALL request-level validation per the project rule (validateRequest
- * lives in schemas/, never inline in services). The service layer only
- * does business-rule checks that need DAG / crypto state:
+ * lives in schemas/, never inline in services). Matches media-access:
  *
  *   schema (here):                          service (media-service.js):
- *     - shape (bytes, mime, signer, sig)      - identity exists + active
- *     - mime format (image/audio/video)       - identity not revoked
- *     - mime family enabled (video gate)      - signature verifies against identity's public_key
+ *     - shape (bytes, mime, signer, sig)      - signature verifies against
+ *     - mime format (image/audio/video)         identity's public_key
+ *     - mime family enabled (video gate)      - storage.put
  *     - per-mime size limit (genesis)
  *     - replay window (nowMs ± window)
+ *     - DAG presence (signer exists,
+ *       active, not revoked)
  *
  * Challenge format (signed by uploader's ML-DSA-65 key):
  *   MEDIA_UPLOAD:{content_hash_hex}:{mime}:{timestamp}:{signer_tip_id}
@@ -43,9 +44,29 @@ function _resolveSizeLimit(mime) {
 }
 
 /**
+ * Look up the signer's identity on the DAG and reject if missing,
+ * inactive, or revoked. Mirrors media-access.resolveRequester so the
+ * "is this caller a valid TIP-ID?" predicate is identical across
+ * media endpoints.
+ */
+function resolveSigner(tipId, dag) {
+  const identity = dag.getIdentity(tipId);
+  if (!identity) {
+    throw schemaError(404, `Unknown signer: ${tipId}`, "signer_not_found");
+  }
+  if (identity.status !== "active") {
+    throw schemaError(403, `Signer not active: ${tipId}`, "signer_inactive");
+  }
+  if (typeof dag.isRevoked === "function" && dag.isRevoked(tipId)) {
+    throw schemaError(403, `Signer revoked: ${tipId}`, "signer_revoked");
+  }
+  return identity;
+}
+
+/**
  * Validate a media upload request. Throws schemaError on the first problem.
- * Does NOT do DAG-bound checks (identity / signature) — those live in
- * media-service because they need state.
+ * Service keeps only the signature verification (needs canonical challenge
+ * bytes + the identity's public key).
  *
  * @param {Object} input
  * @param {Buffer} input.bytes
@@ -53,8 +74,9 @@ function _resolveSizeLimit(mime) {
  * @param {string} input.signer_tip_id
  * @param {string} input.signature
  * @param {number} input.timestamp
+ * @param {Object} deps          { dag } — identity lookups
  */
-function validateRequest(input) {
+function validateRequest(input, deps) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "request input is required", "input_invalid");
   }
@@ -98,6 +120,11 @@ function validateRequest(input) {
       "timestamp_drift",
     );
   }
+
+  if (!deps || !deps.dag) {
+    throw new Error("media-upload.validateRequest: deps.dag required");
+  }
+  resolveSigner(input.signer_tip_id, deps.dag);
 }
 
 /**
@@ -117,6 +144,7 @@ function buildChallenge({ content_hash, mime, timestamp, signer_tip_id }) {
 
 module.exports = {
   validateRequest,
+  resolveSigner,
   buildChallenge,
   TIP_ID_RE,
   MIME_RE,

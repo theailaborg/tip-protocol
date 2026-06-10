@@ -80,18 +80,13 @@ function createMediaService({ storage, dag, log }) {
 
   async function upload(input) {
     if (!dag) throw new Error("media-service.upload: dag required");
-    // ALL request-level validation lives in the schema module (shape, mime
-    // family, size limit, replay window). Service handles only the
-    // business-rule checks that need DAG / crypto state.
-    mediaUploadSchema.validateRequest(input);
+    // Schema owns ALL request-level checks: shape, mime family, size
+    // limit, replay window, DAG presence (signer exists / active / not
+    // revoked). Service keeps only the signature verification.
+    mediaUploadSchema.validateRequest(input, { dag });
 
     const { bytes, mime, signer_tip_id, signature, timestamp } = input;
-
-    // Identity must exist, be active, and not be revoked.
-    const identity = dag.getIdentity(signer_tip_id);
-    if (!identity) throw schemaError(404, `Unknown signer: ${signer_tip_id}`, "signer_not_found");
-    if (identity.status !== "active") throw schemaError(403, `Signer not active: ${signer_tip_id}`, "signer_inactive");
-    if (dag.isRevoked(signer_tip_id)) throw schemaError(403, `Signer revoked: ${signer_tip_id}`, "signer_revoked");
+    const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
 
     // Verify the author signed the upload challenge. content_hash is
     // shake256(bytes) — same value used as the storage media_id, so we
@@ -133,10 +128,14 @@ function createMediaService({ storage, dag, log }) {
 
   // Reviewer / juror / disputer / author fetch path. Returns one of:
   //
-  //   { transport: "redirect", origin_node_id }
-  //     — this node does not have the bytes; caller (route) should 307
-  //       to that node so the requester re-presents the same signed
-  //       request there. Cross-node fallback for fs-backed federations.
+  //   { transport: "redirect", origin_node_id, origin_endpoint }
+  //     — this node does not hold the bytes. Storage is PER-NODE (each
+  //       operator pays for and serves their own bucket), so remote
+  //       media is the normal case, not a fallback. origin_endpoint is
+  //       the on-chain api_endpoint of the node that received the
+  //       upload (null when that node hasn't announced one); the route
+  //       307s there so the requester re-presents the same signed
+  //       request against the node that has the bytes.
   //
   //   { transport: "stream", media_id, mime, bytes }
   //     — fs backend (or s3 with presigning disabled). Caller streams.
@@ -176,18 +175,26 @@ function createMediaService({ storage, dag, log }) {
     }
     const ref = media[idx];
 
-    // Local probe first. If this node has the bytes, serve. If not, fall
-    // back to a cross-node redirect using the node the content was first
-    // registered on. content.prescan_assigned_node_id is set on every
-    // REGISTER_CONTENT and replicated through consensus, so every node
-    // can compute the same redirect target deterministically.
+    // Local probe first. If this node holds the bytes, serve. If not,
+    // redirect to the node that received the upload — per-node buckets
+    // mean media lives only on the registering node's storage.
+    // content.prescan_assigned_node_id is set on every REGISTER_CONTENT
+    // and replicated through consensus, so every node computes the same
+    // redirect target; its api_endpoint comes off the on-chain nodes row
+    // (announced via NODE_ENDPOINT_UPDATED).
     const localHead = await storage.head(ref.media_id);
     if (!localHead || !localHead.exists) {
       const origin = content.prescan_assigned_node_id || null;
       if (!origin) {
         throw schemaError(410, "Media not present locally and origin node unknown", "media_unavailable");
       }
-      return { transport: "redirect", origin_node_id: origin, role: policy.role };
+      const originNode = typeof dag.getNode === "function" ? dag.getNode(origin) : null;
+      return {
+        transport: "redirect",
+        origin_node_id: origin,
+        origin_endpoint: originNode?.api_endpoint || null,
+        role: policy.role,
+      };
     }
 
     // s3 backend serves bytes via short-TTL presigned URL — saves the
