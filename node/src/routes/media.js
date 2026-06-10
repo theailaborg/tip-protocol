@@ -44,10 +44,19 @@ function createRouter({ mediaService }) {
     const tsHeader = req.get("X-Timestamp");
     const timestamp = tsHeader ? parseInt(tsHeader, 10) : NaN;
 
-    const result = await mediaService.uploadStream({
-      stream: req, mime, signer_tip_id: signerTip, signature, timestamp,
-    });
-    res.status(201).json(result);
+    try {
+      const result = await mediaService.uploadStream({
+        stream: req, mime, signer_tip_id: signerTip, signature, timestamp,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      // Rejecting mid-body (size cap, bad signature) leaves unread bytes
+      // on the wire — the keep-alive socket can't be reused. Tell the
+      // client explicitly so its NEXT request opens a fresh connection
+      // instead of dying on the poisoned one.
+      if (!res.headersSent) res.setHeader("Connection", "close");
+      throw err;
+    }
   }));
 
   // Reviewer / juror / disputer / author fetch path. All authz happens

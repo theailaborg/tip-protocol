@@ -270,6 +270,9 @@ describe("POST /v1/media/upload — body-parser size cap", () => {
 
     expect(res.status).toBe(413);
     expect(res.body.error?.code).toBe("file_too_large");
+    // Mid-body rejection leaves unread bytes on the wire — the server
+    // must tell the client not to reuse the connection.
+    expect(res.headers.connection).toBe("close");
 
     await fs.rm(root, { recursive: true, force: true });
   });
