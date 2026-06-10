@@ -28,28 +28,24 @@
 
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
-const { CONTENT_LIMITS } = require("../../../shared/protocol-constants");
 
 function createRouter({ mediaService }) {
   const router = express.Router();
 
-  // Raw body parser scoped to upload only so the 25MB limit doesn't leak
-  // into express.json's 4MB ceiling for the rest of /v1.
-  const rawBody = express.raw({
-    type: () => true,
-    limit: CONTENT_LIMITS.REQUEST_BODY_MAX_BYTES,
-  });
-
-  router.post("/media/upload", rawBody, asyncHandler(async (req, res) => {
-    const bytes = req.body;
+  // Streaming upload — NO body parser. The raw request stream flows
+  // through media-service.uploadStream (hash + size gauge → tmp file →
+  // promote), so node memory stays flat regardless of file size. The
+  // per-mime genesis caps are enforced mid-stream; lifting them later
+  // (e.g. video in v2) is a genesis change only — transport is ready.
+  router.post("/media/upload", asyncHandler(async (req, res) => {
     const mime = req.get("X-Media-Mime") || req.get("Content-Type");
     const signerTip = req.get("X-Signer-TipId");
     const signature = req.get("X-Signer-Signature");
     const tsHeader = req.get("X-Timestamp");
     const timestamp = tsHeader ? parseInt(tsHeader, 10) : NaN;
 
-    const result = await mediaService.upload({
-      bytes, mime, signer_tip_id: signerTip, signature, timestamp,
+    const result = await mediaService.uploadStream({
+      stream: req, mime, signer_tip_id: signerTip, signature, timestamp,
     });
     res.status(201).json(result);
   }));

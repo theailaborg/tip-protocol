@@ -306,6 +306,114 @@ describe("media-service.fetchForClassifier", () => {
   });
 });
 
+// ─── Streaming upload (flat-memory path used by the route) ──────────────
+
+const { Readable } = require("stream");
+
+describe("media-service.uploadStream", () => {
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-aaaabbbbccccdddd", public_key: kp.publicKey, status: "active" };
+    service = createMediaService({ storage, dag: _fakeDag(identity) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  function _streamInput(bytes, mime, opts = {}) {
+    const base = _signedUpload(bytes, mime, identity.tip_id, kp, opts.timestamp);
+    return { ...base, ...opts, stream: Readable.from([bytes]), bytes: undefined };
+  }
+
+  test("streamed upload → identical result to buffered upload (same media_id)", async () => {
+    const bytes = Buffer.from("streamed-bytes-here");
+    const r = await service.uploadStream(_streamInput(bytes, "image/png"));
+    expect(r.media_id).toBe(shake256(bytes));
+    expect(r.size).toBe(bytes.length);
+
+    const got = await service.fetchBytes(r.media_id);
+    expect(got.bytes.equals(bytes)).toBe(true);
+    expect(got.mime).toBe("image/png");
+  });
+
+  test("multi-chunk stream hashes identically to one-shot", async () => {
+    const bytes = Buffer.alloc(256 * 1024, 0xab);
+    const chunks = [];
+    for (let i = 0; i < bytes.length; i += 64 * 1024) chunks.push(bytes.subarray(i, i + 64 * 1024));
+    const base = _signedUpload(bytes, "image/png", identity.tip_id, kp);
+    const r = await service.uploadStream({ ...base, bytes: undefined, stream: Readable.from(chunks) });
+    expect(r.media_id).toBe(shake256(bytes));
+  });
+
+  test("bytes differ from what was signed → 403, tmp cleaned, nothing stored", async () => {
+    const signedOver = Buffer.from("what the client claimed");
+    const actuallySent = Buffer.from("what the client really sent");
+    const base = _signedUpload(signedOver, "image/png", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([actuallySent]) }))
+      .rejects.toMatchObject({ code: "signature_invalid" });
+
+    expect((await storage.head(shake256(actuallySent))).exists).toBe(false);
+    const staging = await storage.stagingDir();
+    expect(await fs.readdir(staging)).toEqual([]);
+  });
+
+  test("size cap exceeded mid-stream → 413, stream aborted, tmp cleaned", async () => {
+    // 6MB as image (5MB cap) — abort fires mid-stream, not after buffering.
+    const big = Buffer.alloc(6 * 1024 * 1024, 1);
+    const base = _signedUpload(big, "image/png", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([big]) }))
+      .rejects.toMatchObject({ code: "file_too_large" });
+    const staging = await storage.stagingDir();
+    expect(await fs.readdir(staging)).toEqual([]);
+  });
+
+  test("empty body → 400 bytes_required", async () => {
+    const base = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([]) }))
+      .rejects.toMatchObject({ code: "bytes_required" });
+  });
+
+  test("video mime rejected before any bytes flow", async () => {
+    const base = _signedUpload(Buffer.from("x"), "video/mp4", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([Buffer.from("x")]) }))
+      .rejects.toMatchObject({ code: "mime_disabled" });
+  });
+
+  test("streamed dedup: second identical stream returns same media_id", async () => {
+    const bytes = Buffer.from("dedup-stream");
+    const r1 = await service.uploadStream(_streamInput(bytes, "image/png"));
+    const r2 = await service.uploadStream(_streamInput(bytes, "image/png"));
+    expect(r1.media_id).toBe(r2.media_id);
+  });
+});
+
+describe("media-storage — cleanStaging", () => {
+  test("removes stale .part files, keeps fresh ones", async () => {
+    const root = await _scratch();
+    try {
+      const storage = createMediaStorage({ backend: "fs", fsPath: root });
+      const dir = await storage.stagingDir();
+      const stale = path.join(dir, "upl-stale.part");
+      const freshFile = path.join(dir, "upl-fresh.part");
+      await fs.writeFile(stale, "old");
+      await fs.writeFile(freshFile, "new");
+      // Age the stale file's mtime 2h back (utimes takes epoch seconds).
+      const oldSec = (nowMs() - 2 * 60 * 60 * 1000) / 1000;
+      await fs.utimes(stale, oldSec, oldSec);
+
+      const out = await storage.cleanStaging(60 * 60 * 1000);  // 1h window
+      expect(out.removed).toBe(1);
+      const left = await fs.readdir(dir);
+      expect(left).toEqual(["upl-fresh.part"]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── M4: fetchForReviewer ────────────────────────────────────────────────
 
 const CTID = "tip://c/OH-aabbccddeeff11-1234";

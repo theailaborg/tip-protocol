@@ -28,6 +28,48 @@ const DEFAULT_ROOT = path.join(process.cwd(), "data/media");
 function createLocalFsBackend(config = {}) {
   const root = config.fsPath || process.env.TIP_MEDIA_FS_PATH || DEFAULT_ROOT;
 
+  // Scratch dir for in-flight streamed uploads. Same filesystem as `root`
+  // so the promote rename is atomic (cross-device rename would EXDEV).
+  async function stagingDir() {
+    const dir = path.join(root, ".staging");
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  // Drop abandoned in-flight uploads (client disconnected before the
+  // pipeline finished — the catch in uploadStream usually unlinks, but a
+  // hard process crash can leave .part files behind).
+  async function cleanStaging(maxAgeMs) {
+    const dir = await stagingDir();
+    let removed = 0;
+    for (const f of await fs.readdir(dir).catch(() => [])) {
+      const p = path.join(dir, f);
+      const st = await fs.stat(p).catch(() => null);
+      if (st && nowMs() - st.mtimeMs > maxAgeMs) {
+        await fs.unlink(p).catch(() => { });
+        removed += 1;
+      }
+    }
+    return { removed };
+  }
+
+  // Promote a fully-written tmp file (hash already verified by the
+  // caller) into the content-addressed layout. Dedup: when the target
+  // exists the tmp is discarded — same bytes by construction.
+  async function promoteTmpFile(tmpPath, { contentHash, mime, size }) {
+    const { dir, bin, meta } = _objectKeys(contentHash);
+    if (await _exists(bin)) {
+      await fs.unlink(tmpPath).catch(() => { });
+      return { media_id: contentHash, size };
+    }
+    await fs.mkdir(dir, { recursive: true });
+    const tmpMeta = `${meta}.tmp`;
+    await fs.writeFile(tmpMeta, JSON.stringify({ mime, size, created_at: nowMs() }));
+    await fs.rename(tmpPath, bin);
+    await fs.rename(tmpMeta, meta);
+    return { media_id: contentHash, size };
+  }
+
   function _objectKeys(mediaId) {
     if (typeof mediaId !== "string" || !/^[0-9a-f]{64}$/.test(mediaId)) {
       throw new Error("media-storage(fs): media_id must be 64-char lowercase hex");
@@ -152,7 +194,7 @@ function createLocalFsBackend(config = {}) {
     }
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, list, backend: "fs" };
+  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "fs" };
 }
 
 module.exports = { createLocalFsBackend };

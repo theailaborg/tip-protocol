@@ -22,6 +22,10 @@
 
 "use strict";
 
+const fs = require("fs/promises");
+const fsSync = require("fs");
+const os = require("os");
+const path = require("path");
 const { shake256 } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const {
@@ -196,7 +200,62 @@ function createS3Backend(config = {}) {
     }
   }
 
-  return { put, get, head, presignedGet, delete: deleteMedia, list, backend: "s3" };
+  // Scratch dir for in-flight streamed uploads. Node-local disk — the
+  // bytes only hit S3 once the hash is verified at promote time.
+  async function stagingDir() {
+    const dir = path.join(os.tmpdir(), `tip-media-staging-${bucket}`);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  // Drop abandoned in-flight uploads — staging is node-local disk, so
+  // this is identical to the fs backend's hygiene.
+  async function cleanStaging(maxAgeMs) {
+    const dir = await stagingDir();
+    let removed = 0;
+    for (const f of await fs.readdir(dir).catch(() => [])) {
+      const p = path.join(dir, f);
+      const st = await fs.stat(p).catch(() => null);
+      if (st && nowMs() - st.mtimeMs > maxAgeMs) {
+        await fs.unlink(p).catch(() => { });
+        removed += 1;
+      }
+    }
+    return { removed };
+  }
+
+  // Promote a fully-written tmp file (hash already verified by the
+  // caller) to the bucket under the content-addressed key, then drop the
+  // tmp. Streams from disk — flat memory regardless of file size; a
+  // single PUT covers objects up to S3's 5GB non-multipart ceiling.
+  async function promoteTmpFile(tmpPath, { contentHash, mime, size }) {
+    const key = _objectKey(contentHash);
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      await fs.unlink(tmpPath).catch(() => { });
+      return { media_id: contentHash, size };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") throw err;
+    }
+
+    await client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: fsSync.createReadStream(tmpPath),
+      ContentLength: size,
+      ContentType: mime,
+      Metadata: {
+        mime,
+        "created-at": String(nowMs()),
+        "content-hash": contentHash,
+      },
+      ...(_encryptionArgs()),
+    }));
+    await fs.unlink(tmpPath).catch(() => { });
+    return { media_id: contentHash, size };
+  }
+
+  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "s3" };
 }
 
 module.exports = { createS3Backend };

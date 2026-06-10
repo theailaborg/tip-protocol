@@ -18,7 +18,13 @@
 
 "use strict";
 
-const { shake256, mldsaVerify } = require("../../../shared/crypto");
+const fsSync = require("fs");
+const fs = require("fs/promises");
+const path = require("path");
+const { randomUUID } = require("crypto");
+const { pipeline } = require("stream/promises");
+const { Transform } = require("stream");
+const { shake256, shake256Incremental, mldsaVerify } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
 const { schemaError } = require("../schemas/_common");
 const mediaUploadSchema = require("../schemas/media-upload");
@@ -108,6 +114,70 @@ function createMediaService({ storage, dag, log }) {
     // media_id — REGISTER_CONTENT consumers think in terms of content_hash
     // (CNA-MIX-1 binding), and the duplication makes that contract explicit.
     return { media_id, content_hash: contentHash, mime, size, uploaded_at, signer_tip_id };
+  }
+
+  // Streaming upload — flat memory regardless of file size. The request
+  // body flows: stream → incremental shake256 + byte counter → tmp file
+  // on disk → (hash verified against the signed challenge) → backend
+  // promote (fs rename / single S3 PUT from disk). The per-mime size cap
+  // aborts the stream the moment it's exceeded, so an oversized body
+  // costs at most `limit` bytes of disk and zero RAM growth.
+  //
+  // Trust model is identical to upload(): the client signs
+  // MEDIA_UPLOAD:{content_hash}:{mime}:{ts}:{tip_id} BEFORE sending. The
+  // server recomputes the hash from the bytes it actually received and
+  // verifies the signature against THAT — a client can't claim bytes it
+  // didn't send, and a transport corruption fails closed.
+  async function uploadStream(input) {
+    if (!dag) throw new Error("media-service.uploadStream: dag required");
+    const { stream, mime, signer_tip_id, signature, timestamp } = input;
+    if (!stream || typeof stream.pipe !== "function") {
+      throw new Error("media-service.uploadStream: readable stream required");
+    }
+    // Schema: everything except the bytes (not arrived yet). Returns the
+    // per-mime cap for the in-flight check below.
+    const sizeLimit = mediaUploadSchema.validateStreamRequest(input, { dag });
+    const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
+
+    const dir = await storage.stagingDir();
+    const tmpPath = path.join(dir, `upl-${randomUUID()}.part`);
+
+    const hasher = shake256Incremental(32);
+    let size = 0;
+    const gauge = new Transform({
+      transform(chunk, _enc, cb) {
+        size += chunk.length;
+        if (size > sizeLimit) {
+          cb(schemaError(413, `File too large: exceeded ${sizeLimit} bytes mid-stream`, "file_too_large"));
+          return;
+        }
+        hasher.update(chunk);
+        cb(null, chunk);
+      },
+    });
+
+    try {
+      await pipeline(stream, gauge, fsSync.createWriteStream(tmpPath));
+      if (size === 0) {
+        throw schemaError(400, "bytes is required (non-empty body)", "bytes_required");
+      }
+
+      const contentHash = hasher.digest("hex");
+      const challenge = mediaUploadSchema.buildChallenge({
+        content_hash: contentHash, mime, timestamp, signer_tip_id,
+      });
+      if (!mldsaVerify(challenge, signature, identity.public_key)) {
+        throw schemaError(403, "Upload signature verification failed", "signature_invalid");
+      }
+
+      const { media_id } = await storage.promoteTmpFile(tmpPath, { contentHash, mime, size });
+      const uploaded_at = nowMs();
+      logger.info?.(`media-upload(stream): ${signer_tip_id} → media_id=${media_id} mime=${mime} size=${size}`);
+      return { media_id, content_hash: contentHash, mime, size, uploaded_at, signer_tip_id };
+    } catch (err) {
+      await fs.unlink(tmpPath).catch(() => { });
+      throw err;
+    }
   }
 
   async function fetchBytes(mediaId) {
@@ -229,7 +299,7 @@ function createMediaService({ storage, dag, log }) {
     };
   }
 
-  return { upload, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, fetchForReviewer };
+  return { upload, uploadStream, fetchBytes, presignedGet, head, delete: deleteMedia, resolveRefs, fetchForClassifier, fetchForReviewer };
 }
 
 module.exports = { createMediaService };

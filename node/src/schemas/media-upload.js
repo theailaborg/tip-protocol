@@ -64,24 +64,13 @@ function resolveSigner(tipId, dag) {
 }
 
 /**
- * Validate a media upload request. Throws schemaError on the first problem.
- * Service keeps only the signature verification (needs canonical challenge
- * bytes + the identity's public key).
- *
- * @param {Object} input
- * @param {Buffer} input.bytes
- * @param {string} input.mime
- * @param {string} input.signer_tip_id
- * @param {string} input.signature
- * @param {number} input.timestamp
- * @param {Object} deps          { dag } — identity lookups
+ * Validation shared by the buffered and streaming upload paths — every
+ * check that doesn't need the bytes: mime family + gate, signer format,
+ * signature format, timestamp + replay window, DAG presence.
  */
-function validateRequest(input, deps) {
+function _validateMeta(input, deps) {
   if (!input || typeof input !== "object") {
     throw schemaError(400, "request input is required", "input_invalid");
-  }
-  if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) {
-    throw schemaError(400, "bytes is required (non-empty buffer)", "bytes_required");
   }
   if (typeof input.mime !== "string" || input.mime.length === 0) {
     throw schemaError(400, "mime is required", "mime_required");
@@ -95,9 +84,6 @@ function validateRequest(input, deps) {
     // Mime family hard-gated in genesis (today: video). Disabled at the
     // schema layer so callers see a 415 before any storage cost is paid.
     throw schemaError(415, `Mime family disabled in genesis: ${input.mime}`, "mime_disabled");
-  }
-  if (input.bytes.length > sizeLimit) {
-    throw schemaError(413, `File too large: ${input.bytes.length} > ${sizeLimit}`, "file_too_large");
   }
 
   if (typeof input.signer_tip_id !== "string" || !TIP_ID_RE.test(input.signer_tip_id)) {
@@ -122,9 +108,48 @@ function validateRequest(input, deps) {
   }
 
   if (!deps || !deps.dag) {
-    throw new Error("media-upload.validateRequest: deps.dag required");
+    throw new Error("media-upload validate: deps.dag required");
   }
   resolveSigner(input.signer_tip_id, deps.dag);
+
+  return sizeLimit;
+}
+
+/**
+ * Validate a buffered media upload request. Throws schemaError on the
+ * first problem. Service keeps only the signature verification (needs
+ * canonical challenge bytes + the identity's public key).
+ *
+ * @param {Object} input
+ * @param {Buffer} input.bytes
+ * @param {string} input.mime
+ * @param {string} input.signer_tip_id
+ * @param {string} input.signature
+ * @param {number} input.timestamp
+ * @param {Object} deps          { dag } — identity lookups
+ */
+function validateRequest(input, deps) {
+  if (!input || typeof input !== "object") {
+    throw schemaError(400, "request input is required", "input_invalid");
+  }
+  if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) {
+    throw schemaError(400, "bytes is required (non-empty buffer)", "bytes_required");
+  }
+  const sizeLimit = _validateMeta(input, deps);
+  if (input.bytes.length > sizeLimit) {
+    throw schemaError(413, `File too large: ${input.bytes.length} > ${sizeLimit}`, "file_too_large");
+  }
+}
+
+/**
+ * Validate a STREAMING upload request — everything except the bytes,
+ * which haven't arrived yet. Returns the per-mime size limit so the
+ * service can abort the stream the moment it's exceeded.
+ *
+ * @returns {number} max bytes allowed for this mime family
+ */
+function validateStreamRequest(input, deps) {
+  return _validateMeta(input, deps);
 }
 
 /**
@@ -144,6 +169,7 @@ function buildChallenge({ content_hash, mime, timestamp, signer_tip_id }) {
 
 module.exports = {
   validateRequest,
+  validateStreamRequest,
   resolveSigner,
   buildChallenge,
   TIP_ID_RE,

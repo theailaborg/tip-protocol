@@ -160,6 +160,14 @@ function createMediaRetention({ dag, storage, log }) {
       ? dag.getReferencedMediaIds()
       : new Set();
 
+    // Abandoned in-flight uploads (.part files in staging) age out on the
+    // same window — they were never promoted, so nothing references them.
+    let staging_removed = 0;
+    if (typeof storage.cleanStaging === "function") {
+      try { staging_removed = (await storage.cleanStaging(windowMs)).removed; }
+      catch (err) { logger.warn?.(`media-retention: staging clean failed: ${err?.message || err}`); }
+    }
+
     let scanned = 0, deleted = 0, kept_referenced = 0, kept_recent = 0, missing = 0, kept_no_meta = 0;
     for await (const entry of storage.list()) {
       scanned += 1;
@@ -175,7 +183,7 @@ function createMediaRetention({ dag, storage, log }) {
         logger.warn?.(`media-retention: orphan delete failed for ${entry.media_id}: ${err?.message || err}`);
       }
     }
-    return { scanned, deleted, missing, kept_referenced, kept_recent, kept_no_meta };
+    return { scanned, deleted, missing, kept_referenced, kept_recent, kept_no_meta, staging_removed };
   }
 
   return { sweepExpiredContent, sweepOrphanUploads };
