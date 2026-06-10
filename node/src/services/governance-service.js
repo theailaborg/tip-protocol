@@ -84,7 +84,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
         }
       : body;
     validate(normalisedBody, { public_key: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
-    const { name, public_key, algorithm, council_signature, approving_vp_id } = normalisedBody;
+    const { public_key, algorithm, council_signature, approving_vp_id } = normalisedBody;
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP can approve nodes` };
@@ -93,14 +93,23 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     if (!approvingVp) throw { status: 403, error: `Approving VP not found` };
     if (approvingVp.status !== "active") throw { status: 403, error: `Approving VP is not active` };
 
+    // GH #85: pre-compute nodeId (depends only on public_key, available now)
+    // so the resolved name is part of the canonical bytes the VP signs.
+    // Previously nodeId was computed after verifyBodySignature, so a client
+    // omitting `name` would have the auto-generated name injected into tx.data
+    // after the signature check — consensus replay would then include the name
+    // the VP never signed and the tx would be silently dropped.
+    const nodeId = require("../../../shared/crypto").generateNodeId(public_key);
+    const resolvedName = normalisedBody.name || `node-${nodeId.slice(0, 8)}`;
+    const bodyForVerify = { ...normalisedBody, name: resolvedName };
+
     // GH #60: algorithm is in canonical signed bytes; alphabetical sort
     // keeps signer/verifier byte-aligned.
     const NODE_REGISTER_FIELDS = ["algorithm", "approving_vp_id", "name", "public_key"];
-    if (!verifyBodySignature(normalisedBody, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
+    if (!verifyBodySignature(bodyForVerify, council_signature, approvingVp.public_key, NODE_REGISTER_FIELDS)) {
       throw { status: 403, error: "Council signature verification failed" };
     }
 
-    const nodeId = require("../../../shared/crypto").generateNodeId(public_key);
     const nodeCheck = rules.canRegisterNode(dag, { node_id: nodeId });
     if (!nodeCheck.valid) throw { status: nodeCheck.error.status, error: nodeCheck.error.message };
 
@@ -108,7 +117,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
 
     const nodeTx = withTxId({
       tx_type: TX_TYPES.NODE_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
-      data: { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, public_key, algorithm, approving_vp_id },
+      data: { node_id: nodeId, name: resolvedName, public_key, algorithm, approving_vp_id },
       // GH #51 — approving VP's council signature lives at tx.signature.
       signature: council_signature,
     });
@@ -119,7 +128,7 @@ function createGovernanceService({ dag, scoring, config, submitTx }) {
     submitTx(nodeTx);
 
     log.info(`Node registration proposed: ${nodeId}`);
-    return { node_id: nodeId, name: name || `node-${nodeId.slice(0, 8)}`, registered_at: registeredAt, confirmation: "proposed" };
+    return { node_id: nodeId, name: resolvedName, registered_at: registeredAt, confirmation: "proposed" };
   }
 
   /**
