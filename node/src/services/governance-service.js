@@ -192,10 +192,15 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       } catch (err) {
         throw { status: 400, error: `api_endpoint probe failed — ${normalised}/health unreachable: ${err?.message || err}` };
       }
-      if (probe?.node_id !== nodeId) {
+      // /health responses go through the API envelope wrapper
+      // ({ ok, status, data: { node_id, ... } }), so the node_id lives at
+      // probe.data.node_id. Accept a raw top-level node_id too for
+      // robustness against non-enveloped health endpoints.
+      const probedNodeId = probe?.data?.node_id ?? probe?.node_id;
+      if (probedNodeId !== nodeId) {
         throw {
           status: 400,
-          error: `api_endpoint ownership check failed — ${normalised} answers as "${probe?.node_id}" not "${nodeId}". Refusing to publish a URL that is not this node.`,
+          error: `api_endpoint ownership check failed — ${normalised} answers as "${probedNodeId}" not "${nodeId}". Refusing to publish a URL that is not this node.`,
         };
       }
     }

@@ -82,7 +82,12 @@ function _setup({ fetchImpl, apiEndpoint } = {}) {
   return { dag, service, submitted, kp };
 }
 
+// Real /health goes through the API envelope: { ok, status, data: { node_id } }.
 function _okProbe(nodeId = NODE_ID) {
+  return async () => ({ json: async () => ({ ok: true, status: 200, data: { node_id: nodeId } }) });
+}
+// Some health endpoints might return a raw (non-enveloped) body.
+function _okProbeRaw(nodeId = NODE_ID) {
   return async () => ({ json: async () => ({ status: "ok", node_id: nodeId }) });
 }
 
@@ -95,6 +100,13 @@ describe("governance-service.updateNodeEndpoint", () => {
     expect(tx).toBeDefined();
     expect(tx.data.node_id).toBe(NODE_ID);
     expect(tx.data.api_endpoint).toBe(ENDPOINT);
+  });
+
+  test("probe with raw (non-enveloped) health body also accepted", async () => {
+    const { service, submitted } = _setup({ fetchImpl: _okProbeRaw() });
+    const out = await service.updateNodeEndpoint(ENDPOINT);
+    expect(out.confirmation).toBe("proposed");
+    expect(submitted.find(t => t.tx_type === TX_TYPES.NODE_ENDPOINT_UPDATED)).toBeDefined();
   });
 
   test("trailing slash normalised before probe + tx", async () => {
