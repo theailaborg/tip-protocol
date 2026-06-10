@@ -38,7 +38,7 @@
 "use strict";
 
 const { TX_TYPES, ORIGIN, VERDICT } = require("../../shared/constants");
-const { SCORE_EVENTS, SCORE } = require("../../shared/protocol-constants");
+const { SCORE_EVENTS, SCORE, SOCIAL_LINK } = require("../../shared/protocol-constants");
 
 /**
  * Default state for an unknown tip_id — score starts at genesis's
@@ -47,7 +47,7 @@ const { SCORE_EVENTS, SCORE } = require("../../shared/protocol-constants");
  * after any revocation; positive deltas zero out post-freeze.
  */
 function initialState() {
-  return { score: SCORE.INITIAL_IDENTITY, offense_count: 0, frozen: false };
+  return { score: SCORE.INITIAL_IDENTITY, offense_count: 0, frozen: false, linkedPlatforms: new Set() };
 }
 
 /**
@@ -135,6 +135,10 @@ function applyScoreEffect(tx, current) {
   let nextScore = cur.score;
   let nextOffense = cur.offense_count;
   let nextFrozen = cur.frozen;
+  // Pass linkedPlatforms through every tx type; LINK_PLATFORM adds to it.
+  let nextLinkedPlatforms = cur.linkedPlatforms instanceof Set
+    ? new Set(cur.linkedPlatforms)
+    : new Set();
   let delta = 0;
   let reason = "";
 
@@ -155,11 +159,22 @@ function applyScoreEffect(tx, current) {
     }
 
     case TX_TYPES.LINK_PLATFORM: {
-      // No inline delta — paired SCORE_UPDATE (emitted by identity-service.linkPlatform
-      // in the same mempool batch) owns the +5 delta. This case exists so
-      // scoreTargetTipId routes the tx and applyScoreEffect produces a
-      // deterministic reason string for the activity feed.
-      reason = "Social account linked";
+      // Per-platform uniqueness: cur.linkedPlatforms is populated by
+      // either computeScore's accumulated replay state (all prior
+      // LINK_PLATFORM txs for this tipId processed before this one)
+      // or _applyScoreEffect's DAG-query injection (commit-handler
+      // reads prior committed LINK_PLATFORMs and sets cur.linkedPlatforms
+      // before calling here). Either way, the check is structural on
+      // (tip_id, platform) — immune to reason-string spoofing (#86).
+      if (d.platform) {
+        const isRelink  = nextLinkedPlatforms.has(d.platform);
+        const capReached = nextLinkedPlatforms.size >= SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
+        if (!isRelink && !capReached) {
+          delta = SOCIAL_LINK.SOCIAL_LINK_BONUS;
+        }
+        nextLinkedPlatforms.add(d.platform);
+      }
+      reason = `Social account linked: ${d.platform || ""}`;
       break;
     }
 
@@ -265,6 +280,7 @@ function applyScoreEffect(tx, current) {
     frozen: nextFrozen,
     delta,
     reason,
+    linkedPlatforms: nextLinkedPlatforms,
   };
 }
 
