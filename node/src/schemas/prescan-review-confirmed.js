@@ -109,12 +109,16 @@ function buildSigningPayload(input) {
       "suggested_origin_invalid",
     );
   }
-  return {
-    decision_note: typeof input.decision_note === "string" ? input.decision_note : null,
+  // GH #85 Pattern A: omit decision_note when absent; keep "" as intentional value.
+  const out = {
     review_id: input.review_id,
     reviewer_tip_id: input.reviewer_tip_id,
     suggested_origin: input.suggested_origin,
   };
+  if (input.decision_note !== undefined && input.decision_note !== null) {
+    out.decision_note = input.decision_note;
+  }
+  return out;
 }
 
 function sign(payload, privateKeyHex, opts) {
