@@ -148,16 +148,17 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.JUROR_TIP_ID,
     // confirmed_origin is conditional — only present when the juror's
-    // vote is MISMATCH + the suggested origin (matches the
-    // commit-handler verifier today; both sides drop the field when
-    // truthy=false to keep the canonical bytes aligned).
+    // vote is MISMATCH + the suggested origin.
+    // GH #85 Pattern A: strip undefined+null; keep "", 0, false as intentional values.
     buildSigningPayload: (data) => {
       const out = {
         juror_tip_id: data.juror_tip_id,
         vote: data.vote,
         salt: data.salt,
       };
-      if (data.confirmed_origin) out.confirmed_origin = data.confirmed_origin;
+      if (data.confirmed_origin !== undefined && data.confirmed_origin !== null) {
+        out.confirmed_origin = data.confirmed_origin;
+      }
       return out;
     },
   },
@@ -195,16 +196,18 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
         SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.DISPUTER_TIP_ID,
         buildSigningPayload: (data) => {
-          // claimed_origin + evidence_hash are conditional. Mirror the
-          // dispute-service.fileDispute + UI canonicalisation: only
-          // emit when truthy. Listing them unconditionally would diverge
-          // from the signer's canonical bytes.
+          // claimed_origin + evidence_hash are conditional.
+          // GH #85 Pattern A: strip undefined+null; keep "", 0, false as intentional values.
           const out = {
             disputer_tip_id: data.disputer_tip_id,
             reason: data.reason,
           };
-          if (data.claimed_origin) out.claimed_origin = data.claimed_origin;
-          if (data.evidence_hash) out.evidence_hash = data.evidence_hash;
+          if (data.claimed_origin !== undefined && data.claimed_origin !== null) {
+            out.claimed_origin = data.claimed_origin;
+          }
+          if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
+            out.evidence_hash = data.evidence_hash;
+          }
           return out;
         },
       };
