@@ -163,3 +163,169 @@ describe("GH #87 HIGH — CONTENT_DISPUTED in-batch dedup", () => {
     expect(res.dropped).toBe(0);
   });
 });
+
+// ─── Builders: prescan review family ────────────────────────────────────────
+// TRIGGERED is node-signed (envelope); DISMISSED / CONFIRMED are
+// reviewer-signed (BODY); auto-RECUSED is node-signed with auto:true —
+// mirrors prescan-review-trigger._buildAutoRecuseTx.
+
+function _makeTriggeredTx(fx, { reviewId, ctid, timestamp }) {
+  const txBody = {
+    tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: {
+      review_id: reviewId,
+      ctid,
+      creator_tip_id: AUTHOR_TIP,
+      assigned_reviewer_tip_id: REVIEWER_TIP,
+      node_id: NODE_ID,
+      triggered_at_round: 1,
+    },
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return signTransaction(txBody, fx.nodeKp.privateKey);
+}
+
+function _makeDismissedTx(fx, { reviewId, timestamp }) {
+  const fields = { review_id: reviewId, reviewer_tip_id: REVIEWER_TIP, decision_note: null };
+  const payload = dismissedSchema.buildSigningPayload(fields);
+  const signature = dismissedSchema.sign(payload, fx.reviewerKp.privateKey);
+  const txBody = {
+    tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
+    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeConfirmedTx(fx, { reviewId, timestamp }) {
+  const fields = {
+    review_id: reviewId, reviewer_tip_id: REVIEWER_TIP,
+    suggested_origin: "AG", decision_note: null,
+  };
+  const payload = confirmedSchema.buildSigningPayload(fields);
+  const signature = confirmedSchema.sign(payload, fx.reviewerKp.privateKey);
+  const txBody = {
+    tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
+    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeAutoRecusedTx(fx, { reviewId, timestamp }) {
+  const txBody = {
+    tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: {
+      review_id: reviewId,
+      auto: true,
+      node_id: NODE_ID,
+      recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
+    },
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return signTransaction(txBody, fx.nodeKp.privateKey);
+}
+
+// Commit a TRIGGERED review in its own earlier round so terminal-decision
+// txs have an open review row to act on.
+function _openReview(fx, reviewId, ctid, round) {
+  const res = fx.handler.commitOrderedTxs([_makeTriggeredTx(fx, { reviewId, ctid, timestamp: T1 })], round);
+  expect(res.committed).toBe(1);
+}
+
+describe("GH #87 HIGH — PRESCAN_REVIEW_TRIGGERED in-batch dedup", () => {
+
+  test("two triggers for the same ctid in one batch: second dropped", () => {
+    const fx = _setup();
+    // Same review_id is the realistic race (deterministic id from ctid+round
+    // on every node) — but tx_ids differ because node_id/timestamps differ.
+    const tx1 = _makeTriggeredTx(fx, { reviewId: "rv_same", ctid: CTID_A, timestamp: T1 });
+    const tx2 = _makeTriggeredTx(fx, { reviewId: "rv_same", ctid: CTID_A, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("byzantine: two triggers for same ctid with DIFFERENT review_ids: second dropped", () => {
+    // The committed-history guard in _statefulCheck (getOpenPrescanReviewByCtid)
+    // can't see in-batch siblings — two forged different review_ids for one
+    // ctid would otherwise create two parallel open reviews. The ctid dedup
+    // key closes exactly this hole.
+    const fx = _setup();
+    const tx1 = _makeTriggeredTx(fx, { reviewId: "rv_honest", ctid: CTID_A, timestamp: T1 });
+    const tx2 = _makeTriggeredTx(fx, { reviewId: "rv_forged", ctid: CTID_A, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    expect(fx.dag.getPrescanReview("rv_honest")).not.toBeNull();
+    expect(fx.dag.getPrescanReview("rv_forged")).toBeNull();
+  });
+
+  test("triggers for different ctids in one batch: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeTriggeredTx(fx, { reviewId: "rv_a", ctid: CTID_A, timestamp: T1 });
+    const tx2 = _makeTriggeredTx(fx, { reviewId: "rv_b", ctid: CTID_B, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+describe("GH #87 HIGH — prescan terminal decisions: one per review_id per batch (cross-type)", () => {
+
+  test("DISMISSED + DISMISSED for same review_id: second dropped", () => {
+    const fx = _setup();
+    _openReview(fx, "rv_1", CTID_A, 1);
+    const tx1 = _makeDismissedTx(fx, { reviewId: "rv_1", timestamp: T1 + 2000 });
+    const tx2 = _makeDismissedTx(fx, { reviewId: "rv_1", timestamp: T1 + 3000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("DISMISSED + auto-RECUSED for same review_id (SLA-boundary race): second dropped", () => {
+    const fx = _setup();
+    _openReview(fx, "rv_1", CTID_A, 1);
+    const tx1 = _makeDismissedTx(fx, { reviewId: "rv_1", timestamp: T1 + 2000 });
+    const tx2 = _makeAutoRecusedTx(fx, { reviewId: "rv_1", timestamp: T1 + 3000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
+
+    _expectSecondDropped(fx, res, tx2);
+    // Review state reflects the FIRST decision only.
+    expect(fx.dag.getPrescanReview("rv_1").state).toBe(PRESCAN_REVIEW_STATES.CLOSED_DISMISSED);
+  });
+
+  test("CONFIRMED + DISMISSED for same review_id: second dropped", () => {
+    const fx = _setup();
+    _openReview(fx, "rv_1", CTID_A, 1);
+    const tx1 = _makeConfirmedTx(fx, { reviewId: "rv_1", timestamp: T1 + 2000 });
+    const tx2 = _makeDismissedTx(fx, { reviewId: "rv_1", timestamp: T1 + 3000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("decisions for different review_ids in one batch: both commit", () => {
+    const fx = _setup();
+    _openReview(fx, "rv_a", CTID_A, 1);
+    _openReview(fx, "rv_b", CTID_B, 2);
+    const tx1 = _makeDismissedTx(fx, { reviewId: "rv_a", timestamp: T1 + 2000 });
+    const tx2 = _makeDismissedTx(fx, { reviewId: "rv_b", timestamp: T1 + 3000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 3);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});

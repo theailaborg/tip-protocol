@@ -567,6 +567,37 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
+        // One open-review trigger per ctid per batch. The trigger's
+        // leader gate can be bypassed (multi-node race / byzantine peer);
+        // the trigger module itself documents that the commit-handler
+        // dedupes racing triggers — this is the in-batch half (the
+        // committed-history half is getOpenPrescanReviewByCtid in _statefulCheck).
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate PRESCAN_REVIEW_TRIGGERED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+      case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+        // Cross-type: each review_id gets exactly ONE terminal decision
+        // per batch. Real collision: reviewer decision racing the
+        // scheduler's SLA auto-recuse at the 48h boundary.
+        if (!d.review_id) return { valid: true };
+        const TERMINAL_TYPES = [
+          TX_TYPES.PRESCAN_REVIEW_DISMISSED,
+          TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
+          TX_TYPES.PRESCAN_REVIEW_RECUSED,
+        ];
+        const inBatch = validated.find(t =>
+          TERMINAL_TYPES.includes(t.tx_type) && t.data?.review_id === d.review_id);
+        if (inBatch) return { valid: false, error: `duplicate prescan-review terminal decision in batch for ${d.review_id}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
