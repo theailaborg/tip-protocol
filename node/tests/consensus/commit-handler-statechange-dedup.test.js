@@ -45,6 +45,7 @@ const AUTHOR_TIP   = "tip://id/US-aabbccddeeff0011";
 const VERIFIER_TIP = "tip://id/US-1111aaaa1111aaaa";
 const REVIEWER_TIP = "tip://id/US-2222bbbb2222bbbb";
 const ORG_TIP      = "tip://id/US-9999eeee9999eeee";
+const ORG_2_TIP    = "tip://id/US-8888ffff8888ffff";
 const TARGET_2_TIP = "tip://id/US-3333cccc3333cccc";
 const CTID_A = "tip://c/OH-aaaaaaaaaaaaaa-0001";
 const CTID_B = "tip://c/OH-bbbbbbbbbbbbbb-0001";
@@ -60,6 +61,7 @@ function _setup() {
   const verifierKp = generateMLDSAKeypair();
   const reviewerKp = generateMLDSAKeypair();
   const orgKp      = generateMLDSAKeypair();
+  const org2Kp     = generateMLDSAKeypair();
   const target2Kp  = generateMLDSAKeypair();
 
   dag.saveNode({
@@ -80,7 +82,8 @@ function _setup() {
   mkIdentity(AUTHOR_TIP, authorKp);
   mkIdentity(VERIFIER_TIP, verifierKp);
   mkIdentity(REVIEWER_TIP, reviewerKp, { reviewer_consent: true });
-  mkIdentity(ORG_TIP, orgKp, { tip_id_type: TIP_ID_TYPES.ORGANIZATION });
+  mkIdentity(ORG_TIP,    orgKp,  { tip_id_type: TIP_ID_TYPES.ORGANIZATION });
+  mkIdentity(ORG_2_TIP,  org2Kp, { tip_id_type: TIP_ID_TYPES.ORGANIZATION });
   mkIdentity(TARGET_2_TIP, target2Kp);
   dag.setScore(AUTHOR_TIP, 750, 0, T0);
   dag.setScore(VERIFIER_TIP, 820, 0, T0);
@@ -103,7 +106,7 @@ function _setup() {
   const scoring = initScoring(dag, config);
   const handler = createCommitHandler({ dag, scoring, config });
 
-  return { dag, nodeKp, vpKp, authorKp, verifierKp, reviewerKp, orgKp, target2Kp, handler };
+  return { dag, nodeKp, vpKp, authorKp, verifierKp, reviewerKp, orgKp, org2Kp, target2Kp, handler };
 }
 
 // Assert helper: tx2 dropped with an in-batch dedup detail, tx1 committed.
@@ -634,6 +637,149 @@ describe("GH #87 LOW — CONTENT_VERIFIED in-batch dedup", () => {
     // REVIEWER_TIP doubles as a second verifier (any active non-author works).
     const tx1 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 });
     const tx2 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: REVIEWER_TIP, verifierKp: fx.reviewerKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+// ─── Builders: domain binding (node-signed binding + claimant cosignature) ──
+// Mirrors domain-service's BIND_DOMAIN tx shape exactly: tx.signature is the
+// node's attestation over the 7-field canonical binding; the claimant's
+// REGISTER_DOMAIN claim sig rides as a subject cosignature.
+
+function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
+  const claimedAt = timestamp - 60_000;
+  const claim = registerDomainSchema.buildSigningPayload({
+    claimed_at: claimedAt, domain, method: "auto", tip_id: tipId,
+  });
+  const claimSig = registerDomainSchema.sign(claim, claimantKp.privateKey);
+
+  const binding = bindDomainSchema.buildSigningPayload({
+    binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
+    claimed_at: claimedAt,
+    domain,
+    method: "auto",
+    node_id: NODE_ID,
+    tip_id: tipId,
+    verified_at: timestamp,
+  });
+  const bindingSig = bindDomainSchema.sign(binding, fx.nodeKp.privateKey);
+
+  const txBody = {
+    tx_type: TX_TYPES.BIND_DOMAIN,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: {
+      binding_state: binding.binding_state,
+      claimed_at: binding.claimed_at,
+      domain: binding.domain,
+      method: binding.method,
+      node_id: binding.node_id,
+      tip_id: binding.tip_id,
+      verified_at: binding.verified_at,
+      cosignatures: [{
+        signer_kind: "subject",
+        signer_ref: tipId,
+        signature: claimSig,
+      }],
+      evidence: {},
+    },
+    signature: bindingSig,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeUnbindDomainTx(fx, { domain, timestamp }) {
+  const fields = {
+    domain,
+    node_id: NODE_ID,
+    reason: DOMAIN_UNBIND_REASONS.ADMIN_ACTION,
+    revoked_at: timestamp,
+  };
+  const payload = bindDomainSchema.buildUnbindSigningPayload(fields);
+  const signature = bindDomainSchema.signUnbind(payload, fx.nodeKp.privateKey);
+  const txBody = {
+    tx_type: TX_TYPES.UNBIND_DOMAIN,
+    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+// Seed an existing binding so UNBIND's verifyUnbindTx "binding exists" check passes.
+function _seedBinding(fx, domain, tipId) {
+  fx.dag.saveDomainBinding({
+    domain, tip_id: tipId,
+    binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
+    method: "auto", claimed_at: T0, verified_at: T0,
+    expires_at: null, consecutive_failures: 0,
+    node_id: NODE_ID, claim_signature: "00", binding_signature: "00",
+    tx_id: shake256(`bind:${domain}`),
+  });
+}
+
+describe("GH #87 LOW — BIND_DOMAIN in-batch dedup", () => {
+
+  test("two binds of the same (tip_id, domain) in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeBindDomainTx(fx, { domain: "example.com", tipId: ORG_TIP, claimantKp: fx.orgKp, timestamp: T1 });
+    const tx2 = _makeBindDomainTx(fx, { domain: "example.com", tipId: ORG_TIP, claimantKp: fx.orgKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("cross-claimant: two different tip_ids bind the same domain in one batch: second dropped", () => {
+    // canBindDomain only sees committed state — without domain-only
+    // keying both claimants pass Phase 1 and the upsert makes the
+    // SECOND win, inverting first-wins. Confirmed empirically in review.
+    const fx = _setup();
+    const tx1 = _makeBindDomainTx(fx, { domain: "example.com", tipId: ORG_TIP,   claimantKp: fx.orgKp,  timestamp: T1 });
+    const tx2 = _makeBindDomainTx(fx, { domain: "example.com", tipId: ORG_2_TIP, claimantKp: fx.org2Kp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    // First claimant's binding holds.
+    expect(fx.dag.getDomainBinding("example.com").tip_id).toBe(ORG_TIP);
+  });
+
+  test("binds of different domains by the same tip_id in one batch: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeBindDomainTx(fx, { domain: "example.com", tipId: ORG_TIP, claimantKp: fx.orgKp, timestamp: T1 });
+    const tx2 = _makeBindDomainTx(fx, { domain: "other.com",   tipId: ORG_TIP, claimantKp: fx.orgKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+describe("GH #87 LOW — UNBIND_DOMAIN in-batch dedup", () => {
+
+  test("two unbinds of the same domain in one batch: second dropped", () => {
+    const fx = _setup();
+    _seedBinding(fx, "example.com", ORG_TIP);
+    const tx1 = _makeUnbindDomainTx(fx, { domain: "example.com", timestamp: T1 });
+    const tx2 = _makeUnbindDomainTx(fx, { domain: "example.com", timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("unbinds of different domains in one batch: both commit", () => {
+    const fx = _setup();
+    _seedBinding(fx, "example.com", ORG_TIP);
+    _seedBinding(fx, "other.com", ORG_TIP);
+    const tx1 = _makeUnbindDomainTx(fx, { domain: "example.com", timestamp: T1 });
+    const tx2 = _makeUnbindDomainTx(fx, { domain: "other.com",   timestamp: T1 + 1000 });
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 

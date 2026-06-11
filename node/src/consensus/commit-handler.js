@@ -663,6 +663,33 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.BIND_DOMAIN: {
+        // One bind per domain per batch — keyed on domain alone, NOT
+        // (tip_id, domain): rules.canBindDomain enforces first-wins for
+        // committed history only, so two different claimants in one
+        // batch would both pass Phase 1 and the second would win via
+        // saveDomainBinding's upsert, inverting first-wins. Domain-only
+        // keying closes both the same-claimant and cross-claimant
+        // same-batch races. (Deviation from #87's proposed snippet,
+        // which keyed on (tip_id, domain) — see PR discussion.)
+        if (!d.domain) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.BIND_DOMAIN && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `duplicate BIND_DOMAIN in batch for domain ${d.domain}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.UNBIND_DOMAIN: {
+        // A domain has exactly one binding — one unbind per domain per
+        // batch. No emitter exists yet (reserved for revocation cascade);
+        // the guard future-proofs the seam before the path is wired.
+        if (!d.domain) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UNBIND_DOMAIN && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `duplicate UNBIND_DOMAIN in batch for ${d.domain}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
