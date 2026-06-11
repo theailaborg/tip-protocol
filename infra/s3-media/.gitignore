@@ -13,4 +13,7 @@ plan.bin
 # Variable files with secrets
 *.tfvars
 *.tfvars.json
-!example.tfvars
+!terraform.tfvars.example
+
+# Roles Anywhere CA + node cert (private keys, operator-local only)
+external-credentials/

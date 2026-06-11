@@ -1,4 +1,4 @@
-# infra/s3-media — Terraform module for the TIP media S3 backend
+# infra/s3-media: Terraform module for the TIP media S3 backend
 
 Storage is **per-node**: each operator provisions, pays for, and serves
 their own bucket. Bytes live only on the node that received the upload;
@@ -13,16 +13,149 @@ Provisions the AWS infrastructure required by `media-storage-s3.js`:
 - **Customer-managed KMS key** with rotation enabled and key policy
   scoped to the node role only.
 - **IAM role** for the TIP node with minimal grants (`s3:GetObject`,
-  `s3:PutObject`, `s3:HeadObject`, `s3:DeleteObject`, `s3:ListBucket`,
+  `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`,
   `kms:Encrypt/Decrypt/GenerateDataKey/DescribeKey`).
-- **Trust policy** toggled between IRSA (EKS) and EC2 instance profile.
+- **Trust policy** toggled between IRSA (EKS), EC2 instance profile,
+  IAM Roles Anywhere (non-AWS hosts), and a bucket-scoped IAM user key.
 - **Optional** S3 gateway VPC endpoint and bucket access logs.
 
-The module's outputs include `tip_node_env_vars` — the four env vars
+The module's outputs include `tip_node_env_vars`, the four env vars
 the TIP node consumes (`TIP_MEDIA_BACKEND`, `TIP_MEDIA_S3_BUCKET`,
 `TIP_MEDIA_S3_REGION`, `TIP_MEDIA_S3_KMS_KEY_ID`).
 
-## Usage
+## Setup guide: start to end
+
+Same process for every host (EC2, EKS, Hetzner/DO/bare metal, dev
+laptop). Total time: ~15 minutes, once per node.
+
+### Step 0: who runs this, and where
+
+Whoever has (or is given) access to the AWS account that will own and
+pay for this node's bucket. Run it on the machine the node will live on
+when you can (then `external` mode wires everything automatically); any
+machine works otherwise.
+
+### Step 1: install the two tools (once per machine)
+
+```bash
+# macOS                          # Linux
+brew install awscli terraform    # see aws.amazon.com/cli + developer.hashicorp.com/terraform/install
+```
+
+(The aws CLI is optional if you already have access keys in env; see 2c.)
+
+### Step 2: get AWS credentials (pick the one that matches you)
+
+**2a. Your own account, SSO / Identity Center** (you log into AWS via a
+start-URL portal):
+
+```bash
+aws configure sso     # answer the prompts; browser opens to approve
+# later logins are just: aws sso login --profile <name>
+```
+
+**2b. Your own account, plain IAM user:**
+
+Console -> IAM -> your user -> Security credentials -> Create access key,
+then:
+
+```bash
+aws configure         # paste the two values, set your region
+```
+
+**2c. Someone ELSE owns the AWS account** (you are deploying their node):
+
+Ask the owner for a temporary key. Their part is browser-only:
+
+> Log into the AWS console -> IAM -> Users -> your user ->
+> Security credentials -> "Create access key" -> send me both values.
+> I will tell you when to deactivate it (~15 minutes).
+
+Then on your machine (no aws CLI needed for this path):
+
+```bash
+export AWS_ACCESS_KEY_ID=...       # what the owner sent
+export AWS_SECRET_ACCESS_KEY=...
+```
+
+The owner deactivates that key right after step 4 (one click). The node
+is left holding only its own bucket-scoped credential, never the
+owner's.
+
+### Step 3: choose your mode + fill 3 values
+
+```bash
+cd infra/s3-media
+cp terraform.tfvars.example terraform.tfvars
+# edit: bucket_name (globally unique), region, trust_mode
+```
+
+| Node host | trust_mode | node credential afterwards |
+|---|---|---|
+| AWS EC2 instance | `ec2` | ambient instance profile (zero secrets) |
+| AWS EKS pod | `irsa` | ambient pod role (zero secrets) |
+| Anything else, easy | `keys` | bucket-scoped access key in `.env` (rotate 90d) |
+| Anything else, hardened | `external` | X.509 cert -> auto-refreshing 1h credentials |
+
+### Step 4: run it
+
+```bash
+./setup.sh
+```
+
+Creates the bucket, KMS encryption key, and node credentials, then
+prints two things:
+
+1. **The env block** -- paste into the node's `.env`:
+
+```bash
+TIP_MEDIA_BACKEND=s3
+TIP_MEDIA_S3_BUCKET=...
+TIP_MEDIA_S3_REGION=...
+TIP_MEDIA_S3_KMS_KEY_ID=...
+# keys mode adds:        AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# external mode adds:    AWS_PROFILE=tip-media-node
+```
+
+2. **One mode-specific step** (already done for you when possible):
+   - `ec2`: attach the printed instance profile to the EC2 instance
+   - `irsa`: run the printed `kubectl annotate` command
+   - `keys`: nothing, the env block is everything
+   - `external`: nothing if you ran setup.sh on the node machine (it
+     installs the signing helper, writes the SDK profile, and verifies
+     the certificate against AWS); manual copy instructions print if you
+     ran it elsewhere
+
+### Step 5: start the node and verify
+
+```bash
+docker compose up -d tip-node
+docker logs tip-node | grep "Media retention started"
+# -> Media retention started: interval=21600000ms backend=s3
+```
+
+If you used 2c: tell the owner to deactivate the temporary key now.
+
+### Later: rotation and teardown
+
+Keep this folder (it holds `terraform.tfstate`, the record of what was
+created). From it:
+
+```bash
+# keys mode, every 90 days:
+terraform apply -replace='aws_iam_access_key.media_node[0]'   # prints new key
+
+# external mode, yearly:
+rm external-credentials/node.pem && ./setup.sh                # re-issues the cert
+
+# external mode, EMERGENCY (server compromised):
+aws rolesanywhere disable-trust-anchor --trust-anchor-id <id>  # kills all access in <1h
+
+# decommission everything:
+terraform destroy
+```
+
+## Usage (as a terraform module)
 
 ```hcl
 module "tip_media" {
@@ -31,7 +164,7 @@ module "tip_media" {
   bucket_name = "tip-media-prod-uswest2"
   region      = "us-west-2"
 
-  trust_mode = "ec2"        # or "irsa" for EKS pods
+  trust_mode = "ec2"        # or "irsa" (EKS) / "external" (non-AWS host) / "keys" (any host)
 
   tags = {
     Environment = "prod"
@@ -50,7 +183,7 @@ See `examples/` for complete IRSA and EC2 wirings.
 
 | Name | Type | Default | Purpose |
 |---|---|---|---|
-| `bucket_name` | string | — | Globally-unique S3 bucket name. **Required.** |
+| `bucket_name` | string | (none) | Globally-unique S3 bucket name. **Required.** |
 | `region` | string | `us-west-2` | Region (echoed into outputs). |
 | `tags` | map(string) | `{}` | Tags on every resource. |
 | `trust_mode` | string | `ec2` | `ec2` or `irsa`. |
@@ -65,7 +198,7 @@ See `examples/` for complete IRSA and EC2 wirings.
 | `enable_access_logs` | bool | `false` | Turn on S3 server access logs. |
 | `access_logs_bucket` | string | `null` | Pre-existing bucket for access logs. |
 | `access_logs_prefix` | string | `tip-media/` | Prefix inside that bucket. |
-| `kms_deletion_window_days` | number | `30` | KMS key deletion window (7–30). |
+| `kms_deletion_window_days` | number | `30` | KMS key deletion window (7-30). |
 
 ## Outputs
 
@@ -115,7 +248,7 @@ See `examples/` for complete IRSA and EC2 wirings.
    systemd unit / docker-compose env).
 6. For EKS only: annotate the pod's service account with the
    `eks.amazonaws.com/role-arn` output.
-7. Verify end-to-end — see `docs/PROD_S3_SETUP.md` for the smoke test.
+7. Verify end-to-end: see `docs/PROD_S3_SETUP.md` for the smoke test.
 
 ## Relationship to the app
 

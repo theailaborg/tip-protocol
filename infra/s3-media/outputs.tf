@@ -61,3 +61,24 @@ output "tip_node_env_vars" {
     TIP_MEDIA_S3_KMS_KEY_ID = aws_kms_key.media.arn
   }
 }
+
+output "external_trust_anchor_arn" {
+  description = "Roles Anywhere trust anchor ARN (only set when trust_mode=external)."
+  value       = try(aws_rolesanywhere_trust_anchor.media_node[0].arn, null)
+}
+
+output "external_profile_arn" {
+  description = "Roles Anywhere profile ARN (only set when trust_mode=external)."
+  value       = try(aws_rolesanywhere_profile.media_node[0].arn, null)
+}
+
+output "node_access_key_id" {
+  description = "Access key id for the bucket-scoped IAM user (only set when trust_mode=keys)."
+  value       = try(aws_iam_access_key.media_node[0].id, null)
+}
+
+output "node_secret_access_key" {
+  description = "Secret access key for the bucket-scoped IAM user (only set when trust_mode=keys). Sensitive."
+  value       = try(aws_iam_access_key.media_node[0].secret, null)
+  sensitive   = true
+}

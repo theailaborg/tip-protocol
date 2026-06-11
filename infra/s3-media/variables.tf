@@ -25,17 +25,45 @@ variable "tags" {
 variable "trust_mode" {
   description = <<-EOT
     How the node's IAM role is assumed:
-      - "irsa" — pod-level role via the EKS OIDC provider (preferred for EKS).
-      - "ec2"  — instance profile (for EC2-hosted nodes / docker-compose).
-    Both produce a role with the same S3+KMS permissions; only the trust
-    policy differs.
+      - "irsa": pod-level role via the EKS OIDC provider (preferred for EKS).
+      - "ec2": instance profile (for EC2-hosted nodes / docker-compose).
+      - "external": node on a non-AWS host (Hetzner, DO, GCP, bare
+                 metal) via IAM Roles Anywhere: the node authenticates
+                 with an X.509 certificate and receives temporary role
+                 credentials from the aws_signing_helper. Requires
+                 external_ca_cert_pem (setup.sh generates the CA + node
+                 cert with openssl; private keys never enter tfstate).
+      - "keys": easiest handover for any host. Creates a dedicated IAM
+                 user scoped to exactly this bucket's media/ prefix and
+                 outputs a long-lived access key (sensitive). Paste the
+                 env block anywhere; rotate every 90 days with
+                 terraform apply -replace=aws_iam_access_key.media_node[0].
+    All modes produce a role with the same S3+KMS permissions; only the
+    trust policy differs.
   EOT
   type        = string
   default     = "ec2"
 
   validation {
-    condition     = contains(["irsa", "ec2"], var.trust_mode)
-    error_message = "trust_mode must be \"irsa\" or \"ec2\"."
+    condition     = contains(["irsa", "ec2", "external", "keys"], var.trust_mode)
+    error_message = "trust_mode must be \"irsa\", \"ec2\", \"external\" or \"keys\"."
+  }
+}
+
+variable "external_ca_cert_pem" {
+  description = <<-EOT
+    PEM of the CA certificate that signs the node's client certificate.
+    Required when trust_mode=external; becomes the Roles Anywhere trust
+    anchor. PUBLIC material only; the CA private key stays on the
+    operator's machine (setup.sh keeps it under external-credentials/,
+    which is gitignored).
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.trust_mode != "external" || length(var.external_ca_cert_pem) > 0
+    error_message = "trust_mode=external requires external_ca_cert_pem (run setup.sh; it generates the CA for you)."
   }
 }
 

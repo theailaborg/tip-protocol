@@ -160,13 +160,16 @@ data "aws_iam_policy_document" "bucket" {
   }
 
   # Defense in depth: deny everyone except the node role from touching the
-  # DATA — object reads/writes and the media listing. Scoped to data
-  # actions ONLY (not s3:*), so bucket administration (policy / lifecycle /
-  # encryption / tagging) stays available to whoever holds IAM admin in the
-  # account. A blanket s3:* deny here would lock the operator (and even
-  # Terraform) out of managing the bucket it just created — the node role
-  # is not an admin principal. Account root is exempt as the break-glass
-  # path, but AWS best practice is to never use root day-to-day.
+  # DATA (object reads/writes). Scoped to object actions ONLY, not s3:*
+  # and not s3:ListBucket:
+  #   - s3:* here would lock the operator (and even Terraform) out of
+  #     managing the bucket it just created.
+  #   - s3:ListBucket also authorizes HeadBucket, which Terraform calls on
+  #     every refresh; denying it makes the provider treat the bucket as
+  #     gone, drop it from state, and try to recreate it. Key names are
+  #     content hashes (no sensitive data), so admin listing is acceptable.
+  # Account root is exempt as the break-glass path, but AWS best practice
+  # is to never use root day-to-day.
   statement {
     sid    = "DenyDataAccessExceptNodeRole"
     effect = "Deny"
@@ -174,7 +177,6 @@ data "aws_iam_policy_document" "bucket" {
       "s3:GetObject",
       "s3:PutObject",
       "s3:DeleteObject",
-      "s3:ListBucket",
     ]
 
     principals {
@@ -190,10 +192,10 @@ data "aws_iam_policy_document" "bucket" {
     condition {
       test     = "StringNotEqualsIfExists"
       variable = "aws:PrincipalArn"
-      values = [
-        aws_iam_role.media_node.arn,
-        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
-      ]
+      values = concat(
+        local.node_data_principals,
+        ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"],
+      )
     }
   }
 
@@ -203,14 +205,14 @@ data "aws_iam_policy_document" "bucket" {
     sid    = "AllowNodeRole"
     effect = "Allow"
     actions = [
-      "s3:GetObject",   # also authorizes HeadObject — HEAD has no separate IAM action
+      "s3:GetObject", # also authorizes HeadObject (HEAD has no separate IAM action)
       "s3:PutObject",
       "s3:DeleteObject",
     ]
 
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.media_node.arn]
+      identifiers = local.node_data_principals
     }
 
     resources = ["${aws_s3_bucket.media.arn}/media/*"]
@@ -226,7 +228,7 @@ data "aws_iam_policy_document" "bucket" {
 
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.media_node.arn]
+      identifiers = local.node_data_principals
     }
 
     resources = [aws_s3_bucket.media.arn]
@@ -285,7 +287,7 @@ data "aws_iam_policy_document" "kms" {
 
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.media_node.arn]
+      identifiers = local.node_data_principals
     }
 
     resources = ["*"]
@@ -307,13 +309,13 @@ resource "aws_iam_role" "media_node" {
   assume_role_policy = data.aws_iam_policy_document.trust.json
   tags               = var.tags
 
-  # Fail loudly at plan-time when IRSA fields are missing — otherwise
+  # Fail loudly at plan-time when IRSA fields are missing; otherwise
   # the trust policy would silently render to an empty Statement block
   # and the role would be unassumable.
   lifecycle {
     precondition {
       condition = (
-        var.trust_mode == "ec2"
+        var.trust_mode != "irsa"
         || (
           var.oidc_provider_arn != null
           && var.oidc_issuer_host != null
@@ -355,8 +357,12 @@ data "aws_iam_policy_document" "trust" {
     }
   }
 
+  # keys mode also lands here: the role itself is unused (the node holds
+  # the dedicated IAM user's key instead), but AWS requires a non-empty
+  # trust policy, and the EC2 service principal is inert when no instance
+  # profile is ever attached.
   dynamic "statement" {
-    for_each = var.trust_mode == "ec2" ? [1] : []
+    for_each = contains(["ec2", "keys"], var.trust_mode) ? [1] : []
 
     content {
       effect  = "Allow"
@@ -368,6 +374,67 @@ data "aws_iam_policy_document" "trust" {
       }
     }
   }
+
+  # external: IAM Roles Anywhere. Nodes on non-AWS hosts present an
+  # X.509 certificate chained to our trust anchor and receive temporary
+  # role credentials. SourceArn pins the trust to THIS anchor so a
+  # certificate from any other Roles Anywhere anchor in the account
+  # cannot assume the media role.
+  dynamic "statement" {
+    for_each = var.trust_mode == "external" ? [1] : []
+
+    content {
+      effect = "Allow"
+      actions = [
+        "sts:AssumeRole",
+        "sts:TagSession",
+        "sts:SetSourceIdentity",
+      ]
+
+      principals {
+        type        = "Service"
+        identifiers = ["rolesanywhere.amazonaws.com"]
+      }
+
+      condition {
+        test     = "ArnEquals"
+        variable = "aws:SourceArn"
+        values   = [aws_rolesanywhere_trust_anchor.media_node[0].arn]
+      }
+    }
+  }
+}
+
+# ── IAM Roles Anywhere (trust_mode=external) ───────────────────────────────
+# Certificate-based temporary credentials for nodes outside AWS. The
+# trust anchor is the operator-generated CA; the profile binds it to the
+# node role. The node runs `aws_signing_helper credential-process` with
+# its client cert: same rotating-credentials posture as EC2/EKS, no
+# long-lived keys on any host.
+
+resource "aws_rolesanywhere_trust_anchor" "media_node" {
+  count   = var.trust_mode == "external" ? 1 : 0
+  name    = "${var.bucket_name}-trust-anchor"
+  enabled = true
+
+  source {
+    source_type = "CERTIFICATE_BUNDLE"
+
+    source_data {
+      x509_certificate_data = var.external_ca_cert_pem
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_rolesanywhere_profile" "media_node" {
+  count     = var.trust_mode == "external" ? 1 : 0
+  name      = "${var.bucket_name}-profile"
+  enabled   = true
+  role_arns = [aws_iam_role.media_node.arn]
+
+  tags = var.tags
 }
 
 resource "aws_iam_role_policy" "media_node" {
@@ -376,12 +443,47 @@ resource "aws_iam_role_policy" "media_node" {
   policy = data.aws_iam_policy_document.node_policy.json
 }
 
+# ── IAM user + access key (trust_mode=keys) ─────────────────────────────────
+# The copy-paste handover path: the account owner runs setup.sh, sends the
+# printed env block (including this user's access key) to whoever operates
+# the node machine, on any cloud. The key is a LONG-LIVED secret scoped to
+# exactly this bucket's media/ prefix and nothing else in the account;
+# rotate it every 90 days (terraform apply -replace=aws_iam_access_key.media_node).
+# Prefer ec2 / irsa / external when the host supports them.
+
+resource "aws_iam_user" "media_node" {
+  count = var.trust_mode == "keys" ? 1 : 0
+  name  = "${var.bucket_name}-node-user"
+  tags  = var.tags
+}
+
+resource "aws_iam_user_policy" "media_node" {
+  count  = var.trust_mode == "keys" ? 1 : 0
+  name   = "${var.bucket_name}-node-policy"
+  user   = aws_iam_user.media_node[0].name
+  policy = data.aws_iam_policy_document.node_policy.json
+}
+
+resource "aws_iam_access_key" "media_node" {
+  count = var.trust_mode == "keys" ? 1 : 0
+  user  = aws_iam_user.media_node[0].name
+}
+
+locals {
+  # Every principal allowed to touch media data. The role always exists;
+  # keys mode adds the dedicated bucket-scoped IAM user alongside it.
+  node_data_principals = concat(
+    [aws_iam_role.media_node.arn],
+    var.trust_mode == "keys" ? [aws_iam_user.media_node[0].arn] : [],
+  )
+}
+
 data "aws_iam_policy_document" "node_policy" {
   statement {
     sid    = "MediaObjectsRW"
     effect = "Allow"
     actions = [
-      "s3:GetObject",   # also authorizes HeadObject — HEAD has no separate IAM action
+      "s3:GetObject", # also authorizes HeadObject (HEAD has no separate IAM action)
       "s3:PutObject",
       "s3:DeleteObject",
     ]

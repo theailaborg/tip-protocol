@@ -24,6 +24,19 @@ long-lived `AWS_ACCESS_KEY_ID` in the node's environment.
 
 ---
 
+## TL;DR: one command
+
+```bash
+cd infra/s3-media
+cp terraform.tfvars.example terraform.tfvars   # 3 values: bucket_name, region, trust_mode
+./setup.sh
+```
+
+Works identically for EC2 (`trust_mode=ec2`), EKS (`irsa`) and a dev
+laptop (`dev`). Prints the env block for the node and the single
+mode-specific wiring step. The sections below describe what it does and
+the manual console/CLI path for operators who prefer that.
+
 ## A. Terraform path (recommended)
 
 See `infra/s3-media/README.md` for the full module reference. Quick
