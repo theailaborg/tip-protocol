@@ -37,6 +37,7 @@ const {
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { Upload } = require("@aws-sdk/lib-storage");
 
 const DEFAULT_REGION = "us-west-2";
 const DEFAULT_PRESIGN_TTL_SEC = 300;
@@ -238,19 +239,31 @@ function createS3Backend(config = {}) {
       if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") throw err;
     }
 
-    await client.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: fsSync.createReadStream(tmpPath),
-      ContentLength: size,
-      ContentType: mime,
-      Metadata: {
-        mime,
-        "created-at": String(nowMs()),
-        "content-hash": contentHash,
+    // Managed multipart upload, NOT a single PutObject: a stream-bodied
+    // PutObject is non-retryable in the SDK, so one network hiccup at any
+    // point of a large transfer aborts the whole thing. Upload() splits
+    // the file into parts, uploads 4 in parallel, and retries individual
+    // failed parts. Small files (< partSize) collapse to one PUT
+    // automatically. Failure hygiene: abort the multipart so no orphaned
+    // parts accrue storage (the lifecycle rule also reaps them at 7d).
+    const upload = new Upload({
+      client,
+      params: {
+        Bucket: bucket,
+        Key: key,
+        Body: fsSync.createReadStream(tmpPath),
+        ContentType: mime,
+        Metadata: {
+          mime,
+          "created-at": String(nowMs()),
+          "content-hash": contentHash,
+        },
+        ...(_encryptionArgs()),
       },
-      ...(_encryptionArgs()),
-    }));
+      partSize: 16 * 1024 * 1024,
+      queueSize: 4,
+    });
+    await upload.done();
     await fs.unlink(tmpPath).catch(() => { });
     return { media_id: contentHash, size };
   }
