@@ -629,6 +629,40 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.UPDATE_ORIGIN: {
+        // One origin update per ctid per batch. Committed-history limit
+        // (single update ever) lives in rules.canUpdateOrigin.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UPDATE_ORIGIN && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate UPDATE_ORIGIN in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.CONTENT_RETRACTED: {
+        // State write is idempotent, and the paired SCORE_UPDATE is
+        // already collapsed by the SCORE_UPDATE (tip_id, ctid, reason)
+        // dedup above. Dropping the sibling here prevents an orphaned
+        // committed tx and matches canRetract's cross-round 409.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_RETRACTED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_RETRACTED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.CONTENT_VERIFIED: {
+        // One verification per (verifier, ctid) per batch. Committed
+        // history is guarded by dag.hasVerification in rules.canVerify.
+        if (!d.ctid || !d.verifier_tip_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_VERIFIED
+          && t.data?.ctid === d.ctid
+          && t.data?.verifier_tip_id === d.verifier_tip_id);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_VERIFIED in batch for (${d.verifier_tip_id}, ${d.ctid})` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
@@ -1120,8 +1154,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.RETRACTED);
         }
-        // Author retraction penalty is applied via the unified
-        // `_applyScoreEffect(tx)` pass below.
+        // Author retraction penalty rides on the paired SCORE_UPDATE tx
+        // submitted by content-service.retract; applyScoreEffect's
+        // CONTENT_RETRACTED case is a no-op.
         break;
 
       // ── Domain binding (org-only) ────────────────────────────────────

@@ -506,3 +506,138 @@ describe("GH #87 MED — REVOKE_*: one revocation per tip_id per batch (cross-ty
     expect(fx.dag.isRevoked(TARGET_2_TIP)).toBe(true);
   });
 });
+
+// ─── Builders: content family (author/verifier BODY signatures) ─────────────
+// Signed payloads replicate the registry contracts in schemas/_registry.js
+// exactly: CONTENT_VERIFIED {verifier_tip_id, ctid, verdict};
+// UPDATE_ORIGIN {author_tip_id, ctid, new_origin_code};
+// CONTENT_RETRACTED {author_tip_id, ctid}.
+
+function _makeVerifyTx(fx, { ctid, verifierTipId, verifierKp, timestamp }) {
+  const signature = signPayload(
+    { verifier_tip_id: verifierTipId, ctid, verdict: "ORIGIN_CONFIRMED" },
+    verifierKp.privateKey,
+  );
+  const txBody = {
+    tx_type: TX_TYPES.CONTENT_VERIFIED,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: {
+      ctid, verifier_tip_id: verifierTipId, verdict: "ORIGIN_CONFIRMED",
+      weighted_delta: 2, author_tip_id: AUTHOR_TIP,
+    },
+    signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeUpdateOriginTx(fx, { ctid, newOrigin, timestamp }) {
+  const signature = signPayload(
+    { author_tip_id: AUTHOR_TIP, ctid, new_origin_code: newOrigin },
+    fx.authorKp.privateKey,
+  );
+  const txBody = {
+    tx_type: TX_TYPES.UPDATE_ORIGIN,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: { ctid, old_origin_code: "OH", new_origin_code: newOrigin, author_tip_id: AUTHOR_TIP },
+    signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeRetractTx(fx, { ctid, timestamp }) {
+  const signature = signPayload(
+    { author_tip_id: AUTHOR_TIP, ctid },
+    fx.authorKp.privateKey,
+  );
+  const txBody = {
+    tx_type: TX_TYPES.CONTENT_RETRACTED,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: { ctid, author_tip_id: AUTHOR_TIP, origin_code: "OH", pre_retract_status: "registered" },
+    signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+describe("GH #87 MED — UPDATE_ORIGIN in-batch dedup", () => {
+
+  test("two origin updates for the same ctid in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeUpdateOriginTx(fx, { ctid: CTID_A, newOrigin: "AA", timestamp: T1 });
+    const tx2 = _makeUpdateOriginTx(fx, { ctid: CTID_A, newOrigin: "AG", timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    // First update applied, not the second.
+    expect(fx.dag.getContent(CTID_A).origin_code).toBe("AA");
+  });
+
+  test("origin updates for different ctids in one batch: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeUpdateOriginTx(fx, { ctid: CTID_A, newOrigin: "AA", timestamp: T1 });
+    const tx2 = _makeUpdateOriginTx(fx, { ctid: CTID_B, newOrigin: "AA", timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+describe("GH #87 MED — CONTENT_RETRACTED in-batch dedup", () => {
+
+  test("two retractions of the same ctid in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeRetractTx(fx, { ctid: CTID_A, timestamp: T1 });
+    const tx2 = _makeRetractTx(fx, { ctid: CTID_A, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    expect(fx.dag.getContent(CTID_A).status).toBe(CONTENT_STATUS.RETRACTED);
+  });
+
+  test("retractions of different ctids in one batch: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeRetractTx(fx, { ctid: CTID_A, timestamp: T1 });
+    const tx2 = _makeRetractTx(fx, { ctid: CTID_B, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+// ─── LOW severity ────────────────────────────────────────────────────────────
+
+describe("GH #87 LOW — CONTENT_VERIFIED in-batch dedup", () => {
+
+  test("same verifier verifies same ctid twice in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 });
+    const tx2 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("two different verifiers for same ctid in one batch: both commit", () => {
+    const fx = _setup();
+    // REVIEWER_TIP doubles as a second verifier (any active non-author works).
+    const tx1 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 });
+    const tx2 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: REVIEWER_TIP, verifierKp: fx.reviewerKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
