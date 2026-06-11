@@ -611,6 +611,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.REVOKE_VOLUNTARY:
+      case TX_TYPES.REVOKE_VP:
+      case TX_TYPES.REVOKE_DECEASED:
+      case TX_TYPES.REVOKE_DEVICE: {
+        // Cross-type: all four revoke the whole identity
+        // (dag.addRevocation(d.tip_id, ...)) — any pair for the same
+        // tip_id in one batch conflicts. First in canonical order wins.
+        if (!d.tip_id) return { valid: true };
+        const REVOKE_TYPES = [
+          TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
+          TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
+        ];
+        const inBatch = validated.find(t =>
+          REVOKE_TYPES.includes(t.tx_type) && t.data?.tip_id === d.tip_id);
+        if (inBatch) return { valid: false, error: `duplicate REVOKE_* in batch for ${d.tip_id}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }

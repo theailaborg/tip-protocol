@@ -435,3 +435,74 @@ describe("GH #87 HIGH — key transitions: one per tip_id per batch (cross-type)
     expect(res.dropped).toBe(0);
   });
 });
+
+// ─── Builder: REVOKE_* (VP-signed BODY: {tx_type, tip_id, issuing_vp_id}) ───
+// tx_type is in the signed payload so a captured signature for one revoke
+// type can't replay as another (see REVOKE_CONTRACT in schemas/_registry.js).
+function _makeRevokeTx(fx, { txType, tipId, timestamp }) {
+  const payload = { tx_type: txType, tip_id: tipId, issuing_vp_id: VP_ID };
+  const signature = signPayload(payload, fx.vpKp.privateKey);
+  const txBody = {
+    tx_type: txType,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: { tx_type: txType, tip_id: tipId, issuing_vp_id: VP_ID },
+    signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+// ─── MED severity ────────────────────────────────────────────────────────────
+
+describe("GH #87 MED — REVOKE_*: one revocation per tip_id per batch (cross-type)", () => {
+
+  test("two REVOKE_VOLUNTARY for same tip_id in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+  });
+
+  test("REVOKE_VOLUNTARY + REVOKE_DECEASED for same tip_id (cross-type): second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_DECEASED, tipId: AUTHOR_TIP, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+  });
+
+  test("REVOKE_DEVICE + REVOKE_VOLUNTARY for same tip_id (cross-type): second dropped", () => {
+    // REVOKE_DEVICE currently revokes the whole identity (same
+    // addRevocation path) — pin that assumption so any future
+    // per-device revocation flow has to revisit this dedup key.
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_DEVICE, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+  });
+
+  test("REVOKE_VOLUNTARY for two different tip_ids: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: TARGET_2_TIP, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+    expect(fx.dag.isRevoked(TARGET_2_TIP)).toBe(true);
+  });
+});
