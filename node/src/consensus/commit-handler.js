@@ -598,6 +598,19 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.KEY_ROTATED:
+      case TX_TYPES.KEY_RECOVERY: {
+        // Cross-type: at most ONE key transition per tip_id per batch.
+        // Both types close + open entity_keys rows; two in one batch
+        // corrupt the active-key invariant that KA-2 (PR #74) restored.
+        if (!d.tip_id) return { valid: true };
+        const KEY_TRANSITION_TYPES = [TX_TYPES.KEY_ROTATED, TX_TYPES.KEY_RECOVERY];
+        const inBatch = validated.find(t =>
+          KEY_TRANSITION_TYPES.includes(t.tx_type) && t.data?.tip_id === d.tip_id);
+        if (inBatch) return { valid: false, error: `duplicate key transition in batch for ${d.tip_id}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }

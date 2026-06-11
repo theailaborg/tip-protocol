@@ -329,3 +329,109 @@ describe("GH #87 HIGH — prescan terminal decisions: one per review_id per batc
     expect(res.dropped).toBe(0);
   });
 });
+
+// ─── Builders: key transitions ──────────────────────────────────────────────
+// KEY_ROTATED: BODY-signed by the OLD (currently active) key — the
+// dispatcher resolves it via getKeyValidAt(tip_id, tx.timestamp) because
+// tx.timestamp < effective_at. KEY_RECOVERY: BODY-signed by the VP, plus
+// new_key_signature proof-of-possession co-signed by the NEW key;
+// effective_at is chain-stamped to tx.timestamp.
+
+function _makeKeyRotatedTx(fx, { tipId, oldKp, timestamp }) {
+  const newKp = generateMLDSAKeypair();
+  const fields = {
+    algorithm: "ml-dsa-65",
+    effective_at: timestamp + 60_000,   // must be >= tx.timestamp
+    new_public_key: newKp.publicKey,
+    old_key_fingerprint: shake256(oldKp.publicKey).slice(0, 32),
+    tip_id: tipId,
+  };
+  const payload = keyRotatedSchema.buildSigningPayload(fields);
+  const signature = keyRotatedSchema.sign(payload, oldKp.privateKey);
+  const txBody = {
+    tx_type: TX_TYPES.KEY_ROTATED,
+    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+function _makeKeyRecoveryTx(fx, { tipId, replacesPubkey, timestamp }) {
+  const newKp = generateMLDSAKeypair();
+  const core = {
+    algorithm: "ml-dsa-65",
+    new_public_key: newKp.publicKey,
+    recovery_evidence_hash: shake256("recovery-evidence"),
+    replaces_pubkey: replacesPubkey,
+    tip_id: tipId,
+    vp_id: VP_ID,
+    zk_proof: { pi_a: ["1"], pi_b: [["1"]], pi_c: ["1"] },
+  };
+  const payload = keyRecoverySchema.buildSigningPayload(core);
+  const vpSignature  = keyRecoverySchema.sign(payload, fx.vpKp.privateKey);
+  const newKeySig    = keyRecoverySchema.sign(payload, newKp.privateKey);
+  const txBody = {
+    tx_type: TX_TYPES.KEY_RECOVERY,
+    timestamp,
+    prev: fx.dag.getRecentPrev(),
+    data: {
+      ...core,
+      effective_at: timestamp,          // chain-stamped: must equal tx.timestamp
+      new_key_signature: newKeySig,
+    },
+    signature: vpSignature,
+  };
+  txBody.tx_id = computeTxId(txBody);
+  return txBody;
+}
+
+describe("GH #87 HIGH — key transitions: one per tip_id per batch (cross-type)", () => {
+
+  test("two KEY_ROTATED for same tip_id in one batch: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 });
+    const tx2 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("KEY_ROTATED + KEY_RECOVERY for same tip_id (cross-type): second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 });
+    const tx2 = _makeKeyRecoveryTx(fx, {
+      tipId: AUTHOR_TIP, replacesPubkey: fx.authorKp.publicKey, timestamp: T1 + 1000,
+    });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("KEY_RECOVERY + KEY_ROTATED for same tip_id (recovery first): second dropped", () => {
+    // Security-relevant ordering: a VP-attested recovery lands first; a
+    // rotation still signed by the (compromised) old key in the same batch
+    // must be dropped, not allowed to stomp the recovered key.
+    const fx = _setup();
+    const tx1 = _makeKeyRecoveryTx(fx, {
+      tipId: AUTHOR_TIP, replacesPubkey: fx.authorKp.publicKey, timestamp: T1,
+    });
+    const tx2 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2);
+  });
+
+  test("KEY_ROTATED for two different tip_ids in one batch: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 });
+    const tx2 = _makeKeyRotatedTx(fx, { tipId: TARGET_2_TIP, oldKp: fx.target2Kp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
