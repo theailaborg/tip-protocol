@@ -45,6 +45,15 @@ async function _scratch() {
   return fs.mkdtemp(path.join(os.tmpdir(), "tip-media-service-"));
 }
 
+// Upload fixtures need REAL magic bytes — the server derives the stored
+// mime from the bytes (detectMime), so arbitrary text buffers are 415.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+const MP4_MAGIC = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from("ftypisom")]);
+function _png(content) { return Buffer.concat([PNG_MAGIC, Buffer.from(content), Buffer.alloc(8)]); }
+function _jpeg(content) { return Buffer.concat([JPEG_MAGIC, Buffer.from(content), Buffer.alloc(8)]); }
+function _mp4(content) { return Buffer.concat([MP4_MAGIC, Buffer.from(content), Buffer.alloc(8)]); }
+
 function _signedUpload(bytes, mime, signerTipId, kp, timestamp = nowMs()) {
   const content_hash = shake256(bytes);
   const challenge = mediaUploadSchema.buildChallenge({ content_hash, mime, timestamp, signer_tip_id: signerTipId });
@@ -71,7 +80,7 @@ describe("media-service.upload — happy path", () => {
   });
 
   test("uploads valid image; returns media_id + content_hash + size", async () => {
-    const bytes = Buffer.from("png-bytes-here");
+    const bytes = _png("png-bytes-here");
     const input = _signedUpload(bytes, "image/png", identity.tip_id, kp);
     const r = await service.upload(input);
 
@@ -84,14 +93,14 @@ describe("media-service.upload — happy path", () => {
   });
 
   test("media_id equals shake256(bytes) — single hash across storage + protocol", async () => {
-    const bytes = Buffer.from("equivalence proof");
+    const bytes = _png("equivalence proof");
     const r = await service.upload(_signedUpload(bytes, "image/png", identity.tip_id, kp));
     expect(r.media_id).toBe(shake256(bytes));
     expect(r.media_id).toBe(r.content_hash);
   });
 
   test("upload then fetchBytes round-trips", async () => {
-    const bytes = Buffer.from("round trip me");
+    const bytes = _png("round trip me");
     const r = await service.upload(_signedUpload(bytes, "image/png", identity.tip_id, kp));
     const got = await service.fetchBytes(r.media_id);
     expect(got.bytes.equals(bytes)).toBe(true);
@@ -122,9 +131,14 @@ describe("media-service.upload — validation", () => {
     await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_invalid" });
   });
 
-  test("rejects video (gated by VIDEO_MAX_BYTES=0)", async () => {
-    const input = _signedUpload(Buffer.from("x"), "video/mp4", identity.tip_id, kp);
-    await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_disabled" });
+  test("video bytes follow the genesis gate", async () => {
+    const input = _signedUpload(_mp4("clip"), "video/mp4", identity.tip_id, kp);
+    if (PC.CONTENT_LIMITS.VIDEO_MAX_BYTES > 0) {
+      const r = await service.upload(input);
+      expect(r.mime).toBe("video/mp4");
+    } else {
+      await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_disabled" });
+    }
   });
 
   test("rejects malformed signer_tip_id", async () => {
@@ -133,27 +147,26 @@ describe("media-service.upload — validation", () => {
   });
 
   test("rejects non-hex signature", async () => {
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, kp);
     input.signature = "NOT-HEX!";
     await expect(service.upload(input)).rejects.toMatchObject({ code: "signature_required" });
   });
 
   test("rejects non-integer timestamp", async () => {
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, kp);
     input.timestamp = "not-a-number";
     await expect(service.upload(input)).rejects.toMatchObject({ code: "timestamp_required" });
   });
 
-  test("rejects file exceeding size limit", async () => {
-    // image limit = 5MB; send 6MB. Sign over the actual bytes.
-    const big = Buffer.alloc(6 * 1024 * 1024, 0x42);
+  test("rejects file exceeding the genesis image cap", async () => {
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 0x42)]);
     const input = _signedUpload(big, "image/png", identity.tip_id, kp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "file_too_large" });
   });
 
   test("rejects timestamp outside replay window", async () => {
     const stale = nowMs() - (10 * 60 * 1000); // 10 min ago
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp, stale);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, kp, stale);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "timestamp_drift" });
   });
 });
@@ -174,26 +187,26 @@ describe("media-service.upload — identity + signature checks", () => {
     service = createMediaService({ storage, dag: _fakeDag(identity) });
     const otherKp = generateMLDSAKeypair();
     const otherTip = "tip://id/US-ffffffffffffffff";
-    const input = _signedUpload(Buffer.from("x"), "image/png", otherTip, otherKp);
+    const input = _signedUpload(_png("x"), "image/png", otherTip, otherKp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "signer_not_found" });
   });
 
   test("rejects inactive signer", async () => {
     service = createMediaService({ storage, dag: _fakeDag({ ...identity, status: "suspended" }) });
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, kp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "signer_inactive" });
   });
 
   test("rejects revoked signer", async () => {
     service = createMediaService({ storage, dag: _fakeDag(identity, /* isRevoked */ true) });
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, kp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "signer_revoked" });
   });
 
   test("rejects wrong signature (signed by different key)", async () => {
     service = createMediaService({ storage, dag: _fakeDag(identity) });
     const decoyKp = generateMLDSAKeypair();
-    const input = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, decoyKp);
+    const input = _signedUpload(_png("x"), "image/png", identity.tip_id, decoyKp);
     await expect(service.upload(input)).rejects.toMatchObject({ code: "signature_invalid" });
   });
 });
@@ -207,7 +220,7 @@ describe("media-service — content-addressed dedup", () => {
       const identity = { tip_id: "tip://id/US-dddddddddddddddd", public_key: kp.publicKey, status: "active" };
       const service = createMediaService({ storage, dag: _fakeDag(identity) });
 
-      const bytes = Buffer.from("dedup");
+      const bytes = _png("dedup");
       const r1 = await service.upload(_signedUpload(bytes, "image/png", identity.tip_id, kp));
       const r2 = await service.upload(_signedUpload(bytes, "image/png", identity.tip_id, kp));
       expect(r1.media_id).toBe(r2.media_id);
@@ -245,19 +258,19 @@ describe("media-service.resolveRefs", () => {
   });
 
   test("mime mismatch → 400 media_mime_mismatch", async () => {
-    const r = await service.upload(_signedUpload(Buffer.from("png-bytes"), "image/png", identity.tip_id, kp));
+    const r = await service.upload(_signedUpload(_png("png-bytes"), "image/png", identity.tip_id, kp));
     await expect(service.resolveRefs([{ media_id: r.media_id, mime: "image/jpeg" }]))
       .rejects.toMatchObject({ status: 400, code: "media_mime_mismatch" });
   });
 
   test("happy path: returns canonical [{media_id, mime}], mime lowercased", async () => {
-    const r = await service.upload(_signedUpload(Buffer.from("png-1"), "image/png", identity.tip_id, kp));
+    const r = await service.upload(_signedUpload(_png("png-1"), "image/png", identity.tip_id, kp));
     const out = await service.resolveRefs([{ media_id: r.media_id, mime: "IMAGE/PNG" }]);
     expect(out).toEqual([{ media_id: r.media_id, mime: "image/png" }]);
   });
 
   test("dedups on media_id — duplicate refs collapse to one entry", async () => {
-    const r = await service.upload(_signedUpload(Buffer.from("dup-bytes"), "image/png", identity.tip_id, kp));
+    const r = await service.upload(_signedUpload(_png("dup-bytes"), "image/png", identity.tip_id, kp));
     const out = await service.resolveRefs([
       { media_id: r.media_id, mime: "image/png" },
       { media_id: r.media_id, mime: "image/png" },
@@ -286,16 +299,16 @@ describe("media-service.fetchForClassifier", () => {
   });
 
   test("returns {base64, mime} per ref, preserving order", async () => {
-    const a = await service.upload(_signedUpload(Buffer.from("alpha"), "image/png", identity.tip_id, kp));
-    const b = await service.upload(_signedUpload(Buffer.from("beta"),  "image/jpeg", identity.tip_id, kp));
+    const a = await service.upload(_signedUpload(_png("alpha"), "image/png", identity.tip_id, kp));
+    const b = await service.upload(_signedUpload(_jpeg("beta"),  "image/jpeg", identity.tip_id, kp));
     const out = await service.fetchForClassifier([
       { media_id: a.media_id, mime: "image/png" },
       { media_id: b.media_id, mime: "image/jpeg" },
     ]);
     expect(out).toHaveLength(2);
-    expect(Buffer.from(out[0].base64, "base64").toString()).toBe("alpha");
+    expect(Buffer.from(out[0].base64, "base64").equals(_png("alpha"))).toBe(true);
     expect(out[0].mime).toBe("image/png");
-    expect(Buffer.from(out[1].base64, "base64").toString()).toBe("beta");
+    expect(Buffer.from(out[1].base64, "base64").equals(_jpeg("beta"))).toBe(true);
     expect(out[1].mime).toBe("image/jpeg");
   });
 
@@ -329,7 +342,7 @@ describe("media-service.uploadStream", () => {
   }
 
   test("streamed upload → identical result to buffered upload (same media_id)", async () => {
-    const bytes = Buffer.from("streamed-bytes-here");
+    const bytes = _png("streamed-bytes-here");
     const r = await service.uploadStream(_streamInput(bytes, "image/png"));
     expect(r.media_id).toBe(shake256(bytes));
     expect(r.size).toBe(bytes.length);
@@ -340,7 +353,7 @@ describe("media-service.uploadStream", () => {
   });
 
   test("multi-chunk stream hashes identically to one-shot", async () => {
-    const bytes = Buffer.alloc(256 * 1024, 0xab);
+    const bytes = Buffer.concat([PNG_MAGIC, Buffer.alloc(256 * 1024, 0xab)]);
     const chunks = [];
     for (let i = 0; i < bytes.length; i += 64 * 1024) chunks.push(bytes.subarray(i, i + 64 * 1024));
     const base = _signedUpload(bytes, "image/png", identity.tip_id, kp);
@@ -349,8 +362,8 @@ describe("media-service.uploadStream", () => {
   });
 
   test("bytes differ from what was signed → 403, tmp cleaned, nothing stored", async () => {
-    const signedOver = Buffer.from("what the client claimed");
-    const actuallySent = Buffer.from("what the client really sent");
+    const signedOver = _png("what the client claimed");
+    const actuallySent = _png("what the client really sent");
     const base = _signedUpload(signedOver, "image/png", identity.tip_id, kp);
     await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([actuallySent]) }))
       .rejects.toMatchObject({ code: "signature_invalid" });
@@ -361,8 +374,8 @@ describe("media-service.uploadStream", () => {
   });
 
   test("size cap exceeded mid-stream → 413, stream aborted, tmp cleaned", async () => {
-    // 6MB as image (5MB cap) — abort fires mid-stream, not after buffering.
-    const big = Buffer.alloc(6 * 1024 * 1024, 1);
+    // just over the genesis image cap — abort fires mid-stream, not after buffering.
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 1)]);
     const base = _signedUpload(big, "image/png", identity.tip_id, kp);
     await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([big]) }))
       .rejects.toMatchObject({ code: "file_too_large" });
@@ -371,22 +384,86 @@ describe("media-service.uploadStream", () => {
   });
 
   test("empty body → 400 bytes_required", async () => {
-    const base = _signedUpload(Buffer.from("x"), "image/png", identity.tip_id, kp);
+    const base = _signedUpload(_png("x"), "image/png", identity.tip_id, kp);
     await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([]) }))
       .rejects.toMatchObject({ code: "bytes_required" });
   });
 
-  test("video mime rejected before any bytes flow", async () => {
-    const base = _signedUpload(Buffer.from("x"), "video/mp4", identity.tip_id, kp);
-    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([Buffer.from("x")]) }))
-      .rejects.toMatchObject({ code: "mime_disabled" });
+  test("video stream follows the genesis gate", async () => {
+    const clip = _mp4("clip");
+    const base = _signedUpload(clip, "video/mp4", identity.tip_id, kp);
+    if (PC.CONTENT_LIMITS.VIDEO_MAX_BYTES > 0) {
+      const r = await service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([clip]) });
+      expect(r.mime).toBe("video/mp4");
+    } else {
+      await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([clip]) }))
+        .rejects.toMatchObject({ code: "mime_disabled" });
+    }
   });
 
   test("streamed dedup: second identical stream returns same media_id", async () => {
-    const bytes = Buffer.from("dedup-stream");
+    const bytes = _png("dedup-stream");
     const r1 = await service.uploadStream(_streamInput(bytes, "image/png"));
     const r2 = await service.uploadStream(_streamInput(bytes, "image/png"));
     expect(r1.media_id).toBe(r2.media_id);
+  });
+});
+
+describe("media-service — server-side mime detection", () => {
+  let storage, service, root, kp, identity;
+
+  beforeEach(async () => {
+    root = await _scratch();
+    storage = createMediaStorage({ backend: "fs", fsPath: root });
+    kp = generateMLDSAKeypair();
+    identity = { tip_id: "tip://id/US-eeeeeeeeeeeeeeee", public_key: kp.publicKey, status: "active" };
+    service = createMediaService({ storage, dag: _fakeDag(identity) });
+  });
+
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  test("mislabeled upload stores the DETECTED mime, not the claim", async () => {
+    // mp4 bytes claimed as image/png — the poisoned-label scenario.
+    const clip = _mp4("mislabel");
+    const r = await service.upload(_signedUpload(clip, "image/png", identity.tip_id, kp));
+    expect(r.mime).toBe("video/mp4");
+    const head = await storage.head(r.media_id);
+    expect(head.mime).toBe("video/mp4");
+  });
+
+  test("streamed mislabeled upload also stores detected mime", async () => {
+    const jpg = _jpeg("stream-mislabel");
+    const base = _signedUpload(jpg, "image/png", identity.tip_id, kp);
+    const { Readable } = require("stream");
+    const r = await service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([jpg]) });
+    expect(r.mime).toBe("image/jpeg");
+  });
+
+  test("unrecognized format → 415 format_unsupported (buffered + stream)", async () => {
+    const junk = Buffer.concat([Buffer.from("%PDF-1.4 not media"), Buffer.alloc(32)]);
+    await expect(service.upload(_signedUpload(junk, "image/png", identity.tip_id, kp)))
+      .rejects.toMatchObject({ status: 415, code: "format_unsupported" });
+    const { Readable } = require("stream");
+    const base = _signedUpload(junk, "image/png", identity.tip_id, kp);
+    await expect(service.uploadStream({ ...base, bytes: undefined, stream: Readable.from([junk]) }))
+      .rejects.toMatchObject({ status: 415, code: "format_unsupported" });
+  });
+
+  test("detectMime covers every supported container", () => {
+    const d = mediaUploadSchema.detectMime;
+    expect(d(_png("x"))).toBe("image/png");
+    expect(d(_jpeg("x"))).toBe("image/jpeg");
+    expect(d(Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(12)]))).toBe("image/gif");
+    expect(d(Buffer.concat([Buffer.from("RIFF\x00\x00\x00\x00WEBP"), Buffer.alloc(8)]))).toBe("image/webp");
+    expect(d(Buffer.concat([Buffer.from("RIFF\x00\x00\x00\x00WAVE"), Buffer.alloc(8)]))).toBe("audio/wav");
+    expect(d(Buffer.concat([Buffer.from("ID3"), Buffer.alloc(12)]))).toBe("audio/mpeg");
+    expect(d(Buffer.concat([Buffer.from("OggS"), Buffer.alloc(12)]))).toBe("audio/ogg");
+    expect(d(Buffer.concat([Buffer.from("fLaC"), Buffer.alloc(12)]))).toBe("audio/flac");
+    expect(d(_mp4("x"))).toBe("video/mp4");
+    expect(d(Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from("ftypM4A "), Buffer.alloc(8)]))).toBe("audio/mp4");
+    expect(d(Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(12)]))).toBe("video/webm");
+    expect(d(Buffer.from("tiny"))).toBe(null);
+    expect(d(Buffer.alloc(64, 9))).toBe(null);
   });
 });
 
@@ -446,7 +523,7 @@ describe("media-service.fetchForReviewer — happy path", () => {
 
     // Pre-load a media object on the local backend so the route serves
     // bytes (not a redirect).
-    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    const up = await storage.put(_png("png-bytes"), { mime: "image/png" });
     mediaId = up.media_id;
 
     const content = {
@@ -464,7 +541,7 @@ describe("media-service.fetchForReviewer — happy path", () => {
     const out = await service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp));
     expect(out.transport).toBe("stream");
     expect(out.role).toBe("author");
-    expect(out.bytes.toString()).toBe("png-bytes");
+    expect(out.bytes.equals(_png("png-bytes"))).toBe(true);
     expect(out.mime).toBe("image/png");
   });
 });
@@ -477,7 +554,7 @@ describe("media-service.fetchForReviewer — validation + auth", () => {
     storage = createMediaStorage({ backend: "fs", fsPath: root });
     kp = generateMLDSAKeypair();
     identity = { tip_id: "tip://id/US-2222222222222222", public_key: kp.publicKey, status: "active" };
-    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    const up = await storage.put(_png("png-bytes"), { mime: "image/png" });
     mediaId = up.media_id;
     content = {
       ctid: CTID,
@@ -514,7 +591,7 @@ describe("media-service.fetchForReviewer — policy gate", () => {
     storage = createMediaStorage({ backend: "fs", fsPath: root });
     kp = generateMLDSAKeypair();
     identity = { tip_id: "tip://id/US-3333333333333333", public_key: kp.publicKey, status: "active" };
-    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    const up = await storage.put(_png("png-bytes"), { mime: "image/png" });
     mediaId = up.media_id;
   });
 
@@ -576,7 +653,7 @@ describe("media-service.fetchForReviewer — idx + cross-node", () => {
   afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 
   test("idx out of range → 404 media_idx_out_of_range", async () => {
-    const up = await storage.put(Buffer.from("png-bytes"), { mime: "image/png" });
+    const up = await storage.put(_png("png-bytes"), { mime: "image/png" });
     const content = {
       ctid: CTID, signer_tip_id: identity.tip_id,
       media: [{ media_id: up.media_id, mime: "image/png" }],

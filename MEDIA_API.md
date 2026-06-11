@@ -96,6 +96,14 @@ fires per chunk); `fetch` cannot report upload progress.
 again (any user) returns `201` with the same `media_id`; deduplication is
 free and safe to rely on.
 
+**The `mime` in the response is authoritative and may differ from your
+header.** The server derives the type from the file's magic bytes (png,
+jpeg, gif, webp, mp3, wav, ogg, flac, mp4, webm) and stores THAT - the
+client's declaration is never trusted for storage, size caps, or
+classification. Always use the response `mime` in `media[]` when
+registering. Bytes in an unrecognized container are rejected with
+`415 format_unsupported`.
+
 ### Limits (genesis constants)
 
 | Type | Limit |
@@ -116,7 +124,8 @@ free and safe to rely on.
 | 403 | `signer_inactive` / `signer_revoked` | identity not active |
 | 404 | `signer_not_found` | identity not registered on this node |
 | 413 | `file_too_large` | over the per-mime cap. The server aborts mid-stream and replies with `Connection: close`; open a NEW connection for the next request |
-| 415 | `mime_invalid` / `mime_disabled` | type not accepted |
+| 415 | `mime_invalid` / `mime_disabled` | claimed type malformed or family disabled |
+| 415 | `format_unsupported` | the BYTES are not a recognized media container |
 
 ## 2. Register content with media: `POST /v1/content/register`
 

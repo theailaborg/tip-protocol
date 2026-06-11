@@ -256,9 +256,10 @@ describe("POST /v1/media/upload — body-parser size cap", () => {
     const service = createMediaService({ storage, dag: _accessDag({ identity, content: null }) });
     const app = _makeApp({ mediaService: service });
 
-    // 26MB > the 25MB express.raw cap — body-parser aborts before any
-    // schema/service code runs; errorHandler must map entity.too.large.
-    const big = Buffer.alloc(26 * 1024 * 1024, 1);
+    // Real PNG magic + just over the genesis image cap: the streaming
+    // route's mid-flight gauge must abort with 413 once the cap is crossed.
+    const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const big = Buffer.concat([PNG_MAGIC, Buffer.alloc(PC.CONTENT_LIMITS.IMAGE_MAX_BYTES, 1)]);
     const res = await request(app)
       .post("/v1/media/upload")
       .set("Content-Type", "application/octet-stream")

@@ -44,6 +44,68 @@ function _resolveSizeLimit(mime) {
 }
 
 /**
+ * Derive the mime from the file's magic bytes. The STORED mime is always
+ * this value — the client's X-Media-Mime header is part of the signed
+ * challenge but is never trusted for storage, size caps, or classifier
+ * routing. A client cannot mislabel bytes (accidentally or maliciously),
+ * and dedup can never produce conflicting labels because the stored mime
+ * is a pure function of the bytes.
+ *
+ * Needs at most the first 16 bytes. Returns null for any format outside
+ * the supported set — callers reject those with 415.
+ */
+function detectMime(bytes) {
+  if (!bytes || bytes.length < 12) return null;
+  const b = bytes;
+
+  // image
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return "image/gif";
+
+  // RIFF containers: WEBP (image) vs WAV (audio), split on bytes 8-11
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {
+    const tag = b.slice(8, 12).toString("ascii");
+    if (tag === "WEBP") return "image/webp";
+    if (tag === "WAVE") return "audio/wav";
+    return null;
+  }
+
+  // audio
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return "audio/mpeg";            // ID3-tagged MP3
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return "audio/mpeg";                    // raw MP3 frame sync
+  if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return "audio/ogg";
+  if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return "audio/flac";
+
+  // ISO-BMFF (ftyp at offset 4): mp4 family. M4A brand is audio-only.
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    const brand = b.slice(8, 12).toString("ascii");
+    if (brand.startsWith("M4A")) return "audio/mp4";
+    return "video/mp4";
+  }
+
+  // Matroska / WebM
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
+
+  return null;
+}
+
+/**
+ * Gate + size cap for a SNIFFED mime. Throws the same 415/limit errors as
+ * the claim-based path, but driven by what the bytes actually are.
+ */
+function limitForDetectedMime(mime) {
+  if (mime === null) {
+    throw schemaError(415, "Unrecognized file format — supported: png, jpeg, gif, webp, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
+  }
+  const limit = _resolveSizeLimit(mime);
+  if (limit <= 0) {
+    throw schemaError(415, `Mime family disabled in genesis: ${mime} (detected from bytes)`, "mime_disabled");
+  }
+  return limit;
+}
+
+/**
  * Look up the signer's identity on the DAG and reject if missing,
  * inactive, or revoked. Mirrors media-access.resolveRequester so the
  * "is this caller a valid TIP-ID?" predicate is identical across
@@ -135,10 +197,15 @@ function validateRequest(input, deps) {
   if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) {
     throw schemaError(400, "bytes is required (non-empty buffer)", "bytes_required");
   }
-  const sizeLimit = _validateMeta(input, deps);
+  _validateMeta(input, deps);
+  // The bytes decide the mime — gate + cap run on the DETECTED type, so a
+  // mislabeled claim can neither dodge a family cap nor poison storage.
+  const detected = detectMime(input.bytes);
+  const sizeLimit = limitForDetectedMime(detected);
   if (input.bytes.length > sizeLimit) {
     throw schemaError(413, `File too large: ${input.bytes.length} > ${sizeLimit}`, "file_too_large");
   }
+  return detected;
 }
 
 /**
@@ -170,6 +237,8 @@ function buildChallenge({ content_hash, mime, timestamp, signer_tip_id }) {
 module.exports = {
   validateRequest,
   validateStreamRequest,
+  detectMime,
+  limitForDetectedMime,
   resolveSigner,
   buildChallenge,
   TIP_ID_RE,

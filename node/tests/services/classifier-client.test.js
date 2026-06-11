@@ -169,15 +169,20 @@ describe("prescan", () => {
     expect(fetch.calls).toHaveLength(0);
   });
 
-  test("video file → rejected before fetch (v1 block)", async () => {
+  test("video file follows the genesis gate at the client boundary", async () => {
     const { client, fetch } = clientWith(() => ({ body: { x: 1 } }));
-    await expect(
-      client.prescan({ originCode: "OH", file: { base64: "x", mime: "video/mp4" } })
-    ).rejects.toMatchObject({
-      code: "video_unsupported_v1",
-      status: 415,
-    });
-    expect(fetch.calls).toHaveLength(0);
+    if (PC.CONTENT_LIMITS.VIDEO_MAX_BYTES > 0) {
+      await client.prescan({ originCode: "OH", file: { base64: "x", mime: "video/mp4" } });
+      expect(fetch.calls).toHaveLength(1);
+    } else {
+      await expect(
+        client.prescan({ originCode: "OH", file: { base64: "x", mime: "video/mp4" } })
+      ).rejects.toMatchObject({
+        code: "video_unsupported_v1",
+        status: 415,
+      });
+      expect(fetch.calls).toHaveLength(0);
+    }
   });
 
   test("HTTP 500 from classifier → throws classifier_http_error", async () => {

@@ -89,7 +89,10 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     // Schema owns ALL request-level checks: shape, mime family, size
     // limit, replay window, DAG presence (signer exists / active / not
     // revoked). Service keeps only the signature verification.
-    mediaUploadSchema.validateRequest(input, { dag });
+    // Returns the mime DETECTED from the bytes' magic numbers — the
+    // claimed mime stays in the signed challenge but never reaches
+    // storage, caps, or the classifier. Bytes are the source of truth.
+    const detectedMime = mediaUploadSchema.validateRequest(input, { dag });
 
     const { bytes, mime, signer_tip_id, signature, timestamp } = input;
     const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
@@ -105,15 +108,20 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
       throw schemaError(403, "Upload signature verification failed", "signature_invalid");
     }
 
+    if (detectedMime !== mime) {
+      logger.warn?.(`media-upload: claimed mime ${mime} != detected ${detectedMime} — storing detected (signer ${signer_tip_id})`);
+    }
+
     // Store. media_id == content_hash by construction (both shake256).
-    const { media_id, size } = await storage.put(bytes, { mime, contentHash });
+    const { media_id, size } = await storage.put(bytes, { mime: detectedMime, contentHash });
     const uploaded_at = nowMs();
 
-    logger.info?.(`media-upload: ${signer_tip_id} → media_id=${media_id} mime=${mime} size=${size}`);
+    logger.info?.(`media-upload: ${signer_tip_id} → media_id=${media_id} mime=${detectedMime} size=${size}`);
     // content_hash field kept for caller clarity even though it equals
     // media_id — REGISTER_CONTENT consumers think in terms of content_hash
     // (CNA-MIX-1 binding), and the duplication makes that contract explicit.
-    return { media_id, content_hash: contentHash, mime, size, uploaded_at, signer_tip_id };
+    // mime is the DETECTED type — clients must use this value in media[].
+    return { media_id, content_hash: contentHash, mime: detectedMime, size, uploaded_at, signer_tip_id };
   }
 
   // Streaming upload — flat memory regardless of file size. The request
@@ -134,9 +142,10 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     if (!stream || typeof stream.pipe !== "function") {
       throw new Error("media-service.uploadStream: readable stream required");
     }
-    // Schema: everything except the bytes (not arrived yet). Returns the
-    // per-mime cap for the in-flight check below.
-    const sizeLimit = mediaUploadSchema.validateStreamRequest(input, { dag });
+    // Schema: everything except the bytes (not arrived yet). The claim's
+    // cap is only a provisional ceiling; the authoritative gate + cap come
+    // from the mime DETECTED off the first bytes below.
+    mediaUploadSchema.validateStreamRequest(input, { dag });
     const identity = dag.getIdentity(signer_tip_id);  // guaranteed by schema
 
     const dir = await storage.stagingDir();
@@ -144,10 +153,30 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
 
     const hasher = shake256Incremental(32);
     let size = 0;
+    let detectedMime = null;
+    let sizeLimit = null;
+    let sniffBuf = Buffer.alloc(0);
     const gauge = new Transform({
       transform(chunk, _enc, cb) {
+        // Sniff the real type off the first bytes (magic numbers live in
+        // the first 16). The detected mime — never the claim — drives the
+        // family gate and the size cap, so a mislabeled upload can't dodge
+        // a cap or store a wrong label.
+        if (detectedMime === null) {
+          sniffBuf = Buffer.concat([sniffBuf, chunk]);
+          if (sniffBuf.length >= 16) {
+            detectedMime = mediaUploadSchema.detectMime(sniffBuf);
+            try {
+              sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime);
+            } catch (err) {
+              cb(err);
+              return;
+            }
+            sniffBuf = Buffer.alloc(0);
+          }
+        }
         size += chunk.length;
-        if (size > sizeLimit) {
+        if (sizeLimit !== null && size > sizeLimit) {
           cb(schemaError(413, `File too large: exceeded ${sizeLimit} bytes mid-stream`, "file_too_large"));
           return;
         }
@@ -161,6 +190,15 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
       if (size === 0) {
         throw schemaError(400, "bytes is required (non-empty body)", "bytes_required");
       }
+      // Bodies under 16 bytes never triggered the in-flight sniff; no real
+      // media is that small, and limitForDetectedMime(null) rejects 415.
+      if (detectedMime === null) {
+        detectedMime = mediaUploadSchema.detectMime(sniffBuf);
+        sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime);
+      }
+      if (detectedMime !== mime) {
+        logger.warn?.(`media-upload(stream): claimed mime ${mime} != detected ${detectedMime} — storing detected (signer ${signer_tip_id})`);
+      }
 
       const contentHash = hasher.digest("hex");
       const challenge = mediaUploadSchema.buildChallenge({
@@ -170,10 +208,11 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
         throw schemaError(403, "Upload signature verification failed", "signature_invalid");
       }
 
-      const { media_id } = await storage.promoteTmpFile(tmpPath, { contentHash, mime, size });
+      const { media_id } = await storage.promoteTmpFile(tmpPath, { contentHash, mime: detectedMime, size });
       const uploaded_at = nowMs();
-      logger.info?.(`media-upload(stream): ${signer_tip_id} → media_id=${media_id} mime=${mime} size=${size}`);
-      return { media_id, content_hash: contentHash, mime, size, uploaded_at, signer_tip_id };
+      logger.info?.(`media-upload(stream): ${signer_tip_id} → media_id=${media_id} mime=${detectedMime} size=${size}`);
+      // mime is the DETECTED type — clients must use this value in media[].
+      return { media_id, content_hash: contentHash, mime: detectedMime, size, uploaded_at, signer_tip_id };
     } catch (err) {
       await fs.unlink(tmpPath).catch(() => { });
       throw err;
