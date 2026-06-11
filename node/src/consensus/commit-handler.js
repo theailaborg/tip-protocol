@@ -546,6 +546,27 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      // GH #87 (AG-7 follow-up): in-batch dedup for the remaining
+      // state-changing tx types. Same Phase-1 racing seam as the
+      // REGISTER_* block above — committed-history first-wins lives in
+      // _statefulCheck (rules/schema verifyTx); these cases only close
+      // the same-batch window that Phase 2 hasn't written yet.
+      // (Caveat: auto:true disputes bypass _statefulCheck entirely, so
+      // their cross-batch dedup is NOT covered — only the same-batch
+      // window is closed here.)
+
+      case TX_TYPES.CONTENT_DISPUTED: {
+        // One dispute per ctid per batch — two disputers racing in one
+        // round would deduct two stakes but only one jury can resolve.
+        // Covers auto (cascade/trigger) disputes too: a user dispute and
+        // an auto-escalation for the same ctid collapse to the first.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_DISPUTED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_DISPUTED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
       default:
         return { valid: true };
     }
