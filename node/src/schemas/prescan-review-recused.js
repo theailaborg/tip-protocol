@@ -129,11 +129,15 @@ function buildSigningPayload(input) {
   if (typeof input.reviewer_tip_id !== "string") {
     throw schemaError(400, "reviewer_tip_id is required", "reviewer_tip_id_required");
   }
-  return {
-    recusal_reason: typeof input.recusal_reason === "string" ? input.recusal_reason : null,
+  // GH #85 Pattern A: omit recusal_reason when absent; keep "" as intentional value.
+  const out = {
     review_id: input.review_id,
     reviewer_tip_id: input.reviewer_tip_id,
   };
+  if (input.recusal_reason !== undefined && input.recusal_reason !== null) {
+    out.recusal_reason = input.recusal_reason;
+  }
+  return out;
 }
 
 function sign(payload, privateKeyHex, opts) {
