@@ -130,6 +130,8 @@ x-node-common: &node-common
     TIP_MEDIA_RETENTION_DISABLE: ${TIP_MEDIA_RETENTION_DISABLE:-}
     TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS: ${TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS:-}
     TIP_API_ENDPOINT:            ${TIP_API_ENDPOINT:-}
+    AWS_ACCESS_KEY_ID:           ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY:       ${AWS_SECRET_ACCESS_KEY:-}
     # Dev-only ZK skip — when set to "true" the dedup-proof verifier
     # returns true unconditionally. Production deployments leave this
     # unset; the var only takes effect when the operator opts in.
