@@ -109,7 +109,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
     }
 
     if (detectedMime !== mime) {
-      logger.warn?.(`media-upload: claimed mime ${mime} != detected ${detectedMime} — storing detected (signer ${signer_tip_id})`);
+      logger.warn?.(`media-upload: claimed mime ${mime} != detected ${detectedMime}; storing detected (signer ${signer_tip_id})`);
     }
 
     // Store. media_id == content_hash by construction (both shake256).
@@ -197,7 +197,7 @@ function createMediaService({ storage, dag, log, selfNodeId = null }) {
         sizeLimit = mediaUploadSchema.limitForDetectedMime(detectedMime);
       }
       if (detectedMime !== mime) {
-        logger.warn?.(`media-upload(stream): claimed mime ${mime} != detected ${detectedMime} — storing detected (signer ${signer_tip_id})`);
+        logger.warn?.(`media-upload(stream): claimed mime ${mime} != detected ${detectedMime}; storing detected (signer ${signer_tip_id})`);
       }
 
       const contentHash = hasher.digest("hex");

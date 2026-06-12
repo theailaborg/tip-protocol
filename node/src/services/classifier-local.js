@@ -151,7 +151,7 @@ function createFallbackClassifierClient({ primary, local, log }) {
     } catch (err) {
       if (!_isNetworkError(err)) throw err;
       logger.warn?.(
-        `classifier unreachable (${err.message || err}) — serving LOCAL FALLBACK verdict ` +
+        `classifier unreachable (${err.message || err}); serving LOCAL FALLBACK verdict ` +
         "(heuristic text, stub media). Set TIP_CLASSIFIER_FALLBACK=0 to disable fallback.",
       );
       return localClient.prescan(args);

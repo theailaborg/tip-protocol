@@ -176,7 +176,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     nodeEndpointUpdateSchema.validateRequest({ node_id: nodeId, api_endpoint: normalised });
 
     const row = dag.getNode(nodeId);
-    if (!row) throw { status: 409, error: `Node ${nodeId} not on chain yet — wait for NODE_REGISTERED to commit` };
+    if (!row) throw { status: 409, error: `Node ${nodeId} not on chain yet; wait for NODE_REGISTERED to commit` };
     if ((row.api_endpoint || null) === normalised) {
       return { node_id: nodeId, api_endpoint: normalised, confirmation: "unchanged" };
     }
@@ -190,7 +190,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
         clearTimeout(timer);
         probe = await res.json();
       } catch (err) {
-        throw { status: 400, error: `api_endpoint probe failed — ${normalised}/health unreachable: ${err?.message || err}` };
+        throw { status: 400, error: `api_endpoint probe failed: ${normalised}/health unreachable (${err?.message || err})` };
       }
       // /health responses go through the API envelope wrapper
       // ({ ok, status, data: { node_id, ... } }), so the node_id lives at
@@ -200,7 +200,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       if (probedNodeId !== nodeId) {
         throw {
           status: 400,
-          error: `api_endpoint ownership check failed — ${normalised} answers as "${probedNodeId}" not "${nodeId}". Refusing to publish a URL that is not this node.`,
+          error: `api_endpoint ownership check failed: ${normalised} answers as "${probedNodeId}" not "${nodeId}". Refusing to publish a URL that is not this node.`,
         };
       }
     }
