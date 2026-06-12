@@ -256,6 +256,24 @@ describe("tick — happy path", () => {
     const tx = submitter.txs[0];
     const img = tx.data.modality_results.find(m => m.modality === "image");
     expect(img.probability).toBe(0.95);
+
+    // Per-FILE scores survive the collapse, tagged by media_id, in call
+    // order (call 0 = text+media[0], call 1 = media[1]).
+    expect(tx.data.media_results).toEqual([
+      { media_id: MID_A, mime: "image/png", probability: 0.40, provider: "ensemble(ollama,statistical,heuristic)" },
+      { media_id: MID_B, mime: "image/jpeg", probability: 0.95, provider: "ensemble(ollama,statistical,heuristic)" },
+    ]);
+  });
+
+  test("text-only content → media_results empty", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.21 }] }),
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "x", origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(submitter.txs[0].data.media_results).toEqual([]);
   });
 });
 

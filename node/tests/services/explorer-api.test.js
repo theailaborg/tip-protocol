@@ -193,3 +193,65 @@ describe("content-list schema cursor", () => {
     expect(() => contentListSchema.decodeCursor("AAAA")).toThrow(expect.objectContaining({ code: "cursor_invalid" }));
   });
 });
+
+// ── resolve(): per-media AI scores from the verdict tx ─────────────────────
+
+describe("contentService.resolve — media ai_probability projection", () => {
+  const { createContentService } = require(path.join(SRC, "services/content-service"));
+  const { TX_TYPES } = require(path.join(SHARED, "constants"));
+
+  test("merges media_results scores into enriched media[]", async () => {
+    const MID_A = "a".repeat(64);
+    const MID_B = "b".repeat(64);
+    const rec = _row(7, { media: [
+      { media_id: MID_A, mime: "image/png" },
+      { media_id: MID_B, mime: "image/jpeg" },
+    ] });
+    const verdictTx = {
+      tx_id: "f".repeat(64),
+      tx_type: TX_TYPES.PRESCAN_COMPLETED,
+      data: {
+        ctid: rec.ctid,
+        media_results: [
+          { media_id: MID_A, mime: "image/png", probability: 0.40, provider: "image_detector" },
+          { media_id: MID_B, mime: "image/jpeg", probability: 0.95, provider: "image_detector" },
+        ],
+      },
+    };
+    const dag = {
+      getContent: () => rec,
+      getTx: () => null,
+      getIdentity: () => ({ status: "active" }),
+      getRevocation: () => null,
+      getTxsByTypeAndCtid: (type) => type === TX_TYPES.PRESCAN_COMPLETED ? [verdictTx] : [],
+      getOpenPrescanReviewByCtid: () => null,
+    };
+    const mediaService = { head: async () => ({ exists: true, size: 123 }) };
+    const service = createContentService({
+      dag, mediaService,
+      scoring: { getScore: () => ({ score: 0, tier: { name: "x" } }) },
+      config: {}, submitTx: () => {},
+    });
+    const out = await service.resolve(rec.ctid);
+    expect(out.media[0]).toMatchObject({ media_id: MID_A, ai_probability: 0.40, ai_provider: "image_detector", stored: true });
+    expect(out.media[1]).toMatchObject({ media_id: MID_B, ai_probability: 0.95 });
+  });
+
+  test("no verdict tx yet → ai_probability null", async () => {
+    const MID = "c".repeat(64);
+    const rec = _row(8, { media: [{ media_id: MID, mime: "image/png" }] });
+    const dag = {
+      getContent: () => rec, getTx: () => null,
+      getIdentity: () => ({ status: "active" }), getRevocation: () => null,
+      getTxsByTypeAndCtid: () => [],
+      getOpenPrescanReviewByCtid: () => null,
+    };
+    const service = createContentService({
+      dag, mediaService: { head: async () => ({ exists: true, size: 1 }) },
+      scoring: { getScore: () => ({ score: 0, tier: { name: "x" } }) },
+      config: {}, submitTx: () => {},
+    });
+    const out = await service.resolve(rec.ctid);
+    expect(out.media[0].ai_probability).toBeNull();
+  });
+});
