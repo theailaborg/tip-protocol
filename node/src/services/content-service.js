@@ -238,13 +238,31 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     // confirm "the referenced object really is held by this node"
     // without revealing content.
     let enrichedMedia = rec.media;
-    if (mediaService && Array.isArray(rec.media) && rec.media.length > 0) {
+    if (Array.isArray(rec.media) && rec.media.length > 0) {
+      // Per-file AI scores from the verdict tx (media_results). The
+      // collapsed headline probability lives on the content row; the
+      // per-file evidence survives here even after the bytes are
+      // retention-deleted or the classifier model moves on.
+      const scoreById = new Map();
+      const verdicts = dag.getTxsByTypeAndCtid(TX_TYPES.PRESCAN_COMPLETED, ctid);
+      const latestVerdict = verdicts.length ? verdicts[verdicts.length - 1] : null;
+      for (const mr of latestVerdict?.data?.media_results || []) {
+        scoreById.set(mr.media_id, mr);
+      }
+
       enrichedMedia = await Promise.all(rec.media.map(async (m) => {
+        const score = scoreById.get(m.media_id);
+        const base = {
+          ...m,
+          ai_probability: score ? score.probability : null,
+          ai_provider: score ? score.provider : null,
+        };
+        if (!mediaService) return { ...base, stored: null, size: null };
         try {
           const head = await mediaService.head(m.media_id);
-          return { ...m, stored: !!head?.exists, size: head?.exists ? head.size : null };
+          return { ...base, stored: !!head?.exists, size: head?.exists ? head.size : null };
         } catch {
-          return { ...m, stored: null, size: null };
+          return { ...base, stored: null, size: null };
         }
       }));
     }

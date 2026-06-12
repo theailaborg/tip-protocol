@@ -210,12 +210,14 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     }
 
     let modalityResults;
+    let mediaResults = [];
     let providersUsed;
     let classifierVersion;
     let skipped = false;
     try {
       const fanOut = await _fanOutClassifierCalls(payload);
       modalityResults = fanOut.modalityResults;
+      mediaResults = fanOut.mediaResults || [];
       providersUsed = fanOut.providersUsed;
       classifierVersion = fanOut.classifierVersion;
       skipped = !!fanOut.skipped;
@@ -250,6 +252,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
         content_type: contentType,
         content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
         modality_results: [],
+        media_results: [],
         classifier_version: classifierVersion || "n/a",
         classifier_providers_used: providersUsed || "skipped_locally",
         completed_at: now(),
@@ -289,6 +292,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       _emitFailOpen(job, contentType, isLocalFallback ? "local_fallback_no_media_signal" : "hard_degraded_after_retries", {
         probability: agg.probability,
         modalityResults: agg.modality_results,
+        mediaResults,
       });
       return;
     }
@@ -309,6 +313,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       content_type: contentType,
       content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
       modality_results: agg.modality_results,
+      media_results: mediaResults,
       classifier_version: classifierVersion || "unknown",
       classifier_providers_used: providersUsed || "unknown",
       completed_at: now(),
@@ -361,6 +366,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // the classifier never produced.
     const probability = Number.isFinite(opts.probability) ? opts.probability : 0.5;
     const modalityResults = Array.isArray(opts.modalityResults) ? opts.modalityResults : [];
+    const mediaResults = Array.isArray(opts.mediaResults) ? opts.mediaResults : [];
     const tier = prescanCompletedSchema.tierFromProbability(probability);
     const flagged = tier === "high" || tier === "critical";
     const data = {
@@ -372,6 +378,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       content_type: contentType || "multi",
       content_type_meta: { hint_provided: null, resolution: "fail_open", reason: null },
       modality_results: modalityResults,
+      media_results: mediaResults,
       classifier_version: "unknown",
       classifier_providers_used: "fail_open",
       completed_at: now(),
@@ -451,9 +458,11 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // Surface as degraded so the aggregator handles them like other
     // unreliable signals.
     const modalityResults = [];
+    const mediaResults = [];
     const providers = new Set();
     let version;
-    for (const r of responses) {
+    for (let ri = 0; ri < responses.length; ri++) {
+      const r = responses[ri];
       if (!r) continue;
       providers.add(r.provider_used || "unknown");
       version = version || r.classifier_version;
@@ -465,11 +474,26 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
           // aggregator already treats degraded entries as unreliable.
           error: m.error || (heuristicOnly ? "heuristic_only_unreliable" : null),
         });
+        // Per-FILE attribution: call ri carries media[ri] (call 0 also
+        // carries the text, whose entry has modality "text" — skip it).
+        // The aggregator max-collapses same-modality entries for the
+        // verdict, so without this tagging the per-file scores would be
+        // unrecoverable once the bytes are retention-deleted or the
+        // model version moves on.
+        if (m.modality !== "text" && media[ri]) {
+          mediaResults.push({
+            media_id: media[ri].media_id,
+            mime: media[ri].mime,
+            probability: Number.isFinite(m.probability) ? m.probability : null,
+            provider: m.provider || r.provider_used || null,
+          });
+        }
       }
     }
 
     return {
       modalityResults,
+      mediaResults,
       providersUsed: Array.from(providers).join("|"),
       classifierVersion: version || "unknown",
     };
