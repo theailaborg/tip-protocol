@@ -459,6 +459,45 @@ Docker: `docker compose -f docker-compose.local.yml --profile mssql up -d`
 
 ---
 
+### Media Storage (local / S3)
+
+Registered content can carry media attachments (images, audio). Media
+bytes are content-addressed (`media_id = SHAKE-256(bytes)`, deduplicated
+by construction) and are NOT stored on chain; only the hash references
+are. Access is restricted to the five roles with standing on the content
+(author, assigned reviewer, disputer, juror, expert reviewer), and a
+three-stage retention sweep deletes bytes after their dispute-relevance
+window (21d base, 7d post-adjudication, 7d post-appeal); the on-chain
+hashes remain verifiable forever.
+
+Two interchangeable storage backends:
+
+| Backend | Use | Env |
+|---------|-----|-----|
+| `fs` (default) | development, single machine | `TIP_MEDIA_BACKEND=fs`, `TIP_MEDIA_FS_PATH=./data/media` |
+| `s3` | production | `TIP_MEDIA_BACKEND=s3` + bucket/region/KMS vars |
+
+Storage is **per-node**: each operator provisions, pays for, and serves
+their own bucket; peers fetch media through the origin node's API, never
+from each other's buckets.
+
+Setting up the S3 backend is one command (creates the bucket, encryption
+key, and node credentials in ~10 minutes, for any host: EC2, EKS,
+Hetzner, dev laptop):
+
+```bash
+cd infra/s3-media
+cp terraform.tfvars.example terraform.tfvars   # fill 3 values
+./setup.sh                                     # prints the env block for the node
+```
+
+Full start-to-end guide (including how to get AWS credentials):
+[`infra/s3-media/README.md`](./infra/s3-media/README.md). Operator
+runbook with console paths and smoke tests:
+[`docs/PROD_S3_SETUP.md`](./docs/PROD_S3_SETUP.md).
+
+---
+
 ### TLS and Reverse Proxy
 
 The Node.js process serves plain HTTP on `PORT` and plain TCP libp2p on

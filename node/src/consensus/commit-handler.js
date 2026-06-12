@@ -27,6 +27,7 @@ const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
 const registerIdentitySchema = require("../schemas/register-identity");
 const bindDomainSchema = require("../schemas/bind-domain");
+const nodeEndpointUpdateSchema = require("../schemas/node-endpoint-update");
 const updateProfileSchema = require("../schemas/update-profile");
 const prescanReviewTriggeredSchema = require("../schemas/prescan-review-triggered");
 const prescanReviewDismissedSchema = require("../schemas/prescan-review-dismissed");
@@ -521,6 +522,21 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         return { valid: true };
       }
 
+      case TX_TYPES.NODE_ENDPOINT_UPDATED: {
+        // Envelope signature already binds data.node_id to the node's
+        // registered key (NODE_ENVELOPE contract) — only the node itself
+        // can produce a valid update. Here: shape + existence only.
+        try {
+          nodeEndpointUpdateSchema.validateRequest(d);
+        } catch (err) {
+          return { valid: false, error: err.error || String(err) };
+        }
+        if (!dag.getNode(d.node_id)) {
+          return { valid: false, error: `NODE_ENDPOINT_UPDATED for unknown node ${d.node_id}` };
+        }
+        return { valid: true };
+      }
+
       case TX_TYPES.INTEREST_REGISTERED: {
         if (!d.slug) return { valid: true };
         const inBatch = validated.find(t =>
@@ -982,6 +998,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
             registered_urls: Array.isArray(d.registered_urls) ? d.registered_urls : [],
+            // M3 — media refs + canonical hash. Not signed individually:
+            // content_hash binds them via CNA-MIX-1 (mch + textHash).
+            media: Array.isArray(d.media) ? d.media : [],
+            media_canonical_hash: typeof d.media_canonical_hash === "string" ? d.media_canonical_hash : null,
           });
         }
         break;
@@ -1238,10 +1258,17 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             name: d.name || "",
             public_key: d.public_key || "",
             algorithm: d.algorithm || "ml-dsa-65",
+            api_endpoint: typeof d.api_endpoint === "string" ? d.api_endpoint : null,
             status: "active",
             registered_at: tx.timestamp,
             tx_id: tx.tx_id,
           });
+        }
+        break;
+
+      case TX_TYPES.NODE_ENDPOINT_UPDATED:
+        if (d.node_id && dag.getNode(d.node_id)) {
+          dag.updateNodeEndpoint(d.node_id, typeof d.api_endpoint === "string" ? d.api_endpoint : null);
         }
         break;
 

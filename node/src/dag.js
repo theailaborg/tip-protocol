@@ -102,6 +102,8 @@ function _canonContent(r) {
     override: r.override ? 1 : 0,
     registered_at: r.registered_at,
     registered_urls: Array.isArray(r.registered_urls) ? r.registered_urls : [],
+    media: Array.isArray(r.media) ? r.media : [],
+    media_canonical_hash: typeof r.media_canonical_hash === "string" ? r.media_canonical_hash : null,
     tx_id: r.tx_id || null,
   };
 }
@@ -212,6 +214,7 @@ function _canonNode(r) {
     node_id: r.node_id,
     name: r.name || null,
     status: r.status,
+    api_endpoint: r.api_endpoint || null,
     registered_at: r.registered_at,
   };
 }
@@ -478,6 +481,48 @@ class MemoryStore {
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
+  // Explorer list — newest-first, cursor-paginated. Returns up to
+  // limit+1 rows so the caller can detect "has more" without a count
+  // query. Cursor is an exclusive (registered_at, ctid) tuple; the
+  // composite tiebreak makes pagination stable when several rows share
+  // a timestamp.
+  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+    let rows = [...this._content.values()];
+    if (author) rows = rows.filter(c => c.author_tip_id === author);
+    if (origin) rows = rows.filter(c => c.origin_code === origin);
+    if (status) rows = rows.filter(c => c.status === status);
+    if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
+    rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
+    if (cursor) {
+      rows = rows.filter(c =>
+        c.registered_at < cursor.t
+        || (c.registered_at === cursor.t && c.ctid < cursor.c));
+    }
+    return rows.slice(0, limit + 1);
+  }
+  // M6 retention sweep — parity with SqliteStore.getContentWithMediaBefore.
+  getContentWithMediaBefore(cutoffMs) {
+    return [...this._content.values()].filter(c =>
+      typeof c.registered_at === "number"
+      && c.registered_at < cutoffMs
+      && Array.isArray(c.media)
+      && c.media.length > 0
+    );
+  }
+  // M6 — Map<media_id, reference_count> across every content row. See
+  // SqliteStore.getReferencedMediaIds for the contract.
+  getReferencedMediaIds() {
+    const out = new Map();
+    for (const c of this._content.values()) {
+      if (!Array.isArray(c.media)) continue;
+      for (const m of c.media) {
+        if (m && typeof m.media_id === "string") {
+          out.set(m.media_id, (out.get(m.media_id) || 0) + 1);
+        }
+      }
+    }
+    return out;
+  }
   getCleanRecordEligible(cutoff) {
     const txs = [...this._txs.values()];
     return [...this._identities.values()]
@@ -689,7 +734,11 @@ class MemoryStore {
     }
     const { public_key, algorithm, ...rest } = rec;
     void public_key; void algorithm;
-    this._nodes.set(rec.node_id, { ...rest });
+    this._nodes.set(rec.node_id, { api_endpoint: null, ...rest });
+  }
+  updateNodeEndpoint(nodeId, apiEndpoint) {
+    const row = this._nodes.get(nodeId);
+    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null });
   }
   getNode(nodeId) {
     const row = this._nodes.get(nodeId);
@@ -780,6 +829,21 @@ class MemoryStore {
       if (!best || r.valid_from_ts > best.valid_from_ts) best = r;
     }
     return best ? { public_key: best.public_key, algorithm: best.algorithm } : null;
+  }
+  // Full key chain for one entity, oldest first — the raw material a
+  // client walks to verify rotations from the tip_id-anchored root key
+  // to the key valid at any given tx timestamp.
+  getEntityKeyHistory(entityType, entityId) {
+    return [...this._entityKeys.values()]
+      .filter(r => r.entity_type === entityType && r.entity_id === entityId)
+      .sort((a, b) => a.valid_from_ts - b.valid_from_ts)
+      .map(r => ({
+        public_key: r.public_key,
+        algorithm: r.algorithm,
+        valid_from_ts: r.valid_from_ts,
+        valid_to_ts: r.valid_to_ts ?? null,
+        source_tx_id: r.source_tx_id ?? null,
+      }));
   }
   *iterateEntityKeys() {
     // For snapshot serialisation + state_merkle_root canonicalisation.
@@ -1686,6 +1750,8 @@ class SQLiteStore {
         override                   INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
         registered_at              INTEGER NOT NULL,
         registered_urls            TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
+        media                      TEXT,                            -- JSON-encoded [{media_id, mime}, ...]; ordered (matches mch derivation)
+        media_canonical_hash       TEXT,                            -- shake256 of media[].media_id concat; null when no media
         tx_id                      TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
@@ -1808,6 +1874,7 @@ class SQLiteStore {
         node_id         TEXT PRIMARY KEY,
         name            TEXT,
         status          TEXT NOT NULL DEFAULT 'active',
+        api_endpoint    TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
         registered_at INTEGER NOT NULL
       );
 
@@ -2342,14 +2409,32 @@ class SQLiteStore {
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
-            override,registered_at,registered_urls,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
+      // M6 retention — content rows with media[] that pre-date a cutoff,
+      // so the sweep walks only what could possibly be expired. Empty
+      // `media` (JSON-encoded "[]" or NULL) is filtered out at the SQL
+      // layer because text-only content carries no bytes to delete.
+      contentWithMediaBefore: this.db.prepare(
+        `SELECT * FROM content
+         WHERE registered_at < ?
+           AND media IS NOT NULL
+           AND media <> '[]'`
+      ),
+      // Returns just the media JSON column for every content row — used
+      // by the orphan sweep to build the "referenced media_id" set
+      // without hydrating the full rows.
+      contentMediaRefs: this.db.prepare(
+        `SELECT media FROM content
+         WHERE media IS NOT NULL
+           AND media <> '[]'`
+      ),
       hasVerification: this.db.prepare(
         `SELECT 1 FROM transactions
          WHERE tx_type='CONTENT_VERIFIED'
@@ -2444,8 +2529,11 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,registered_at)
-         VALUES (?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,registered_at)
+         VALUES (?,?,?,?,?)`
+      ),
+      updateNodeEndpoint: this.db.prepare(
+        "UPDATE nodes SET api_endpoint=? WHERE node_id=?"
       ),
       getNode: this.db.prepare(
         `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
@@ -2491,6 +2579,11 @@ class SQLiteStore {
       iterateEntityKeys: this.db.prepare(
         `SELECT * FROM entity_keys
          ORDER BY entity_type, entity_id, valid_from_ts`
+      ),
+      getEntityKeyHistory: this.db.prepare(
+        `SELECT * FROM entity_keys
+         WHERE entity_type=? AND entity_id=?
+         ORDER BY valid_from_ts`
       ),
       clearEntityKeys: this.db.prepare("DELETE FROM entity_keys"),
 
@@ -2916,6 +3009,7 @@ class SQLiteStore {
     const urls = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
     const authors = Array.isArray(rec.authors) ? rec.authors : [];
     const extras = (rec.extras && typeof rec.extras === "object" && !Array.isArray(rec.extras)) ? rec.extras : {};
+    const media = Array.isArray(rec.media) ? rec.media : [];
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
       rec.content_hash, rec.perceptual_hash || null,
@@ -2935,7 +3029,10 @@ class SQLiteStore {
       rec.prescan_overall_degraded ? 1 : 0,
       rec.content_type_hint || null,
       rec.override ? 1 : 0,
-      rec.registered_at, JSON.stringify(urls), rec.tx_id || null
+      rec.registered_at, JSON.stringify(urls),
+      JSON.stringify(media),
+      typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
+      rec.tx_id || null
     );
   }
   // SQL returns array/object columns as JSON-encoded TEXT. Decode all
@@ -2951,6 +3048,7 @@ class SQLiteStore {
       registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
       authors: (() => { const v = decode(row.authors, []); return Array.isArray(v) ? v : []; })(),
       extras: (() => { const v = decode(row.extras, {}); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
+      media: (() => { const v = decode(row.media, []); return Array.isArray(v) ? v : []; })(),
     };
   }
   getContent(ctid) { return this._hydrateContent(this._stmts.getContent.get(ctid)); }
@@ -2958,6 +3056,51 @@ class SQLiteStore {
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
+  // Explorer list — see MemoryStore.listContent for the contract.
+  // Filters vary per call, so the statement is built dynamically; the
+  // (status, author, origin) columns are indexed.
+  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+    const where = [];
+    const params = [];
+    if (author) { where.push("author_tip_id = ?"); params.push(author); }
+    if (origin) { where.push("origin_code = ?"); params.push(origin); }
+    if (status) { where.push("status = ?"); params.push(status); }
+    if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
+    if (cursor) {
+      where.push("(registered_at < ? OR (registered_at = ? AND ctid < ?))");
+      params.push(cursor.t, cursor.t, cursor.c);
+    }
+    const sql = `SELECT * FROM content${where.length ? " WHERE " + where.join(" AND ") : ""}
+      ORDER BY registered_at DESC, ctid DESC LIMIT ?`;
+    params.push(limit + 1);
+    return this.db.prepare(sql).all(...params).map(r => this._hydrateContent(r));
+  }
+  // M6 — content rows registered before `cutoffMs` that carry media[].
+  getContentWithMediaBefore(cutoffMs) {
+    return this._stmts.contentWithMediaBefore.all(cutoffMs).map(r => this._hydrateContent(r));
+  }
+  // M6 — Map<media_id, reference_count> across every content row.
+  //   - Orphan sweep checks `.has(mediaId)` to decide if a stored object
+  //     is referenced at all.
+  //   - Content-retention sweep checks the count so dedup'd media (same
+  //     bytes referenced by multiple ctids) only gets deleted when ALL
+  //     referring rows are expired in the same pass.
+  getReferencedMediaIds() {
+    const out = new Map();
+    for (const row of this._stmts.contentMediaRefs.iterate()) {
+      try {
+        const arr = JSON.parse(row.media);
+        if (Array.isArray(arr)) {
+          for (const m of arr) {
+            if (m && typeof m.media_id === "string") {
+              out.set(m.media_id, (out.get(m.media_id) || 0) + 1);
+            }
+          }
+        }
+      } catch { /* corrupt row — skip */ }
+    }
+    return out;
+  }
   hasVerification(ctid, tipId) { return !!this._stmts.hasVerification.get(ctid, tipId); }
   hasDispute(ctid, tipId) { return !!this._stmts.hasDispute.get(ctid, tipId); }
 
@@ -3123,8 +3266,12 @@ class SQLiteStore {
     this._stmts.saveNode.run(
       rec.node_id, rec.name || null,
       rec.status || "active",
+      rec.api_endpoint || null,
       rec.registered_at || nowMs()
     );
+  }
+  updateNodeEndpoint(nodeId, apiEndpoint) {
+    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, nodeId);
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes() { return this._stmts.getAllNodes.all(); }
@@ -3163,6 +3310,17 @@ class SQLiteStore {
   getKeyValidAt(entity_type, entity_id, timestamp) {
     const r = this._stmts.getKeyValidAt.get(entity_type, entity_id, timestamp, timestamp);
     return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+  }
+  // Full key chain for one entity, oldest first — parity with
+  // MemoryStore.getEntityKeyHistory.
+  getEntityKeyHistory(entityType, entityId) {
+    return this._stmts.getEntityKeyHistory.all(entityType, entityId).map(r => ({
+      public_key: r.public_key,
+      algorithm: r.algorithm,
+      valid_from_ts: r.valid_from_ts,
+      valid_to_ts: r.valid_to_ts ?? null,
+      source_tx_id: r.source_tx_id ?? null,
+    }));
   }
   *iterateEntityKeys() {
     for (const r of this._stmts.iterateEntityKeys.iterate()) yield r;
@@ -3814,6 +3972,10 @@ function _buildDagHandle(store, config) {
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
+    listContent: (opts) => store.listContent(opts),
+    // M6 — used by the periodic media-retention sweep.
+    getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),
+    getReferencedMediaIds: () => store.getReferencedMediaIds(),
     getCleanRecordEligible: (cutoff) => store.getCleanRecordEligible(cutoff),
     hasVerification: (ctid, tipId) => store.hasVerification(ctid, tipId),
     hasDispute: (ctid, tipId) => store.hasDispute(ctid, tipId),
@@ -3862,6 +4024,7 @@ function _buildDagHandle(store, config) {
 
     // ── Nodes ────────────────────────────────────────────────────────────
     saveNode: (rec) => store.saveNode(rec),
+    updateNodeEndpoint: (nodeId, apiEndpoint) => store.updateNodeEndpoint(nodeId, apiEndpoint),
     getNode: (id) => store.getNode(id),
     getAllNodes: () => store.getAllNodes(),
 
@@ -3878,6 +4041,7 @@ function _buildDagHandle(store, config) {
     // tx.timestamp so the right key is selected for that point in time.
     // Returns { public_key, algorithm } or null.
     getKeyValidAt: (entityType, entityId, timestamp) => store.getKeyValidAt(entityType, entityId, timestamp),
+    getEntityKeyHistory: (entityType, entityId) => store.getEntityKeyHistory(entityType, entityId),
     iterateEntityKeys: () => store.iterateEntityKeys(),
     clearEntityKeys: () => store.clearEntityKeys(),
 
@@ -4282,4 +4446,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore };

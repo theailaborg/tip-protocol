@@ -95,6 +95,10 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   // Async-prescan worker verdict — node-signed envelope; carries
   // probability + tier + per-modality breakdown.
   [TX_TYPES.PRESCAN_COMPLETED]: NODE_ENVELOPE,
+  // Node updating its own public API base URL. data.node_id is both
+  // subject and signer — the envelope only verifies under that node's
+  // registered key, so self-update is enforced by the signature itself.
+  [TX_TYPES.NODE_ENDPOINT_UPDATED]: NODE_ENVELOPE,
 
   // ─── Subject-signed body sigs (CTID-bound replay protection) ─────────────
   [TX_TYPES.CONTENT_VERIFIED]: {
@@ -264,6 +268,12 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
       name: data.name,
       public_key: data.public_key,
       approving_vp_id: data.approving_vp_id,
+      // Optional — the node's public API base URL. Peers use it for
+      // cross-node media redirects (per-node S3 buckets mean bytes live
+      // only on the upload-receiving node). Omitted on legacy txs;
+      // included in canonical bytes only when present so old committed
+      // txs keep verifying byte-for-byte.
+      ...(data.api_endpoint ? { api_endpoint: data.api_endpoint } : {}),
     }),
   },
 

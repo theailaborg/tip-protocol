@@ -109,6 +109,7 @@ function subjectTipId(tx) {
     case TX_TYPES.APPEAL_RESULT:
     case TX_TYPES.VP_REGISTERED:
     case TX_TYPES.NODE_REGISTERED:
+    case TX_TYPES.NODE_ENDPOINT_UPDATED:
     case TX_TYPES.AI_CLASSIFIER_RESULT:
       return null;
 

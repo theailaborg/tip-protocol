@@ -1,13 +1,14 @@
 "use strict";
 
 const {
-  shake256, hashContent, perceptualHashText, tipNormalize,
+  shake256, perceptualHashText, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
+const contentListSchema = require("../schemas/content-list");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -19,7 +20,7 @@ const helpers = require("./helpers");
 const { validate } = require("../middleware/validate");
 const { log } = require("../logger");
 
-function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
+function createContentService({ dag, scoring, config, submitTx, prescanJobs, mediaService }) {
 
   // Enqueue the prescan job for the worker. The job payload carries
   // everything the worker needs (text, origin_code, resolved content_type,
@@ -29,7 +30,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
   // succeeds; the failover trigger will eventually pick the content up
   // if PRESCAN_COMPLETED never arrives. No-op when prescanJobs isn't
   // wired (legacy paths / certain test setups).
-  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution }) {
+  function _enqueuePrescanJob({ ctid, content, origin_code, signer_tip_id, ctypeResolution, media }) {
     if (!prescanJobs) return;
     try {
       const verifiedOhCount = dag.getContentByAuthor(signer_tip_id)
@@ -48,6 +49,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
           },
           creator_cleared_count: verifiedOhCount,
           author_tip_id: signer_tip_id,
+          // M3 — media references (media_id + mime). Worker fetches bytes
+          // from mediaStorage at scan time; refs keep the queue row small.
+          media: Array.isArray(media) ? media : [],
         },
       });
     } catch (err) {
@@ -55,21 +59,46 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     }
   }
 
-  function register(body) {
+  async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
     const {
-      signer_tip_id, origin_code, content, signature, media_canonical_hash,
+      signer_tip_id, origin_code, content, signature,
     } = body;
     const identity = contentRegisterSchema.resolveSigner(signer_tip_id, dag);
 
-    // CNA-MIX-1: when media hash is present, combine media + text hashes.
-    // The client signs the combined hash, so the node must reproduce it.
+    // M3 — validate each media[] reference exists in storage with matching
+    // mime, dedup on media_id, return canonical list for downstream use.
+    // Throws 404 / 400 before signature verify so clients see a clear error.
+    const resolvedMedia = mediaService
+      ? await mediaService.resolveRefs(body.media)
+      : (Array.isArray(body.media) ? body.media.map(m => ({ media_id: m.media_id, mime: String(m.mime).toLowerCase() })) : []);
+
+    // CNA-MIX-1: derive the media canonical hash from the resolved media[]
+    // when present; fall back to client-supplied legacy field. The derived
+    // value MUST match what the client signed — if both are sent and
+    // differ, reject as a tampering signal.
+    const derivedMch = contentRegisterSchema.mediaCanonicalHash(resolvedMedia);
+    if (body.media_canonical_hash && derivedMch && body.media_canonical_hash !== derivedMch) {
+      throw schemaError(
+        400,
+        "media_canonical_hash does not match shake256 of media[].media_id concatenation",
+        "media_canonical_hash_mismatch",
+      );
+    }
+    const media_canonical_hash = derivedMch || body.media_canonical_hash || null;
+
+    // The client signs over content_hash, which combines media + text per
+    // CNA-MIX-1. Server reproduces the same formula deterministically.
     const textHashFull = content ? shake256(tipNormalize(content)) : shake256("");
     const contentHashFull = media_canonical_hash
       ? shake256(media_canonical_hash + textHashFull)
       : textHashFull;
-    const contentHashShort = hashContent(content || media_canonical_hash || "");
+    // CTID short hash derives from the full canonical hash so it covers
+    // every modality (text, media, mixed). Earlier branching on raw inputs
+    // collided on same-text-different-media posts. shake256 output is
+    // already uniformly distributed hex, so a 14-char prefix is fine.
+    const contentHashShort = contentHashFull.slice(0, 14);
 
     // ── Signature verification ─────────────────────────────────────────────
     const canonicalPayload = contentRegisterSchema.buildSigningPayload(body, contentHashFull);
@@ -86,7 +115,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     // REGISTER_CONTENT only carries the hint (publisher's declaration).
     const ctypeResolution = contentType.resolve({
       text: content,
-      // media[] is plumbed in a follow-up step; for now there's only text.
+      media: resolvedMedia,
       content_type_hint: body.content_type_hint || null,
       // First registered URL drives platform-based resolution
       // (twitter.com → MIXED, youtube.com → video, etc.). See
@@ -135,6 +164,12 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
         extras: canonicalPayload.extras,
         registered_urls: canonicalPayload.registered_urls,
         signer_tip_id: canonicalPayload.signer_tip_id,
+        // ── M3 media references. Not in the signed payload — content_hash
+        //    already commits to media via CNA-MIX-1 (shake256(mch + textHash)).
+        //    Persisted on tx.data so commit-handler can mirror onto the
+        //    content row and the worker can resolve bytes from storage.
+        media: resolvedMedia,
+        media_canonical_hash,
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -147,6 +182,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,
+      media: resolvedMedia,
     });
 
     const status = CONTENT_STATUS.PENDING_PRESCAN;
@@ -192,9 +228,26 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     };
   }
 
-  function resolve(ctid) {
+  async function resolve(ctid) {
     const rec = dag.getContent(ctid);
     if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
+
+    // Public storage facts per media item (existence + size + the
+    // server-detected mime). Metadata only — the bytes themselves stay
+    // behind the role-gated media-access endpoint. Lets any viewer
+    // confirm "the referenced object really is held by this node"
+    // without revealing content.
+    let enrichedMedia = rec.media;
+    if (mediaService && Array.isArray(rec.media) && rec.media.length > 0) {
+      enrichedMedia = await Promise.all(rec.media.map(async (m) => {
+        try {
+          const head = await mediaService.head(m.media_id);
+          return { ...m, stored: !!head?.exists, size: head?.exists ? head.size : null };
+        } catch {
+          return { ...m, stored: null, size: null };
+        }
+      }));
+    }
 
     const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
     const txValid = tx ? verifyTxId(tx) : false;
@@ -218,6 +271,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
 
     return {
       ...rec,
+      media: enrichedMedia,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       original_origin_code: originalOriginCode,
       origin_changed: originChanged,
@@ -497,7 +551,30 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs }) {
     };
   }
 
-  return { register, resolve, verify, updateOrigin, retract, getPrescanStatus };
+  // Explorer list — slim rows, cursor-paginated, newest first. Heavy
+  // fields (authors[], extras, media[]) stay out of list rows; clients
+  // follow the ctid to resolve() for the full record.
+  function list(query) {
+    const opts = contentListSchema.validateRequest(query);
+    const rows = dag.listContent(opts);
+    const hasMore = rows.length > opts.limit;
+    const page = hasMore ? rows.slice(0, opts.limit) : rows;
+    const items = page.map(c => ({
+      ctid: c.ctid,
+      author_tip_id: c.author_tip_id,
+      origin_code: c.origin_code,
+      status: c.status,
+      prescan_status: c.prescan_status,
+      prescan_tier: c.prescan_tier,
+      media_count: Array.isArray(c.media) ? c.media.length : 0,
+      registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
+      registered_at: c.registered_at,
+    }));
+    const next_cursor = hasMore ? contentListSchema.encodeCursor(page[page.length - 1]) : null;
+    return { items, next_cursor };
+  }
+
+  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus };
 }
 
 module.exports = { createContentService };

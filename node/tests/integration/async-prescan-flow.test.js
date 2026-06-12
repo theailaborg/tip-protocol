@@ -197,7 +197,7 @@ describe("async-prescan e2e — happy path", () => {
     });
 
     // Step 1: register. Returns 202-style result and enqueues the job.
-    const r = fx.contentService.register(fx.buildRegisterBody());
+    const r = await fx.contentService.register(fx.buildRegisterBody());
     expect(r.status).toBe(CONTENT_STATUS.PENDING_PRESCAN);
     expect(r.prescan_status).toBe("pending");
     expect(r.prescan_poll_url).toMatch(/^\/v1\/content\/.+\/prescan_status$/);
@@ -244,7 +244,7 @@ describe("async-prescan e2e — happy path", () => {
       classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.93 }] }),
     });
 
-    const r = fx.contentService.register(fx.buildRegisterBody({ content: "ai-style writing" }));
+    const r = await fx.contentService.register(fx.buildRegisterBody({ content: "ai-style writing" }));
     const ctid = r.ctid;
     fx.commitDrain(clock.now());
 
@@ -272,7 +272,7 @@ describe("async-prescan e2e — fail-open via completion trigger", () => {
     });
 
     // Register; do NOT run the worker (simulate it being down).
-    const r = fx.contentService.register(fx.buildRegisterBody());
+    const r = await fx.contentService.register(fx.buildRegisterBody());
     const ctid = r.ctid;
     fx.commitDrain(clock.now());
 
@@ -316,7 +316,7 @@ describe("async-prescan e2e — fail-open via completion trigger", () => {
       now: clock.now,
       classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.93 }] }),
     });
-    const r = fx.contentService.register(fx.buildRegisterBody());
+    const r = await fx.contentService.register(fx.buildRegisterBody());
     const ctid = r.ctid;
     fx.commitDrain(clock.now());
 
@@ -381,7 +381,7 @@ describe("async-prescan e2e — non-OH origin", () => {
     // Skip this rebuild for OH; the locally-skipped path is covered by
     // unit tests. Here we just exercise the worker tick to confirm no
     // crashes when registering normal content + tick path runs end-to-end.
-    const r = fx.contentService.register(fx.buildRegisterBody());
+    const r = await fx.contentService.register(fx.buildRegisterBody());
     fx.commitDrain(clock.now());
     const tick = await fx.worker.tick();
     expect(tick.outcome).toBe("completed");

@@ -92,7 +92,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     // explicit check stays so the error is precise if someone bypasses
     // the validator.)
     if (body.evidence_hash !== undefined && evidence === undefined) {
-      throw { status: 400, error: "evidence_hash provided without an evidence body — attach `evidence: { payload, signature }` instead" };
+      throw { status: 400, error: "evidence_hash provided without an evidence body; attach `evidence: { payload, signature }` instead" };
     }
 
     // Persist the body first so the subsequent canDispute uniqueness check
@@ -448,7 +448,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const prefix = idOrPrefix.toLowerCase();
     const matches = dag.getTxsByType(TX_TYPES.CONTENT_DISPUTED).filter(t => t.tx_id.startsWith(prefix));
     if (matches.length === 0) throw { status: 404, error: "Dispute not found" };
-    if (matches.length > 1) throw { status: 409, error: `Ambiguous dispute_id (${matches.length} matches) — provide more characters` };
+    if (matches.length > 1) throw { status: 409, error: `Ambiguous dispute_id (${matches.length} matches); provide more characters` };
     return matches[0];
   }
 
@@ -714,9 +714,10 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
   }
 
   function _ctidLabel(ctid) {
-    // Shorten "tip://c/AA-3356172f3297aa-4c0b" → "tip://c/AA-…" for titles.
-    const m = /^tip:\/\/c\/([A-Z]{2})-/.exec(ctid || "");
-    return m ? `tip://c/${m[1]}-…` : (ctid || "");
+    // Always the FULL identifier in notification text. Inbox cards, email
+    // digests, and push payloads need copy-pasteable ids; shortening for
+    // display is the client's call, never the server's.
+    return ctid || "";
   }
 
   // Recency window for purely-informational notifications. Items older than
@@ -786,7 +787,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           id: `${type}:dispute:${disputeId}`,
           type,
           priority: "info",
-          title: `${role === "expert" ? "Expert" : "Jury"} vote revealed — awaiting verdict`,
+          title: `${role === "expert" ? "Expert" : "Jury"} vote revealed; awaiting verdict`,
           summary: `${_ctidLabel(ctid)} reveal phase ${now > revealDeadlineMs ? "closed" : "open until " + revealDeadlineMs}; tally pending.`,
           role,
           ctid,
@@ -829,7 +830,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           id: `${type}:dispute:${disputeId}`,
           type,
           priority: "info",
-          title: `${role === "expert" ? "Expert" : "Jury"} vote committed — reveal opens in ${_shortRemaining(commitDeadlineMs, now)}`,
+          title: `${role === "expert" ? "Expert" : "Jury"} vote committed; reveal opens in ${_shortRemaining(commitDeadlineMs, now)}`,
           summary: `${_ctidLabel(ctid)}: commit phase ends at ${commitDeadlineMs}, reveal window then opens for ${Math.round((revealDeadlineMs - commitDeadlineMs) / 3600000)}h.`,
           role,
           ctid,
@@ -902,8 +903,8 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
 
       if (isLoser && !appealAlreadyFiled && now < filingDeadlineMs) {
         const appealTitle = isAuthor
-          ? `Your content's verdict was ${verdict} — appeal closes in ${_shortRemaining(filingDeadlineMs, now)}`
-          : `Your dispute was ${verdict} — appeal closes in ${_shortRemaining(filingDeadlineMs, now)}`;
+          ? `Your content's verdict was ${verdict}; appeal closes in ${_shortRemaining(filingDeadlineMs, now)}`
+          : `Your dispute was ${verdict}; appeal closes in ${_shortRemaining(filingDeadlineMs, now)}`;
         items.push({
           id: `appeal_available:dispute:${disputeId}`,
           type: "appeal_available",
@@ -1052,8 +1053,8 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           type: "review_assignment_pending",
           priority: overdue ? "urgent" : (hoursRemaining <= 6 ? "urgent" : "high"),
           title: overdue
-            ? `Review assignment past SLA — auto-recuse imminent`
-            : `Review assignment open — ${hoursRemaining}h to decide or recuse`,
+            ? `Review assignment past SLA; auto-recuse imminent`
+            : `Review assignment open: ${hoursRemaining}h to decide or recuse`,
           summary: `${_ctidLabel(r.ctid)} is awaiting your decision. Dismiss, confirm, or recuse before the assignment auto-recuses and reassigns.`,
           role: "reviewer",
           ctid: r.ctid,
@@ -1117,8 +1118,8 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
             type: "prescan_review_decision_required",
             priority: "high",
             title: remainingMs > 0
-              ? `Reviewer confirmed the AI flag — ${remainingHours}h to respond.`
-              : `Reviewer confirmed the AI flag — decision window elapsed.`,
+              ? `Reviewer confirmed the AI flag; ${remainingHours}h to respond.`
+              : `Reviewer confirmed the AI flag; decision window elapsed.`,
             summary: `${_ctidLabel(c.ctid)}: an independent reviewer agreed with the ${c.prescan_tier.toUpperCase()} AI assessment${openReview.suggested_origin ? ` and suggested ${openReview.suggested_origin}` : ""}. Accept the correction privately (-10 reputation) or escalate to a public dispute.`,
             role: "author",
             ctid: c.ctid,
@@ -1196,7 +1197,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           id: `content_flagged_for_review:${c.ctid}`,
           type: "content_flagged_for_review",
           priority: "high",
-          title: `${remainingHours}h to reconsider — reviewer engages after that.`,
+          title: `${remainingHours}h to reconsider; reviewer engages after that.`,
           summary: `${_ctidLabel(c.ctid)} was flagged at ${c.prescan_tier.toUpperCase()} AI confidence (${Math.round((c.prescan_probability || 0) * 100)}%). Update the origin to AA / AG / MX during this window for a clean exit, or do nothing and an independent reviewer will examine it at h=48.`,
           role: "author",
           ctid: c.ctid,
@@ -1230,7 +1231,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         type: "dispute_filed_against_me",
         priority: "info",
         title: `New dispute filed against your content`,
-        summary: `${_ctidLabel(dispute.data.ctid)} — ${dispute.data?.declared_origin}→${dispute.data?.claimed_origin} claim.`,
+        summary: `${_ctidLabel(dispute.data.ctid)}: ${dispute.data?.declared_origin} to ${dispute.data?.claimed_origin} claim.`,
         role: "author",
         ctid: dispute.data.ctid,
         dispute_id: disputeId,

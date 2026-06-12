@@ -52,6 +52,17 @@ function shake256Multi(...parts) {
   return h.digest("hex");
 }
 
+/**
+ * Incremental SHAKE-256 hasher for streaming inputs (large media uploads).
+ * Same digest as shake256() for the same bytes — call .update(chunk) per
+ * chunk, then .digest("hex") once.
+ * @param {number} outputBytes  Default 32 (256 bits)
+ * @returns {import('crypto').Hash}
+ */
+function shake256Incremental(outputBytes = 32) {
+  return crypto.createHash("shake256", { outputLength: outputBytes });
+}
+
 // ─── ML-DSA-65 KEYPAIR (Dilithium, FIPS 204) ─────────────────────────────────
 // Uses @noble/post-quantum (ESM) via a lazy async initialiser.
 // Call `await initCrypto()` once at process startup before using any PQ function.
@@ -570,6 +581,7 @@ module.exports = {
   initCrypto,
   shake256,
   shake256Multi,
+  shake256Incremental,
   generateMLDSAKeypair,
   mldsaSign,
   mldsaVerify,

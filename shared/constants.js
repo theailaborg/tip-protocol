@@ -473,6 +473,10 @@ const TX_TYPES = Object.freeze({
   VP_REGISTERED: "VP_REGISTERED",
   VP_SUSPENDED: "VP_SUSPENDED",
   NODE_REGISTERED: "NODE_REGISTERED",
+  // Node self-service update of its public API base URL. Envelope-signed
+  // by the node's own registered key — only the node itself can repoint
+  // where peers redirect reviewers for its media bytes.
+  NODE_ENDPOINT_UPDATED: "NODE_ENDPOINT_UPDATED",
   // Interest taxonomy — VP-attested registry entries. Each tx adds a
   // {slug, label} row to interests_registry. Users reference these slugs
   // in their UPDATE_PROFILE.interests selection. Genesis seeds the initial

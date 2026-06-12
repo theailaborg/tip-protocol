@@ -422,6 +422,33 @@ describe("verifyTx — DAG-lookup, no fallback", () => {
     expect(schema.verifyTx(tx, dag)).toEqual({ ok: true });
   });
 
+  test("media[] consistent with media_canonical_hash → ok", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-vt-media-ok";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    const tx = _validTx(kp, tipId);
+    const media = [{ media_id: "a".repeat(64), mime: "image/png" }];
+    tx.data.media = media;
+    tx.data.media_canonical_hash = schema.mediaCanonicalHash(media);
+    expect(schema.verifyTx(tx, dag)).toEqual({ ok: true });
+  });
+
+  test("media[] tampered after signing → 400 media_canonical_hash_mismatch", () => {
+    // Proposing node swaps a media ref on the committed tx. The client
+    // signature still verifies (it covers content_hash, not media[]),
+    // so the mch re-derivation is the only thing that catches it.
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-vt-media-bad";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    const tx = _validTx(kp, tipId);
+    const media = [{ media_id: "a".repeat(64), mime: "image/png" }];
+    tx.data.media_canonical_hash = schema.mediaCanonicalHash(media);
+    tx.data.media = [{ media_id: "b".repeat(64), mime: "image/png" }];  // swapped
+    const r = schema.verifyTx(tx, dag);
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("media_canonical_hash_mismatch");
+  });
+
   test("signer NOT on DAG → 412 signer_not_registered (no fallback)", () => {
     const kp = generateMLDSAKeypair();
     const tipId = "tip://id/US-vt-missing";
@@ -478,5 +505,108 @@ describe("verifyTx — DAG-lookup, no fallback", () => {
     expect(r.ok).toBe(false);
     expect(r.status).toBe(400);
     expect(r.code).toBe("signature_missing");
+  });
+});
+
+// ─── M3: media[] validateRequest + mediaCanonicalHash ─────────────────────
+
+describe("validateRequest — media[] shape checks", () => {
+  function _baseBody(tipId) {
+    return {
+      signer_tip_id: tipId,
+      origin_code: "OH",
+      signature: "deadbeef",
+      content: "some content",
+      authors: [{ tip_id: tipId, role: "byline", key_mode: "attribution", signed: false, tip_id_type: "personal" }],
+    };
+  }
+  function _depsFor(tipId, kp, opts = {}) {
+    return {
+      mediaLimits: { media_items_max: opts.itemsMax ?? 8 },
+      dag: {
+        getIdentity: (t) => (t === tipId ? { tip_id: tipId, public_key: kp.publicKey, status: "active" } : null),
+        isRevoked: () => false,
+      },
+    };
+  }
+
+  test("media[] missing — accepted (text-only path)", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-noimg";
+    expect(() => schema.validateRequest(_baseBody(tipId), _depsFor(tipId, kp))).not.toThrow();
+  });
+
+  test("media not an array → media_invalid", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-bad";
+    const body = { ..._baseBody(tipId), media: "not-an-array" };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
+      .toThrow(expect.objectContaining({ code: "media_invalid" }));
+  });
+
+  test("media[] exceeds limit → media_items_max", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-toomany";
+    const body = {
+      ..._baseBody(tipId),
+      media: Array.from({ length: 3 }, (_, i) => ({
+        media_id: String(i).padStart(64, "a"),
+        mime: "image/png",
+      })),
+    };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp, { itemsMax: 2 })))
+      .toThrow(expect.objectContaining({ code: "media_items_max" }));
+  });
+
+  test("media_id wrong length → media_id_invalid", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-shortid";
+    const body = { ..._baseBody(tipId), media: [{ media_id: "abc", mime: "image/png" }] };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
+      .toThrow(expect.objectContaining({ code: "media_id_invalid" }));
+  });
+
+  test("media_id uppercase hex rejected — strictly lowercase per content-addressed convention", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-uppercase";
+    const body = { ..._baseBody(tipId), media: [{ media_id: "A".repeat(64), mime: "image/png" }] };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
+      .toThrow(expect.objectContaining({ code: "media_id_invalid" }));
+  });
+
+  test("mime not image/audio/video → media_mime_invalid", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-badmime";
+    const body = { ..._baseBody(tipId), media: [{ media_id: "a".repeat(64), mime: "application/pdf" }] };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp)))
+      .toThrow(expect.objectContaining({ code: "media_mime_invalid" }));
+  });
+
+  test("happy path: media[] with one image accepted", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-m3-happy";
+    const body = { ..._baseBody(tipId), media: [{ media_id: "a".repeat(64), mime: "image/png" }] };
+    expect(() => schema.validateRequest(body, _depsFor(tipId, kp))).not.toThrow();
+  });
+});
+
+describe("mediaCanonicalHash — derivation", () => {
+  test("empty or missing media → null (caller treats as no media)", () => {
+    expect(schema.mediaCanonicalHash([])).toBeNull();
+    expect(schema.mediaCanonicalHash(null)).toBeNull();
+    expect(schema.mediaCanonicalHash(undefined)).toBeNull();
+  });
+
+  test("single media → shake256(media_id)", () => {
+    const mid = "a".repeat(64);
+    expect(schema.mediaCanonicalHash([{ media_id: mid, mime: "image/png" }]))
+      .toBe(shake256(mid));
+  });
+
+  test("ordered concat — swapping order changes the hash (catches reorder tampering)", () => {
+    const a = "a".repeat(64), b = "b".repeat(64);
+    const h1 = schema.mediaCanonicalHash([{ media_id: a }, { media_id: b }]);
+    const h2 = schema.mediaCanonicalHash([{ media_id: b }, { media_id: a }]);
+    expect(h1).not.toBe(h2);
   });
 });

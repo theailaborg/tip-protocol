@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and fill in. These three lines are the entire
+# per-operator configuration; setup.sh handles everything else.
+
+# Globally unique. Convention: tip-node-{your-node-short-id}-media-{region}
+bucket_name = "tip-node-CHANGEME-media-eu-north-1"
+
+# Region the bucket + KMS key live in. Pick the region closest to the node.
+region = "eu-north-1"
+
+# Where the node runs:
+#   "ec2": node on an EC2 instance (or docker on EC2)
+#   "irsa": node as an EKS pod (also set oidc_provider_arn / oidc_issuer_host)
+#   "external": node on a non-AWS host (Hetzner/DO/bare metal) via
+#                IAM Roles Anywhere (setup.sh generates the certificate)
+#   "keys": easiest handover; setup.sh prints a bucket-scoped access key,
+#           paste the env block on any machine, any cloud
+#           (long-lived secret: rotate every 90 days)
+trust_mode = "keys"

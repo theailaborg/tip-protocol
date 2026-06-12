@@ -41,6 +41,7 @@
 "use strict";
 
 const { createClassifierClient } = require("./services/classifier-client");
+const { createLocalClassifierClient, createFallbackClassifierClient } = require("./services/classifier-local");
 const { createPrescanWorker } = require("./workers/prescan-worker");
 const { createTxSubmitter } = require("./services/helpers");
 const { log } = require("./logger");
@@ -53,6 +54,15 @@ function _resolveWorkerCount() {
   return DEFAULT_WORKER_COUNT;
 }
 
+// Local-fallback mode: when the external classifier is missing or
+// unreachable, serve heuristic text verdicts + stub media values so
+// registrations keep flowing. Enabled by default; TIP_CLASSIFIER_FALLBACK=0
+// restores strict behaviour (no classifier → no prescan worker; content
+// waits for the cross-node fail-open trigger).
+function _fallbackEnabled() {
+  return process.env.TIP_CLASSIFIER_FALLBACK !== "0";
+}
+
 /**
  * Boot N prescan workers (default 1) sharing the same prescan_jobs queue.
  *
@@ -63,16 +73,25 @@ function _resolveWorkerCount() {
  * @param {Object} deps.config        Node config (signing key + reg id)
  * @returns {Object}                  { workers: Worker[], stopAll(): void }
  */
-function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
+function initPrescanWorker({ dag, prescanJobs, consensusRef, config, mediaService }) {
   const empty = { workers: [], stopAll() { /* no-op */ } };
 
   if (process.env.TIP_PRESCAN_WORKER_DISABLE === "1") {
     log.info("Prescan worker disabled via TIP_PRESCAN_WORKER_DISABLE=1");
     return empty;
   }
-  if (!process.env.TIP_CLASSIFIER_URL) {
-    log.warn("Prescan worker NOT started: TIP_CLASSIFIER_URL not set");
+  const classifierConfigured = !!process.env.TIP_CLASSIFIER_URL;
+  if (!classifierConfigured && !_fallbackEnabled()) {
+    log.warn("Prescan worker NOT started: TIP_CLASSIFIER_URL not set and fallback disabled (TIP_CLASSIFIER_FALLBACK=0)");
     return empty;
+  }
+  if (!classifierConfigured) {
+    log.warn(
+      "TIP_CLASSIFIER_URL not set — prescan running in LOCAL FALLBACK mode: " +
+      "heuristic verdicts for text, stub neutral values for image/audio. " +
+      "Verdicts are tagged provider=local_fallback on chain. " +
+      "Set TIP_CLASSIFIER_FALLBACK=0 to disable this mode.",
+    );
   }
 
   const count = _resolveWorkerCount();
@@ -86,7 +105,7 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
 
   for (let i = 0; i < count; i++) {
     try {
-      const { worker, runPromise } = _spawnWorker({ dag, prescanJobs, consensusRef, config, index: i });
+      const { worker, runPromise } = _spawnWorker({ dag, prescanJobs, consensusRef, config, mediaService, index: i });
       workers.push(worker);
       runPromises.push(runPromise);
     } catch (err) {
@@ -101,7 +120,7 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
     log.notice(
       `Prescan workers started: count=${workers.length}/${count} ` +
       `concurrency_each=${concurrency} ` +
-      `classifier=${process.env.TIP_CLASSIFIER_URL}`,
+      `classifier=${process.env.TIP_CLASSIFIER_URL || "LOCAL_FALLBACK"}`,
     );
   }
 
@@ -117,8 +136,22 @@ function initPrescanWorker({ dag, prescanJobs, consensusRef, config }) {
   return { workers, stopAll };
 }
 
-function _spawnWorker({ dag, prescanJobs, consensusRef, config, index }) {
-  const classifierClient = createClassifierClient({ config });
+function _spawnWorker({ dag, prescanJobs, consensusRef, config, mediaService, index }) {
+  // Three client shapes depending on configuration:
+  //   classifier configured + fallback on  → real client wrapped so a
+  //     network failure at call time serves the local verdict (warned).
+  //   classifier configured + fallback off → real client, hard failures
+  //     follow the retry → fail-open path.
+  //   classifier missing (fallback on)     → pure local client.
+  let classifierClient;
+  if (process.env.TIP_CLASSIFIER_URL) {
+    const primary = createClassifierClient({ config });
+    classifierClient = _fallbackEnabled()
+      ? createFallbackClassifierClient({ primary, log })
+      : primary;
+  } else {
+    classifierClient = createLocalClassifierClient();
+  }
   const { submitTx } = createTxSubmitter(consensusRef);
   // Pass `config` unmodified — `nodeRegisteredId` flows into the on-chain
   // signed PRESCAN_COMPLETED tx; tagging it per-worker would make the
@@ -126,7 +159,7 @@ function _spawnWorker({ dag, prescanJobs, consensusRef, config, index }) {
   // via worker.tag (claim debugging only, no on-chain effect).
   const worker = createPrescanWorker({
     dag, jobs: prescanJobs, classifierClient,
-    submitTx, config, log,
+    submitTx, config, log, mediaService,
     workerTag: `#${index}`,
   });
   const runPromise = worker.run().catch(err => {

@@ -38,6 +38,9 @@ const { generateMLDSAKeypair, initCrypto } = require("../../shared/crypto");
 const { resolveDriver } = require("./db/index");
 const { createPrescanJobs } = require("./services/prescan-jobs");
 const { initPrescanWorker } = require("./init-prescan-worker");
+const { initMediaRetention } = require("./init-media-retention");
+const { initEndpointAnnounce } = require("./init-endpoint-announce");
+const { createMediaStorage } = require("./services/media-storage");
 
 // Process-level error boundary for the consensus loops + libp2p stream
 // handlers + scheduled timers. Without these, any throw inside a
@@ -161,7 +164,22 @@ async function main() {
   // classifier, aggregates, and emits PRESCAN_COMPLETED via consensus.
   // Runs in-process for v1; split to a sibling process via docker-compose
   // / pm2 when classifier traffic justifies it.
-  const prescanWorkers = initPrescanWorker({ dag, prescanJobs, consensusRef, config });
+  const prescanWorkers = initPrescanWorker({
+    dag, prescanJobs, consensusRef, config,
+    mediaService: app.locals.mediaService,
+  });
+
+  // 8b. Media retention sweep — periodic deletion of expired content
+  // media and orphan uploads. Disabled in tests and via env. Shares the
+  // mediaStorage instance with the API (createApp built it).
+  const mediaRetention = initMediaRetention({
+    dag,
+    mediaStorage: app.locals.mediaStorage,
+  });
+
+  // 8c. One-shot api_endpoint reconcile — announces TIP_API_ENDPOINT on
+  // chain when the nodes row disagrees. No-op when unconfigured.
+  initEndpointAnnounce({ dag, config, governanceService: app.locals.governanceService });
 
   // 9. Start listening
   server.listen(config.port, () => {
@@ -176,6 +194,7 @@ async function main() {
     log.info(`${signal} received — shutting down gracefully`);
     server.close(async () => {
       try { scheduler.stop(); } catch { }
+      try { mediaRetention.stop(); } catch { }
       // Await prescan worker drain so in-flight classifier calls finish
       // before the process exits. Without this, the safety net is the
       // queue's claim-timeout (60s) — recovers correctness, costs latency.
