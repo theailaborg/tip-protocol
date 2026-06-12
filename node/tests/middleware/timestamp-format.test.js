@@ -50,6 +50,35 @@ function _mockRes() {
 
 describe("timestampFormat — outgoing (res.json)", () => {
 
+  test("does NOT mutate the source body object (live store objects served by reference)", async () => {
+    // Regression: a single API read of a dag tx ISO-ified the LIVE
+    // mirror object's timestamp in place, permanently failing
+    // verifyTxId until restart. The outgoing walk must copy-on-write.
+    const liveTx = {
+      tx_id: "ab".repeat(32),
+      timestamp: GENESIS_MS,
+      data: { registered_at: GENESIS_MS, media: [{ media_id: "cd".repeat(32) }] },
+      prev: [],
+    };
+    const { res, captured } = _mockRes();
+    await _runMiddleware({}, res);
+    res.json({ tx: liveTx });
+    // response carries ISO...
+    expect(captured.body.tx.timestamp).toBe(GENESIS_ISO);
+    expect(captured.body.tx.data.registered_at).toBe(GENESIS_ISO);
+    // ...but the ORIGINAL object is untouched, ints intact:
+    expect(liveTx.timestamp).toBe(GENESIS_MS);
+    expect(liveTx.data.registered_at).toBe(GENESIS_MS);
+  });
+
+  test("untouched subtrees keep their original references (no needless cloning)", async () => {
+    const untouched = { media_id: "ef".repeat(32), mime: "image/png" };
+    const { res, captured } = _mockRes();
+    await _runMiddleware({}, res);
+    res.json({ timestamp: GENESIS_MS, payload: untouched });
+    expect(captured.body.payload).toBe(untouched);  // same reference
+  });
+
   test("converts ms → ISO for pattern-matched fields", async () => {
     const req = { body: {} };
     const { res, captured } = _mockRes();

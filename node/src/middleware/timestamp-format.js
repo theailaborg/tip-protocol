@@ -82,9 +82,8 @@ function _isTimestampField(key) {
 }
 
 // Walk an arbitrary JSON-shaped value, mutating timestamp fields in
-// place. Mutation rather than copy because response bodies can be
-// large (long activity feeds, paginated DAG dumps) and a deep clone
-// would double the allocations on every API call.
+// place. Used ONLY on the incoming side, where req.body is owned by
+// this request and shared with nobody.
 function _walk(node, transform) {
   if (node === null || typeof node !== "object") return;
   if (Array.isArray(node)) {
@@ -101,6 +100,43 @@ function _walk(node, transform) {
       _walk(val, transform);
     }
   }
+}
+
+// Copy-on-write walk for the OUTGOING side. Response bodies routinely
+// contain LIVE store objects (the dag tx route serves mirror records by
+// reference), and mutating those in place corrupts node state: a single
+// API read of a tx rewrote its in-memory timestamp to an ISO string,
+// permanently failing verifyTxId until a restart rehydrated the mirror,
+// and the same hazard reaches everything the state merkle root covers.
+// Returns the input reference unchanged when nothing below it converts;
+// allocates new objects/arrays only along paths that actually change,
+// so large untouched feeds still serialize with near-zero extra cost.
+function _walkCopy(node, transform) {
+  if (node === null || typeof node !== "object") return node;
+  if (Array.isArray(node)) {
+    let out = null;
+    for (let i = 0; i < node.length; i++) {
+      const replaced = _walkCopy(node[i], transform);
+      if (replaced !== node[i] && out === null) out = node.slice(0, i);
+      if (out !== null) out.push(replaced);
+    }
+    return out === null ? node : out;
+  }
+  let out = null;
+  for (const key of Object.keys(node)) {
+    const val = node[key];
+    let next = val;
+    if (_isTimestampField(key)) {
+      const replaced = transform(val);
+      if (replaced !== undefined) next = replaced;
+    }
+    if (next === val && val !== null && typeof val === "object") {
+      next = _walkCopy(val, transform);
+    }
+    if (next !== val && out === null) out = { ...node };
+    if (out !== null) out[key] = next;
+  }
+  return out === null ? node : out;
 }
 
 // Response side: integer ms → ISO. Only plausible epoch-ms integers
@@ -145,7 +181,7 @@ function createTimestampFormat({ outgoing = true, incoming = false } = {}) {
       const originalJson = res.json.bind(res);
       res.json = function patchedJson(body) {
         if (body && typeof body === "object") {
-          _walk(body, _msToIso);
+          body = _walkCopy(body, _msToIso);
         }
         return originalJson(body);
       };
