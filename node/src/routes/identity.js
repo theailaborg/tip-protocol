@@ -71,6 +71,13 @@ function createRouter({ identityService, profileService, keyService }) {
   // private key. The chain closes the OLD entity_keys row and appends
   // the NEW one at effective_at — old signatures still verify because
   // historical lookup is time-anchored on tx.timestamp.
+  // Public key chain (oldest first) for client-side verification of
+  // rotated identities: walk from the tip_id-anchored root key to the
+  // key valid at any tx timestamp.
+  router.get("/identity/:tipId/keys", asyncHandler((req, res) => {
+    res.json(keyService.getKeyHistory(req.params.tipId));
+  }));
+
   router.post("/identity/:tipId/keys/rotate", asyncHandler((req, res) => {
     res.status(202).json(keyService.rotateKey({ ...req.body, tip_id: req.params.tipId }));
   }));

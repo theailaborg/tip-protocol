@@ -8,6 +8,7 @@ const { nowMs, toIso } = require("../../../shared/time");
 const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_NOTES } = require("../../../shared/constants");
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
+const contentListSchema = require("../schemas/content-list");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -227,9 +228,26 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  function resolve(ctid) {
+  async function resolve(ctid) {
     const rec = dag.getContent(ctid);
     if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
+
+    // Public storage facts per media item (existence + size + the
+    // server-detected mime). Metadata only — the bytes themselves stay
+    // behind the role-gated media-access endpoint. Lets any viewer
+    // confirm "the referenced object really is held by this node"
+    // without revealing content.
+    let enrichedMedia = rec.media;
+    if (mediaService && Array.isArray(rec.media) && rec.media.length > 0) {
+      enrichedMedia = await Promise.all(rec.media.map(async (m) => {
+        try {
+          const head = await mediaService.head(m.media_id);
+          return { ...m, stored: !!head?.exists, size: head?.exists ? head.size : null };
+        } catch {
+          return { ...m, stored: null, size: null };
+        }
+      }));
+    }
 
     const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
     const txValid = tx ? verifyTxId(tx) : false;
@@ -253,6 +271,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     return {
       ...rec,
+      media: enrichedMedia,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
       original_origin_code: originalOriginCode,
       origin_changed: originChanged,
@@ -532,7 +551,30 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  return { register, resolve, verify, updateOrigin, retract, getPrescanStatus };
+  // Explorer list — slim rows, cursor-paginated, newest first. Heavy
+  // fields (authors[], extras, media[]) stay out of list rows; clients
+  // follow the ctid to resolve() for the full record.
+  function list(query) {
+    const opts = contentListSchema.validateRequest(query);
+    const rows = dag.listContent(opts);
+    const hasMore = rows.length > opts.limit;
+    const page = hasMore ? rows.slice(0, opts.limit) : rows;
+    const items = page.map(c => ({
+      ctid: c.ctid,
+      author_tip_id: c.author_tip_id,
+      origin_code: c.origin_code,
+      status: c.status,
+      prescan_status: c.prescan_status,
+      prescan_tier: c.prescan_tier,
+      media_count: Array.isArray(c.media) ? c.media.length : 0,
+      registered_urls: Array.isArray(c.registered_urls) ? c.registered_urls : [],
+      registered_at: c.registered_at,
+    }));
+    const next_cursor = hasMore ? contentListSchema.encodeCursor(page[page.length - 1]) : null;
+    return { items, next_cursor };
+  }
+
+  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus };
 }
 
 module.exports = { createContentService };

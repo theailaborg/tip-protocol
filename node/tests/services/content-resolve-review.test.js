@@ -58,7 +58,7 @@ function _setup() {
   dag.setScore(REVIEWER, 900, 0, nowMs());
 
   const service = createContentService({
-    dag, scoring, config: { mediaLimits: {} }, submitTx: () => {},
+    dag, scoring, config: { mediaLimits: {} }, submitTx: () => { },
   });
   return { dag, service };
 }
@@ -79,16 +79,16 @@ function _seedContent(dag, { status = CONTENT_STATUS.REGISTERED, origin_code = "
 
 describe("content-service.resolve — review_history + consensus", () => {
 
-  test("no review ever → review_history.total=0, latest=null", () => {
+  test("no review ever → review_history.total=0, latest=null", async () => {
     const fx = _setup();
     _seedContent(fx.dag);
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.REGISTERED);
     expect(out.review_history).toEqual({ total: 0, latest: null });
     expect(out.consensus).toEqual({ available: false, status: "not_requested" });
   });
 
-  test("trigger fired (review TRIGGERED) → content.status=PENDING_REVIEW + latest.state=TRIGGERED", () => {
+  test("trigger fired (review TRIGGERED) → content.status=PENDING_REVIEW + latest.state=TRIGGERED", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.PENDING_REVIEW });
     fx.dag.savePrescanReview({
@@ -96,14 +96,14 @@ describe("content-service.resolve — review_history + consensus", () => {
       assigned_reviewer: REVIEWER, triggered_at_round: 1,
       state: PRESCAN_REVIEW_STATES.TRIGGERED,
     });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.PENDING_REVIEW);
     expect(out.review_history.total).toBe(1);
     expect(out.review_history.latest.state).toBe(PRESCAN_REVIEW_STATES.TRIGGERED);
     expect(out.review_history.latest.assigned_reviewer).toBe(REVIEWER);
   });
 
-  test("dismissed → content.status=REGISTERED + latest.state=CLOSED_DISMISSED (vindication signal)", () => {
+  test("dismissed → content.status=REGISTERED + latest.state=CLOSED_DISMISSED (vindication signal)", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.REGISTERED });
     fx.dag.savePrescanReview({
@@ -112,7 +112,7 @@ describe("content-service.resolve — review_history + consensus", () => {
       state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
       decision_note: "human voice",
     });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     // Content is back to REGISTERED (green) BUT the review history
     // tells the client "cleared after AI flag was dismissed".
     expect(out.status).toBe(CONTENT_STATUS.REGISTERED);
@@ -120,7 +120,7 @@ describe("content-service.resolve — review_history + consensus", () => {
     expect(out.review_history.latest.decision_note).toBe("human voice");
   });
 
-  test("confirmed (creator deciding) → content.status=PENDING_REVIEW + latest.state=CONFIRMED + suggested_origin", () => {
+  test("confirmed (creator deciding) → content.status=PENDING_REVIEW + latest.state=CONFIRMED + suggested_origin", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.PENDING_REVIEW });
     const confirmedAtMs = nowMs();
@@ -130,14 +130,14 @@ describe("content-service.resolve — review_history + consensus", () => {
       decided_at_round: 2, confirmed_at_round: 2, confirmed_at_ms: confirmedAtMs,
       state: PRESCAN_REVIEW_STATES.CONFIRMED, suggested_origin: "AG",
     });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.PENDING_REVIEW);
     expect(out.review_history.latest.state).toBe(PRESCAN_REVIEW_STATES.CONFIRMED);
     expect(out.review_history.latest.suggested_origin).toBe("AG");
     expect(out.review_history.latest.confirmed_at_ms).toBe(confirmedAtMs);
   });
 
-  test("accepted-private → content.status=REGISTERED + origin updated + latest.state=CLOSED_ACCEPTED_PRIVATE", () => {
+  test("accepted-private → content.status=REGISTERED + origin updated + latest.state=CLOSED_ACCEPTED_PRIVATE", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.REGISTERED, origin_code: "AG" });
     fx.dag.savePrescanReview({
@@ -146,13 +146,13 @@ describe("content-service.resolve — review_history + consensus", () => {
       decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: nowMs() - 3600_000,
       state: PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE, suggested_origin: "AG",
     });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.REGISTERED);
     expect(out.origin_code).toBe("AG");
     expect(out.review_history.latest.state).toBe(PRESCAN_REVIEW_STATES.CLOSED_ACCEPTED_PRIVATE);
   });
 
-  test("escalated → content.status=DISPUTED + latest.state=ESCALATED_TO_DISPUTE", () => {
+  test("escalated → content.status=DISPUTED + latest.state=ESCALATED_TO_DISPUTE", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { status: CONTENT_STATUS.DISPUTED });
     fx.dag.savePrescanReview({
@@ -161,28 +161,28 @@ describe("content-service.resolve — review_history + consensus", () => {
       decided_at_round: 3, confirmed_at_round: 2, confirmed_at_ms: nowMs() - 25 * 3600_000,
       state: PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE, suggested_origin: "AG",
     });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.DISPUTED);
     expect(out.review_history.latest.state).toBe(PRESCAN_REVIEW_STATES.ESCALATED_TO_DISPUTE);
   });
 
-  test("origin unchanged → original_origin_code=ctid prefix, origin_changed=false, change_origin in actions", () => {
+  test("origin unchanged → original_origin_code=ctid prefix, origin_changed=false, change_origin in actions", async () => {
     const fx = _setup();
     _seedContent(fx.dag, { origin_code: "OH" });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.original_origin_code).toBe("OH");
     expect(out.origin_changed).toBe(false);
     expect(out.prescan.actions_available).toContain("change_origin");
     expect(out.prescan.next_step_if_kept).toBe("independent_reviewer_at_window_end");
   });
 
-  test("origin changed (OH → AA) → origin_changed=true, change_origin removed from actions, next_step_if_kept=none", () => {
+  test("origin changed (OH → AA) → origin_changed=true, change_origin removed from actions, next_step_if_kept=none", async () => {
     const fx = _setup();
     // Seed at OH then mutate as the UPDATE_ORIGIN flow would (commit-handler
     // path is exercised end-to-end in the integration suite; this unit test
     // covers the resolve() projection logic in isolation).
     _seedContent(fx.dag, { origin_code: "AA" });
-    const out = fx.service.resolve(CTID);
+    const out = await fx.service.resolve(CTID);
     expect(out.original_origin_code).toBe("OH");
     expect(out.origin_code).toBe("AA");
     expect(out.origin_changed).toBe(true);

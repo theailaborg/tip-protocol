@@ -481,6 +481,25 @@ class MemoryStore {
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
+  // Explorer list — newest-first, cursor-paginated. Returns up to
+  // limit+1 rows so the caller can detect "has more" without a count
+  // query. Cursor is an exclusive (registered_at, ctid) tuple; the
+  // composite tiebreak makes pagination stable when several rows share
+  // a timestamp.
+  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+    let rows = [...this._content.values()];
+    if (author) rows = rows.filter(c => c.author_tip_id === author);
+    if (origin) rows = rows.filter(c => c.origin_code === origin);
+    if (status) rows = rows.filter(c => c.status === status);
+    if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
+    rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
+    if (cursor) {
+      rows = rows.filter(c =>
+        c.registered_at < cursor.t
+        || (c.registered_at === cursor.t && c.ctid < cursor.c));
+    }
+    return rows.slice(0, limit + 1);
+  }
   // M6 retention sweep — parity with SqliteStore.getContentWithMediaBefore.
   getContentWithMediaBefore(cutoffMs) {
     return [...this._content.values()].filter(c =>
@@ -810,6 +829,21 @@ class MemoryStore {
       if (!best || r.valid_from_ts > best.valid_from_ts) best = r;
     }
     return best ? { public_key: best.public_key, algorithm: best.algorithm } : null;
+  }
+  // Full key chain for one entity, oldest first — the raw material a
+  // client walks to verify rotations from the tip_id-anchored root key
+  // to the key valid at any given tx timestamp.
+  getEntityKeyHistory(entityType, entityId) {
+    return [...this._entityKeys.values()]
+      .filter(r => r.entity_type === entityType && r.entity_id === entityId)
+      .sort((a, b) => a.valid_from_ts - b.valid_from_ts)
+      .map(r => ({
+        public_key: r.public_key,
+        algorithm: r.algorithm,
+        valid_from_ts: r.valid_from_ts,
+        valid_to_ts: r.valid_to_ts ?? null,
+        source_tx_id: r.source_tx_id ?? null,
+      }));
   }
   *iterateEntityKeys() {
     // For snapshot serialisation + state_merkle_root canonicalisation.
@@ -2546,6 +2580,11 @@ class SQLiteStore {
         `SELECT * FROM entity_keys
          ORDER BY entity_type, entity_id, valid_from_ts`
       ),
+      getEntityKeyHistory: this.db.prepare(
+        `SELECT * FROM entity_keys
+         WHERE entity_type=? AND entity_id=?
+         ORDER BY valid_from_ts`
+      ),
       clearEntityKeys: this.db.prepare("DELETE FROM entity_keys"),
 
       // Certificates — 8 columns including BFT-Time `timestamp`
@@ -3017,6 +3056,25 @@ class SQLiteStore {
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
+  // Explorer list — see MemoryStore.listContent for the contract.
+  // Filters vary per call, so the statement is built dynamically; the
+  // (status, author, origin) columns are indexed.
+  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+    const where = [];
+    const params = [];
+    if (author) { where.push("author_tip_id = ?"); params.push(author); }
+    if (origin) { where.push("origin_code = ?"); params.push(origin); }
+    if (status) { where.push("status = ?"); params.push(status); }
+    if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
+    if (cursor) {
+      where.push("(registered_at < ? OR (registered_at = ? AND ctid < ?))");
+      params.push(cursor.t, cursor.t, cursor.c);
+    }
+    const sql = `SELECT * FROM content${where.length ? " WHERE " + where.join(" AND ") : ""}
+      ORDER BY registered_at DESC, ctid DESC LIMIT ?`;
+    params.push(limit + 1);
+    return this.db.prepare(sql).all(...params).map(r => this._hydrateContent(r));
+  }
   // M6 — content rows registered before `cutoffMs` that carry media[].
   getContentWithMediaBefore(cutoffMs) {
     return this._stmts.contentWithMediaBefore.all(cutoffMs).map(r => this._hydrateContent(r));
@@ -3252,6 +3310,17 @@ class SQLiteStore {
   getKeyValidAt(entity_type, entity_id, timestamp) {
     const r = this._stmts.getKeyValidAt.get(entity_type, entity_id, timestamp, timestamp);
     return r ? { public_key: r.public_key, algorithm: r.algorithm } : null;
+  }
+  // Full key chain for one entity, oldest first — parity with
+  // MemoryStore.getEntityKeyHistory.
+  getEntityKeyHistory(entityType, entityId) {
+    return this._stmts.getEntityKeyHistory.all(entityType, entityId).map(r => ({
+      public_key: r.public_key,
+      algorithm: r.algorithm,
+      valid_from_ts: r.valid_from_ts,
+      valid_to_ts: r.valid_to_ts ?? null,
+      source_tx_id: r.source_tx_id ?? null,
+    }));
   }
   *iterateEntityKeys() {
     for (const r of this._stmts.iterateEntityKeys.iterate()) yield r;
@@ -3903,6 +3972,7 @@ function _buildDagHandle(store, config) {
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
+    listContent: (opts) => store.listContent(opts),
     // M6 — used by the periodic media-retention sweep.
     getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),
     getReferencedMediaIds: () => store.getReferencedMediaIds(),
@@ -3971,6 +4041,7 @@ function _buildDagHandle(store, config) {
     // tx.timestamp so the right key is selected for that point in time.
     // Returns { public_key, algorithm } or null.
     getKeyValidAt: (entityType, entityId, timestamp) => store.getKeyValidAt(entityType, entityId, timestamp),
+    getEntityKeyHistory: (entityType, entityId) => store.getEntityKeyHistory(entityType, entityId),
     iterateEntityKeys: () => store.iterateEntityKeys(),
     clearEntityKeys: () => store.clearEntityKeys(),
 
@@ -4375,4 +4446,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore };

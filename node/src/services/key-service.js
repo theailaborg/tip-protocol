@@ -24,6 +24,8 @@ function _pickTxData(body, fields) {
   return out;
 }
 
+const keyHistorySchema = require("../schemas/key-history");
+
 function createKeyService({ dag, submitTx }) {
 
   // KEY_ROTATED — user proves possession of CURRENT (OLD) key by signing
@@ -157,7 +159,21 @@ function createKeyService({ dag, submitTx }) {
     };
   }
 
-  return { rotateKey, recoverKey };
+  // Public key chain for an identity, oldest first. The client verifies
+  // the chain itself: shake256(keys[0].public_key)[0:16] must equal the
+  // tip_id hash segment, and each later key is introduced by the signed
+  // KEY_ROTATED / KEY_RECOVERY tx in source_tx_id. Served for revoked
+  // identities too — their historical signatures still need verifying.
+  function getKeyHistory(tipId) {
+    keyHistorySchema.validateRequest({ tip_id: tipId });
+    const keys = dag.getEntityKeyHistory("identity", tipId);
+    if (!keys.length) {
+      throw { status: 404, error: `Unknown identity: ${tipId}`, code: "identity_not_found" };
+    }
+    return { tip_id: tipId, rotations: keys.length - 1, keys };
+  }
+
+  return { rotateKey, recoverKey, getKeyHistory };
 }
 
 module.exports = { createKeyService };

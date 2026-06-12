@@ -1123,6 +1123,7 @@ class KnexAdapter {
   }
   getActiveKey(entity_type, entity_id) { return this.mirror.getActiveKey(entity_type, entity_id); }
   getKeyValidAt(entity_type, entity_id, timestamp) { return this.mirror.getKeyValidAt(entity_type, entity_id, timestamp); }
+  getEntityKeyHistory(t, i) { return this.mirror.getEntityKeyHistory(t, i); }
   *iterateEntityKeys() { yield* this.mirror.iterateEntityKeys(); }
   clearEntityKeys() {
     this.mirror.clearEntityKeys();
@@ -1173,6 +1174,7 @@ class KnexAdapter {
   getContentByStatus(s) { return this.mirror.getContentByStatus(s); }
   getContentWithMediaBefore(cutoffMs) { return this.mirror.getContentWithMediaBefore(cutoffMs); }
   getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }
+  listContent(opts) { return this.mirror.listContent(opts); }
   getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
   getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
   hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }

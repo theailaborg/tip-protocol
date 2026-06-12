@@ -82,21 +82,21 @@ function _seedRevocation(dag, { tx_type, reason_code, evidence_hash, timestamp }
 
 describe("content-service.resolve — author_revocation", () => {
 
-  test("no revocation → author_revocation is null, author_valid true", () => {
+  test("no revocation → author_revocation is null, author_valid true", async () => {
     const { service } = _setup();
-    const out = service.resolve(CTID);
+    const out = await service.resolve(CTID);
     expect(out.verification.author_revocation).toBeNull();
     expect(out.verification.author_valid).toBe(true);
   });
 
-  test("REVOKE_VP → surfaces tx_type, reason_code, evidence_hash, issuing_vp_id, revoked_at", () => {
+  test("REVOKE_VP → surfaces tx_type, reason_code, evidence_hash, issuing_vp_id, revoked_at", async () => {
     const { dag, service } = _setup();
     const ts = 1778414400000;
     const txId = _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_VP, reason_code: "fraudulent_identity",
       evidence_hash: "ff".repeat(32), timestamp: ts,
     });
-    const out = service.resolve(CTID);
+    const out = await service.resolve(CTID);
     expect(out.verification.author_valid).toBe(false);
     expect(out.verification.author_revocation).toEqual({
       tx_type: TX_TYPES.REVOKE_VP,
@@ -108,37 +108,37 @@ describe("content-service.resolve — author_revocation", () => {
     });
   });
 
-  test("REVOKE_VOLUNTARY → content.status stays VERIFIED (no cascade)", () => {
+  test("REVOKE_VOLUNTARY → content.status stays VERIFIED (no cascade)", async () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_VOLUNTARY, reason_code: "user_request",
       evidence_hash: null, timestamp: 1778414400000,
     });
-    const out = service.resolve(CTID);
+    const out = await service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
     expect(out.verification.author_revocation.tx_type).toBe(TX_TYPES.REVOKE_VOLUNTARY);
     expect(out.verification.author_revocation.reason_code).toBe("user_request");
     expect(out.verification.author_revocation.evidence_hash).toBeNull();
   });
 
-  test("REVOKE_DECEASED → content.status stays VERIFIED", () => {
+  test("REVOKE_DECEASED → content.status stays VERIFIED", async () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_DECEASED, reason_code: "death_certificate",
       evidence_hash: "aa".repeat(32), timestamp: 1778414400000,
     });
-    const out = service.resolve(CTID);
+    const out = await service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
     expect(out.verification.author_revocation.tx_type).toBe(TX_TYPES.REVOKE_DECEASED);
   });
 
-  test("REVOKE_DEVICE → content.status stays VERIFIED", () => {
+  test("REVOKE_DEVICE → content.status stays VERIFIED", async () => {
     const { dag, service } = _setup();
     _seedRevocation(dag, {
       tx_type: TX_TYPES.REVOKE_DEVICE, reason_code: "device_compromise",
       evidence_hash: "bb".repeat(32), timestamp: 1778414400000,
     });
-    const out = service.resolve(CTID);
+    const out = await service.resolve(CTID);
     expect(out.status).toBe(CONTENT_STATUS.VERIFIED);
     expect(out.verification.author_revocation.tx_type).toBe(TX_TYPES.REVOKE_DEVICE);
   });
@@ -146,12 +146,12 @@ describe("content-service.resolve — author_revocation", () => {
 
 describe("dag.getRevocation", () => {
 
-  test("returns null when no revocation exists", () => {
+  test("returns null when no revocation exists", async () => {
     const { dag } = _setup();
     expect(dag.getRevocation(AUTHOR)).toBeNull();
   });
 
-  test("returns the canonical row when present", () => {
+  test("returns the canonical row when present", async () => {
     const { dag } = _setup();
     const ts = 1778414400000;
     const txId = _seedRevocation(dag, {
