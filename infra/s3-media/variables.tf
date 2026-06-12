@@ -190,3 +190,14 @@ variable "alert_sns_topic_arn" {
   type        = string
   default     = null
 }
+
+variable "cors_allowed_origins" {
+  description = <<-EOT
+    Origins allowed to fetch presigned media URLs from a browser. The
+    presigned signature already authorizes the request; this only
+    satisfies browser CORS policy. Default allows any origin; pin to the
+    web app's origin(s) when known, e.g. ["https://app.example.com"].
+  EOT
+  type        = list(string)
+  default     = ["*"]
+}
