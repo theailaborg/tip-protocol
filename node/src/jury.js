@@ -356,17 +356,39 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const revealedIds = new Set(filteredReveals.map(r => r.data.juror_tip_id));
   // Pre-fetch Stage-2 commit txs once — determines no-commit vs no-reveal penalty split
   const jurorCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
-      .filter(c => !c.data?.is_appeal);
+    .filter(c => !c.data?.is_appeal);
 
-  // ── NO_QUORUM auto-escalation ─────────────────────────────────────────────
+  // ── NO_QUORUM ─────────────────────────────────────────────────────────────
   if (totalVotes < JURY.QUORUM || nonAbstain < JURY.MAJORITY_VOTE) {
+    // A Stage-2 NO_QUORUM normally auto-escalates to a Stage-3 expert panel.
+    // But that escalation must only happen if a panel that could actually
+    // reach quorum can be formed. If the eligible expert pool (after the
+    // score floors + conflict-of-interest filter) is too small, escalating
+    // would summon too few experts to ever reach APPEAL.MIN_VOTES, and in
+    // the zero-expert case the appeal would HANG forever: the appeal-
+    // resolution trigger is driven by expert-summons reveal deadlines, so
+    // with no summons no deadline ever fires and APPEAL_RESULT is never
+    // emitted. We therefore decide escalate-vs-terminate up front.
+    //
+    // The decision uses the expert COUNT, not the selected identities. The
+    // count equals min(eligiblePoolSize, EXPERT_COUNT), which is identical
+    // on every node at the same chain height (the pool is pure DAG state);
+    // only WHICH experts a node picks depends on the per-node seed. So the
+    // escalate-vs-terminate decision is deterministic.
+    const appealTx = nodeSignedAuto({
+      tx_type: TX_TYPES.APPEAL_FILED,
+      timestamp,
+      prev: getRecentPrev(),
+      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
+    }, config);
+    const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
+    const canEscalate = experts.experts.length >= APPEAL.MIN_VOTES;
+
     // Emit ADJUDICATION_RESULT (verdict=NO_QUORUM) FIRST so every Stage-2
-    // dispute ends with a verdict tx — consistent with the UPHELD /
-    // DISMISSED / CONSERVATIVE_LABEL paths. The APPEAL_FILED that follows
-    // depends on this for prereq validation; emitting it here also keeps
-    // the timeline / activity feed / dispute-case verdict block populated.
-    // No score effect: applyScoreEffect's ADJUDICATION_RESULT case treats
-    // NO_QUORUM as a no-op (verdict gates on === UPHELD).
+    // dispute ends with a verdict tx. `terminal` marks the case undecidable
+    // (no Stage-3 panel possible) so the commit-handler restores content
+    // status instead of leaving it parked awaiting an appeal that will
+    // never come.
     const noQuorumResultTx = nodeSignedAuto({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       timestamp,
@@ -374,6 +396,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       data: {
         ctid,
         verdict: VERDICT.NO_QUORUM,
+        terminal: !canEscalate,
         declared_origin: disputeData.declared_origin || rec?.origin_code,
         confirmed_origin: null,
         reason: disputeData.reason,
@@ -388,15 +411,43 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     }, config);
     txs.push(noQuorumResultTx);
 
-    const appealTx = nodeSignedAuto({
-      tx_type: TX_TYPES.APPEAL_FILED,
-      timestamp,
-      prev: getRecentPrev(),
-      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
-    }, config);
-    txs.push(appealTx);
+    // No-show penalties always apply: the absent jurors are the ones who
+    // broke quorum, regardless of whether the case escalates or terminates.
+    // relatedTxId is the appeal (escalating) or the result (terminal).
+    const noShowRelatedTxId = canEscalate ? appealTx.tx_id : noQuorumResultTx.tx_id;
+    for (const s of summons) {
+      if (!revealedIds.has(s.data.juror_tip_id)) {
+        const hasCommit = jurorCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
+        const delta = hasCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY;
+        const reason = hasCommit ? `Jury no-reveal on ${ctid}` : `Jury no-commit on ${ctid}`;
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: s.data.juror_tip_id, delta,
+          reason, ctid, relatedTxId: noShowRelatedTxId,
+          timestamp, getRecentPrev, config,
+        }));
+      }
+    }
 
-    const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
+    if (!canEscalate) {
+      // Terminal NO_QUORUM: no Stage-3 panel possible, the case is
+      // undecidable. Content stands (its ADJUDICATION_RESULT restores
+      // pre-dispute status in the commit-handler). Refund the disputer:
+      // they forfeit only when a panel actually rules their dispute
+      // groundless, never when the system fails to decide it.
+      if (disputerTipId) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
+          reason: `Dispute refunded (terminal no-quorum) on ${ctid}`,
+          ctid, relatedTxId: noQuorumResultTx.tx_id,
+          timestamp, getRecentPrev, config,
+        }));
+      }
+      log.info(`Jury NO_QUORUM on ${ctid} — terminal (no expert panel formable, ${experts.experts.length} eligible < ${APPEAL.MIN_VOTES}); disputer refunded`);
+      return { txs, verdict: VERDICT.NO_QUORUM, terminal: true, auto_appeal: false, matchCount, mismatchCount, abstainCount };
+    }
+
+    // Escalate to Stage 3.
+    txs.push(appealTx);
     const commitDeadline = nowPlusMs(APPEAL.COMMIT_WINDOW_HOURS * 3600000);
     const revealDeadline = nowPlusMs((APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000);
     for (const expertTipId of experts.experts) {
@@ -406,20 +457,6 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         commitDeadline, revealDeadline, isAppeal: true,
         timestamp, dag, config,
       }));
-    }
-
-    // No-show penalties — no-commit vs no-reveal distinction
-    for (const s of summons) {
-      if (!revealedIds.has(s.data.juror_tip_id)) {
-        const hasCommit = jurorCommitTxs.some(c => c.data?.juror_tip_id === s.data.juror_tip_id);
-        const delta = hasCommit ? -JURY.JUROR_NO_REVEAL_PENALTY : -JURY.JUROR_NO_COMMIT_PENALTY;
-        const reason = hasCommit ? `Jury no-reveal on ${ctid}` : `Jury no-commit on ${ctid}`;
-        txs.push(scoring.buildScoreUpdateTx({
-          tipId: s.data.juror_tip_id, delta,
-          reason, ctid, relatedTxId: appealTx.tx_id,
-          timestamp, getRecentPrev, config,
-        }));
-      }
     }
 
     log.info(`Jury NO_QUORUM on ${ctid} — auto-escalating to Stage 3 with ${experts.experts.length} experts (${txs.length} txs in batch)`);
@@ -571,8 +608,8 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
     : null;
   if (escalatedReview && escalatedReview.assigned_reviewer
-      && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
-      && REVIEWER.CORRECT_BONUS > 0) {
+    && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
+    && REVIEWER.CORRECT_BONUS > 0) {
     txs.push(scoring.buildScoreUpdateTx({
       tipId: escalatedReview.assigned_reviewer,
       delta: REVIEWER.CORRECT_BONUS,
@@ -650,7 +687,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const revealedIds = new Set(filteredReveals.map(r => r.data.juror_tip_id));
   // Pre-fetch Stage-3 commit txs once — determines no-commit vs no-reveal penalty split
   const expertCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
-      .filter(c => !!c.data?.is_appeal);
+    .filter(c => !!c.data?.is_appeal);
 
   // ── Insufficient experts → DISMISSED default ──────────────────────────────
   if (nonAbstain < APPEAL.MIN_VOTES) {
@@ -678,6 +715,23 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
           timestamp, getRecentPrev, config,
         }));
       }
+    }
+
+    // Terminal NO_QUORUM that originated from a Stage-2 NO_QUORUM: the
+    // original dispute never got a merits ruling (Stage-2 paid nothing,
+    // Stage-3 also fails quorum), so refund the disputer's stake. Gated on
+    // stage2_verdict === NO_QUORUM: when Stage 2 produced a real verdict the
+    // disputer was already settled there, and refunding here would double-pay.
+    // (The Stage-2-cannot-form-panel terminal path refunds in
+    // buildAdjudicationBatch; the two are mutually exclusive and share the
+    // reason string, so SCORE_UPDATE dedup is a belt-and-braces guard.)
+    if (stage2Verdict === VERDICT.NO_QUORUM && disputerTipId) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
+        reason: `Dispute refunded (terminal no-quorum) on ${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
     }
 
     log.info(`Appeal NO_QUORUM on ${ctid} — defaulted to DISMISSED (${txs.length} txs in batch)`);
@@ -893,8 +947,8 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       ? (dag.getPrescanReviewsByCtid(ctid) || []).find(r => r.state === "escalated_to_dispute")
       : null;
     if (noQuorumEscalatedReview && noQuorumEscalatedReview.assigned_reviewer
-        && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
-        && REVIEWER.CORRECT_BONUS > 0) {
+      && (verdict === VERDICT.UPHELD || verdict === VERDICT.CONSERVATIVE_LABEL)
+      && REVIEWER.CORRECT_BONUS > 0) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: noQuorumEscalatedReview.assigned_reviewer,
         delta: REVIEWER.CORRECT_BONUS,
