@@ -64,6 +64,7 @@ You open the content's detail page
 You see:
     - Origin label (e.g. "OH")
     - AI prescan tier (e.g. LOW, ELEVATED, HIGH, CRITICAL)
+    - Any attached media (type, size, and per-file AI score)
     - Verification count (other users who've verified it)
     - Creator's TIP ID
        ↓
@@ -71,6 +72,8 @@ Decide: do I have a real basis to dispute?
 ```
 
 If yes, look for the **"Dispute this content"** button on the content page.
+
+**Viewing the attached media.** Before you file, you can only see media *metadata* (type, size, hash, AI score), not the bytes, since you don't yet have a role on the content. The moment your dispute is on file, you gain view access to the actual media for as long as the dispute is live, so you can ground your argument in the real files. Each file's AI score is visible to everyone; the content's headline confidence is the most-AI-looking file among them.
 
 ### Step 2: Build your case
 

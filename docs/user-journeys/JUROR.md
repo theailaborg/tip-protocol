@@ -14,10 +14,10 @@ You qualify if **all** are true:
 |---|---|
 | Your trust score is **700 or higher** | Jurors hold real consequences — you need a proven track record |
 | You're a **personal identity** (not an organization) | Orgs can't be jurors |
-| You turned ON **"I want to help adjudicate"** in your profile | Opt-in only |
+| You turned ON **"I want to serve as a juror"** in your profile | Opt-in only. Each adjudication role (reviewer, juror, expert) has its OWN toggle, so you can sit on juries without being pulled into reviewer or expert duty. |
 | You're not the creator, the disputer, or anyone on the original review | Conflict-of-interest filter, applied automatically |
 
-**Where to find the toggle:** Profile → Settings → Adjudication participation → "I want to help adjudicate". ON by default at registration. You can turn it off any time — you stop getting picked immediately.
+**Where to find the toggle:** Profile → Settings → Adjudication participation → "Serve as a juror". Separate from the reviewer and expert toggles. You can turn it off any time, you stop getting picked immediately.
 
 **How often you'll be picked:** A few times a year initially, depending on dispute volume and the active eligible-juror pool. Higher trust scores qualify for a bigger pool but the random selection is uniform — your trust score doesn't bias the picker, only the eligibility floor does.
 
@@ -80,6 +80,8 @@ This way, juror #5 can't watch juror #1's vote and copy it. Everyone votes blind
 ```
 
 You take your time, study the content, read the evidence. Then you cast a vote.
+
+**Viewing the content's media.** If the disputed content has media attached (images, audio, video), you can open the actual files while you sit on the jury. The bytes are access-controlled (the public sees only a file's type, size, hash, and AI score), but a summoned juror gets full view access so you can judge the work itself, not just its description. Your access opens when you're summoned and closes when the verdict lands (ADJUDICATION_RESULT). Each file also shows its own AI-likelihood score; the case's headline confidence is the most-AI-looking file among them. If the bytes were already retention-swept, you'll see the hash and score but not the file. The app handles the signed request and download link for you.
 
 ---
 
@@ -348,6 +350,9 @@ Only after reveal phase ends. During COMMIT, all 7 are anonymous to each other. 
 
 **Can I see the AI's prescan result?**
 Yes — the disputer can attach it as evidence. You'll see the AI confidence in the case panel. Use it as ONE input among many; don't just rubber-stamp the AI.
+
+**Can I view the attached images / video / audio?**
+Yes, while you're on the jury. Your access opens when you're summoned and closes when the verdict lands. The public never sees the bytes, only each file's type, size, hash, and per-file AI score.
 
 **What if the disputer is wrong / disputes are abusive?**
 That's exactly why the disputer ALSO stakes 15 points. If the jury DISMISSES (creator wins), the disputer loses those 15. So abusive disputes self-discipline through the stake.

@@ -197,9 +197,29 @@ Resolve a content provenance record.
   "author_tip_id":  "tip://id/US-a3f8c91b2d4e7021",
   "author_score":   892,
   "dispute_count":  0,
-  "registered_at":  "2026-03-15T00:00:00Z"
+  "registered_at":  "2026-03-15T00:00:00Z",
+  "media": [
+    {
+      "media_id":       "[SHAKE-256 hex of the bytes]",
+      "mime":           "image/png",
+      "stored":         true,
+      "size":           2361613,
+      "ai_probability": 0.51,
+      "ai_provider":    "image_detector"
+    }
+  ],
+  "media_canonical_hash": "[SHAKE-256 hex]"
 }
 ```
+
+`media[]` carries public storage facts (type, size, whether the bytes are still stored) and the per-file AI score from the verdict. The bytes themselves are not here, fetch them via the role-gated media endpoint below. `ai_probability` is `null` until prescan completes.
+
+#### `GET /v1/content`
+List content, newest first. Cursor-paginated, public.
+
+Query params (all optional): `author`, `origin`, `status`, `has_media`, `limit` (1-100, default 20), `cursor` (opaque token from a prior response's `next_cursor`).
+
+**Response 200:** `{ "items": [ ...slim rows... ], "next_cursor": "..." | null }`. Each row carries `ctid`, `author_tip_id`, `origin_code`, `status`, `prescan_status`, `prescan_tier`, `media_count`, `registered_urls`, `registered_at`.
 
 #### `POST /v1/content/:ctid/dispute`
 File a dispute against a content origin declaration.
@@ -224,6 +244,37 @@ File a dispute against a content origin declaration.
 
 #### `POST /v1/content/:ctid/verify`
 Manually verify a content record (jury-level participants only).
+
+---
+
+### Media
+
+Media bytes are content-addressed (`media_id = SHAKE-256(bytes)`), stored off-chain per node, and access-controlled by adjudication role. Only the content-hash references live on chain. See [`docs/user-journeys`](user-journeys/) for the role-access model.
+
+#### `POST /v1/media/upload`
+Upload one file. Body is the raw bytes (`Content-Type: application/octet-stream`), one file per call, streamed.
+
+**Headers:** `X-Media-Mime`, `X-Signer-TipId`, `X-Timestamp` (epoch ms, 5-min window), `X-Signer-Signature` (ML-DSA over `MEDIA_UPLOAD:{shake256(bytes)}:{mime}:{timestamp}:{signer_tip_id}`).
+
+**Response 201:** `{ media_id, content_hash, mime, size, uploaded_at, signer_tip_id }`. The `mime` is SERVER-DETECTED from the file's magic bytes and is authoritative, use it (not your own label) when registering. Identical bytes always return the same `media_id` (dedup).
+
+**Errors:** `400` timestamp_drift / bytes_required; `403` signature_invalid; `413` file_too_large (aborts mid-stream, sends `Connection: close`); `415` mime_disabled / format_unsupported.
+
+#### `GET /v1/content/:ctid/media/:idx`
+Fetch media bytes. Role-gated, signed. The public cannot fetch bytes (only the metadata on the content record).
+
+**Headers:** `X-Requester-TipId`, `X-Timestamp`, `X-Signature` (ML-DSA over `MEDIA_ACCESS:{ctid}:{idx}:{timestamp}:{requester_tip_id}`).
+
+Allowed callers: author (always), assigned reviewer (until the review closes), disputer (while the dispute lives), juror (until ADJUDICATION_RESULT), expert (until APPEAL_RESULT). Everyone else gets `403 forbidden`.
+
+**Responses:** `200` raw bytes (local-fs node) or `200` JSON `{ presigned_url, expires_at }` (S3 node, fetch the URL within ~5 min); `307` redirect to the origin node (bytes live elsewhere, repeat the same signed request to `Location`); `410 media_unavailable` (retention-deleted, the hash on chain remains the proof).
+
+---
+
+### Identity keys
+
+#### `GET /v1/identity/:tipId/keys`
+Public key-rotation chain for an identity, oldest first: `{ tip_id, rotations, keys: [{ public_key, algorithm, valid_from_ts, valid_to_ts, source_tx_id }] }`. Used for client-side verification: `tip_id` anchors `shake256(keys[0].public_key)`, and each later key is introduced by the signed rotation tx in `source_tx_id`.
 
 ---
 

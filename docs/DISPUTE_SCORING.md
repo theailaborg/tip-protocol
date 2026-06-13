@@ -25,6 +25,7 @@ spec changed or the genesis is misconfigured.
 | `EXPERT_NO_COMMIT_PENALTY` | **1** | Expert summoned but never committed |
 | `EXPERT_NO_REVEAL_PENALTY` | **10** | Expert committed but failed to reveal |
 | `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
+| `REVIEWER.WRONG_DISMISS_CLAWBACK` | **-5** | Signed delta reclaimed from a reviewer whose DISMISS is later overturned by an UPHELD dispute. Default `-5` exactly cancels `CORRECT_BONUS` (pure clawback, net 0). Stored negative so the call site applies it directly (same convention as `accept_correction_score_delta`). Make it more negative than the bonus to turn it into a real penalty. |
 
 **Author penalty (UPHELD only)** — per-pair escalation `base × [1, 2, 3]`
 per spec (TIP_Trust_Scoring §6 Asymmetric Penalty Structure):
@@ -220,6 +221,35 @@ Paired with the originating tx in the same batch (single-channel rule):
 the DISMISS batch is `[PRESCAN_REVIEW_DISMISSED, SCORE_UPDATE]`; the
 accept-private batch is `[UPDATE_ORIGIN, SCORE_UPDATE(creator −10),
 SCORE_UPDATE(reviewer +5)]`.
+
+### Wrong-DISMISS clawback (accountable dismiss)
+
+The DISMISS `+5` is paid at dismiss time but is accountable. A DISMISS is
+a non-action (the reviewer accuses no one), unlike CONFIRM which is an
+accusation that carries the full disputer-stake risk, so a wrong DISMISS
+is not punished like a wrong accusation. Instead the bonus is reclaimed.
+
+When a public dispute is later filed on the same content by a separate
+disputer and Stage-2 rules **UPHELD** (the AI flag the reviewer dismissed
+was correct after all), the settlement reclaims the bonus via
+`REVIEWER.WRONG_DISMISS_CLAWBACK` (signed `-5`): the dismissing reviewer
+nets 0. The dismissing reviewer is a third settlement actor, distinct from
+the disputer and the author; the clawback is found by looking up the
+DISMISSED prescan_review for the ctid and emitting the delta for its
+`assigned_reviewer`.
+
+The clawback rides the full appeal chain exactly like the CONFIRM bonus:
+
+| Stage | Event | Reviewer Δ | Reviewer net |
+|---|---|---:|---:|
+| 1 | DISMISS | +5 | +5 |
+| 2 | dispute UPHELD (dismiss was wrong) | -5 (clawback) | 0 |
+| 3 | expert OVERTURNS to DISMISSED (dismiss was right) | +5 (reverse) | +5 |
+| 3 | expert CONFIRMS Stage-2 UPHELD | 0 | 0 |
+
+Only one of {CONFIRM-bonus path, DISMISS-clawback path} applies per ctid:
+a content cannot have both a CONFIRMED-escalated review and a DISMISSED
+review driving the same dispute.
 
 ### Escalation-time emission (paired with CONTENT_DISPUTED)
 
