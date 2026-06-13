@@ -141,7 +141,7 @@ Nothing is held in escrow at summons time — your score doesn't move until the 
 - **Summoned but never committed** → **-1** (small signal — you didn't engage at all)
 - **Committed but missed the reveal** → **-8** (heavier — you engaged with the case then walked away mid-process)
 
-(Both no-show penalties only apply if the jury reaches quorum without you. NO_QUORUM zeros everyone out.)
+(On NO_QUORUM the majority/minority settlement does not apply, because there is no majority, so jurors who revealed get **0**, win or lose. But the no-show penalties above (**-1** / **-8**) still apply to the absentees who broke quorum. They are the only jurors who pay when a jury fails to reach quorum: the people who showed up are never punished for a quorum failure they didn't cause.)
 
 The asymmetric math (-8 to lose vs +3 to win) is deliberate: it makes "vote anyway, hope for the best" worse than "ABSTAIN if you're not sure." Voting carefully is the right strategy. And the split between -1 (never committed) and -8 (committed-but-bailed) reflects intent — a juror who never opens the case is unresponsive; one who commits and walks away actively disrupted the panel's quorum math.
 

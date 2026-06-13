@@ -257,7 +257,7 @@ Fewer than 2 non-abstain reveals
    Experts who revealed (including ABSTAIN) take 0
 ```
 
-**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum, it auto-escalates to Stage 3 and nobody is penalised — there's somewhere to go. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
+**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum it auto-escalates to Stage 3 (there's somewhere to go): the jurors who revealed take 0, but the no-show jurors who broke quorum still take their -1 / -8. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
 
 In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 
