@@ -177,7 +177,25 @@ appellant settlement event.
 |---|---:|---:|---:|
 | UPHELD | **+20** (refund 15 + bonus 5) | **-100** (fresh penalty) | 0 → 1 |
 | CONSERVATIVE_LABEL | **+15** (refund only) | **0** | 0 |
-| DISMISSED | **0** (stake stays forfeited) | **+5** (vindication) | 0 |
+| DISMISSED (panel reached quorum, ruled on merits) | **0** (stake forfeited) | **+5** (vindication) | 0 |
+| NO_QUORUM terminal (Stage-3 also failed quorum, or no expert panel could be formed) | **+15** (refund, no bonus) | **0** (no vindication) | 0 |
+
+**Refund on terminal NO_QUORUM.** A disputer forfeits their stake only
+when a panel actually reaches quorum and rules the dispute groundless (a
+real DISMISSED). When the case dies because the *system* could not
+decide it (Stage-2 jury failed quorum AND Stage-3 experts also failed
+quorum, or no eligible expert panel could be formed at all), the
+disputer is refunded their 15: the failure was the absent
+jurors'/experts', not theirs. The author gets no vindication bonus in
+this terminal case, because nobody actually cleared them. The content
+keeps its declared label (benefit of the doubt) but no party is
+penalized except the no-show jurors/experts who broke quorum.
+
+> Liveness dependency: the terminal-NO_QUORUM refund requires the appeal
+> stage to always resolve. Today a Stage-2 NO_QUORUM that cannot form an
+> expert panel escalates into a hang (no expert summons means no appeal
+> deadline ever fires). That hang is fixed separately; the refund lands
+> in both terminal paths once it does.
 
 ### Experts (any Stage-3 verdict)
 
@@ -308,9 +326,13 @@ fires then for the reviewer, plus CORRECT_BONUS overlay:
 |---|---:|---:|
 | UPHELD | **+20** (refund + bonus) | **+5** |
 | CONSERVATIVE_LABEL | **+15** (refund only) | **+5** |
-| DISMISSED | **0** (stake stays forfeited) | 0 |
+| DISMISSED (quorum reached, ruled on merits) | **0** (stake forfeited) | 0 |
+| NO_QUORUM terminal (Stage-3 also failed quorum / no panel formable) | **+15** (refund, no bonus) | 0 |
 
-CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`.
+CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`. The
+terminal-NO_QUORUM refund applies to the reviewer-as-disputer exactly as
+it does to any disputer: forfeit only on a real DISMISSED, refund when no
+panel ever ruled.
 
 ### Reviewer skin-in-the-game summary (lifetime nets)
 

@@ -45,6 +45,7 @@ You qualify if **all** are true:
 | You partly win at Stage 2 (CONSERVATIVE_LABEL — creator declared AG and the jury confirmed OH; over-declaration with no creator penalty) | **0 net** (-15 filing, +15 stake refund, no bonus) |
 | You lose at Stage 2 (DISMISSED) | **-15 net** (filing stake stays forfeited; no settlement event) |
 | Jury fails quorum (NO_QUORUM, auto-escalates to Stage 3 Experts) | Settlement is deferred — net depends on the final Stage-3 verdict. Your 15 stays locked until then. |
+| Case dies undecided (Stage 3 also fails quorum, or no expert panel can be formed) | **0 net**: your 15 is **refunded**. You only forfeit when a panel actually rules your dispute groundless; if the system never decides, you get your stake back. |
 
 If you lose at Stage 2 and want to file an appeal, you stake an additional **25 points** (APPELLANT_STAKE). The net math for the appeal path is in the full score table at the bottom.
 
@@ -244,6 +245,8 @@ HOUR ~84:
        CONSERVATIVE_LABEL → you get +15 stake refund (no bonus)
        DISMISSED          → no event (your -15 stays forfeited)
        NO_QUORUM          → auto-escalates to Stage 3 immediately; your 15 stays on file
+                            (refunded later if the case dies undecided, i.e. Stage 3
+                             also fails quorum or no expert panel can be formed)
 
 HOURS 84 – 132 (if you lost or want to challenge):
    Appeal window — 48h to file. Filing costs an additional -25.
