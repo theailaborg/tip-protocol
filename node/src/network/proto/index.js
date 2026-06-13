@@ -63,6 +63,7 @@ async function loadTypes() {
     // #68 multi-sig rotation coordination
     "tip.consensus.RotationProposal",
     "tip.consensus.RotationSignature",
+    "tip.consensus.RotationCoordMessage",
     "tip.consensus.CommitteeMember",
   ];
 
