@@ -207,3 +207,10 @@ scripts/oracle-init.sh
 scripts/postgres-init.sql
 # Added by code-review-graph
 .code-review-graph/
+
+# Local-only dev artifacts (not committed)
+COMMANDS.md
+docker-compose.classifier-stub.yml
+docs/superpowers/
+docs/tech-debt/
+node6-env/
