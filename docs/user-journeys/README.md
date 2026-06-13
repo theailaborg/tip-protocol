@@ -18,7 +18,7 @@ Written for people who use the app, not for engineers.
 
 | Role | When you're called | Time commitment |
 |---|---|---|
-| **[Reviewer](REVIEWER.md)** | When AI flags content as possibly AI-generated. You decide: was the AI right or wrong? Score 800+, opt-in. | Up to 48 hours per case |
+| **[Reviewer](REVIEWER.md)** | When AI flags content as possibly AI-generated. You decide: was the AI right or wrong? Score 600+, opt-in. | Up to 48 hours per case |
 | **[Juror](JUROR.md)** | When a community member publicly disputes a piece of content. You're one of 7 jurors who vote on it. Score 700+, opt-in. | 72 hours to vote + 12 hours to reveal |
 | **[Expert](EXPERT.md)** | When someone challenges a jury's verdict (appeals). You're one of 3 experts who make the final call. Score 850+, opt-in. | 72 hours to vote + 12 hours to reveal |
 
@@ -72,7 +72,7 @@ You may play different roles at different times. A typical TIP user is **always*
 You publish content                   →  CREATOR
 You read & agree with a label         →  VERIFIER (score 650+, free attestation)
 You see content that looks mislabeled →  DISPUTER (you stake 15 pts to file)
-AI flags someone's content            →  REVIEWER (called automatically, score 800+)
+AI flags someone's content            →  REVIEWER (called automatically, score 600+)
 A dispute escalates to public jury    →  JUROR (1 of 7, score 700+, stake 10 pts)
 A jury verdict gets appealed          →  EXPERT (1 of 3, score 850+, stake 25 pts)
 ```
@@ -80,9 +80,10 @@ A jury verdict gets appealed          →  EXPERT (1 of 3, score 850+, stake 25 
 ## Some things to know before you read
 
 - **Anonymous** — you don't see who flagged the content, who's disputing it, or who else is on the jury/panel. The creator doesn't see who you are either. Only your decision is public on the chain (under your TIP ID pseudonym).
-- **You can opt out anytime** — turn off "I want to help adjudicate" in your profile and you stop getting picked for adjudication roles.
+- **You can opt out anytime, per role**: reviewer, juror, and expert each have their own opt-in toggle in your profile. Turn any one off and you stop getting picked for that role (the others are unaffected).
 - **No tokens** — you earn trust score (your reputation on the protocol), not money. Trust score makes you visible, trustworthy, and qualifies you for higher-tier roles.
 - **You can decline a specific case** — if you know the creator personally or have a stake, recuse yourself. It's free and the right thing to do.
 - **You have skin in the game where it matters** — Disputers stake 15, Jurors stake 10, Experts stake 25. Reviewers don't stake. Creators don't stake (but lose points if their content is mislabeled). Vote/decide with the majority → get it back + bonus. Vote/decide against → lose it.
+- **Media is role-gated**: content can carry images, audio, and video. The public only ever sees a file's type, size, hash, and AI score, never the bytes. People with a role on the content (the creator, the assigned reviewer, the disputer, summoned jurors, appeal experts) ARE authorized to load the actual file: opening the content (on the UI or its URL) loads the bytes directly for them, the app handles the signed request and the temporary download link. Your access opens when your role begins and closes when your stage ends (review closed, dispute resolved, verdict or appeal-result reached). Media bytes are also deleted after the dispute-relevance window; the content-hash stays on chain forever as proof.
 
 Pick the role you're playing today and read its guide.

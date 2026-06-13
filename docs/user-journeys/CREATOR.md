@@ -47,6 +47,20 @@ You pick one when you publish. **Be honest about the label.** AI scans every pie
 
 ---
 
+## Attaching media to your content
+
+Your content can carry media files: images, audio, and video. (Which types and size limits are enabled is network policy, set in genesis. Video is accepted for storage even though its automated AI score is not available yet.)
+
+What you should know:
+
+- **Upload first, then publish.** Each file is uploaded on its own (you get back a `media_id`), then you list those ids when you register the content. Uploading is content-addressed: the `media_id` IS the cryptographic hash of the bytes, so the same file always produces the same id, and re-uploading an identical file is free (it deduplicates).
+- **The server decides the file type, not your label.** The node reads the file's actual bytes to determine the real type (png, jpeg, webp, gif, mp3, wav, mp4, ...). If your client mislabels a file, the node stores the truth and hands it back. Use the type it returns when you publish.
+- **Your media is private to the people who judge it.** The bytes are NOT public. Anyone can see a file's type, size, hash, and AI score, but only people with a role on your content (you, an assigned reviewer, a disputer, jurors, appeal experts) can open the actual file. There is no public media URL.
+- **Each file gets its own AI score.** The prescan classifier scores every file individually. Your content's headline confidence is the most-AI-looking file among them. You can see the per-file scores on your content page.
+- **Media bytes do not live forever.** Once the dispute-relevance window closes (never-disputed content after a few weeks; disputed content about a week after the verdict), the node deletes the raw bytes. The content-hash stays on chain permanently as proof of what the file was, but the bytes themselves are swept to keep storage honest. Your registration and its verdict are unaffected.
+
+---
+
 ## What happens if AI flags you
 
 If you claimed **OH** but AI thinks **AG** with high confidence (HIGH or CRITICAL tier), things branch.

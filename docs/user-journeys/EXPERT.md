@@ -14,11 +14,11 @@ You qualify if **all** are true:
 |---|---|
 | Your trust score is **850 or higher** | Experts hold the final word. Need the strongest track record. |
 | You're a **personal identity** | Orgs never adjudicate |
-| You turned ON **"I want to help adjudicate"** in your profile | Opt-in only |
+| You turned ON **"I want to serve as an expert"** in your profile | Opt-in only. Each adjudication role (reviewer, juror, expert) has its OWN toggle, so opting into expert duty does not pull you into reviewer or juror duty. |
 | You weren't on the original Stage 2 jury | The same person can't judge the same case twice — system filters automatically |
 | You're not the creator, the disputer, or the appellant | Conflict-of-interest filter |
 
-**Where to find the toggle:** Profile → Settings → Adjudication participation → "I want to help adjudicate". Same toggle as Juror — if it's ON, you're eligible for both roles whenever your score and the case match. You can turn it off any time and stop being picked immediately.
+**Where to find the toggle:** Profile → Settings → Adjudication participation → "Serve as an expert". Separate from the reviewer and juror toggles. You can turn it off any time and stop being picked immediately.
 
 **How often you'll be picked:** Rarely — only when (a) a dispute makes it to Stage 2, AND (b) the loser stakes 25 points to file an appeal. On a federation with thousands of users, expect a handful of expert summonses per quarter at most.
 
@@ -81,6 +81,8 @@ So appeals only get filed when someone genuinely believes the jury was wrong (th
 ```
 
 You see the full Stage-2 vote breakdown, the appellant's argument, and the original content. You're not redoing the jury's work from scratch — you're reviewing whether the jury made the right call given the evidence.
+
+**Viewing the content's media.** If the content has media attached (images, audio, video), you can open the actual files while you sit on the expert panel. The bytes are access-controlled (the public sees only a file's type, size, hash, and AI score); a summoned expert gets full view access. Your access opens when you're summoned and closes when the appeal result lands (APPEAL_RESULT). Each file shows its own AI-likelihood score; the headline confidence is the most-AI-looking file among them. If the bytes were retention-swept, you'll see the hash and score but not the file. The app handles the signed request and download link for you.
 
 ---
 
@@ -255,7 +257,7 @@ Fewer than 2 non-abstain reveals
    Experts who revealed (including ABSTAIN) take 0
 ```
 
-**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum, it auto-escalates to Stage 3 and nobody is penalised — there's somewhere to go. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
+**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum it auto-escalates to Stage 3 (there's somewhere to go): the jurors who revealed take 0, but the no-show jurors who broke quorum still take their -1 / -8. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
 
 In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 
