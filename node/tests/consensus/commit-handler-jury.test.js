@@ -321,6 +321,49 @@ describe("commit-handler ADJUDICATION_RESULT: first-wins per ctid", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 3b. ADJUDICATION_RESULT NO_QUORUM — terminal restores content, non-terminal
+//     leaves it parked for the escalated appeal to finalise.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("commit-handler ADJUDICATION_RESULT: NO_QUORUM content status", () => {
+  function _noQuorumAdjTx(fx, ctid, terminal) {
+    return _signByNode(fx, 0, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT,
+      timestamp: 1767398400000,
+      prev: [],
+      data: {
+        ctid, verdict: VERDICT.NO_QUORUM, terminal,
+        declared_origin: "OH", confirmed_origin: null,
+        author_tip_id: "tip://id/author", author_score_delta: 0,
+        pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        match_count: 0, mismatch_count: 0, abstain_count: 0,
+      },
+    });
+  }
+
+  test("terminal NO_QUORUM restores content to pre-dispute status", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    fx.handler.commitOrderedTxs([_noQuorumAdjTx(fx, fx.ctid, true)], 100);
+
+    // No Stage-3 panel was formable, so there will be no APPEAL_RESULT —
+    // the content must not be left parked in DISPUTED forever.
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.REGISTERED);
+  });
+
+  test("non-terminal NO_QUORUM leaves content parked (appeal will finalise)", () => {
+    const fx = _setupDisputeFixture();
+    fx.dag.updateContentStatus(fx.ctid, CONTENT_STATUS.DISPUTED);
+
+    fx.handler.commitOrderedTxs([_noQuorumAdjTx(fx, fx.ctid, false)], 100);
+
+    // The case escalated to Stage 3; its APPEAL_RESULT will set the final
+    // status. Touching it here would race that outcome.
+    expect(fx.dag.getContent(fx.ctid).status).toBe(CONTENT_STATUS.DISPUTED);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 4. APPEAL_RESULT — content-state reversal effects (#15)
 // ═══════════════════════════════════════════════════════════════════════════
 describe("commit-handler APPEAL_RESULT: content-state effects", () => {

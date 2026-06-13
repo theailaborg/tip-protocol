@@ -172,6 +172,30 @@ function _seedDispute(dag, ctid, {
   return { authorTipId, disputerTipId, jurors, summons, disputeTx, ctid };
 }
 
+// Stage-2 NO_QUORUM only auto-escalates if a Stage-3 expert panel can
+// actually be formed (>= APPEAL.MIN_VOTES eligible experts). In production the
+// expert pool is a standing set of opted-in, high-score identities that exists
+// before any dispute, so seed it before Stage-2 to exercise the escalation
+// path. Experts must carry reviewer_consent and span enough regions to clear
+// the appeal_max_same_country geo-cap.
+const _EXPERT_REGIONS = ["US", "GB", "DE", "JP", "BR"];
+function _seedExpertPool(dag, count = 3, score = 900) {
+  const experts = [];
+  for (let i = 0; i < count; i++) {
+    const e = `tip://id/expert-${i}`;
+    dag.saveIdentity({
+      tip_id: e, region: _EXPERT_REGIONS[i % _EXPERT_REGIONS.length],
+      public_key: "00", root_public_key: "00", vp_id: VP_ID,
+      verification_tier: "T1", founding: false, status: "active",
+      reviewer_consent: true, registered_at: 1767225600000,
+      tx_id: shake256(`id:${e}`),
+    });
+    dag.setScore(e, score, 0, 1767225600000);
+    experts.push(e);
+  }
+  return experts;
+}
+
 function _filingStakeDebit(dag, ctid, tipId, ts = 1775001600500) {
   return _addTx(dag, {
     tx_type: TX_TYPES.SCORE_UPDATE, timestamp: ts,
@@ -572,6 +596,7 @@ describe("Flow 7 — NO_QUORUM auto-escalation → Stage-3 UPHELD", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow7fffffffffff-7777";
     const ids = _seedDispute(fx.dag, ctid);
+    _seedExpertPool(fx.dag);   // standing expert pool → Stage-2 can escalate
 
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
@@ -616,6 +641,7 @@ describe("Flow 7 — NO_QUORUM auto-escalation → Stage-3 UPHELD", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow7ggggggggggg-7778";
     const ids = _seedDispute(fx.dag, ctid);
+    const experts = _seedExpertPool(fx.dag);   // standing pool → Stage-2 escalates
 
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
@@ -626,8 +652,6 @@ describe("Flow 7 — NO_QUORUM auto-escalation → Stage-3 UPHELD", () => {
     _commitBatch(fx.dag, stage2.txs);
 
     // Stage-3 — experts UPHELD via MISMATCH
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
-    for (const e of experts) _seedIdentity(fx.dag, e, 900);
     const expSummons = _expertSummons(fx.dag, ctid, experts);
     const expReveals = _buildReveals(experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH], ctid, {
       ts: 1775433600000, isAppeal: true,
@@ -657,6 +681,7 @@ describe("Flow 8 — zero-participation NO_QUORUM (every juror is a no-show)", (
     const fx = _setup();
     const ctid = "tip://c/OH-flow8hhhhhhhhhh-8888";
     const ids = _seedDispute(fx.dag, ctid);
+    _seedExpertPool(fx.dag);   // standing expert pool → Stage-2 can escalate
 
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
@@ -766,21 +791,20 @@ describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror scor
 // ════════════════════════════════════════════════════════════════════════════
 
 describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISSED", () => {
-  test("defaulted: true, no settlement for either party, expert no-show penalties only", () => {
+  test("defaulted: true, disputer refunded (no merits ruling), expert no-show penalties only", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow10kkkkkkkkk-aaaa";
     const ids = _seedDispute(fx.dag, ctid);
+    const experts = _seedExpertPool(fx.dag);   // standing pool → Stage-2 escalates
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
-    // Stage-2 NO_QUORUM (any path that left a state needing Stage-3)
+    // Stage-2 NO_QUORUM that escalates (expert panel formable)
     const reveals = _buildReveals(ids.jurors.slice(0, 4), [
       VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
     ], ctid);
     _commitBatch(fx.dag, buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config).txs);
 
     // Stage-3 — 0 reveals from the 3 experts
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
-    for (const e of experts) _seedIdentity(fx.dag, e, 900);
     const expSummons = _expertSummons(fx.dag, ctid, experts);
     const stage3 = buildAppealBatch(ctid, [], expSummons, fx.dag, fx.scoring, fx.config);
     expect(stage3.verdict).toBe(VERDICT.DISMISSED);
@@ -791,9 +815,13 @@ describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISS
     expect(apResult.data.defaulted).toBe(true);
     expect(apResult.data.overturned).toBe(false);
 
-    // No settlement for author or disputer
+    // The dispute never got a merits ruling (Stage-2 NO_QUORUM, Stage-3
+    // defaulted for lack of experts), so the disputer is refunded their
+    // filing stake. The author gets nothing (their content stands).
     expect(_scoreUpdates(stage3.txs, ids.authorTipId)).toHaveLength(0);
-    expect(_scoreUpdates(stage3.txs, ids.disputerTipId)).toHaveLength(0);
+    const disputerSU = _scoreUpdates(stage3.txs, ids.disputerTipId);
+    expect(disputerSU).toHaveLength(1);
+    expect(disputerSU[0].data.delta).toBe(STAKES.DISPUTER);
 
     // 3 experts: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1 each)
     _commitBatch(fx.dag, stage3.txs);
@@ -801,5 +829,82 @@ describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISS
       const s = _replay(fx.dag, e, { score: 900, offense_count: 0, frozen: false });
       expect(s.score).toBe(900 - STAKES.EXPERT_NO_COMMIT);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Flow 11 — terminal NO_QUORUM (no Stage-3 expert panel can be formed)
+//
+// A Stage-2 NO_QUORUM normally auto-escalates, but escalation is gated on an
+// expert panel actually being formable (>= APPEAL.MIN_VOTES eligible experts).
+// When the pool is too small, escalating would hang forever (the appeal-
+// resolution trigger is driven by expert-summons reveal deadlines, so zero
+// summons = no deadline = no APPEAL_RESULT ever). The batch must instead
+// terminate: emit a terminal ADJUDICATION_RESULT and refund the disputer.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("Flow 11 — terminal NO_QUORUM (unformable Stage-3 panel)", () => {
+  test("zero eligible experts → terminal, no APPEAL_FILED, disputer refunded", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow11lllllllll-bbbb";
+    const ids = _seedDispute(fx.dag, ctid);   // NO expert pool seeded
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    const reveals = _buildReveals(ids.jurors.slice(0, 4), [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ], ctid);
+    const stage2 = buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+
+    expect(stage2.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(stage2.terminal).toBe(true);
+    expect(stage2.auto_appeal).toBe(false);
+
+    // No escalation artefacts: no APPEAL_FILED, no expert summons.
+    expect(stage2.txs.find(t => t.tx_type === TX_TYPES.APPEAL_FILED)).toBeUndefined();
+    expect(stage2.txs.filter(t => t.tx_type === TX_TYPES.JURY_SUMMONS && t.data?.is_appeal))
+      .toHaveLength(0);
+
+    // ADJUDICATION_RESULT is marked terminal so the commit-handler restores
+    // content status instead of leaving it parked awaiting an appeal.
+    const adjResult = stage2.txs.find(t => t.tx_type === TX_TYPES.ADJUDICATION_RESULT);
+    expect(adjResult.data.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(adjResult.data.terminal).toBe(true);
+
+    // Disputer refunded: never forfeit when the system fails to decide.
+    const disputerSU = _scoreUpdates(stage2.txs, ids.disputerTipId);
+    expect(disputerSU).toHaveLength(1);
+    expect(disputerSU[0].data.delta).toBe(STAKES.DISPUTER);
+
+    _commitBatch(fx.dag, stage2.txs);
+    // -15 filing + 15 refund = back to start.
+    expect(_replay(fx.dag, ids.disputerTipId).score).toBe(SCORE.INITIAL_IDENTITY);
+
+    // No-show jurors (4,5,6) still penalised — they broke quorum.
+    for (let i = 4; i < 7; i++) {
+      const s = _replay(fx.dag, ids.jurors[i], { score: 750, offense_count: 0, frozen: false });
+      expect(s.score).toBe(750 - STAKES.JUROR_NO_COMMIT);
+    }
+  });
+
+  test("one eligible expert (below MIN_VOTES) → still terminal + refunded", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow11mmmmmmmmm-cccc";
+    const ids = _seedDispute(fx.dag, ctid);
+    _seedExpertPool(fx.dag, 1);   // 1 expert < APPEAL.MIN_VOTES (2)
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    const reveals = _buildReveals(ids.jurors.slice(0, 4), [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ], ctid);
+    const stage2 = buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+
+    expect(stage2.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(stage2.terminal).toBe(true);
+    expect(stage2.auto_appeal).toBe(false);
+    expect(stage2.txs.find(t => t.tx_type === TX_TYPES.APPEAL_FILED)).toBeUndefined();
+
+    const disputerSU = _scoreUpdates(stage2.txs, ids.disputerTipId);
+    expect(disputerSU).toHaveLength(1);
+    expect(disputerSU[0].data.delta).toBe(STAKES.DISPUTER);
   });
 });

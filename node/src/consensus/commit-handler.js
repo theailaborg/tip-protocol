@@ -1181,6 +1181,15 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             dag.updateContentStatus(d.ctid, _postResolutionStatus(d.pre_dispute_status));
           } else if (d.verdict === VERDICT.UPHELD && d.confirmed_origin) {
             dag.updateContentOrigin(d.ctid, d.confirmed_origin, CONTENT_STATUS.VERIFIED);
+          } else if (d.verdict === VERDICT.NO_QUORUM && d.terminal) {
+            // Terminal NO_QUORUM: no Stage-3 expert panel could be formed,
+            // so the case is undecidable and there will be no APPEAL_RESULT.
+            // Restore the content to its pre-dispute status (it keeps its
+            // declared label, benefit of the doubt) instead of leaving it
+            // parked awaiting an appeal that never comes. A non-terminal
+            // NO_QUORUM escalates and is finalised by its APPEAL_RESULT, so
+            // we deliberately do nothing for it here.
+            dag.updateContentStatus(d.ctid, _postResolutionStatus(d.pre_dispute_status));
           }
         }
         // Author-penalty side-effects (juror bonuses, no-show penalties,
