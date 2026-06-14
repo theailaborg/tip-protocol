@@ -328,7 +328,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     return _statefulCheck(tx, txMs);
   }
 
-  /** First-wins dedup over verdict / appeal / score / appeal-filed records. */
+  /**
+   * Same-round first-wins dedup. Phase 1 validates the whole batch before
+   * Phase 2 writes any of it, so `_statefulCheck`'s committed-history guards
+   * can't see a conflicting sibling that rode into this same round (it isn't
+   * written yet). This scans `validated` — the siblings already accepted, in
+   * canonical order — and drops the later duplicate, so only the first tx for
+   * a given key commits. The cross-round half of each rule is in `_statefulCheck`.
+   */
   function _dedupCheck(tx, validated) {
     const d = tx.data || {};
     switch (tx.tx_type) {
