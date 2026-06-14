@@ -327,7 +327,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     return _statefulCheck(tx, txMs);
   }
 
-  /** First-wins dedup over verdict / appeal / score / appeal-filed records. */
+  /**
+   * Same-round first-wins dedup. Phase 1 validates the whole batch before
+   * Phase 2 writes any of it, so `_statefulCheck`'s committed-history guards
+   * can't see a conflicting sibling that rode into this same round (it isn't
+   * written yet). This scans `validated` — the siblings already accepted, in
+   * canonical order — and drops the later duplicate, so only the first tx for
+   * a given key commits. The cross-round half of each rule is in `_statefulCheck`.
+   */
   function _dedupCheck(tx, validated) {
     const d = tx.data || {};
     switch (tx.tx_type) {
@@ -523,6 +530,150 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           t.tx_type === TX_TYPES.INTEREST_REGISTERED && t.data?.slug === d.slug
         );
         if (inBatch) return { valid: false, error: `INTEREST_REGISTERED already in this batch for slug ${d.slug}` };
+        return { valid: true };
+      }
+
+      // GH #87 (AG-7 follow-up): in-batch dedup for the remaining
+      // state-changing tx types. Same Phase-1 racing seam as the
+      // REGISTER_* block above — committed-history first-wins lives in
+      // _statefulCheck (rules/schema verifyTx); these cases only close
+      // the same-batch window that Phase 2 hasn't written yet.
+      // (Caveat: auto:true disputes bypass _statefulCheck entirely, so
+      // their cross-batch dedup is NOT covered — only the same-batch
+      // window is closed here.)
+
+      case TX_TYPES.CONTENT_DISPUTED: {
+        // One dispute per ctid per batch — two disputers racing in one
+        // round would deduct two stakes but only one jury can resolve.
+        // Covers auto (cascade/trigger) disputes too: a user dispute and
+        // an auto-escalation for the same ctid collapse to the first.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_DISPUTED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_DISPUTED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_TRIGGERED: {
+        // One open-review trigger per ctid per batch. The trigger's
+        // leader gate can be bypassed (multi-node race / byzantine peer);
+        // the trigger module itself documents that the commit-handler
+        // dedupes racing triggers — this is the in-batch half (the
+        // committed-history half is getOpenPrescanReviewByCtid in _statefulCheck).
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate PRESCAN_REVIEW_TRIGGERED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+      case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+      case TX_TYPES.PRESCAN_REVIEW_RECUSED: {
+        // Cross-type: each review_id gets exactly ONE terminal decision
+        // per batch. Real collision: reviewer decision racing the
+        // scheduler's SLA auto-recuse at the 48h boundary.
+        if (!d.review_id) return { valid: true };
+        const TERMINAL_TYPES = [
+          TX_TYPES.PRESCAN_REVIEW_DISMISSED,
+          TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
+          TX_TYPES.PRESCAN_REVIEW_RECUSED,
+        ];
+        const inBatch = validated.find(t =>
+          TERMINAL_TYPES.includes(t.tx_type) && t.data?.review_id === d.review_id);
+        if (inBatch) return { valid: false, error: `duplicate prescan-review terminal decision in batch for ${d.review_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.KEY_ROTATED:
+      case TX_TYPES.KEY_RECOVERY: {
+        // Cross-type: at most ONE key transition per tip_id per batch.
+        // Both types close + open entity_keys rows; two in one batch
+        // corrupt the active-key invariant that KA-2 (PR #74) restored.
+        if (!d.tip_id) return { valid: true };
+        const KEY_TRANSITION_TYPES = [TX_TYPES.KEY_ROTATED, TX_TYPES.KEY_RECOVERY];
+        const inBatch = validated.find(t =>
+          KEY_TRANSITION_TYPES.includes(t.tx_type) && t.data?.tip_id === d.tip_id);
+        if (inBatch) return { valid: false, error: `duplicate key transition in batch for ${d.tip_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.REVOKE_VOLUNTARY:
+      case TX_TYPES.REVOKE_VP:
+      case TX_TYPES.REVOKE_DECEASED:
+      case TX_TYPES.REVOKE_DEVICE: {
+        // Cross-type: all four revoke the whole identity
+        // (dag.addRevocation(d.tip_id, ...)) — any pair for the same
+        // tip_id in one batch conflicts. First in canonical order wins.
+        if (!d.tip_id) return { valid: true };
+        const REVOKE_TYPES = [
+          TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
+          TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
+        ];
+        const inBatch = validated.find(t =>
+          REVOKE_TYPES.includes(t.tx_type) && t.data?.tip_id === d.tip_id);
+        if (inBatch) return { valid: false, error: `duplicate REVOKE_* in batch for ${d.tip_id}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.UPDATE_ORIGIN: {
+        // One origin update per ctid per batch. Committed-history limit
+        // (single update ever) lives in rules.canUpdateOrigin.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UPDATE_ORIGIN && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate UPDATE_ORIGIN in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.CONTENT_RETRACTED: {
+        // State write is idempotent, and the paired SCORE_UPDATE is
+        // already collapsed by the SCORE_UPDATE (tip_id, ctid, reason)
+        // dedup above. Dropping the sibling here prevents an orphaned
+        // committed tx and matches canRetract's cross-round 409.
+        if (!d.ctid) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_RETRACTED && t.data?.ctid === d.ctid);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_RETRACTED in batch for ${d.ctid}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.CONTENT_VERIFIED: {
+        // One verification per (verifier, ctid) per batch. Committed
+        // history is guarded by dag.hasVerification in rules.canVerify.
+        if (!d.ctid || !d.verifier_tip_id) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.CONTENT_VERIFIED
+          && t.data?.ctid === d.ctid
+          && t.data?.verifier_tip_id === d.verifier_tip_id);
+        if (inBatch) return { valid: false, error: `duplicate CONTENT_VERIFIED in batch for (${d.verifier_tip_id}, ${d.ctid})` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.BIND_DOMAIN: {
+        // One bind per domain per batch — keyed on domain alone, NOT
+        // (tip_id, domain): rules.canBindDomain enforces first-wins for
+        // committed history only, so two different claimants in one
+        // batch would both pass Phase 1 and the second would win via
+        // saveDomainBinding's upsert, inverting first-wins. Domain-only
+        // keying closes both the same-claimant and cross-claimant
+        // same-batch races. (Deviation from #87's proposed snippet,
+        // which keyed on (tip_id, domain) — see PR discussion.)
+        if (!d.domain) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.BIND_DOMAIN && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `duplicate BIND_DOMAIN in batch for domain ${d.domain}` };
+        return { valid: true };
+      }
+
+      case TX_TYPES.UNBIND_DOMAIN: {
+        // A domain has exactly one binding — one unbind per domain per
+        // batch. No emitter exists yet (reserved for revocation cascade);
+        // the guard future-proofs the seam before the path is wired.
+        if (!d.domain) return { valid: true };
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.UNBIND_DOMAIN && t.data?.domain === d.domain);
+        if (inBatch) return { valid: false, error: `duplicate UNBIND_DOMAIN in batch for ${d.domain}` };
         return { valid: true };
       }
 
@@ -1017,8 +1168,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (d.ctid) {
           dag.updateContentStatus(d.ctid, CONTENT_STATUS.RETRACTED);
         }
-        // Author retraction penalty is applied via the unified
-        // `_applyScoreEffect(tx)` pass below.
+        // Author retraction penalty rides on the paired SCORE_UPDATE tx
+        // submitted by content-service.retract; applyScoreEffect's
+        // CONTENT_RETRACTED case is a no-op.
         break;
 
       // ── Domain binding (org-only) ────────────────────────────────────
