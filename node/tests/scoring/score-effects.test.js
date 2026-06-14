@@ -254,12 +254,25 @@ describe("score-effects.applyScoreEffect — pure-function correctness", () => {
     expect(scoreTargetTipId(tx)).toBe("tip://id/IN-abc");
   });
 
-  test("LINK_PLATFORM → applyScoreEffect has delta=0 (SCORE_UPDATE paired tx owns the +5)", () => {
+  test("LINK_PLATFORM → first link earns SOCIAL_LINK_BONUS inline (issue #86 Option A)", () => {
+    const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
     const tx = { tx_type: TX_TYPES.LINK_PLATFORM, data: { tip_id: "tip://id/IN-abc", platform: "youtube", handle: "@ch" } };
+    // First link: linkedPlatforms is empty → earns bonus
     const next = applyScoreEffect(tx, initialState());
+    expect(next.delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    expect(next.score).toBe(500 + SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    expect(next.reason).toBe("Social account linked: youtube");
+    expect(next.linkedPlatforms.has("youtube")).toBe(true);
+  });
+
+  test("LINK_PLATFORM → re-link same platform: delta=0 (isRelink via accumulated state)", () => {
+    const { SOCIAL_LINK } = require("../../../shared/protocol-constants");
+    const tx = { tx_type: TX_TYPES.LINK_PLATFORM, data: { tip_id: "tip://id/IN-abc", platform: "youtube", handle: "@ch" } };
+    // Seed linkedPlatforms with "youtube" already present
+    const stateWithPriorLink = { ...initialState(), linkedPlatforms: new Set(["youtube"]) };
+    const next = applyScoreEffect(tx, stateWithPriorLink);
     expect(next.delta).toBe(0);
     expect(next.score).toBe(500);
-    expect(next.reason).toBe("Social account linked");
   });
 });
 

@@ -228,6 +228,56 @@ describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
     expect(result.valid).toBe(false);
     expect(result.errors.join("\n")).toMatch(/TIP-ID not found/);
   });
+
+  // #86 hardening: the (tip_id, platform) dedup + inline bonus match the
+  // stored platform byte-for-byte, so verifyTx must reject a non-canonical
+  // casing that a gossip-bypass / malicious-node tx could use to occupy a
+  // second slot for the same real account.
+  test("verifyTx rejects non-canonical platform casing", () => {
+    const tx = makeTx({ platform: "Twitter" });
+    const result = linkPlatformSchema.verifyTx(tx, dag);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("platform_not_canonical");
+  });
+
+  test("verifyTx rejects an unknown platform", () => {
+    const tx = makeTx({ platform: "myspace" });
+    const result = linkPlatformSchema.verifyTx(tx, dag);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("platform_not_canonical");
+  });
+});
+
+describe("LINK_PLATFORM validateRequest — canonical platform (#86 hardening)", () => {
+  function _body(overrides = {}) {
+    return {
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      claim_signature: "00",
+      claimed_at: nowMs(),
+      ...overrides,
+    };
+  }
+
+  test("rejects non-canonical casing", () => {
+    const body = _body({ platform: "Twitter" });
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err.code).toBe("platform_not_canonical");
+  });
+
+  test("accepts a canonical lowercase platform (no canonical/unknown error)", () => {
+    const body = _body({ platform: "twitter" });
+    // No deps.dag → returns after the stateless platform/url/oauth checks.
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err && err.code).not.toBe("platform_not_canonical");
+    expect(err && err.code).not.toBe("unknown_platform");
+  });
 });
 
 describe("identityService.linkPlatform v2 (node-attested)", () => {
@@ -289,7 +339,7 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     return registerSocialSchema.sign(payload, userPriv);
   }
 
-  test("linkPlatform calls verifyBio and submits LINK_PLATFORM + SCORE_UPDATE", async () => {
+  test("linkPlatform calls verifyBio and submits LINK_PLATFORM only (no separate SCORE_UPDATE — issue #86 Option A)", async () => {
     submitted.length = 0;
     // Use a bio-check platform (medium) — twitter is OAUTH_REQUIRED and would
     // reject without a VP proof before ever reaching verifyBio.
@@ -313,10 +363,11 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     expect(result.confirmation).toBe("proposed");
     expect(result.platform).toBe("medium");
     expect(result.handle).toBe("alice");
-    expect(submitted).toHaveLength(2);
+    // Issue #86 Option A: bonus applied inline at consensus — no separate SCORE_UPDATE tx.
+    expect(submitted).toHaveLength(1);
     expect(submitted[0].tx_type).toBe(TX_TYPES.LINK_PLATFORM);
-    expect(submitted[1].tx_type).toBe(TX_TYPES.SCORE_UPDATE);
-    expect(submitted[1].data.delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    expect(result.score_delta).toBe(SOCIAL_LINK.SOCIAL_LINK_BONUS);
+    expect(result.score_tx_id).toBeNull();
     // Cosignatures shape — user's claim sig rides as a SUBJECT cosig.
     expect(Array.isArray(submitted[0].data.cosignatures)).toBe(true);
     expect(submitted[0].data.cosignatures).toHaveLength(1);
@@ -665,9 +716,10 @@ describe("social link score cap — 7th platform earns no bonus", () => {
     expect(result.score_delta).toBe(0);
     expect(result.confirmation).toBe("proposed");
 
-    // No SCORE_UPDATE should have been emitted for the 7th link.
+    // Issue #86 Option A: no SCORE_UPDATEs emitted for social links at all —
+    // bonus applies inline at consensus via applyScoreEffect's LINK_PLATFORM case.
     const scoreTxs = submitted3.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE);
-    expect(scoreTxs).toHaveLength(SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS);
+    expect(scoreTxs).toHaveLength(0);
   });
 });
 
