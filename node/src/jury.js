@@ -704,6 +704,9 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   // appellant's appeal stake are both returned. Stage-2's settlement stands
   // (a tie does not overturn it), and no vindication is paid.
   const appealIsTie = matchCount === mismatchCount;
+  // Precise audit flag: a deadlock is a QUORATE tie; a 0-reveal panel is
+  // sub-quorum (0===0), not a deadlock, and is marked by `defaulted` instead.
+  const appealDeadlock = nonAbstain >= APPEAL.MIN_VOTES && appealIsTie;
   if (nonAbstain < APPEAL.MIN_VOTES || appealIsTie) {
     const resultTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_RESULT,
@@ -711,7 +714,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       prev: getRecentPrev(),
       data: {
         ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
-        tie: appealIsTie,
+        tie: appealDeadlock,
         stage2_verdict: stage2Verdict || null,
         pre_dispute_status: preStatus,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
@@ -761,8 +764,8 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       }));
     }
 
-    log.info(`Appeal no-result (${appealIsTie ? "tie" : "sub-quorum"}) on ${ctid} — terminal DISMISSED, stakes refunded (${txs.length} txs in batch)`);
-    return { txs, verdict: VERDICT.DISMISSED, defaulted: true, tie: appealIsTie, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
+    log.info(`Appeal no-result (${appealDeadlock ? "tie" : "sub-quorum"}) on ${ctid} — terminal DISMISSED, stakes refunded (${txs.length} txs in batch)`);
+    return { txs, verdict: VERDICT.DISMISSED, defaulted: true, tie: appealDeadlock, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
   }
 
   // ── Quorum reached — compute expert verdict ───────────────────────────────

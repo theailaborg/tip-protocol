@@ -868,6 +868,40 @@ describe("Flow 9b — tie economics: terminal refund, full chain, and the substa
     expect(_replay(fx.dag, ids.disputerTipId).score).toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
     expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
   });
+
+  test("Stage-3 tie on a Stage-2 UPHELD appeal: AUTHOR-appellant stake refunded, disputer untouched", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow9blllllllll-9b04";
+    const ids = _seedDispute(fx.dag, ctid);
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    // Stage-2 UPHELD (clear MISMATCH majority) → author penalised, appeals.
+    const stage2 = buildAdjudicationBatch(ctid, _buildReveals(ids.jurors, [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH, VOTE.MATCH,
+    ], ctid), ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(stage2.verdict).toBe(VERDICT.UPHELD);
+    _commitBatch(fx.dag, stage2.txs);
+
+    _appealFilingDebit(fx.dag, ctid, ids.authorTipId);
+    _appealFiled(fx.dag, ctid, ids.authorTipId, VERDICT.UPHELD);
+
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    for (const e of experts) _seedIdentity(fx.dag, e, 900);
+    const expSummons = _expertSummons(fx.dag, ctid, experts);
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+      ts: 1775433600000, isAppeal: true,
+    });
+    const s3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
+    expect(s3.verdict).toBe(VERDICT.DISMISSED);
+    expect(s3.tie).toBe(true);
+
+    // Author (appellant) gets the 25 appeal stake back — no result reached.
+    const authorSU = _scoreUpdates(s3.txs, ids.authorTipId);
+    expect(authorSU).toHaveLength(1);
+    expect(authorSU[0].data.delta).toBe(STAKES.APPELLANT);
+    // Disputer is NOT touched at Stage 3 — their Stage-2 UPHELD settlement stands.
+    expect(_scoreUpdates(s3.txs, ids.disputerTipId)).toHaveLength(0);
+  });
 });
 
 describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISSED", () => {
