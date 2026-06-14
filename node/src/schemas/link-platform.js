@@ -94,7 +94,17 @@ function validateRequest(body, deps) {
     throw schemaError(400, "claimed_at must be a valid epoch ms timestamp", "claimed_at_invalid");
   }
 
-  const platformKey = body.platform.toLowerCase();
+  // platform must be the exact canonical (lowercase) key. The on-chain
+  // (tip_id, platform) dedup — first-wins link gate + the inline
+  // social-link bonus — matches the stored value byte-for-byte, so a
+  // non-canonical casing like "LinkedIn" would occupy a separate slot
+  // and earn a second bonus for the same real account. Reject it rather
+  // than coercing: the value is bound into the user's claim signature,
+  // so the canonical form must be what they signed.
+  if (body.platform !== body.platform.toLowerCase()) {
+    throw schemaError(400, `platform must be lowercase canonical (got "${body.platform}")`, "platform_not_canonical");
+  }
+  const platformKey = body.platform;
   const platformPatterns = ALLOWED_PLATFORMS[platformKey];
   if (!platformPatterns) {
     throw schemaError(400, `Unknown or unsupported platform: "${body.platform}"`, "unknown_platform");
@@ -338,6 +348,16 @@ function verifyTx(tx, dag) {
   }
   if (typeof dag.isRevoked === "function" && dag.isRevoked(d.tip_id)) {
     return { ok: false, status: 403, error: `TIP-ID is revoked: ${d.tip_id}`, code: "tip_id_revoked" };
+  }
+
+  // platform must be the exact canonical (lowercase) key, enforced here
+  // too so a gossip-bypass / malicious-node tx can't slip a non-canonical
+  // casing past the (tip_id, platform) first-wins dedup and the inline
+  // social-link bonus (see validateRequest for the rationale).
+  if (typeof d.platform !== "string"
+      || d.platform !== d.platform.toLowerCase()
+      || !ALLOWED_PLATFORMS[d.platform]) {
+    return { ok: false, status: 400, error: `Non-canonical or unknown platform: "${d.platform}"`, code: "platform_not_canonical" };
   }
 
   // First-wins guard. Relink after an UNLINK is allowed (existing row's

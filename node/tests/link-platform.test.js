@@ -228,6 +228,56 @@ describe("LINK_PLATFORM tx-validator v2 (node-attested)", () => {
     expect(result.valid).toBe(false);
     expect(result.errors.join("\n")).toMatch(/TIP-ID not found/);
   });
+
+  // #86 hardening: the (tip_id, platform) dedup + inline bonus match the
+  // stored platform byte-for-byte, so verifyTx must reject a non-canonical
+  // casing that a gossip-bypass / malicious-node tx could use to occupy a
+  // second slot for the same real account.
+  test("verifyTx rejects non-canonical platform casing", () => {
+    const tx = makeTx({ platform: "Twitter" });
+    const result = linkPlatformSchema.verifyTx(tx, dag);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("platform_not_canonical");
+  });
+
+  test("verifyTx rejects an unknown platform", () => {
+    const tx = makeTx({ platform: "myspace" });
+    const result = linkPlatformSchema.verifyTx(tx, dag);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("platform_not_canonical");
+  });
+});
+
+describe("LINK_PLATFORM validateRequest — canonical platform (#86 hardening)", () => {
+  function _body(overrides = {}) {
+    return {
+      tip_id: "tip://id/US-aabbccdd11223344",
+      platform: "twitter",
+      profile_url: "https://x.com/alice",
+      claim_signature: "00",
+      claimed_at: nowMs(),
+      ...overrides,
+    };
+  }
+
+  test("rejects non-canonical casing", () => {
+    const body = _body({ platform: "Twitter" });
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err.code).toBe("platform_not_canonical");
+  });
+
+  test("accepts a canonical lowercase platform (no canonical/unknown error)", () => {
+    const body = _body({ platform: "twitter" });
+    // No deps.dag → returns after the stateless platform/url/oauth checks.
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err && err.code).not.toBe("platform_not_canonical");
+    expect(err && err.code).not.toBe("unknown_platform");
+  });
 });
 
 describe("identityService.linkPlatform v2 (node-attested)", () => {
