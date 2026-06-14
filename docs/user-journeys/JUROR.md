@@ -153,10 +153,13 @@ Your own +3 / -8 is small. The case-level economics your vote drives are much bi
 
 | Verdict | Creator | Disputer |
 |---|---|---|
-| DISMISSED (MATCH wins) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
+| DISMISSED (clear MATCH majority) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
 | UPHELD (MISMATCH wins) | **-100** for OH→AG 1st offense (smaller for AA→AG or OH→AA; up to **-300** for repeat offenders — see the mislabeling table) | **+20** (filing stake refunded + upheld bonus) |
 | CONSERVATIVE_LABEL (creator declared AG, jury confirmed it's actually OH — over-declaration) | **0** (no penalty — over-declaration is encouraged) | **+15** (refund only, no bonus) |
 | NO_QUORUM (fewer than 5 reveals or fewer than 3 non-abstain) | 0 (pending Stage 3) | 0 (stake locked until Stage 3) |
+| Tie (MATCH == MISMATCH) | 0 (no vindication) | 0 (stake locked, escalates) |
+
+A **tie is a deadlock, not a dismissal** — there's no majority, so it auto-escalates to Stage 3 exactly like NO_QUORUM (the disputer's stake stays locked, the creator gets no vindication). Only a *clear* MATCH majority is a real DISMISSED that forfeits the disputer and vindicates the creator.
 
 A jury that gets it wrong moves real points across the federation. **Your personal +3 / -8 delta is the smallest thing in the room** — the case-level impact is what the protocol is asking you to take seriously.
 
@@ -203,12 +206,13 @@ HOUR 84:
         - MISMATCH > MATCH (majority of non-abstain)        → UPHELD
           ↳ If creator declared AG and majority confirmed OH → CONSERVATIVE_LABEL
             (over-declaration: no creator penalty)
-        - MATCH ≥ MISMATCH (majority of non-abstain)        → DISMISSED
-        - Tie (MATCH == MISMATCH)                            → DISMISSED, no juror bonus/penalty
-   Without quorum:
-        - Fewer than 5 reveals OR fewer than 3 non-abstain   → NO_QUORUM
-          ↳ Auto-escalates to Stage 3 (Expert panel)
-          ↳ No juror score effects fire — neither bonuses nor no-show penalties
+        - MATCH > MISMATCH (clear majority of non-abstain)  → DISMISSED
+        - Tie (MATCH == MISMATCH)                            → no result → escalates (see below)
+   No decisive result (deadlock or low participation):
+        - Tie, OR fewer than 5 reveals, OR fewer than 3 non-abstain → NO_QUORUM
+          ↳ Auto-escalates to Stage 3 (Expert panel); disputer stake stays locked
+          ↳ Revealers get 0 (no majority to score); no-show jurors who broke
+            quorum still take their -1 / -8
 
 HOUR 84+:
    With quorum reached:

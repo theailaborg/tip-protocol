@@ -42,7 +42,7 @@ Stage 2 jury voted, verdict landed (e.g. UPHELD or DISMISSED)
                        That's YOU — APPEAL_FILED notification lands
 ```
 
-Appeals cost the appellant 25 points (filing stake). If they win the appeal, they get the 25 back + a +10 overturn bonus, AND the chain reverses the entire Stage-2 settlement that hit them. If they lose, the 25 stays forfeited and the Stage-2 outcome stands.
+Appeals cost the appellant 25 points (filing stake). If they win the appeal, they get the 25 back + a +10 overturn bonus, AND the chain reverses the entire Stage-2 settlement that hit them. If they lose on a *decisive* call (a clear majority confirms Stage 2), the 25 stays forfeited and the Stage-2 outcome stands. If the panel reaches **no result** — a tie or too few non-abstain reveals — the appeal is undecided, so the 25 is **refunded** (you forfeit only on a real loss, not on a deadlock).
 
 So appeals only get filed when someone genuinely believes the jury was wrong (the stake punishes frivolous appeals).
 
@@ -205,15 +205,15 @@ HOURS 72 – 84:
 HOUR 84:
    Reveal phase ends. Verdict computed automatically.
         ↓
-   Need at least 2 non-abstain reveals (MIN_VOTES = 2). Otherwise
-   the appeal defaults to DISMISSED — Stage 2 verdict stands.
+   Need at least 2 non-abstain reveals (MIN_VOTES = 2) AND a non-tie.
         ↓
-   - Majority of non-abstain says UPHOLD VERDICT → APPEAL_RESULT: Stage 2 stands.
-                                                   Appellant's 25 stays forfeited.
-   - Majority of non-abstain says OVERTURN      → APPEAL_RESULT: Stage 2 reversed.
-                                                   Appellant gets +25 +10 bonus.
-                                                   Full Stage-2 settlement reversed (creator + disputer + reviewer).
-   - Fewer than 2 non-abstain reveals           → Defaults to DISMISSED. Stage 2 stands.
+   - Clear majority says UPHOLD VERDICT → APPEAL_RESULT: Stage 2 stands.
+                                          Appellant's 25 stays forfeited (decisive loss).
+   - Clear majority says OVERTURN       → APPEAL_RESULT: Stage 2 reversed.
+                                          Appellant gets +25 +10 bonus.
+                                          Full Stage-2 settlement reversed (creator + disputer + reviewer).
+   - No result (fewer than 2 non-abstain reveals, OR a tie) → terminal DISMISSED,
+                                          Stage 2 stands, appellant's 25 REFUNDED (no verdict).
 
 HOUR 84+:
    - Voted with majority + revealed → +7
@@ -240,16 +240,17 @@ Same constants as Juror — there's no special expert escrow.
 
 ---
 
-## What if the panel doesn't reach quorum?
+## What if the panel reaches no result? (sub-quorum or tie)
 
-The expert panel needs at least **2 non-abstain reveals** to compute a verdict. If fewer than 2 experts make a valid non-abstain reveal — for example two miss the reveal and the third abstains — the appeal **defaults to DISMISSED**: the Stage-2 verdict stands.
+The expert panel needs at least **2 non-abstain reveals** to compute a verdict, AND those reveals must not be a tie (equal UPHOLD/OVERTURN). Either way — too few non-abstain reveals, or a deadlock — the panel produced **no decision**, so the appeal is undecided. Experts are the final tier (nowhere to escalate), so the case terminates as DISMISSED (Stage-2 outcome stands by default), but **nobody is forfeited**: it was a deadlock, not a loss.
 
 ```
-Fewer than 2 non-abstain reveals
+No result — fewer than 2 non-abstain reveals, OR a tie (UPHOLD = OVERTURN)
             ↓
-   APPEAL_RESULT: defaults to DISMISSED
-   Stage-2 outcome stays in force
-   Appellant's 25-point filing stake stays forfeited
+   APPEAL_RESULT: terminal DISMISSED (Stage-2 outcome stays in force)
+   Appellant's 25-point appeal stake → REFUNDED (no verdict was reached)
+   If the original dispute never got a merits ruling at either stage
+       (Stage-2 also deadlocked/no-quorum) → disputer's 15 filing stake REFUNDED too
             ↓
    No-show experts STILL take their penalty:
       - Never committed             → -1
@@ -257,7 +258,7 @@ Fewer than 2 non-abstain reveals
    Experts who revealed (including ABSTAIN) take 0
 ```
 
-**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum it auto-escalates to Stage 3 (there's somewhere to go): the jurors who revealed take 0, but the no-show jurors who broke quorum still take their -1 / -8. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
+**This mirrors Stage 2.** When the Stage-2 jury can't decide (no quorum OR a tie) it auto-escalates to Stage 3 — there's somewhere to go, and nobody is forfeited. Stage 3 has no further tier to escalate to, so a no-result appeal terminates here instead of escalating; the difference is only "escalate vs terminate," not the economics — in both cases a deadlock refunds rather than forfeits. No-show experts still take their penalty (-1 never-committed, -10 committed-but-missed-reveal).
 
 In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 

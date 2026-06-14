@@ -343,6 +343,12 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const abstainCount = filteredReveals.filter(r => r.data?.vote === VOTE.ABSTAIN).length;
   const totalVotes = matchCount + mismatchCount + abstainCount;
   const nonAbstain = matchCount + mismatchCount;
+  // A deadlocked but quorate jury (equal match/mismatch) produced NO decisive
+  // result, so it is treated exactly like NO_QUORUM: escalate to Stage 3, or
+  // refund if no expert panel can form. It is NOT a merits dismissal, so the
+  // disputer is never forfeited and the author earns no vindication on a tie.
+  const quorumMet = totalVotes >= JURY.QUORUM && nonAbstain >= JURY.MAJORITY_VOTE;
+  const isTie = matchCount === mismatchCount;
 
   const timestamp = nowMs();
   const txs = [];
@@ -358,8 +364,8 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const jurorCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .filter(c => !c.data?.is_appeal);
 
-  // ── NO_QUORUM ─────────────────────────────────────────────────────────────
-  if (totalVotes < JURY.QUORUM || nonAbstain < JURY.MAJORITY_VOTE) {
+  // ── NO_QUORUM / deadlock (no decisive result) ─────────────────────────────
+  if (!quorumMet || isTie) {
     // A Stage-2 NO_QUORUM normally auto-escalates to a Stage-3 expert panel.
     // But that escalation must only happen if a panel that could actually
     // reach quorum can be formed. If the eligible expert pool (after the
@@ -397,6 +403,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         ctid,
         verdict: VERDICT.NO_QUORUM,
         terminal: !canEscalate,
+        tie: quorumMet && isTie,   // audit: deadlock (quorate, no majority) vs low-participation no-quorum
         declared_origin: disputeData.declared_origin || rec?.origin_code,
         confirmed_origin: null,
         reason: disputeData.reason,
@@ -527,7 +534,8 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   }
 
   // ── Juror score effects ───────────────────────────────────────────────────
-  const isTie = matchCount === mismatchCount;
+  // Ties returned via the no-result branch above, so a decisive majority
+  // exists here. (isTie is computed once near the vote tallies.)
   if (!isTie) {
     const majorityVote = mismatchCount > matchCount ? VOTE.MISMATCH : VOTE.MATCH;
     for (const reveal of filteredReveals) {
@@ -689,14 +697,21 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const expertCommitTxs = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .filter(c => !!c.data?.is_appeal);
 
-  // ── Insufficient experts → DISMISSED default ──────────────────────────────
-  if (nonAbstain < APPEAL.MIN_VOTES) {
+  // ── No decisive result at the final layer → terminal, refund, no penalty ──
+  // Experts are the last stage, so a sub-quorum panel OR a tie (equal
+  // match/mismatch) cannot escalate further. Neither is a merits ruling, so
+  // we do NOT forfeit anyone: the original dispute's filing stake and the
+  // appellant's appeal stake are both returned. Stage-2's settlement stands
+  // (a tie does not overturn it), and no vindication is paid.
+  const appealIsTie = matchCount === mismatchCount;
+  if (nonAbstain < APPEAL.MIN_VOTES || appealIsTie) {
     const resultTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_RESULT,
       timestamp,
       prev: getRecentPrev(),
       data: {
         ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
+        tie: appealIsTie,
         stage2_verdict: stage2Verdict || null,
         pre_dispute_status: preStatus,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
@@ -717,14 +732,13 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       }
     }
 
-    // Terminal NO_QUORUM that originated from a Stage-2 NO_QUORUM: the
-    // original dispute never got a merits ruling (Stage-2 paid nothing,
-    // Stage-3 also fails quorum), so refund the disputer's stake. Gated on
-    // stage2_verdict === NO_QUORUM: when Stage 2 produced a real verdict the
-    // disputer was already settled there, and refunding here would double-pay.
-    // (The Stage-2-cannot-form-panel terminal path refunds in
-    // buildAdjudicationBatch; the two are mutually exclusive and share the
-    // reason string, so SCORE_UPDATE dedup is a belt-and-braces guard.)
+    // Refund the original filing stake when the dispute never got a merits
+    // ruling at either stage (Stage-2 NO_QUORUM/tie auto-escalated here, then
+    // Stage-3 also produced no result). Gated on stage2_verdict === NO_QUORUM:
+    // a substantive Stage-2 verdict already settled the disputer, so refunding
+    // here would double-pay. (The Stage-2-cannot-form-panel terminal path
+    // refunds in buildAdjudicationBatch; mutually exclusive, shared reason
+    // string, so SCORE_UPDATE dedup is a belt-and-braces guard.)
     if (stage2Verdict === VERDICT.NO_QUORUM && disputerTipId) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
@@ -734,8 +748,21 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       }));
     }
 
-    log.info(`Appeal NO_QUORUM on ${ctid} — defaulted to DISMISSED (${txs.length} txs in batch)`);
-    return { txs, verdict: VERDICT.DISMISSED, defaulted: true, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
+    // Refund the appellant's appeal stake: the appeal reached no verdict, so
+    // the deposit is returned (forfeit only happens on a decisive loss, in
+    // the not-overturned settlement path below). SYSTEM_AUTO_ESCALATION posts
+    // no stake, so there is nothing to refund for it.
+    if (appellantTipId && appellantTipId !== "SYSTEM_AUTO_ESCALATION") {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: appellantTipId, delta: APPEAL.APPELLANT_STAKE,
+        reason: `Appeal stake refunded (no result) on ${ctid}`,
+        ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    }
+
+    log.info(`Appeal no-result (${appealIsTie ? "tie" : "sub-quorum"}) on ${ctid} — terminal DISMISSED, stakes refunded (${txs.length} txs in batch)`);
+    return { txs, verdict: VERDICT.DISMISSED, defaulted: true, tie: appealIsTie, tx_id: resultTx.tx_id, matchCount, mismatchCount, abstainCount };
   }
 
   // ── Quorum reached — compute expert verdict ───────────────────────────────
