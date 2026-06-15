@@ -68,24 +68,14 @@ const REVOKE_CONTRACT = Object.freeze({
   SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
   SIGNED_BY: SIGNED_BY_KIND.VP,
   VP_ID_FIELD: VP_ID_FIELDS.ISSUING_VP_ID,
-  buildSigningPayload: (data) => {
-    const out = {
-      tx_type: data.tx_type,                  // distinguishes revoke types
-      tip_id: data.tip_id,
-      issuing_vp_id: data.issuing_vp_id,
-    };
-    // reason_code and evidence_hash are conditional — only added when present.
-    // canonicalJson renders undefined as the literal string "undefined", which
-    // diverges from verifyBodySignature's "skip undefined" behaviour at the
-    // signer and breaks consensus-level signature replay.
-    if (data.reason_code !== undefined && data.reason_code !== null) {
-      out.reason_code = data.reason_code;
-    }
-    if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
-      out.evidence_hash = data.evidence_hash;
-    }
-    return out;
-  },
+  // tx_type is in the signed payload so a captured signature for one revoke
+  // type can't be replayed as another. reason_code + evidence_hash are
+  // conditional. GH #85: the strip rule lives in buildSignedPayload (omit
+  // undefined+null; keep "",0,false) so it can't drift from verifyBodySignature.
+  buildSigningPayload: (data) => buildSignedPayload(data, {
+    required: ["tx_type", "tip_id", "issuing_vp_id"],
+    optional: ["reason_code", "evidence_hash"],
+  }),
 });
 
 const TX_SIGNATURE_REGISTRY = Object.freeze({
@@ -212,14 +202,21 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
       if (!d.auto) return [];
       const escalator = d.escalated_by_tip_id;
       if (!escalator) return [];
+      // Reconstruct the cosigner body via the escalation endpoint's own
+      // canonical builder (same {author_tip_id, ctid, review_id} the
+      // creator signed) so the two definitions can't drift — same pattern
+      // as BIND_DOMAIN / LINK_PLATFORM delegating to their register schemas.
+      // Lazy require: prescan-review-dispute pulls in _common, which lazily
+      // points back here; deferring the load avoids a load-order cycle.
+      const prescanReviewDispute = require("./prescan-review-dispute");
       return [{
         kind: SIGNED_BY_KIND.SUBJECT,
-        ref:  escalator,
-        body: {
+        ref: escalator,
+        body: prescanReviewDispute.buildSigningPayload({
           author_tip_id: escalator,
-          ctid:          d.ctid,
-          review_id:     d.source_review_id,
-        },
+          ctid: d.ctid,
+          review_id: d.source_review_id,
+        }),
       }];
     },
   },
