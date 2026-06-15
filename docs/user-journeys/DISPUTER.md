@@ -43,9 +43,9 @@ You qualify if **all** are true:
 |---|---|
 | You win at Stage 2 (Jury UPHELD) | **+5 net** (-15 filing, +15 stake refund, +5 upheld bonus) |
 | You partly win at Stage 2 (CONSERVATIVE_LABEL — creator declared AG and the jury confirmed OH; over-declaration with no creator penalty) | **0 net** (-15 filing, +15 stake refund, no bonus) |
-| You lose at Stage 2 (DISMISSED) | **-15 net** (filing stake stays forfeited; no settlement event) |
-| Jury fails quorum (NO_QUORUM, auto-escalates to Stage 3 Experts) | Settlement is deferred — net depends on the final Stage-3 verdict. Your 15 stays locked until then. |
-| Case dies undecided (Stage 3 also fails quorum, or no expert panel can be formed) | **0 net**: your 15 is **refunded**. You only forfeit when a panel actually rules your dispute groundless; if the system never decides, you get your stake back. |
+| You lose at Stage 2 (DISMISSED — a *clear* MATCH majority) | **-15 net** (filing stake stays forfeited; no settlement event) |
+| Jury deadlocks (a tie) OR fails quorum — both auto-escalate to Stage 3 Experts | Settlement is deferred — net depends on the final Stage-3 verdict. Your 15 stays **locked, not forfeited** (a tie isn't a loss). |
+| Case dies undecided (Stage 3 also deadlocks / fails quorum, or no expert panel can be formed) | **0 net**: your 15 is **refunded**. You only forfeit when a panel actually rules your dispute groundless; if the system never decides (no quorum *or* a deadlock), you get your stake back. |
 
 If you lose at Stage 2 and want to file an appeal, you stake an additional **25 points** (APPELLANT_STAKE). The net math for the appeal path is in the full score table at the bottom.
 
@@ -193,7 +193,7 @@ You file APPEAL_FILED within 48h
        ↓
 -25 points deducted (appeal stake on file)
        ↓
-3 Experts get summoned (Stage 3)
+5 Experts get summoned (Stage 3)
        ↓
 You wait 84h
        ↓

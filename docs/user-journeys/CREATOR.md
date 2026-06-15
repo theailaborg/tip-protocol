@@ -231,9 +231,9 @@ You file APPEAL_FILED within 48h
        ↓
 -25 points deducted (appeal stake on file)
        ↓
-3 Experts get summoned (Stage 3)
+5 Experts get summoned (Stage 3)
        ↓
-       72h commit + 12h reveal (need ≥2 non-abstain reveals)
+       72h commit + 12h reveal (need ≥3 non-abstain reveals)
        ↓
         ┌──────────────────┬──────────────────┐
         ↓                                     ↓
@@ -429,7 +429,7 @@ Done.               ↓         ↓
                                     ↓           ↓
                           Either side can appeal in 48h
                                             ↓
-                          Stage 3: 3 Experts (verdict FINAL,
+                          Stage 3: 5 Experts (verdict FINAL,
                                               no further appeal)
 ```
 

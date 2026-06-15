@@ -20,7 +20,7 @@ Written for people who use the app, not for engineers.
 |---|---|---|
 | **[Reviewer](REVIEWER.md)** | When AI flags content as possibly AI-generated. You decide: was the AI right or wrong? Score 600+, opt-in. | Up to 48 hours per case |
 | **[Juror](JUROR.md)** | When a community member publicly disputes a piece of content. You're one of 7 jurors who vote on it. Score 700+, opt-in. | 72 hours to vote + 12 hours to reveal |
-| **[Expert](EXPERT.md)** | When someone challenges a jury's verdict (appeals). You're one of 3 experts who make the final call. Score 850+, opt-in. | 72 hours to vote + 12 hours to reveal |
+| **[Expert](EXPERT.md)** | When someone challenges a jury's verdict (appeals). You're one of 5 experts who make the final call. Score 850+, opt-in. | 72 hours to vote + 12 hours to reveal |
 
 ## How they fit together
 
@@ -57,7 +57,7 @@ Someone publishes content
        Yes (someone files appeal) →
                        ↓
    ┌─────────────────┐
-   │  STAGE 3        │   ← 3 Experts settle it
+   │  STAGE 3        │   ← 5 Experts settle it
    │  Final appeal   │
    └────────┬────────┘
             ↓

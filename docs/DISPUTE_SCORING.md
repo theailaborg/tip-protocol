@@ -69,9 +69,16 @@ the penalty table above for other origin pairs.
 | Stage-2 verdict | Disputer | Author | offense_count |
 |---|---:|---:|---:|
 | UPHELD | **+20** (refund 15 + bonus 5) | **-100** | 0 → 1 |
-| DISMISSED | **0** (filing-time -15 IS the forfeit) | **+5** (vindication) | 0 |
+| DISMISSED (clear MATCH majority) | **0** (filing-time -15 IS the forfeit) | **+5** (vindication) | 0 |
 | CONSERVATIVE_LABEL | **+15** (refund only, no bonus) | **0** | 0 |
 | NO_QUORUM | **0** (stake locked, settles at Stage-3) | **0** | 0 |
+| Tie (MATCH = MISMATCH) | **0** (stake locked, escalates) | **0** (no vindication) | 0 |
+
+A **tie is not a merits dismissal** — it is a deadlock, so it is treated
+exactly like NO_QUORUM: the case auto-escalates to Stage 3 (no appeal stake
+required), the disputer's stake stays locked (never forfeited on a tie), and
+the author earns no vindication. Only a *clear* MATCH majority is a
+substantive DISMISSED that forfeits the disputer and vindicates the author.
 
 ### Jurors (any verdict)
 
@@ -157,11 +164,18 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 **Disputer from start:** -15 -25 = **-40**
 **Author from start:** **+5** (vindication unchanged)
 
-### Defaulted DISMISSED (Stage-3 ran out of expert reveals)
+### No result at Stage 3 (expert tie, or ran out of expert reveals)
+
+Experts are the final layer, so a tie (MATCH = MISMATCH) or a sub-quorum
+panel cannot escalate further and is **not** a merits ruling. Nobody is
+forfeited: the appellant's appeal stake is **refunded** (the appeal reached
+no verdict), Stage-2's settlement stands (a tie does not overturn it), and no
+vindication is paid. Forfeit of the appeal stake happens only on a *decisive*
+not-overturned result (a clear confirm of Stage 2).
 
 | Party | Δ |
 |---|---:|
-| Appellant | 0 (filing-time -25 stays forfeited) |
+| Appellant | **+25** (appeal stake refunded — no result) |
 | Other party | 0 |
 | Experts who never committed | -1 each |
 | Experts who committed but missed reveal | -10 each |
@@ -178,17 +192,17 @@ appellant settlement event.
 | UPHELD | **+20** (refund 15 + bonus 5) | **-100** (fresh penalty) | 0 → 1 |
 | CONSERVATIVE_LABEL | **+15** (refund only) | **0** | 0 |
 | DISMISSED (panel reached quorum, ruled on merits) | **0** (stake forfeited) | **+5** (vindication) | 0 |
-| NO_QUORUM terminal (Stage-3 also failed quorum, or no expert panel could be formed) | **+15** (refund, no bonus) | **0** (no vindication) | 0 |
+| No result terminal (Stage-3 tie, Stage-3 sub-quorum, or no expert panel could be formed) | **+15** (refund, no bonus) | **0** (no vindication) | 0 |
 
-**Refund on terminal NO_QUORUM.** A disputer forfeits their stake only
+**Refund on a terminal no-result.** A disputer forfeits their stake only
 when a panel actually reaches quorum and rules the dispute groundless (a
 real DISMISSED). When the case dies because the *system* could not
-decide it (Stage-2 jury failed quorum AND Stage-3 experts also failed
-quorum, or no eligible expert panel could be formed at all), the
-disputer is refunded their 15: the failure was the absent
-jurors'/experts', not theirs. The author gets no vindication bonus in
-this terminal case, because nobody actually cleared them. The content
-keeps its declared label (benefit of the doubt) but no party is
+decide it — Stage-2 jury deadlocked/failed quorum AND Stage-3 experts
+also deadlocked/failed quorum, or no eligible expert panel could be
+formed at all — the disputer is refunded their 15: the failure was the
+absent or split jurors'/experts', not theirs. The author gets no
+vindication bonus in this terminal case, because nobody actually cleared
+them. The content keeps its declared label (benefit of the doubt) but no party is
 penalized except the no-show jurors/experts who broke quorum.
 
 > Liveness dependency: the terminal-NO_QUORUM refund requires the appeal

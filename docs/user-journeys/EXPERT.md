@@ -1,6 +1,6 @@
 # Expert Journey
 
-You're an **Expert**. A jury already ruled on a public dispute, and one side appealed. You're one of **3 experts** picked to settle it. Whatever your panel decides is **final** — no further appeal.
+You're an **Expert**. A jury already ruled on a public dispute, and one side appealed. You're one of **5 experts** picked to settle it. Whatever your panel decides is **final** — no further appeal.
 
 This is Stage 3, the highest-trust adjudication tier on TIP.
 
@@ -37,12 +37,12 @@ Stage 2 jury voted, verdict landed (e.g. UPHELD or DISMISSED)
               ↓             APPEAL_FILED
        Verdict final            ↓
        Done                     ↓
-                       3 Experts get picked
+                       5 Experts get picked
                                 ↓
                        That's YOU — APPEAL_FILED notification lands
 ```
 
-Appeals cost the appellant 25 points (filing stake). If they win the appeal, they get the 25 back + a +10 overturn bonus, AND the chain reverses the entire Stage-2 settlement that hit them. If they lose, the 25 stays forfeited and the Stage-2 outcome stands.
+Appeals cost the appellant 25 points (filing stake). If they win the appeal, they get the 25 back + a +10 overturn bonus, AND the chain reverses the entire Stage-2 settlement that hit them. If they lose on a *decisive* call (a clear majority confirms Stage 2), the 25 stays forfeited and the Stage-2 outcome stands. If the panel reaches **no result** — a tie or too few non-abstain reveals — the appeal is undecided, so the 25 is **refunded** (you forfeit only on a real loss, not on a deadlock).
 
 So appeals only get filed when someone genuinely believes the jury was wrong (the stake punishes frivolous appeals).
 
@@ -135,8 +135,8 @@ Effect on you:
        ↓
    Score delta: 0 — no bonus, no penalty
    Your vote doesn't count toward the panel majority.
-   Expert panels need at least 2 non-abstain reveals to produce a verdict.
-   If fewer than 2 experts make a valid (non-abstain) reveal → the appeal
+   Expert panels need at least 3 non-abstain reveals to produce a verdict.
+   If fewer than 3 experts make a valid (non-abstain) reveal → the appeal
    defaults to DISMISSED (Stage 2 stands). Rare at this tier — pool of 850+
    experts is small but reliable.
 ```
@@ -153,7 +153,7 @@ Nothing is held in escrow at summons time — your score only moves once the app
 - **Summoned, never committed** → **-1** (small signal — you didn't engage at all)
 - **Committed but missed reveal** → **-10** (heavier — you engaged with the case then walked away mid-process)
 
-The big stake on the table at Stage 3 is the **appellant's 25 + the original Stage-2 settlement** — that's what your three-person vote moves around. Your own personal delta is small; the impact of your vote on others is enormous. Treat the latter as the part that matters.
+The big stake on the table at Stage 3 is the **appellant's 25 + the original Stage-2 settlement** — that's what your five-person vote moves around. Your own personal delta is small; the impact of your vote on others is enormous. Treat the latter as the part that matters.
 
 ---
 
@@ -174,7 +174,7 @@ Prevents bandwagoning. Each expert votes blind.
 ```
 HOUR 0:
    APPEAL_FILED tx commits on chain.
-   System runs deterministic selection — 3 experts picked.
+   System runs deterministic selection — 5 experts picked.
    You're one. Push notification lands.
    Your score doesn't move yet — settlement happens at hour 84.
 
@@ -205,15 +205,15 @@ HOURS 72 – 84:
 HOUR 84:
    Reveal phase ends. Verdict computed automatically.
         ↓
-   Need at least 2 non-abstain reveals (MIN_VOTES = 2). Otherwise
-   the appeal defaults to DISMISSED — Stage 2 verdict stands.
+   Need at least 3 non-abstain reveals (MIN_VOTES = 3) AND a non-tie.
         ↓
-   - Majority of non-abstain says UPHOLD VERDICT → APPEAL_RESULT: Stage 2 stands.
-                                                   Appellant's 25 stays forfeited.
-   - Majority of non-abstain says OVERTURN      → APPEAL_RESULT: Stage 2 reversed.
-                                                   Appellant gets +25 +10 bonus.
-                                                   Full Stage-2 settlement reversed (creator + disputer + reviewer).
-   - Fewer than 2 non-abstain reveals           → Defaults to DISMISSED. Stage 2 stands.
+   - Clear majority says UPHOLD VERDICT → APPEAL_RESULT: Stage 2 stands.
+                                          Appellant's 25 stays forfeited (decisive loss).
+   - Clear majority says OVERTURN       → APPEAL_RESULT: Stage 2 reversed.
+                                          Appellant gets +25 +10 bonus.
+                                          Full Stage-2 settlement reversed (creator + disputer + reviewer).
+   - No result (fewer than 3 non-abstain reveals, OR a tie) → terminal DISMISSED,
+                                          Stage 2 stands, appellant's 25 REFUNDED (no verdict).
 
 HOUR 84+:
    - Voted with majority + revealed → +7
@@ -240,16 +240,17 @@ Same constants as Juror — there's no special expert escrow.
 
 ---
 
-## What if the panel doesn't reach quorum?
+## What if the panel reaches no result? (sub-quorum or tie)
 
-The expert panel needs at least **2 non-abstain reveals** to compute a verdict. If fewer than 2 experts make a valid non-abstain reveal — for example two miss the reveal and the third abstains — the appeal **defaults to DISMISSED**: the Stage-2 verdict stands.
+The expert panel needs at least **3 non-abstain reveals** to compute a verdict, AND those reveals must not be a tie (equal UPHOLD/OVERTURN). Either way — too few non-abstain reveals, or a deadlock — the panel produced **no decision**, so the appeal is undecided. Experts are the final tier (nowhere to escalate), so the case terminates as DISMISSED (Stage-2 outcome stands by default), but **nobody is forfeited**: it was a deadlock, not a loss.
 
 ```
-Fewer than 2 non-abstain reveals
+No result — fewer than 3 non-abstain reveals, OR a tie (UPHOLD = OVERTURN)
             ↓
-   APPEAL_RESULT: defaults to DISMISSED
-   Stage-2 outcome stays in force
-   Appellant's 25-point filing stake stays forfeited
+   APPEAL_RESULT: terminal DISMISSED (Stage-2 outcome stays in force)
+   Appellant's 25-point appeal stake → REFUNDED (no verdict was reached)
+   If the original dispute never got a merits ruling at either stage
+       (Stage-2 also deadlocked/no-quorum) → disputer's 15 filing stake REFUNDED too
             ↓
    No-show experts STILL take their penalty:
       - Never committed             → -1
@@ -257,7 +258,7 @@ Fewer than 2 non-abstain reveals
    Experts who revealed (including ABSTAIN) take 0
 ```
 
-**This is different from Stage 2 jury NO_QUORUM.** When the Stage 2 jury fails quorum it auto-escalates to Stage 3 (there's somewhere to go): the jurors who revealed take 0, but the no-show jurors who broke quorum still take their -1 / -8. Stage 3 has no further tier to escalate to, so an under-quorum appeal can't be re-tried. The appeal is rejected by default, and no-show experts still take their penalty (-1 if they never committed, -10 if they committed but missed reveal).
+**This mirrors Stage 2.** When the Stage-2 jury can't decide (no quorum OR a tie) it auto-escalates to Stage 3 — there's somewhere to go, and nobody is forfeited. Stage 3 has no further tier to escalate to, so a no-result appeal terminates here instead of escalating; the difference is only "escalate vs terminate," not the economics — in both cases a deadlock refunds rather than forfeits. No-show experts still take their penalty (-1 never-committed, -10 committed-but-missed-reveal).
 
 In practice this is rare. The 850+ expert pool is small but reliable, and selection is heavily filtered for conflicts.
 
@@ -287,7 +288,7 @@ Same data source as Juror, just filtered by `is_appeal === true`. Nothing extra 
 
 ## Notifications you'll see
 
-Your dashboard feed surfaces these expert-facing notification types — mirror of the juror set, with `expert_` prefix and 3-person panel context:
+Your dashboard feed surfaces these expert-facing notification types — mirror of the juror set, with `expert_` prefix and 5-person panel context:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -353,24 +354,24 @@ You're at a higher tier, so:
 | Dimension | Juror (Stage 2) | Expert (Stage 3) |
 |---|---|---|
 | Minimum trust score | 700 | **850** |
-| Panel size | 7 | **3** |
+| Panel size | 7 | **5** |
 | Personal majority bonus | +3 | **+7** |
 | Personal minority penalty | **-8** | **-10** |
 | Never-committed penalty | -1 | -1 |
 | Committed-but-no-reveal penalty | **-8** | **-10** |
-| Quorum thresholds | ≥5 reveals AND ≥3 non-abstain | ≥2 non-abstain reveals |
+| Quorum thresholds | ≥5 reveals AND ≥3 non-abstain | ≥3 non-abstain reveals (of 5) |
 | What you're judging | "Is the dispute right?" — looking at the content fresh | "Was the Stage-2 jury right?" — reviewing their verdict |
 | Verdict can be appealed | Yes (to Expert panel) | **No. Final.** |
 | Frequency of being summoned | Sometimes | **Rarely** (only when appeals fire) |
 
-Three experts, three votes, two-out-of-three wins. You're the final word.
+Five experts, best of three-of-five wins. You're the final word.
 
 ---
 
 ## Things people ask
 
-**Why are there only 3 experts when juries have 7?**
-Because the pool of 850+ trust score users is much smaller. Statistically, 3 high-trust experts at the appeal stage carry similar signal to 7 jurors at the dispute stage — and they're settling, not initiating.
+**Why are there only 5 experts when juries have 7?**
+Because the pool of 850+ trust score users is much smaller. Statistically, a handful of high-trust experts at the appeal stage carry similar signal to 7 jurors at the dispute stage — and they're settling, not initiating.
 
 **Is the stake higher at the expert tier?**
 Yes, on both sides. The downside is heavier than Juror at Stage 3: -10 minority and -10 committed-but-no-reveal (vs -8 and -8 for jurors), reflecting the final-word weight of the expert tier. The no-commit penalty is the same -1 for both roles — never engaging reads the same at either tier. The upside is also bigger — your majority bonus is **+7** here vs +3 for jurors, calibrating for the higher-trust 850+ score floor and the harder Stage-3 calls. What's much bigger though is the *case-level* stake — the appellant's 25-point filing fee and the full Stage-2 settlement that flips on overturn. Your call is final, and reversing it isn't possible — so the impact on others is what makes this tier weighty, not just your own score delta.

@@ -709,86 +709,201 @@ describe("Flow 8 — zero-participation NO_QUORUM (every juror is a no-show)", (
 // Flow 9 — Tie (3-3) → DISMISSED + isTie short-circuits juror effects
 // ════════════════════════════════════════════════════════════════════════════
 
-describe("Flow 9 — tie vote (3-3, with 1 no-show) → DISMISSED, no juror score effects", () => {
-  test("DISMISSED, no juror SCORE_UPDATE for revealers, -10 for the no-show, +5 author vindication", () => {
+describe("Flow 9 — tie vote (no decisive result): escalate at Stage 2, refund at Stage 3", () => {
+  test("Stage-2 3-3 tie → escalates as no-result (no vindication, disputer not forfeited)", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow9iiiiiiiiii-9999";
     const ids = _seedDispute(fx.dag, ctid);
+    _seedExpertPool(fx.dag);   // standing pool → a deadlock escalates to Stage 3
 
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
-    // 6 reveal: 3 MATCH + 3 MISMATCH; juror-6 is the no-show
+    // 6 reveal: 3 MATCH + 3 MISMATCH (deadlock); juror-6 is the no-show
     const votes = [
       VOTE.MATCH, VOTE.MATCH, VOTE.MATCH,
       VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
     ];
     const reveals = _buildReveals(ids.jurors.slice(0, 6), votes, ctid);
     const stage2 = buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
-    expect(stage2.verdict).toBe(VERDICT.DISMISSED);
+
+    // A deadlock is NOT a merits dismissal — it escalates like NO_QUORUM.
+    expect(stage2.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(stage2.auto_appeal).toBe(true);
     expect(stage2.matchCount).toBe(3);
     expect(stage2.mismatchCount).toBe(3);
+    const adj = stage2.txs.find(t => t.tx_type === TX_TYPES.ADJUDICATION_RESULT);
+    expect(adj.data.tie).toBe(true);
+    expect(stage2.txs.find(t => t.tx_type === TX_TYPES.APPEAL_FILED)).toBeDefined();
     _commitBatch(fx.dag, stage2.txs);
 
-    // Author: +5 vindication (any DISMISSED — including a tie-resolved
-    // one — credits the cleared author).
-    expect(_replay(fx.dag, ids.authorTipId).score)
-      .toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
-    expect(_replay(fx.dag, ids.authorTipId).offense_count).toBe(0);
+    // No author vindication on a tie — nothing was decided.
+    expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY);
+    expect(_scoreUpdates(stage2.txs, ids.authorTipId)).toHaveLength(0);
 
-    // Disputer's stake stays forfeited (DISMISSED produces no settlement)
+    // Disputer's stake stays LOCKED (not forfeited) pending Stage 3.
     expect(_replay(fx.dag, ids.disputerTipId).score)
       .toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
 
-    // 6 revealers: zero score effect (isTie short-circuit)
+    // 6 revealers: zero score effect (no majority to reward/penalise).
     for (let i = 0; i < 6; i++) {
       expect(_scoreUpdates(stage2.txs, ids.jurors[i])).toHaveLength(0);
     }
-    // 1 no-show: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1)
+    // 1 no-show: no JURY_VOTE_COMMIT in DAG → no-commit penalty (-1).
     const noShowSU = _scoreUpdates(stage2.txs, ids.jurors[6]);
     expect(noShowSU).toHaveLength(1);
     expect(noShowSU[0].data.delta).toBe(-STAKES.JUROR_NO_COMMIT);
-
-    // Total score-updates in batch: 1 no-show + 1 author vindication = 2
-    expect(stage2.txs.filter(t => t.tx_type === TX_TYPES.SCORE_UPDATE)).toHaveLength(2);
   });
 
-  test("Stage-3 tie (1 MATCH + 1 MISMATCH + 1 ABSTAIN): DISMISSED, no expert score effects", () => {
+  test("Stage-3 expert tie (2 MATCH + 2 MISMATCH + 1 ABSTAIN) → terminal DISMISSED, appeal stake refunded", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow9jjjjjjjjjj-9990";
     const ids = _seedDispute(fx.dag, ctid);
     _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
 
-    // Stage-2 DISMISSED so we have a state to appeal from
+    // Stage-2 substantive DISMISSED so we have a real verdict to appeal from.
     const reveals = _buildReveals(ids.jurors, [
       VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH,
       VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH,
     ], ctid);
     _commitBatch(fx.dag, buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config).txs);
 
+    // Disputer appeals the dismissal (pays the appeal stake).
     _appealFilingDebit(fx.dag, ctid, ids.disputerTipId);
     _appealFiled(fx.dag, ctid, ids.disputerTipId, VERDICT.DISMISSED);
 
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    // 5-expert panel; a quorate deadlock now needs 2-2 (>= MIN_VOTES = 3 non-abstain).
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
     for (const e of experts) _seedIdentity(fx.dag, e, 900);
     const expSummons = _expertSummons(fx.dag, ctid, experts);
-    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
       ts: 1775433600000, isAppeal: true,
     });
     const stage3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
     expect(stage3.verdict).toBe(VERDICT.DISMISSED);
-    expect(stage3.overturned).toBe(false);
+    expect(stage3.defaulted).toBe(true);
+    expect(stage3.tie).toBe(true);
 
-    // Tie short-circuits: no expert SCORE_UPDATE, no appellant settlement.
+    // Tie = no decisive verdict: no expert score effects (all revealed, no
+    // majority), and the appellant's appeal stake is refunded.
     for (const e of experts) {
       expect(_scoreUpdates(stage3.txs, e)).toHaveLength(0);
     }
-    expect(_scoreUpdates(stage3.txs, ids.disputerTipId)).toHaveLength(0);
+    const appellantSU = _scoreUpdates(stage3.txs, ids.disputerTipId);
+    expect(appellantSU).toHaveLength(1);
+    expect(appellantSU[0].data.delta).toBe(STAKES.APPELLANT);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // Flow 10 — Stage-3 expert no-show → defaulted DISMISSED
 // ════════════════════════════════════════════════════════════════════════════
+
+describe("Flow 9b — tie economics: terminal refund, full chain, and the substantive-dismiss guard", () => {
+  test("Stage-2 tie with no expert panel → terminal NO_QUORUM, disputer refunded (no forfeit)", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow9biiiiiiiii-9b01";
+    const ids = _seedDispute(fx.dag, ctid);   // NO expert pool → tie can't escalate
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    const reveals = _buildReveals(ids.jurors.slice(0, 6), [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ], ctid);
+    const stage2 = buildAdjudicationBatch(ctid, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+
+    expect(stage2.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(stage2.terminal).toBe(true);
+    expect(stage2.txs.find(t => t.tx_type === TX_TYPES.APPEAL_FILED)).toBeUndefined();
+    const adj = stage2.txs.find(t => t.tx_type === TX_TYPES.ADJUDICATION_RESULT);
+    expect(adj.data.tie).toBe(true);
+
+    _commitBatch(fx.dag, stage2.txs);
+    // -15 filing + 15 refund = whole again; author gets no vindication.
+    expect(_replay(fx.dag, ids.disputerTipId).score).toBe(SCORE.INITIAL_IDENTITY);
+    expect(_scoreUpdates(stage2.txs, ids.authorTipId)).toHaveLength(0);
+  });
+
+  test("full chain: Stage-2 tie → Stage-3 tie (auto-escalation) → disputer filing stake refunded", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow9bjjjjjjjjj-9b02";
+    const ids = _seedDispute(fx.dag, ctid);
+    _seedExpertPool(fx.dag);
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    // Stage-2 deadlock → escalates (SYSTEM_AUTO_ESCALATION, no appellant stake).
+    const s2 = buildAdjudicationBatch(ctid, _buildReveals(ids.jurors.slice(0, 6), [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ], ctid), ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(s2.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(s2.auto_appeal).toBe(true);
+    _commitBatch(fx.dag, s2.txs);
+
+    // Stage-3 also deadlocks (2-2) → terminal; refund the original filing stake.
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
+    const expSummons = _expertSummons(fx.dag, ctid, experts);
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+      ts: 1775433600000, isAppeal: true,
+    });
+    const s3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
+    expect(s3.verdict).toBe(VERDICT.DISMISSED);
+    expect(s3.tie).toBe(true);
+
+    const disputerSU = _scoreUpdates(s3.txs, ids.disputerTipId);
+    expect(disputerSU).toHaveLength(1);
+    expect(disputerSU[0].data.delta).toBe(STAKES.DISPUTER);   // filing stake back; no appellant stake (SYSTEM)
+  });
+
+  test("substantive DISMISSED still forfeits disputer + pays author vindication (unchanged)", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow9bkkkkkkkkk-9b03";
+    const ids = _seedDispute(fx.dag, ctid);
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    // Clear MATCH majority (5-2) → real merits dismissal, not a tie.
+    const stage2 = buildAdjudicationBatch(ctid, _buildReveals(ids.jurors, [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ], ctid), ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(stage2.verdict).toBe(VERDICT.DISMISSED);
+    _commitBatch(fx.dag, stage2.txs);
+
+    // Disputer's filing stake stays forfeited; author keeps the +5 vindication.
+    expect(_replay(fx.dag, ids.disputerTipId).score).toBe(SCORE.INITIAL_IDENTITY - STAKES.DISPUTER);
+    expect(_replay(fx.dag, ids.authorTipId).score).toBe(SCORE.INITIAL_IDENTITY + DISPUTE.VINDICATION_BONUS);
+  });
+
+  test("Stage-3 tie on a Stage-2 UPHELD appeal: AUTHOR-appellant stake refunded, disputer untouched", () => {
+    const fx = _setup();
+    const ctid = "tip://c/OH-flow9blllllllll-9b04";
+    const ids = _seedDispute(fx.dag, ctid);
+    _filingStakeDebit(fx.dag, ctid, ids.disputerTipId);
+
+    // Stage-2 UPHELD (clear MISMATCH majority) → author penalised, appeals.
+    const stage2 = buildAdjudicationBatch(ctid, _buildReveals(ids.jurors, [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH, VOTE.MATCH,
+    ], ctid), ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(stage2.verdict).toBe(VERDICT.UPHELD);
+    _commitBatch(fx.dag, stage2.txs);
+
+    _appealFilingDebit(fx.dag, ctid, ids.authorTipId);
+    _appealFiled(fx.dag, ctid, ids.authorTipId, VERDICT.UPHELD);
+
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
+    for (const e of experts) _seedIdentity(fx.dag, e, 900);
+    const expSummons = _expertSummons(fx.dag, ctid, experts);
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+      ts: 1775433600000, isAppeal: true,
+    });
+    const s3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
+    expect(s3.verdict).toBe(VERDICT.DISMISSED);
+    expect(s3.tie).toBe(true);
+
+    // Author (appellant) gets the 25 appeal stake back — no result reached.
+    const authorSU = _scoreUpdates(s3.txs, ids.authorTipId);
+    expect(authorSU).toHaveLength(1);
+    expect(authorSU[0].data.delta).toBe(STAKES.APPELLANT);
+    // Disputer is NOT touched at Stage 3 — their Stage-2 UPHELD settlement stands.
+    expect(_scoreUpdates(s3.txs, ids.disputerTipId)).toHaveLength(0);
+  });
+});
 
 describe("Flow 10 — Stage-3 expert no-show → APPEAL_RESULT defaulted DISMISSED", () => {
   test("defaulted: true, disputer refunded (no merits ruling), expert no-show penalties only", () => {
