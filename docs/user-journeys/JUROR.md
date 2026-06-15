@@ -14,10 +14,10 @@ You qualify if **all** are true:
 |---|---|
 | Your trust score is **700 or higher** | Jurors hold real consequences — you need a proven track record |
 | You're a **personal identity** (not an organization) | Orgs can't be jurors |
-| You turned ON **"I want to help adjudicate"** in your profile | Opt-in only |
+| You turned ON **"I want to serve as a juror"** in your profile | Opt-in only. Each adjudication role (reviewer, juror, expert) has its OWN toggle, so you can sit on juries without being pulled into reviewer or expert duty. |
 | You're not the creator, the disputer, or anyone on the original review | Conflict-of-interest filter, applied automatically |
 
-**Where to find the toggle:** Profile → Settings → Adjudication participation → "I want to help adjudicate". ON by default at registration. You can turn it off any time — you stop getting picked immediately.
+**Where to find the toggle:** Profile → Settings → Adjudication participation → "Serve as a juror". Separate from the reviewer and expert toggles. You can turn it off any time, you stop getting picked immediately.
 
 **How often you'll be picked:** A few times a year initially, depending on dispute volume and the active eligible-juror pool. Higher trust scores qualify for a bigger pool but the random selection is uniform — your trust score doesn't bias the picker, only the eligibility floor does.
 
@@ -81,6 +81,8 @@ This way, juror #5 can't watch juror #1's vote and copy it. Everyone votes blind
 
 You take your time, study the content, read the evidence. Then you cast a vote.
 
+**Viewing the content's media.** If the disputed content has media attached (images, audio, video), you can open the actual files while you sit on the jury. The bytes are access-controlled (the public sees only a file's type, size, hash, and AI score), but a summoned juror gets full view access so you can judge the work itself, not just its description. Your access opens when you're summoned and closes when the verdict lands (ADJUDICATION_RESULT). Each file also shows its own AI-likelihood score; the case's headline confidence is the most-AI-looking file among them. If the bytes were already retention-swept, you'll see the hash and score but not the file. The app handles the signed request and download link for you.
+
 ---
 
 ## Your three vote options
@@ -139,7 +141,7 @@ Nothing is held in escrow at summons time — your score doesn't move until the 
 - **Summoned but never committed** → **-1** (small signal — you didn't engage at all)
 - **Committed but missed the reveal** → **-8** (heavier — you engaged with the case then walked away mid-process)
 
-(Both no-show penalties only apply if the jury reaches quorum without you. NO_QUORUM zeros everyone out.)
+(On NO_QUORUM the majority/minority settlement does not apply, because there is no majority, so jurors who revealed get **0**, win or lose. But the no-show penalties above (**-1** / **-8**) still apply to the absentees who broke quorum. They are the only jurors who pay when a jury fails to reach quorum: the people who showed up are never punished for a quorum failure they didn't cause.)
 
 The asymmetric math (-8 to lose vs +3 to win) is deliberate: it makes "vote anyway, hope for the best" worse than "ABSTAIN if you're not sure." Voting carefully is the right strategy. And the split between -1 (never committed) and -8 (committed-but-bailed) reflects intent — a juror who never opens the case is unresponsive; one who commits and walks away actively disrupted the panel's quorum math.
 
@@ -151,10 +153,13 @@ Your own +3 / -8 is small. The case-level economics your vote drives are much bi
 
 | Verdict | Creator | Disputer |
 |---|---|---|
-| DISMISSED (MATCH wins) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
+| DISMISSED (clear MATCH majority) | **+5** vindication bonus | **-15** (filing stake stays forfeited) |
 | UPHELD (MISMATCH wins) | **-100** for OH→AG 1st offense (smaller for AA→AG or OH→AA; up to **-300** for repeat offenders — see the mislabeling table) | **+20** (filing stake refunded + upheld bonus) |
 | CONSERVATIVE_LABEL (creator declared AG, jury confirmed it's actually OH — over-declaration) | **0** (no penalty — over-declaration is encouraged) | **+15** (refund only, no bonus) |
 | NO_QUORUM (fewer than 5 reveals or fewer than 3 non-abstain) | 0 (pending Stage 3) | 0 (stake locked until Stage 3) |
+| Tie (MATCH == MISMATCH) | 0 (no vindication) | 0 (stake locked, escalates) |
+
+A **tie is a deadlock, not a dismissal** — there's no majority, so it auto-escalates to Stage 3 exactly like NO_QUORUM (the disputer's stake stays locked, the creator gets no vindication). Only a *clear* MATCH majority is a real DISMISSED that forfeits the disputer and vindicates the creator.
 
 A jury that gets it wrong moves real points across the federation. **Your personal +3 / -8 delta is the smallest thing in the room** — the case-level impact is what the protocol is asking you to take seriously.
 
@@ -201,12 +206,13 @@ HOUR 84:
         - MISMATCH > MATCH (majority of non-abstain)        → UPHELD
           ↳ If creator declared AG and majority confirmed OH → CONSERVATIVE_LABEL
             (over-declaration: no creator penalty)
-        - MATCH ≥ MISMATCH (majority of non-abstain)        → DISMISSED
-        - Tie (MATCH == MISMATCH)                            → DISMISSED, no juror bonus/penalty
-   Without quorum:
-        - Fewer than 5 reveals OR fewer than 3 non-abstain   → NO_QUORUM
-          ↳ Auto-escalates to Stage 3 (Expert panel)
-          ↳ No juror score effects fire — neither bonuses nor no-show penalties
+        - MATCH > MISMATCH (clear majority of non-abstain)  → DISMISSED
+        - Tie (MATCH == MISMATCH)                            → no result → escalates (see below)
+   No decisive result (deadlock or low participation):
+        - Tie, OR fewer than 5 reveals, OR fewer than 3 non-abstain → NO_QUORUM
+          ↳ Auto-escalates to Stage 3 (Expert panel); disputer stake stays locked
+          ↳ Revealers get 0 (no majority to score); no-show jurors who broke
+            quorum still take their -1 / -8
 
 HOUR 84+:
    With quorum reached:
@@ -243,7 +249,7 @@ Fewer than 5 reveals OR fewer than 3 non-abstain
             ↓
    NO_QUORUM verdict — auto-escalates to Stage 3
             ↓
-   3 Experts get summoned to settle it
+   5 Experts get summoned to settle it
             ↓
    No juror score effects fire — everyone walks away at 0
 ```
@@ -348,6 +354,9 @@ Only after reveal phase ends. During COMMIT, all 7 are anonymous to each other. 
 
 **Can I see the AI's prescan result?**
 Yes — the disputer can attach it as evidence. You'll see the AI confidence in the case panel. Use it as ONE input among many; don't just rubber-stamp the AI.
+
+**Can I view the attached images / video / audio?**
+Yes, while you're on the jury. Your access opens when you're summoned and closes when the verdict lands. The public never sees the bytes, only each file's type, size, hash, and per-file AI score.
 
 **What if the disputer is wrong / disputes are abusive?**
 That's exactly why the disputer ALSO stakes 15 points. If the jury DISMISSES (creator wins), the disputer loses those 15. So abusive disputes self-discipline through the stake.

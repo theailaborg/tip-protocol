@@ -6,13 +6,19 @@ const { asyncHandler } = require("../middleware/error-handler");
 function createRouter({ contentService }) {
   const router = express.Router();
 
-  router.post("/content/register", asyncHandler((req, res) => {
-    const result = contentService.register(req.body);
+  router.post("/content/register", asyncHandler(async (req, res) => {
+    const result = await contentService.register(req.body);
     res.status(202).json(result);
   }));
 
-  router.get("/content/:ctid", asyncHandler((req, res) => {
-    res.json(contentService.resolve(req.params.ctid));
+  // Explorer list — public, cursor-paginated. Filters: author, origin,
+  // status, has_media. Slim rows; follow ctid for the full record.
+  router.get("/content", asyncHandler((req, res) => {
+    res.json(contentService.list(req.query));
+  }));
+
+  router.get("/content/:ctid", asyncHandler(async (req, res) => {
+    res.json(await contentService.resolve(req.params.ctid));
   }));
 
   // Lightweight async-prescan poll endpoint. Clients hit this after

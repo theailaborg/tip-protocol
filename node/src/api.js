@@ -34,6 +34,8 @@ const { createRevocationService } = require("./services/revocation-service");
 const { createGovernanceService } = require("./services/governance-service");
 const { createDomainService } = require("./services/domain-service");
 const { createReviewService } = require("./services/review-service");
+const { createMediaService } = require("./services/media-service");
+const { createMediaStorage } = require("./services/media-storage");
 
 // Routes
 const healthRoutes = require("./routes/health");
@@ -48,10 +50,25 @@ const governanceRoutes = require("./routes/governance");
 const dagRoutes = require("./routes/dag");
 const domainRoutes = require("./routes/domain");
 const reviewRoutes = require("./routes/reviews");
+const mediaRoutes = require("./routes/media");
 
 function createApp({ dag, scoring, config, consensus: consensusRef = null, network: networkRef = null, prescanJobs = null }) {
   const { submitTx, submitBatch } = createTxSubmitter(consensusRef);
-  const ctx = { dag, scoring, config, submitTx, submitBatch, consensus: consensusRef, network: networkRef, prescanJobs };
+
+  // Media storage + service. Backend selected via TIP_MEDIA_BACKEND
+  // (fs default for dev/test, s3 for prod). One instance per node —
+  // the worker uses fetchForClassifier(); content-service uses
+  // resolveRefs(); routes use upload/fetchBytes/head.
+  const mediaStorage = createMediaStorage(config.mediaStorage || {});
+  const mediaService = createMediaService({
+    storage: mediaStorage, dag,
+    selfNodeId: config.nodeRegisteredId || config.nodeId || null,
+  });
+
+  const ctx = {
+    dag, scoring, config, submitTx, submitBatch,
+    consensus: consensusRef, network: networkRef, prescanJobs, mediaService,
+  };
 
   // ── Create services ────────────────────────────────────────────────────────
   const identityService = createIdentityService(ctx);
@@ -158,6 +175,7 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(API_VERSION, governanceRoutes.createRouter({ governanceService }));
   app.use(API_VERSION, domainRoutes.createRouter({ domainService }));
   app.use(API_VERSION, reviewRoutes.createRouter({ reviewService }));
+  app.use(API_VERSION, mediaRoutes.createRouter({ mediaService }));
   app.use(API_VERSION, dagRoutes.createRouter(ctx));
 
   // ── 404 catch-all (after all routes, before error handler) ─────────────────
@@ -177,9 +195,13 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   app.use(errorHandler);
 
   // Expose select services on the app for out-of-band consumers (e.g. the
-  // domain re-verify scheduler in index.js). The app stays Express-shaped;
+  // domain re-verify scheduler in index.js, the prescan worker's media
+  // fetch path, the media-retention sweep). The app stays Express-shaped;
   // these are tucked under `app.locals` so they don't collide with routes.
   app.locals.domainService = domainService;
+  app.locals.mediaService = mediaService;
+  app.locals.mediaStorage = mediaStorage;
+  app.locals.governanceService = governanceService;
 
   return app;
 }

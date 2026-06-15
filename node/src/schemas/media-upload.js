@@ -1,0 +1,247 @@
+/**
+ * @file @tip-protocol/node/src/schemas/media-upload.js
+ * @description Request validation for POST /v1/media/upload.
+ *
+ * Owns ALL request-level validation per the project rule (validateRequest
+ * lives in schemas/, never inline in services). Matches media-access:
+ *
+ *   schema (here):                          service (media-service.js):
+ *     - shape (bytes, mime, signer, sig)      - signature verifies against
+ *     - mime format (image/audio/video)         identity's public_key
+ *     - mime family enabled (video gate)      - storage.put
+ *     - per-mime size limit (genesis)
+ *     - replay window (nowMs ± window)
+ *     - DAG presence (signer exists,
+ *       active, not revoked)
+ *
+ * Challenge format (signed by uploader's ML-DSA-65 key):
+ *   MEDIA_UPLOAD:{content_hash_hex}:{mime}:{timestamp}:{signer_tip_id}
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+"use strict";
+
+const { schemaError } = require("./_common");
+const { isValidMs, nowMs } = require("../../../shared/time");
+const { CONTENT_LIMITS } = require("../../../shared/protocol-constants");
+
+const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
+const HEX_RE = /^[0-9a-f]+$/i;
+const MIME_RE = /^(image|audio|video)\/[a-z0-9.+\-]+$/i;
+
+// Replay window: signed timestamps from clients must fall within ±N ms of
+// server clock. Tight enough to defeat replay; loose enough to forgive
+// honest NTP-level clock skew.
+const UPLOAD_TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
+
+function _resolveSizeLimit(mime) {
+  if (mime.startsWith("image/")) return CONTENT_LIMITS.IMAGE_MAX_BYTES;
+  if (mime.startsWith("audio/")) return CONTENT_LIMITS.AUDIO_MAX_BYTES;
+  if (mime.startsWith("video/")) return CONTENT_LIMITS.VIDEO_MAX_BYTES;
+  return null;
+}
+
+/**
+ * Derive the mime from the file's magic bytes. The STORED mime is always
+ * this value — the client's X-Media-Mime header is part of the signed
+ * challenge but is never trusted for storage, size caps, or classifier
+ * routing. A client cannot mislabel bytes (accidentally or maliciously),
+ * and dedup can never produce conflicting labels because the stored mime
+ * is a pure function of the bytes.
+ *
+ * Needs at most the first 16 bytes. Returns null for any format outside
+ * the supported set — callers reject those with 415.
+ */
+function detectMime(bytes) {
+  if (!bytes || bytes.length < 12) return null;
+  const b = bytes;
+
+  // image
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return "image/gif";
+
+  // RIFF containers: WEBP (image) vs WAV (audio), split on bytes 8-11
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {
+    const tag = b.slice(8, 12).toString("ascii");
+    if (tag === "WEBP") return "image/webp";
+    if (tag === "WAVE") return "audio/wav";
+    return null;
+  }
+
+  // audio
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return "audio/mpeg";            // ID3-tagged MP3
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return "audio/mpeg";                    // raw MP3 frame sync
+  if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return "audio/ogg";
+  if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return "audio/flac";
+
+  // ISO-BMFF (ftyp at offset 4): mp4 family. M4A brand is audio-only.
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    const brand = b.slice(8, 12).toString("ascii");
+    if (brand.startsWith("M4A")) return "audio/mp4";
+    return "video/mp4";
+  }
+
+  // Matroska / WebM
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
+
+  return null;
+}
+
+/**
+ * Gate + size cap for a SNIFFED mime. Throws the same 415/limit errors as
+ * the claim-based path, but driven by what the bytes actually are.
+ */
+function limitForDetectedMime(mime) {
+  if (mime === null) {
+    throw schemaError(415, "Unrecognized file format — supported: png, jpeg, gif, webp, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
+  }
+  const limit = _resolveSizeLimit(mime);
+  if (limit <= 0) {
+    throw schemaError(415, `Mime family disabled in genesis: ${mime} (detected from bytes)`, "mime_disabled");
+  }
+  return limit;
+}
+
+/**
+ * Look up the signer's identity on the DAG and reject if missing,
+ * inactive, or revoked. Mirrors media-access.resolveRequester so the
+ * "is this caller a valid TIP-ID?" predicate is identical across
+ * media endpoints.
+ */
+function resolveSigner(tipId, dag) {
+  const identity = dag.getIdentity(tipId);
+  if (!identity) {
+    throw schemaError(404, `Unknown signer: ${tipId}`, "signer_not_found");
+  }
+  if (identity.status !== "active") {
+    throw schemaError(403, `Signer not active: ${tipId}`, "signer_inactive");
+  }
+  if (typeof dag.isRevoked === "function" && dag.isRevoked(tipId)) {
+    throw schemaError(403, `Signer revoked: ${tipId}`, "signer_revoked");
+  }
+  return identity;
+}
+
+/**
+ * Validation shared by the buffered and streaming upload paths — every
+ * check that doesn't need the bytes: mime family + gate, signer format,
+ * signature format, timestamp + replay window, DAG presence.
+ */
+function _validateMeta(input, deps) {
+  if (!input || typeof input !== "object") {
+    throw schemaError(400, "request input is required", "input_invalid");
+  }
+  if (typeof input.mime !== "string" || input.mime.length === 0) {
+    throw schemaError(400, "mime is required", "mime_required");
+  }
+  if (!MIME_RE.test(input.mime)) {
+    throw schemaError(415, `mime must match image/*, audio/*, or video/* (got ${input.mime})`, "mime_invalid");
+  }
+
+  const sizeLimit = _resolveSizeLimit(input.mime);
+  if (sizeLimit <= 0) {
+    // Mime family hard-gated in genesis (today: video). Disabled at the
+    // schema layer so callers see a 415 before any storage cost is paid.
+    throw schemaError(415, `Mime family disabled in genesis: ${input.mime}`, "mime_disabled");
+  }
+
+  if (typeof input.signer_tip_id !== "string" || !TIP_ID_RE.test(input.signer_tip_id)) {
+    throw schemaError(400, "signer_tip_id is required (tip://id/<REGION>-<16hex>)", "signer_tip_id_required");
+  }
+  if (typeof input.signature !== "string" || !HEX_RE.test(input.signature) || input.signature.length === 0) {
+    throw schemaError(400, "signature is required (hex-encoded ML-DSA)", "signature_required");
+  }
+  if (!Number.isInteger(input.timestamp) || !isValidMs(input.timestamp)) {
+    throw schemaError(400, "timestamp is required (integer ms epoch)", "timestamp_required");
+  }
+
+  // Replay defense. Tight ±5min window; client must NTP-sync within
+  // reason. Past failures here are usually a client clock skew bug.
+  const drift = Math.abs(nowMs() - input.timestamp);
+  if (drift > UPLOAD_TIMESTAMP_WINDOW_MS) {
+    throw schemaError(
+      400,
+      `Timestamp drift ${drift}ms exceeds ${UPLOAD_TIMESTAMP_WINDOW_MS}ms window`,
+      "timestamp_drift",
+    );
+  }
+
+  if (!deps || !deps.dag) {
+    throw new Error("media-upload validate: deps.dag required");
+  }
+  resolveSigner(input.signer_tip_id, deps.dag);
+
+  return sizeLimit;
+}
+
+/**
+ * Validate a buffered media upload request. Throws schemaError on the
+ * first problem. Service keeps only the signature verification (needs
+ * canonical challenge bytes + the identity's public key).
+ *
+ * @param {Object} input
+ * @param {Buffer} input.bytes
+ * @param {string} input.mime
+ * @param {string} input.signer_tip_id
+ * @param {string} input.signature
+ * @param {number} input.timestamp
+ * @param {Object} deps          { dag } — identity lookups
+ */
+function validateRequest(input, deps) {
+  if (!input || typeof input !== "object") {
+    throw schemaError(400, "request input is required", "input_invalid");
+  }
+  if (!Buffer.isBuffer(input.bytes) || input.bytes.length === 0) {
+    throw schemaError(400, "bytes is required (non-empty buffer)", "bytes_required");
+  }
+  _validateMeta(input, deps);
+  // The bytes decide the mime — gate + cap run on the DETECTED type, so a
+  // mislabeled claim can neither dodge a family cap nor poison storage.
+  const detected = detectMime(input.bytes);
+  const sizeLimit = limitForDetectedMime(detected);
+  if (input.bytes.length > sizeLimit) {
+    throw schemaError(413, `File too large: ${input.bytes.length} > ${sizeLimit}`, "file_too_large");
+  }
+  return detected;
+}
+
+/**
+ * Validate a STREAMING upload request — everything except the bytes,
+ * which haven't arrived yet. Returns the per-mime size limit so the
+ * service can abort the stream the moment it's exceeded.
+ *
+ * @returns {number} max bytes allowed for this mime family
+ */
+function validateStreamRequest(input, deps) {
+  return _validateMeta(input, deps);
+}
+
+/**
+ * Build the canonical signed challenge for an upload. Single source of
+ * truth so client and server compute identical bytes.
+ *
+ * @param {Object} input
+ * @param {string} input.content_hash   shake256(bytes, 32) as 64-hex
+ * @param {string} input.mime
+ * @param {number} input.timestamp
+ * @param {string} input.signer_tip_id
+ * @returns {string} canonical challenge
+ */
+function buildChallenge({ content_hash, mime, timestamp, signer_tip_id }) {
+  return `MEDIA_UPLOAD:${content_hash}:${mime}:${timestamp}:${signer_tip_id}`;
+}
+
+module.exports = {
+  validateRequest,
+  validateStreamRequest,
+  detectMime,
+  limitForDetectedMime,
+  resolveSigner,
+  buildChallenge,
+  TIP_ID_RE,
+  MIME_RE,
+  UPLOAD_TIMESTAMP_WINDOW_MS,
+};

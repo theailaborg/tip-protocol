@@ -408,6 +408,8 @@ class KnexAdapter {
       t.integer("override").notNullable().defaultTo(0);                   // creator confirmed OH despite HIGH/CRITICAL warning
       t.bigInteger("registered_at").notNullable();
       t.text("registered_urls").nullable();                         // JSON-encoded string[]; index 0 is the canonical / primary URL
+      t.text("media").nullable();                                   // JSON-encoded [{media_id, mime}, ...]; ordered (matches mch derivation)
+      t.string("media_canonical_hash", 64).nullable();              // shake256 of media[].media_id concat; null when no media
       _id(t, "tx_id").nullable();
       t.index("author_tip_id", "idx_content_author");
       t.index("signer_tip_id", "idx_content_signer");
@@ -518,6 +520,7 @@ class KnexAdapter {
       _pk(t, "node_id");
       t.text("name").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
+      t.text("api_endpoint").nullable();   // public API origin; peers redirect reviewers here for this node's media
       t.bigInteger("registered_at").notNullable();
     });
 
@@ -730,6 +733,7 @@ class KnexAdapter {
       const urls = _decodeJson(row.registered_urls, []);
       const authors = _decodeJson(row.authors, []);
       const extras = _decodeJson(row.extras, {});
+      const media = _decodeJson(row.media, []);
       const mapped = {
         ...row,
         ctid: row.tip_ctid,
@@ -739,6 +743,8 @@ class KnexAdapter {
         registered_urls: Array.isArray(urls) ? urls : [],
         authors: Array.isArray(authors) ? authors : [],
         extras: (extras && typeof extras === "object" && !Array.isArray(extras)) ? extras : {},
+        media: Array.isArray(media) ? media : [],
+        media_canonical_hash: typeof row.media_canonical_hash === "string" ? row.media_canonical_hash : null,
       };
       delete mapped.tip_ctid;
       this.mirror._content.set(mapped.ctid, mapped);
@@ -1117,6 +1123,7 @@ class KnexAdapter {
   }
   getActiveKey(entity_type, entity_id) { return this.mirror.getActiveKey(entity_type, entity_id); }
   getKeyValidAt(entity_type, entity_id, timestamp) { return this.mirror.getKeyValidAt(entity_type, entity_id, timestamp); }
+  getEntityKeyHistory(t, i) { return this.mirror.getEntityKeyHistory(t, i); }
   *iterateEntityKeys() { yield* this.mirror.iterateEntityKeys(); }
   clearEntityKeys() {
     this.mirror.clearEntityKeys();
@@ -1156,6 +1163,8 @@ class KnexAdapter {
       override: rec.override ? 1 : 0,
       registered_at: rec.registered_at,
       registered_urls: JSON.stringify(urls),
+      media: JSON.stringify(Array.isArray(rec.media) ? rec.media : []),
+      media_canonical_hash: typeof rec.media_canonical_hash === "string" ? rec.media_canonical_hash : null,
       tx_id: rec.tx_id || null,
     };
     this._ff(() => this._dbInsert("content", "tip_ctid", row, "merge"));
@@ -1163,6 +1172,9 @@ class KnexAdapter {
 
   getContent(ctid) { return this.mirror.getContent(ctid); }
   getContentByStatus(s) { return this.mirror.getContentByStatus(s); }
+  getContentWithMediaBefore(cutoffMs) { return this.mirror.getContentWithMediaBefore(cutoffMs); }
+  getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }
+  listContent(opts) { return this.mirror.listContent(opts); }
   getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
   getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
   hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }
@@ -1466,9 +1478,15 @@ class KnexAdapter {
       node_id: rec.node_id,
       name: rec.name || null,
       status: rec.status || "active",
+      api_endpoint: rec.api_endpoint || null,
       registered_at: rec.registered_at,
     };
     this._ff(() => this._dbInsert("nodes", "node_id", row, "merge"));
+  }
+
+  updateNodeEndpoint(nodeId, apiEndpoint) {
+    this.mirror.updateNodeEndpoint(nodeId, apiEndpoint);
+    this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({ api_endpoint: apiEndpoint || null }));
   }
 
   getNode(id) { return this.mirror.getNode(id); }

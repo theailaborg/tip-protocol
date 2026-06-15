@@ -92,6 +92,22 @@ function _validateShape(d) {
   if (!Array.isArray(d.modality_results)) {
     throw schemaError(400, "modality_results must be an array", "modality_results_invalid");
   }
+  // Optional per-FILE scores (media_id-tagged, pre-collapse). Additive:
+  // txs from older nodes simply omit the field and keep validating. The
+  // collapsed modality_results stay authoritative for the verdict; this
+  // array preserves the per-file evidence that collapsing discards.
+  if (d.media_results !== undefined) {
+    if (!Array.isArray(d.media_results)) {
+      throw schemaError(400, "media_results must be an array when present", "media_results_invalid");
+    }
+    for (const m of d.media_results) {
+      if (!m || typeof m !== "object"
+        || typeof m.media_id !== "string" || !/^[0-9a-f]{64}$/.test(m.media_id)
+        || (m.probability !== null && !(typeof m.probability === "number" && m.probability >= 0 && m.probability <= 1))) {
+        throw schemaError(400, "media_results entries need media_id (64-hex) and probability (0..1 or null)", "media_results_invalid");
+      }
+    }
+  }
   if (typeof d.classifier_version !== "string" || d.classifier_version.length === 0) {
     throw schemaError(400, "classifier_version is required", "classifier_version_required");
   }

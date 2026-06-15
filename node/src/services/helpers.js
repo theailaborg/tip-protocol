@@ -253,7 +253,7 @@ function createTxSubmitter(consensusRef) {
       if (!result.added) {
         // Rollback: remove already-added txs from this batch
         for (const addedId of txIds) consensusRef.current.mempool.remove([addedId]);
-        throw { status: 503, error: `Batch rejected: tx ${tx.tx_id?.slice(0, 16)} — ${result.reason}` };
+        throw { status: 503, error: `Batch rejected: tx ${tx.tx_id?.slice(0, 16)}: ${result.reason}` };
       }
       txIds.push(tx.tx_id);
     }

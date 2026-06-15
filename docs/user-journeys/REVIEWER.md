@@ -12,7 +12,7 @@ You qualify if **all four** are true:
 
 | Requirement | Why |
 |---|---|
-| Your trust score is **800 or higher** | Reviewers shape outcomes — high score = proven track record |
+| Your trust score is **600 or higher** | Reviewers audit a single AI flag (lower stakes than jury/expert), so the bar is the lowest of the adjudication roles |
 | You're a **personal identity** (not an organization / publisher) | Orgs can't be reviewers — only individual humans |
 | You turned ON **"I want to be a reviewer"** in your profile | Opt-in only. Never auto-conscripted. |
 | Your reviewer overturn rate is **under 30%** | If too many of your past calls got overturned, you're paused while you cool off |
@@ -35,7 +35,7 @@ Someone publishes content
           ↓
    48h passes, creator stayed silent (didn't change anything)
           ↓
-   System picks a Reviewer (deterministic selection from the eligible 800+ pool)
+   System picks a Reviewer (deterministic selection from the eligible 600+ pool)
           ↓
    That's YOU — notification appears
 ```
@@ -51,6 +51,7 @@ You get a push notification + an item in your "To Do" queue. The clock starts: *
 │  REVIEW REQUEST #rv_4a8c…                           │
 │                                                     │
 │  Content        →  [Title + body text shown here]   │
+│  Media          →  2 files · open while review live │
 │  Creator        →  tip://id/IN-... (you see ID,    │
 │                     not their real name)            │
 │  AI's flag      →  CRITICAL — 98% confident AI-made │
@@ -65,6 +66,16 @@ You get a push notification + an item in your "To Do" queue. The clock starts: *
 ```
 
 You read the content. You compare what the creator claimed (e.g. "I wrote this — OH") vs what AI thinks (e.g. "AG — AI generated this"). You pick one of three buttons.
+
+### Viewing the content's media
+
+If the flagged content has media attached (images, audio, video), you can open and view those files **for as long as your review is open**. The bytes are access-controlled: the general public only ever sees a file's type, size, hash, and AI score, never the file itself. As the assigned reviewer you get full view access to the real bytes, because you can't fairly judge what you can't see.
+
+- **Your access is scoped to your assignment.** It opens the moment you're assigned and closes the moment you submit DISMISS / CONFIRM / RECUSE (or the 48h auto-recuse fires). After the case leaves your hands you can no longer open the files.
+- **The AI already looked at the media.** Each file carries its own AI-likelihood score, shown per file in the case panel. The headline confidence is the most-AI-looking file among them, so a single AI image inside an otherwise human post still drives the flag.
+- **If the bytes were retention-swept**, you'll see the file's hash and score but the bytes are gone (deleted after the dispute-relevance window). Judge on the record that remains.
+
+There is nothing to install and no key to fetch: the app handles the signed request and the temporary download link for you.
 
 ---
 
@@ -84,10 +95,13 @@ Content goes back to "Verified" status
 Creator is unaffected — no penalty, badge restored
        ↓
 You earn +5 trust score IMMEDIATELY (review_correct_bonus settles in the same batch).
-A DISMISS can't be re-litigated through the review pipeline. If someone else later
-disputes the same content publicly, that's a separate Stage-2 case with its own
-disputer — your DISMISS bonus is not at risk from it.
+The +5 is accountable: if someone later disputes the same content publicly and the
+jury rules UPHELD (your DISMISS was wrong), the +5 is clawed back (net 0). If that
+verdict is itself overturned on appeal back to DISMISSED (you were right after all),
+the clawback reverses and you keep the +5.
 ```
+
+A DISMISS accuses no one, so a wrong DISMISS is not punished like a wrong CONFIRM (which forfeits the full -15 disputer stake). You simply don't keep pay for a call later proven wrong. See "What you earn (or risk)" below for the full table.
 
 ### CONFIRM — "The AI was right"
 
@@ -165,7 +179,7 @@ When the path closes without ever escalating to a public dispute, the math is si
 
 | Outcome | Effect on you |
 |---|---|
-| You DISMISS | **+5 trust score** immediately. No further risk on this case. |
+| You DISMISS | **+5 trust score** immediately. Accountable: if a later public dispute on the same content is UPHELD (your DISMISS was wrong), the +5 is **clawed back** (net 0). If that verdict is overturned on appeal to DISMISSED (you were right), the clawback **reverses** and you keep the +5. A wrong DISMISS only costs you the bonus, never a penalty. |
 | You CONFIRM → creator privately accepts the correction | **+5 trust score** (review_correct_bonus). Creator separately takes -10 for the accepted correction. |
 | You CONFIRM → escalates to Jury → Stage-2 UPHELD (jury agrees with you) | -15 stake (filing-time) + 15 (refund) + 5 (UPHELD bonus) + 5 (review_correct_bonus) = **+10 net**. |
 | You CONFIRM → escalates to Jury → Stage-2 CONSERVATIVE_LABEL | -15 + 15 + 5 = **+5 net**. (Stake refunded + review_correct_bonus; no UPHELD bonus since the conservative path applies.) |
@@ -174,7 +188,7 @@ When the path closes without ever escalating to a public dispute, the math is si
 | You RECUSE | **0 — neutral.** No change. |
 | You auto-recuse (48h silent) | **0** for the score; the assignment counts toward eligibility metrics. |
 
-The math is asymmetric in design: clear DISMISS / CONFIRM-with-accept paths are pure upside (+5). Going public is the path that puts real points (-15) at risk — and is also the path that pays the most when you're right (+10).
+The math is asymmetric in design: an honest DISMISS or a CONFIRM-with-accept pays +5 with no penalty risk (a wrong DISMISS only loses the bonus, never points). Going public on a CONFIRM is the path that puts real points (-15) at risk, and is also the path that pays the most when you're right (+10).
 
 ---
 
@@ -215,7 +229,7 @@ The item appears the moment a `PRESCAN_REVIEW_TRIGGERED` tx with you as `assigne
 ## The complete journey at a glance
 
 ```
-1.  Live your normal life. Reviewer-consent ON. Score 800+.
+1.  Live your normal life. Reviewer-consent ON. Score 600+.
                        ↓
 2.  Push notification: "You've been assigned to a review"
                        ↓
@@ -230,9 +244,9 @@ The item appears the moment a `PRESCAN_REVIEW_TRIGGERED` tx with you as `assigne
             ↓          ↓          ↓
        Restored.  Creator      Someone
        Earn +5    decides:     else gets it
-       if no       admit or
-       overturn.   go public
-                       ↓
+       (clawed    admit or
+        back if   go public
+        upheld)       ↓
                    ┌───┴───┐
                    ↓       ↓
                Admits   Public Jury
@@ -268,11 +282,14 @@ Depends on how many flagged cases come up and how many other reviewers are activ
 **Will the creator know it was me?**
 No. The decision is on the chain (so anyone can audit it), but your TIP ID isn't broadcast as "the reviewer." Anonymity by design.
 
+**Can I view the attached images / video / audio?**
+Yes, while your review is open. Your access ends when you submit your decision (or auto-recuse). The public never sees the bytes, only the file's type, size, hash, and AI score.
+
 **Can I change my mind after submitting?**
 No. Once you sign and submit, it's on the chain. Take your time before clicking.
 
 **Is there any money in this?**
-No tokens. You earn trust score: +5 on DISMISS, +5 to +10 on a CONFIRM path that vindicates you, -15 when a public jury overturns your CONFIRM. Trust score is your protocol-wide reputation. Higher score = qualifies you for Juror, then Expert, roles — and those carry their own stakes.
+No tokens. You earn trust score: +5 on DISMISS (clawed back if a later dispute proves the DISMISS wrong), +5 to +10 on a CONFIRM path that vindicates you, -15 when a public jury overturns your CONFIRM. Trust score is your protocol-wide reputation. Higher score = qualifies you for Juror, then Expert, roles, and those carry their own stakes.
 
 ---
 

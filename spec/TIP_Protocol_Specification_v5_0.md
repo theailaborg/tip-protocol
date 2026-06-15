@@ -1592,9 +1592,9 @@ The verdict is computed after the reveal phase:
 
 - **CONSERVATIVE_LABEL.** Majority of non-abstain votes select MISMATCH but the alternative origin votes are split across multiple options. The content's Origin Code is updated to the smallest-penalty alternative (typically the next-higher AI involvement level). The creator's score is not penalized (the protocol's response to inconclusive verdicts on the precise alternative is to apply the lightest correction without scoring impact). The disputer's stake is refunded without the UPHELD bonus.
 
-- **DISMISSED.** Majority of non-abstain votes select MATCH. The disputer's stake is forfeited. The creator receives a small VINDICATION bonus.
+- **DISMISSED.** A *clear* majority of non-abstain votes selects MATCH. The disputer's stake is forfeited. The creator receives a small VINDICATION bonus.
 
-- **NO_QUORUM.** Quorum thresholds were not met. The case auto-escalates to Stage 3 without disputer-stake settlement.
+- **NO_QUORUM / deadlock.** Quorum thresholds were not met, OR the non-abstain votes are evenly split (a tie, with no majority either way). A deadlock is not a merits dismissal, so it is treated exactly like NO_QUORUM: the case auto-escalates to Stage 3 without disputer-stake settlement (the disputer's stake stays locked, never forfeited on a tie) and the creator earns no vindication bonus. Forfeit and vindication apply only on a clear DISMISSED majority.
 
 ### 28.4 Filing a Stage 2 dispute directly
 
@@ -1607,7 +1607,7 @@ The filer's stake is settled at verdict:
 - **UPHELD verdict:** Stake refunded plus +5 UPHELD_BONUS. Net +5.
 - **CONSERVATIVE_LABEL verdict:** Stake refunded. Net 0.
 - **DISMISSED verdict:** Stake forfeited. Net -15.
-- **NO_QUORUM verdict:** Stake remains locked pending Stage 3 resolution.
+- **NO_QUORUM / deadlock verdict:** Stake remains locked pending Stage 3 resolution (a tie is not a loss — the stake is never forfeited at this stage).
 
 The 15-point stake is the protocol's economic friction against frivolous disputes. A holder with score 410 who files a frivolous dispute and loses drops to score 395, marking them as REVIEW_ADVISED and potentially gating their future Disputer eligibility.
 
@@ -1617,14 +1617,15 @@ A holder may file at most five disputes per rolling 30 days (DISPUTER_FREQUENCY_
 
 The losing party of Stage 2 (the Disputer if DISMISSED, the Creator if UPHELD) may appeal to Stage 3 by signing an APPEAL_FILED transaction. The appellant stakes an additional 25 score points (APPELLANT_STAKE).
 
-Three Community Expert Panelists (Section 29.3) are summoned. Each Expert has score at least 850 and has not opted out. The Experts vote under the same commit-reveal protocol as the Jury (72 hours commit, 12 hours reveal). Quorum requires at least 2 of 3 to reveal non-abstain votes.
+Five Community Expert Panelists (Section 29.3) are summoned. Each Expert has score at least 850 and has not opted out. The Experts vote under the same commit-reveal protocol as the Jury (72 hours commit, 12 hours reveal). Quorum requires at least 3 of 5 to reveal non-abstain votes.
 
-The verdict options are the same as Stage 2 (UPHELD, CONSERVATIVE_LABEL, DISMISSED) but the verdict applies as a final, non-appealable outcome and reverses any Stage 2 settlement that conflicts with the Stage 3 finding.
+The verdict options are the same as Stage 2 (UPHELD, CONSERVATIVE_LABEL, DISMISSED) but the verdict applies as a final, non-appealable outcome and reverses any Stage 2 settlement that conflicts with the Stage 3 finding. Because Experts are the final tier, a panel that reaches **no result** (a tie, or fewer than 3 non-abstain reveals) cannot escalate further: it terminates with the Stage 2 outcome standing by default, and — since no merits ruling was reached — refunds rather than forfeits (see settlement below).
 
 Stage 3 settlement of the appellant's stake:
 
 - **Stage 3 overturns Stage 2 (appellant wins):** Stage 2 settlement is reversed end-to-end. Appellant receives stake refund (+25) plus OVERTURN_BONUS (+10). Net +35 above the appellant's Stage 2 position.
-- **Stage 3 confirms Stage 2 (appellant loses):** Appellant stake is forfeited.
+- **Stage 3 confirms Stage 2 by a clear majority (appellant loses):** Appellant stake is forfeited.
+- **Stage 3 reaches no result (tie or sub-quorum):** The appeal reached no verdict, so the appellant's 25-point stake is refunded. Stage 2 stands (a tie does not overturn it). If the original dispute never received a merits ruling at either stage (Stage 2 was also NO_QUORUM/deadlock), the disputer's 15-point filing stake is refunded as well. No vindication is paid.
 
 The cradle-to-grave net for a Stage 2 loser who appeals and wins Stage 3 is approximately:
 
@@ -1642,7 +1643,7 @@ The math is designed so that an appellant who is genuinely right gains net posit
 
 The three-stage structure exists for three reasons:
 
-1. **Cost efficiency.** Stage 1 (AI classifier) is essentially free; it resolves the easy cases. Stage 2 (jury of 7) is moderate-cost; it resolves the cases that require human judgment but not specialized expertise. Stage 3 (panel of 3 experts) is expensive in participant time; it is reserved for genuinely contested cases.
+1. **Cost efficiency.** Stage 1 (AI classifier) is essentially free; it resolves the easy cases. Stage 2 (jury of 7) is moderate-cost; it resolves the cases that require human judgment but not specialized expertise. Stage 3 (panel of 5 experts) is expensive in participant time; it is reserved for genuinely contested cases.
 
 2. **Robustness against single-stage error.** Any single stage can be wrong. A naive AI classifier produces false positives. A jury can miss a fact pattern an expert would have caught. An expert can be biased. The three stages produce three independent looks at the same case, each layer correcting for the failure modes of the previous.
 
@@ -1697,7 +1698,7 @@ The split between -1 (never committed) and -8 (committed but failed to reveal) r
 
 **Eligibility:** Score at least 850, personal-identity TIP-ID, adjudication participation toggle in the ON position (default ON at registration).
 
-**Role:** Stage 3 expert panel member. Panel size 3.
+**Role:** Stage 3 expert panel member. Panel size 5.
 
 **Time window:** 72-hour commit phase, 12-hour reveal phase. Total 84 hours.
 
@@ -3110,7 +3111,8 @@ JURY_REVEAL_HOURS:          6
 JURY_QUORUM_REVEALS:        5
 JURY_QUORUM_NON_ABSTAIN:    3
 
-EXPERT_PANEL_SIZE:          3
+EXPERT_PANEL_SIZE:          5
+EXPERT_QUORUM_NON_ABSTAIN:  3
 EXPERT_SCORE_FLOOR:         850
 
 REVIEWER_SCORE_FLOOR:       800

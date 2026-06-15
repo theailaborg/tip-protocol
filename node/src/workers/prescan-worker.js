@@ -61,7 +61,7 @@ const STAGE_AUDIO = "audio";
  * @param {() => number} [deps.now]         Time source for tests.
  * @param {() => Promise<void>} [deps.sleep] Sleep impl for tests.
  */
-function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "" }) {
+function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, log, now: nowFn, sleep: sleepFn, workerTag = "", mediaService }) {
   if (!dag) throw new Error("prescan-worker: dag required");
   if (!jobs) throw new Error("prescan-worker: jobs required");
   if (!classifierClient) throw new Error("prescan-worker: classifierClient required");
@@ -210,12 +210,14 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     }
 
     let modalityResults;
+    let mediaResults = [];
     let providersUsed;
     let classifierVersion;
     let skipped = false;
     try {
       const fanOut = await _fanOutClassifierCalls(payload);
       modalityResults = fanOut.modalityResults;
+      mediaResults = fanOut.mediaResults || [];
       providersUsed = fanOut.providersUsed;
       classifierVersion = fanOut.classifierVersion;
       skipped = !!fanOut.skipped;
@@ -250,6 +252,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
         content_type: contentType,
         content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
         modality_results: [],
+        media_results: [],
         classifier_version: classifierVersion || "n/a",
         classifier_providers_used: providersUsed || "skipped_locally",
         completed_at: now(),
@@ -264,11 +267,21 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // off the enqueued payload (resolved at register time).
     const agg = aggregate(modalityResults, contentType);
 
+    // Local-fallback responses are terminal: the external classifier is
+    // unreachable, so retrying just re-invokes the same down service and
+    // re-derives the same fallback. Skip the retry budget entirely and
+    // commit the fail-open immediately when the bytes had no local signal
+    // (e.g. image content with no local model). Text-only fallback isn't
+    // hard-degraded, so it never reaches this branch — it commits cleanly
+    // below as a local_fallback verdict.
+    const isLocalFallback = typeof providersUsed === "string" && providersUsed.includes("local_fallback");
+
     // Hard-degraded path: at least one modality produced no usable signal
     // (error / non-finite / forced 0.5). Retry if budget remains — these
-    // are transient and a re-run may yield a real probability.
+    // are transient and a re-run may yield a real probability — UNLESS the
+    // signal came from local fallback (retrying a down classifier is futile).
     if (agg.overall_hard_degraded) {
-      if (job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
+      if (!isLocalFallback && job.retries < PRESCAN_WORKER.MAX_RETRIES_ON_DEGRADED) {
         jobs.releaseForRetry(job.job_id, "hard_degraded_signal");
         return;
       }
@@ -276,9 +289,10 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       // (a non-hard modality may have given a usable number); only fall
       // back to the no-signal neutral when the aggregator itself has no
       // probability to share.
-      _emitFailOpen(job, contentType, "hard_degraded_after_retries", {
+      _emitFailOpen(job, contentType, isLocalFallback ? "local_fallback_no_media_signal" : "hard_degraded_after_retries", {
         probability: agg.probability,
         modalityResults: agg.modality_results,
+        mediaResults,
       });
       return;
     }
@@ -299,6 +313,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       content_type: contentType,
       content_type_meta: payload.content_type_meta || { hint_provided: null, resolution: "derived", reason: null },
       modality_results: agg.modality_results,
+      media_results: mediaResults,
       classifier_version: classifierVersion || "unknown",
       classifier_providers_used: providersUsed || "unknown",
       completed_at: now(),
@@ -351,6 +366,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // the classifier never produced.
     const probability = Number.isFinite(opts.probability) ? opts.probability : 0.5;
     const modalityResults = Array.isArray(opts.modalityResults) ? opts.modalityResults : [];
+    const mediaResults = Array.isArray(opts.mediaResults) ? opts.mediaResults : [];
     const tier = prescanCompletedSchema.tierFromProbability(probability);
     const flagged = tier === "high" || tier === "critical";
     const data = {
@@ -362,6 +378,7 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
       content_type: contentType || "multi",
       content_type_meta: { hint_provided: null, resolution: "fail_open", reason: null },
       modality_results: modalityResults,
+      media_results: mediaResults,
       classifier_version: "unknown",
       classifier_providers_used: "fail_open",
       completed_at: now(),
@@ -400,17 +417,24 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     if (media.length === 0) {
       calls.push(classifierClient.prescan({ originCode, text, creatorClearedCount: cleared, authorTipId: authorTip }));
     } else {
+      if (!mediaService) {
+        throw new Error("prescan-worker: mediaService not wired but payload carries media[]");
+      }
+      // Fetch bytes for all refs in parallel — storage IO overlaps before
+      // we issue classifier calls. fetchForClassifier returns the
+      // {base64, mime} shape the classifier-client expects.
+      const files = await mediaService.fetchForClassifier(media);
       // First call carries the text alongside media[0].
       calls.push(classifierClient.prescan({
         originCode, text,
-        file: { base64: media[0].base64, mime: media[0].mime },
+        file: files[0],
         creatorClearedCount: cleared, authorTipId: authorTip,
       }));
       // Remaining media files alone (empty text).
-      for (let i = 1; i < media.length; i++) {
+      for (let i = 1; i < files.length; i++) {
         calls.push(classifierClient.prescan({
           originCode, text: "",
-          file: { base64: media[i].base64, mime: media[i].mime },
+          file: files[i],
           creatorClearedCount: cleared, authorTipId: authorTip,
         }));
       }
@@ -434,9 +458,11 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     // Surface as degraded so the aggregator handles them like other
     // unreliable signals.
     const modalityResults = [];
+    const mediaResults = [];
     const providers = new Set();
     let version;
-    for (const r of responses) {
+    for (let ri = 0; ri < responses.length; ri++) {
+      const r = responses[ri];
       if (!r) continue;
       providers.add(r.provider_used || "unknown");
       version = version || r.classifier_version;
@@ -448,11 +474,26 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
           // aggregator already treats degraded entries as unreliable.
           error: m.error || (heuristicOnly ? "heuristic_only_unreliable" : null),
         });
+        // Per-FILE attribution: call ri carries media[ri] (call 0 also
+        // carries the text, whose entry has modality "text" — skip it).
+        // The aggregator max-collapses same-modality entries for the
+        // verdict, so without this tagging the per-file scores would be
+        // unrecoverable once the bytes are retention-deleted or the
+        // model version moves on.
+        if (m.modality !== "text" && media[ri]) {
+          mediaResults.push({
+            media_id: media[ri].media_id,
+            mime: media[ri].mime,
+            probability: Number.isFinite(m.probability) ? m.probability : null,
+            provider: m.provider || r.provider_used || null,
+          });
+        }
       }
     }
 
     return {
       modalityResults,
+      mediaResults,
       providersUsed: Array.from(providers).join("|"),
       classifierVersion: version || "unknown",
     };

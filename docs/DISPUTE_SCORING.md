@@ -25,6 +25,7 @@ spec changed or the genesis is misconfigured.
 | `EXPERT_NO_COMMIT_PENALTY` | **1** | Expert summoned but never committed |
 | `EXPERT_NO_REVEAL_PENALTY` | **10** | Expert committed but failed to reveal |
 | `REVIEWER.CORRECT_BONUS` | **5** | Pre-scan reviewer's "case closed cleanly" bonus |
+| `REVIEWER.WRONG_DISMISS_CLAWBACK` | **-5** | Signed delta reclaimed from a reviewer whose DISMISS is later overturned by an UPHELD dispute. Default `-5` exactly cancels `CORRECT_BONUS` (pure clawback, net 0). Stored negative so the call site applies it directly (same convention as `accept_correction_score_delta`). Make it more negative than the bonus to turn it into a real penalty. |
 
 **Author penalty (UPHELD only)** — per-pair escalation `base × [1, 2, 3]`
 per spec (TIP_Trust_Scoring §6 Asymmetric Penalty Structure):
@@ -68,9 +69,16 @@ the penalty table above for other origin pairs.
 | Stage-2 verdict | Disputer | Author | offense_count |
 |---|---:|---:|---:|
 | UPHELD | **+20** (refund 15 + bonus 5) | **-100** | 0 → 1 |
-| DISMISSED | **0** (filing-time -15 IS the forfeit) | **+5** (vindication) | 0 |
+| DISMISSED (clear MATCH majority) | **0** (filing-time -15 IS the forfeit) | **+5** (vindication) | 0 |
 | CONSERVATIVE_LABEL | **+15** (refund only, no bonus) | **0** | 0 |
 | NO_QUORUM | **0** (stake locked, settles at Stage-3) | **0** | 0 |
+| Tie (MATCH = MISMATCH) | **0** (stake locked, escalates) | **0** (no vindication) | 0 |
+
+A **tie is not a merits dismissal** — it is a deadlock, so it is treated
+exactly like NO_QUORUM: the case auto-escalates to Stage 3 (no appeal stake
+required), the disputer's stake stays locked (never forfeited on a tie), and
+the author earns no vindication. Only a *clear* MATCH majority is a
+substantive DISMISSED that forfeits the disputer and vindicates the author.
 
 ### Jurors (any verdict)
 
@@ -156,11 +164,18 @@ already landed). Author penalty assumes OH→AG 1st offense (-100).
 **Disputer from start:** -15 -25 = **-40**
 **Author from start:** **+5** (vindication unchanged)
 
-### Defaulted DISMISSED (Stage-3 ran out of expert reveals)
+### No result at Stage 3 (expert tie, or ran out of expert reveals)
+
+Experts are the final layer, so a tie (MATCH = MISMATCH) or a sub-quorum
+panel cannot escalate further and is **not** a merits ruling. Nobody is
+forfeited: the appellant's appeal stake is **refunded** (the appeal reached
+no verdict), Stage-2's settlement stands (a tie does not overturn it), and no
+vindication is paid. Forfeit of the appeal stake happens only on a *decisive*
+not-overturned result (a clear confirm of Stage 2).
 
 | Party | Δ |
 |---|---:|
-| Appellant | 0 (filing-time -25 stays forfeited) |
+| Appellant | **+25** (appeal stake refunded — no result) |
 | Other party | 0 |
 | Experts who never committed | -1 each |
 | Experts who committed but missed reveal | -10 each |
@@ -176,7 +191,25 @@ appellant settlement event.
 |---|---:|---:|---:|
 | UPHELD | **+20** (refund 15 + bonus 5) | **-100** (fresh penalty) | 0 → 1 |
 | CONSERVATIVE_LABEL | **+15** (refund only) | **0** | 0 |
-| DISMISSED | **0** (stake stays forfeited) | **+5** (vindication) | 0 |
+| DISMISSED (panel reached quorum, ruled on merits) | **0** (stake forfeited) | **+5** (vindication) | 0 |
+| No result terminal (Stage-3 tie, Stage-3 sub-quorum, or no expert panel could be formed) | **+15** (refund, no bonus) | **0** (no vindication) | 0 |
+
+**Refund on a terminal no-result.** A disputer forfeits their stake only
+when a panel actually reaches quorum and rules the dispute groundless (a
+real DISMISSED). When the case dies because the *system* could not
+decide it — Stage-2 jury deadlocked/failed quorum AND Stage-3 experts
+also deadlocked/failed quorum, or no eligible expert panel could be
+formed at all — the disputer is refunded their 15: the failure was the
+absent or split jurors'/experts', not theirs. The author gets no
+vindication bonus in this terminal case, because nobody actually cleared
+them. The content keeps its declared label (benefit of the doubt) but no party is
+penalized except the no-show jurors/experts who broke quorum.
+
+> Liveness dependency: the terminal-NO_QUORUM refund requires the appeal
+> stage to always resolve. Today a Stage-2 NO_QUORUM that cannot form an
+> expert panel escalates into a hang (no expert summons means no appeal
+> deadline ever fires). That hang is fixed separately; the refund lands
+> in both terminal paths once it does.
 
 ### Experts (any Stage-3 verdict)
 
@@ -220,6 +253,35 @@ Paired with the originating tx in the same batch (single-channel rule):
 the DISMISS batch is `[PRESCAN_REVIEW_DISMISSED, SCORE_UPDATE]`; the
 accept-private batch is `[UPDATE_ORIGIN, SCORE_UPDATE(creator −10),
 SCORE_UPDATE(reviewer +5)]`.
+
+### Wrong-DISMISS clawback (accountable dismiss)
+
+The DISMISS `+5` is paid at dismiss time but is accountable. A DISMISS is
+a non-action (the reviewer accuses no one), unlike CONFIRM which is an
+accusation that carries the full disputer-stake risk, so a wrong DISMISS
+is not punished like a wrong accusation. Instead the bonus is reclaimed.
+
+When a public dispute is later filed on the same content by a separate
+disputer and Stage-2 rules **UPHELD** (the AI flag the reviewer dismissed
+was correct after all), the settlement reclaims the bonus via
+`REVIEWER.WRONG_DISMISS_CLAWBACK` (signed `-5`): the dismissing reviewer
+nets 0. The dismissing reviewer is a third settlement actor, distinct from
+the disputer and the author; the clawback is found by looking up the
+DISMISSED prescan_review for the ctid and emitting the delta for its
+`assigned_reviewer`.
+
+The clawback rides the full appeal chain exactly like the CONFIRM bonus:
+
+| Stage | Event | Reviewer Δ | Reviewer net |
+|---|---|---:|---:|
+| 1 | DISMISS | +5 | +5 |
+| 2 | dispute UPHELD (dismiss was wrong) | -5 (clawback) | 0 |
+| 3 | expert OVERTURNS to DISMISSED (dismiss was right) | +5 (reverse) | +5 |
+| 3 | expert CONFIRMS Stage-2 UPHELD | 0 | 0 |
+
+Only one of {CONFIRM-bonus path, DISMISS-clawback path} applies per ctid:
+a content cannot have both a CONFIRMED-escalated review and a DISMISSED
+review driving the same dispute.
 
 ### Escalation-time emission (paired with CONTENT_DISPUTED)
 
@@ -278,9 +340,13 @@ fires then for the reviewer, plus CORRECT_BONUS overlay:
 |---|---:|---:|
 | UPHELD | **+20** (refund + bonus) | **+5** |
 | CONSERVATIVE_LABEL | **+15** (refund only) | **+5** |
-| DISMISSED | **0** (stake stays forfeited) | 0 |
+| DISMISSED (quorum reached, ruled on merits) | **0** (stake forfeited) | 0 |
+| NO_QUORUM terminal (Stage-3 also failed quorum / no panel formable) | **+15** (refund, no bonus) | 0 |
 
-CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`.
+CORRECT_BONUS reason: `review_correct_bonus_no_quorum:<review_id>`. The
+terminal-NO_QUORUM refund applies to the reviewer-as-disputer exactly as
+it does to any disputer: forfeit only on a real DISMISSED, refund when no
+panel ever ruled.
 
 ### Reviewer skin-in-the-game summary (lifetime nets)
 

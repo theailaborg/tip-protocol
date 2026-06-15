@@ -243,52 +243,61 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
   }
 
   function _encodeProposal(p) {
-    return proto.encode("RotationProposal", {
-      rotationNumber: p.rotation_number,
-      effectiveRound: p.effective_round,
-      newCommittee: p.new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
-      payloadHash: p.payload_hash,
-      proposerNodeId: p.proposer_node_id,
-      proposerSignature: hexToBytes(p.proposer_signature),
+    return proto.encode("RotationCoordMessage", {
+      proposal: {
+        rotationNumber: p.rotation_number,
+        effectiveRound: p.effective_round,
+        newCommittee: p.new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
+        payloadHash: p.payload_hash,
+        proposerNodeId: p.proposer_node_id,
+        proposerSignature: hexToBytes(p.proposer_signature),
+      },
     });
   }
 
   function _encodeSignature(rotation_number, payload_hash, signer_node_id, signature) {
-    return proto.encode("RotationSignature", {
-      rotationNumber: rotation_number,
-      payloadHash: payload_hash,
-      signerNodeId: signer_node_id,
-      signature: hexToBytes(signature),
+    return proto.encode("RotationCoordMessage", {
+      signature: {
+        rotationNumber: rotation_number,
+        payloadHash: payload_hash,
+        signerNodeId: signer_node_id,
+        signature: hexToBytes(signature),
+      },
     });
   }
 
   // ── Receiver side ──────────────────────────────────────────────────────────
   /**
    * Dispatched from network.js when a message lands on the
-   * `tip/rotation-coordination` topic. Auto-detects whether the message is
-   * a `RotationProposal` or `RotationSignature` by trying decode in order.
-   * Failure on both = malformed; logged at debug + dropped.
+   * `tip/rotation-coordination` topic. The message is a `RotationCoordMessage`
+   * envelope whose `oneof` tells us unambiguously whether it carries a
+   * proposal or a signature. This replaced an earlier trial-decode that
+   * guessed the type by decoding as a proposal first: because the two inner
+   * messages collide on field 2 (proposal.effective_round varint vs
+   * signature.payload_hash string), decoding a signature as a proposal
+   * misaligned the reader into the randomized ML-DSA signature bytes and
+   * ~2-3% of the time produced a garbage-but-plausible "proposal", silently
+   * dropping the vote and stalling rotations at the 2f+1 boundary.
+   * Failure to decode the envelope = malformed; logged at debug + dropped.
    */
   function handleIncoming(buf, peerId) {
-    let proposal = null, signature = null, propErr = null, sigErr = null;
-    try { proposal = proto.decode("RotationProposal", buf); }
-    catch (e) { propErr = e.message; }
-    if (proposal && proposal.rotationNumber != null && proposal.payloadHash) {
-      _onProposal(proposal);
+    let msg = null;
+    try { msg = proto.decode("RotationCoordMessage", buf); }
+    catch (e) {
+      log.debug(`Drop rotation-coordination message from ${peerId?.slice(0, 12)} — undecodable envelope (${buf.length} bytes): ${e.message?.slice(0, 80)}`);
       return;
     }
-    try { signature = proto.decode("RotationSignature", buf); }
-    catch (e) { sigErr = e.message; }
-    if (signature && signature.rotationNumber != null && signature.payloadHash && signature.signerNodeId) {
-      _onSignature(signature);
+    if (msg.proposal && msg.proposal.rotationNumber != null && msg.proposal.payloadHash) {
+      _onProposal(msg.proposal);
+      return;
+    }
+    if (msg.signature && msg.signature.rotationNumber != null && msg.signature.payloadHash && msg.signature.signerNodeId) {
+      _onSignature(msg.signature);
       return;
     }
     log.debug(
       `Unrecognized rotation-coordination message from ${peerId?.slice(0, 12)} ` +
-      `(${buf.length} bytes; propThrew=${propErr ? propErr.slice(0, 60) : "no"}; ` +
-      `sigThrew=${sigErr ? sigErr.slice(0, 60) : "no"}; ` +
-      `propRn=${proposal?.rotationNumber}, propPh=${(proposal?.payloadHash || "").slice(0, 8)}, propPn=${(proposal?.proposerNodeId || "").slice(0, 12)}; ` +
-      `sigRn=${signature?.rotationNumber}, sigPh=${(signature?.payloadHash || "").slice(0, 8)}, sigSn=${(signature?.signerNodeId || "").slice(0, 12)})`
+      `(${buf.length} bytes; hasProposal=${!!msg.proposal}, hasSignature=${!!msg.signature})`
     );
   }
 

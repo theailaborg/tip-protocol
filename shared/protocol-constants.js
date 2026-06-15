@@ -261,7 +261,7 @@ const CONTENT_TYPE = {
 // secondary-vs-primary gaps contribute. See genesis.js comment for the
 // per-row reasoning.
 const MODALITY_WEIGHTS = {
-  get text()  { return _ps().modality_weights.text; },
+  get text() { return _ps().modality_weights.text; },
   get image() { return _ps().modality_weights.image; },
   get audio() { return _ps().modality_weights.audio; },
   get video() { return _ps().modality_weights.video; },
@@ -320,6 +320,27 @@ const _cg = () => get().content_grace;
 const CONTENT_GRACE = {
   get UNFLAGGED_MS() { return _cg().unflagged_ms; },
   get FLAGGED_MS() { return _cg().flagged_ms; },
+};
+
+// Media retention windows — three-case model. Clock anchor depends on
+// the ctid's lifecycle:
+//
+//   BASE_RETENTION_MS     — never-disputed content. Clock starts at
+//                           registered_at.
+//   POST_ADJUDICATION_MS  — content with only ADJUDICATION_RESULT (no
+//                           appeal). Clock starts at adjudication.ts.
+//                           Length > appeal-filing window so a late
+//                           appeal can't race the sweep.
+//   POST_APPEAL_MS        — content with APPEAL_RESULT (terminal).
+//                           Clock starts at appeal.ts.
+//   ORPHAN_UPLOAD_MS      — bytes uploaded that no content row ever
+//                           referenced. Catches abandoned drafts.
+const _mr = () => get().media_retention;
+const MEDIA_RETENTION = {
+  get BASE_RETENTION_MS()    { return _mr().base_retention_ms; },
+  get POST_ADJUDICATION_MS() { return _mr().post_adjudication_ms; },
+  get POST_APPEAL_MS()       { return _mr().post_appeal_ms; },
+  get ORPHAN_UPLOAD_MS()     { return _mr().orphan_upload_ms; },
 };
 
 const _c = () => get().consensus;
@@ -457,9 +478,9 @@ const IDENTITY = {
 // constants under a feature-oriented name. Imported by identity-service
 // and link-platform tests without having to reach for IDENTITY.
 const SOCIAL_LINK = {
-  get SOCIAL_LINK_BONUS()   { return get().identity.social_link_bonus; },
+  get SOCIAL_LINK_BONUS() { return get().identity.social_link_bonus; },
   get MAX_SOCIAL_ACCOUNTS() { return get().identity.max_social_accounts; },
-  get MAX_SOCIAL_BONUS()    { return get().identity.max_social_bonus; },
+  get MAX_SOCIAL_BONUS() { return get().identity.max_social_bonus; },
 };
 
 function getTier(score) {
@@ -478,6 +499,6 @@ module.exports = {
   VERIFY_CAPS, DISPUTE, JURY, APPEAL, AI_CLASSIFIER, SCORE_EVENTS,
   PRESCAN_THRESHOLDS, PRESCAN_TIER_THRESHOLDS, CALIBRATION_THRESHOLDS,
   PRESCAN_WORKER, CONTENT_TYPE, MODALITY_WEIGHTS, CONTENT_LIMITS,
-  REVIEWER, CONTENT_GRACE,
+  REVIEWER, CONTENT_GRACE, MEDIA_RETENTION,
   CONSENSUS, NETWORK, REPUTATION, SCORE, IDENTITY, SOCIAL_LINK, getTier,
 };

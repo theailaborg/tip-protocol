@@ -73,7 +73,7 @@ function _validatePayload(payload) {
   if (evidence === undefined) return;
 
   if (!Array.isArray(evidence)) throw { status: 400, error: "payload.evidence must be an array (or omit the key entirely)" };
-  if (evidence.length === 0) throw { status: 400, error: "payload.evidence must be omitted when empty — do not send `evidence: []`" };
+  if (evidence.length === 0) throw { status: 400, error: "payload.evidence must be omitted when empty; do not send `evidence: []`" };
   if (evidence.length > MAX_EVIDENCE_ITEMS) {
     throw { status: 400, error: `payload.evidence exceeds ${MAX_EVIDENCE_ITEMS} items` };
   }

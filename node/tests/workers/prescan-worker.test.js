@@ -69,7 +69,26 @@ function R({ modalities = [], provider = "ensemble(ollama,statistical,heuristic)
   };
 }
 
-async function setup({ now, classifierHandler }) {
+// Fake media-service for worker tests — fetchForClassifier() returns
+// canned {base64, mime} files keyed by media_id. resolveRefs() not used
+// by the worker but kept for parity with the real shape.
+function makeMediaService(filesByMediaId = {}) {
+  return {
+    async resolveRefs(media) {
+      return Array.isArray(media) ? media.map(m => ({ media_id: m.media_id, mime: m.mime })) : [];
+    },
+    async fetchForClassifier(media) {
+      if (!Array.isArray(media)) return [];
+      return media.map(m => {
+        const f = filesByMediaId[m.media_id];
+        if (!f) throw new Error(`fake-media-service: no entry for ${m.media_id}`);
+        return { base64: f.base64, mime: m.mime || f.mime };
+      });
+    },
+  };
+}
+
+async function setup({ now, classifierHandler, mediaService }) {
   await initCrypto();
   const kp = generateMLDSAKeypair();
   const dag = initDAG({ dbPath: ":memory-test:" });
@@ -92,7 +111,7 @@ async function setup({ now, classifierHandler }) {
     dag, jobs, classifierClient: classifier,
     submitTx: submitter.submitTx, config,
     log: { info: () => {}, warn: () => {}, error: () => {} },
-    now,
+    now, mediaService,
   });
   return { dag, jobs, classifier, submitter, worker };
 }
@@ -172,8 +191,11 @@ describe("tick — happy path", () => {
 
   test("multimodal text + image → single classifier call, both modalities in tx", async () => {
     const clock = makeClock();
+    const MID_A = "a".repeat(64);
+    const mediaService = makeMediaService({ [MID_A]: { base64: "<b64>", mime: "image/png" } });
     const { jobs, submitter, worker, classifier } = await setup({
       now: clock.now,
+      mediaService,
       classifierHandler: () => R({ modalities: [
         { modality: "text",  probability: 0.30 },
         { modality: "image", probability: 0.80 },
@@ -185,7 +207,7 @@ describe("tick — happy path", () => {
         text: "caption",
         origin_code: "OH",
         content_type: "image",
-        media: [{ base64: "<b64>", mime: "image/png" }],
+        media: [{ media_id: MID_A, mime: "image/png" }],
       },
     });
     await worker.tick();
@@ -197,8 +219,15 @@ describe("tick — happy path", () => {
   test("N images → N classifier calls + union of modality_results", async () => {
     const clock = makeClock();
     let callCount = 0;
+    const MID_A = "a".repeat(64);
+    const MID_B = "b".repeat(64);
+    const mediaService = makeMediaService({
+      [MID_A]: { base64: "b64a", mime: "image/png" },
+      [MID_B]: { base64: "b64b", mime: "image/jpeg" },
+    });
     const { jobs, submitter, worker } = await setup({
       now: clock.now,
+      mediaService,
       classifierHandler: (args) => {
         callCount += 1;
         // First call: text + image
@@ -216,8 +245,8 @@ describe("tick — happy path", () => {
       payload: {
         text: "x", origin_code: "OH", content_type: "image",
         media: [
-          { base64: "b64a", mime: "image/png" },
-          { base64: "b64b", mime: "image/jpeg" },
+          { media_id: MID_A, mime: "image/png" },
+          { media_id: MID_B, mime: "image/jpeg" },
         ],
       },
     });
@@ -227,6 +256,24 @@ describe("tick — happy path", () => {
     const tx = submitter.txs[0];
     const img = tx.data.modality_results.find(m => m.modality === "image");
     expect(img.probability).toBe(0.95);
+
+    // Per-FILE scores survive the collapse, tagged by media_id, in call
+    // order (call 0 = text+media[0], call 1 = media[1]).
+    expect(tx.data.media_results).toEqual([
+      { media_id: MID_A, mime: "image/png", probability: 0.40, provider: "ensemble(ollama,statistical,heuristic)" },
+      { media_id: MID_B, mime: "image/jpeg", probability: 0.95, provider: "ensemble(ollama,statistical,heuristic)" },
+    ]);
+  });
+
+  test("text-only content → media_results empty", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      classifierHandler: () => R({ modalities: [{ modality: "text", probability: 0.21 }] }),
+    });
+    jobs.enqueue({ ctid: CTID, payload: { text: "x", origin_code: "OH", content_type: "text" } });
+    await worker.tick();
+    expect(submitter.txs[0].data.media_results).toEqual([]);
   });
 });
 
@@ -248,6 +295,33 @@ describe("tick — degraded signal handling", () => {
     expect(job.status).toBe("queued");
     expect(job.retries).toBe(1);
     expect(job.last_error).toBe("hard_degraded_signal");
+  });
+
+  test("local-fallback hard-degraded → fail-open immediately, NO retry (down classifier won't recover on retry)", async () => {
+    const clock = makeClock();
+    const { jobs, submitter, worker } = await setup({
+      now: clock.now,
+      // Image-primary content where the local fallback stubs the image at
+      // 0.5 (no local model). provider_used=local_fallback signals the
+      // external classifier is down — retrying is futile.
+      classifierHandler: () => R({
+        modalities: [{ modality: "image", probability: 0.5 }],
+        provider: "local_fallback",
+      }),
+    });
+    jobs.enqueue({
+      ctid: CTID,
+      payload: { text: "", origin_code: "OH", content_type: "image" },
+    });
+    await worker.tick();
+    // Committed on the FIRST tick — no retry consumed.
+    expect(submitter.txs).toHaveLength(1);
+    const tx = submitter.txs[0];
+    expect(tx.data.failed).toBe(true);
+    expect(tx.data.failure_reason).toBe("local_fallback_no_media_signal");
+    // No retry was consumed — committed on the first tick (retries=0).
+    const job = jobs.getByCtid(CTID);
+    expect(job.retries).toBe(0);
   });
 
   test("hard-degraded + retries exhausted → fail-open with overall_degraded=true", async () => {

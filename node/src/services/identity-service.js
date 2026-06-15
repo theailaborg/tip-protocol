@@ -486,26 +486,17 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
 
     submitTx(linkTx);
 
-    const scoreEligible = !isRelink && uniqueLinkedPlatforms.size < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS;
-    let scoreTxId = null;
-    const scoreDelta = scoreEligible ? SOCIAL_LINK.SOCIAL_LINK_BONUS : 0;
+    // Score bonus is now applied inline at consensus commit time via
+    // applyScoreEffect's LINK_PLATFORM case (issue #86 Option A).
+    // No separate SCORE_UPDATE is emitted — per-platform uniqueness and
+    // cap enforcement are structural on (tip_id, platform), closing both
+    // reason-string-spoofing and phantom-platform attacks.
+    const scoreDelta = !isRelink && uniqueLinkedPlatforms.size < SOCIAL_LINK.MAX_SOCIAL_ACCOUNTS
+      ? SOCIAL_LINK.SOCIAL_LINK_BONUS
+      : 0;
+    const scoreTxId = null;
 
-    if (scoreEligible) {
-      const scoreTx = scoring.buildScoreUpdateTx({
-        tipId,
-        delta: SOCIAL_LINK.SOCIAL_LINK_BONUS,
-        reason: `Social account linked: ${platform}`,
-        relatedTxId: linkTx.tx_id,
-        timestamp: verifiedAt,
-        getRecentPrev: () => dag.getRecentPrev(),
-        config,
-        extraData: { link_tx_id: linkTx.tx_id },
-      });
-      submitTx(scoreTx);
-      scoreTxId = scoreTx.tx_id;
-    }
-
-    log.info(`Social account linked: ${tipId} -> ${platform} (${handle || "no-handle"})${scoreEligible ? "" : " [no bonus - cap reached]"}`);
+    log.info(`Social account linked: ${tipId} -> ${platform} (${handle || "no-handle"})${scoreDelta > 0 ? "" : " [no bonus - cap reached]"}`);
     return {
       tip_id: tipId, platform, handle: handle ?? null,
       tx_id: linkTx.tx_id, score_tx_id: scoreTxId,

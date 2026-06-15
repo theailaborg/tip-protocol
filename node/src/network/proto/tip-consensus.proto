@@ -193,6 +193,24 @@ message RotationSignature {
   bytes signature = 4;
 }
 
+/**
+ * RotationCoordMessage — typed envelope for the `tip/rotation-coordination`
+ * gossip topic. RotationProposal and RotationSignature collide on field 2
+ * (proposal.effective_round is a varint; signature.payload_hash is a
+ * length-delimited string), so a bare buffer cannot be classified by
+ * trial-decode: decoding a signature as a proposal misreads field 2 and
+ * misaligns the reader into the randomized ML-DSA signature bytes, which
+ * ~2-3% of the time yields a garbage-but-plausible "proposal" and silently
+ * drops the vote. The oneof makes the wire type explicit so receivers never
+ * guess. Ephemeral coordination traffic only — never persisted in the DAG.
+ */
+message RotationCoordMessage {
+  oneof msg {
+    RotationProposal proposal = 1;
+    RotationSignature signature = 2;
+  }
+}
+
 message CommitteeMember {
   string node_id = 1;
   string public_key = 2;

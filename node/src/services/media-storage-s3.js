@@ -1,0 +1,274 @@
+/**
+ * @file @tip-protocol/node/src/services/media-storage-s3.js
+ * @description S3 backend for media-storage. Default for prod.
+ *
+ * Object layout in bucket:
+ *   media/{media_id[0:2]}/{media_id[2:]}.bin  — the bytes
+ *
+ * MIME + content_hash live in S3 object metadata (`x-amz-meta-*`) so we don't
+ * need a sidecar object. Saves one write per put.
+ *
+ * Encryption: SSE-KMS when `kmsKeyId` is configured (production posture).
+ * Falls back to SSE-S3 if no key — never plaintext.
+ *
+ * Presigned GET URLs: short TTL (default 300s) so reviewers / disputers can
+ * fetch directly without round-tripping bytes through the node. The node IS
+ * the auth gate (it generates the URL only after auth); S3 enforces the URL
+ * signature and TTL.
+ *
+ * © 2026 The AI Lab Intelligence Unobscured, Inc.
+ * License: TIPCL-1.0
+ */
+
+"use strict";
+
+const fs = require("fs/promises");
+const fsSync = require("fs");
+const os = require("os");
+const path = require("path");
+const { shake256 } = require("../../../shared/crypto");
+const { nowMs } = require("../../../shared/time");
+const {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+} = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { Upload } = require("@aws-sdk/lib-storage");
+
+const DEFAULT_REGION = "us-west-2";
+const DEFAULT_PRESIGN_TTL_SEC = 300;
+
+function createS3Backend(config = {}) {
+  const bucket = config.s3Bucket || process.env.TIP_MEDIA_S3_BUCKET;
+  if (!bucket) {
+    throw new Error("media-storage(s3): TIP_MEDIA_S3_BUCKET env / config.s3Bucket required");
+  }
+  const region = config.s3Region || process.env.TIP_MEDIA_S3_REGION || DEFAULT_REGION;
+  const kmsKeyId = config.kmsKeyId || process.env.TIP_MEDIA_S3_KMS_KEY_ID || null;
+  const presignTtlSec = config.presignTtlSec || parseInt(process.env.TIP_MEDIA_PRESIGN_TTL_SEC || "", 10) || DEFAULT_PRESIGN_TTL_SEC;
+
+  // Credentials come from the ambient IAM role (IRSA in EKS, EC2 instance
+  // role, or `aws sso` for local). No long-lived keys in config — that's a
+  // hard rule. SDK's default credential chain picks the right source.
+  const client = new S3Client({ region });
+
+  function _objectKey(mediaId) {
+    if (typeof mediaId !== "string" || !/^[0-9a-f]{64}$/.test(mediaId)) {
+      throw new Error("media-storage(s3): media_id must be 64-char lowercase hex");
+    }
+    return `media/${mediaId.slice(0, 2)}/${mediaId.slice(2)}.bin`;
+  }
+
+  function _encryptionArgs() {
+    if (kmsKeyId) {
+      return { ServerSideEncryption: "aws:kms", SSEKMSKeyId: kmsKeyId };
+    }
+    // Always-on encryption even without a customer-managed key — never plaintext.
+    return { ServerSideEncryption: "AES256" };
+  }
+
+  async function put(bytes, opts = {}) {
+    if (!Buffer.isBuffer(bytes) && !(bytes instanceof Uint8Array)) {
+      throw new Error("media-storage(s3): put requires Buffer/Uint8Array bytes");
+    }
+    if (!opts.mime || typeof opts.mime !== "string") {
+      throw new Error("media-storage(s3): put requires opts.mime");
+    }
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+    // media_id IS the content_hash (SHAKE-256). Caller may pass it via
+    // opts.contentHash to skip rehashing; otherwise compute here. Same
+    // contract as the fs backend so the factory is interchangeable.
+    const mediaId = opts.contentHash || shake256(buf);
+    const key = _objectKey(mediaId);
+
+    // Content-addressed dedup: HEAD before PUT. Saves the cost of a redundant
+    // upload + KMS encryption when the bytes already exist. Race is benign —
+    // two concurrent identical puts both end with the same object.
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      return { media_id: mediaId, size: buf.length };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") {
+        throw err;
+      }
+      // fallthrough: HEAD 404 → safe to PUT
+    }
+
+    await client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: buf,
+      ContentType: opts.mime,
+      Metadata: {
+        mime: opts.mime,
+        "created-at": String(nowMs()),
+        ...(opts.contentHash ? { "content-hash": opts.contentHash } : {}),
+      },
+      ...(_encryptionArgs()),
+    }));
+
+    return { media_id: mediaId, size: buf.length };
+  }
+
+  async function get(mediaId) {
+    const key = _objectKey(mediaId);
+    try {
+      const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      // Body is a stream — buffer it. The caller can switch to streaming
+      // later if media gets large; for image/audio (≤10MB) buffering is fine.
+      const chunks = [];
+      for await (const chunk of res.Body) chunks.push(chunk);
+      const bytes = Buffer.concat(chunks);
+      return {
+        bytes,
+        mime: res.ContentType || res.Metadata?.mime || "application/octet-stream",
+        size: bytes.length,
+        created_at: parseInt(res.Metadata?.["created-at"] || "0", 10) || null,
+      };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode === 404 || err.name === "NoSuchKey") return null;
+      throw err;
+    }
+  }
+
+  async function head(mediaId) {
+    const key = _objectKey(mediaId);
+    try {
+      const res = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      return {
+        exists: true,
+        mime: res.ContentType || res.Metadata?.mime || "application/octet-stream",
+        size: res.ContentLength || 0,
+        created_at: parseInt(res.Metadata?.["created-at"] || "0", 10) || null,
+      };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode === 404 || err.name === "NotFound") {
+        return { exists: false };
+      }
+      throw err;
+    }
+  }
+
+  async function presignedGet(mediaId, opts = {}) {
+    const key = _objectKey(mediaId);
+    const ttl = opts.ttlSec || presignTtlSec;
+    const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+    return getSignedUrl(client, cmd, { expiresIn: ttl });
+  }
+
+  async function deleteMedia(mediaId) {
+    const key = _objectKey(mediaId);
+    try {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+      return { deleted: true };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode === 404 || err.name === "NoSuchKey") {
+        return { deleted: false };
+      }
+      throw err;
+    }
+  }
+
+  // Async generator over every object under the `media/` prefix. Used by
+  // the retention sweep to find orphans. Pages via ContinuationToken so a
+  // bucket with millions of objects doesn't blow heap. created_at comes
+  // from the object's LastModified — we don't HEAD each key (would cost
+  // one HEAD per object); LastModified is set by S3 on put and is what
+  // the lifecycle rules also key off, so it's the right source of truth
+  // for age regardless of what's in our custom metadata.
+  async function* list() {
+    let continuationToken;
+    while (true) {
+      const res = await client.send(new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: "media/",
+        ContinuationToken: continuationToken,
+      }));
+      for (const obj of res.Contents || []) {
+        // key format: media/{shard}/{rest}.bin
+        const m = obj.Key && obj.Key.match(/^media\/([0-9a-f]{2})\/([0-9a-f]{62})\.bin$/);
+        if (!m) continue;
+        const mediaId = m[1] + m[2];
+        const createdAt = obj.LastModified instanceof Date ? obj.LastModified.getTime() : null;
+        yield { media_id: mediaId, created_at: createdAt };
+      }
+      if (!res.IsTruncated) return;
+      continuationToken = res.NextContinuationToken;
+    }
+  }
+
+  // Scratch dir for in-flight streamed uploads. Node-local disk — the
+  // bytes only hit S3 once the hash is verified at promote time.
+  async function stagingDir() {
+    const dir = path.join(os.tmpdir(), `tip-media-staging-${bucket}`);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  // Drop abandoned in-flight uploads — staging is node-local disk, so
+  // this is identical to the fs backend's hygiene.
+  async function cleanStaging(maxAgeMs) {
+    const dir = await stagingDir();
+    let removed = 0;
+    for (const f of await fs.readdir(dir).catch(() => [])) {
+      const p = path.join(dir, f);
+      const st = await fs.stat(p).catch(() => null);
+      if (st && nowMs() - st.mtimeMs > maxAgeMs) {
+        await fs.unlink(p).catch(() => { });
+        removed += 1;
+      }
+    }
+    return { removed };
+  }
+
+  // Promote a fully-written tmp file (hash already verified by the
+  // caller) to the bucket under the content-addressed key, then drop the
+  // tmp. Streams from disk — flat memory regardless of file size; a
+  // single PUT covers objects up to S3's 5GB non-multipart ceiling.
+  async function promoteTmpFile(tmpPath, { contentHash, mime, size }) {
+    const key = _objectKey(contentHash);
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      await fs.unlink(tmpPath).catch(() => { });
+      return { media_id: contentHash, size };
+    } catch (err) {
+      if (err.$metadata?.httpStatusCode !== 404 && err.name !== "NotFound") throw err;
+    }
+
+    // Managed multipart upload, NOT a single PutObject: a stream-bodied
+    // PutObject is non-retryable in the SDK, so one network hiccup at any
+    // point of a large transfer aborts the whole thing. Upload() splits
+    // the file into parts, uploads 4 in parallel, and retries individual
+    // failed parts. Small files (< partSize) collapse to one PUT
+    // automatically. Failure hygiene: abort the multipart so no orphaned
+    // parts accrue storage (the lifecycle rule also reaps them at 7d).
+    const upload = new Upload({
+      client,
+      params: {
+        Bucket: bucket,
+        Key: key,
+        Body: fsSync.createReadStream(tmpPath),
+        ContentType: mime,
+        Metadata: {
+          mime,
+          "created-at": String(nowMs()),
+          "content-hash": contentHash,
+        },
+        ...(_encryptionArgs()),
+      },
+      partSize: 16 * 1024 * 1024,
+      queueSize: 4,
+    });
+    await upload.done();
+    await fs.unlink(tmpPath).catch(() => { });
+    return { media_id: contentHash, size };
+  }
+
+  return { put, get, head, presignedGet, delete: deleteMedia, list, stagingDir, promoteTmpFile, cleanStaging, backend: "s3" };
+}
+
+module.exports = { createS3Backend };

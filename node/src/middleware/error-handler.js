@@ -32,6 +32,21 @@ function errorHandler(err, req, res, _next) {
     });
   }
 
+  // Body-parser size cap (express.json 4mb / express.raw media limit).
+  // PayloadTooLargeError carries status=413 but no `.error` field, so
+  // without this mapping it falls through to the 500 branch.
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({
+      ok: false,
+      status: 413,
+      error: {
+        message: `Request body too large${err.limit ? ` (limit ${err.limit} bytes)` : ""}`,
+        code: "file_too_large",
+        request_id: requestId,
+      },
+    });
+  }
+
   if (err.status && err.error) {
     const message = Array.isArray(err.error) ? err.error.join("; ") : err.error;
     const errorBody = {

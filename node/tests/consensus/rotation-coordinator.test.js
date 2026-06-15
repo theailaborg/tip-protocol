@@ -42,6 +42,13 @@ beforeAll(async () => {
 
 const TOPIC = "tip/rotation-coordination";
 
+// Wire helpers — peers send a RotationCoordMessage envelope on the gossip
+// topic, never a bare RotationProposal/RotationSignature. These mirror what
+// the coordinator's _encodeProposal/_encodeSignature emit so the tests feed
+// handleIncoming the same bytes a real peer would.
+function _propMsg(proposal) { return encode("RotationCoordMessage", { proposal }); }
+function _sigMsg(signature) { return encode("RotationCoordMessage", { signature }); }
+
 function _mockNetwork() {
   const published = [];
   return {
@@ -166,7 +173,7 @@ describe("#68 rotation coordinator", () => {
     // B signs and we feed the signature in as if from gossip.
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    const bBuf = encode("RotationSignature", {
+    const bBuf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     });
@@ -176,6 +183,57 @@ describe("#68 rotation coordinator", () => {
     expect(submitted).toHaveLength(1);
     expect(submitted[0].data.cosignatures.map(c => c.signer_ref).sort())
       .toEqual([ids[0].node_id, ids[1].node_id].sort());
+  });
+
+  test("incoming signatures are NEVER misclassified as proposals (regression: envelope vs trial-decode)", () => {
+    // Pre-envelope, handleIncoming guessed the message type by trial-decoding
+    // as a RotationProposal first. RotationProposal.effective_round (field 2,
+    // varint) and RotationSignature.payload_hash (field 2, string) collide, so
+    // decoding a signature as a proposal misaligned the reader into the
+    // randomized ML-DSA signature bytes and ~2-3% of the time produced a
+    // garbage-but-plausible "proposal" — silently dropping the vote. With the
+    // RotationCoordMessage envelope the type is explicit, so EVERY randomly
+    // signed signature must land. 200 iterations would catch a 2-3% drop with
+    // overwhelming probability; we assert a perfect 200/200.
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const c = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+      { node_id: "tip://node/C", public_key: c.publicKey },
+    ];
+
+    const N = 200;
+    let accumulated = 0;
+    for (let i = 0; i < N; i++) {
+      const dag = _setupDagWith(ids);
+      const submitted = [];
+      const { coord } = _buildCoordinator({
+        dag,
+        identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+        submitted,
+      });
+      const new_committee = ids;
+      const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+      coord.proposeRotation({
+        rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+        prevCommitteeNodeIds: ids.map(m => m.node_id),
+        prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+      });
+
+      // B re-signs each iteration → fresh randomized ML-DSA bytes, the exact
+      // input that used to intermittently misdecode as a proposal.
+      const bSig = mldsaSign(`rotation:${payload_hash}:${ids[1].node_id}`, b.privateKey);
+      const bBuf = _sigMsg({
+        rotationNumber: 2, payloadHash: payload_hash,
+        signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+      });
+      coord.handleIncoming(bBuf, "peer-b");
+
+      if (coord._state().get(2)?.sigs.has(ids[1].node_id)) accumulated++;
+    }
+    expect(accumulated).toBe(N);
   });
 
   test("non-proposer prev-committee member with quorum sigs ALSO submits (multi-aggregator)", () => {
@@ -213,7 +271,7 @@ describe("#68 rotation coordinator", () => {
     // A's proposal lands at B.
     const aMsg = `rotation:${payload_hash}:${ids[0].node_id}`;
     const aSig = mldsaSign(aMsg, a.privateKey);
-    const proposalBuf = encode("RotationProposal", {
+    const proposalBuf = _propMsg({
       rotationNumber: 2, effectiveRound: 400,
       newCommittee: new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
       payloadHash: payload_hash,
@@ -228,7 +286,7 @@ describe("#68 rotation coordinator", () => {
     // proposer, so submission stays with A.
     const cMsg = `rotation:${payload_hash}:${ids[2].node_id}`;
     const cSig = mldsaSign(cMsg, c.privateKey);
-    const cBuf = encode("RotationSignature", {
+    const cBuf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[2].node_id, signature: hexToBytes(cSig),
     });
@@ -261,7 +319,7 @@ describe("#68 rotation coordinator", () => {
     const payload_hash = _payloadHash({ rotation_number: 5, effective_round: 1000, committee: new_committee });
     const aMsg = `rotation:${payload_hash}:${ids[0].node_id}`;
     const aSig = mldsaSign(aMsg, a.privateKey);
-    const buf = encode("RotationProposal", {
+    const buf = _propMsg({
       rotationNumber: 5, effectiveRound: 1000,
       newCommittee: new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
       payloadHash: payload_hash, proposerNodeId: ids[0].node_id,
@@ -294,7 +352,7 @@ describe("#68 rotation coordinator", () => {
     const payload_hash = "deadbeef";
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    const buf = encode("RotationSignature", {
+    const buf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     });
@@ -321,7 +379,7 @@ describe("#68 rotation coordinator", () => {
     // X (not in prev committee) signs + sends.
     const xMsg = `rotation:${payload_hash}:tip://node/X`;
     const xSig = mldsaSign(xMsg, x.privateKey);
-    const buf = encode("RotationProposal", {
+    const buf = _propMsg({
       rotationNumber: 2, effectiveRound: 400,
       newCommittee: new_committee.map(m => ({ nodeId: m.node_id, publicKey: m.public_key })),
       payloadHash: payload_hash, proposerNodeId: "tip://node/X",
@@ -361,7 +419,7 @@ describe("#68 rotation coordinator", () => {
     // X signs (not in prev committee) and sends.
     const xMsg = `rotation:${payload_hash}:tip://node/X`;
     const xSig = mldsaSign(xMsg, x.privateKey);
-    const buf = encode("RotationSignature", {
+    const buf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: "tip://node/X", signature: hexToBytes(xSig),
     });
@@ -400,7 +458,7 @@ describe("#68 rotation coordinator", () => {
 
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    const bBuf = encode("RotationSignature", {
+    const bBuf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     });
@@ -449,7 +507,7 @@ describe("#68 rotation coordinator", () => {
     // B's sig arrives via gossip.
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    const bBuf = encode("RotationSignature", {
+    const bBuf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     });
@@ -509,7 +567,7 @@ describe("#68 rotation coordinator", () => {
     // Feed B's sig but BEFORE submission triggers (manually clear submittedAt).
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    const bBuf = encode("RotationSignature", {
+    const bBuf = _sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     });
@@ -571,7 +629,7 @@ describe("#68 rotation coordinator", () => {
     // B's sig pushes us over quorum → submitTx fires.
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    coord.handleIncoming(encode("RotationSignature", {
+    coord.handleIncoming(_sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     }), "peer-b");
@@ -624,7 +682,7 @@ describe("#68 rotation coordinator", () => {
     // n=2 quorum=2; A's own sig alone isn't enough — feed B's sig to submit.
     const bMsg = `rotation:${payload_hash}:${ids[1].node_id}`;
     const bSig = mldsaSign(bMsg, b.privateKey);
-    coord.handleIncoming(encode("RotationSignature", {
+    coord.handleIncoming(_sigMsg({
       rotationNumber: 2, payloadHash: payload_hash,
       signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
     }), "peer-b");
