@@ -754,7 +754,7 @@ describe("Flow 9 — tie vote (no decisive result): escalate at Stage 2, refund 
     expect(noShowSU[0].data.delta).toBe(-STAKES.JUROR_NO_COMMIT);
   });
 
-  test("Stage-3 expert tie (1 MATCH + 1 MISMATCH + 1 ABSTAIN) → terminal DISMISSED, appeal stake refunded", () => {
+  test("Stage-3 expert tie (2 MATCH + 2 MISMATCH + 1 ABSTAIN) → terminal DISMISSED, appeal stake refunded", () => {
     const fx = _setup();
     const ctid = "tip://c/OH-flow9jjjjjjjjjj-9990";
     const ids = _seedDispute(fx.dag, ctid);
@@ -771,10 +771,11 @@ describe("Flow 9 — tie vote (no decisive result): escalate at Stage 2, refund 
     _appealFilingDebit(fx.dag, ctid, ids.disputerTipId);
     _appealFiled(fx.dag, ctid, ids.disputerTipId, VERDICT.DISMISSED);
 
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    // 5-expert panel; a quorate deadlock now needs 2-2 (>= MIN_VOTES = 3 non-abstain).
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
     for (const e of experts) _seedIdentity(fx.dag, e, 900);
     const expSummons = _expertSummons(fx.dag, ctid, experts);
-    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
       ts: 1775433600000, isAppeal: true,
     });
     const stage3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
@@ -836,10 +837,10 @@ describe("Flow 9b — tie economics: terminal refund, full chain, and the substa
     expect(s2.auto_appeal).toBe(true);
     _commitBatch(fx.dag, s2.txs);
 
-    // Stage-3 also deadlocks → terminal; refund the original filing stake.
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    // Stage-3 also deadlocks (2-2) → terminal; refund the original filing stake.
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
     const expSummons = _expertSummons(fx.dag, ctid, experts);
-    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
       ts: 1775433600000, isAppeal: true,
     });
     const s3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);
@@ -885,10 +886,10 @@ describe("Flow 9b — tie economics: terminal refund, full chain, and the substa
     _appealFilingDebit(fx.dag, ctid, ids.authorTipId);
     _appealFiled(fx.dag, ctid, ids.authorTipId, VERDICT.UPHELD);
 
-    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2"];
+    const experts = ["tip://id/expert-0", "tip://id/expert-1", "tip://id/expert-2", "tip://id/expert-3", "tip://id/expert-4"];
     for (const e of experts) _seedIdentity(fx.dag, e, 900);
     const expSummons = _expertSummons(fx.dag, ctid, experts);
-    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
+    const expReveals = _buildReveals(experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.ABSTAIN], ctid, {
       ts: 1775433600000, isAppeal: true,
     });
     const s3 = buildAppealBatch(ctid, expReveals, expSummons, fx.dag, fx.scoring, fx.config);

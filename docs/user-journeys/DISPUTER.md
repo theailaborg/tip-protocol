@@ -193,7 +193,7 @@ You file APPEAL_FILED within 48h
        ↓
 -25 points deducted (appeal stake on file)
        ↓
-3 Experts get summoned (Stage 3)
+5 Experts get summoned (Stage 3)
        ↓
 You wait 84h
        ↓

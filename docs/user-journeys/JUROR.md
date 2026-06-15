@@ -249,7 +249,7 @@ Fewer than 5 reveals OR fewer than 3 non-abstain
             ↓
    NO_QUORUM verdict — auto-escalates to Stage 3
             ↓
-   3 Experts get summoned to settle it
+   5 Experts get summoned to settle it
             ↓
    No juror score effects fire — everyone walks away at 0
 ```
