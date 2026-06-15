@@ -44,6 +44,9 @@
 const {
   TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, VP_ID_FIELDS,
 } = require("../../../shared/constants");
+// GH #85: the single canonical strip rule (omit undefined+null; keep "", 0,
+// false). Every buildSigningPayload routes through this so the rule can't drift.
+const { buildSignedPayload } = require("../../../shared/crypto");
 
 // ─── Node-signed envelope (no per-tx-type config) ──────────────────────────
 // Auto-emitted by a node; the node signs canonicalTx(tx) with its own
@@ -152,19 +155,12 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.JUROR_TIP_ID,
     // confirmed_origin is conditional — only present when the juror's
-    // vote is MISMATCH + the suggested origin.
-    // GH #85 Pattern A: strip undefined+null; keep "", 0, false as intentional values.
-    buildSigningPayload: (data) => {
-      const out = {
-        juror_tip_id: data.juror_tip_id,
-        vote: data.vote,
-        salt: data.salt,
-      };
-      if (data.confirmed_origin !== undefined && data.confirmed_origin !== null) {
-        out.confirmed_origin = data.confirmed_origin;
-      }
-      return out;
-    },
+    // vote is MISMATCH + the suggested origin. GH #85: the strip rule lives
+    // in buildSignedPayload (omit undefined+null; keep "", 0, false).
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["juror_tip_id", "vote", "salt"],
+      optional: ["confirmed_origin"],
+    }),
   },
 
   // ─── DUAL-MODE: appeal can be user-filed or auto-escalated ────────────────
@@ -199,21 +195,12 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
         SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
         SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.DISPUTER_TIP_ID,
-        buildSigningPayload: (data) => {
-          // claimed_origin + evidence_hash are conditional.
-          // GH #85 Pattern A: strip undefined+null; keep "", 0, false as intentional values.
-          const out = {
-            disputer_tip_id: data.disputer_tip_id,
-            reason: data.reason,
-          };
-          if (data.claimed_origin !== undefined && data.claimed_origin !== null) {
-            out.claimed_origin = data.claimed_origin;
-          }
-          if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
-            out.evidence_hash = data.evidence_hash;
-          }
-          return out;
-        },
+        // claimed_origin + evidence_hash are conditional. GH #85: the strip
+        // rule lives in buildSignedPayload (omit undefined+null; keep "",0,false).
+        buildSigningPayload: (data) => buildSignedPayload(data, {
+          required: ["disputer_tip_id", "reason"],
+          optional: ["claimed_origin", "evidence_hash"],
+        }),
       };
     },
     // Cosignature contract — used by commit-handler to verify the

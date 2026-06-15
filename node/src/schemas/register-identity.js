@@ -40,6 +40,7 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
+const { buildSignedPayload } = require("../../../shared/crypto");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND,
@@ -203,8 +204,7 @@ function buildSigningPayload(input) {
     );
   }
 
-  // GH #85 Pattern A: omit creator_name when absent; keep "" as intentional value.
-  const out = {
+  const normalised = {
     algorithm,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
@@ -214,11 +214,15 @@ function buildSigningPayload(input) {
     verification_tier: verificationTier,
     vp_id: input.vp_id,
     zk_proof: input.zk_proof,
+    creator_name: input.creator_name,
   };
-  if (input.creator_name !== undefined && input.creator_name !== null) {
-    out.creator_name = input.creator_name;
-  }
-  return out;
+  return buildSignedPayload(normalised, {
+    required: [
+      "algorithm", "dedup_hash", "public_key", "region", "social_attested",
+      "tip_id_type", "verification_tier", "vp_id", "zk_proof",
+    ],
+    optional: ["creator_name"],
+  });
 }
 
 /**

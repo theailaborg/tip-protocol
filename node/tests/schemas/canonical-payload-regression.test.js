@@ -19,6 +19,8 @@
  *   - PRESCAN_REVIEW_DISMISSED (decision_note — was Pattern C, now Pattern A)
  *   - PRESCAN_REVIEW_RECUSED (recusal_reason — was Pattern C, now Pattern A)
  *   - REGISTER_IDENTITY (creator_name — was Pattern C, now Pattern A)
+ *   - VP_REGISTERED (jurisdiction_tier — server-default injection)
+ *   - NODE_REGISTERED (name — server-default injection)
  *
  * Also asserts the universal null rule: null values are stripped identically
  * to absent values by both paths.
@@ -234,6 +236,38 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
       creator_name: "Alice",
     });
     expect(payload.creator_name).toBe("Alice");
+  });
+
+  // ── VP_REGISTERED / NODE_REGISTERED (server-default injection) ────────────────
+  // These differ from the strip cases above: jurisdiction_tier / name are NOT
+  // stripped-when-absent — the service injects a default ("green" / node-derived)
+  // into the body before verifyBodySignature AND stores the same value in tx.data.
+  // The hazard: if the default is applied to tx.data but not to the verify-body
+  // (or vice-versa), a request that omits the field passes API verify but fails
+  // consensus replay, splitting the chain. Asserts both paths see the same bytes.
+
+  test("VP_REGISTERED — jurisdiction_tier server-default injected: API == consensus", () => {
+    const txData = {
+      algorithm: "ml-dsa-65",
+      name: "VP Two",
+      jurisdiction: "US",
+      jurisdiction_tier: "green",
+      public_key: "a".repeat(64),
+      approving_vp_id: "tip://vp/v1",
+    };
+    const fields = ["algorithm", "approving_vp_id", "jurisdiction", "jurisdiction_tier", "name", "public_key"];
+    expect(apiHash(txData, fields)).toEqual(consensusHash(TX_TYPES.VP_REGISTERED, txData));
+  });
+
+  test("NODE_REGISTERED — name server-default injected: API == consensus", () => {
+    const txData = {
+      algorithm: "ml-dsa-65",
+      name: "node-deadbeef",
+      public_key: "a".repeat(64),
+      approving_vp_id: "tip://vp/v1",
+    };
+    const fields = ["algorithm", "api_endpoint", "approving_vp_id", "name", "public_key"];
+    expect(apiHash(txData, fields)).toEqual(consensusHash(TX_TYPES.NODE_REGISTERED, txData));
   });
 
   // ── Universal null rule ──────────────────────────────────────────────────────

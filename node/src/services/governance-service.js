@@ -35,7 +35,16 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
         }
       : body;
     validate(normalisedBody, { name: { required: true }, public_key: { required: true }, jurisdiction: { required: true }, council_signature: { required: true }, approving_vp_id: { required: true } });
-    const { name, jurisdiction, jurisdiction_tier = "green", public_key, algorithm, council_signature, approving_vp_id } = normalisedBody;
+    const { name, jurisdiction, public_key, algorithm, council_signature, approving_vp_id } = normalisedBody;
+    // GH #85: jurisdiction_tier is an optional request field with a server
+    // default ("green") but it IS a signed field. Resolve it BEFORE the
+    // signature check so the canonical bytes the VP signed match what
+    // consensus reconstructs — same class as the NODE_REGISTERED.name fix.
+    // Without this, a VP omitting jurisdiction_tier passes API verify (the
+    // field is stripped as absent) but the injected "green" default lands in
+    // tx.data, and consensus replay computes bytes the VP never signed.
+    const jurisdiction_tier = normalisedBody.jurisdiction_tier ?? "green";
+    const bodyForVerify = { ...normalisedBody, jurisdiction_tier };
 
     const foundingVpId = getFoundingVP().vp_id;
     if (approving_vp_id !== foundingVpId) throw { status: 403, error: `Only the founding VP (${foundingVpId}) can approve new VPs` };
@@ -48,7 +57,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     // the (pubkey, algorithm) pair. Field list sorted alphabetically
     // so signer + verifier agree on canonical order.
     const VP_REGISTER_FIELDS = ["algorithm", "approving_vp_id", "jurisdiction", "jurisdiction_tier", "name", "public_key"];
-    if (!verifyBodySignature(normalisedBody, council_signature, approvingVp.public_key, VP_REGISTER_FIELDS)) {
+    if (!verifyBodySignature(bodyForVerify, council_signature, approvingVp.public_key, VP_REGISTER_FIELDS)) {
       throw { status: 403, error: "Council signature verification failed" };
     }
 

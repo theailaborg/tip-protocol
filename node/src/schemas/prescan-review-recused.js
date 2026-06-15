@@ -28,7 +28,7 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
-const { mldsaVerify, canonicalTx } = require("../../../shared/crypto");
+const { mldsaVerify, canonicalTx, buildSignedPayload } = require("../../../shared/crypto");
 const { TX_TYPES, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_RECUSED;
@@ -129,15 +129,10 @@ function buildSigningPayload(input) {
   if (typeof input.reviewer_tip_id !== "string") {
     throw schemaError(400, "reviewer_tip_id is required", "reviewer_tip_id_required");
   }
-  // GH #85 Pattern A: omit recusal_reason when absent; keep "" as intentional value.
-  const out = {
-    review_id: input.review_id,
-    reviewer_tip_id: input.reviewer_tip_id,
-  };
-  if (input.recusal_reason !== undefined && input.recusal_reason !== null) {
-    out.recusal_reason = input.recusal_reason;
-  }
-  return out;
+  return buildSignedPayload(input, {
+    required: ["review_id", "reviewer_tip_id"],
+    optional: ["recusal_reason"],
+  });
 }
 
 function sign(payload, privateKeyHex, opts) {
