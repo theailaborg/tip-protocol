@@ -97,6 +97,28 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
     expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.REVOKE_VOLUNTARY, data));
   });
 
+  // ── APPEAL_FILED (ctid-bound replay protection) ──────────────────────────────
+  // The signed payload binds ctid so an appellant_tip_id-only signature can't be
+  // replayed against another ctid the appellant has standing on.
+
+  test("APPEAL_FILED — user-filed: API == consensus (both bind ctid)", () => {
+    const data = { appellant_tip_id: "tip://id/appellant", ctid: "tip://c/CASE-1" };
+    const fields = ["appellant_tip_id", "ctid"];
+    expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.APPEAL_FILED, data));
+  });
+
+  test("APPEAL_FILED — sign for ctid A does NOT verify against ctid B (replay rejected)", () => {
+    const kp       = generateMLDSAKeypair();
+    const dataA    = { appellant_tip_id: "tip://id/appellant", ctid: "tip://c/CASE-A" };
+    const contract = TX_SIGNATURE_REGISTRY[TX_TYPES.APPEAL_FILED].getSignatureContract({ data: dataA });
+    const sig      = signBody(contract.buildSigningPayload(dataA), kp.privateKey);
+    const fields   = ["appellant_tip_id", "ctid"];
+    // Same appellant, different ctid (the route ctid the server folds in).
+    const dataB    = { appellant_tip_id: "tip://id/appellant", ctid: "tip://c/CASE-B" };
+    expect(verifyBodySignature(dataA, sig, kp.publicKey, fields)).toBe(true);
+    expect(verifyBodySignature(dataB, sig, kp.publicKey, fields)).toBe(false);
+  });
+
   // ── JURY_VOTE_REVEAL ────────────────────────────────────────────────────────
 
   test("JURY_VOTE_REVEAL — confirmed_origin absent (MATCH): API == consensus", () => {

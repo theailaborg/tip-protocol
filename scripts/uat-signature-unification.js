@@ -436,7 +436,7 @@ async function main() {
     // The author lost (UPHELD verdict → author's origin claim wrong);
     // they can file an appeal. Schema requires appellant to be the
     // losing party from the Stage-2 verdict.
-    const sigBody = { appellant_tip_id: author.tip_id };
+    const sigBody = { appellant_tip_id: author.tip_id, ctid: disputed.ctid };
     const sig = signBody(sigBody, author.kp.privateKey);
     const r = await _post(`/v1/content/${encodeURIComponent(disputed.ctid)}/appeal`, { ...sigBody, signature: sig });
     expect([200, 201, 202].includes(r.status), "POST /v1/content/:ctid/appeal", `status=${r.status} ${JSON.stringify(r.body?.error||"")}`);

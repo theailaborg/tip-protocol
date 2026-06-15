@@ -165,7 +165,15 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
         SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
         SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.APPELLANT_TIP_ID,
-        buildSigningPayload: (data) => ({ appellant_tip_id: data.appellant_tip_id }),
+        // ctid is in the signed payload for replay protection: an
+        // appellant_tip_id-only signature could be replayed against any
+        // other ctid the same appellant has standing on (author or original
+        // disputer), burning their stake on a case they never chose to
+        // appeal. Mirrors prescan-review-dispute binding ctid + review_id.
+        buildSigningPayload: (data) => ({
+          appellant_tip_id: data.appellant_tip_id,
+          ctid: data.ctid,
+        }),
       };
     },
   },
