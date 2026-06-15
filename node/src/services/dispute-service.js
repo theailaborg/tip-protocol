@@ -358,7 +358,12 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const authorTipId = rec?.author_tip_id;
 
     const appellant = dag.getIdentity(appellant_tip_id);
-    if (!verifyBodySignature(body, signature, appellant.public_key, ["appellant_tip_id"])) throw { status: 403, error: "Appellant signature verification failed" };
+    // ctid comes from the route, not the request body — fold it in so the
+    // signature is bound to THIS appeal. Without it an appellant_tip_id-only
+    // signature is replayable against any other ctid the appellant has
+    // standing on. Matches the consensus-replay payload in _registry.
+    const bodyForVerify = { ...body, ctid };
+    if (!verifyBodySignature(bodyForVerify, signature, appellant.public_key, ["appellant_tip_id", "ctid"])) throw { status: 403, error: "Appellant signature verification failed" };
 
     const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature });
 

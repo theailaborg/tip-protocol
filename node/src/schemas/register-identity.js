@@ -40,6 +40,7 @@
 const {
   signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
+const { buildSignedPayload } = require("../../../shared/crypto");
 const {
   TX_TYPES, TIP_ID_TYPES, TIP_ID_TYPE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND,
@@ -203,14 +204,8 @@ function buildSigningPayload(input) {
     );
   }
 
-  // creator_name pass-through: typeof check passes strings through
-  // verbatim, null / undefined / non-strings emit `null`. Empty string
-  // is REJECTED at validateRequest, so it never reaches here in normal
-  // flow; the only callers that hit this with `""` are misbehaving
-  // (and their canonical bytes won't match the server's anyway).
-  return {
+  const normalised = {
     algorithm,
-    creator_name: typeof input.creator_name === "string" ? input.creator_name : null,
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
     region: typeof input.region === "string" ? input.region.toUpperCase() : "US",
@@ -219,7 +214,15 @@ function buildSigningPayload(input) {
     verification_tier: verificationTier,
     vp_id: input.vp_id,
     zk_proof: input.zk_proof,
+    creator_name: input.creator_name,
   };
+  return buildSignedPayload(normalised, {
+    required: [
+      "algorithm", "dedup_hash", "public_key", "region", "social_attested",
+      "tip_id_type", "verification_tier", "vp_id", "zk_proof",
+    ],
+    optional: ["creator_name"],
+  });
 }
 
 /**

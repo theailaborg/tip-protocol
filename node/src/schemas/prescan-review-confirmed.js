@@ -23,6 +23,7 @@
 "use strict";
 
 const { signPayload, verifyPayload, schemaError } = require("./_common");
+const { buildSignedPayload } = require("../../../shared/crypto");
 const { TX_TYPES, ORIGIN, PRESCAN_REVIEW_STATES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS } = require("../../../shared/constants");
 
 const TX_TYPE = TX_TYPES.PRESCAN_REVIEW_CONFIRMED;
@@ -109,12 +110,10 @@ function buildSigningPayload(input) {
       "suggested_origin_invalid",
     );
   }
-  return {
-    decision_note: typeof input.decision_note === "string" ? input.decision_note : null,
-    review_id: input.review_id,
-    reviewer_tip_id: input.reviewer_tip_id,
-    suggested_origin: input.suggested_origin,
-  };
+  return buildSignedPayload(input, {
+    required: ["review_id", "reviewer_tip_id", "suggested_origin"],
+    optional: ["decision_note"],
+  });
 }
 
 function sign(payload, privateKeyHex, opts) {

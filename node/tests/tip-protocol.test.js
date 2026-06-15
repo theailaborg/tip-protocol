@@ -1750,7 +1750,7 @@ describe("Semantic Dedup", () => {
       .send(_buildContentRegisterBody({ authorTipId: sdTipId, authorPriv: sdAuthorPriv, content: appContent }));
     const appCtid = ctRes.body.data.ctid;
 
-    const appFields = { appellant_tip_id: sdTipId };
+    const appFields = { appellant_tip_id: sdTipId, ctid: appCtid };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(appCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
@@ -1791,7 +1791,7 @@ describe("Semantic Dedup", () => {
     sdDag.addTx(adjTx);
 
     // Author files appeal
-    const appFields = { appellant_tip_id: sdTipId };
+    const appFields = { appellant_tip_id: sdTipId, ctid: appealCtid };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(appealCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, sdAuthorPriv) });
@@ -1835,7 +1835,7 @@ describe("Semantic Dedup", () => {
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
 
     // Third party tries to appeal
-    const appFields = { appellant_tip_id: thirdTipId };
+    const appFields = { appellant_tip_id: thirdTipId, ctid: tCtid };
     const res = await request(sdApp)
       .post(`/v1/content/${encodeURIComponent(tCtid)}/appeal`)
       .send({ ...appFields, signature: signBody(appFields, thirdKp.privateKey) });
@@ -1865,7 +1865,7 @@ describe("Semantic Dedup", () => {
     adjTx.tx_id = computeTxId(adjTx); sdDag.addTx(adjTx);
 
     // First appeal
-    const f1 = { appellant_tip_id: sdTipId };
+    const f1 = { appellant_tip_id: sdTipId, ctid: dCtid };
     const r1 = await request(sdApp).post(`/v1/content/${encodeURIComponent(dCtid)}/appeal`)
       .send({ ...f1, signature: signBody(f1, sdAuthorPriv) });
     expect(r1.status).toBe(202);

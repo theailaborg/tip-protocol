@@ -44,6 +44,9 @@
 const {
   TX_TYPES, SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS, VP_ID_FIELDS,
 } = require("../../../shared/constants");
+// GH #85: the single canonical strip rule (omit undefined+null; keep "", 0,
+// false). Every buildSigningPayload routes through this so the rule can't drift.
+const { buildSignedPayload } = require("../../../shared/crypto");
 
 // ─── Node-signed envelope (no per-tx-type config) ──────────────────────────
 // Auto-emitted by a node; the node signs canonicalTx(tx) with its own
@@ -65,24 +68,14 @@ const REVOKE_CONTRACT = Object.freeze({
   SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
   SIGNED_BY: SIGNED_BY_KIND.VP,
   VP_ID_FIELD: VP_ID_FIELDS.ISSUING_VP_ID,
-  buildSigningPayload: (data) => {
-    const out = {
-      tx_type: data.tx_type,                  // distinguishes revoke types
-      tip_id: data.tip_id,
-      issuing_vp_id: data.issuing_vp_id,
-    };
-    // reason_code and evidence_hash are conditional — only added when present.
-    // canonicalJson renders undefined as the literal string "undefined", which
-    // diverges from verifyBodySignature's "skip undefined" behaviour at the
-    // signer and breaks consensus-level signature replay.
-    if (data.reason_code !== undefined && data.reason_code !== null) {
-      out.reason_code = data.reason_code;
-    }
-    if (data.evidence_hash !== undefined && data.evidence_hash !== null) {
-      out.evidence_hash = data.evidence_hash;
-    }
-    return out;
-  },
+  // tx_type is in the signed payload so a captured signature for one revoke
+  // type can't be replayed as another. reason_code + evidence_hash are
+  // conditional. GH #85: the strip rule lives in buildSignedPayload (omit
+  // undefined+null; keep "",0,false) so it can't drift from verifyBodySignature.
+  buildSigningPayload: (data) => buildSignedPayload(data, {
+    required: ["tx_type", "tip_id", "issuing_vp_id"],
+    optional: ["reason_code", "evidence_hash"],
+  }),
 });
 
 const TX_SIGNATURE_REGISTRY = Object.freeze({
@@ -152,18 +145,12 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.JUROR_TIP_ID,
     // confirmed_origin is conditional — only present when the juror's
-    // vote is MISMATCH + the suggested origin (matches the
-    // commit-handler verifier today; both sides drop the field when
-    // truthy=false to keep the canonical bytes aligned).
-    buildSigningPayload: (data) => {
-      const out = {
-        juror_tip_id: data.juror_tip_id,
-        vote: data.vote,
-        salt: data.salt,
-      };
-      if (data.confirmed_origin) out.confirmed_origin = data.confirmed_origin;
-      return out;
-    },
+    // vote is MISMATCH + the suggested origin. GH #85: the strip rule lives
+    // in buildSignedPayload (omit undefined+null; keep "", 0, false).
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["juror_tip_id", "vote", "salt"],
+      optional: ["confirmed_origin"],
+    }),
   },
 
   // ─── DUAL-MODE: appeal can be user-filed or auto-escalated ────────────────
@@ -178,7 +165,15 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
         SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
         SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.APPELLANT_TIP_ID,
-        buildSigningPayload: (data) => ({ appellant_tip_id: data.appellant_tip_id }),
+        // ctid is in the signed payload for replay protection: an
+        // appellant_tip_id-only signature could be replayed against any
+        // other ctid the same appellant has standing on (author or original
+        // disputer), burning their stake on a case they never chose to
+        // appeal. Mirrors prescan-review-dispute binding ctid + review_id.
+        buildSigningPayload: (data) => ({
+          appellant_tip_id: data.appellant_tip_id,
+          ctid: data.ctid,
+        }),
       };
     },
   },
@@ -198,19 +193,12 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
         SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
         SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.DISPUTER_TIP_ID,
-        buildSigningPayload: (data) => {
-          // claimed_origin + evidence_hash are conditional. Mirror the
-          // dispute-service.fileDispute + UI canonicalisation: only
-          // emit when truthy. Listing them unconditionally would diverge
-          // from the signer's canonical bytes.
-          const out = {
-            disputer_tip_id: data.disputer_tip_id,
-            reason: data.reason,
-          };
-          if (data.claimed_origin) out.claimed_origin = data.claimed_origin;
-          if (data.evidence_hash) out.evidence_hash = data.evidence_hash;
-          return out;
-        },
+        // claimed_origin + evidence_hash are conditional. GH #85: the strip
+        // rule lives in buildSignedPayload (omit undefined+null; keep "",0,false).
+        buildSigningPayload: (data) => buildSignedPayload(data, {
+          required: ["disputer_tip_id", "reason"],
+          optional: ["claimed_origin", "evidence_hash"],
+        }),
       };
     },
     // Cosignature contract — used by commit-handler to verify the
@@ -222,14 +210,21 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
       if (!d.auto) return [];
       const escalator = d.escalated_by_tip_id;
       if (!escalator) return [];
+      // Reconstruct the cosigner body via the escalation endpoint's own
+      // canonical builder (same {author_tip_id, ctid, review_id} the
+      // creator signed) so the two definitions can't drift — same pattern
+      // as BIND_DOMAIN / LINK_PLATFORM delegating to their register schemas.
+      // Lazy require: prescan-review-dispute pulls in _common, which lazily
+      // points back here; deferring the load avoids a load-order cycle.
+      const prescanReviewDispute = require("./prescan-review-dispute");
       return [{
         kind: SIGNED_BY_KIND.SUBJECT,
-        ref:  escalator,
-        body: {
+        ref: escalator,
+        body: prescanReviewDispute.buildSigningPayload({
           author_tip_id: escalator,
-          ctid:          d.ctid,
-          review_id:     d.source_review_id,
-        },
+          ctid: d.ctid,
+          review_id: d.source_review_id,
+        }),
       }];
     },
   },
@@ -251,7 +246,9 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
-      algorithm: data.algorithm || "ml-dsa-65",
+      // GH #85: ?? instead of || so algorithm="" is not silently promoted
+      // to the default; only null/undefined fall back to "ml-dsa-65".
+      algorithm: data.algorithm ?? "ml-dsa-65",
       name: data.name,
       jurisdiction: data.jurisdiction,
       jurisdiction_tier: data.jurisdiction_tier,
@@ -264,7 +261,9 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
     buildSigningPayload: (data) => ({
-      algorithm: data.algorithm || "ml-dsa-65",
+      // GH #85: ?? instead of || so algorithm="" is not silently promoted
+      // to the default; only null/undefined fall back to "ml-dsa-65".
+      algorithm: data.algorithm ?? "ml-dsa-65",
       name: data.name,
       public_key: data.public_key,
       approving_vp_id: data.approving_vp_id,

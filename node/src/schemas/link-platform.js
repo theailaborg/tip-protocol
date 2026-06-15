@@ -259,7 +259,10 @@ function buildSigningPayload(input) {
   // OAuth bundle — included only when the link went through a VP OAuth
   // flow. All three fields move together; presence of any one without
   // the others would make the OAuth signature unverifiable at replay.
-  const oauthPresent = input.vp_id || input.vp_oauth_signature || input.vp_oauth_verified_at;
+  // GH #85: detect bundle presence by != null (Pattern A) so vp_id=""
+  // triggers the validation throw below rather than silently dropping
+  // the whole bundle.
+  const oauthPresent = input.vp_id != null || input.vp_oauth_signature != null || input.vp_oauth_verified_at != null;
   if (oauthPresent) {
     if (typeof input.vp_id !== "string" || input.vp_id.length === 0) {
       throw schemaError(400, "vp_id is required when OAuth proof is provided", "vp_id_required");

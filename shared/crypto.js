@@ -567,12 +567,37 @@ function signBody(fields, privateKey, opts = {}) {
 }
 
 /**
+ * Build a canonical signed-payload object applying the universal strip rule
+ * (GH #85): omit undefined and null; keep "", 0, false as intentional values.
+ *
+ * @param {object}   data          – source object (tx.data or request body)
+ * @param {string[]} required      – fields that must be present (throws if missing/null)
+ * @param {string[]} optional      – fields included only when not undefined/null
+ * @returns {object} canonical payload ready for canonicalJson / shake256
+ */
+function buildSignedPayload(data, { required = [], optional = [] } = {}) {
+  const out = {};
+  for (const f of required) {
+    if (data[f] === undefined || data[f] === null) {
+      throw new Error(`required signed field missing: ${f}`);
+    }
+    out[f] = data[f];
+  }
+  for (const f of optional) {
+    if (data[f] !== undefined && data[f] !== null) out[f] = data[f];
+  }
+  return out;
+}
+
+/**
  * Verify a body signature over specified fields only (ignores extra client fields).
+ * GH #85: strips both undefined AND null so verifyBodySignature matches the
+ * universal strip rule applied by every buildSigningPayload.
  */
 function verifyBodySignature(body, signature, publicKey, fields) {
   const payload = {};
   for (const f of fields) {
-    if (body[f] !== undefined) payload[f] = body[f];
+    if (body[f] !== undefined && body[f] !== null) payload[f] = body[f];
   }
   return mldsaVerify(shake256(canonicalJson(payload)), signature, publicKey);
 }
@@ -607,5 +632,6 @@ module.exports = {
   verifyTxId,
   canonicalJson,
   signBody,
+  buildSignedPayload,
   verifyBodySignature,
 };
