@@ -546,3 +546,140 @@ describe("vindication +5 to author on DISMISSED", () => {
     expect(retraction[0].data.delta).toBe(-DISPUTE.VINDICATION_BONUS);
   });
 });
+
+// ─── Terminal NO_QUORUM — disputer refund ────────────────────────────────────
+// A disputer forfeits their stake ONLY when a panel rules on the merits and
+// rules DISMISSED. When the case dies in quorum failure (no merits ruling),
+// the stake is refunded (+DISPUTER_STAKE, no bonus). No vindication either —
+// the author was not actually cleared.
+
+describe("Terminal NO_QUORUM — disputer refunded (no panel ruled on merits)", () => {
+
+  test("Stage-2 terminal NO_QUORUM (no expert panel formable): disputer refunded +15", () => {
+    // Seed a dispute with NO eligible experts so selectExperts returns < MIN_VOTES
+    // candidates. buildAdjudicationBatch then takes the terminal path.
+    // We achieve this by using a fresh DB with only the 7 jurors (excluded
+    // from expert panel as prior-stage jurors) + author + disputer.
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+
+    // Force sub-quorum: only 2 jurors reveal (need JURY.QUORUM = 5 for quorum)
+    const reveals = _buildReveals(ids.jurors.slice(0, 2), [VOTE.MISMATCH, VOTE.MATCH]);
+
+    // The test DAG has no additional identities beyond jurors + author + disputer,
+    // so selectExperts will find < MIN_VOTES eligible experts → terminal.
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(out.terminal).toBe(true);
+
+    const refund = _findSU(out.txs, ids.disputerTipId);
+    expect(refund).toHaveLength(1);
+    expect(refund[0].data.delta).toBe(DISPUTE.DISPUTER_STAKE);
+    expect(refund[0].data.delta).toBe(15);
+    expect(refund[0].data.reason).toMatch(/terminal no-quorum/i);
+  });
+
+  test("Stage-2 terminal NO_QUORUM: author gets NO vindication (no merits ruling)", () => {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+    const reveals = _buildReveals(ids.jurors.slice(0, 2), [VOTE.MISMATCH, VOTE.MATCH]);
+
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.NO_QUORUM);
+    expect(out.terminal).toBe(true);
+
+    // No vindication — nobody actually cleared the author
+    expect(_findSU(out.txs, ids.authorTipId)).toHaveLength(0);
+  });
+
+  test("Stage-3 terminal (Stage-2 NO_QUORUM, Stage-3 experts also fail quorum): disputer refunded +15", () => {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+
+    // Seed Stage-2 NO_QUORUM + SYSTEM_AUTO_ESCALATION appeal
+    const adjTx = _addTx(fx.dag, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775174400000,
+      data: {
+        ctid: CTID, verdict: VERDICT.NO_QUORUM,
+        declared_origin: ORIGIN.OH, confirmed_origin: null,
+        author_tip_id: ids.authorTipId, disputer_tip_id: ids.disputerTipId,
+        author_score_delta: 0, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+      },
+    });
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260800000,
+      data: { ctid: CTID, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
+    });
+
+    // Seed 3 experts but provide ZERO reveals (sub-quorum)
+    const experts = ["tip://id/exp-term-0", "tip://id/exp-term-1", "tip://id/exp-term-2"];
+    for (const e of experts) _seedIdentity(fx.dag, e, 900);
+    const expSummons = experts.map((e, i) => _addTx(fx.dag, {
+      tx_type: TX_TYPES.JURY_SUMMONS,
+      timestamp: `2026-05-01T00:00:0${i}.000Z`,
+      data: {
+        ctid: CTID, dispute_tx_id: adjTx.tx_id, juror_tip_id: e,
+        is_appeal: true, stake: JURY.JUROR_STAKE,
+        seed: shake256("term-seed"), identity_count: 3,
+        commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+      },
+    }));
+
+    // Zero expert reveals → nonAbstain < MIN_VOTES → no-result path
+    const out = buildAppealBatch(CTID, [], expSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+    expect(out.defaulted).toBe(true);
+
+    const refund = _findSU(out.txs, ids.disputerTipId);
+    expect(refund).toHaveLength(1);
+    expect(refund[0].data.delta).toBe(DISPUTE.DISPUTER_STAKE);
+    expect(refund[0].data.delta).toBe(15);
+    expect(refund[0].data.reason).toMatch(/terminal no-quorum/i);
+  });
+
+  test("Stage-3 real DISMISSED (quorum reached, merits ruling): disputer still forfeits", () => {
+    const fx = _setup();
+    const ids = _seedDisputeFixture(fx.dag);
+
+    // Stage-2 NO_QUORUM → auto-escalation → Stage-3 decisively DISMISSED
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775174400000,
+      data: {
+        ctid: CTID, verdict: VERDICT.NO_QUORUM,
+        declared_origin: ORIGIN.OH, confirmed_origin: null,
+        author_tip_id: ids.authorTipId, disputer_tip_id: ids.disputerTipId,
+        author_score_delta: 0, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+      },
+    });
+    _addTx(fx.dag, {
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260800000,
+      data: { ctid: CTID, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
+    });
+
+    const experts = ["tip://id/exp-real-0", "tip://id/exp-real-1", "tip://id/exp-real-2"];
+    for (const e of experts) _seedIdentity(fx.dag, e, 900);
+    const expSummons = experts.map((e, i) => _addTx(fx.dag, {
+      tx_type: TX_TYPES.JURY_SUMMONS,
+      timestamp: `2026-05-02T00:00:0${i}.000Z`,
+      data: {
+        ctid: CTID, juror_tip_id: e, is_appeal: true,
+        stake: JURY.JUROR_STAKE, seed: shake256("real-seed"), identity_count: 3,
+        commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+      },
+    }));
+
+    // All 3 experts vote MATCH → DISMISSED (quorum reached, merits ruling)
+    const reveals = experts.map((e, i) => ({
+      tx_id: shake256(`real-er-${i}`), tx_type: TX_TYPES.JURY_VOTE_REVEAL,
+      timestamp: 1775433600000,
+      data: { ctid: CTID, juror_tip_id: e, vote: VOTE.MATCH, is_appeal: true, salt: shake256(`rs${i}`) },
+    }));
+
+    const out = buildAppealBatch(CTID, reveals, expSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+    expect(out.defaulted).toBeUndefined();
+
+    // Disputer forfeits: real DISMISSED = stake lost
+    expect(_findSU(out.txs, ids.disputerTipId)).toHaveLength(0);
+  });
+});
