@@ -16,11 +16,12 @@
  * mutations via a generic tx type.
  *
  * v1 known fields:
- *   reviewer_consent  boolean  — opt-in to be selected as adjudicator across
- *                                ALL protocol roles (Protocol Review reviewer,
- *                                Stage 2 jury, Stage 3 expert panel). Runtime
- *                                filters at selection time decide which role
- *                                a consenting user lands in for a given case.
+ *   reviewer_consent  boolean  — opt-in to be selected as a pre-scan reviewer
+ *                                (one reviewer per flagged piece, async, h=48).
+ *   juror_consent     boolean  — opt-in to be drafted onto Stage-2 jury panels
+ *                                (7-seat commit-reveal, time-boxed).
+ *   expert_consent    boolean  — opt-in to be selected for Stage-3 expert appeal
+ *                                panels (highest score bar, highest accountability).
  *
  * Signature scope: the user's own ML-DSA-65 key signs the canonical
  * payload. No VP attestation needed — this is purely the user mutating
@@ -59,7 +60,9 @@ const SUBJECT_TIP_ID_FIELD = TIP_ID_FIELDS.TIP_ID;
 // order.
 const KNOWN_FIELDS = Object.freeze({
   reviewer_consent: { type: "boolean" },
-  interests: { type: "object" },
+  juror_consent:    { type: "boolean" },
+  expert_consent:   { type: "boolean" },
+  interests:        { type: "object" },
 });
 
 const KNOWN_FIELD_NAMES = Object.freeze(Object.keys(KNOWN_FIELDS));
@@ -134,10 +137,12 @@ function validateRequest(body, deps) {
 
   // Organization identities cannot opt into adjudication roles. Reject
   // at the schema gate so the state can never end up with an org's
-  // reviewer_consent=1 (matches the filter in selectJury / selectExperts /
+  // consent field set (matches filters in selectJury / selectExperts /
   // reviewer-selection). Personal identities are the only legitimate
   // judgment-makers in the protocol.
-  if (presentFields.includes("reviewer_consent") && body.reviewer_consent === true) {
+  const CONSENT_FIELDS = ["reviewer_consent", "juror_consent", "expert_consent"];
+  const settingAnyConsent = CONSENT_FIELDS.some(f => presentFields.includes(f) && body[f] === true);
+  if (settingAnyConsent) {
     const subjectType = subject.tip_id_type || TIP_ID_TYPES.PERSONAL;
     if (subjectType !== TIP_ID_TYPES.PERSONAL) {
       throw schemaError(

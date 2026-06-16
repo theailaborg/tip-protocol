@@ -100,14 +100,9 @@ function createProfileService({ dag, config, submitTx }) {
   }
 
   /**
-   * Convenience over updateProfile that pins reviewer_consent. Body
-   * shape: { signature, tip_id? }. Signature must cover the canonical
-   * payload that updateProfile assembles (tip_id + reviewer_consent),
-   * so the client signs the exact bytes the schema validates.
-   *
-   * Separate from updateProfile so the API surface reads cleanly
-   * ("become a reviewer") instead of forcing clients to know about
-   * the UPDATE_PROFILE tx shape.
+   * Convenience helpers that pin a single consent field. Body shape:
+   * { signature, tip_id? }. The client signs the canonical payload
+   * assembled by buildSigningPayload (tip_id + the single consent field).
    */
   function becomeReviewer(tipId, body) {
     return updateProfile(tipId, {
@@ -125,7 +120,39 @@ function createProfileService({ dag, config, submitTx }) {
     });
   }
 
-  return { updateProfile, getProfile, becomeReviewer, stopReviewing };
+  function becomeJuror(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      juror_consent: true,
+      signature: body && body.signature,
+    });
+  }
+
+  function stopJuror(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      juror_consent: false,
+      signature: body && body.signature,
+    });
+  }
+
+  function becomeExpert(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      expert_consent: true,
+      signature: body && body.signature,
+    });
+  }
+
+  function stopExpert(tipId, body) {
+    return updateProfile(tipId, {
+      tip_id: (body && body.tip_id) ?? tipId,
+      expert_consent: false,
+      signature: body && body.signature,
+    });
+  }
+
+  return { updateProfile, getProfile, becomeReviewer, stopReviewing, becomeJuror, stopJuror, becomeExpert, stopExpert };
 }
 
 module.exports = { createProfileService };

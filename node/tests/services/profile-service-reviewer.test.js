@@ -1,15 +1,17 @@
 /**
  * @file tests/services/profile-service-reviewer.test.js
- * @description Phase 5 — become-reviewer / stop-reviewing convenience
- * wrappers over UPDATE_PROFILE.
+ * @description Phase 5 + issue #107 — role-consent convenience wrappers
+ * over UPDATE_PROFILE.
  *
  * Verifies that:
- *   - becomeReviewer pins reviewer_consent=true on the tx data
- *   - stopReviewing pins reviewer_consent=false on the tx data
- *   - Both still go through updateProfileSchema.validateRequest — the
- *     wrappers don't bypass any check. Signature mismatch / missing
- *     signature / wrong subject all reject identically to a generic
- *     POST /identity/:tipId/profile call.
+ *   - becomeReviewer  pins reviewer_consent=true  on the tx data
+ *   - stopReviewing   pins reviewer_consent=false on the tx data
+ *   - becomeJuror     pins juror_consent=true     on the tx data
+ *   - stopJuror       pins juror_consent=false    on the tx data
+ *   - becomeExpert    pins expert_consent=true    on the tx data
+ *   - stopExpert      pins expert_consent=false   on the tx data
+ *   - All wrappers still go through validateRequest — signature
+ *     mismatch / missing signature / wrong subject all reject.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -152,5 +154,95 @@ describe("profile-service.stopReviewing", () => {
     const err = _throws(() => fx.service.stopReviewing(SUBJECT, { signature: wrongSig }));
     expect(err.code).toBe("signature_invalid");
     expect(err.status).toBe(403);
+  });
+});
+
+// ── Issue #107 — juror_consent convenience wrappers ───────────────────────
+
+describe("profile-service.becomeJuror", () => {
+
+  test("submits UPDATE_PROFILE with juror_consent=true", () => {
+    const fx = _setup();
+    const signature = _signCanonical(
+      { tip_id: SUBJECT, juror_consent: true },
+      fx.subjectKp.privateKey,
+    );
+    const out = fx.service.becomeJuror(SUBJECT, { signature });
+    expect(fx.submitted.length).toBe(1);
+    const tx = fx.submitted[0];
+    expect(tx.tx_type).toBe(TX_TYPES.UPDATE_PROFILE);
+    expect(tx.data.juror_consent).toBe(true);
+    expect(tx.data.reviewer_consent).toBeUndefined();
+    expect(out.updated.juror_consent).toBe(true);
+  });
+
+  test("rejects signature signed for juror_consent=false", () => {
+    const fx = _setup();
+    const wrongSig = _signCanonical(
+      { tip_id: SUBJECT, juror_consent: false },
+      fx.subjectKp.privateKey,
+    );
+    const err = _throws(() => fx.service.becomeJuror(SUBJECT, { signature: wrongSig }));
+    expect(err.code).toBe("signature_invalid");
+    expect(err.status).toBe(403);
+  });
+});
+
+describe("profile-service.stopJuror", () => {
+
+  test("submits UPDATE_PROFILE with juror_consent=false", () => {
+    const fx = _setup();
+    const signature = _signCanonical(
+      { tip_id: SUBJECT, juror_consent: false },
+      fx.subjectKp.privateKey,
+    );
+    fx.service.stopJuror(SUBJECT, { signature });
+    expect(fx.submitted.length).toBe(1);
+    expect(fx.submitted[0].data.juror_consent).toBe(false);
+  });
+});
+
+// ── Issue #107 — expert_consent convenience wrappers ─────────────────────
+
+describe("profile-service.becomeExpert", () => {
+
+  test("submits UPDATE_PROFILE with expert_consent=true", () => {
+    const fx = _setup();
+    const signature = _signCanonical(
+      { tip_id: SUBJECT, expert_consent: true },
+      fx.subjectKp.privateKey,
+    );
+    const out = fx.service.becomeExpert(SUBJECT, { signature });
+    expect(fx.submitted.length).toBe(1);
+    const tx = fx.submitted[0];
+    expect(tx.tx_type).toBe(TX_TYPES.UPDATE_PROFILE);
+    expect(tx.data.expert_consent).toBe(true);
+    expect(tx.data.reviewer_consent).toBeUndefined();
+    expect(out.updated.expert_consent).toBe(true);
+  });
+
+  test("rejects signature signed for expert_consent=false", () => {
+    const fx = _setup();
+    const wrongSig = _signCanonical(
+      { tip_id: SUBJECT, expert_consent: false },
+      fx.subjectKp.privateKey,
+    );
+    const err = _throws(() => fx.service.becomeExpert(SUBJECT, { signature: wrongSig }));
+    expect(err.code).toBe("signature_invalid");
+    expect(err.status).toBe(403);
+  });
+});
+
+describe("profile-service.stopExpert", () => {
+
+  test("submits UPDATE_PROFILE with expert_consent=false", () => {
+    const fx = _setup();
+    const signature = _signCanonical(
+      { tip_id: SUBJECT, expert_consent: false },
+      fx.subjectKp.privateKey,
+    );
+    fx.service.stopExpert(SUBJECT, { signature });
+    expect(fx.submitted.length).toBe(1);
+    expect(fx.submitted[0].data.expert_consent).toBe(false);
   });
 });

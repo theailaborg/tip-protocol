@@ -63,6 +63,10 @@ function _canonIdentity(r) {
     founding: r.founding ? 1 : 0,
     status: r.status,
     reviewer_consent: r.reviewer_consent ? 1 : 0,
+    // Back-compat: if juror_consent/expert_consent are null (pre-migration row),
+    // inherit from reviewer_consent so existing opted-in users keep all roles.
+    juror_consent:  r.juror_consent  != null ? (r.juror_consent  ? 1 : 0) : (r.reviewer_consent ? 1 : 0),
+    expert_consent: r.expert_consent != null ? (r.expert_consent ? 1 : 0) : (r.reviewer_consent ? 1 : 0),
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
@@ -1668,11 +1672,12 @@ class SQLiteStore {
         tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
-        -- Opt-in to be selected as an adjudicator across all protocol roles
-        -- (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
-        -- Runtime filters at selection time decide which role a consenting
-        -- user lands in (score, content category, conflict-of-interest).
+        -- Separate opt-in per adjudication role (issue #107).
+        -- NULL means "not explicitly set" — read path falls back to reviewer_consent
+        -- for back-compat with pre-migration rows.
         reviewer_consent    INTEGER NOT NULL DEFAULT 0,
+        juror_consent       INTEGER DEFAULT NULL,
+        expert_consent      INTEGER DEFAULT NULL,
         -- Denormalised user-picked interest slugs (canonical sort, deduped).
         -- Source of truth is the chain of UPDATE_PROFILE txs; this column
         -- is the read-side projection. JSON-encoded array.
@@ -2378,10 +2383,11 @@ class SQLiteStore {
       saveIdentity: this.db.prepare(
         `INSERT OR REPLACE INTO identities
            (tip_id,region,vp_id,
-            verification_tier,tip_id_type,founding,status,reviewer_consent,
+            verification_tier,tip_id_type,founding,status,
+            reviewer_consent,juror_consent,expert_consent,
             interests,
             registered_at,creator_name,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       // GH #60 — JOIN with active entity_keys row so existing callers
       // of getIdentity(id).public_key keep working. valid_to_ts IS NULL
@@ -2977,6 +2983,8 @@ class SQLiteStore {
       rec.founding ? 1 : 0,
       rec.status || "active",
       rec.reviewer_consent ? 1 : 0,
+      rec.juror_consent  != null ? (rec.juror_consent  ? 1 : 0) : null,
+      rec.expert_consent != null ? (rec.expert_consent ? 1 : 0) : null,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
@@ -2993,10 +3001,14 @@ class SQLiteStore {
     if (typeof row.interests === "string" && row.interests.length > 0) {
       try { interests = JSON.parse(row.interests); } catch { interests = []; }
     }
+    const reviewerConsent = row.reviewer_consent === 1;
     return {
       ...row,
       founding: row.founding === 1,
-      reviewer_consent: row.reviewer_consent === 1,
+      reviewer_consent: reviewerConsent,
+      // Back-compat: NULL means not yet set → inherit from reviewer_consent.
+      juror_consent:  row.juror_consent  != null ? row.juror_consent  === 1 : reviewerConsent,
+      expert_consent: row.expert_consent != null ? row.expert_consent === 1 : reviewerConsent,
       interests,
     };
   }
