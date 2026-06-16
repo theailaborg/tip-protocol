@@ -345,7 +345,12 @@ class KnexAdapter {
       // (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
       // Runtime filters at selection time decide which role a consenting
       // user lands in (score, content category, conflict-of-interest).
+      // Separate opt-in per adjudication role (issue #107).
+      // juror_consent/expert_consent are nullable: NULL = not explicitly set,
+      // read path falls back to reviewer_consent for pre-migration rows.
       t.integer("reviewer_consent").notNullable().defaultTo(0);
+      t.integer("juror_consent").nullable().defaultTo(null);
+      t.integer("expert_consent").nullable().defaultTo(null);
       // Denormalised user-picked interest slugs (canonical sort, deduped).
       // Source of truth is the chain of UPDATE_PROFILE txs; this column
       // is the read-side projection for activity feed / discovery /
@@ -714,10 +719,14 @@ class KnexAdapter {
       if (typeof row.interests === "string" && row.interests.length > 0) {
         try { interests = JSON.parse(row.interests); } catch { interests = []; }
       }
+      const reviewerConsent = !!row.reviewer_consent;
       this.mirror._identities.set(row.tip_id, {
         ...row,
         founding: !!row.founding,
-        reviewer_consent: !!row.reviewer_consent,
+        reviewer_consent: reviewerConsent,
+        // Back-compat: NULL = not yet set → inherit from reviewer_consent.
+        juror_consent:  row.juror_consent  != null ? !!row.juror_consent  : reviewerConsent,
+        expert_consent: row.expert_consent != null ? !!row.expert_consent : reviewerConsent,
         interests,
       });
     }
@@ -1070,6 +1079,8 @@ class KnexAdapter {
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
       reviewer_consent: rec.reviewer_consent ? 1 : 0,
+      juror_consent:  rec.juror_consent  != null ? (rec.juror_consent  ? 1 : 0) : null,
+      expert_consent: rec.expert_consent != null ? (rec.expert_consent ? 1 : 0) : null,
       interests: JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,

@@ -181,11 +181,10 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
-      // Adjudication opt-in — the same reviewer_consent toggle that gates
-      // reviewer selection covers juror/expert seats ("I want to help
-      // adjudicate"). Drafting non-consenting users seats unaware
-      // panelists and bleeds their score via no-commit penalties.
-      const consent = id.reviewer_consent;
+      // Juror opt-in. juror_consent is the dedicated field (issue #107);
+      // fall back to reviewer_consent for identities registered before the
+      // split so existing opted-in users remain eligible without re-saving.
+      const consent = id.juror_consent !== undefined ? id.juror_consent : id.reviewer_consent;
       if (consent !== true && consent !== 1) return false;
       return true;
     })
@@ -240,8 +239,9 @@ function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, cti
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
-      // Adjudication opt-in — same contract as selectJury above.
-      const consent = id.reviewer_consent;
+      // Expert opt-in. expert_consent is the dedicated field (issue #107);
+      // fall back to reviewer_consent for pre-split identities.
+      const consent = id.expert_consent !== undefined ? id.expert_consent : id.reviewer_consent;
       if (consent !== true && consent !== 1) return false;
       return true;
     })

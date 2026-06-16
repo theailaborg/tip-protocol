@@ -250,6 +250,8 @@ describe("profile-service.getProfile", () => {
     expect(profile).toEqual({
       tip_id: tipId,
       reviewer_consent: false,
+      juror_consent: false,
+      expert_consent: false,
       interests: [],
     });
   });
@@ -271,5 +273,62 @@ describe("profile-service.getProfile", () => {
     expect(() => fx.profileService.getProfile(unknownTipId)).toThrow(
       expect.objectContaining({ status: 404, code: "tip_id_not_registered" }),
     );
+  });
+});
+
+// ── Issue #107 — independent role consent fields ───────────────────────────
+
+describe("profile-service.updateProfile — juror_consent and expert_consent (issue #107)", () => {
+
+  test("juror_consent can be set independently of reviewer_consent", () => {
+    const fx = _setup();
+    const { tipId, kp } = _seedUser(fx, "user-juror");
+    fx.profileService.updateProfile(tipId,
+      _buildSignedBody(tipId, kp.privateKey, { juror_consent: true }));
+    _commit(fx);
+    // Use getProfile (not getIdentity) — back-compat normalization (undefined→false)
+    // lives in _parseIdentityRow/knex _hydrate, not in the in-memory MemoryStore.
+    const profile = fx.profileService.getProfile(tipId);
+    expect(profile.juror_consent).toBe(true);
+    expect(profile.reviewer_consent).toBe(false);  // unchanged
+    expect(profile.expert_consent).toBe(false);    // never set → normalized to false
+  });
+
+  test("expert_consent can be set independently of reviewer_consent", () => {
+    const fx = _setup();
+    const { tipId, kp } = _seedUser(fx, "user-expert");
+    fx.profileService.updateProfile(tipId,
+      _buildSignedBody(tipId, kp.privateKey, { expert_consent: true }));
+    _commit(fx);
+    const profile = fx.profileService.getProfile(tipId);
+    expect(profile.expert_consent).toBe(true);
+    expect(profile.reviewer_consent).toBe(false);
+    expect(profile.juror_consent).toBe(false);     // never set → normalized to false
+  });
+
+  test("all three consent fields can be set in a single tx", () => {
+    const fx = _setup();
+    const { tipId, kp } = _seedUser(fx, "user-allroles");
+    fx.profileService.updateProfile(tipId,
+      _buildSignedBody(tipId, kp.privateKey, {
+        reviewer_consent: true, juror_consent: true, expert_consent: true,
+      }));
+    _commit(fx);
+    const id = fx.dag.getIdentity(tipId);
+    expect(id.reviewer_consent).toBe(true);
+    expect(id.juror_consent).toBe(true);
+    expect(id.expert_consent).toBe(true);
+  });
+
+  test("getProfile reflects all three consent fields", () => {
+    const fx = _setup();
+    const { tipId, kp } = _seedUser(fx, "user-profile3");
+    fx.profileService.updateProfile(tipId,
+      _buildSignedBody(tipId, kp.privateKey, { reviewer_consent: true, juror_consent: false, expert_consent: true }));
+    _commit(fx);
+    const profile = fx.profileService.getProfile(tipId);
+    expect(profile.reviewer_consent).toBe(true);
+    expect(profile.juror_consent).toBe(false);
+    expect(profile.expert_consent).toBe(true);
   });
 });

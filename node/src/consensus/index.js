@@ -38,6 +38,7 @@ const { createTxSubmitter } = require("../services/helpers");
 const { nowMs } = require("../../../shared/time");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { encode, decode } = require("../network/proto");
 const { getLogger } = require("../logger");
 
