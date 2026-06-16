@@ -13,11 +13,15 @@
 [![Wikidata: Org](https://img.shields.io/badge/Wikidata-Q139715497-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715497)
 [![Wikidata: Founder](https://img.shields.io/badge/Founder-Q139715509-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715509)
 
-> Authored and maintained by **[The AI Lab Intelligence Unobscured, Inc.](https://www.wikidata.org/wiki/Q139715497)** ([theailab.org](https://theailab.org)). Inventor: **[Dinesh Mendhe](https://www.wikidata.org/wiki/Q139715509)**.
+> Authored and maintained by **[The AI Lab Intelligence Unobscured, Inc.](https://www.wikidata.org/wiki/Q139715497)** ([theailab.org](https://theailab.org)). Inventor: **[Dinesh Mendhe](https://www.wikidata.org/wiki/Q139715509)** ([ORCID: 0000-0003-1158-3259](https://orcid.org/0000-0003-1158-3259)).
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20722378.svg)](https://doi.org/10.5281/zenodo.20722378)
 
 ---
 
-> **TIP Protocol Whitepaper, Version 1.0 is published.** The canonical public specification of the protocol (140 pages, eleven Parts, twelve Appendices, licensed CC BY 4.0) is available in PDF, HTML, EPUB, and DOCX at **[theailab.org/whitepaper](https://theailab.org/whitepaper)**. Citation: Mendhe, D. (2026). *TIP Protocol Whitepaper, Version 1.0: Trust Identity Protocol for the Verifiable Internet*. The AI Lab Intelligence Unobscured, Inc.
+> **Trust Identity Protocol (TIP) Whitepaper, Version 1.0 is published.** The canonical public specification of the protocol (140 pages, eleven Parts, twelve Appendices, licensed CC BY 4.0) is available in PDF, HTML, EPUB, and DOCX at **[theailab.org/whitepaper](https://theailab.org/whitepaper)** and permanently archived on Zenodo (CERN) under DOI **[10.5281/zenodo.20722378](https://doi.org/10.5281/zenodo.20722378)**. The Concept DOI **[10.5281/zenodo.20722377](https://doi.org/10.5281/zenodo.20722377)** always resolves to the latest printing.
+>
+> **Cite as:** Mendhe, D. (2026). *Trust Identity Protocol (TIP): An Open Standard for Verified Human Identity and Content Provenance on the Internet* (1.0). The AI Lab Intelligence Unobscured, Inc. https://doi.org/10.5281/zenodo.20722378
 
 ---
 
@@ -804,8 +808,12 @@ This software implements inventions that are the subject of pending U.S. patent 
 |----------|-----|
 | Website | https://theailab.org |
 | **Whitepaper v1.0** (canonical) | **https://theailab.org/whitepaper** |
+| Whitepaper DOI (this printing) | https://doi.org/10.5281/zenodo.20722378 |
+| Whitepaper Concept DOI (latest) | https://doi.org/10.5281/zenodo.20722377 |
+| Whitepaper Zenodo record | https://zenodo.org/records/20722378 |
 | Whitepaper PDF | https://theailab.org/whitepaper/TIP_Protocol_Whitepaper_v1_0.pdf |
 | Whitepaper errata | https://theailab.org/whitepaper/errata |
+| Author ORCID | https://orcid.org/0000-0003-1158-3259 |
 | Documentation | https://docs.theailab.org |
 | Protocol Spec | https://github.com/theailaborg/tip-protocol/blob/main/spec/TIP_Protocol_Specification_v5_0.md |
 | Badge Widget | https://badge.theailab.org |
