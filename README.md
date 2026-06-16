@@ -17,6 +17,10 @@
 
 ---
 
+> **TIP Protocol Whitepaper, Version 1.0 is published.** The canonical public specification of the protocol (140 pages, eleven Parts, twelve Appendices, licensed CC BY 4.0) is available in PDF, HTML, EPUB, and DOCX at **[theailab.org/whitepaper](https://theailab.org/whitepaper)**. Citation: Mendhe, D. (2026). *TIP Protocol Whitepaper, Version 1.0: Trust Identity Protocol for the Verifiable Internet*. The AI Lab Intelligence Unobscured, Inc.
+
+---
+
 ## What is TIP Protocol?
 
 **TIP Protocol (Trust Identity Protocol)** is an open, federated, post-quantum cryptographic protocol that provides three things the internet has never had:
@@ -799,8 +803,11 @@ This software implements inventions that are the subject of pending U.S. patent 
 | Resource | URL |
 |----------|-----|
 | Website | https://theailab.org |
+| **Whitepaper v1.0** (canonical) | **https://theailab.org/whitepaper** |
+| Whitepaper PDF | https://theailab.org/whitepaper/TIP_Protocol_Whitepaper_v1_0.pdf |
+| Whitepaper errata | https://theailab.org/whitepaper/errata |
 | Documentation | https://docs.theailab.org |
-| Protocol Spec | https://github.com/theailaborg/tip-protocol/blob/main/spec/TIP_Protocol_Specification_v4_0.md |
+| Protocol Spec | https://github.com/theailaborg/tip-protocol/blob/main/spec/TIP_Protocol_Specification_v5_0.md |
 | Badge Widget | https://badge.theailab.org |
 | Verify a TIP-ID | https://vp.theailab.org/verify-record |
 | Create a TIP-ID | https://vp.theailab.org/get-verified |
