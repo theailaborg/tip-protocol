@@ -280,7 +280,7 @@ async function duelViaRejectionTableAny(key, reqA, reqB, txTypes) {
     return { verdict: "ERROR", detail: `both API calls failed: A=${JSON.stringify(respA.body).slice(0, 120)} B=${JSON.stringify(respB.body).slice(0, 120)}` };
   }
 
-  const typeList = txTypes.map(t => `'${t}'`).join(",");
+  const typeList = txTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(",");
   const sql = `SELECT tx_type, reason_detail FROM tx_rejections WHERE tx_type IN (${typeList}) AND reason_detail LIKE '%${key.replace(/'/g, "''")}%' ORDER BY rejected_at_ms DESC LIMIT 3;`;
   const deadline = nowMs() + 20_000;
   while (nowMs() < deadline) {
