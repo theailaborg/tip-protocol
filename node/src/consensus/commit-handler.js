@@ -159,6 +159,48 @@ const CONTENT_STATUS_MUTATORS = Object.freeze([
   TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
 ]);
 
+/**
+ * Extract the acting identity's tip_id from a tx — the tip_id that
+ * `isRevoked` is checked against in that tx's business-rule or schema guard.
+ * Returns null for types with no identity actor or where the actor requires
+ * a DAG lookup (PRESCAN_REVIEW_* terminals — deferred, see GH #112).
+ * Used by the Family B revocation-freeze check in _dedupCheck.
+ */
+function _actorTipId(tx) {
+  const d = tx.data || {};
+  switch (tx.tx_type) {
+    // Direct tip_id: actor IS the identity performing the action.
+    case TX_TYPES.BIND_DOMAIN:
+    case TX_TYPES.KEY_ROTATED:
+    case TX_TYPES.KEY_RECOVERY:
+    case TX_TYPES.LINK_PLATFORM:
+    case TX_TYPES.UNLINK_PLATFORM:
+    case TX_TYPES.UPDATE_PROFILE:
+      return d.tip_id || null;
+    // Content actions — actor field name varies by role.
+    case TX_TYPES.REGISTER_CONTENT:
+      return d.signer_tip_id || null;
+    case TX_TYPES.CONTENT_VERIFIED:
+      return d.verifier_tip_id || null;
+    case TX_TYPES.CONTENT_RETRACTED:
+    case TX_TYPES.UPDATE_ORIGIN:
+      return d.author_tip_id || null;
+    case TX_TYPES.CONTENT_DISPUTED:
+      return d.disputer_tip_id || null;
+    // Jury / appeal.
+    case TX_TYPES.JURY_VOTE_COMMIT:
+    case TX_TYPES.JURY_VOTE_REVEAL:
+      return d.juror_tip_id || null;
+    case TX_TYPES.APPEAL_FILED:
+      return d.appellant_tip_id || null;
+    // PRESCAN_REVIEW_* terminal types: reviewer tip_id is in the review record,
+    // not in tx.data — a DAG lookup would be needed. Deferred (cross-round
+    // _statefulCheck via prescanReview*Schema.verifyTx still guards these).
+    default:
+      return null;
+  }
+}
+
 function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
@@ -351,6 +393,25 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    */
   function _dedupCheck(tx, validated) {
     const d = tx.data || {};
+
+    // GH #112 Family B: revocation freeze. If this tx's actor identity is
+    // being revoked in the same batch (REVOKE_* already in validated), drop
+    // this tx. First-wins in canonical order: the freeze fires only when
+    // REVOKE_* precedes the action in validated. If the action lands first,
+    // both commit; cross-round _statefulCheck blocks future actions via
+    // isRevoked() once the revocation commits.
+    const actor = _actorTipId(tx);
+    if (actor) {
+      const inBatchRevoke = validated.find(
+        t => REVOKE_TYPES.includes(t.tx_type) && t.data?.tip_id === actor
+      );
+      if (inBatchRevoke) {
+        return {
+          valid: false,
+          error: `revocation freeze: ${tx.tx_type} dropped — ${actor} is being revoked this batch`,
+        };
+      }
+    }
 
     switch (tx.tx_type) {
 
