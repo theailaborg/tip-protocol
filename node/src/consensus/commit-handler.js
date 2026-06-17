@@ -176,26 +176,29 @@ function _actorTipId(tx) {
     case TX_TYPES.LINK_PLATFORM:
     case TX_TYPES.UNLINK_PLATFORM:
     case TX_TYPES.UPDATE_PROFILE:
-      return d.tip_id || null;
+      return d.tip_id ?? null;
     // Content actions — actor field name varies by role.
     case TX_TYPES.REGISTER_CONTENT:
-      return d.signer_tip_id || null;
+      return d.signer_tip_id ?? null;
     case TX_TYPES.CONTENT_VERIFIED:
-      return d.verifier_tip_id || null;
+      return d.verifier_tip_id ?? null;
     case TX_TYPES.CONTENT_RETRACTED:
     case TX_TYPES.UPDATE_ORIGIN:
-      return d.author_tip_id || null;
+      return d.author_tip_id ?? null;
     case TX_TYPES.CONTENT_DISPUTED:
-      return d.disputer_tip_id || null;
+      return d.disputer_tip_id ?? null;
     // Jury / appeal.
     case TX_TYPES.JURY_VOTE_COMMIT:
     case TX_TYPES.JURY_VOTE_REVEAL:
-      return d.juror_tip_id || null;
+      return d.juror_tip_id ?? null;
     case TX_TYPES.APPEAL_FILED:
-      return d.appellant_tip_id || null;
-    // PRESCAN_REVIEW_* terminal types: reviewer tip_id is in the review record,
-    // not in tx.data — a DAG lookup would be needed. Deferred (cross-round
-    // _statefulCheck via prescanReview*Schema.verifyTx still guards these).
+      return d.appellant_tip_id ?? null;
+    // PRESCAN_REVIEW_* terminal types: reviewer_tip_id is a required field in
+    // tx.data for all three types — no DAG lookup needed.
+    case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+    case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+      return d.reviewer_tip_id ?? null;
     default:
       return null;
   }
@@ -1767,7 +1770,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     }
 
     try {
-      const schema = SCHEMA_FOR_TX_TYPE[tt] || null;
+      const schema = SCHEMA_FOR_TX_TYPE[tt] ?? null;
       const result = unifiedVerifyTxSignature(tx, schema, dag);
       if (!result.ok) {
         log.warn(`Round-replay signature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${result.error}`);
