@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @file scripts/test-inbatch-dedup.js
- * @description DEV-ONLY: live-cluster test for GH #87 — in-batch dedup of
+ * @description DEV-ONLY: live-cluster test for GH #87/#112 — in-batch dedup of
  * state-changing tx types in commit-handler's `_dedupCheck`.
  *
  * The dedup only fires when two competing same-key txs land in the SAME
@@ -27,7 +27,9 @@
  *   node scripts/test-inbatch-dedup.js --case dispute       # one case
  *   node scripts/test-inbatch-dedup.js --case verify --attempts 5
  *
- * Cases: dispute | verify | update-origin | retract | key-rotate | all
+ * Cases: dispute | verify | update-origin | retract | key-rotate |
+ *        dispute-verify | dispute-retract | dispute-update-origin | verify-retract |
+ *        revoke-update-profile | all
  *
  * Options:
  *   --node-a URL     first submission target   (default http://localhost:4000)
@@ -260,6 +262,47 @@ async function duelViaRejectionTable(label, ctid, reqA, reqB) {
   return { verdict: "FAILED", detail: `no ${label} rejection row for ${ctid} after settle window — both txs likely committed` };
 }
 
+/**
+ * Cross-type variant: fire two requests of DIFFERENT tx types for the same
+ * key (ctid or tip_id) and classify via the rejection table. Either tx_type
+ * may end up as the loser — searches all provided types.
+ */
+async function duelViaRejectionTableAny(key, reqA, reqB, txTypes) {
+  const [respA, respB] = await Promise.all([
+    post(NODE_A, reqA.path, reqA.body),
+    post(NODE_B, reqB.path, reqB.body),
+  ]);
+  console.log(dim(`    A(${NODE_A}) → ${respA.status}`));
+  console.log(dim(`    B(${NODE_B}) → ${respB.status}`));
+  const okCalls = [respA, respB].filter(r => r.status >= 200 && r.status < 300).length;
+  if (okCalls < 2) {
+    if (okCalls === 1) return { verdict: "CROSS_ROUND", detail: "second call rejected at API time" };
+    return { verdict: "ERROR", detail: `both API calls failed: A=${JSON.stringify(respA.body).slice(0, 120)} B=${JSON.stringify(respB.body).slice(0, 120)}` };
+  }
+
+  const typeList = txTypes.map(t => `'${t}'`).join(",");
+  const sql = `SELECT tx_type, reason_detail FROM tx_rejections WHERE tx_type IN (${typeList}) AND reason_detail LIKE '%${key.replace(/'/g, "''")}%' ORDER BY rejected_at_ms DESC LIMIT 3;`;
+  const deadline = nowMs() + 20_000;
+  while (nowMs() < deadline) {
+    await sleep(2000);
+    let out = "";
+    try {
+      out = execSync(
+        `docker exec tip-postgres psql -U tipuser -d tip_node1 -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+        { stdio: ["pipe", "pipe", "pipe"] }
+      ).toString().trim();
+    } catch (e) { return { verdict: "ERROR", detail: `psql probe failed: ${e.message.slice(0, 120)}` }; }
+    if (out) {
+      console.log(dim(`    rejection row: ${out.split("\n")[0]}`));
+      if (/in batch|in this batch|content-status conflict|revocation freeze/i.test(out)) {
+        return { verdict: "IN_BATCH", detail: out.split("\n")[0] };
+      }
+      return { verdict: "CROSS_ROUND", detail: out.split("\n")[0] };
+    }
+  }
+  return { verdict: "FAILED", detail: `no rejection row for (${txTypes.join("|")}) key=${key} after settle window — both txs likely committed` };
+}
+
 /** Retry wrapper: fresh setup per attempt until IN_BATCH or attempts exhausted. */
 async function runCase(name, attemptFn) {
   console.log(`\n${BOLD}━━ ${name} ━━${RESET}`);
@@ -341,6 +384,22 @@ function buildDispute(ctid, disputer) {
   };
 }
 
+function buildVerify(ctid, verifier) {
+  const verdict = "ORIGIN_CONFIRMED";
+  const signature = signBody({ verifier_tip_id: verifier.tip_id, ctid, verdict }, verifier.private_key);
+  return { path: `/v1/content/${enc(ctid)}/verify`, body: { verifier_tip_id: verifier.tip_id, verdict, signature } };
+}
+
+function buildRetract(ctid, author) {
+  return {
+    path: `/v1/content/${enc(ctid)}/retract`,
+    body: {
+      author_tip_id: author.tip_id,
+      signature: signBody({ author_tip_id: author.tip_id, ctid }, author.private_key),
+    },
+  };
+}
+
 async function caseDispute(users, attempt) {
   // Rotate actors each attempt: stake is -15 per filed dispute and filers
   // are rate-limited (5 per 30d).
@@ -416,6 +475,63 @@ async function caseKeyRotate(users, attempt) {
   return duel("KEY_ROTATED", mk(), mk());
 }
 
+async function caseDisputeVerify(users, attempt) {
+  // Three distinct actors: author registers, disputer disputes, verifier verifies.
+  const [author, disputer, verifier] = pickActors(users, attempt, 3);
+  const ctid = await registerFreshContent(author, { waitPrescan: true });
+  return duelViaRejectionTableAny(
+    ctid,
+    buildDispute(ctid, disputer),
+    buildVerify(ctid, verifier),
+    ["CONTENT_DISPUTED", "CONTENT_VERIFIED"],
+  );
+}
+
+async function caseDisputeRetract(users, attempt) {
+  // Author fires retract; a different user fires dispute simultaneously.
+  const [author, disputer] = pickActors(users, attempt, 2);
+  const ctid = await registerFreshContent(author, { waitPrescan: true });
+  return duelViaRejectionTableAny(
+    ctid,
+    buildDispute(ctid, disputer),
+    buildRetract(ctid, author),
+    ["CONTENT_DISPUTED", "CONTENT_RETRACTED"],
+  );
+}
+
+async function caseDisputeUpdateOrigin(users, attempt) {
+  // Author fires update-origin; a different user fires dispute simultaneously.
+  // Content is freshly registered so still within the grace window for UPDATE_ORIGIN.
+  const [author, disputer] = pickActors(users, attempt, 2);
+  const ctid = await registerFreshContent(author, { waitPrescan: true });
+  const updateReq = {
+    path: `/v1/content/${enc(ctid)}/update-origin`,
+    body: {
+      author_tip_id: author.tip_id,
+      new_origin_code: "AG",
+      signature: signBody({ author_tip_id: author.tip_id, ctid, new_origin_code: "AG" }, author.private_key),
+    },
+  };
+  return duelViaRejectionTableAny(
+    ctid,
+    buildDispute(ctid, disputer),
+    updateReq,
+    ["CONTENT_DISPUTED", "UPDATE_ORIGIN"],
+  );
+}
+
+async function caseVerifyRetract(users, attempt) {
+  // Third-party verifier fires verify; author fires retract simultaneously.
+  const [author, verifier] = pickActors(users, attempt, 2);
+  const ctid = await registerFreshContent(author, { waitPrescan: true });
+  return duelViaRejectionTableAny(
+    ctid,
+    buildVerify(ctid, verifier),
+    buildRetract(ctid, author),
+    ["CONTENT_VERIFIED", "CONTENT_RETRACTED"],
+  );
+}
+
 // Deterministic actor rotation across attempts so retries use fresh pairs.
 function pickActors(users, attempt, n) {
   const pool = users.eligible;
@@ -434,6 +550,10 @@ const CASES = {
   "update-origin": caseUpdateOrigin,
   "retract": caseRetract,
   "key-rotate": caseKeyRotate,
+  "dispute-verify": caseDisputeVerify,
+  "dispute-retract": caseDisputeRetract,
+  "dispute-update-origin": caseDisputeUpdateOrigin,
+  "verify-retract": caseVerifyRetract,
 };
 
 (async () => {
@@ -445,7 +565,7 @@ const CASES = {
     const h = await get(base, "/health");
     if (h.status !== 200) { console.error(bad(`✗ ${base}/health → ${h.status} — is the cluster up?`)); process.exit(1); }
   }
-  console.log(`${BOLD}GH #87 in-batch dedup live test${RESET}  A=${NODE_A}  B=${NODE_B}  attempts/case=${ATTEMPTS}`);
+  console.log(`${BOLD}GH #87/#112 in-batch dedup live test${RESET}  A=${NODE_A}  B=${NODE_B}  attempts/case=${ATTEMPTS}`);
 
   const names = CASE === "all" ? Object.keys(CASES) : [CASE];
   if (names.some(nm => !CASES[nm])) { console.error(bad(`✗ unknown --case ${CASE} (use ${Object.keys(CASES).join("|")}|all)`)); process.exit(1); }
