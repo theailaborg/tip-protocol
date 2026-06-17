@@ -56,6 +56,7 @@ const { nowMs } = require(path.join(SHARED, "time"));
 const { DISPUTE_REASON } = require(path.join(SHARED, "constants"));
 const contentRegisterSchema = require(path.join(ROOT, "node/src/schemas/content-register"));
 const keyRotatedSchema = require(path.join(ROOT, "node/src/schemas/key-rotated"));
+const updateProfileSchema = require(path.join(ROOT, "node/src/schemas/update-profile"));
 
 // Protocol constants from genesis (schema validators need MEDIA_LIMITS etc.)
 const PC = require(path.join(SHARED, "protocol-constants"));
@@ -74,6 +75,7 @@ const NODE_B = arg("node-b", "http://localhost:4100");
 const PORTS = arg("ports", "4000,4100,4200,4300,4400").split(",").map(s => s.trim());
 const ATTEMPTS = parseInt(arg("attempts", "3"), 10);
 const USERS_FILE = arg("users", path.join(ROOT, "genesis-data/temp-users/temp-users-latest.json"));
+const VP_KEYS_FILE = path.join(ROOT, "genesis-data/founding-vp-keys.json");
 
 const RESET = "\x1b[0m", GREEN = "\x1b[32m", RED = "\x1b[31m", YELLOW = "\x1b[33m", DIM = "\x1b[2m", BOLD = "\x1b[1m";
 const ok = (s) => `${GREEN}${s}${RESET}`;
@@ -124,6 +126,17 @@ function loadUsers() {
     process.exit(1);
   }
   return { all, eligible };
+}
+
+function loadFoundingVp() {
+  if (!fs.existsSync(VP_KEYS_FILE)) {
+    console.error(bad(`✗ ${VP_KEYS_FILE} not found — cluster setup required`));
+    process.exit(1);
+  }
+  const data = JSON.parse(fs.readFileSync(VP_KEYS_FILE, "utf8"));
+  const vp = data.entries?.[0];
+  if (!vp) { console.error(bad("✗ no VP entries in founding-vp-keys.json")); process.exit(1); }
+  return vp; // { id, public_key, private_key, ... }
 }
 
 // ── outcome polling ─────────────────────────────────────────────────────────
@@ -400,6 +413,26 @@ function buildRetract(ctid, author) {
   };
 }
 
+function buildRevoke(targetUser, vp) {
+  // REVOCATION_FIELDS = ["tx_type", "tip_id", "reason_code", "evidence_hash", "issuing_vp_id"]
+  // reason_code and evidence_hash are optional; verifyBodySignature strips null/undefined.
+  const sigFields = { tx_type: "REVOKE_VP", tip_id: targetUser.tip_id, issuing_vp_id: vp.id };
+  const signature = signBody(sigFields, vp.private_key);
+  return {
+    path: "/v1/revocations",
+    body: { tx_type: "REVOKE_VP", tip_id: targetUser.tip_id, issuing_vp_id: vp.id, signature },
+  };
+}
+
+function buildUpdateProfile(user) {
+  const sigPayload = updateProfileSchema.buildSigningPayload({ tip_id: user.tip_id, reviewer_consent: true });
+  const signature = updateProfileSchema.sign(sigPayload, user.private_key);
+  return {
+    path: `/v1/identity/${enc(user.tip_id)}/profile`,
+    body: { tip_id: user.tip_id, reviewer_consent: true, signature },
+  };
+}
+
 async function caseDispute(users, attempt) {
   // Rotate actors each attempt: stake is -15 per filed dispute and filers
   // are rate-limited (5 per 30d).
@@ -532,6 +565,26 @@ async function caseVerifyRetract(users, attempt) {
   );
 }
 
+async function caseRevokeUpdateProfile(users, attempt) {
+  // Use a dedicated user from the END of the eligible pool — revocation is
+  // irreversible, so this identity can no longer submit txs after the test.
+  // Never reuse it across attempts or cases.
+  const targetUser = users.eligible[users.eligible.length - attempt];
+  if (!targetUser) throw new Error("ran out of dedicated revocation users — seed more temp users");
+  const vp = loadFoundingVp();
+  console.log(dim(`    revoking: ${targetUser.tip_id}`));
+  // Fire REVOKE_VP at NODE_A and UPDATE_PROFILE at NODE_B simultaneously.
+  // The freeze fires only when REVOKE_VP lands first in canonical order
+  // (Bullshark ordering). ~50% of attempts hit this ordering. With
+  // --attempts 5 the probability of at least one IN_BATCH is ~97%.
+  return duelViaRejectionTableAny(
+    targetUser.tip_id,
+    buildRevoke(targetUser, vp),
+    buildUpdateProfile(targetUser),
+    ["REVOKE_VP", "UPDATE_PROFILE"],
+  );
+}
+
 // Deterministic actor rotation across attempts so retries use fresh pairs.
 function pickActors(users, attempt, n) {
   const pool = users.eligible;
@@ -554,6 +607,7 @@ const CASES = {
   "dispute-retract": caseDisputeRetract,
   "dispute-update-origin": caseDisputeUpdateOrigin,
   "verify-retract": caseVerifyRetract,
+  "revoke-update-profile": caseRevokeUpdateProfile,
 };
 
 (async () => {
