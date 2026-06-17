@@ -145,6 +145,20 @@ function _mapBusinessRuleReason(error) {
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
+
+// GH #112: module-level constants shared between _dedupCheck cases and the
+// Family B pre-switch freeze block. Defined here so they're allocated once,
+// not per-tx-call.
+const REVOKE_TYPES = Object.freeze([
+  TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
+  TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
+]);
+const CONTENT_STATUS_MUTATORS = Object.freeze([
+  TX_TYPES.CONTENT_DISPUTED, TX_TYPES.CONTENT_VERIFIED,
+  TX_TYPES.CONTENT_RETRACTED, TX_TYPES.UPDATE_ORIGIN,
+  TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
+]);
+
 function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
@@ -337,18 +351,6 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    */
   function _dedupCheck(tx, validated) {
     const d = tx.data || {};
-
-    // Hoisted so both the Family B pre-switch block (added in Task 4) and the
-    // per-type cases below can reference these without re-definition.
-    const REVOKE_TYPES = [
-      TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
-      TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
-    ];
-    const CONTENT_STATUS_MUTATORS = [
-      TX_TYPES.CONTENT_DISPUTED, TX_TYPES.CONTENT_VERIFIED,
-      TX_TYPES.CONTENT_RETRACTED, TX_TYPES.UPDATE_ORIGIN,
-      TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
-    ];
 
     switch (tx.tx_type) {
 
@@ -671,6 +673,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // different verifiers for the same content are both valid.
         // Cross-type (Family A) uses ctid alone: any status-mutating
         // sibling blocks verification regardless of verifier identity.
+        // A CONTENT_VERIFIED without a verifier identity is malformed and
+        // cannot be a meaningful status mutation — skip both dedup checks.
         if (!d.ctid || !d.verifier_tip_id) return { valid: true };
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.CONTENT_VERIFIED
