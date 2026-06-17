@@ -566,10 +566,11 @@ async function caseVerifyRetract(users, attempt) {
 }
 
 async function caseRevokeUpdateProfile(users, attempt) {
-  // Use a dedicated user from the END of the eligible pool — revocation is
+  // Use a dedicated user from the FRONT of the eligible pool — revocation is
   // irreversible, so this identity can no longer submit txs after the test.
-  // Never reuse it across attempts or cases.
-  const targetUser = users.eligible[users.eligible.length - attempt];
+  // Front-of-pool avoids the tail collision with caseKeyRotate, which
+  // consumes from the back of users.all (eligible is a subset of all).
+  const targetUser = users.eligible[attempt - 1];
   if (!targetUser) throw new Error("ran out of dedicated revocation users — seed more temp users");
   const vp = loadFoundingVp();
   console.log(dim(`    revoking: ${targetUser.tip_id}`));
