@@ -162,8 +162,7 @@ const CONTENT_STATUS_MUTATORS = Object.freeze([
 /**
  * Extract the acting identity's tip_id from a tx — the tip_id that
  * `isRevoked` is checked against in that tx's business-rule or schema guard.
- * Returns null for types with no identity actor or where the actor requires
- * a DAG lookup (PRESCAN_REVIEW_* terminals — deferred, see GH #112).
+ * Returns null for types with no identity actor (REVOKE_*, system txs, etc.).
  * Used by the Family B revocation-freeze check in _dedupCheck.
  */
 function _actorTipId(tx) {
