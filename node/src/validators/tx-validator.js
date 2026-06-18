@@ -116,7 +116,8 @@ const SCHEMA = {
     types: { tip_id: "string" },
   },
   [TX_TYPES.REVOKE_VP]: {
-    required: ["tip_id", "reason_code", "evidence_hash", "issuing_vp_id"],
+    // reason_code and evidence_hash are optional (matches _registry.js REVOKE_CONTRACT).
+    required: ["tip_id", "issuing_vp_id"],
     types: { tip_id: "string", issuing_vp_id: "string" },
   },
   [TX_TYPES.REVOKE_DECEASED]: {
