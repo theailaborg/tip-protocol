@@ -698,6 +698,54 @@ class KnexAdapter {
       t.bigInteger("completed_at").nullable();
       t.index(["status", "created_at"], "idx_prescan_jobs_status");
     });
+
+    // Off-DAG perceptual similarity index (advisory): NOT mirrored (no _hydrate)
+    // and NOT in state_merkle_root. Cross-node-consistent because the fingerprint
+    // is replicated in the tx, not via consensus over this index. Source of truth
+    // = perceptual_fingerprint; the other three are derived candidate indexes
+    // (text LSH, image/video MIH, audio inverted). 16-bit MIH chunks are INTEGER
+    // (unsigned 0..65535 overflows a signed smallint).
+    await ensure("perceptual_fingerprint", t => {
+      t.string("ctid", 512).notNullable();
+      t.integer("component_idx").notNullable();
+      t.string("modality", 16).notNullable();    // text|image|video|audio
+      t.string("profile", 64).notNullable();
+      t.text("pipeline").notNullable();           // JSON
+      t.integer("quality");                        // null for text/audio
+      t.text("fingerprint").notNullable();        // JSON
+      t.bigInteger("created_at").notNullable();
+      t.primary(["ctid", "component_idx"]);
+    });
+    await ensure("minhash_band", t => {
+      t.string("profile", 64).notNullable();
+      t.integer("band_idx").notNullable();
+      t.bigInteger("band_hash").notNullable();
+      t.string("ctid", 512).notNullable();
+      t.primary(["profile", "band_idx", "band_hash", "ctid"]);
+      t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
+    });
+    await ensure("phash_code", t => {
+      t.bigIncrements("code_id");
+      t.string("ctid", 512).notNullable();
+      t.string("profile", 64).notNullable();
+      t.string("modality", 16).notNullable();    // image|video
+      t.integer("frame");                          // null for image
+      t.float("ts");                               // seconds, for video
+      t.integer("quality").notNullable();
+      t.string("pdq", 64).notNullable();          // 64-hex (256-bit)
+      for (let i = 0; i < 16; i++) t.integer(`c${i}`).notNullable();
+      t.index(["ctid"], "idx_phash_code_ctid");
+      for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
+    });
+    await ensure("audio_landmark", t => {
+      t.string("profile", 64).notNullable();
+      t.integer("hash").notNullable();
+      t.string("ctid", 512).notNullable();
+      t.integer("component_idx").notNullable();
+      t.integer("t").notNullable();
+      t.primary(["profile", "hash", "ctid", "component_idx", "t"]);
+      t.index(["profile", "hash"], "idx_audio_landmark_lookup");
+    });
   }
 
   async _hydrate() {

@@ -2200,6 +2200,72 @@ class SQLiteStore {
         completed_at  INTEGER                                -- ms; null while incomplete
       );
       CREATE INDEX IF NOT EXISTS idx_prescan_jobs_status ON prescan_jobs(status, created_at);
+
+      -- Off-DAG perceptual similarity index (advisory): NOT mirrored, NOT in
+      -- state_merkle_root. Cross-node-consistent because the fingerprint is
+      -- replicated in the tx, not via consensus over this index. Source of truth
+      -- = perceptual_fingerprint; the other three are derived candidate indexes
+      -- (text LSH / image+video MIH / audio inverted). 16-bit MIH chunks are
+      -- INTEGER (unsigned 0..65535 overflows a signed smallint).
+      CREATE TABLE IF NOT EXISTS perceptual_fingerprint (
+        ctid           TEXT    NOT NULL,
+        component_idx  INTEGER NOT NULL,
+        modality       TEXT    NOT NULL,          -- 'text'|'image'|'video'|'audio'
+        profile        TEXT    NOT NULL,
+        pipeline       TEXT    NOT NULL,           -- JSON
+        quality        INTEGER,                    -- null for text/audio
+        fingerprint    TEXT    NOT NULL,           -- JSON: minhash[128]|pdq|features[]|landmarks[]
+        created_at     INTEGER NOT NULL,
+        PRIMARY KEY (ctid, component_idx)
+      );
+      CREATE TABLE IF NOT EXISTS minhash_band (
+        profile    TEXT    NOT NULL,
+        band_idx   INTEGER NOT NULL,
+        band_hash  INTEGER NOT NULL,
+        ctid       TEXT    NOT NULL,
+        PRIMARY KEY (profile, band_idx, band_hash, ctid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_minhash_band_lookup ON minhash_band(profile, band_idx, band_hash);
+      CREATE TABLE IF NOT EXISTS phash_code (
+        code_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        ctid      TEXT    NOT NULL,
+        profile   TEXT    NOT NULL,
+        modality  TEXT    NOT NULL,               -- 'image'|'video'
+        frame     INTEGER,                          -- null for image
+        ts        REAL,                             -- seconds, for video
+        quality   INTEGER NOT NULL,
+        pdq       TEXT    NOT NULL,                -- 64-hex (256-bit)
+        c0  INTEGER NOT NULL, c1  INTEGER NOT NULL, c2  INTEGER NOT NULL, c3  INTEGER NOT NULL,
+        c4  INTEGER NOT NULL, c5  INTEGER NOT NULL, c6  INTEGER NOT NULL, c7  INTEGER NOT NULL,
+        c8  INTEGER NOT NULL, c9  INTEGER NOT NULL, c10 INTEGER NOT NULL, c11 INTEGER NOT NULL,
+        c12 INTEGER NOT NULL, c13 INTEGER NOT NULL, c14 INTEGER NOT NULL, c15 INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_phash_code_ctid ON phash_code(ctid);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c0  ON phash_code(profile, modality, c0);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c1  ON phash_code(profile, modality, c1);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c2  ON phash_code(profile, modality, c2);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c3  ON phash_code(profile, modality, c3);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c4  ON phash_code(profile, modality, c4);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c5  ON phash_code(profile, modality, c5);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c6  ON phash_code(profile, modality, c6);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c7  ON phash_code(profile, modality, c7);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c8  ON phash_code(profile, modality, c8);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c9  ON phash_code(profile, modality, c9);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c10 ON phash_code(profile, modality, c10);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c11 ON phash_code(profile, modality, c11);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c12 ON phash_code(profile, modality, c12);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c13 ON phash_code(profile, modality, c13);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c14 ON phash_code(profile, modality, c14);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c15 ON phash_code(profile, modality, c15);
+      CREATE TABLE IF NOT EXISTS audio_landmark (
+        profile       TEXT    NOT NULL,
+        hash          INTEGER NOT NULL,
+        ctid          TEXT    NOT NULL,
+        component_idx INTEGER NOT NULL,
+        t             INTEGER NOT NULL,
+        PRIMARY KEY (profile, hash, ctid, component_idx, t)
+      );
+      CREATE INDEX IF NOT EXISTS idx_audio_landmark_lookup ON audio_landmark(profile, hash);
     `);
 
     // Backfill creator_name column for pre-existing identities tables
