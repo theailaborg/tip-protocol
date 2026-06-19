@@ -211,6 +211,9 @@ scripts/postgres-init.sql
 # Local-only dev artifacts (not committed)
 COMMANDS.md
 docker-compose.classifier-stub.yml
+docker-compose.mixed-db.yml
+scripts/start-mixed-db.sh
+scripts/verify-mixed-db.sh
 docs/superpowers/
 docs/tech-debt/
 node6-env/
