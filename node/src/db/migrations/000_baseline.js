@@ -80,9 +80,10 @@ exports.up = async (knex) => {
 
   await knex.schema.createTable("content", t => {
     // Column name is client-conditional:
-    //   SQLite  → "ctid"     (no reserved-name conflict)
-    //   Postgres → "tip_ctid" ("ctid" is a Postgres system column)
-    const ctidCol = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    //   SQLite (better-sqlite3) → "ctid"    (dag.js SQLiteStore uses "ctid" directly)
+    //   All server-side DBs     → "tip_ctid" (knex-adapter always references "tip_ctid";
+    //                                         also avoids Postgres system-column conflict)
+    const ctidCol = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
     t.string(ctidCol, 512).primary();
     t.string("origin_code", 8).notNullable();
     t.string("content_hash", 128).notNullable();
@@ -332,9 +333,9 @@ exports.up = async (knex) => {
   await knex.schema.createTable("prescan_reviews", t => {
     t.string("review_id", 128).primary();
     // Column name is client-conditional (same pattern as `content` above):
-    //   SQLite  → "ctid"
-    //   Postgres → "tip_ctid"
-    const ctidCol2 = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    //   SQLite (better-sqlite3) → "ctid"
+    //   All server-side DBs     → "tip_ctid"
+    const ctidCol2 = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
     _id(t, ctidCol2).notNullable();
     _id(t, "creator_tip_id").notNullable();
     _id(t, "assigned_reviewer").nullable();
@@ -377,9 +378,9 @@ exports.up = async (knex) => {
   await knex.schema.createTable("prescan_jobs", t => {
     t.string("job_id", 128).primary();
     // Column name is client-conditional (same pattern as `content`):
-    //   SQLite  → "ctid"
-    //   Postgres → "tip_ctid"
-    const ctidCol3 = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    //   SQLite (better-sqlite3) → "ctid"
+    //   All server-side DBs     → "tip_ctid"
+    const ctidCol3 = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
     t.string(ctidCol3, 512).notNullable().unique();
     t.binary("payload").notNullable();              // canonical JSON of classifier input
     t.string("status", 16).notNullable();           // 'queued' | 'claimed' | 'done' | 'failed'
