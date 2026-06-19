@@ -79,8 +79,11 @@ exports.up = async (knex) => {
   });
 
   await knex.schema.createTable("content", t => {
-    // tip_ctid = application-level CTID; "ctid" is reserved in PostgreSQL
-    t.string("tip_ctid", 512).primary();
+    // Column name is client-conditional:
+    //   SQLite  → "ctid"     (no reserved-name conflict)
+    //   Postgres → "tip_ctid" ("ctid" is a Postgres system column)
+    const ctidCol = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    t.string(ctidCol, 512).primary();
     t.string("origin_code", 8).notNullable();
     t.string("content_hash", 128).notNullable();
     t.string("perceptual_hash", 128).nullable();
@@ -328,11 +331,11 @@ exports.up = async (knex) => {
   // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
   await knex.schema.createTable("prescan_reviews", t => {
     t.string("review_id", 128).primary();
-    // tip_ctid (not "ctid") — PostgreSQL reserves "ctid" as a system
-    // column on every table, so naming a user column "ctid" causes
-    // CREATE TABLE to fail. Same workaround as the `content` table:
-    // store as tip_ctid in the DB, map back to ctid on hydrate / save.
-    _id(t, "tip_ctid").notNullable();
+    // Column name is client-conditional (same pattern as `content` above):
+    //   SQLite  → "ctid"
+    //   Postgres → "tip_ctid"
+    const ctidCol2 = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    _id(t, ctidCol2).notNullable();
     _id(t, "creator_tip_id").notNullable();
     _id(t, "assigned_reviewer").nullable();
     t.integer("triggered_at_round").notNullable();
@@ -343,7 +346,7 @@ exports.up = async (knex) => {
     t.string("state", 32).notNullable().defaultTo("triggered");
     t.text("decision_note").nullable();
     t.string("suggested_origin", 8).nullable();
-    t.index("tip_ctid", "idx_prescan_reviews_ctid");
+    t.index(ctidCol2, "idx_prescan_reviews_ctid");
     t.index("state", "idx_prescan_reviews_state");
     t.index("assigned_reviewer", "idx_prescan_reviews_reviewer");
   });
@@ -373,10 +376,11 @@ exports.up = async (knex) => {
   // chain as a PRESCAN_COMPLETED tx that every node applies.
   await knex.schema.createTable("prescan_jobs", t => {
     t.string("job_id", 128).primary();
-    // Column named `tip_ctid` (not `ctid`) because `ctid` is a Postgres
-    // reserved system column (physical tuple identifier). Same pattern
-    // as the `content` table.
-    t.string("tip_ctid", 512).notNullable().unique();
+    // Column name is client-conditional (same pattern as `content`):
+    //   SQLite  → "ctid"
+    //   Postgres → "tip_ctid"
+    const ctidCol3 = knex.client.config.client === "pg" ? "tip_ctid" : "ctid";
+    t.string(ctidCol3, 512).notNullable().unique();
     t.binary("payload").notNullable();              // canonical JSON of classifier input
     t.string("status", 16).notNullable();           // 'queued' | 'claimed' | 'done' | 'failed'
     t.bigInteger("claimed_at").nullable();          // ms; null while queued

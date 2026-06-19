@@ -35,6 +35,27 @@ const { log } = require("./logger");
 let Database = null;
 try { Database = require("better-sqlite3"); } catch { /* use in-memory */ }
 
+// ─── Knex SQLite migration runner ─────────────────────────────────────────────
+// Runs the shared Knex migration files against a SQLite DB file before the
+// SQLiteStore is constructed. Called from initDAGAsync when dbPath is set and
+// better-sqlite3 is available. Runs every boot; Knex's migration tracker
+// (knex_migrations table) makes it idempotent.
+async function _runSqliteMigrations(dbPath) {
+  const knexLib = require("knex");
+  const migrationsDir = require("path").join(__dirname, "db/migrations");
+  const k = knexLib({
+    client: "better-sqlite3",
+    connection: { filename: dbPath },
+    useNullAsDefault: true,
+    migrations: { directory: migrationsDir, loadExtensions: [".js"] },
+  });
+  try {
+    await k.migrate.latest();
+  } finally {
+    await k.destroy();
+  }
+}
+
 // ─── Canonical row shapers (§14 snapshot-sync) ────────────────────────────
 // Both stores project their row shapes through these before yielding from
 // iterateCanonicalState. Single source of truth for which fields of each
@@ -1702,718 +1723,10 @@ class SQLiteStore {
   }
 
   _migrate() {
-    // GOTCHA: this SQL is a JS template literal, so any `${...}` in SQL
-    // strings or comments evaluates as JS at runtime. If you reference an
-    // undefined identifier in a comment (e.g. example placeholders), the
-    // whole _migrate() throws and `initDAG`'s catch silently falls back
-    // to MemoryStore — losing on-disk data on restart. Use angle brackets
-    // <like_this> or backslash-escape `\${...}` for placeholder examples.
-    this.db.exec(`
-      -- ── Transactions ─────────────────────────────────────────────────
-      -- subject_tip_id is a denormalised index column populated at write
-      -- time from tx-attribution.subjectTipId(tx). The canonical value
-      -- still lives inside the data JSON column; this column exists only
-      -- to give getTxsByTipId / activity-feed queries an indexed lookup
-      -- path. Nullable: org/system-level txs (VP_REGISTERED,
-      -- NODE_REGISTERED, AI_CLASSIFIER_RESULT, APPEAL_RESULT) have no
-      -- individual subject and never appear in any user's feed.
-      CREATE TABLE IF NOT EXISTS transactions (
-        tx_id              TEXT PRIMARY KEY,
-        tx_type            TEXT NOT NULL,
-        data               TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        prev               TEXT NOT NULL DEFAULT '[]',
-        signature          TEXT,
-        subject_tip_id     TEXT,
-        -- local_inserted_at = this node's nowMs() when the row was
-        -- written. Per-node by design. NOT in canonicalTx / tx_id /
-        -- state_merkle_root. For chain-time use the timestamp column
-        -- (the author-signed value bound into tx_id).
-        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      CREATE INDEX IF NOT EXISTS idx_txs_type              ON transactions(tx_type);
-      CREATE INDEX IF NOT EXISTS idx_txs_ts                ON transactions(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_txs_local_inserted_at ON transactions(local_inserted_at);
-      -- idx_txs_subject is created unconditionally below the ALTER block
-      -- so existing DBs (which need ALTER TABLE first) don't fail here on
-      -- a column that hasn't been added yet.
-
-      -- ── Identities ───────────────────────────────────────────────────
-      -- GH #60: public_key + algorithm are NOT columns on this table.
-      -- entity_keys is the single source of truth (see below). This
-      -- table holds mutable non-cryptographic attributes only. Readers
-      -- needing current key go through dag.getIdentity (auto-joins
-      -- active entity_keys row) or dag.getActiveKey("identity", tip_id).
-      -- Historical-signature verification (commit-handler / dispatcher)
-      -- uses dag.getKeyValidAt("identity", tip_id, tx.timestamp).
-      -- root_public_key dropped — it was scaffolded for a recovery
-      -- anchor that was never wired in any service / schema / seed.
-      CREATE TABLE IF NOT EXISTS identities (
-        tip_id              TEXT PRIMARY KEY,
-        region              TEXT NOT NULL DEFAULT 'US',
-        vp_id               TEXT,
-        verification_tier   TEXT NOT NULL DEFAULT 'T1',
-        score_display_mode  TEXT NOT NULL DEFAULT 'TIER_ONLY',
-        tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
-        founding            INTEGER NOT NULL DEFAULT 0,
-        status              TEXT NOT NULL DEFAULT 'active',
-        -- Independent opt-in per adjudication role (issue #107). Each defaults
-        -- to 0 (not opted in); a role is entered only by its own explicit
-        -- UPDATE_PROFILE toggle. No cross-role inheritance.
-        reviewer_consent    INTEGER NOT NULL DEFAULT 0,
-        juror_consent       INTEGER NOT NULL DEFAULT 0,
-        expert_consent      INTEGER NOT NULL DEFAULT 0,
-        -- Denormalised user-picked interest slugs (canonical sort, deduped).
-        -- Source of truth is the chain of UPDATE_PROFILE txs; this column
-        -- is the read-side projection. JSON-encoded array.
-        interests           TEXT NOT NULL DEFAULT '[]',
-        registered_at INTEGER NOT NULL,
-        creator_name        TEXT,
-        tx_id               TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_id_vp        ON identities(vp_id);
-      CREATE INDEX IF NOT EXISTS idx_id_status    ON identities(status);
-      CREATE INDEX IF NOT EXISTS idx_id_type      ON identities(tip_id_type);
-
-      -- ── entity_keys (GH #60) ──────────────────────────────────────────
-      -- Single source of truth for public_key + algorithm of every
-      -- identity, node, and VP across all time. Same pattern as W3C
-      -- DIDs verificationMethod[] / X.509 cert chains / WebAuthn
-      -- credentials / JWKS keysets. Append-only with valid_from_ts /
-      -- valid_to_ts ranges. KEY_ROTATED / KEY_RECOVERY close the
-      -- currently-active row (set valid_to_ts = effective_at) and
-      -- append a new one (valid_from_ts = effective_at,
-      -- valid_to_ts = NULL). REGISTER_IDENTITY / VP_REGISTERED /
-      -- NODE_REGISTERED insert the initial active row. Historical
-      -- signature verification reads the row valid at tx.timestamp.
-      CREATE TABLE IF NOT EXISTS entity_keys (
-        entity_type   TEXT NOT NULL,           -- 'identity' | 'node' | 'vp'
-        entity_id     TEXT NOT NULL,           -- tip://id/... | tip://node/... | tip://vp/...
-        public_key    TEXT NOT NULL,
-        algorithm     TEXT NOT NULL DEFAULT 'ml-dsa-65',
-        valid_from_ts INTEGER NOT NULL,         -- inclusive lower bound (epoch ms from tx.timestamp)
-        valid_to_ts   INTEGER,                  -- NULL = still active
-        source_tx_id  TEXT NOT NULL,            -- REGISTER_IDENTITY | KEY_ROTATED | KEY_RECOVERY | genesis:<id>
-        PRIMARY KEY (entity_type, entity_id, valid_from_ts)
-      );
-      CREATE INDEX IF NOT EXISTS idx_entity_keys_active
-        ON entity_keys(entity_type, entity_id, valid_to_ts);
-      CREATE INDEX IF NOT EXISTS idx_entity_keys_time
-        ON entity_keys(entity_type, entity_id, valid_from_ts);
-
-      -- ── Content ───────────────────────────────────────────────────────
-      -- Async-prescan fields: prescan_status flips from 'pending' (set at
-      -- REGISTER_CONTENT) to 'completed' when the worker emits
-      -- PRESCAN_COMPLETED. prescan_completed_at is the worker's submit
-      -- timestamp; downstream consumers (h=48 reviewer trigger, grace
-      -- windows) anchor to it rather than registered_at so the clock
-      -- starts when the creator sees the verdict, not when they pressed
-      -- publish. prescan_content_type is the resolved primary modality
-      -- (text/image/audio/video/multi) used by the modality-weight
-      -- aggregator. content_type_hint is the publisher's signed
-      -- declaration; the worker may override at PRESCAN_COMPLETED time.
-      -- Default 'completed' on prescan_status keeps existing/legacy rows
-      -- valid without a migration.
-      CREATE TABLE IF NOT EXISTS content (
-        ctid                       TEXT PRIMARY KEY,
-        origin_code                TEXT NOT NULL,
-        content_hash               TEXT NOT NULL,
-        author_tip_id              TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
-        signer_tip_id              TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
-        authors                    TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
-        attribution_mode           TEXT NOT NULL DEFAULT 'self',    -- self / employed / hosted
-        extras                     TEXT,                            -- JSON-encoded extension data
-        cna_version                TEXT NOT NULL,                   -- CNA version this content was signed under
-        status                     TEXT NOT NULL DEFAULT 'verified',
-        dispute_count              INTEGER NOT NULL DEFAULT 0,
-        verification_count         INTEGER NOT NULL DEFAULT 0,
-        prescan_flagged            INTEGER NOT NULL DEFAULT 0,
-        prescan_probability        REAL NOT NULL DEFAULT 0,         -- raw classifier output [0.0, 1.0]
-        prescan_tier               TEXT NOT NULL DEFAULT 'low',     -- low|elevated|high|critical (calibrated)
-        prescan_status             TEXT NOT NULL DEFAULT 'completed', -- 'pending' | 'completed'
-        prescan_completed_at       INTEGER,                          -- ms epoch; null for legacy rows
-        prescan_assigned_node_id   TEXT,                             -- node_reg_id of the API node that received the registration
-        prescan_content_type       TEXT,                             -- 'text'|'image'|'audio'|'video'|'multi'; null until PRESCAN_COMPLETED applies
-        prescan_overall_degraded   INTEGER NOT NULL DEFAULT 0,       -- 1 if any modality returned error / disagreement / 0.5 neutral
-        content_type_hint          TEXT,                             -- publisher's declared hint at register time
-        override                   INTEGER NOT NULL DEFAULT 0,      -- creator confirmed OH despite HIGH/CRITICAL warning
-        registered_at              INTEGER NOT NULL,
-        registered_urls            TEXT,                            -- JSON-encoded string[]; index 0 is the canonical / primary URL
-        media                      TEXT,                            -- JSON-encoded [{media_id, mime}, ...]; ordered (matches mch derivation)
-        media_canonical_hash       TEXT,                            -- shake256 of media[].media_id concat; null when no media
-        tx_id                      TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_content_author ON content(author_tip_id);
-      CREATE INDEX IF NOT EXISTS idx_content_signer ON content(signer_tip_id);
-      CREATE INDEX IF NOT EXISTS idx_content_origin ON content(origin_code);
-      CREATE INDEX IF NOT EXISTS idx_content_status ON content(status);
-      CREATE INDEX IF NOT EXISTS idx_content_prescan_status ON content(prescan_status);
-
-      -- ── Trust Scores ──────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS scores (
-        tip_id         TEXT PRIMARY KEY,
-        score          INTEGER NOT NULL DEFAULT 500,
-        offense_count  INTEGER NOT NULL DEFAULT 0,
-        last_updated   INTEGER NOT NULL
-      );
-
-      -- ── Dedup registry (ZK — Poseidon field elements, never raw inputs) ──
-      -- created_at is unix-seconds from tx.timestamp (the REGISTER_IDENTITY tx
-      -- that introduced this dedup hash). Must NOT be a DEFAULT (unixepoch() * 1000)
-      -- value — that would read the local clock and break the state_merkle_root.
-      -- tip_id is denormalized so /v1/identity/by-dedup-hash (and the
-      -- duplicate-registration 409 response) can resolve hash → tip_id
-      -- in a single indexed read. The same fact is derivable by walking
-      -- back to the REGISTER_IDENTITY tx but that's O(N).
-      CREATE TABLE IF NOT EXISTS dedup_registry (
-        dedup_hash  TEXT PRIMARY KEY,
-        created_at  INTEGER NOT NULL,
-        tip_id      TEXT
-      );
-
-      -- ── Revocations ───────────────────────────────────────────────────
-      CREATE TABLE IF NOT EXISTS revocations (
-        tip_id      TEXT PRIMARY KEY,
-        tx_type     TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        tx_id       TEXT NOT NULL
-      );
-
-      -- ── Domain bindings (org-only; canonical, in state_merkle_root) ──
-      -- One row per verified domain. Written by commit-handler on every
-      -- committed BIND_DOMAIN tx. binding_signature is the node's ML-DSA
-      -- attestation over {binding_state, claim_signature, claimed_at,
-      -- domain, method, node_id, tip_id, verified_at} — the canonical
-      -- payload that schemas/bind-domain.verifyTx reconstructs.
-      --
-      -- expires_at + consecutive_failures are v2 renewal prep slots
-      -- (adaptive-expiry RENEW_DOMAIN). Set at BIND commit to
-      -- (verified_at + DOMAIN_HEALTHY_EXPIRY_MS, 0) and untouched until
-      -- v2 ships. Including them in canonical state now avoids a second
-      -- migration when the renewal scheduler lands.
-      CREATE TABLE IF NOT EXISTS domain_bindings (
-        domain                TEXT PRIMARY KEY,
-        tip_id                TEXT NOT NULL,
-        binding_state         TEXT NOT NULL,
-        method                TEXT NOT NULL,
-        claimed_at INTEGER NOT NULL,
-        verified_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        consecutive_failures  INTEGER NOT NULL DEFAULT 0,
-        node_id               TEXT NOT NULL,
-        claim_signature       TEXT NOT NULL,
-        binding_signature     TEXT NOT NULL,
-        tx_id                 TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_dom_bind_tip_id  ON domain_bindings(tip_id);
-      CREATE INDEX IF NOT EXISTS idx_dom_bind_state   ON domain_bindings(binding_state);
-      CREATE INDEX IF NOT EXISTS idx_dom_bind_expires ON domain_bindings(expires_at);
-
-      -- ── Platform links (canonical, in state_merkle_root) ─────────────
-      -- One row per (tip_id, platform) pair. Written by commit-handler on
-      -- every committed LINK_PLATFORM tx. node_signature is the node's
-      -- ML-DSA attestation over the canonical link payload.
-      CREATE TABLE IF NOT EXISTS platform_links (
-        id             TEXT PRIMARY KEY,
-        tip_id         TEXT NOT NULL,
-        platform       TEXT NOT NULL,
-        handle         TEXT,
-        profile_url    TEXT NOT NULL,
-        status         TEXT NOT NULL DEFAULT 'active',
-        linked_at      INTEGER NOT NULL,
-        verified_at    INTEGER NOT NULL,
-        unlinked_at    INTEGER,
-        unlink_tx_id   TEXT,
-        node_id        TEXT NOT NULL,
-        tx_id          TEXT NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_links_tip_plat ON platform_links(tip_id, platform);
-      CREATE INDEX IF NOT EXISTS idx_platform_links_tip_id ON platform_links(tip_id);
-      CREATE INDEX IF NOT EXISTS idx_platform_links_status ON platform_links(status);
-
-      -- ── Pending domain claims (local-only; NOT in state_merkle_root) ─
-      -- Stores the user-signed claim between POST /v1/domain/register
-      -- and POST /v1/domain/verify. Per-node — the claim arrives at one
-      -- node and verification is initiated against that same node. Once
-      -- /verify succeeds and a BIND_DOMAIN tx commits, the row is removed.
-      CREATE TABLE IF NOT EXISTS pending_domain_claims (
-        domain      TEXT PRIMARY KEY,
-        tip_id      TEXT NOT NULL,
-        method      TEXT NOT NULL,
-        claimed_at INTEGER NOT NULL,
-        signature   TEXT NOT NULL,
-        received_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_pending_dom_tip_id ON pending_domain_claims(tip_id);
-
-      -- ── Verification Providers ────────────────────────────────────────
-      -- GH #60: public_key + algorithm live in entity_keys.
-      CREATE TABLE IF NOT EXISTS verification_providers (
-        vp_id              TEXT PRIMARY KEY,
-        name               TEXT NOT NULL,
-        jurisdiction       TEXT NOT NULL DEFAULT 'US',
-        jurisdiction_tier  TEXT NOT NULL DEFAULT 'green',
-        status             TEXT NOT NULL DEFAULT 'active',
-        registered_at INTEGER NOT NULL
-      );
-
-      -- ── Nodes ───────────────────────────────────────────────────────
-      -- GH #60: public_key + algorithm live in entity_keys.
-      CREATE TABLE IF NOT EXISTS nodes (
-        node_id              TEXT PRIMARY KEY,
-        name                 TEXT,
-        status               TEXT NOT NULL DEFAULT 'active',
-        api_endpoint         TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
-        updated_at           INTEGER,                         -- tx.timestamp of the last node-mutating tx; null until first. Monotonic-replay guard: every node-mutating tx must bump this AND reject tx.timestamp <= updated_at
-        registered_at        INTEGER NOT NULL
-      );
-
-      -- ── Consensus: Certificates (Narwhal) ─────────────────────────
-      CREATE TABLE IF NOT EXISTS certificates (
-        hash            TEXT PRIMARY KEY,
-        round           INTEGER NOT NULL,
-        author_node_id  TEXT NOT NULL,
-        batch_data      TEXT NOT NULL,
-        acknowledgments TEXT NOT NULL,
-        parent_hashes   TEXT NOT NULL,
-        signature       TEXT NOT NULL,
-        -- BFT-Time: median(acks.signed_at) at cert creation, integer epoch ms.
-        -- Default 0 keeps pre-BFT-Time DBs valid for inspection but Bullshark's
-        -- monotonicity gate rejects anchors with timestamp <= floor, so a real
-        -- network with 0-timestamp certs would halt at the next anchor (correct
-        -- behavior — flags an upgrade boundary instead of silently mis-ordering).
-        timestamp         INTEGER NOT NULL DEFAULT 0,
-        -- local_inserted_at = node-local write time. Chain-time for a
-        -- cert is the timestamp column (BFT-Time = median of acks).
-        local_inserted_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      CREATE INDEX IF NOT EXISTS idx_cert_round ON certificates(round);
-      CREATE INDEX IF NOT EXISTS idx_cert_author ON certificates(author_node_id, round);
-
-      -- ── Consensus: Commit checkpoints (§15) ────────────────────────
-      -- One row per Bullshark anchor commit. Durable record of
-      -- "at round R, consensus agreed these nodes were the committee,
-      --  this was the commit sequence number, this was the anchor cert."
-      -- Enables Byzantine-robust state-snapshot sync (§14), commit-time
-      -- committee divergence detection, and audit queries without
-      -- replaying the DAG.
-      CREATE TABLE IF NOT EXISTS commits (
-        round             INTEGER PRIMARY KEY,
-        anchor_cert_hash  TEXT NOT NULL,
-        leader_node_id    TEXT NOT NULL,
-        committee         TEXT NOT NULL,   -- JSON sorted array of node_ids
-        support_count     INTEGER NOT NULL,
-        consensus_index   INTEGER NOT NULL,
-        committed_at INTEGER NOT NULL,
-        -- §14 snapshot-sync fields (two separate roots, both signed by 2f+1 committee):
-        state_merkle_root TEXT NOT NULL,   -- hash over canonical derived state tables (answers "is my app state at round R correct?")
-        txs_merkle_root   TEXT NOT NULL,   -- merkle root of ordered tx_ids up to round R (answers "is tx X included?" for light clients)
-        ack_signer_ids    TEXT NOT NULL,   -- JSON array of node_ids that ack'd the anchor cert
-        ack_signatures    TEXT NOT NULL,   -- JSON array of hex signatures, same order as ack_signer_ids
-        -- BFT-Time: each ack's signed_at (epoch ms), parallel array to
-        -- ack_signatures/ack_signer_ids. The ack signature scope covers
-        -- signed_at, so a snapshot joiner reconstructs the payload as
-        -- "ack:<batch_hash>:<signer>:<signed_at>" to verify each signature.
-        -- Without this, joiners cannot verify ack signatures on commits
-        -- after the sender's certs have been GC'd.
-        ack_signed_ats    TEXT NOT NULL DEFAULT '[]',  -- JSON array of integer epoch ms
-        -- BFT-Time: cert.timestamp = median(acks.signed_at) at anchor commit.
-        -- Canonical "consensus wall clock" for this round, deterministic
-        -- across all nodes. Used by post-round logic (verdict triggers,
-        -- audit logs) and by Bullshark's anchor-monotonicity gate on
-        -- restart (read latest, set as floor for next anchor).
-        cert_timestamp    INTEGER NOT NULL DEFAULT 0,
-        -- #50: explicit copy of the anchor cert's batch_hash so this row
-        -- stays self-contained for snapshot verification once cert GC has
-        -- pruned the underlying cert. Without this, snapshot serving
-        -- needs dag.getCertificate(anchor_cert_hash).batch.hash, which
-        -- fails on idle federations whose latest commit drifts past
-        -- gc_depth rounds. Joiner uses this to reconstruct the
-        -- ack-signature payload (ack:<batch_hash>:<signer>:<signed_at>) each ack signed.
-        anchor_batch_hash TEXT,            -- hex; nullable for back-compat with pre-#50 rows
-        -- local_inserted_at = node-local write time. Chain-time for a
-        -- commit is the committed_at column (= anchor cert's BFT-Time).
-        local_inserted_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_index ON commits(consensus_index);
-
-      -- ── Committee history (§4 + #34 — chain-of-trust) ─────────────
-      -- One row per committee rotation. Bootstrapped at initDAG with
-      -- rotation 0 from genesis.founding_node (no sigs — hardcoded
-      -- trust anchor). Every subsequent rotation requires 2f+1 sigs
-      -- from the PREVIOUS committee, signed over payload_hash =
-      -- shake256(canonical{rotation_number, effective_round, committee}).
-      --
-      -- Snapshot fast-sync ships these rows in their own stream with
-      -- their own committee_history_root (separate from state_merkle_root).
-      -- The joiner walks the chain forward from rotation 0 verifying
-      -- each transition was signed by the previously-trusted committee.
-      -- This catches the synthetic-snapshot attack: a fabricated chain
-      -- collapses at the first link because the founding_node's sig
-      -- can't be forged.
-      --
-      -- committee field schema: JSON array of { node_id, public_key }
-      -- records, sorted by node_id. Carrying pubkeys IN the rotation
-      -- (rather than relying on the snapshot's nodes table) is what
-      -- breaks the chicken-and-egg in fresh-joiner verification — a
-      -- fresh joiner anchors trust at local genesis (hardcoded
-      -- founding_node + public_key in their binary) and adopts each
-      -- rotation's pubkeys only after verifying its sigs against the
-      -- previously-trusted committee.
-      CREATE TABLE IF NOT EXISTS committee_history (
-        rotation_number    INTEGER PRIMARY KEY,
-        effective_round    INTEGER NOT NULL,
-        committee          TEXT NOT NULL,    -- JSON [{node_id, public_key}], sorted by node_id
-        prev_rotation      INTEGER,           -- NULL for rotation 0 (genesis)
-        signer_node_ids    TEXT NOT NULL DEFAULT '[]',  -- JSON sorted node_ids array
-        signatures         TEXT NOT NULL DEFAULT '[]',  -- JSON, parallel to signer_node_ids
-        payload_hash       TEXT,              -- hex; what each signer signed
-        committed_at INTEGER NOT NULL,
-        -- local_inserted_at = node-local write time. Chain-time for a
-        -- rotation is the committed_at column (= committing cert's
-        -- BFT-Time).
-        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      CREATE INDEX IF NOT EXISTS idx_committee_history_round ON committee_history(effective_round);
-
-      -- ── Interests Registry ──────────────────────────────────────────
-      -- Curated taxonomy of slugs users can pick from on their profile
-      -- (UPDATE_PROFILE.interests). Seeded at first boot from
-      -- INITIAL_INTERESTS_SEED; extended at runtime via INTEREST_REGISTERED
-      -- (VP-attested). Slug is PK so duplicates are rejected at insert.
-      -- registered_by_vp_id is NULL for genesis-seeded rows.
-      CREATE TABLE IF NOT EXISTS interests_registry (
-        slug                  TEXT PRIMARY KEY,
-        label                 TEXT NOT NULL,
-        category              TEXT NOT NULL,
-        registered_at         INTEGER NOT NULL,
-        registered_by_vp_id   TEXT,
-        tx_id                 TEXT,
-        local_inserted_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      CREATE INDEX IF NOT EXISTS idx_interests_registry_category ON interests_registry(category);
-
-      -- ── Prescan Reviews ─────────────────────────────────────────────
-      -- Tracks human-reviewing-AI-flag instances. A row is created at h=48
-      -- for HIGH/CRITICAL-flagged content the creator didn't self-correct.
-      -- The state machine carries the review to a terminal outcome
-      -- (closed_dismissed / closed_accepted_private / escalated_to_dispute
-      -- / closed_self_correct). On DAG for federation consistency — any
-      -- node selecting reviewers or surfacing badge state must agree.
-      CREATE TABLE IF NOT EXISTS prescan_reviews (
-        review_id            TEXT PRIMARY KEY,
-        ctid                 TEXT NOT NULL,
-        creator_tip_id       TEXT NOT NULL,
-        assigned_reviewer    TEXT,                            -- NULL until REVIEW_TRIGGERED commits with the assignment
-        triggered_at_round   INTEGER NOT NULL,
-        triggered_at_ms      INTEGER,                          -- cert.ts ms at TRIGGERED apply; drives reviewer SLA auto-recuse
-        decided_at_round     INTEGER,                          -- when reviewer DISMISSED or CONFIRMED
-        confirmed_at_round   INTEGER,                          -- set on CONFIRMED; starts creator's 24h decision window
-        confirmed_at_ms      INTEGER,                          -- cert.ts ms at CONFIRMED apply; drives h=R+24 auto-escalation
-        state                TEXT NOT NULL DEFAULT 'triggered',
-        decision_note        TEXT,                             -- reviewer's optional notes
-        suggested_origin     TEXT                              -- on CONFIRMED: reviewer's recommended AA/AG/MX
-      );
-      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_ctid ON prescan_reviews(ctid);
-      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_state ON prescan_reviews(state);
-      CREATE INDEX IF NOT EXISTS idx_prescan_reviews_reviewer ON prescan_reviews(assigned_reviewer);
-
-      -- ── #75 Rotation participation tally ───────────────────────────
-      -- Per-author counter of "appearances in Bullshark anchors during
-      -- rotation N's period". Incremented on every anchor commit (one
-      -- increment for the leader, one per ack-signer). At each rotation
-      -- boundary (consensus_index % COMMITTEE_ROTATION_INTERVAL_COMMITS
-      -- == 0), the next rotation's committee is computed from these
-      -- tallies: anyone with count >= ceil(INTERVAL_COMMITS *
-      -- MIN_PARTICIPATION_PCT / 100), plus genesis members, qualifies.
-      --
-      -- The table is bit-identical across all nodes by Bullshark's BFT
-      -- consensus property: every node sees the same anchor cert at
-      -- consensus_index N (same leader, same ack_signer_ids), so every
-      -- node's increments are identical, so the counters end up
-      -- bit-identical, so the "qualified for next rotation?" boolean
-      -- returns the same answer everywhere. This is what eliminates the
-      -- §4 / #74 divergence at the source — committee derivation is
-      -- now a deterministic function of BFT-attested state, not local
-      -- cert-history.
-      --
-      -- Storage: at most active_committee_size × kept_rotations rows.
-      -- For testnet (3-10 nodes, keep last 3 rotations) ~30 rows. Pruned
-      -- via pruneRotationParticipationBefore. Never grows with chain
-      -- length — distinct from the per-anchor logging approach we
-      -- explicitly avoided (would have been ~1 GB/year).
-      CREATE TABLE IF NOT EXISTS rotation_participation (
-        node_id          TEXT NOT NULL,
-        rotation_number  INTEGER NOT NULL,
-        count            INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (node_id, rotation_number)
-      );
-      CREATE INDEX IF NOT EXISTS idx_rotation_participation_rotation
-        ON rotation_participation(rotation_number);
-
-      -- ── Consensus: Equivocation defense (§1) ──────────────────────
-      -- Durable record of "what I've already attested to at (round, author)".
-      -- Checked before signing any ack; refuse if a different batch_hash
-      -- exists for the same (round, author). Prevents our node from being
-      -- coerced (by peer equivocation or our own crash-restart) into signing
-      -- two different attestations for the same logical position — which
-      -- would let an author collect quorum on both of two conflicting
-      -- batches and fork network state.
-      --
-      -- Bounded storage: pruned by _tryAdvanceRound on every round advance
-      -- to a window of (current_round - VOTES_RETENTION_ROUNDS). Steady-state
-      -- row count = VOTES_RETENTION_ROUNDS × committee_size (tens of rows).
-      CREATE TABLE IF NOT EXISTS votes_seen (
-        round              INTEGER NOT NULL,
-        author             TEXT NOT NULL,
-        batch_hash         TEXT NOT NULL,
-        -- local_inserted_at = when this node first observed the vote.
-        -- Pure operational dedup table; not in any canonical projection.
-        local_inserted_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
-        PRIMARY KEY (round, author)
-      );
-      CREATE INDEX IF NOT EXISTS idx_votes_round ON votes_seen(round);
-
-      -- ── Consensus: Persistent Mempool ──────────────────────────────
-      -- subject_tip_id mirrors transactions.subject_tip_id so the
-      -- activity feed can show a user's still-pending txs alongside
-      -- their committed ones in a single merged response.
-      CREATE TABLE IF NOT EXISTS mempool (
-        tx_id           TEXT PRIMARY KEY,
-        tx_data         TEXT NOT NULL,
-        subject_tip_id  TEXT,
-        received_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-      );
-      -- idx_mempool_subject created unconditionally below the ALTER block.
-
-      -- ── Tx Rejections (#64 follow-up — no-loss invariant) ─────────
-      -- Records every tx that was admitted past the API layer but did
-      -- not end up in transactions. Combined with the dag, this seals
-      -- the invariant: every tx_id the API returned is either in the
-      -- transactions table (committed) or here (dropped, with reason)
-      -- — never both, never neither.
-      --
-      -- Per-node observation log, NOT consensus state. Each node's drop
-      -- sites observe their own POV; rows intentionally diverge across
-      -- nodes. Not included in state_merkle_root.
-      --
-      -- INSERT OR IGNORE on tx_id PK: first observation wins. Peer
-      -- re-broadcast of an already-rejected tx is a silent no-op so
-      -- the original (most-informative) reason is preserved.
-      CREATE TABLE IF NOT EXISTS tx_rejections (
-        tx_id              TEXT PRIMARY KEY,
-        reason             TEXT NOT NULL,
-        reason_detail      TEXT,
-        rejected_at_ms     INTEGER NOT NULL,
-        rejected_at_round  INTEGER,
-        dropper_node_id    TEXT NOT NULL,
-        tx_type            TEXT,
-        origin_node_id     TEXT,
-        -- Full tx body as JSON (signature, data, prev, timestamp).
-        -- Populated by every drop site so a future operator-initiated
-        -- replay path can re-validate and re-submit. Even terminal
-        -- reasons (already_registered, equivocation) keep the body
-        -- for forensics — uniform schema beats branching logic, and
-        -- rejections are sparse relative to commits so storage cost
-        -- is bounded.
-        tx_data            TEXT,
-        -- Mirrors transactions.subject_tip_id. Lets the activity feed
-        -- merge a user's rejected txs with their committed + pending
-        -- via one indexed query per source.
-        subject_tip_id     TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_reason  ON tx_rejections(reason);
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_at      ON tx_rejections(rejected_at_ms);
-      CREATE INDEX IF NOT EXISTS idx_tx_rej_origin  ON tx_rejections(origin_node_id);
-      -- idx_tx_rej_subject created unconditionally below the ALTER block.
-
-      -- ── #44: Consensus singleton key-value store ───────────────────
-      -- Tiny kv table for consensus state that's a single value rather
-      -- than a per-event row. Currently used to persist the in-memory
-      -- consensus_index counter (anchor count) so it survives restarts
-      -- on idle federations — where commit rows are sparse and the
-      -- counter would otherwise be lost / under-recovered.
-      --
-      -- Constant footprint regardless of update frequency: every write
-      -- is INSERT OR REPLACE on the same primary key, so the table has
-      -- one row per distinct key forever. Designed for low-cardinality
-      -- singleton state; do NOT use for per-event data.
-      CREATE TABLE IF NOT EXISTS consensus_meta (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
-      -- ── Dispute details (off-chain dispute body) ──────────────────
-      -- Holds the disputer-submitted description + structured evidence
-      -- array, bound by evidence_hash to a CONTENT_DISPUTED tx. The hash
-      -- is on-chain; the body is NOT. NOT consensus state — excluded
-      -- from iterateCanonicalState / state_merkle_root. Per-node copies
-      -- may legitimately diverge. INSERT OR IGNORE on evidence_hash PK
-      -- keeps uploads idempotent. disputer_tip_id is stored (not
-      -- derivable from signature alone) so reads can fetch the pubkey
-      -- and re-verify the signature.
-      CREATE TABLE IF NOT EXISTS dispute_details (
-        evidence_hash      TEXT PRIMARY KEY,
-        disputer_tip_id    TEXT NOT NULL,
-        payload_json       TEXT NOT NULL,
-        signature          TEXT NOT NULL,
-        -- local_inserted_at = when this node received the evidence body.
-        -- Off-chain store by design; no chain-time exists for this row.
-        local_inserted_at  INTEGER NOT NULL
-      );
-
-      -- ── Prescan jobs (node-local async queue; NOT in state_merkle_root) ─
-      -- Worker-process queue for outbound classifier calls. One row per
-      -- registered content awaiting prescan. The API node that received
-      -- the registration enqueues; its sibling worker process polls,
-      -- calls the classifier, and emits PRESCAN_COMPLETED. Stuck claims
-      -- past claimed_at + worker_claim_timeout_ms are reclaimable by
-      -- another worker on the same node. Per-node by design — other
-      -- nodes never see these rows, only the PRESCAN_COMPLETED tx that
-      -- eventually commits.
-      CREATE TABLE IF NOT EXISTS prescan_jobs (
-        job_id        TEXT PRIMARY KEY,
-        ctid          TEXT NOT NULL UNIQUE,
-        payload       BLOB NOT NULL,                       -- canonical JSON of classifier input
-        status        TEXT NOT NULL,                       -- 'queued' | 'claimed' | 'done' | 'failed'
-        claimed_at    INTEGER,                              -- ms; null while queued
-        claimed_by    TEXT,                                  -- worker pid / node_reg_id; null while queued
-        retries       INTEGER NOT NULL DEFAULT 0,
-        last_error    TEXT,
-        created_at    INTEGER NOT NULL,                     -- ms; enqueue time
-        completed_at  INTEGER                                -- ms; null while incomplete
-      );
-      CREATE INDEX IF NOT EXISTS idx_prescan_jobs_status ON prescan_jobs(status, created_at);
-
-      -- Off-DAG perceptual similarity index (advisory): NOT mirrored, NOT in
-      -- state_merkle_root. Cross-node-consistent because the fingerprint is
-      -- replicated in the tx, not via consensus over this index. Source of truth
-      -- = perceptual_fingerprint; the other three are derived candidate indexes
-      -- (text LSH / image+video MIH / audio inverted). 16-bit MIH chunks are
-      -- INTEGER (unsigned 0..65535 overflows a signed smallint).
-      CREATE TABLE IF NOT EXISTS perceptual_fingerprint (
-        ctid           TEXT    NOT NULL,
-        component_idx  INTEGER NOT NULL,
-        modality       TEXT    NOT NULL,          -- 'text'|'image'|'video'|'audio'
-        profile        TEXT    NOT NULL,
-        pipeline       TEXT    NOT NULL,           -- JSON
-        quality        INTEGER,                    -- null for text/audio
-        fingerprint    TEXT    NOT NULL,           -- JSON: minhash[128]|pdq|features[]|landmarks[]
-        created_at     INTEGER NOT NULL,
-        PRIMARY KEY (ctid, component_idx)
-      );
-      CREATE TABLE IF NOT EXISTS minhash_band (
-        profile    TEXT    NOT NULL,
-        band_idx   INTEGER NOT NULL,
-        band_hash  INTEGER NOT NULL,
-        ctid       TEXT    NOT NULL,
-        PRIMARY KEY (profile, band_idx, band_hash, ctid)
-      );
-      CREATE INDEX IF NOT EXISTS idx_minhash_band_lookup ON minhash_band(profile, band_idx, band_hash);
-      CREATE TABLE IF NOT EXISTS phash_code (
-        ctid          TEXT    NOT NULL,
-        component_idx INTEGER NOT NULL,
-        frame         INTEGER NOT NULL,             -- 0 for image, frame index for video
-        profile       TEXT    NOT NULL,
-        modality      TEXT    NOT NULL,             -- 'image'|'video'
-        ts            REAL,                          -- seconds, for video
-        quality       INTEGER NOT NULL,
-        pdq           TEXT    NOT NULL,             -- 64-hex (256-bit)
-        c0  INTEGER NOT NULL, c1  INTEGER NOT NULL, c2  INTEGER NOT NULL, c3  INTEGER NOT NULL,
-        c4  INTEGER NOT NULL, c5  INTEGER NOT NULL, c6  INTEGER NOT NULL, c7  INTEGER NOT NULL,
-        c8  INTEGER NOT NULL, c9  INTEGER NOT NULL, c10 INTEGER NOT NULL, c11 INTEGER NOT NULL,
-        c12 INTEGER NOT NULL, c13 INTEGER NOT NULL, c14 INTEGER NOT NULL, c15 INTEGER NOT NULL,
-        -- Natural key: re-ingest of the same content (always identical frames,
-        -- the fingerprint is fixed per ctid) is ignored, not duplicated.
-        PRIMARY KEY (ctid, component_idx, frame)
-      );
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c0  ON phash_code(profile, modality, c0);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c1  ON phash_code(profile, modality, c1);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c2  ON phash_code(profile, modality, c2);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c3  ON phash_code(profile, modality, c3);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c4  ON phash_code(profile, modality, c4);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c5  ON phash_code(profile, modality, c5);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c6  ON phash_code(profile, modality, c6);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c7  ON phash_code(profile, modality, c7);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c8  ON phash_code(profile, modality, c8);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c9  ON phash_code(profile, modality, c9);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c10 ON phash_code(profile, modality, c10);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c11 ON phash_code(profile, modality, c11);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c12 ON phash_code(profile, modality, c12);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c13 ON phash_code(profile, modality, c13);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c14 ON phash_code(profile, modality, c14);
-      CREATE INDEX IF NOT EXISTS idx_phash_code_c15 ON phash_code(profile, modality, c15);
-      -- Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the
-      -- landmark index explodes (~20k rows/song), so rows reference a compact
-      -- BIGINT clip_id instead of a TEXT(512) ctid (~5x smaller). The full
-      -- landmark set lives in perceptual_fingerprint.fingerprint; this index is
-      -- rebuildable, so only a strong SUBSET of landmarks need be indexed.
-      CREATE TABLE IF NOT EXISTS audio_clip (
-        clip_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        ctid           TEXT    NOT NULL,
-        component_idx  INTEGER NOT NULL,
-        landmark_count INTEGER NOT NULL DEFAULT 0,  -- FULL count (for scoreRatio denom)
-        UNIQUE (ctid, component_idx)
-      );
-      CREATE TABLE IF NOT EXISTS audio_landmark (
-        profile   TEXT    NOT NULL,
-        hash      INTEGER NOT NULL,   -- 24-bit packed (f1,f2,dt) landmark
-        clip_id   INTEGER NOT NULL,   -- -> audio_clip(ctid, component_idx)
-        t         INTEGER NOT NULL,   -- anchor frame index
-        PRIMARY KEY (profile, hash, clip_id, t)
-      );
-      CREATE INDEX IF NOT EXISTS idx_audio_landmark_lookup ON audio_landmark(profile, hash);
-    `);
-
-    // Backfill creator_name column for pre-existing identities tables
-    const idCols = this.db.prepare("PRAGMA table_info(identities)").all().map(c => c.name);
-    if (!idCols.includes("creator_name")) {
-      this.db.exec("ALTER TABLE identities ADD COLUMN creator_name TEXT");
-    }
-    // #50: backfill anchor_batch_hash column for pre-existing commits tables.
-    // Older rows (written before #50) have NULL — snapshot serving still
-    // tries the cert lookup as a fallback for them, which fails if the
-    // cert was GC'd (same pre-fix behaviour for old rows). Every new
-    // commit written after this migration includes the column directly,
-    // so going forward each commit row is self-contained.
-    const commitCols = this.db.prepare("PRAGMA table_info(commits)").all().map(c => c.name);
-    if (!commitCols.includes("anchor_batch_hash")) {
-      this.db.exec("ALTER TABLE commits ADD COLUMN anchor_batch_hash TEXT");
-    }
-
-    // Activity-feed denormalisation: backfill `subject_tip_id` on the
-    // three tables that participate in the activity merge (committed +
-    // pending + rejected). Two-phase migration:
-    //   1. ALTER TABLE adds the column to existing schemas (no-op when
-    //      the column already exists, e.g. fresh DBs whose CREATE TABLE
-    //      defined it directly).
-    //   2. CREATE INDEX runs unconditionally afterwards. Idempotent via
-    //      IF NOT EXISTS, and deliberately not in the main exec block —
-    //      placing it there fails on existing DBs because the column
-    //      doesn't exist yet at CREATE TABLE IF NOT EXISTS time, which
-    //      throws and cascades to the in-memory fallback (live-observed:
-    //      node 2 lost its persisted state on first restart with this
-    //      migration). Backfill values is deferred to
-    //      `backfillSubjectTipId()` so it short-circuits when nothing
-    //      needs filling.
-    const txCols = this.db.prepare("PRAGMA table_info(transactions)").all().map(c => c.name);
-    if (!txCols.includes("subject_tip_id")) {
-      this.db.exec("ALTER TABLE transactions ADD COLUMN subject_tip_id TEXT");
-    }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_txs_subject ON transactions(subject_tip_id)");
-
-    const mempoolCols = this.db.prepare("PRAGMA table_info(mempool)").all().map(c => c.name);
-    if (!mempoolCols.includes("subject_tip_id")) {
-      this.db.exec("ALTER TABLE mempool ADD COLUMN subject_tip_id TEXT");
-    }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_mempool_subject ON mempool(subject_tip_id)");
-
-    const rejCols = this.db.prepare("PRAGMA table_info(tx_rejections)").all().map(c => c.name);
-    if (!rejCols.includes("subject_tip_id")) {
-      this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
-    }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
+    // Schema is applied via Knex migrations (src/db/migrations/) in
+    // initDAGAsync before this SQLiteStore is constructed. No-op here.
   }
+
 
   /**
    * Populate `subject_tip_id` on existing rows that pre-date the column.
@@ -3257,6 +2570,7 @@ class SQLiteStore {
     };
     return {
       ...row,
+      ctid: row.ctid,
       registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
       authors: (() => { const v = decode(row.authors, []); return Array.isArray(v) ? v : []; })(),
       extras: (() => { const v = decode(row.extras, {}); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
@@ -3721,29 +3035,33 @@ class SQLiteStore {
       rec.suggested_origin || null,
     );
   }
+  _hydratePrescanReview(row) {
+    if (!row) return null;
+    return { ...row };
+  }
   getPrescanReview(reviewId) {
-    return this._stmts.getPrescanReview.get(reviewId) || null;
+    return this._hydratePrescanReview(this._stmts.getPrescanReview.get(reviewId));
   }
   getOpenPrescanReviewByCtid(ctid) {
-    return this._stmts.getOpenPrescanReviewByCtid.get(ctid) || null;
+    return this._hydratePrescanReview(this._stmts.getOpenPrescanReviewByCtid.get(ctid));
   }
   getPrescanReviewsByReviewer(reviewerTipId) {
-    return this._stmts.getPrescanReviewsByReviewer.all(reviewerTipId);
+    return this._stmts.getPrescanReviewsByReviewer.all(reviewerTipId).map(r => this._hydratePrescanReview(r));
   }
   getPrescanReviewsByCtid(ctid) {
-    return this._stmts.getPrescanReviewsByCtid.all(ctid);
+    return this._stmts.getPrescanReviewsByCtid.all(ctid).map(r => this._hydratePrescanReview(r));
   }
   getContentsNeedingReview(nowMs) {
-    return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS);
+    return this._stmts.getContentsNeedingReview.all(nowMs - CONTENT_GRACE.FLAGGED_MS).map(r => this._hydrateContent(r));
   }
   getContentsStuckInPrescan(failOpenCutoffMs) {
-    return this._stmts.getContentsStuckInPrescan.all(failOpenCutoffMs);
+    return this._stmts.getContentsStuckInPrescan.all(failOpenCutoffMs).map(r => this._hydrateContent(r));
   }
   getReviewsNeedingAutoEscalation(nowMs) {
-    return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS);
+    return this._stmts.getReviewsNeedingAutoEscalation.all(nowMs - REVIEWER.CREATOR_DECISION_WINDOW_MS).map(r => this._hydratePrescanReview(r));
   }
   getReviewsNeedingAutoRecuse(nowMs) {
-    return this._stmts.getReviewsNeedingAutoRecuse.all(nowMs - REVIEWER.AUTO_RECUSE_AGE_MS);
+    return this._stmts.getReviewsNeedingAutoRecuse.all(nowMs - REVIEWER.AUTO_RECUSE_AGE_MS).map(r => this._hydratePrescanReview(r));
   }
 
   // #75 rotation_participation — see MemoryStore version for the contract.
@@ -4010,6 +3328,10 @@ class SQLiteStore {
   // Mirrors MemoryStore.saveDisputeDetails. Idempotent on evidence_hash —
   // re-uploads of the same payload are a silent no-op.
   // ── Prescan jobs (node-local async classifier queue) ───────────────────
+  _hydratePrescanJob(row) {
+    if (!row) return null;
+    return { ...row };
+  }
   enqueuePrescanJob(rec) {
     // payload is canonical JSON; pass as-is (SQLite BLOB column).
     const res = this._stmts.enqueuePrescanJob.run(
@@ -4018,10 +3340,10 @@ class SQLiteStore {
     return res.changes > 0;
   }
   getPrescanJob(jobId) {
-    return this._stmts.getPrescanJob.get(jobId) || null;
+    return this._hydratePrescanJob(this._stmts.getPrescanJob.get(jobId));
   }
   getPrescanJobByCtid(ctid) {
-    return this._stmts.getPrescanJobByCtid.get(ctid) || null;
+    return this._hydratePrescanJob(this._stmts.getPrescanJobByCtid.get(ctid));
   }
   // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
   savePerceptualFingerprint(rec) {
@@ -4094,7 +3416,7 @@ class SQLiteStore {
     return this._stmts.getAudioClip.get(clipId) || null;
   }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
-    return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
+    return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs));
   }
   markPrescanJobDone(jobId, { completedAt }) {
     return this._stmts.markPrescanJobDone.run(completedAt, jobId).changes > 0;
@@ -4507,7 +3829,11 @@ async function initDAGAsync(config) {
   const { createStore } = require("./db/index");
   const store = createStore(config, log);
   if (!store) {
-    // SQLite or memory — use the sync path (already wrapped in Promise by async)
+    // SQLite or memory — run schema migrations then use sync path.
+    const dbPath = config.dbPath || process.env.TIP_SQLITE_PATH;
+    if (dbPath && Database) {
+      await _runSqliteMigrations(dbPath);
+    }
     return initDAG(config);
   }
 
