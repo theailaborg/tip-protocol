@@ -67,7 +67,9 @@ exports.up = async (knex) => {
   // (valid_to_ts IS NULL).
   await knex.schema.createTable("entity_keys", t => {
     t.string("entity_type", 32).notNullable();           // 'identity' | 'node' | 'vp'
-    t.text("entity_id").notNullable();
+    // 128 chars: sufficient for all TIP IDs (~30 chars) and avoids
+    // Oracle ORA-02329 (CLOB cannot be PK) and MSSQL nvarchar(max) PK error.
+    t.string("entity_id", 128).notNullable();
     t.text("public_key").notNullable();
     t.string("algorithm", 64).notNullable().defaultTo("ml-dsa-65");
     t.bigInteger("valid_from_ts").notNullable();
@@ -75,7 +77,8 @@ exports.up = async (knex) => {
     _id(t, "source_tx_id").notNullable();                // REGISTER_IDENTITY | KEY_ROTATED | KEY_RECOVERY | genesis:<id>
     t.primary(["entity_type", "entity_id", "valid_from_ts"], "pk_entity_keys");
     t.index(["entity_type", "entity_id", "valid_to_ts"], "idx_entity_keys_active");
-    t.index(["entity_type", "entity_id", "valid_from_ts"], "idx_entity_keys_time");
+    // idx_entity_keys_time omitted: it duplicates the PK columns exactly.
+    // Oracle (ORA-01408) and some engines reject a redundant index on the same column list.
   });
 
   await knex.schema.createTable("content", t => {
