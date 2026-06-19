@@ -1,0 +1,10 @@
+# GitHub funding metadata · drives the "Sponsor" button on the
+# repo header.  Until GitHub Sponsors is enabled for the
+# theailaborg organization, the custom URLs below send the
+# user to the Council's institutional partner contact channel.
+# Once Sponsors is enabled, the github line below can be
+# populated with the @theailaborg username.
+
+custom:
+  - "https://theailab.org/ai-trust-council"
+  - "mailto:council@theailab.org"

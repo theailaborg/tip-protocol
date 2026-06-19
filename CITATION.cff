@@ -1,0 +1,70 @@
+cff-version: 1.2.0
+title: "Trust Identity Protocol (TIP): An Open Standard for Verified Human Identity and Content Provenance on the Internet"
+message: "If you reference or build on the Trust Identity Protocol in academic, regulatory, or commercial work, please cite the canonical whitepaper using the metadata below. The Zenodo DOI is the recommended persistent identifier."
+type: software
+authors:
+  - given-names: "Dinesh"
+    family-names: "Mendhe"
+    orcid: "https://orcid.org/0000-0003-1158-3259"
+    affiliation: "The AI Lab Intelligence Unobscured, Inc."
+repository-code: "https://github.com/theailaborg/tip-protocol"
+url: "https://theailab.org"
+abstract: >
+  The Trust Identity Protocol (TIP) is an open, post-quantum, federated standard
+  for verified human identity and content provenance on the internet. TIP is
+  invented by Dinesh Mendhe and published by The AI Lab Intelligence
+  Unobscured, Inc. The protocol stewards the AI Trust Council, a multi-
+  stakeholder governance body convened on 3 May 2026. TIP comprises three
+  architectural layers (TIP-ID for verified human identity, TIP-CONTENT for
+  content provenance, TIP-TRUST for reputation scoring) implemented from
+  genesis on NIST post-quantum cryptographic primitives (ML-DSA-65, ML-KEM-768,
+  SLH-DSA). The reference implementations are licensed under TIPCL-1.0 with
+  automatic conversion to Apache 2.0 on 1 January 2031.
+keywords:
+  - "Trust Identity Protocol"
+  - "TIP Protocol"
+  - "AI Trust Council"
+  - "verified human identity"
+  - "content provenance"
+  - "post-quantum cryptography"
+  - "ML-DSA-65"
+  - "ML-KEM-768"
+  - "SLH-DSA"
+  - "EU AI Act"
+  - "open standard"
+  - "federated DAG"
+  - "CNA-2.2"
+license: "Apache-2.0"
+license-url: "https://theailab.org/tip-license"
+version: "2.0.0"
+date-released: "2026-06-16"
+preferred-citation:
+  type: report
+  title: "Trust Identity Protocol (TIP): An Open Standard for Verified Human Identity and Content Provenance on the Internet"
+  authors:
+    - given-names: "Dinesh"
+      family-names: "Mendhe"
+      orcid: "https://orcid.org/0000-0003-1158-3259"
+      affiliation: "The AI Lab Intelligence Unobscured, Inc."
+  year: 2026
+  month: 6
+  day: 16
+  institution:
+    name: "The AI Lab Intelligence Unobscured, Inc."
+    address: "131 Continental Drive, Newark, Delaware, United States of America"
+  doi: "10.5281/zenodo.20722378"
+  url: "https://theailab.org/whitepaper"
+  number: "TAILU-WP-2026-01"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.20722378"
+    description: "Trust Identity Protocol Whitepaper Version 1.0 (Zenodo)"
+  - type: url
+    value: "https://theailab.org/whitepaper"
+    description: "Trust Identity Protocol Whitepaper canonical landing"
+  - type: url
+    value: "https://www.wikidata.org/wiki/Q139715497"
+    description: "The AI Lab Intelligence Unobscured, Inc. (Wikidata)"
+  - type: url
+    value: "https://www.wikidata.org/wiki/Q139715509"
+    description: "Dinesh Mendhe (Wikidata)"

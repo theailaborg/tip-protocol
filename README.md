@@ -1,21 +1,29 @@
-# TIP Protocol: Trust Identity Protocol
+# Trust Identity Protocol (TIP)
 
-> **The trust layer the internet was always missing.**
-
-[![License: TIPCL-1.0](https://img.shields.io/badge/License-TIPCL--1.0-blue.svg)](./LICENSE.txt)
-[![Protocol Spec: CC-BY 4.0](https://img.shields.io/badge/Spec-CC--BY%204.0-green.svg)](./spec/TIP_Protocol_Specification_v4.0.md)
-[![Patent Pending](https://img.shields.io/badge/Patent-Pending-orange.svg)](./PATENTS.md)
-[![Version](https://img.shields.io/badge/Version-2.0.0-navy.svg)](./CHANGELOG.md)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen.svg)]()
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)]()
-[![DAG](https://img.shields.io/badge/Ledger-Federated%20DAG-purple.svg)]()
-[![Crypto](https://img.shields.io/badge/Crypto-Post--Quantum-red.svg)]()
-[![Wikidata: Org](https://img.shields.io/badge/Wikidata-Q139715497-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715497)
-[![Wikidata: Founder](https://img.shields.io/badge/Founder-Q139715509-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715509)
-
-> Authored and maintained by **[The AI Lab Intelligence Unobscured, Inc.](https://www.wikidata.org/wiki/Q139715497)** ([theailab.org](https://theailab.org)). Inventor: **[Dinesh Mendhe](https://www.wikidata.org/wiki/Q139715509)** ([ORCID: 0000-0003-1158-3259](https://orcid.org/0000-0003-1158-3259)).
+> **The trust layer the internet was always missing.** The open, post-quantum, federated standard for verified human identity and AI content provenance. Free in every jurisdiction, in perpetuity.
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20722378.svg)](https://doi.org/10.5281/zenodo.20722378)
+[![Whitepaper v1.0](https://img.shields.io/badge/Whitepaper-v1.0-B8942E.svg?logo=readthedocs&logoColor=white)](https://theailab.org/whitepaper)
+[![License: TIPCL-1.0](https://img.shields.io/badge/License-TIPCL--1.0-blue.svg)](./LICENSE.txt)
+[![Protocol Spec: CC-BY 4.0](https://img.shields.io/badge/Spec-CC--BY%204.0-green.svg)](./spec/TIP_Protocol_Specification_v5_0.md)
+[![Version](https://img.shields.io/badge/Version-2.0.0-navy.svg)](./CHANGELOG.md)
+
+[![Wikidata: Org](https://img.shields.io/badge/Wikidata-Q139715497-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715497)
+[![Wikidata: Founder](https://img.shields.io/badge/Founder-Q139715509-006699?logo=wikidata&logoColor=white)](https://www.wikidata.org/wiki/Q139715509)
+[![ORCID](https://img.shields.io/badge/ORCID-0000--0003--1158--3259-A6CE39?logo=orcid&logoColor=white)](https://orcid.org/0000-0003-1158-3259)
+[![Patent Pending](https://img.shields.io/badge/Patent-Pending-orange.svg)](./PATENTS.md)
+
+[![Crypto: Post-Quantum](https://img.shields.io/badge/Crypto-Post--Quantum%20(FIPS%20203%2F204%2F205)-red.svg)](./spec/TIP_Protocol_Specification_v5_0.md)
+[![Ledger: Federated DAG](https://img.shields.io/badge/Ledger-Federated%20DAG-purple.svg)]()
+[![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Article%2050%20Compliant-0066CC.svg)](https://theailab.org/insights/eu-ai-act-compliance-playbook)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)]()
+
+> Trust Identity Protocol (TIP) was invented by **[Dinesh Mendhe](https://www.wikidata.org/wiki/Q139715509)** ([ORCID 0000-0003-1158-3259](https://orcid.org/0000-0003-1158-3259)) and is published by **[The AI Lab Intelligence Unobscured, Inc.](https://www.wikidata.org/wiki/Q139715497)** ([theailab.org](https://theailab.org)). The protocol is stewarded by the [AI Trust Council](https://theailab.org/ai-trust-council), an independent multi-stakeholder body convened on 3 May 2026.
+
+> **Cite this work:** Mendhe, D. (2026). *Trust Identity Protocol (TIP): An Open Standard for Verified Human Identity and Content Provenance on the Internet* (1.0). The AI Lab Intelligence Unobscured, Inc. [https://doi.org/10.5281/zenodo.20722378](https://doi.org/10.5281/zenodo.20722378)
+
+<sub>**Keywords for search:** trust identity protocol · TIP protocol · TIP-ID · CTID · content TIP ID · AI trust ID · AI trust council · AI trust registry · global seal of trust · TIPCL-1.0 · CNA-2.2 · canonical normalization algorithm · post-quantum cryptography · ML-DSA-65 · ML-KEM-768 · SLH-DSA · FIPS 203 · FIPS 204 · FIPS 205 · NIST post-quantum · federated DAG · verified human identity · content provenance · deepfake defense · human or AI · #HumanOrAI · EU AI Act · EU AI Act Article 50 · Digital Services Act · GDPR · eIDAS 2.0 · WebAuthn · C2PA alternative · verifiable internet · open standard · Dinesh Mendhe · The AI Lab Intelligence Unobscured · Wikidata Q139715497 · Wikidata Q139715509 · DOI 10.5281/zenodo.20722378</sub>
 
 ---
 
