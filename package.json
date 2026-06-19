@@ -40,7 +40,7 @@
     "lint": "npm run lint:node",
     "lint:node": "cd node && npx eslint src/ --ext .js",
     "seed": "node --experimental-vm-modules scripts/seed.js",
-    "seed:fresh": "rm -rf genesis-data/ data/ && node --experimental-vm-modules scripts/seed.js",
+    "seed:fresh": "node -e \"const fs=require('fs');['genesis-data','data'].forEach(d=>{try{fs.rmSync(d,{recursive:true,force:true})}catch(_){}})\" && node --experimental-vm-modules scripts/seed.js",
     "seed:python": "cd python && python -m scripts.seed",
     "start": "node node/src/index.js",
     "dev": "node --watch node/src/index.js"

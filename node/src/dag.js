@@ -481,6 +481,16 @@ class MemoryStore {
   getContentByStatus(status) {
     return [...this._content.values()].filter(c => c.status === status);
   }
+  getContentByUrl(url) {
+    if (!url) return null;
+    const norm = url.trim().toLowerCase();
+    for (const rec of this._content.values()) {
+      if (Array.isArray(rec.registered_urls) && rec.registered_urls.some(u => u.trim().toLowerCase() === norm)) {
+        return rec;
+      }
+    }
+    return null;
+  }
   // Explorer list — newest-first, cursor-paginated. Returns up to
   // limit+1 rows so the caller can detect "has more" without a count
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
@@ -3056,6 +3066,19 @@ class SQLiteStore {
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
+  getContentByUrl(url) {
+    if (!url) return null;
+    const norm = url.trim().toLowerCase();
+    const row = this.db.prepare(
+      "SELECT * FROM content WHERE registered_urls LIKE ? LIMIT 1"
+    ).get("%" + norm + "%");
+    if (!row) return null;
+    const rec = this._hydrateContent(row);
+    if (Array.isArray(rec.registered_urls) && rec.registered_urls.some(u => u.trim().toLowerCase() === norm)) {
+      return rec;
+    }
+    return null;
+  }
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
@@ -3972,6 +3995,7 @@ function _buildDagHandle(store, config) {
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
+    getContentByUrl: (url) => store.getContentByUrl(url),
     listContent: (opts) => store.listContent(opts),
     // M6 — used by the periodic media-retention sweep.
     getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),

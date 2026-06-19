@@ -11,6 +11,12 @@ function createRouter({ contentService }) {
     res.status(202).json(result);
   }));
 
+  // Lightweight duplicate-URL check: GET /v1/content/check-url?url=<encoded-url>
+  // Returns { registered: false } or { registered: true, ctid, origin_code, ... }
+  router.get("/content/check-url", asyncHandler((req, res) => {
+    res.json(contentService.checkUrl(req.query.url));
+  }));
+
   // Explorer list — public, cursor-paginated. Filters: author, origin,
   // status, has_media. Slim rows; follow ctid for the full record.
   router.get("/content", asyncHandler((req, res) => {

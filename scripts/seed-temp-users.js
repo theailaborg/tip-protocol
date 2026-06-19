@@ -72,13 +72,14 @@ const OUT_LATEST = path.join(TEMP_USERS_DIR, "temp-users-latest.json");
 // HTTP endpoints + their corresponding postgres DBs. These must be kept in
 // sync with the node-N.env files; if you reshape the dev cluster, update both.
 const NODES = [
-  { url: "http://localhost:4000", db: "tip_protocol" },
+  { url: "http://localhost:4000", db: "tip_node1" },
   { url: "http://localhost:4100", db: "tip_node2" },
   { url: "http://localhost:4200", db: "tip_node3" },
   { url: "http://localhost:4300", db: "tip_node4" },
   { url: "http://localhost:4400", db: "tip_node5" },
 ];
 const PG_CONTAINER = "tip-postgres";
+const PG_USER = process.env.DB_USER || "tipuser";
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
@@ -316,7 +317,7 @@ ON CONFLICT (tip_id) DO UPDATE SET score = EXCLUDED.score, last_updated = EXCLUD
   let bumped = 0, skipped = 0;
   for (const { db } of NODES) {
     try {
-      execSync(`docker exec -i ${PG_CONTAINER} psql -U tip -d ${db} -v ON_ERROR_STOP=1`, {
+      execSync(`docker exec -i ${PG_CONTAINER} psql -U ${PG_USER} -d ${db} -v ON_ERROR_STOP=1`, {
         input: sql,
         stdio: ["pipe", "pipe", "pipe"],
       });

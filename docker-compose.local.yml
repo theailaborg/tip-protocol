@@ -50,7 +50,7 @@ services:
       - ./scripts/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - tip-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${DB_USER:-tip}"]
+      test: ["CMD", "pg_isready", "-U", "${DB_USER:-tipuser}", "-d", "postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -553,6 +553,23 @@ services:
       tip-local:
         ipv4_address: 172.30.0.31
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: tip-pgadmin
+    profiles: [observability]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5051:80"
+    volumes:
+      - tip-pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      tip-local:
+        ipv4_address: 172.30.0.32
+
 volumes:
   tip-postgres-data:
   tip-mariadb-data:
@@ -560,6 +577,7 @@ volumes:
   tip-oracle-data:
   tip-prometheus-data:
   tip-grafana-data:
+  tip-pgadmin-data:
 
 networks:
   tip-local:

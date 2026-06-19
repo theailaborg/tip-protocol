@@ -67,6 +67,21 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     } = body;
     const identity = contentRegisterSchema.resolveSigner(signer_tip_id, dag);
 
+    // Reject duplicate registrations for the same post URL regardless of origin type.
+    const primaryUrl = Array.isArray(body.registered_urls) && body.registered_urls.length > 0
+      ? body.registered_urls[0].trim()
+      : null;
+    if (primaryUrl) {
+      const existing = dag.getContentByUrl(primaryUrl);
+      if (existing) {
+        throw schemaError(
+          409,
+          `This content has already been registered (CTID: ${existing.ctid}). View the existing CTID instead.`,
+          "duplicate_url",
+        );
+      }
+    }
+
     // M3 — validate each media[] reference exists in storage with matching
     // mime, dedup on media_id, return canonical list for downstream use.
     // Throws 404 / 400 before signature verify so clients see a clear error.
@@ -592,7 +607,22 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { items, next_cursor };
   }
 
-  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus };
+  function checkUrl(url) {
+    if (!url || typeof url !== "string") {
+      throw schemaError(400, "url query parameter is required", "missing_url");
+    }
+    const existing = dag.getContentByUrl(url.trim());
+    if (!existing) return { registered: false };
+    return {
+      registered: true,
+      ctid: existing.ctid,
+      origin_code: existing.origin_code,
+      origin_label: ORIGIN_LABELS[existing.origin_code] || existing.origin_code,
+      registered_at: existing.registered_at,
+    };
+  }
+
+  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus, checkUrl };
 }
 
 module.exports = { createContentService };
