@@ -74,4 +74,16 @@ function phashRow(ctid, profile, modality, frame, ts, quality, pdq) {
   return row;
 }
 
-module.exports = { buildIngestRows };
+// Step (b): derive the rows then write them through the dag store. Sync-callable
+// (KnexAdapter writes are fire-and-forget). `dag` is the dag facade (or any store)
+// exposing savePerceptualFingerprint / saveMinhashBands / savePhashCodes. The
+// writes are off-DAG / advisory: not mirrored, not in state_merkle_root.
+function ingestFingerprint(dag, fp, opts) {
+  const { fingerprint, bands, codes } = buildIngestRows(fp, opts);
+  dag.savePerceptualFingerprint(fingerprint);
+  if (bands.length) dag.saveMinhashBands(bands);
+  if (codes.length) dag.savePhashCodes(codes);
+  return { fingerprint, bands: bands.length, codes: codes.length };
+}
+
+module.exports = { buildIngestRows, ingestFingerprint };

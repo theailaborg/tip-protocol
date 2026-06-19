@@ -1281,6 +1281,20 @@ class KnexAdapter {
     }
     return fresh;
   }
+  // ── Perceptual index writes (off-DAG, advisory; written to the DB only, NOT
+  // mirrored: the matcher queries knex directly, never the sync mirror). ──────
+  savePerceptualFingerprint(rec) {
+    this._ff(() => this._dbInsert("perceptual_fingerprint", ["ctid", "component_idx"], rec, "merge"));
+  }
+  saveMinhashBands(rows) {
+    if (!rows || !rows.length) return;
+    this._ff(() => this.knex("minhash_band").insert(rows)
+      .onConflict(["profile", "band_idx", "band_hash", "ctid"]).ignore());
+  }
+  savePhashCodes(rows) {
+    if (!rows || !rows.length) return;
+    this._ff(() => this.knex("phash_code").insert(rows));
+  }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
   claimPrescanJob(opts) {

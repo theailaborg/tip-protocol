@@ -374,6 +374,11 @@ class MemoryStore {
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
+    // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
+    // state_merkle_root). Source of truth + derived candidate indexes.
+    this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
+    this._minhashBands = [];                    // text LSH index rows
+    this._phashCodes = [];                      // image/video MIH index rows
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
   }
@@ -1502,6 +1507,16 @@ class MemoryStore {
       completed_at: null,
     });
     return true;
+  }
+  // ── Perceptual index writes (off-DAG, advisory; not mirrored elsewhere) ────
+  savePerceptualFingerprint(rec) {
+    this._perceptualFingerprints.set(`${rec.ctid}|${rec.component_idx}`, { ...rec });
+  }
+  saveMinhashBands(rows) {
+    for (const r of rows) this._minhashBands.push({ ...r });
+  }
+  savePhashCodes(rows) {
+    for (const r of rows) this._phashCodes.push({ ...r });
   }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
@@ -2987,6 +3002,21 @@ class SQLiteStore {
                 last_error=?, retries=retries+1
           WHERE job_id=?`
       ),
+      // Perceptual index (off-DAG, advisory).
+      savePerceptualFingerprint: this.db.prepare(
+        `INSERT OR REPLACE INTO perceptual_fingerprint
+           (ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ),
+      saveMinhashBand: this.db.prepare(
+        `INSERT OR IGNORE INTO minhash_band (profile, band_idx, band_hash, ctid) VALUES (?, ?, ?, ?)`
+      ),
+      savePhashCode: this.db.prepare(
+        `INSERT INTO phash_code
+           (ctid, profile, modality, frame, ts, quality, pdq,
+            c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ),
     };
   }
 
@@ -3888,6 +3918,25 @@ class SQLiteStore {
   getPrescanJobByCtid(ctid) {
     return this._stmts.getPrescanJobByCtid.get(ctid) || null;
   }
+  // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
+  savePerceptualFingerprint(rec) {
+    this._stmts.savePerceptualFingerprint.run(
+      rec.ctid, rec.component_idx, rec.modality, rec.profile,
+      rec.pipeline, rec.quality, rec.fingerprint, rec.created_at,
+    );
+  }
+  saveMinhashBands(rows) {
+    for (const r of rows) this._stmts.saveMinhashBand.run(r.profile, r.band_idx, r.band_hash, r.ctid);
+  }
+  savePhashCodes(rows) {
+    for (const r of rows) {
+      this._stmts.savePhashCode.run(
+        r.ctid, r.profile, r.modality, r.frame, r.ts, r.quality, r.pdq,
+        r.c0, r.c1, r.c2, r.c3, r.c4, r.c5, r.c6, r.c7,
+        r.c8, r.c9, r.c10, r.c11, r.c12, r.c13, r.c14, r.c15,
+      );
+    }
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4247,6 +4296,9 @@ function _buildDagHandle(store, config) {
 
     // ── Prescan jobs (node-local async classifier queue) ────────────────
     enqueuePrescanJob: (rec) => store.enqueuePrescanJob(rec),
+    savePerceptualFingerprint: (rec) => store.savePerceptualFingerprint(rec),
+    saveMinhashBands: (rows) => store.saveMinhashBands(rows),
+    savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),
