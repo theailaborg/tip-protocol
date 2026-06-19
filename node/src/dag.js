@@ -1530,6 +1530,19 @@ class MemoryStore {
     }
     return [...ctids];
   }
+  // MIH candidate-gen: codes sharing >= 1 chunk value with the query's per-chunk
+  // Hamming-1 neighborhoods (queryKeys = [[17 keys] x 16]).
+  findPhashCandidates(profile, modality, queryKeys) {
+    const sets = queryKeys.map((keys) => new Set(keys));
+    const out = [];
+    for (const c of this._phashCodes) {
+      if (c.profile !== profile || c.modality !== modality) continue;
+      for (let i = 0; i < 16; i++) {
+        if (sets[i].has(c["c" + i])) { out.push(c); break; }
+      }
+    }
+    return out;
+  }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
   }
@@ -3965,6 +3978,21 @@ class SQLiteStore {
     }
     return [...ctids];
   }
+  // Dynamic SQL (variable IN-list size); one indexed seek per chunk OR'd together.
+  findPhashCandidates(profile, modality, queryKeys) {
+    const conds = [];
+    const params = [profile, modality];
+    for (let i = 0; i < 16; i++) {
+      const keys = queryKeys[i];
+      conds.push(`c${i} IN (${keys.map(() => "?").join(",")})`);
+      for (const k of keys) params.push(k);
+    }
+    const sql =
+      `SELECT DISTINCT ctid, profile, modality, frame, ts, quality, pdq
+         FROM phash_code
+        WHERE profile=? AND modality=? AND (${conds.join(" OR ")})`;
+    return this.db.prepare(sql).all(...params);
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4329,6 +4357,7 @@ function _buildDagHandle(store, config) {
     savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
+    findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),

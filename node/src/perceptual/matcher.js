@@ -14,8 +14,12 @@
 
 const { lshBands } = require("tip-content-fingerprint/src/text/lsh");
 const { jaccardEstimate } = require("tip-content-fingerprint/src/text/compare");
+const { queryKeys } = require("tip-content-fingerprint/src/image/mih");
+const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
 
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
+const IMAGE_DISTANCE = 31;        // PDQ Hamming match floor (of 256)
+const IMAGE_MIN_QUALITY = 49;     // discard flat/low-detail images
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
@@ -49,4 +53,31 @@ async function matchText(dag, queryFp, opts) {
   return out;
 }
 
-module.exports = { matchText, TEXT_FLAG_THRESHOLD };
+// Find indexed images that are near-duplicates of queryFp. MIH candidate-gen on
+// phash_code, then full-Hamming verify (<= distanceThreshold), quality-gated.
+// Returns [{ ctid, distance }] sorted closest-first.
+async function matchImage(dag, queryFp, opts) {
+  opts = opts || {};
+  const maxDistance = opts.distanceThreshold != null ? opts.distanceThreshold : IMAGE_DISTANCE;
+  const minQuality = opts.minQuality != null ? opts.minQuality : IMAGE_MIN_QUALITY;
+  if (!queryFp || queryFp.kind !== "image" || typeof queryFp.pdq !== "string") return [];
+  if (queryFp.quality != null && queryFp.quality < minQuality) return []; // unreliable query
+
+  const candidates = await dag.findPhashCandidates(queryFp.profile, "image", queryKeys(queryFp.pdq));
+
+  const best = new Map(); // ctid -> smallest distance seen
+  for (const c of candidates) {
+    if (opts.excludeCtid && c.ctid === opts.excludeCtid) continue;
+    if (c.quality != null && c.quality < minQuality) continue;
+    const distance = hammingHex(queryFp.pdq, c.pdq);
+    if (distance <= maxDistance) {
+      const prev = best.get(c.ctid);
+      if (prev == null || distance < prev) best.set(c.ctid, distance);
+    }
+  }
+  return [...best.entries()]
+    .map(([ctid, distance]) => ({ ctid, distance }))
+    .sort((a, b) => a.distance - b.distance);
+}
+
+module.exports = { matchText, matchImage, TEXT_FLAG_THRESHOLD, IMAGE_DISTANCE, IMAGE_MIN_QUALITY };
