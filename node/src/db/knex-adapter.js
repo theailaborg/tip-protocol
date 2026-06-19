@@ -1295,6 +1295,20 @@ class KnexAdapter {
     if (!rows || !rows.length) return;
     this._ff(() => this.knex("phash_code").insert(rows));
   }
+  async getPerceptualFingerprint(ctid, componentIdx = 0) {
+    const row = await this.knex("perceptual_fingerprint").where({ ctid, component_idx: componentIdx }).first();
+    return row || null;
+  }
+  async findMinhashCandidates(profile, bandHashes) {
+    const ctids = new Set();
+    for (let i = 0; i < bandHashes.length; i++) {
+      const rows = await this.knex("minhash_band")
+        .where({ profile, band_idx: i, band_hash: bandHashes[i] })
+        .select("ctid");
+      for (const r of rows) ctids.add(r.ctid);
+    }
+    return [...ctids];
+  }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
   claimPrescanJob(opts) {

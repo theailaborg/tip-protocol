@@ -1518,6 +1518,18 @@ class MemoryStore {
   savePhashCodes(rows) {
     for (const r of rows) this._phashCodes.push({ ...r });
   }
+  getPerceptualFingerprint(ctid, componentIdx = 0) {
+    return this._perceptualFingerprints.get(`${ctid}|${componentIdx}`) || null;
+  }
+  // LSH candidate-gen: ctids that share >= 1 band bucket with the query's bands.
+  findMinhashCandidates(profile, bandHashes) {
+    const want = new Set(bandHashes.map((h, i) => i + "|" + h));
+    const ctids = new Set();
+    for (const b of this._minhashBands) {
+      if (b.profile === profile && want.has(b.band_idx + "|" + b.band_hash)) ctids.add(b.ctid);
+    }
+    return [...ctids];
+  }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
   }
@@ -3017,6 +3029,12 @@ class SQLiteStore {
             c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
+      getPerceptualFingerprint: this.db.prepare(
+        "SELECT * FROM perceptual_fingerprint WHERE ctid=? AND component_idx=?"
+      ),
+      findMinhashByBand: this.db.prepare(
+        "SELECT ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
+      ),
     };
   }
 
@@ -3937,6 +3955,16 @@ class SQLiteStore {
       );
     }
   }
+  getPerceptualFingerprint(ctid, componentIdx = 0) {
+    return this._stmts.getPerceptualFingerprint.get(ctid, componentIdx) || null;
+  }
+  findMinhashCandidates(profile, bandHashes) {
+    const ctids = new Set();
+    for (let i = 0; i < bandHashes.length; i++) {
+      for (const r of this._stmts.findMinhashByBand.all(profile, i, bandHashes[i])) ctids.add(r.ctid);
+    }
+    return [...ctids];
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4299,6 +4327,8 @@ function _buildDagHandle(store, config) {
     savePerceptualFingerprint: (rec) => store.savePerceptualFingerprint(rec),
     saveMinhashBands: (rows) => store.saveMinhashBands(rows),
     savePhashCodes: (rows) => store.savePhashCodes(rows),
+    getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
+    findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),
