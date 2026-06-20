@@ -98,10 +98,10 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.VERIFIER_TIP_ID,
-    buildSigningPayload: (data) => ({
-      verifier_tip_id: data.verifier_tip_id,
-      ctid: data.ctid,
-      verdict: data.verdict,
+    // GH #85: route through the shared strip rule so a missing required field
+    // throws at sign-time instead of silently signing a short payload.
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["verifier_tip_id", "ctid", "verdict"],
     }),
   },
 
@@ -109,10 +109,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.AUTHOR_TIP_ID,
-    buildSigningPayload: (data) => ({
-      author_tip_id: data.author_tip_id,
-      ctid: data.ctid,
-      new_origin_code: data.new_origin_code,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["author_tip_id", "ctid", "new_origin_code"],
     }),
   },
 
@@ -120,9 +118,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.AUTHOR_TIP_ID,
-    buildSigningPayload: (data) => ({
-      author_tip_id: data.author_tip_id,
-      ctid: data.ctid,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["author_tip_id", "ctid"],
     }),
   },
 
@@ -134,9 +131,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     // is already cryptographically bound to (vote, salt) via shake256
     // and the JURY_SUMMONS that allocated this juror locks the ctid.
     // Matches today's commit-handler verifier at the byte level.
-    buildSigningPayload: (data) => ({
-      juror_tip_id: data.juror_tip_id,
-      commitment: data.commitment,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["juror_tip_id", "commitment"],
     }),
   },
 
@@ -170,9 +166,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         // other ctid the same appellant has standing on (author or original
         // disputer), burning their stake on a case they never chose to
         // appeal. Mirrors prescan-review-dispute binding ctid + review_id.
-        buildSigningPayload: (data) => ({
-          appellant_tip_id: data.appellant_tip_id,
-          ctid: data.ctid,
+        buildSigningPayload: (data) => buildSignedPayload(data, {
+          required: ["appellant_tip_id", "ctid"],
         }),
       };
     },
@@ -298,11 +293,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
   [TX_TYPES.UNBIND_DOMAIN]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.NODE,
-    buildSigningPayload: (data) => ({
-      domain: data.domain,
-      node_id: data.node_id,
-      reason: data.reason,
-      revoked_at: data.revoked_at,
+    buildSigningPayload: (data) => buildSignedPayload(data, {
+      required: ["domain", "node_id", "reason", "revoked_at"],
     }),
   },
 });
