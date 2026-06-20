@@ -10,6 +10,7 @@ const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/p
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
 const { ingestFingerprint } = require("../perceptual/ingest");
+const { findSimilarCtids } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -328,6 +329,17 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const originalOriginCode = ctidOriginMatch ? ctidOriginMatch[1] : null;
     const originChanged = !!originalOriginCode && originalOriginCode !== rec.origin_code;
 
+    // Perceptually-similar content (advisory, off-DAG): top-5 near-duplicate
+    // cards, so a content detail page can render "similar content" in the same
+    // call. Also available standalone via GET /content/:ctid/similar. Advisory:
+    // never let an index hiccup break the content detail response.
+    let similar = [];
+    try {
+      similar = (await findSimilarCtids(dag, ctid, { limit: 5 })).map(_similarCard).filter(Boolean);
+    } catch (err) {
+      log.warn(`similar-content lookup failed for ${ctid}: ${err.message || err}`);
+    }
+
     return {
       ...rec,
       media: enrichedMedia,
@@ -357,6 +369,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       }),
       prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
       consensus: { available: false, status: "not_requested" },
+      similar,
     };
   }
 
@@ -633,7 +646,47 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { items, next_cursor };
   }
 
-  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus };
+  // Compact card for a perceptually-similar content item: just enough for the
+  // FE to render a small content card (origin badge, byline, title, one media
+  // ref for a thumbnail, registered date) plus the match score/modality.
+  function _similarCard(match) {
+    const rec = dag.getContent(match.ctid);
+    if (!rec) return null;
+    const author = dag.getIdentity(rec.author_tip_id);
+    return {
+      ctid: match.ctid,
+      origin_code: rec.origin_code,
+      origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      author_tip_id: rec.author_tip_id,
+      author_name: (author && author.creator_name) || null,
+      title: (rec.extras && typeof rec.extras === "object" && rec.extras.title) || null,
+      status: rec.status,
+      registered_at: rec.registered_at,
+      // First media ref so the FE can build a thumbnail URL
+      // (GET /v1/content/:ctid/media/0); null/empty for text-only content.
+      media: Array.isArray(rec.media) ? rec.media.slice(0, 1) : [],
+      similarity: {
+        score: Math.round(match.score * 1000) / 1000, // 0-1, comparable across modalities
+        modality: match.modality,
+        component_idx: match.component_idx,
+        ...match.metric,
+      },
+    };
+  }
+
+  // Perceptually-similar content for a ctid: the top-N near-duplicates by score,
+  // each as a UI card. Advisory + off-DAG; single-node coverage for now (only
+  // content this node has indexed). Returns { ctid, count, similar: [...] }.
+  async function findSimilar(ctid, opts = {}) {
+    if (!dag.getContent(ctid)) throw schemaError(404, "Content not found", "content_not_found");
+    const requested = Number(opts.limit);
+    const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 20) : 5;
+    const matches = await findSimilarCtids(dag, ctid, { limit });
+    const similar = matches.map(_similarCard).filter(Boolean);
+    return { ctid, count: similar.length, similar };
+  }
+
+  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
 }
 
 module.exports = { createContentService };

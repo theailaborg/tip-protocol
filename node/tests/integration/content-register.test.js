@@ -185,6 +185,76 @@ describe("content register — perceptual fingerprints (local off-DAG ingest)", 
   });
 });
 
+// ─── 1c. Similar content — matcher wired into the content API ───────────────
+
+describe("content register — similar content (findSimilar + resolve.similar)", () => {
+  const A = Array.from({ length: 128 }, (_, i) => (i * 7 + 13) % 100000);
+  const NEAR = A.map((v, i) => (i < 10 ? v + 1 : v)); // ~8% changed → shares LSH bands
+  const textEnv = (minhash) => _packFingerprints([
+    { kind: "text", role: "caption", perceptual: { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash } },
+  ]);
+
+  // The harness's submitTx only records the tx; emulate the commit-handler's
+  // content-row create so resolve()/findSimilar have rows to enrich.
+  function _commit(fx, tx) {
+    const d = tx.data;
+    fx.dag.saveContent({
+      ctid: d.ctid, origin_code: d.origin_code, content_hash: d.content_hash,
+      author_tip_id: (d.authors && d.authors[0] && d.authors[0].tip_id) || d.signer_tip_id,
+      signer_tip_id: d.signer_tip_id, authors: d.authors || [],
+      attribution_mode: d.attribution_mode || "self", extras: d.extras || {},
+      cna_version: d.cna_version, status: "registered",
+      registered_at: tx.timestamp, tx_id: tx.tx_id, registered_urls: d.registered_urls || [],
+      media: d.media || [], media_canonical_hash: d.media_canonical_hash || null,
+    });
+  }
+
+  async function _registerPair(fx, kp, tipId) {
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "alpha original", extras: { title: "Alpha" }, fingerprints: textEnv(A) }));
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "beta near-dup", fingerprints: textEnv(NEAR) }));
+    await _flush(); // local fingerprint ingest is fire-and-forget
+    const reg = fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT");
+    reg.forEach(tx => _commit(fx, tx));
+    return { ctidA: reg[0].data.ctid, ctidB: reg[1].data.ctid };
+  }
+
+  test("findSimilar returns the near-duplicate as a card (score + modality + origin/byline/title)", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const { ctidA, ctidB } = await _registerPair(fx, kp, tipId);
+
+    const res = await fx.contentService.findSimilar(ctidB);
+    expect(res.ctid).toBe(ctidB);
+    const card = res.similar.find(s => s.ctid === ctidA);
+    expect(card).toBeDefined();
+    expect(card.similarity.modality).toBe("text");
+    expect(card.similarity.score).toBeGreaterThan(0.8);
+    expect(card.origin_label).toBe("Original Human");
+    expect(card.title).toBe("Alpha");
+    expect(card.author_tip_id).toBe(tipId);
+  });
+
+  test("resolve() embeds the similar[] cards on the content detail", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-signer2").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const { ctidA, ctidB } = await _registerPair(fx, kp, tipId);
+
+    const detail = await fx.contentService.resolve(ctidB);
+    expect(Array.isArray(detail.similar)).toBe(true);
+    expect(detail.similar.map(s => s.ctid)).toContain(ctidA);
+  });
+
+  test("findSimilar on unknown ctid → 404", async () => {
+    const fx = _setup();
+    await expect(fx.contentService.findSimilar("tip://c/OH-deadbeefdeadbe-0000"))
+      .rejects.toMatchObject({ status: 404, code: "content_not_found" });
+  });
+});
+
 // ─── 2. Off-DAG signer — must be rejected per spec §1 ─────────────────────
 
 describe("content register — off-DAG signer is rejected (no fallback)", () => {
