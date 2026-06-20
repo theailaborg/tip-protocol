@@ -53,4 +53,12 @@ describe("perceptual ingest row-building (step a: derive keys via the package)",
     expect(() => buildIngestRows({ kind: "image", profile: "cf-image-1", pdq: "ab".repeat(32) }, {})).toThrow(/ctid/);
     expect(() => buildIngestRows({}, { ctid: "x" })).toThrow(/kind/);
   });
+
+  test("reject tier -> skipped entirely (no row, no keys, no throw)", () => {
+    // The package couldn't fingerprint this component: { kind, tier:"reject" }
+    // with no profile/minhash/pdq/features/landmarks. Must skip, not crash on
+    // the missing profile / indexChunks(undefined).
+    expect(buildIngestRows({ kind: "image", tier: "reject", reason: "decode_failed" }, { ctid: "OH-r" })).toBeNull();
+    expect(buildIngestRows({ kind: "text", tier: "reject" }, { ctid: "OH-r" })).toBeNull();
+  });
 });

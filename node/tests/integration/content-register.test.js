@@ -76,7 +76,7 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
  *
  * Per docs/CONTENT_SIGNING.md.
  */
-function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https://example.com/post/"], extras = {} }) {
+function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https://example.com/post/"], extras = {}, fingerprints = null }) {
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
     origin_code: "OH",
@@ -87,6 +87,9 @@ function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https
     signer_tip_id: tipId,
     attribution_mode: "self",
   };
+  // When the client attaches a perceptual fingerprints envelope, bind it by
+  // signing its commit (strip-rule: present → in the 9-field payload).
+  if (fingerprints) fields.fingerprint_commit = schema.fingerprintsCommit(fingerprints);
   const payload = schema.buildSigningPayload(fields, contentHashFull);
   const signature = schema.sign(payload, privKey);
   return {
@@ -95,8 +98,17 @@ function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https
     content,
     content_type: "text",
     signature,
+    ...(fingerprints ? { fingerprints } : {}),
   };
 }
+
+// Pack an items[] array into the wire envelope the client sends (gzip+base64).
+function _packFingerprints(items) {
+  const json = JSON.stringify(items);
+  const data = require("zlib").gzipSync(Buffer.from(json, "utf8")).toString("base64");
+  return { profile: "cf-fingerprints-1", count: items.length, encoding: "gzip+base64", data };
+}
+const _flush = () => new Promise((r) => setImmediate(r));
 
 // ─── 1. Happy path with DAG-registered signer ─────────────────────────────
 
@@ -124,6 +136,52 @@ describe("content register — DAG-registered signer (canonical happy path)", ()
     expect(tx.data.public_key).toBeUndefined();
     // signer_type was dropped — type resolved from DAG identity, not signed per-message.
     expect(tx.data.signer_type).toBeUndefined();
+  });
+});
+
+// ─── 1b. Perceptual fingerprints — local off-DAG ingest, commit-only on tx ──
+
+describe("content register — perceptual fingerprints (local off-DAG ingest)", () => {
+  const minhash128 = Array.from({ length: 128 }, (_, i) => (i * 2654435761) % 100000);
+  const ITEMS = [
+    { kind: "image", role: "primary", exact: "a".repeat(64),
+      perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
+    { kind: "text", role: "caption",
+      perceptual: { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: minhash128 } },
+  ];
+
+  test("tx carries ONLY the commit; items ingested into the off-DAG index in order", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("fp-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    const fingerprints = _packFingerprints(ITEMS);
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "post with media", fingerprints });
+    await fx.contentService.register(body);
+    await _flush(); // ingest is fire-and-forget
+
+    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    const ctid = tx.data.ctid;
+    // The bulky envelope never rides the tx — only the signed 32-byte commit.
+    expect(tx.data.fingerprint_commit).toBe(schema.fingerprintsCommit(fingerprints));
+    expect(tx.data.fingerprints).toBeUndefined();
+    // Components ingested locally, keyed by position, into the off-DAG tables.
+    expect(fx.dag.getPerceptualFingerprint(ctid, 0)).toMatchObject({ ctid, modality: "image" });
+    expect(fx.dag.getPerceptualFingerprint(ctid, 1)).toMatchObject({ ctid, modality: "text" });
+  });
+
+  test("no fingerprints → no commit on tx, nothing ingested", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("nofp-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "plain post" });
+    await fx.contentService.register(body);
+    await _flush();
+    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    expect(tx.data.fingerprint_commit).toBeUndefined();
+    expect(fx.dag.getPerceptualFingerprint(tx.data.ctid, 0)).toBeNull();
   });
 });
 

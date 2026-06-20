@@ -9,6 +9,7 @@ const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_N
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
+const { ingestFingerprint } = require("../perceptual/ingest");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -56,6 +57,29 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       });
     } catch (err) {
       log.warn(`prescan-jobs enqueue failed for ${ctid}: ${err.message || err}`);
+    }
+  }
+
+  // Ingest the client's perceptual fingerprints envelope into the off-DAG
+  // near-dup index, locally on this node. The envelope was already shape- and
+  // commit-verified in validateRequest. Recover the ordered items[] and ingest
+  // each component's `perceptual` object keyed by position. Per-component
+  // fire-and-forget (async, off-DAG, advisory) — a failure must not affect the
+  // registration. No-op when the request carried no fingerprints.
+  function _ingestRequestFingerprints(ctid, fingerprints, createdAt) {
+    if (fingerprints == null) return;
+    let items;
+    try {
+      items = contentRegisterSchema.parseFingerprintItems(fingerprints);
+    } catch (err) {
+      log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
+      return;
+    }
+    for (let i = 0; i < items.length; i++) {
+      const fp = items[i] && items[i].perceptual;
+      if (!fp) continue;
+      ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt })
+        .catch((err) => log.warn(`perceptual ingest failed for ${ctid}#${i}: ${err.message}`));
     }
   }
 
@@ -170,6 +194,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         //    content row and the worker can resolve bytes from storage.
         media: resolvedMedia,
         media_canonical_hash,
+        // ── Perceptual fingerprint commitment (advisory, off-DAG near-dup
+        //    index). ONLY the signed 32-byte fingerprint_commit rides the tx —
+        //    it's a signed field (mirrored so commit-handler can rebuild the
+        //    payload), and stays tiny so it never burdens consensus. The bulky
+        //    `fingerprints` envelope is NOT on tx.data; it's ingested locally
+        //    below from the request body. Cross-node distribution is a later
+        //    step (replicate the off-DAG rows, keyed to this on-chain commit).
+        ...(canonicalPayload.fingerprint_commit
+          ? { fingerprint_commit: canonicalPayload.fingerprint_commit }
+          : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -179,6 +213,13 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
+
+    // Perceptual fingerprints: ingest locally into the off-DAG index. The blob
+    // lives only in the request body (validated + commit-checked in
+    // validateRequest), never on tx.data — so only this receiving node indexes
+    // it for now. Fire-and-forget: advisory, must not delay the response;
+    // reject-tier items skip themselves in buildIngestRows.
+    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt);
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,

@@ -35,6 +35,7 @@
 
 "use strict";
 
+const zlib = require("zlib");
 const {
   payloadHashHex, signPayload, verifyPayload, schemaError, canonicalJson,
 } = require("./_common");
@@ -43,6 +44,7 @@ const {
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
   PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
+  PERCEPTUAL_FINGERPRINTS_PROFILE, PERCEPTUAL_FINGERPRINTS_ENCODINGS,
 } = require("../../../shared/constants");
 const { shake256 } = require("../../../shared/crypto");
 const { validateContentSize } = require("../middleware/validate");
@@ -156,26 +158,26 @@ function validateRequest(body, deps) {
     }
   }
 
-  // Perceptual fingerprint[] (advisory, off-DAG). Optional; when present it
-  // must be bound by a matching fingerprint_commit so the signature covers it
-  // (mirrors media[]/media_canonical_hash). The two are all-or-nothing at
-  // submission time: a blob with no commit can't be bound, a commit with no
-  // blob has nothing to ingest.
-  const hasFp = body.fingerprint !== undefined;
+  // Perceptual fingerprints envelope (advisory, off-DAG). Optional; when present
+  // it must be bound by a matching fingerprint_commit so the signature covers it
+  // (mirrors media[]/media_canonical_hash). Both-or-neither at submission: a
+  // blob with no commit can't be bound, a commit with no blob has nothing to
+  // ingest. See NODE_FINGERPRINT_CONTRACT.md.
+  const hasFps = body.fingerprints !== undefined;
   const hasFpCommit = body.fingerprint_commit !== undefined;
-  if (hasFp || hasFpCommit) {
-    if (!hasFp || !hasFpCommit) {
-      throw schemaError(400, "fingerprint and fingerprint_commit must be provided together", "fingerprint_commit_required");
-    }
-    _validateFingerprintShape(body.fingerprint);
-    if (body.fingerprint.length === 0) {
-      throw schemaError(400, "fingerprint[] must not be empty when provided", "fingerprint_empty");
+  if (hasFps || hasFpCommit) {
+    if (!hasFps || !hasFpCommit) {
+      throw schemaError(400, "fingerprints and fingerprint_commit must be provided together", "fingerprint_commit_required");
     }
     if (typeof body.fingerprint_commit !== "string" || !/^[0-9a-f]{64}$/.test(body.fingerprint_commit)) {
       throw schemaError(400, "fingerprint_commit must be a 64-char lowercase hex string", "fingerprint_commit_invalid");
     }
-    if (fingerprintCommit(body.fingerprint) !== body.fingerprint_commit) {
-      throw schemaError(400, "fingerprint_commit does not match fingerprint[]", "fingerprint_commit_mismatch");
+    _validateFingerprintsEnvelope(body.fingerprints);
+    // Bind check: the SIGNED commit must equal the hash of the recovered bytes
+    // (the envelope's own `commit` is only a convenience copy; trust the signed
+    // top-level value).
+    if (fingerprintsCommit(body.fingerprints) !== body.fingerprint_commit) {
+      throw schemaError(400, "fingerprint_commit does not match fingerprints", "fingerprint_commit_mismatch");
     }
   }
 
@@ -441,21 +443,12 @@ function verifyTx(tx, dag) {
     }
   }
 
-  // fingerprint[] integrity — same pattern as media[]: the advisory perceptual
-  // blob is unsigned tx metadata bound by the signed fingerprint_commit.
-  // Re-derive the commit so a proposing/relaying node can't swap or inject a
-  // fingerprint the author never signed. A MISSING blob is allowed (a relay
-  // may legitimately drop advisory off-DAG data; the commit is then orphaned
-  // and nothing is ingested) — only a PRESENT-but-mismatched blob is tampering.
-  if (Array.isArray(d.fingerprint) && d.fingerprint.length > 0) {
-    if (fingerprintCommit(d.fingerprint) !== d.fingerprint_commit) {
-      return {
-        ok: false, status: 400,
-        error: "fingerprint[] does not match fingerprint_commit",
-        code: "fingerprint_commit_mismatch",
-      };
-    }
-  }
+  // Perceptual fingerprints: the bulky `fingerprints` envelope is NOT carried
+  // on the tx (only the signed 32-byte fingerprint_commit is, verified via the
+  // signature above when present). The blob is validated + commit-checked at the
+  // API node (validateRequest) and ingested off-DAG there. So there's nothing
+  // to re-derive here. Cross-node distribution (replicate the off-DAG rows,
+  // verified against this on-chain commit) is a separate, future path.
 
   return { ok: true };
 }
@@ -476,52 +469,98 @@ function mediaCanonicalHash(media) {
   return shake256(media.map(m => m.media_id).join(""));
 }
 
-/**
- * Derive the commitment that binds the (otherwise-unsigned) perceptual
- * `fingerprint[]` blob into the signed payload — exactly the role
- * media_canonical_hash plays for media[]. Both client and server compute it
- * the same way (canonical-JSON + SHAKE-256), so a relaying node can't swap the
- * advisory fingerprint without invalidating the signature. Returns null for an
- * empty/missing array (no fingerprint -> no commitment, strip-rule omits it).
- *
- *   fingerprint_commit = shake256(canonicalJson(fingerprint[]))
- */
-function fingerprintCommit(fingerprint) {
-  if (!Array.isArray(fingerprint) || fingerprint.length === 0) return null;
-  return shake256(canonicalJson(fingerprint));
+// ── Perceptual fingerprints envelope (advisory, off-DAG) ────────────────────
+// The client packs per-component fingerprints into a versioned envelope
+// { profile, count, commit, encoding, data } and binds it into the signed
+// payload via the top-level fingerprint_commit. The commit is taken over the
+// EXACT bytes of the recovered `data` (NOT a re-serialization), because JS and
+// Python disagree on float/key formatting — so we hash the received bytes
+// verbatim, never JSON.stringify a parsed object. See NODE_FINGERPRINT_CONTRACT.md.
+
+// Recover the raw fingerprints bytes the client committed over. Returns a
+// Buffer; throws a structured error on a bad envelope / undecodable data.
+function _recoverFingerprintBytes(fingerprints) {
+  if (!fingerprints || typeof fingerprints !== "object" || Array.isArray(fingerprints)) {
+    throw schemaError(400, "fingerprints must be an object", "fingerprints_invalid");
+  }
+  const { encoding, data } = fingerprints;
+  if (typeof data !== "string") {
+    throw schemaError(400, "fingerprints.data must be a string", "fingerprints_data_invalid");
+  }
+  if (!PERCEPTUAL_FINGERPRINTS_ENCODINGS.has(encoding)) {
+    throw schemaError(400, "fingerprints.encoding must be gzip+base64 or identity", "fingerprints_encoding_invalid");
+  }
+  if (encoding === "identity") return Buffer.from(data, "utf8");
+  try {
+    return zlib.gunzipSync(Buffer.from(data, "base64"));
+  } catch {
+    throw schemaError(400, "fingerprints.data failed gzip+base64 decode", "fingerprints_decode_failed");
+  }
 }
 
-/**
- * Light shape-check for an incoming `fingerprint[]` (advisory, off-DAG). Each
- * entry is one content component: an object carrying a known modality `kind`
- * and a string `profile` (the modality+version the index keys off). The deep
- * per-modality fields are validated by the ingest layer (buildIngestRows), not
- * here — this gate only rejects obviously-malformed envelopes before signing.
- * Throws a structured schemaError; void return.
- */
-function _validateFingerprintShape(fingerprint) {
-  if (!Array.isArray(fingerprint)) {
-    throw schemaError(400, "fingerprint must be an array", "fingerprint_invalid");
+// The commitment that binds the envelope into the signed payload: SHAKE-256 of
+// the recovered bytes, hashed verbatim (matches the client's
+// shake256(serialized_items)). Same role media_canonical_hash plays for media[].
+function fingerprintsCommit(fingerprints) {
+  return shake256(_recoverFingerprintBytes(fingerprints));
+}
+
+// Recover + parse the ordered items[] for ingest. Each item is one content
+// component { kind, role, index?, exact?, perceptual }; `perceptual` is the
+// verbatim tip-content-fingerprint output the index keys off. Throws on a
+// malformed envelope / non-array payload.
+function parseFingerprintItems(fingerprints) {
+  const bytes = _recoverFingerprintBytes(fingerprints);
+  let items;
+  try {
+    items = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw schemaError(400, "fingerprints payload is not valid JSON", "fingerprints_payload_invalid");
   }
-  if (fingerprint.length > PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS) {
-    throw schemaError(
-      400,
-      `fingerprint[] exceeds max ${PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS} components`,
-      "fingerprint_too_many",
-    );
+  if (!Array.isArray(items)) {
+    throw schemaError(400, "fingerprints payload must be a JSON array of items", "fingerprints_items_invalid");
   }
-  for (let i = 0; i < fingerprint.length; i++) {
-    const fp = fingerprint[i];
-    if (!fp || typeof fp !== "object" || Array.isArray(fp)) {
-      throw schemaError(400, `fingerprint[${i}] must be an object`, "fingerprint_entry_invalid");
+  return items;
+}
+
+// Envelope-shape + decoded-item validation (advisory; deep per-modality fields
+// are validated by the ingest layer). Throws a structured schemaError. Returns
+// the parsed items so the caller doesn't decode twice.
+function _validateFingerprintsEnvelope(fingerprints) {
+  if (!fingerprints || typeof fingerprints !== "object" || Array.isArray(fingerprints)) {
+    throw schemaError(400, "fingerprints must be an object", "fingerprints_invalid");
+  }
+  if (fingerprints.profile !== PERCEPTUAL_FINGERPRINTS_PROFILE) {
+    throw schemaError(400, `fingerprints.profile must be ${PERCEPTUAL_FINGERPRINTS_PROFILE}`, "fingerprints_profile_invalid");
+  }
+  const items = parseFingerprintItems(fingerprints); // also validates encoding/decode/JSON-array
+  if (items.length === 0) {
+    throw schemaError(400, "fingerprints must carry at least one item", "fingerprints_empty");
+  }
+  if (items.length > PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS) {
+    throw schemaError(400, `fingerprints exceeds max ${PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS} items`, "fingerprints_too_many");
+  }
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!it || typeof it !== "object" || Array.isArray(it)) {
+      throw schemaError(400, `fingerprints item ${i} must be an object`, "fingerprint_item_invalid");
     }
-    if (!PERCEPTUAL_FINGERPRINT_KIND_VALUES.has(fp.kind)) {
-      throw schemaError(400, `fingerprint[${i}].kind must be one of text/image/video/audio`, "fingerprint_kind_invalid");
+    const p = it.perceptual;
+    if (!p || typeof p !== "object" || Array.isArray(p)) {
+      throw schemaError(400, `fingerprints item ${i} missing perceptual object`, "fingerprint_perceptual_invalid");
     }
-    if (typeof fp.profile !== "string" || fp.profile.length === 0) {
-      throw schemaError(400, `fingerprint[${i}].profile must be a non-empty string`, "fingerprint_profile_invalid");
+    if (!PERCEPTUAL_FINGERPRINT_KIND_VALUES.has(p.kind)) {
+      throw schemaError(400, `fingerprints item ${i} kind must be one of text/image/video/audio`, "fingerprint_kind_invalid");
+    }
+    // A reject item (the package couldn't fingerprint this component) is a
+    // legitimate, non-indexable placeholder — accept it (ingest skips it). It
+    // carries no profile, so don't require one.
+    if (p.tier === "reject") continue;
+    if (typeof p.profile !== "string" || p.profile.length === 0) {
+      throw schemaError(400, `fingerprints item ${i} perceptual.profile must be a non-empty string`, "fingerprint_profile_invalid");
     }
   }
+  return items;
 }
 
 module.exports = {
@@ -534,7 +573,8 @@ module.exports = {
   resolveSigner,
   buildSigningPayload,
   mediaCanonicalHash,
-  fingerprintCommit,
+  fingerprintsCommit,
+  parseFingerprintItems,
   sign,
   verifySignature,
   verifyTx,

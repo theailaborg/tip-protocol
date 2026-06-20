@@ -25,8 +25,16 @@ const PKG_VERSION = require("tip-content-fingerprint/package.json").version;
 
 function buildIngestRows(fp, opts) {
   opts = opts || {};
-  if (!fp || !fp.kind || !fp.profile) {
-    throw new Error("perceptual ingest: fingerprint missing kind/profile");
+  if (!fp || !fp.kind) {
+    throw new Error("perceptual ingest: fingerprint missing kind");
+  }
+  // Reject tier: the package couldn't fingerprint this component (corrupt /
+  // empty / unsupported media). It carries no profile/minhash/pdq/features/
+  // landmarks, so there are no keys to derive — skip it entirely (no row, no
+  // index entry). Must precede the profile check below.
+  if (fp.tier === "reject") return null;
+  if (!fp.profile) {
+    throw new Error("perceptual ingest: fingerprint missing profile");
   }
   const ctid = opts.ctid;
   if (!ctid) throw new Error("perceptual ingest: ctid is required");
@@ -90,7 +98,9 @@ function phashRow(ctid, profile, modality, frame, ts, quality, pdq) {
 // (an await on the KnexAdapter path; a no-op await on the sync stores). The other
 // writes stay fire-and-forget. Off-DAG / advisory: not mirrored, not in the root.
 async function ingestFingerprint(dag, fp, opts) {
-  const { fingerprint, bands, codes, landmarks, landmarkCount } = buildIngestRows(fp, opts);
+  const rows = buildIngestRows(fp, opts);
+  if (!rows) return { skipped: true, bands: 0, codes: 0, landmarks: 0 }; // reject tier
+  const { fingerprint, bands, codes, landmarks, landmarkCount } = rows;
   dag.savePerceptualFingerprint(fingerprint);
   if (bands.length) dag.saveMinhashBands(bands);
   if (codes.length) dag.savePhashCodes(codes);
