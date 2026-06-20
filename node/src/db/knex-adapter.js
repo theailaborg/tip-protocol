@@ -525,6 +525,12 @@ class KnexAdapter {
       t.bigInteger("endpoint_updated_at").nullable();  // tx.timestamp of last NODE_ENDPOINT_UPDATED; null until first update; monotonic guard
       t.bigInteger("registered_at").notNullable();
     });
+    // Migration: add endpoint_updated_at to existing nodes tables (not present before issue #120 fix)
+    if (!(await db.schema.hasColumn("nodes", "endpoint_updated_at"))) {
+      await db.schema.alterTable("nodes", t => {
+        t.bigInteger("endpoint_updated_at").nullable();
+      });
+    }
 
     await ensure("certificates", t => {
       t.string("hash", 128).primary();
