@@ -49,6 +49,7 @@ const contentRegisterSchema = require(path.resolve(__dirname, "../node/src/schem
 const API = process.env.TIP_API || "http://localhost:4000";
 const PG_CONTAINER = process.env.TIP_PG || "tip-postgres";
 const PG_DB = process.env.TIP_PG_DB || "tip_protocol";
+const PG_USER = process.env.TIP_PG_USER || "tip";
 
 function _green(s) { return `\x1b[32m${s}\x1b[0m`; }
 function _red(s) { return `\x1b[31m${s}\x1b[0m`; }
@@ -109,7 +110,7 @@ function _bumpScore(tipId, score) {
   const sql = `INSERT INTO scores (tip_id, score, offense_count, last_updated)
     VALUES ('${tipId}', ${score}, 0, ${nowMs()})
     ON CONFLICT (tip_id) DO UPDATE SET score = EXCLUDED.score, last_updated = EXCLUDED.last_updated;`;
-  execSync(`docker exec -i ${PG_CONTAINER} psql -U tip -d ${PG_DB} -v ON_ERROR_STOP=1`, {
+  execSync(`docker exec -i ${PG_CONTAINER} psql -U ${PG_USER} -d ${PG_DB} -v ON_ERROR_STOP=1`, {
     input: sql,
     stdio: ["pipe", "pipe", "pipe"],
   });
