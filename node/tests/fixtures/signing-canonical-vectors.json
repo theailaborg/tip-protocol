@@ -1,0 +1,168 @@
+{
+  "CONTENT_VERIFIED:base": {
+    "tx_type": "CONTENT_VERIFIED",
+    "data": {
+      "verifier_tip_id": "tip://id/US-verif",
+      "ctid": "ctid-deadbeef",
+      "verdict": "OH"
+    },
+    "canonical": "{\"ctid\":\"ctid-deadbeef\",\"verdict\":\"OH\",\"verifier_tip_id\":\"tip://id/US-verif\"}"
+  },
+  "UPDATE_ORIGIN:base": {
+    "tx_type": "UPDATE_ORIGIN",
+    "data": {
+      "author_tip_id": "tip://id/US-author",
+      "ctid": "ctid-deadbeef",
+      "new_origin_code": "AA"
+    },
+    "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\",\"new_origin_code\":\"AA\"}"
+  },
+  "CONTENT_RETRACTED:base": {
+    "tx_type": "CONTENT_RETRACTED",
+    "data": {
+      "author_tip_id": "tip://id/US-author",
+      "ctid": "ctid-deadbeef"
+    },
+    "canonical": "{\"author_tip_id\":\"tip://id/US-author\",\"ctid\":\"ctid-deadbeef\"}"
+  },
+  "JURY_VOTE_COMMIT:base": {
+    "tx_type": "JURY_VOTE_COMMIT",
+    "data": {
+      "juror_tip_id": "tip://id/US-juror",
+      "commitment": "commit-hash"
+    },
+    "canonical": "{\"commitment\":\"commit-hash\",\"juror_tip_id\":\"tip://id/US-juror\"}"
+  },
+  "JURY_VOTE_REVEAL:required_only": {
+    "tx_type": "JURY_VOTE_REVEAL",
+    "data": {
+      "juror_tip_id": "tip://id/US-juror",
+      "vote": "MATCH",
+      "salt": "salt-1"
+    },
+    "canonical": "{\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MATCH\"}"
+  },
+  "JURY_VOTE_REVEAL:with_optional": {
+    "tx_type": "JURY_VOTE_REVEAL",
+    "data": {
+      "juror_tip_id": "tip://id/US-juror",
+      "vote": "MISMATCH",
+      "salt": "salt-1",
+      "confirmed_origin": "AG"
+    },
+    "canonical": "{\"confirmed_origin\":\"AG\",\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MISMATCH\"}"
+  },
+  "CONTENT_DISPUTED:required_only": {
+    "tx_type": "CONTENT_DISPUTED",
+    "data": {
+      "disputer_tip_id": "tip://id/US-disp",
+      "reason": "mislabel"
+    },
+    "canonical": "{\"disputer_tip_id\":\"tip://id/US-disp\",\"reason\":\"mislabel\"}"
+  },
+  "CONTENT_DISPUTED:with_optional": {
+    "tx_type": "CONTENT_DISPUTED",
+    "data": {
+      "disputer_tip_id": "tip://id/US-disp",
+      "reason": "mislabel",
+      "claimed_origin": "MX",
+      "evidence_hash": "ev-hash"
+    },
+    "canonical": "{\"claimed_origin\":\"MX\",\"disputer_tip_id\":\"tip://id/US-disp\",\"evidence_hash\":\"ev-hash\",\"reason\":\"mislabel\"}"
+  },
+  "APPEAL_FILED:user": {
+    "tx_type": "APPEAL_FILED",
+    "data": {
+      "appellant_tip_id": "tip://id/US-appel",
+      "ctid": "ctid-deadbeef"
+    },
+    "canonical": "{\"appellant_tip_id\":\"tip://id/US-appel\",\"ctid\":\"ctid-deadbeef\"}"
+  },
+  "REVOKE_VOLUNTARY:required_only": {
+    "tx_type": "REVOKE_VOLUNTARY",
+    "data": {
+      "tx_type": "REVOKE_VOLUNTARY",
+      "tip_id": "tip://id/US-x",
+      "issuing_vp_id": "tip://vp/iss"
+    },
+    "canonical": "{\"issuing_vp_id\":\"tip://vp/iss\",\"tip_id\":\"tip://id/US-x\",\"tx_type\":\"REVOKE_VOLUNTARY\"}"
+  },
+  "REVOKE_VOLUNTARY:with_optional": {
+    "tx_type": "REVOKE_VOLUNTARY",
+    "data": {
+      "tx_type": "REVOKE_VOLUNTARY",
+      "tip_id": "tip://id/US-x",
+      "issuing_vp_id": "tip://vp/iss",
+      "reason_code": "voluntary",
+      "evidence_hash": "ev-hash"
+    },
+    "canonical": "{\"evidence_hash\":\"ev-hash\",\"issuing_vp_id\":\"tip://vp/iss\",\"reason_code\":\"voluntary\",\"tip_id\":\"tip://id/US-x\",\"tx_type\":\"REVOKE_VOLUNTARY\"}"
+  },
+  "REVOKE_DEVICE:base": {
+    "tx_type": "REVOKE_DEVICE",
+    "data": {
+      "tx_type": "REVOKE_DEVICE",
+      "tip_id": "tip://id/US-x",
+      "issuing_vp_id": "tip://vp/iss"
+    },
+    "canonical": "{\"issuing_vp_id\":\"tip://vp/iss\",\"tip_id\":\"tip://id/US-x\",\"tx_type\":\"REVOKE_DEVICE\"}"
+  },
+  "REVOKE_VP:base": {
+    "tx_type": "REVOKE_VP",
+    "data": {
+      "tx_type": "REVOKE_VP",
+      "tip_id": "tip://id/US-x",
+      "issuing_vp_id": "tip://vp/iss"
+    },
+    "canonical": "{\"issuing_vp_id\":\"tip://vp/iss\",\"tip_id\":\"tip://id/US-x\",\"tx_type\":\"REVOKE_VP\"}"
+  },
+  "REVOKE_DECEASED:base": {
+    "tx_type": "REVOKE_DECEASED",
+    "data": {
+      "tx_type": "REVOKE_DECEASED",
+      "tip_id": "tip://id/US-x",
+      "issuing_vp_id": "tip://vp/iss"
+    },
+    "canonical": "{\"issuing_vp_id\":\"tip://vp/iss\",\"tip_id\":\"tip://id/US-x\",\"tx_type\":\"REVOKE_DECEASED\"}"
+  },
+  "VP_REGISTERED:algo_default": {
+    "tx_type": "VP_REGISTERED",
+    "data": {
+      "name": "VP1",
+      "jurisdiction": "US",
+      "jurisdiction_tier": 1,
+      "public_key": "pubkey-hex",
+      "approving_vp_id": "tip://vp/appr"
+    },
+    "canonical": "{\"algorithm\":\"ml-dsa-65\",\"approving_vp_id\":\"tip://vp/appr\",\"jurisdiction\":\"US\",\"jurisdiction_tier\":1,\"name\":\"VP1\",\"public_key\":\"pubkey-hex\"}"
+  },
+  "NODE_REGISTERED:no_endpoint": {
+    "tx_type": "NODE_REGISTERED",
+    "data": {
+      "name": "N1",
+      "public_key": "pubkey-hex",
+      "approving_vp_id": "tip://vp/appr"
+    },
+    "canonical": "{\"algorithm\":\"ml-dsa-65\",\"approving_vp_id\":\"tip://vp/appr\",\"name\":\"N1\",\"public_key\":\"pubkey-hex\"}"
+  },
+  "NODE_REGISTERED:with_endpoint": {
+    "tx_type": "NODE_REGISTERED",
+    "data": {
+      "name": "N1",
+      "public_key": "pubkey-hex",
+      "approving_vp_id": "tip://vp/appr",
+      "api_endpoint": "https://n1.example.com"
+    },
+    "canonical": "{\"algorithm\":\"ml-dsa-65\",\"api_endpoint\":\"https://n1.example.com\",\"approving_vp_id\":\"tip://vp/appr\",\"name\":\"N1\",\"public_key\":\"pubkey-hex\"}"
+  },
+  "UNBIND_DOMAIN:base": {
+    "tx_type": "UNBIND_DOMAIN",
+    "data": {
+      "domain": "example.com",
+      "node_id": "tip://node/n1",
+      "reason": "revoked",
+      "revoked_at": 1767225600000
+    },
+    "canonical": "{\"domain\":\"example.com\",\"node_id\":\"tip://node/n1\",\"reason\":\"revoked\",\"revoked_at\":1767225600000}"
+  }
+}
