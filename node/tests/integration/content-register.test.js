@@ -356,22 +356,66 @@ describe("content register — registered_urls handling", () => {
     expect(tx.data.registered_urls).toEqual(urls);
   });
 
-  test("empty registered_urls array — content not yet published", async () => {
+  test("empty registered_urls array → 400 (at least one published URL required)", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("unpublished-signer").slice(0, 16)}`;
     _seedIdentity(fx.dag, tipId, kp);
 
-    const body = _buildRegisterBody({
-      tipId, privKey: kp.privateKey,
-      content: "unpublished content test",
-      registered_urls: [],
-    });
-    const out = await fx.contentService.register(body);
-    expect(out.confirmation).toBe("proposed");
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "unpublished content test", registered_urls: [] });
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 400, code: "registered_urls_required" });
+  });
 
-    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
-    expect(tx.data.registered_urls).toEqual([]);
+  test("non-http(s) registered_url → 400", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("badurl-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "bad url test", registered_urls: ["ftp://nope"] });
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 400, code: "registered_urls_invalid" });
+  });
+});
+
+// ─── 4b. Duplicate-content rejection + idempotent ingest ────────────────────
+
+describe("content register — duplicate-ctid guards", () => {
+  test("re-registering identical content while the first is PENDING → 409", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("dup-pending-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const mk = () => _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "duplicate me" });
+
+    await fx.contentService.register(mk());                 // first accepted
+    const firstTx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    fx.dag.saveMempoolTx(firstTx);                          // it's now pending in the mempool
+
+    await expect(fx.contentService.register(mk()))          // identical content (same ctid) again
+      .rejects.toMatchObject({ status: 409, code: "content_registration_pending" });
+  });
+
+  test("re-ingesting the same ctid skips — no duplicate perceptual/derived rows", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("idempotent-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const fingerprints = _packFingerprints([
+      { kind: "image", role: "primary", perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
+    ]);
+    const mk = () => _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "idempotent content", fingerprints });
+
+    // The harness submitTx doesn't populate the mempool, so both registrations
+    // reach ingest — exercising the ingest skip-guard directly (the belt-and-
+    // suspenders for the true-simultaneous race the 409 above doesn't cover).
+    await fx.contentService.register(mk()); await _flush();
+    await fx.contentService.register(mk()); await _flush();
+
+    const ctid = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT").data.ctid;
+    expect(fx.dag.getPerceptualFingerprint(ctid, 0)).toMatchObject({ ctid, modality: "image" });
+    expect(fx.dag.getPhashCodesByCtid(ctid)).toHaveLength(1); // NOT 2 — second ingest was skipped
   });
 });
 

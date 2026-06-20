@@ -76,12 +76,33 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
       return;
     }
-    for (let i = 0; i < items.length; i++) {
-      const fp = items[i] && items[i].perceptual;
-      if (!fp) continue;
-      ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt })
-        .catch((err) => log.warn(`perceptual ingest failed for ${ctid}#${i}: ${err.message}`));
-    }
+    // Idempotency by ctid (same pattern as the prescan-job enqueue): if this
+    // ctid is already indexed, it was registered before. The commit-handler is
+    // first-wins, so a re-registration never creates a new record anyway — skip
+    // the re-ingest and keep the existing rows (avoids piling up duplicate
+    // derived rows for the same content). Runs in the background; getPerceptual-
+    // Fingerprint may be sync (SQLite/Memory) or async (Knex).
+    Promise.resolve(dag.getPerceptualFingerprint(ctid, 0))
+      .then(async (existing) => {
+        if (existing) return; // already indexed — keep older
+        for (let i = 0; i < items.length; i++) {
+          const fp = items[i] && items[i].perceptual;
+          if (!fp) continue;
+          await ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt });
+        }
+      })
+      .catch((err) => log.warn(`perceptual ingest failed for ${ctid}: ${err.message}`));
+  }
+
+  // True if this signer already has a REGISTER_CONTENT for this exact ctid in
+  // the mempool (submitted, not yet committed). canRegisterContent only sees
+  // COMMITTED content, so this closes the rapid-resubmit race where an identical
+  // registration would slip through and get its fingerprints optimistically
+  // re-ingested before the commit-handler (first-wins) drops it.
+  function _isRegistrationPending(ctid, signerTipId) {
+    if (typeof dag.getMempoolTxsByTipId !== "function") return false;
+    return dag.getMempoolTxsByTipId(signerTipId)
+      .some(t => t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data && t.data.ctid === ctid);
   }
 
   async function register(body) {
@@ -154,6 +175,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
     if (!valid) throw schemaError(error.status, error.message, error.code);
+
+    // In-flight dedup (committed dedup is canRegisterContent above).
+    if (_isRegistrationPending(ctid, signer_tip_id)) {
+      throw schemaError(409, `Content already pending registration (CTID: ${ctid})`, "content_registration_pending");
+    }
 
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 

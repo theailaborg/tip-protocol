@@ -181,6 +181,18 @@ function validateRequest(body, deps) {
     }
   }
 
+  // registered_urls — REQUIRED: content must declare at least one URL where it
+  // is published (index 0 = canonical/primary). registered_urls is part of the
+  // signed payload, so the requirement binds to the signature.
+  if (!Array.isArray(body.registered_urls) || body.registered_urls.length === 0) {
+    throw schemaError(400, "registered_urls is required (at least one published URL)", "registered_urls_required");
+  }
+  for (const u of body.registered_urls) {
+    if (typeof u !== "string" || !/^https?:\/\/.+/i.test(u)) {
+      throw schemaError(400, "registered_urls entries must be http(s) URLs", "registered_urls_invalid");
+    }
+  }
+
   // authors[] shape — ≥1 entry, each carrying a tip://id/... string —
   // checked here so we can confidently DAG-look-up every author below.
   if (!Array.isArray(body.authors) || body.authors.length === 0) {

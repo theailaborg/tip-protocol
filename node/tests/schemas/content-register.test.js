@@ -518,6 +518,7 @@ describe("validateRequest — media[] shape checks", () => {
       origin_code: "OH",
       signature: "deadbeef",
       content: "some content",
+      registered_urls: ["https://example.com/post/"], // required as of registered_urls gate
       authors: [{ tip_id: tipId, role: "byline", key_mode: "attribution", signed: false, tip_id_type: "personal" }],
     };
   }
