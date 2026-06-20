@@ -237,6 +237,39 @@ describe("content register — similar content (findSimilar + resolve.similar)",
     expect(card.author_tip_id).toBe(tipId);
   });
 
+  test("audio card score is normalised 0-1; raw landmark count goes to landmark_matches (not score)", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-audio").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    // Two distinct posts (different text → different ctids) that carry the SAME
+    // audio landmark set → a perfect audio match (every landmark aligns at
+    // offset 0, so bestCount = 50). The raw count (50) must NOT leak into the
+    // normalised `score` field — it belongs under `landmark_matches`.
+    const landmarks = Array.from({ length: 50 }, (_, i) => ({ hash: 100000 + i, t: i }));
+    const audioEnv = () => _packFingerprints([
+      { kind: "audio", role: "audio", perceptual: { profile: "cf-audio-landmark-1", kind: "audio", landmarkCount: landmarks.length, landmarks } },
+    ]);
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "audio original", fingerprints: audioEnv() }));
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "audio re-upload", fingerprints: audioEnv() }));
+    await _flush();
+    const reg = fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT");
+    reg.forEach(tx => _commit(fx, tx));
+    const [ctidA, ctidB] = [reg[0].data.ctid, reg[1].data.ctid];
+
+    const res = await fx.contentService.findSimilar(ctidB);
+    const card = res.similar.find(s => s.ctid === ctidA);
+    expect(card).toBeDefined();
+    expect(card.similarity.modality).toBe("audio");
+    // The regression guard: `score` is the normalised 0-1 value, never the raw count.
+    expect(card.similarity.score).toBeGreaterThan(0);
+    expect(card.similarity.score).toBeLessThanOrEqual(1);
+    // The raw landmark count is preserved under its own key.
+    expect(card.similarity.landmark_matches).toBe(50);
+    expect(card.similarity.score_ratio).toBeGreaterThan(0);
+  });
+
   test("resolve() embeds the similar[] cards on the content detail", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();

@@ -28,7 +28,9 @@ function _rawMetric(modality, hit) {
   if (modality === "text") return { similarity: hit.similarity };
   if (modality === "image") return { distance: hit.distance };
   if (modality === "video") return { target_match_pct: hit.targetMatchPct, query_match_pct: hit.queryMatchPct };
-  if (modality === "audio") return { score: hit.score, score_ratio: hit.scoreRatio };
+  // NB: key is `landmark_matches`, NOT `score` — a `score` key here would clobber
+  // the card's normalised 0-1 `score` when the metric is spread into it.
+  if (modality === "audio") return { landmark_matches: hit.score, score_ratio: hit.scoreRatio };
   return {};
 }
 

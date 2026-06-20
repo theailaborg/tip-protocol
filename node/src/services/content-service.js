@@ -692,10 +692,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       // (GET /v1/content/:ctid/media/0); null/empty for text-only content.
       media: Array.isArray(rec.media) ? rec.media.slice(0, 1) : [],
       similarity: {
+        ...match.metric, // raw per-modality figures; spread FIRST so the fields below always win
         score: Math.round(match.score * 1000) / 1000, // 0-1, comparable across modalities
         modality: match.modality,
         component_idx: match.component_idx,
-        ...match.metric,
       },
     };
   }
