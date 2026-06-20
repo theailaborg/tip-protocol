@@ -705,8 +705,12 @@ class KnexAdapter {
     // = perceptual_fingerprint; the other three are derived candidate indexes
     // (text LSH, image/video MIH, audio inverted). 16-bit MIH chunks are INTEGER
     // (unsigned 0..65535 overflows a signed smallint).
+    // NOTE: the content ctid column is named `tip_ctid` here (not `ctid`):
+    // PostgreSQL reserves `ctid` as a system column and rejects user tables that
+    // define it. The adapter maps tip_ctid <-> ctid at the method boundary (same
+    // as content / prescan_jobs / prescan_reviews). SQLite/Memory keep `ctid`.
     await ensure("perceptual_fingerprint", t => {
-      t.string("ctid", 512).notNullable();
+      t.string("tip_ctid", 512).notNullable();
       t.integer("component_idx").notNullable();
       t.string("modality", 16).notNullable();    // text|image|video|audio
       t.string("profile", 64).notNullable();
@@ -714,19 +718,19 @@ class KnexAdapter {
       t.integer("quality");                        // null for text/audio
       t.text("fingerprint").notNullable();        // JSON
       t.bigInteger("created_at").notNullable();
-      t.primary(["ctid", "component_idx"]);
+      t.primary(["tip_ctid", "component_idx"]);
     });
     await ensure("minhash_band", t => {
       t.string("profile", 64).notNullable();
       t.integer("band_idx").notNullable();
       t.bigInteger("band_hash").notNullable();
-      t.string("ctid", 512).notNullable();
-      t.primary(["profile", "band_idx", "band_hash", "ctid"]);
+      t.string("tip_ctid", 512).notNullable();
+      t.primary(["profile", "band_idx", "band_hash", "tip_ctid"]);
       t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
     });
     await ensure("phash_code", t => {
       t.bigIncrements("code_id");
-      t.string("ctid", 512).notNullable();
+      t.string("tip_ctid", 512).notNullable();
       t.string("profile", 64).notNullable();
       t.string("modality", 16).notNullable();    // image|video
       t.integer("frame");                          // null for image
@@ -734,7 +738,7 @@ class KnexAdapter {
       t.integer("quality").notNullable();
       t.string("pdq", 64).notNullable();          // 64-hex (256-bit)
       for (let i = 0; i < 16; i++) t.integer(`c${i}`).notNullable();
-      t.index(["ctid"], "idx_phash_code_ctid");
+      t.index(["tip_ctid"], "idx_phash_code_ctid");
       for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
     });
     // Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the landmark
@@ -744,10 +748,10 @@ class KnexAdapter {
     // strong SUBSET of landmarks need be indexed.
     await ensure("audio_clip", t => {
       t.bigIncrements("clip_id");
-      t.string("ctid", 512).notNullable();
+      t.string("tip_ctid", 512).notNullable();
       t.integer("component_idx").notNullable();
       t.integer("landmark_count").notNullable().defaultTo(0); // FULL count (scoreRatio denom)
-      t.unique(["ctid", "component_idx"], "idx_audio_clip_ctid");
+      t.unique(["tip_ctid", "component_idx"], "idx_audio_clip_ctid");
     });
     await ensure("audio_landmark", t => {
       t.string("profile", 64).notNullable();
@@ -1294,50 +1298,60 @@ class KnexAdapter {
   }
   // ── Perceptual index writes (off-DAG, advisory; written to the DB only, NOT
   // mirrored: the matcher queries knex directly, never the sync mirror). ──────
+  // The app keeps using `ctid`; the DB column is `tip_ctid` (Postgres reserves
+  // `ctid`), so map ctid -> tip_ctid on write and tip_ctid -> ctid on read,
+  // exactly like content / prescan_jobs.
   savePerceptualFingerprint(rec) {
-    this._ff(() => this._dbInsert("perceptual_fingerprint", ["ctid", "component_idx"], rec, "merge"));
+    const { ctid, ...rest } = rec;
+    this._ff(() => this._dbInsert("perceptual_fingerprint", ["tip_ctid", "component_idx"], { tip_ctid: ctid, ...rest }, "merge"));
   }
   saveMinhashBands(rows) {
     if (!rows || !rows.length) return;
-    this._ff(() => this.knex("minhash_band").insert(rows)
-      .onConflict(["profile", "band_idx", "band_hash", "ctid"]).ignore());
+    const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
+    this._ff(() => this.knex("minhash_band").insert(mapped)
+      .onConflict(["profile", "band_idx", "band_hash", "tip_ctid"]).ignore());
   }
   savePhashCodes(rows) {
     if (!rows || !rows.length) return;
-    this._ff(() => this.knex("phash_code").insert(rows));
+    const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
+    this._ff(() => this.knex("phash_code").insert(mapped));
   }
   async getPerceptualFingerprint(ctid, componentIdx = 0) {
-    const row = await this.knex("perceptual_fingerprint").where({ ctid, component_idx: componentIdx }).first();
-    return row || null;
+    const row = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid, component_idx: componentIdx }).first();
+    if (!row) return null;
+    const { tip_ctid, ...rest } = row;
+    return { ctid: tip_ctid, ...rest };
   }
   async findMinhashCandidates(profile, bandHashes) {
     const ctids = new Set();
     for (let i = 0; i < bandHashes.length; i++) {
       const rows = await this.knex("minhash_band")
         .where({ profile, band_idx: i, band_hash: bandHashes[i] })
-        .select("ctid");
-      for (const r of rows) ctids.add(r.ctid);
+        .select("tip_ctid");
+      for (const r of rows) ctids.add(r.tip_ctid);
     }
     return [...ctids];
   }
   async findPhashCandidates(profile, modality, queryKeys) {
-    return this.knex("phash_code")
+    const rows = await this.knex("phash_code")
       .where({ profile, modality })
       .andWhere(function () {
         for (let i = 0; i < 16; i++) this.orWhereIn(`c${i}`, queryKeys[i]);
       })
-      .distinct("ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+      .distinct("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+    return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
   async getPhashCodesByCtid(ctid) {
-    return this.knex("phash_code").where({ ctid })
-      .select("ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+    const rows = await this.knex("phash_code").where({ tip_ctid: ctid })
+      .select("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+    return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
   // ── Audio (inverted landmark index, surrogate clip_id) ────────────────────
   async getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
     await this.knex("audio_clip")
-      .insert({ ctid, component_idx: componentIdx, landmark_count: landmarkCount })
-      .onConflict(["ctid", "component_idx"]).merge(["landmark_count"]);
-    const row = await this.knex("audio_clip").where({ ctid, component_idx: componentIdx }).first("clip_id");
+      .insert({ tip_ctid: ctid, component_idx: componentIdx, landmark_count: landmarkCount })
+      .onConflict(["tip_ctid", "component_idx"]).merge(["landmark_count"]);
+    const row = await this.knex("audio_clip").where({ tip_ctid: ctid, component_idx: componentIdx }).first("clip_id");
     return row.clip_id;
   }
   saveAudioLandmarks(rows) {
@@ -1351,7 +1365,10 @@ class KnexAdapter {
       .select("profile", "hash", "clip_id", "t");
   }
   async getAudioClip(clipId) {
-    return (await this.knex("audio_clip").where({ clip_id: clipId }).first()) || null;
+    const row = await this.knex("audio_clip").where({ clip_id: clipId }).first();
+    if (!row) return null;
+    const { tip_ctid, ...rest } = row;
+    return { ctid: tip_ctid, ...rest };
   }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
