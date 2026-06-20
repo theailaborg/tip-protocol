@@ -127,12 +127,8 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.SUBJECT,
     SUBJECT_TIP_ID_FIELD: TIP_ID_FIELDS.JUROR_TIP_ID,
-    // Note: ctid is NOT in the signed payload by design — the commitment
-    // is already cryptographically bound to (vote, salt) via shake256
-    // and the JURY_SUMMONS that allocated this juror locks the ctid.
-    // Matches today's commit-handler verifier at the byte level.
     buildSigningPayload: (data) => buildSignedPayload(data, {
-      required: ["juror_tip_id", "commitment"],
+      required: ["juror_tip_id", "commitment", "ctid", "is_appeal"],
     }),
   },
 
@@ -144,7 +140,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     // vote is MISMATCH + the suggested origin. GH #85: the strip rule lives
     // in buildSignedPayload (omit undefined+null; keep "", 0, false).
     buildSigningPayload: (data) => buildSignedPayload(data, {
-      required: ["juror_tip_id", "vote", "salt"],
+      required: ["juror_tip_id", "vote", "salt", "ctid", "is_appeal"],
       optional: ["confirmed_origin"],
     }),
   },
@@ -191,7 +187,7 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
         // claimed_origin + evidence_hash are conditional. GH #85: the strip
         // rule lives in buildSignedPayload (omit undefined+null; keep "",0,false).
         buildSigningPayload: (data) => buildSignedPayload(data, {
-          required: ["disputer_tip_id", "reason"],
+          required: ["disputer_tip_id", "reason", "ctid"],
           optional: ["claimed_origin", "evidence_hash"],
         }),
       };

@@ -672,12 +672,14 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
   function _revealTx(fx, jurorTipId, timestampISO) {
     const { signBody } = require(path.join(SHARED, "crypto"));
     const kp = fx.identityKeys[jurorTipId];
-    // The signed payload is exactly the fields the verifier checks
-    // (juror_tip_id, vote, salt, confirmed_origin).
+    // The signed payload includes ctid + is_appeal (issue #121 fix) so a
+    // reveal signature can't be replayed across cases or stages.
+    // Stage-2 jury reveals are always is_appeal=false.
     const signedFields = {
       juror_tip_id: jurorTipId, vote: VOTE.MISMATCH, salt: "abc", confirmed_origin: "AG",
+      ctid: fx.ctid, is_appeal: false,
     };
-    const data = { ...signedFields, ctid: fx.ctid };
+    const data = { ...signedFields };
     const signature = signBody(signedFields, kp.privateKey);
     const txBody = {
       tx_type: TX_TYPES.JURY_VOTE_REVEAL,
