@@ -112,7 +112,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       // Disputer's signature covers the on-chain dispute fields. The
       // evidence_hash (when present) is one of those fields, so the
       // disputer commits to a specific body via this signature.
-      const sigBody = { disputer_tip_id, reason };
+      // ctid comes from the route, not the request body — fold it in so
+      // the signature is bound to THIS content item. Mirrors the pattern
+      // used for APPEAL_FILED (commit 658bd5a). Matches the consensus-replay
+      // payload in _registry (CONTENT_DISPUTED user-filed branch).
+      const sigBody = { disputer_tip_id, reason, ctid };
       if (claimed_origin) sigBody.claimed_origin = claimed_origin;
       if (evidence_hash) sigBody.evidence_hash = evidence_hash;
       const DISPUTE_FIELDS = Object.keys(sigBody);
@@ -213,9 +217,13 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     }
     const juror = dag.getIdentity(juror_tip_id);
 
-    if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Juror signature verification failed" };
+    // ctid comes from the route; is_appeal is always false for Stage-2 jury.
+    // Both are bound into the signed payload so a commit signature can't be
+    // replayed across cases or across jury/expert stages. Mirrors APPEAL_FILED.
+    const bodyForVerify = { ...body, ctid, is_appeal: false };
+    if (!verifyBodySignature(bodyForVerify, signature, juror.public_key, ["juror_tip_id", "commitment", "ctid", "is_appeal"])) throw { status: 403, error: "Juror signature verification failed" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment }, signature });
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, is_appeal: false }, signature });
     submitTx(commitTx);
     return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
@@ -232,10 +240,16 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     }
     const juror = dag.getIdentity(juror_tip_id);
 
-    const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
-    if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Juror signature verification failed" };
+    // ctid comes from the route; is_appeal is always false for Stage-2 jury.
+    // Both are bound into the signed payload to prevent cross-case/cross-stage
+    // replay. Mirrors the pattern used for APPEAL_FILED (commit 658bd5a).
+    const revealBodyForVerify = { ...body, ctid, is_appeal: false };
+    const REVEAL_FIELDS = confirmed_origin
+      ? ["juror_tip_id", "vote", "salt", "confirmed_origin", "ctid", "is_appeal"]
+      : ["juror_tip_id", "vote", "salt", "ctid", "is_appeal"];
+    if (!verifyBodySignature(revealBodyForVerify, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Juror signature verification failed" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null }, signature });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: false }, signature });
     submitTx(revealTx);
 
     // Verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.
@@ -411,7 +425,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
-    if (!verifyBodySignature(body, signature, juror.public_key, ["juror_tip_id", "commitment"])) throw { status: 403, error: "Expert signature verification failed" };
+    // ctid comes from the route; is_appeal is always true for Stage-3 experts.
+    // Both are bound into the signed payload to prevent cross-case/cross-stage
+    // replay. Mirrors the pattern used for APPEAL_FILED (commit 658bd5a).
+    const expertCommitBodyForVerify = { ...body, ctid, is_appeal: true };
+    if (!verifyBodySignature(expertCommitBodyForVerify, signature, juror.public_key, ["juror_tip_id", "commitment", "ctid", "is_appeal"])) throw { status: 403, error: "Expert signature verification failed" };
 
     const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, commitment, is_appeal: true }, signature });
     submitTx(commitTx);
@@ -433,8 +451,14 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       if (!r.valid) throw { status: r.error.status, error: r.error.message };
     }
     const juror = dag.getIdentity(juror_tip_id);
-    const REVEAL_FIELDS = confirmed_origin ? ["juror_tip_id", "vote", "salt", "confirmed_origin"] : ["juror_tip_id", "vote", "salt"];
-    if (!verifyBodySignature(body, signature, juror.public_key, REVEAL_FIELDS)) throw { status: 403, error: "Expert signature verification failed" };
+    // ctid comes from the route; is_appeal is always true for Stage-3 experts.
+    // Both are bound into the signed payload to prevent cross-case/cross-stage
+    // replay. Mirrors the pattern used for APPEAL_FILED (commit 658bd5a).
+    const expertRevealBodyForVerify = { ...body, ctid, is_appeal: true };
+    const EXPERT_REVEAL_FIELDS = confirmed_origin
+      ? ["juror_tip_id", "vote", "salt", "confirmed_origin", "ctid", "is_appeal"]
+      : ["juror_tip_id", "vote", "salt", "ctid", "is_appeal"];
+    if (!verifyBodySignature(expertRevealBodyForVerify, signature, juror.public_key, EXPERT_REVEAL_FIELDS)) throw { status: 403, error: "Expert signature verification failed" };
 
     const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true }, signature });
     submitTx(revealTx);

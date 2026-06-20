@@ -122,24 +122,24 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
   // ── JURY_VOTE_REVEAL ────────────────────────────────────────────────────────
 
   test("JURY_VOTE_REVEAL — confirmed_origin absent (MATCH): API == consensus", () => {
-    const data = { juror_tip_id: "tip://id/juror1", vote: "MATCH", salt: "deadbeef" };
-    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin"];
+    const data = { juror_tip_id: "tip://id/juror1", vote: "MATCH", salt: "deadbeef", ctid: "tip://c/CASE-1", is_appeal: false };
+    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin", "ctid", "is_appeal"];
     expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.JURY_VOTE_REVEAL, data));
   });
 
   test("JURY_VOTE_REVEAL — confirmed_origin present (MISMATCH): API == consensus", () => {
-    const data = { juror_tip_id: "tip://id/juror1", vote: "MISMATCH", salt: "deadbeef", confirmed_origin: "AI" };
-    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin"];
+    const data = { juror_tip_id: "tip://id/juror1", vote: "MISMATCH", salt: "deadbeef", confirmed_origin: "AI", ctid: "tip://c/CASE-1", is_appeal: false };
+    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin", "ctid", "is_appeal"];
     expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.JURY_VOTE_REVEAL, data));
   });
 
   test("JURY_VOTE_REVEAL — sign + verify round-trip: confirmed_origin absent", () => {
     const kp     = generateMLDSAKeypair();
-    const data   = { juror_tip_id: "tip://id/juror1", vote: "MATCH", salt: "deadbeef" };
+    const data   = { juror_tip_id: "tip://id/juror1", vote: "MATCH", salt: "deadbeef", ctid: "tip://c/CASE-1", is_appeal: false };
     const entry  = TX_SIGNATURE_REGISTRY[TX_TYPES.JURY_VOTE_REVEAL];
     const payload = entry.buildSigningPayload(data);
     const sig    = signBody(payload, kp.privateKey);
-    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin"];
+    const fields = ["juror_tip_id", "vote", "salt", "confirmed_origin", "ctid", "is_appeal"];
     // API-path verifier must accept the consensus-built signature.
     expect(verifyBodySignature(data, sig, kp.publicKey, fields)).toBe(true);
   });
@@ -147,27 +147,27 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
   // ── CONTENT_DISPUTED ────────────────────────────────────────────────────────
 
   test("CONTENT_DISPUTED — claimed_origin + evidence_hash absent: API == consensus", () => {
-    const data = { disputer_tip_id: "tip://id/disputer", reason: "misleading", auto: false };
-    const fields = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"];
+    const data = { disputer_tip_id: "tip://id/disputer", reason: "misleading", ctid: "tip://c/CASE-1", auto: false };
+    const fields = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash", "ctid"];
     expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.CONTENT_DISPUTED, data));
   });
 
   test("CONTENT_DISPUTED — claimed_origin + evidence_hash present: API == consensus", () => {
     const data = {
       disputer_tip_id: "tip://id/disputer", reason: "misleading",
-      claimed_origin: "HUMAN", evidence_hash: "cafebabe", auto: false,
+      claimed_origin: "HUMAN", evidence_hash: "cafebabe", ctid: "tip://c/CASE-1", auto: false,
     };
-    const fields = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"];
+    const fields = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash", "ctid"];
     expect(apiHash(data, fields)).toEqual(consensusHash(TX_TYPES.CONTENT_DISPUTED, data));
   });
 
   test("CONTENT_DISPUTED — sign + verify round-trip: optional fields absent", () => {
     const kp       = generateMLDSAKeypair();
-    const data     = { disputer_tip_id: "tip://id/disputer", reason: "misleading", auto: false };
+    const data     = { disputer_tip_id: "tip://id/disputer", reason: "misleading", ctid: "tip://c/CASE-1", auto: false };
     const contract = TX_SIGNATURE_REGISTRY[TX_TYPES.CONTENT_DISPUTED].getSignatureContract({ data });
     const payload  = contract.buildSigningPayload(data);
     const sig      = signBody(payload, kp.privateKey);
-    const fields   = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash"];
+    const fields   = ["disputer_tip_id", "reason", "claimed_origin", "evidence_hash", "ctid"];
     expect(verifyBodySignature(data, sig, kp.publicKey, fields)).toBe(true);
   });
 
@@ -303,8 +303,8 @@ describe("GH #85 — canonical-payload regression: optional-field-absent paths a
 
   test("Universal null rule: null optional field is byte-identical to absent in buildSigningPayload", () => {
     const entry = TX_SIGNATURE_REGISTRY[TX_TYPES.JURY_VOTE_REVEAL];
-    const absent = entry.buildSigningPayload({ juror_tip_id: "j", vote: "MATCH", salt: "s" });
-    const nulled = entry.buildSigningPayload({ juror_tip_id: "j", vote: "MATCH", salt: "s", confirmed_origin: null });
+    const absent = entry.buildSigningPayload({ juror_tip_id: "j", vote: "MATCH", salt: "s", ctid: "tip://c/CASE-1", is_appeal: false });
+    const nulled = entry.buildSigningPayload({ juror_tip_id: "j", vote: "MATCH", salt: "s", ctid: "tip://c/CASE-1", is_appeal: false, confirmed_origin: null });
     expect(absent).toEqual(nulled);
     expect(absent).not.toHaveProperty("confirmed_origin");
   });
