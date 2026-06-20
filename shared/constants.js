@@ -224,6 +224,16 @@ const ATTRIBUTION_MODES = Object.freeze({
 });
 const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 
+// Perceptual fingerprint (off-DAG advisory near-duplicate index). The client
+// may attach `fingerprint[]` to REGISTER_CONTENT — one entry per content
+// component (the text body + each media item, in order) — plus a
+// `fingerprint_commit` (shake256 of canonical-JSON(fingerprint[])) that binds
+// the otherwise-unsigned blob into the signed payload. These are the modality
+// kinds the index recognises and the per-content component cap.
+const PERCEPTUAL_FINGERPRINT_KINDS = Object.freeze(["text", "image", "video", "audio"]);
+const PERCEPTUAL_FINGERPRINT_KIND_VALUES = Object.freeze(new Set(PERCEPTUAL_FINGERPRINT_KINDS));
+const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 64;
+
 // Canonical `tip_id_type` values — the kind of TIP-ID an identity is.
 // Locked enum; rejected at REGISTER_IDENTITY validation time and at
 // REGISTER_CONTENT author cross-check time.
@@ -754,6 +764,9 @@ module.exports = {
   CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
+  PERCEPTUAL_FINGERPRINT_KINDS,
+  PERCEPTUAL_FINGERPRINT_KIND_VALUES,
+  PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
   TIP_ID_TYPES,
   TIP_ID_TYPE_VALUES,
   DOMAIN_BINDING_STATUS,

@@ -42,6 +42,7 @@ const {
   TX_TYPES, ORIGIN, CNA_VERSIONS, CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES, ATTRIBUTION_MODE_VALUES,
   SIGNATURE_SCOPE, SIGNED_BY_KIND, TIP_ID_FIELDS,
+  PERCEPTUAL_FINGERPRINT_KIND_VALUES, PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
 } = require("../../../shared/constants");
 const { shake256 } = require("../../../shared/crypto");
 const { validateContentSize } = require("../middleware/validate");
@@ -152,6 +153,29 @@ function validateRequest(body, deps) {
       if (typeof m.mime !== "string" || !/^(image|audio|video)\/[a-z0-9.+\-]+$/i.test(m.mime)) {
         throw schemaError(400, `media[${i}].mime must be image/*, audio/*, or video/*`, "media_mime_invalid");
       }
+    }
+  }
+
+  // Perceptual fingerprint[] (advisory, off-DAG). Optional; when present it
+  // must be bound by a matching fingerprint_commit so the signature covers it
+  // (mirrors media[]/media_canonical_hash). The two are all-or-nothing at
+  // submission time: a blob with no commit can't be bound, a commit with no
+  // blob has nothing to ingest.
+  const hasFp = body.fingerprint !== undefined;
+  const hasFpCommit = body.fingerprint_commit !== undefined;
+  if (hasFp || hasFpCommit) {
+    if (!hasFp || !hasFpCommit) {
+      throw schemaError(400, "fingerprint and fingerprint_commit must be provided together", "fingerprint_commit_required");
+    }
+    _validateFingerprintShape(body.fingerprint);
+    if (body.fingerprint.length === 0) {
+      throw schemaError(400, "fingerprint[] must not be empty when provided", "fingerprint_empty");
+    }
+    if (typeof body.fingerprint_commit !== "string" || !/^[0-9a-f]{64}$/.test(body.fingerprint_commit)) {
+      throw schemaError(400, "fingerprint_commit must be a 64-char lowercase hex string", "fingerprint_commit_invalid");
+    }
+    if (fingerprintCommit(body.fingerprint) !== body.fingerprint_commit) {
+      throw schemaError(400, "fingerprint_commit does not match fingerprint[]", "fingerprint_commit_mismatch");
     }
   }
 
@@ -290,7 +314,7 @@ function buildSigningPayload(input, contentHashFull) {
     );
   }
 
-  return {
+  const payload = {
     attribution_mode: attributionMode,
     authors,
     cna_version: CURRENT_CNA_VERSION,
@@ -300,6 +324,20 @@ function buildSigningPayload(input, contentHashFull) {
     registered_urls: _normalizeRegisteredUrls(input.registered_urls),
     signer_tip_id: signerTipId,
   };
+
+  // Optional perceptual fingerprint commitment. Strip-rule (signing-versioning
+  // policy): bound into the signed payload ONLY when present, so content with
+  // no fingerprint signs byte-identical to before this field existed (existing
+  // signatures + golden vectors unchanged). canonicalJson sorts keys, so the
+  // field slots in deterministically regardless of insertion order.
+  if (input.fingerprint_commit != null) {
+    if (typeof input.fingerprint_commit !== "string" || !/^[0-9a-f]{64}$/.test(input.fingerprint_commit)) {
+      throw schemaError(400, "fingerprint_commit must be a 64-char lowercase hex string", "fingerprint_commit_invalid");
+    }
+    payload.fingerprint_commit = input.fingerprint_commit;
+  }
+
+  return payload;
 }
 
 /**
@@ -403,6 +441,22 @@ function verifyTx(tx, dag) {
     }
   }
 
+  // fingerprint[] integrity — same pattern as media[]: the advisory perceptual
+  // blob is unsigned tx metadata bound by the signed fingerprint_commit.
+  // Re-derive the commit so a proposing/relaying node can't swap or inject a
+  // fingerprint the author never signed. A MISSING blob is allowed (a relay
+  // may legitimately drop advisory off-DAG data; the commit is then orphaned
+  // and nothing is ingested) — only a PRESENT-but-mismatched blob is tampering.
+  if (Array.isArray(d.fingerprint) && d.fingerprint.length > 0) {
+    if (fingerprintCommit(d.fingerprint) !== d.fingerprint_commit) {
+      return {
+        ok: false, status: 400,
+        error: "fingerprint[] does not match fingerprint_commit",
+        code: "fingerprint_commit_mismatch",
+      };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -422,6 +476,54 @@ function mediaCanonicalHash(media) {
   return shake256(media.map(m => m.media_id).join(""));
 }
 
+/**
+ * Derive the commitment that binds the (otherwise-unsigned) perceptual
+ * `fingerprint[]` blob into the signed payload — exactly the role
+ * media_canonical_hash plays for media[]. Both client and server compute it
+ * the same way (canonical-JSON + SHAKE-256), so a relaying node can't swap the
+ * advisory fingerprint without invalidating the signature. Returns null for an
+ * empty/missing array (no fingerprint -> no commitment, strip-rule omits it).
+ *
+ *   fingerprint_commit = shake256(canonicalJson(fingerprint[]))
+ */
+function fingerprintCommit(fingerprint) {
+  if (!Array.isArray(fingerprint) || fingerprint.length === 0) return null;
+  return shake256(canonicalJson(fingerprint));
+}
+
+/**
+ * Light shape-check for an incoming `fingerprint[]` (advisory, off-DAG). Each
+ * entry is one content component: an object carrying a known modality `kind`
+ * and a string `profile` (the modality+version the index keys off). The deep
+ * per-modality fields are validated by the ingest layer (buildIngestRows), not
+ * here — this gate only rejects obviously-malformed envelopes before signing.
+ * Throws a structured schemaError; void return.
+ */
+function _validateFingerprintShape(fingerprint) {
+  if (!Array.isArray(fingerprint)) {
+    throw schemaError(400, "fingerprint must be an array", "fingerprint_invalid");
+  }
+  if (fingerprint.length > PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS) {
+    throw schemaError(
+      400,
+      `fingerprint[] exceeds max ${PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS} components`,
+      "fingerprint_too_many",
+    );
+  }
+  for (let i = 0; i < fingerprint.length; i++) {
+    const fp = fingerprint[i];
+    if (!fp || typeof fp !== "object" || Array.isArray(fp)) {
+      throw schemaError(400, `fingerprint[${i}] must be an object`, "fingerprint_entry_invalid");
+    }
+    if (!PERCEPTUAL_FINGERPRINT_KIND_VALUES.has(fp.kind)) {
+      throw schemaError(400, `fingerprint[${i}].kind must be one of text/image/video/audio`, "fingerprint_kind_invalid");
+    }
+    if (typeof fp.profile !== "string" || fp.profile.length === 0) {
+      throw schemaError(400, `fingerprint[${i}].profile must be a non-empty string`, "fingerprint_profile_invalid");
+    }
+  }
+}
+
 module.exports = {
   TX_TYPE,
   CURRENT_CNA_VERSION,
@@ -432,6 +534,7 @@ module.exports = {
   resolveSigner,
   buildSigningPayload,
   mediaCanonicalHash,
+  fingerprintCommit,
   sign,
   verifySignature,
   verifyTx,
