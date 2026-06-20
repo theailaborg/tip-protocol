@@ -24,6 +24,8 @@ const VIDEO_DISTANCE = 31;        // per-frame PDQ Hamming "<" tolerance
 const VIDEO_QUALITY = 50;         // frame quality filter F
 const VIDEO_PC = 80;              // target-coverage % required for a match
 const VIDEO_PQ = 0;               // query-coverage % (0 = clip-in-longer-video friendly)
+const AUDIO_MIN_SCORE = 10;       // min time-consistent landmarks at the best offset
+const AUDIO_MIN_RATIO = 0.06;     // min fraction of the smaller fingerprint
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
@@ -134,7 +136,65 @@ async function matchVideo(dag, queryFp, opts) {
   return out;
 }
 
+// Find indexed audio clips that are near-duplicates of queryFp. Shazam-style
+// time-offset histogram (Wang 2003), the same decision the package's compareAudio
+// makes, but driven off the inverted landmark index instead of a full pairwise
+// scan: candidate-gen pulls only the indexed landmarks whose hash the query also
+// carries, then per candidate clip the shared (query->target) time shifts are
+// histogrammed; the tallest bin is the count of time-consistent landmarks (the
+// score) and its offset is where the query aligns inside the clip. scoreRatio
+// normalises by the smaller fingerprint (the clip's FULL landmark_count, kept on
+// audio_clip even when only a subset is indexed). Returns [{ ctid, score,
+// scoreRatio, offset }] sorted highest-score-first, offset in frame units.
+async function matchAudio(dag, queryFp, opts) {
+  opts = opts || {};
+  const minScore = opts.minScore != null ? opts.minScore : AUDIO_MIN_SCORE;
+  const minRatio = opts.minRatio != null ? opts.minRatio : AUDIO_MIN_RATIO;
+  if (!queryFp || queryFp.kind !== "audio" || !Array.isArray(queryFp.landmarks)) return [];
+
+  const queryByHash = new Map(); // hash -> [query times]
+  for (const lm of queryFp.landmarks) {
+    let arr = queryByHash.get(lm.hash);
+    if (!arr) queryByHash.set(lm.hash, (arr = []));
+    arr.push(lm.t);
+  }
+  const qCount = queryFp.landmarks.length;
+  if (!qCount) return [];
+
+  const candidates = await dag.findAudioCandidates(queryFp.profile, [...queryByHash.keys()]);
+
+  // Per clip: offset histogram + running best bin (offset = target_t - query_t).
+  const perClip = new Map(); // clip_id -> { hist: Map, bestOff, bestCount }
+  for (const row of candidates) {
+    const qts = queryByHash.get(row.hash);
+    if (!qts) continue;
+    let agg = perClip.get(row.clip_id);
+    if (!agg) perClip.set(row.clip_id, (agg = { hist: new Map(), bestOff: 0, bestCount: 0 }));
+    for (let i = 0; i < qts.length; i++) {
+      const off = row.t - qts[i];
+      const c = (agg.hist.get(off) || 0) + 1;
+      agg.hist.set(off, c);
+      if (c > agg.bestCount) { agg.bestCount = c; agg.bestOff = off; }
+    }
+  }
+
+  const byCtid = new Map(); // ctid -> best { score, scoreRatio, offset }
+  for (const [clipId, agg] of perClip) {
+    const clip = await dag.getAudioClip(clipId);
+    if (!clip) continue;
+    if (opts.excludeCtid && clip.ctid === opts.excludeCtid) continue;
+    const denom = Math.max(1, Math.min(qCount, clip.landmark_count));
+    const scoreRatio = agg.bestCount / denom;
+    if (agg.bestCount < minScore || scoreRatio < minRatio) continue;
+    const hit = { ctid: clip.ctid, score: agg.bestCount, scoreRatio, offset: agg.bestOff };
+    const prev = byCtid.get(clip.ctid);
+    if (!prev || hit.score > prev.score) byCtid.set(clip.ctid, hit);
+  }
+  return [...byCtid.values()].sort((a, b) => b.score - a.score);
+}
+
 module.exports = {
-  matchText, matchImage, matchVideo,
+  matchText, matchImage, matchVideo, matchAudio,
   TEXT_FLAG_THRESHOLD, IMAGE_DISTANCE, IMAGE_MIN_QUALITY, VIDEO_DISTANCE, VIDEO_QUALITY, VIDEO_PC, VIDEO_PQ,
+  AUDIO_MIN_SCORE, AUDIO_MIN_RATIO,
 };
