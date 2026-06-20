@@ -29,18 +29,22 @@
     "tx_type": "JURY_VOTE_COMMIT",
     "data": {
       "juror_tip_id": "tip://id/US-juror",
-      "commitment": "commit-hash"
+      "commitment": "commit-hash",
+      "ctid": "ctid-deadbeef",
+      "is_appeal": false
     },
-    "canonical": "{\"commitment\":\"commit-hash\",\"juror_tip_id\":\"tip://id/US-juror\"}"
+    "canonical": "{\"commitment\":\"commit-hash\",\"ctid\":\"ctid-deadbeef\",\"is_appeal\":false,\"juror_tip_id\":\"tip://id/US-juror\"}"
   },
   "JURY_VOTE_REVEAL:required_only": {
     "tx_type": "JURY_VOTE_REVEAL",
     "data": {
       "juror_tip_id": "tip://id/US-juror",
       "vote": "MATCH",
-      "salt": "salt-1"
+      "salt": "salt-1",
+      "ctid": "ctid-deadbeef",
+      "is_appeal": false
     },
-    "canonical": "{\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MATCH\"}"
+    "canonical": "{\"ctid\":\"ctid-deadbeef\",\"is_appeal\":false,\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MATCH\"}"
   },
   "JURY_VOTE_REVEAL:with_optional": {
     "tx_type": "JURY_VOTE_REVEAL",
@@ -48,27 +52,31 @@
       "juror_tip_id": "tip://id/US-juror",
       "vote": "MISMATCH",
       "salt": "salt-1",
+      "ctid": "ctid-deadbeef",
+      "is_appeal": false,
       "confirmed_origin": "AG"
     },
-    "canonical": "{\"confirmed_origin\":\"AG\",\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MISMATCH\"}"
+    "canonical": "{\"confirmed_origin\":\"AG\",\"ctid\":\"ctid-deadbeef\",\"is_appeal\":false,\"juror_tip_id\":\"tip://id/US-juror\",\"salt\":\"salt-1\",\"vote\":\"MISMATCH\"}"
   },
   "CONTENT_DISPUTED:required_only": {
     "tx_type": "CONTENT_DISPUTED",
     "data": {
       "disputer_tip_id": "tip://id/US-disp",
-      "reason": "mislabel"
+      "reason": "mislabel",
+      "ctid": "ctid-deadbeef"
     },
-    "canonical": "{\"disputer_tip_id\":\"tip://id/US-disp\",\"reason\":\"mislabel\"}"
+    "canonical": "{\"ctid\":\"ctid-deadbeef\",\"disputer_tip_id\":\"tip://id/US-disp\",\"reason\":\"mislabel\"}"
   },
   "CONTENT_DISPUTED:with_optional": {
     "tx_type": "CONTENT_DISPUTED",
     "data": {
       "disputer_tip_id": "tip://id/US-disp",
       "reason": "mislabel",
+      "ctid": "ctid-deadbeef",
       "claimed_origin": "MX",
       "evidence_hash": "ev-hash"
     },
-    "canonical": "{\"claimed_origin\":\"MX\",\"disputer_tip_id\":\"tip://id/US-disp\",\"evidence_hash\":\"ev-hash\",\"reason\":\"mislabel\"}"
+    "canonical": "{\"claimed_origin\":\"MX\",\"ctid\":\"ctid-deadbeef\",\"disputer_tip_id\":\"tip://id/US-disp\",\"evidence_hash\":\"ev-hash\",\"reason\":\"mislabel\"}"
   },
   "APPEAL_FILED:user": {
     "tx_type": "APPEAL_FILED",
