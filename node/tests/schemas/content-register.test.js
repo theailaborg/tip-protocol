@@ -19,6 +19,7 @@
  */
 
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -617,7 +618,7 @@ describe("perceptual fingerprint — commit + signed-payload strip-rule", () => 
   const zlib = require("zlib");
   const ITEMS = [
     { kind: "image", role: "primary", perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
-    { kind: "text", role: "caption", perceptual: { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: [1, 2, 3] } },
+    { kind: "text", role: "caption", perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: [1, 2, 3] } },
   ];
   const pack = (items, encoding = "gzip+base64") => {
     const json = JSON.stringify(items);

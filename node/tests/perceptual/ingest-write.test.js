@@ -1,10 +1,11 @@
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const { MemoryStore, SQLiteStore } = require("../../src/dag");
 const { ingestFingerprint } = require("../../src/perceptual/ingest");
 
 const minhash128 = Array.from({ length: 128 }, (_, i) => (i * 2654435761) % 100000);
-const textFp = { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 120, minhash: minhash128 };
+const textFp = { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 120, minhash: minhash128 };
 const imageFp = { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 };
 const audioFp = {
   profile: "cf-audio-landmark-1", kind: "audio", landmarkCount: 5,

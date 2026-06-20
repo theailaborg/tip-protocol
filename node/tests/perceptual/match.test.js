@@ -1,11 +1,12 @@
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const { MemoryStore, SQLiteStore } = require("../../src/dag");
 const { ingestFingerprint } = require("../../src/perceptual/ingest");
 const { matchText, matchImage, matchVideo, matchAudio } = require("../../src/perceptual/matcher");
 
 // ── text ───────────────────────────────────────────────────────────────────
-const mkText = (vals) => ({ profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: vals });
+const mkText = (vals) => ({ profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: vals });
 const A = Array.from({ length: 128 }, (_, i) => (i * 7 + 13) % 100000);
 const NEAR = A.map((v, i) => (i < 10 ? v + 1 : v)); // ~10/128 changed -> Jaccard ~0.92, shares bands
 const FAR = A.map((v) => v + 500000);                // shares no band -> Jaccard 0

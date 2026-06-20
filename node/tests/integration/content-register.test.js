@@ -18,6 +18,7 @@
  */
 
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -147,7 +148,7 @@ describe("content register — perceptual fingerprints (local off-DAG ingest)", 
     { kind: "image", role: "primary", exact: "a".repeat(64),
       perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
     { kind: "text", role: "caption",
-      perceptual: { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: minhash128 } },
+      perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: minhash128 } },
   ];
 
   test("tx carries ONLY the commit; items ingested into the off-DAG index in order", async () => {
@@ -191,7 +192,7 @@ describe("content register — similar content (findSimilar + resolve.similar)",
   const A = Array.from({ length: 128 }, (_, i) => (i * 7 + 13) % 100000);
   const NEAR = A.map((v, i) => (i < 10 ? v + 1 : v)); // ~8% changed → shares LSH bands
   const textEnv = (minhash) => _packFingerprints([
-    { kind: "text", role: "caption", perceptual: { profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash } },
+    { kind: "text", role: "caption", perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash } },
   ]);
 
   // The harness's submitTx only records the tx; emulate the commit-handler's
