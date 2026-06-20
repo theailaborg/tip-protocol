@@ -103,6 +103,13 @@ function loadConfig() {
       media_items_max:  CONTENT_LIMITS.MEDIA_ITEMS_MAX,
     },
 
+    // Express body-parser cap (genesis content_limits.request_body_max_bytes).
+    // Surfaced here so api.js sets the limit from config (resolved after
+    // ProtocolConstants init) rather than reaching into the throwing getter at
+    // app-build time. Registrations carry a gzipped perceptual fingerprints
+    // envelope, so this must comfortably exceed media+text JSON.
+    requestBodyMaxBytes: CONTENT_LIMITS.REQUEST_BODY_MAX_BYTES,
+
     // ── Public API endpoint ─────────────────────────────────────────────────
     // This node's public-facing origin (https://host[:port]). Announced on
     // chain via NODE_ENDPOINT_UPDATED at boot when it differs from the

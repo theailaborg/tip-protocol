@@ -96,7 +96,12 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   // Middleware
   app.use(requestId);
   app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(express.json({ limit: "4mb" }));
+  // Body-parser cap = the genesis-configured request_body_max_bytes (25 MB via
+  // config), not a hardcoded literal. Sized for content registrations that
+  // carry a gzipped perceptual `fingerprints` envelope (a long song's landmark
+  // set is ~1-2 MB gzipped; long video pushes higher). See genesis
+  // content_limits.request_body_max_bytes.
+  app.use(express.json({ limit: config.requestBodyMaxBytes || 25 * 1024 * 1024 }));
   // Timestamp normalisation: internal code uses integer ms (see
   // shared/time.js); external clients consume ISO 8601. Single
   // conversion seam — applies to every /v1/ request and response.
