@@ -737,13 +737,23 @@ class KnexAdapter {
       t.index(["ctid"], "idx_phash_code_ctid");
       for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
     });
-    await ensure("audio_landmark", t => {
-      t.string("profile", 64).notNullable();
-      t.integer("hash").notNullable();
+    // Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the landmark
+    // index explodes (~20k rows/song), so rows reference a compact BIGINT clip_id
+    // instead of TEXT(512) ctid (~5x smaller). The full landmark set lives in
+    // perceptual_fingerprint.fingerprint; this index is rebuildable, so only a
+    // strong SUBSET of landmarks need be indexed.
+    await ensure("audio_clip", t => {
+      t.bigIncrements("clip_id");
       t.string("ctid", 512).notNullable();
       t.integer("component_idx").notNullable();
-      t.integer("t").notNullable();
-      t.primary(["profile", "hash", "ctid", "component_idx", "t"]);
+      t.unique(["ctid", "component_idx"], "idx_audio_clip_ctid");
+    });
+    await ensure("audio_landmark", t => {
+      t.string("profile", 64).notNullable();
+      t.integer("hash").notNullable();      // 24-bit packed landmark
+      t.bigInteger("clip_id").notNullable(); // -> audio_clip(ctid, component_idx)
+      t.integer("t").notNullable();          // anchor frame index
+      t.primary(["profile", "hash", "clip_id", "t"]);
       t.index(["profile", "hash"], "idx_audio_landmark_lookup");
     });
   }

@@ -2297,13 +2297,23 @@ class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_phash_code_c13 ON phash_code(profile, modality, c13);
       CREATE INDEX IF NOT EXISTS idx_phash_code_c14 ON phash_code(profile, modality, c14);
       CREATE INDEX IF NOT EXISTS idx_phash_code_c15 ON phash_code(profile, modality, c15);
-      CREATE TABLE IF NOT EXISTS audio_landmark (
-        profile       TEXT    NOT NULL,
-        hash          INTEGER NOT NULL,
+      -- Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the
+      -- landmark index explodes (~20k rows/song), so rows reference a compact
+      -- BIGINT clip_id instead of a TEXT(512) ctid (~5x smaller). The full
+      -- landmark set lives in perceptual_fingerprint.fingerprint; this index is
+      -- rebuildable, so only a strong SUBSET of landmarks need be indexed.
+      CREATE TABLE IF NOT EXISTS audio_clip (
+        clip_id       INTEGER PRIMARY KEY AUTOINCREMENT,
         ctid          TEXT    NOT NULL,
         component_idx INTEGER NOT NULL,
-        t             INTEGER NOT NULL,
-        PRIMARY KEY (profile, hash, ctid, component_idx, t)
+        UNIQUE (ctid, component_idx)
+      );
+      CREATE TABLE IF NOT EXISTS audio_landmark (
+        profile   TEXT    NOT NULL,
+        hash      INTEGER NOT NULL,   -- 24-bit packed (f1,f2,dt) landmark
+        clip_id   INTEGER NOT NULL,   -- -> audio_clip(ctid, component_idx)
+        t         INTEGER NOT NULL,   -- anchor frame index
+        PRIMARY KEY (profile, hash, clip_id, t)
       );
       CREATE INDEX IF NOT EXISTS idx_audio_landmark_lookup ON audio_landmark(profile, hash);
     `);
