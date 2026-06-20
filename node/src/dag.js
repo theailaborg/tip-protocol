@@ -742,7 +742,7 @@ class MemoryStore {
   }
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     const row = this._nodes.get(nodeId);
-    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null, endpoint_updated_at: timestamp || null });
+    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null, endpoint_updated_at: timestamp ?? null });
   }
   getNode(nodeId) {
     const row = this._nodes.get(nodeId);
@@ -3291,7 +3291,7 @@ class SQLiteStore {
     );
   }
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
-    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, timestamp || null, nodeId);
+    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, timestamp ?? null, nodeId);
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes() { return this._stmts.getAllNodes.all(); }

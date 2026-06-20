@@ -1495,7 +1495,7 @@ class KnexAdapter {
     this.mirror.updateNodeEndpoint(nodeId, apiEndpoint, timestamp);
     this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({
       api_endpoint: apiEndpoint || null,
-      endpoint_updated_at: timestamp || null,
+      endpoint_updated_at: timestamp ?? null,
     }));
   }
 

@@ -601,6 +601,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (!existingNode) {
           return { valid: false, error: `NODE_ENDPOINT_UPDATED for unknown node ${d.node_id}` };
         }
+        // equal timestamps are also rejected — ambiguous ordering on the same ms
         if (existingNode.endpoint_updated_at !== null &&
             existingNode.endpoint_updated_at !== undefined &&
             tx.timestamp <= existingNode.endpoint_updated_at) {
