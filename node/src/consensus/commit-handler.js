@@ -590,14 +590,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.NODE_ENDPOINT_UPDATED: {
         // Envelope signature already binds data.node_id to the node's
         // registered key (NODE_ENVELOPE contract) — only the node itself
-        // can produce a valid update. Here: shape + existence only.
+        // can produce a valid update. Here: shape + existence + monotonic
+        // timestamp guard to prevent stale tx replay from reverting api_endpoint.
         try {
           nodeEndpointUpdateSchema.validateRequest(d);
         } catch (err) {
           return { valid: false, error: err.error || String(err) };
         }
-        if (!dag.getNode(d.node_id)) {
+        const existingNode = dag.getNode(d.node_id);
+        if (!existingNode) {
           return { valid: false, error: `NODE_ENDPOINT_UPDATED for unknown node ${d.node_id}` };
+        }
+        if (existingNode.endpoint_updated_at !== null &&
+            existingNode.endpoint_updated_at !== undefined &&
+            tx.timestamp <= existingNode.endpoint_updated_at) {
+          return {
+            valid: false,
+            error: `NODE_ENDPOINT_UPDATED rejected: tx.timestamp ${tx.timestamp} is not strictly after endpoint_updated_at ${existingNode.endpoint_updated_at}`,
+          };
         }
         return { valid: true };
       }
@@ -1510,7 +1520,11 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
       case TX_TYPES.NODE_ENDPOINT_UPDATED:
         if (d.node_id && dag.getNode(d.node_id)) {
-          dag.updateNodeEndpoint(d.node_id, typeof d.api_endpoint === "string" ? d.api_endpoint : null);
+          dag.updateNodeEndpoint(
+            d.node_id,
+            typeof d.api_endpoint === "string" ? d.api_endpoint : null,
+            tx.timestamp,
+          );
         }
         break;
 

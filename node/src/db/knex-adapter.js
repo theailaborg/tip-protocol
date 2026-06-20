@@ -522,6 +522,7 @@ class KnexAdapter {
       t.text("name").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
       t.text("api_endpoint").nullable();   // public API origin; peers redirect reviewers here for this node's media
+      t.bigInteger("endpoint_updated_at").nullable();  // tx.timestamp of last NODE_ENDPOINT_UPDATED; null until first update; monotonic guard
       t.bigInteger("registered_at").notNullable();
     });
 
@@ -1484,14 +1485,18 @@ class KnexAdapter {
       name: rec.name || null,
       status: rec.status || "active",
       api_endpoint: rec.api_endpoint || null,
+      endpoint_updated_at: null,  // null for new nodes (no update committed yet)
       registered_at: rec.registered_at,
     };
     this._ff(() => this._dbInsert("nodes", "node_id", row, "merge"));
   }
 
-  updateNodeEndpoint(nodeId, apiEndpoint) {
-    this.mirror.updateNodeEndpoint(nodeId, apiEndpoint);
-    this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({ api_endpoint: apiEndpoint || null }));
+  updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
+    this.mirror.updateNodeEndpoint(nodeId, apiEndpoint, timestamp);
+    this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({
+      api_endpoint: apiEndpoint || null,
+      endpoint_updated_at: timestamp || null,
+    }));
   }
 
   getNode(id) { return this.mirror.getNode(id); }
