@@ -299,7 +299,7 @@ async function doCommit(args, block) {
     if (p.alreadyOnChain) { skipped++; continue; }
     const key = loadKey(p.juror_tip_id);
     if (!key) { skipped++; console.log(`    ? ${p.creator_name || p.juror_tip_id} no key file — skipping`); continue; }
-    const fields = { juror_tip_id: p.juror_tip_id, commitment: p.commitment };
+    const fields = { juror_tip_id: p.juror_tip_id, commitment: p.commitment, ctid: args.ctid, is_appeal: args.appeal };
     const signature = signBody(fields, key.privateKey);
     const url = `${args.nodeUrl}/v1/content/${encodeURIComponent(args.ctid)}/${routeBase}/commit`;
     const r = await postJson(url, { ...fields, signature });
@@ -340,8 +340,8 @@ async function doReveal(args, block, disputeCase) {
     if (!key) { missing++; console.log(`    ? ${j.creator_name || j.juror_tip_id} no key file — cannot reveal`); continue; }
     const isMismatch = sec.vote === VOTE.MISMATCH;
     const fields = isMismatch
-      ? { juror_tip_id: j.juror_tip_id, vote: sec.vote, salt: sec.salt, confirmed_origin: confirmedOrigin }
-      : { juror_tip_id: j.juror_tip_id, vote: sec.vote, salt: sec.salt };
+      ? { juror_tip_id: j.juror_tip_id, vote: sec.vote, salt: sec.salt, ctid: args.ctid, is_appeal: args.appeal, confirmed_origin: confirmedOrigin }
+      : { juror_tip_id: j.juror_tip_id, vote: sec.vote, salt: sec.salt, ctid: args.ctid, is_appeal: args.appeal };
 
     if (args.dryRun) {
       console.log(`    DRY ${j.creator_name} would reveal vote=${sec.vote}${isMismatch ? ` confirmed_origin=${confirmedOrigin}` : ""}`);
