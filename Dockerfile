@@ -26,6 +26,10 @@ RUN apk add --no-cache python3 make g++
 # Install all production dependencies (root + node workspace)
 COPY package*.json ./
 COPY node/package*.json ./node/
+# Vendored local dependency: node/package.json references tip-content-fingerprint
+# as file:vendor/...tgz, so the tarball must be in the context before install.
+# npm extracts it into node_modules (a real dir), so only the build stage needs it.
+COPY node/vendor/ ./node/vendor/
 RUN npm install --omit=dev
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
