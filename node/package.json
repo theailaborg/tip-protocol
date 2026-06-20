@@ -41,7 +41,7 @@
     "pg": "^8.20.0",
     "protobufjs": "^8.0.1",
     "snarkjs": "^0.7.6",
-    "tip-content-fingerprint": "file:../../../TIP/tip-content-fingerprint",
+    "tip-content-fingerprint": "file:vendor/tip-content-fingerprint-1.1.0.tgz",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
