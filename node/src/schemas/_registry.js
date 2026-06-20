@@ -236,35 +236,23 @@ const TX_SIGNATURE_REGISTRY = Object.freeze({
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
-    buildSigningPayload: (data) => ({
-      // GH #85: ?? instead of || so algorithm="" is not silently promoted
-      // to the default; only null/undefined fall back to "ml-dsa-65".
-      algorithm: data.algorithm ?? "ml-dsa-65",
-      name: data.name,
-      jurisdiction: data.jurisdiction,
-      jurisdiction_tier: data.jurisdiction_tier,
-      public_key: data.public_key,
-      approving_vp_id: data.approving_vp_id,
-    }),
+    buildSigningPayload: (data) => buildSignedPayload(
+      { ...data, algorithm: data.algorithm ?? "ml-dsa-65" },
+      { required: ["algorithm", "approving_vp_id", "jurisdiction", "jurisdiction_tier", "name", "public_key"] },
+    ),
   },
   [TX_TYPES.NODE_REGISTERED]: {
     SIGNATURE_SCOPE: SIGNATURE_SCOPE.BODY,
     SIGNED_BY: SIGNED_BY_KIND.VP,
     VP_ID_FIELD: VP_ID_FIELDS.APPROVING_VP_ID,
-    buildSigningPayload: (data) => ({
-      // GH #85: ?? instead of || so algorithm="" is not silently promoted
-      // to the default; only null/undefined fall back to "ml-dsa-65".
-      algorithm: data.algorithm ?? "ml-dsa-65",
-      name: data.name,
-      public_key: data.public_key,
-      approving_vp_id: data.approving_vp_id,
-      // Optional — the node's public API base URL. Peers use it for
-      // cross-node media redirects (per-node S3 buckets mean bytes live
-      // only on the upload-receiving node). Omitted on legacy txs;
-      // included in canonical bytes only when present so old committed
-      // txs keep verifying byte-for-byte.
-      ...(data.api_endpoint ? { api_endpoint: data.api_endpoint } : {}),
-    }),
+    // api_endpoint is optional — omitted on legacy txs; included in
+    // canonical bytes only when present so old committed txs keep
+    // verifying byte-for-byte. GH #85: null/undefined is stripped by
+    // buildSignedPayload, preserving the "omit on missing" behaviour.
+    buildSigningPayload: (data) => buildSignedPayload(
+      { ...data, algorithm: data.algorithm ?? "ml-dsa-65" },
+      { required: ["algorithm", "approving_vp_id", "name", "public_key"], optional: ["api_endpoint"] },
+    ),
   },
 
   // ─── COMMITTEE_ROTATION ───────────────────────────────────────────────────
