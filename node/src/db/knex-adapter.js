@@ -1327,6 +1327,10 @@ class KnexAdapter {
       })
       .distinct("ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
   }
+  async getPhashCodesByCtid(ctid) {
+    return this.knex("phash_code").where({ ctid })
+      .select("ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+  }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }
   claimPrescanJob(opts) {

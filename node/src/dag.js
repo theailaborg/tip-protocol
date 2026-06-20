@@ -1543,6 +1543,10 @@ class MemoryStore {
     }
     return out;
   }
+  // All phash codes for a ctid (a video's full frame set, for the overlap score).
+  getPhashCodesByCtid(ctid) {
+    return this._phashCodes.filter((c) => c.ctid === ctid);
+  }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
   }
@@ -3058,6 +3062,9 @@ class SQLiteStore {
       findMinhashByBand: this.db.prepare(
         "SELECT ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
       ),
+      getPhashCodesByCtid: this.db.prepare(
+        "SELECT ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE ctid=?"
+      ),
     };
   }
 
@@ -4003,6 +4010,9 @@ class SQLiteStore {
         WHERE profile=? AND modality=? AND (${conds.join(" OR ")})`;
     return this.db.prepare(sql).all(...params);
   }
+  getPhashCodesByCtid(ctid) {
+    return this._stmts.getPhashCodesByCtid.all(ctid);
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4368,6 +4378,7 @@ function _buildDagHandle(store, config) {
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
+    getPhashCodesByCtid: (ctid) => store.getPhashCodesByCtid(ctid),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),

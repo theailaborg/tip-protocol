@@ -2,7 +2,7 @@
 
 const { MemoryStore, SQLiteStore } = require("../../src/dag");
 const { ingestFingerprint } = require("../../src/perceptual/ingest");
-const { matchText, matchImage } = require("../../src/perceptual/matcher");
+const { matchText, matchImage, matchVideo } = require("../../src/perceptual/matcher");
 
 // ── text ───────────────────────────────────────────────────────────────────
 const mkText = (vals) => ({ profile: "cf-text-2", kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: vals });
@@ -34,6 +34,25 @@ async function exerciseImage(dag) {
   expect((await matchImage(dag, mkImg(PDQ), { excludeCtid: "OH-img" })).find((h) => h.ctid === "OH-img")).toBeUndefined();
 }
 
+// ── video ──────────────────────────────────────────────────────────────────
+const vframe = (pdq, i, q = 80) => ({ frame: i, timestamp: i + 0.5, pdq, quality: q });
+const A_PDQS = ["11", "22", "33", "44"].map((b) => b.repeat(32)); // 4 frames, 64-hex each
+const videoA = { profile: "cf-video-1", kind: "video", features: A_PDQS.map((p, i) => vframe(p, i)) };
+// re-encode: flip 1 bit in each frame's first byte -> per-frame Hamming 1 (< 31), shares chunks
+const flip1 = (hex) => (parseInt(hex.slice(0, 2), 16) ^ 1).toString(16).padStart(2, "0") + hex.slice(2);
+const videoNear = { profile: "cf-video-1", kind: "video", features: A_PDQS.map((p, i) => vframe(flip1(p), i)) };
+// unrelated: every byte differs, shares no chunk
+const videoFar = { profile: "cf-video-1", kind: "video", features: ["ab", "cd", "ef", "9a"].map((b, i) => vframe(b.repeat(32), i)) };
+
+async function exerciseVideo(dag) {
+  ingestFingerprint(dag, videoA, { ctid: "OH-vid" });
+  const hits = await matchVideo(dag, videoNear);
+  expect(hits.map((h) => h.ctid)).toContain("OH-vid");
+  expect(hits.find((h) => h.ctid === "OH-vid").targetMatchPct).toBeGreaterThanOrEqual(80);
+  expect((await matchVideo(dag, videoFar)).find((h) => h.ctid === "OH-vid")).toBeUndefined();
+  expect((await matchVideo(dag, videoA, { excludeCtid: "OH-vid" })).find((h) => h.ctid === "OH-vid")).toBeUndefined();
+}
+
 describe("perceptual matcher", () => {
   describe("text near-duplicate (LSH candidate-gen + Jaccard verify)", () => {
     test("MemoryStore", async () => { await exerciseText(new MemoryStore()); });
@@ -42,5 +61,9 @@ describe("perceptual matcher", () => {
   describe("image near-duplicate (MIH candidate-gen + Hamming verify)", () => {
     test("MemoryStore", async () => { await exerciseImage(new MemoryStore()); });
     test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseImage(s); s.db.close(); });
+  });
+  describe("video near-duplicate (per-frame MIH + bidirectional overlap)", () => {
+    test("MemoryStore", async () => { await exerciseVideo(new MemoryStore()); });
+    test("SQLiteStore", async () => { const s = new SQLiteStore(":memory:"); await exerciseVideo(s); s.db.close(); });
   });
 });

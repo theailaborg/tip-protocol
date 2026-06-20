@@ -20,6 +20,10 @@ const { hammingHex } = require("tip-content-fingerprint/src/image/hamming");
 const TEXT_FLAG_THRESHOLD = 0.30; // reviewer-panel "possible copy" cutoff
 const IMAGE_DISTANCE = 31;        // PDQ Hamming match floor (of 256)
 const IMAGE_MIN_QUALITY = 49;     // discard flat/low-detail images
+const VIDEO_DISTANCE = 31;        // per-frame PDQ Hamming "<" tolerance
+const VIDEO_QUALITY = 50;         // frame quality filter F
+const VIDEO_PC = 80;              // target-coverage % required for a match
+const VIDEO_PQ = 0;               // query-coverage % (0 = clip-in-longer-video friendly)
 
 // Find indexed texts that are near-duplicates of queryFp (char-tier MinHash only;
 // micro-tier is exact-match, handled elsewhere). Returns [{ ctid, similarity }]
@@ -80,4 +84,57 @@ async function matchImage(dag, queryFp, opts) {
     .sort((a, b) => a.distance - b.distance);
 }
 
-module.exports = { matchText, matchImage, TEXT_FLAG_THRESHOLD, IMAGE_DISTANCE, IMAGE_MIN_QUALITY };
+// Bidirectional frame-set overlap, mirroring the package's compareVideo
+// (matchTwoHashBrute): coverage = number of A-frames with ANY B-frame within
+// Hamming < D. Reimplemented here (not imported) because the package's video
+// module pulls the wasm decode stack at load; only the pure hammingHex is used.
+function _coverage(A, B, D) {
+  let n = 0;
+  for (const a of A) {
+    for (const b of B) {
+      if (hammingHex(a.pdq, b.pdq) < D) { n++; break; }
+    }
+  }
+  return n;
+}
+
+// Find indexed videos that are near-duplicates of queryFp. Per query frame: MIH
+// candidate-gen on phash_code (modality 'video') -> candidate ctids; then fetch
+// each candidate's full frame set and score the bidirectional overlap. Returns
+// [{ ctid, queryMatchPct, targetMatchPct }] for matches (target coverage >= Pc).
+async function matchVideo(dag, queryFp, opts) {
+  opts = opts || {};
+  const D = opts.distanceTolerance != null ? opts.distanceTolerance : VIDEO_DISTANCE;
+  const F = opts.qualityTolerance != null ? opts.qualityTolerance : VIDEO_QUALITY;
+  const Pc = opts.pc != null ? opts.pc : VIDEO_PC;
+  const Pq = opts.pq != null ? opts.pq : VIDEO_PQ;
+  if (!queryFp || queryFp.kind !== "video" || !Array.isArray(queryFp.features)) return [];
+
+  const q = queryFp.features.filter((f) => typeof f.pdq === "string" && (f.quality == null || f.quality >= F));
+  if (!q.length) return [];
+
+  const ctids = new Set();
+  for (const f of q) {
+    for (const c of await dag.findPhashCandidates(queryFp.profile, "video", queryKeys(f.pdq))) {
+      ctids.add(c.ctid);
+    }
+  }
+
+  const out = [];
+  for (const ctid of ctids) {
+    if (opts.excludeCtid && ctid === opts.excludeCtid) continue;
+    const rows = await dag.getPhashCodesByCtid(ctid);
+    const t = rows.filter((r) => r.modality === "video" && (r.quality == null || r.quality >= F));
+    if (!t.length) continue;
+    const queryMatchPct = (_coverage(q, t, D) * 100) / q.length;
+    const targetMatchPct = (_coverage(t, q, D) * 100) / t.length;
+    if (queryMatchPct >= Pq && targetMatchPct >= Pc) out.push({ ctid, queryMatchPct, targetMatchPct });
+  }
+  out.sort((a, b) => b.targetMatchPct - a.targetMatchPct);
+  return out;
+}
+
+module.exports = {
+  matchText, matchImage, matchVideo,
+  TEXT_FLAG_THRESHOLD, IMAGE_DISTANCE, IMAGE_MIN_QUALITY, VIDEO_DISTANCE, VIDEO_QUALITY, VIDEO_PC, VIDEO_PQ,
+};
