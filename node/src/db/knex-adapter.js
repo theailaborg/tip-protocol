@@ -746,6 +746,7 @@ class KnexAdapter {
       t.bigIncrements("clip_id");
       t.string("ctid", 512).notNullable();
       t.integer("component_idx").notNullable();
+      t.integer("landmark_count").notNullable().defaultTo(0); // FULL count (scoreRatio denom)
       t.unique(["ctid", "component_idx"], "idx_audio_clip_ctid");
     });
     await ensure("audio_landmark", t => {
@@ -1330,6 +1331,27 @@ class KnexAdapter {
   async getPhashCodesByCtid(ctid) {
     return this.knex("phash_code").where({ ctid })
       .select("ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+  }
+  // ── Audio (inverted landmark index, surrogate clip_id) ────────────────────
+  async getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
+    await this.knex("audio_clip")
+      .insert({ ctid, component_idx: componentIdx, landmark_count: landmarkCount })
+      .onConflict(["ctid", "component_idx"]).merge(["landmark_count"]);
+    const row = await this.knex("audio_clip").where({ ctid, component_idx: componentIdx }).first("clip_id");
+    return row.clip_id;
+  }
+  saveAudioLandmarks(rows) {
+    if (!rows || !rows.length) return;
+    this._ff(() => this.knex("audio_landmark").insert(rows)
+      .onConflict(["profile", "hash", "clip_id", "t"]).ignore());
+  }
+  async findAudioCandidates(profile, hashes) {
+    if (!hashes || !hashes.length) return [];
+    return this.knex("audio_landmark").where({ profile }).whereIn("hash", hashes)
+      .select("profile", "hash", "clip_id", "t");
+  }
+  async getAudioClip(clipId) {
+    return (await this.knex("audio_clip").where({ clip_id: clipId }).first()) || null;
   }
   getPrescanJob(jobId) { return this.mirror.getPrescanJob(jobId); }
   getPrescanJobByCtid(ctid) { return this.mirror.getPrescanJobByCtid(ctid); }

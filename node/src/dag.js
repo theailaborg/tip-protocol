@@ -379,6 +379,10 @@ class MemoryStore {
     this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
     this._minhashBands = [];                    // text LSH index rows
     this._phashCodes = [];                      // image/video MIH index rows
+    this._audioClips = new Map();               // `${ctid}|${component_idx}` -> { clip_id, ctid, component_idx, landmark_count }
+    this._audioClipById = new Map();            // clip_id -> the same clip row (matcher resolves clip_id -> ctid)
+    this._audioClipSeq = 0;                     // surrogate clip_id allocator (§8.1)
+    this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
   }
@@ -1547,6 +1551,35 @@ class MemoryStore {
   getPhashCodesByCtid(ctid) {
     return this._phashCodes.filter((c) => c.ctid === ctid);
   }
+  // Audio (§8.1): a clip gets a surrogate clip_id its landmarks point at; the FULL
+  // landmark_count (scoreRatio denom) is kept even when only a subset is indexed.
+  getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
+    const key = `${ctid}|${componentIdx}`;
+    let clip = this._audioClips.get(key);
+    if (clip) {
+      clip.landmark_count = landmarkCount;
+    } else {
+      clip = { clip_id: ++this._audioClipSeq, ctid, component_idx: componentIdx, landmark_count: landmarkCount };
+      this._audioClips.set(key, clip);
+      this._audioClipById.set(clip.clip_id, clip);
+    }
+    return clip.clip_id;
+  }
+  saveAudioLandmarks(rows) {
+    for (const r of rows) this._audioLandmarks.push({ ...r });
+  }
+  // Inverted-index candidate-gen: landmark rows whose hash is one the query carries.
+  findAudioCandidates(profile, hashes) {
+    const want = new Set(hashes);
+    const out = [];
+    for (const l of this._audioLandmarks) {
+      if (l.profile === profile && want.has(l.hash)) out.push(l);
+    }
+    return out;
+  }
+  getAudioClip(clipId) {
+    return this._audioClipById.get(clipId) || null;
+  }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
   }
@@ -2307,9 +2340,10 @@ class SQLiteStore {
       -- landmark set lives in perceptual_fingerprint.fingerprint; this index is
       -- rebuildable, so only a strong SUBSET of landmarks need be indexed.
       CREATE TABLE IF NOT EXISTS audio_clip (
-        clip_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        ctid          TEXT    NOT NULL,
-        component_idx INTEGER NOT NULL,
+        clip_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ctid           TEXT    NOT NULL,
+        component_idx  INTEGER NOT NULL,
+        landmark_count INTEGER NOT NULL DEFAULT 0,  -- FULL count (for scoreRatio denom)
         UNIQUE (ctid, component_idx)
       );
       CREATE TABLE IF NOT EXISTS audio_landmark (
@@ -3064,6 +3098,20 @@ class SQLiteStore {
       ),
       getPhashCodesByCtid: this.db.prepare(
         "SELECT ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE ctid=?"
+      ),
+      // Audio: surrogate clip_id (§8.1). Upsert refreshes the FULL landmark_count
+      // and RETURNs the clip_id the landmark rows point at.
+      upsertAudioClip: this.db.prepare(
+        `INSERT INTO audio_clip (ctid, component_idx, landmark_count)
+         VALUES (?, ?, ?)
+         ON CONFLICT(ctid, component_idx) DO UPDATE SET landmark_count=excluded.landmark_count
+         RETURNING clip_id`
+      ),
+      saveAudioLandmark: this.db.prepare(
+        "INSERT OR IGNORE INTO audio_landmark (profile, hash, clip_id, t) VALUES (?, ?, ?, ?)"
+      ),
+      getAudioClip: this.db.prepare(
+        "SELECT clip_id, ctid, component_idx, landmark_count FROM audio_clip WHERE clip_id=?"
       ),
     };
   }
@@ -4013,6 +4061,23 @@ class SQLiteStore {
   getPhashCodesByCtid(ctid) {
     return this._stmts.getPhashCodesByCtid.all(ctid);
   }
+  getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
+    return this._stmts.upsertAudioClip.get(ctid, componentIdx, landmarkCount).clip_id;
+  }
+  saveAudioLandmarks(rows) {
+    for (const r of rows) this._stmts.saveAudioLandmark.run(r.profile, r.hash, r.clip_id, r.t);
+  }
+  // Dynamic SQL (variable IN-list size); one indexed seek over (profile, hash).
+  findAudioCandidates(profile, hashes) {
+    if (!hashes || !hashes.length) return [];
+    const sql =
+      `SELECT clip_id, hash, t FROM audio_landmark
+        WHERE profile=? AND hash IN (${hashes.map(() => "?").join(",")})`;
+    return this.db.prepare(sql).all(profile, ...hashes);
+  }
+  getAudioClip(clipId) {
+    return this._stmts.getAudioClip.get(clipId) || null;
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4379,6 +4444,10 @@ function _buildDagHandle(store, config) {
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
     getPhashCodesByCtid: (ctid) => store.getPhashCodesByCtid(ctid),
+    getOrCreateAudioClip: (ctid, idx, landmarkCount) => store.getOrCreateAudioClip(ctid, idx, landmarkCount),
+    saveAudioLandmarks: (rows) => store.saveAudioLandmarks(rows),
+    findAudioCandidates: (profile, hashes) => store.findAudioCandidates(profile, hashes),
+    getAudioClip: (clipId) => store.getAudioClip(clipId),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),

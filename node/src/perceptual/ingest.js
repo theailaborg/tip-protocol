@@ -6,11 +6,11 @@
 // the hash format (versioned by the modality PROFILE). Pure, no I/O: the caller
 // writes the returned rows through the dag store methods (step b).
 //
-// Returns { fingerprint, bands, codes }:
+// Returns { fingerprint, bands, codes, landmarks, landmarkCount }:
 //   fingerprint -> one perceptual_fingerprint row (source of truth)
-//   bands       -> minhash_band rows   (text LSH; empty for image/video)
-//   codes       -> phash_code rows     (image/video MIH; empty for text)
-// (audio landmarks use a different index shape, added later.)
+//   bands       -> minhash_band rows   (text LSH)
+//   codes       -> phash_code rows     (image/video MIH)
+//   landmarks   -> [{ hash, t }]       (audio inverted index; clip_id assigned at write)
 //
 // See my-notes/PERCEPTUAL_INDEX_PLAN.md.
 
@@ -46,6 +46,7 @@ function buildIngestRows(fp, opts) {
 
   const bands = [];
   const codes = [];
+  const landmarks = []; // audio: [{ hash, t }] (clip_id assigned at write time)
 
   if (fp.kind === "text") {
     // Only char-tier (MinHash) texts get LSH bands; micro-tier is exact-match.
@@ -61,9 +62,19 @@ function buildIngestRows(fp, opts) {
     for (const f of fp.features || []) {
       codes.push(phashRow(ctid, fp.profile, "video", f.frame, f.timestamp, f.quality, f.pdq));
     }
+  } else if (fp.kind === "audio") {
+    // Index the landmark set as-is. §8.1 lever 2 (cap N/sec, keep loudest peaks)
+    // is a future subset-cap here; the full set always lives in `fingerprint`.
+    for (const lm of fp.landmarks || []) landmarks.push({ hash: lm.hash, t: lm.t });
   }
 
-  return { fingerprint, bands, codes };
+  // The clip's FULL landmark count (for the matcher's scoreRatio denom), even if
+  // only a subset is indexed.
+  const landmarkCount = fp.kind === "audio"
+    ? (fp.landmarkCount != null ? fp.landmarkCount : landmarks.length)
+    : 0;
+
+  return { fingerprint, bands, codes, landmarks, landmarkCount };
 }
 
 // One phash_code row: the metadata + the 16 MIH chunk columns c0..c15.
@@ -74,16 +85,22 @@ function phashRow(ctid, profile, modality, frame, ts, quality, pdq) {
   return row;
 }
 
-// Step (b): derive the rows then write them through the dag store. Sync-callable
-// (KnexAdapter writes are fire-and-forget). `dag` is the dag facade (or any store)
-// exposing savePerceptualFingerprint / saveMinhashBands / savePhashCodes. The
-// writes are off-DAG / advisory: not mirrored, not in state_merkle_root.
-function ingestFingerprint(dag, fp, opts) {
-  const { fingerprint, bands, codes } = buildIngestRows(fp, opts);
+// Step (b): derive the rows then write them through the dag store. async because
+// audio needs the store-assigned surrogate clip_id before writing landmark rows
+// (an await on the KnexAdapter path; a no-op await on the sync stores). The other
+// writes stay fire-and-forget. Off-DAG / advisory: not mirrored, not in the root.
+async function ingestFingerprint(dag, fp, opts) {
+  const { fingerprint, bands, codes, landmarks, landmarkCount } = buildIngestRows(fp, opts);
   dag.savePerceptualFingerprint(fingerprint);
   if (bands.length) dag.saveMinhashBands(bands);
   if (codes.length) dag.savePhashCodes(codes);
-  return { fingerprint, bands: bands.length, codes: codes.length };
+  if (landmarks.length) {
+    const clipId = await dag.getOrCreateAudioClip(fingerprint.ctid, fingerprint.component_idx, landmarkCount);
+    dag.saveAudioLandmarks(
+      landmarks.map((l) => ({ profile: fingerprint.profile, hash: l.hash, clip_id: clipId, t: l.t })),
+    );
+  }
+  return { fingerprint, bands: bands.length, codes: codes.length, landmarks: landmarks.length };
 }
 
 module.exports = { buildIngestRows, ingestFingerprint };
