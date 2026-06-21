@@ -162,7 +162,7 @@ function validateRequest(body, deps) {
   // it must be bound by a matching fingerprint_commit so the signature covers it
   // (mirrors media[]/media_canonical_hash). Both-or-neither at submission: a
   // blob with no commit can't be bound, a commit with no blob has nothing to
-  // ingest. See NODE_FINGERPRINT_CONTRACT.md.
+  // ingest. See docs/NODE_FINGERPRINT_CONTRACT.md.
   const hasFps = body.fingerprints !== undefined;
   const hasFpCommit = body.fingerprint_commit !== undefined;
   if (hasFps || hasFpCommit) {
@@ -486,8 +486,8 @@ function mediaCanonicalHash(media) {
 // { profile, count, commit, encoding, data } and binds it into the signed
 // payload via the top-level fingerprint_commit. The commit is taken over the
 // EXACT bytes of the recovered `data` (NOT a re-serialization), because JS and
-// Python disagree on float/key formatting — so we hash the received bytes
-// verbatim, never JSON.stringify a parsed object. See NODE_FINGERPRINT_CONTRACT.md.
+// Python disagree on float/key formatting, so we hash the received bytes
+// verbatim, never JSON.stringify a parsed object. See docs/NODE_FINGERPRINT_CONTRACT.md.
 
 // Recover the raw fingerprints bytes the client committed over. Returns a
 // Buffer; throws a structured error on a bad envelope / undecodable data.

@@ -225,10 +225,14 @@ const ATTRIBUTION_MODES = Object.freeze({
 const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 
 // Perceptual fingerprint (off-DAG advisory near-duplicate index). The client
-// may attach `fingerprint[]` to REGISTER_CONTENT — one entry per content
-// component (the text body + each media item, in order) — plus a
-// `fingerprint_commit` (shake256 of canonical-JSON(fingerprint[])) that binds
-// the otherwise-unsigned blob into the signed payload. These are the modality
+// attaches a `fingerprints` envelope to REGISTER_CONTENT (one item per content
+// component: the text body + each media item, in order) plus a
+// `fingerprint_commit` that binds the otherwise-unsigned blob into the signed
+// payload. The commit is shake256 of the VERBATIM serialised item bytes (the
+// envelope's recovered `data`), hashed as received. It is NOT a re-serialisation
+// or canonical-JSON of a parsed object: JS and Python disagree on float/key
+// formatting, so client and server must hash the exact same bytes. See the
+// envelope shape below and NODE_FINGERPRINT_CONTRACT.md. These are the modality
 // kinds the index recognises and the per-content component cap.
 const PERCEPTUAL_FINGERPRINT_KINDS = Object.freeze(["text", "image", "video", "audio"]);
 const PERCEPTUAL_FINGERPRINT_KIND_VALUES = Object.freeze(new Set(PERCEPTUAL_FINGERPRINT_KINDS));
