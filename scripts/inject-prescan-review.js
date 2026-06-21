@@ -60,23 +60,26 @@ const BACKDATE_MS = 49 * 60 * 60 * 1000;
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const args = {
-    ctid:       null,
-    nodeUrl:    "http://localhost:4000",
-    forceTier:  null,   // override prescan_tier if it's "low"
-    dryRun:     false,
+    ctid:            null,
+    nodeUrl:         "http://localhost:4000",
+    forceTier:       null,   // override prescan_tier if it's "low"
+    dryRun:          false,
+    ignoreEmptyPool: false,  // allow injection even when pool shows empty (selectReviewer has Pass-3 fallback)
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
-    if      (a === "--ctid")        args.ctid       = argv[++i];
-    else if (a === "--node-url")    args.nodeUrl     = argv[++i];
-    else if (a === "--force-tier")  args.forceTier   = argv[++i];
-    else if (a === "--dry-run")     args.dryRun      = true;
+    if      (a === "--ctid")              args.ctid            = argv[++i];
+    else if (a === "--node-url")          args.nodeUrl          = argv[++i];
+    else if (a === "--force-tier")        args.forceTier        = argv[++i];
+    else if (a === "--dry-run")           args.dryRun           = true;
+    else if (a === "--ignore-empty-pool") args.ignoreEmptyPool  = true;
     else if (a === "--help" || a === "-h") {
       console.log("usage: inject-prescan-review.js --ctid <CTID> [opts]");
-      console.log("  --ctid      tip://c/...    content already in the DAG");
-      console.log("  --node-url  URL            node to check pool against (default http://localhost:4000)");
-      console.log("  --force-tier high|critical also update prescan_tier (useful if content was registered low)");
-      console.log("  --dry-run                  print SQL without executing");
+      console.log("  --ctid              tip://c/...    content already in the DAG");
+      console.log("  --node-url          URL            node to check pool against (default http://localhost:4000)");
+      console.log("  --force-tier        high|critical  also update prescan_tier (useful if content was registered low)");
+      console.log("  --ignore-empty-pool                proceed even with empty pool (selectReviewer has Pass-2/3 fallbacks)");
+      console.log("  --dry-run                          print SQL without executing");
       process.exit(0);
     }
   }
@@ -167,19 +170,26 @@ async function main() {
   const poolRes = await httpGet(`${args.nodeUrl}/v1/reviewers/pool`);
   const pool = poolRes.body?.data?.pool || [];
   if (pool.length === 0) {
-    console.warn([
-      `  ⚠  Reviewer pool is empty! The trigger will fire but no reviewer can be assigned.`,
-      `     Fix first:`,
+    const msg = [
+      `  ⚠  Reviewer pool is empty (no identity passes Pass-1 strict: score ≥ ${600} + accuracy ≥ 0.7).`,
+      `     selectReviewer has Pass-2/3 fallbacks — a reviewer with a borderline score may still be assigned.`,
+      `     Fix for full Pass-1 eligibility:`,
       `       1. node scripts/boost-score.js --tip-id <your-tip-id> --score 850`,
       `       2. docker restart tip-node tip-node2 tip-node3 tip-node4 tip-node5`,
       `       3. http://localhost:5050/settings → enable "Become a reviewer"`,
       `       4. Re-run this script`,
-    ].join("\n"));
-    process.exit(1);
+    ].join("\n");
+    if (!args.ignoreEmptyPool) {
+      console.warn(msg + "\n     Use --ignore-empty-pool to proceed anyway.");
+      process.exit(1);
+    }
+    console.warn(msg + "\n     Proceeding anyway (--ignore-empty-pool).");
   }
   console.log(`  ✓ ${pool.length} reviewer(s) in pool: ${pool.map(r => r.tip_id).join(", ")}`);
 
-  // Build SQL: backdate registered_at + optionally fix tier
+  // Build SQL: backdate registered_at AND prescan_completed_at + optionally fix tier.
+  // The trigger uses prescan_completed_at (not registered_at) as its 48h anchor —
+  // both must be backdated or the trigger skips the content.
   const backdatedMs = nowMs() - BACKDATE_MS;
   const tierUpdate = args.forceTier
     ? `, prescan_tier = '${args.forceTier}', prescan_flagged = 1`
@@ -188,7 +198,8 @@ async function main() {
   const ctidEscaped = args.ctid.replace(/'/g, "''");
   const sql = `
 UPDATE content
-SET registered_at = ${backdatedMs}${tierUpdate}
+SET registered_at = ${backdatedMs},
+    prescan_completed_at = ${backdatedMs}${tierUpdate}
 WHERE tip_ctid = '${ctidEscaped}'
   AND status = 'registered'
   AND origin_code = 'OH';

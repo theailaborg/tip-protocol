@@ -55,15 +55,30 @@ function createRouter({ identityService, profileService, keyService }) {
   }));
 
   // Convenience aliases over the generic /profile POST. The client signs
-  // the same canonical UPDATE_PROFILE payload — these routes just pin
-  // reviewer_consent so the API reads as the intent ("become a reviewer")
-  // rather than as a generic profile mutation.
+  // the same canonical UPDATE_PROFILE payload — these routes pin a single
+  // consent field so the API reads as intent rather than a generic mutation.
   router.post("/identity/:tipId/become-reviewer", asyncHandler((req, res) => {
     res.status(202).json(profileService.becomeReviewer(req.params.tipId, req.body));
   }));
 
   router.post("/identity/:tipId/stop-reviewing", asyncHandler((req, res) => {
     res.status(202).json(profileService.stopReviewing(req.params.tipId, req.body));
+  }));
+
+  router.post("/identity/:tipId/become-juror", asyncHandler((req, res) => {
+    res.status(202).json(profileService.becomeJuror(req.params.tipId, req.body));
+  }));
+
+  router.post("/identity/:tipId/stop-juror", asyncHandler((req, res) => {
+    res.status(202).json(profileService.stopJuror(req.params.tipId, req.body));
+  }));
+
+  router.post("/identity/:tipId/become-expert", asyncHandler((req, res) => {
+    res.status(202).json(profileService.becomeExpert(req.params.tipId, req.body));
+  }));
+
+  router.post("/identity/:tipId/stop-expert", asyncHandler((req, res) => {
+    res.status(202).json(profileService.stopExpert(req.params.tipId, req.body));
   }));
 
   // ── Key lifecycle (KEY_ROTATED / KEY_RECOVERY) ──────────────────────

@@ -341,11 +341,12 @@ class KnexAdapter {
       t.string("tip_id_type", 32).notNullable().defaultTo("personal");  // personal | organization
       t.integer("founding").notNullable().defaultTo(0);
       t.string("status", 32).notNullable().defaultTo("active");
-      // Opt-in to be selected as an adjudicator across all protocol roles
-      // (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
-      // Runtime filters at selection time decide which role a consenting
-      // user lands in (score, content category, conflict-of-interest).
+      // Independent opt-in per adjudication role (issue #107): pre-scan
+      // reviewer, Stage-2 juror, Stage-3 expert. Each defaults to 0 and is
+      // entered only by its own explicit toggle — no cross-role inheritance.
       t.integer("reviewer_consent").notNullable().defaultTo(0);
+      t.integer("juror_consent").notNullable().defaultTo(0);
+      t.integer("expert_consent").notNullable().defaultTo(0);
       // Denormalised user-picked interest slugs (canonical sort, deduped).
       // Source of truth is the chain of UPDATE_PROFILE txs; this column
       // is the read-side projection for activity feed / discovery /
@@ -718,6 +719,8 @@ class KnexAdapter {
         ...row,
         founding: !!row.founding,
         reviewer_consent: !!row.reviewer_consent,
+        juror_consent: !!row.juror_consent,
+        expert_consent: !!row.expert_consent,
         interests,
       });
     }
@@ -1070,6 +1073,8 @@ class KnexAdapter {
       founding: rec.founding ? 1 : 0,
       status: rec.status || "active",
       reviewer_consent: rec.reviewer_consent ? 1 : 0,
+      juror_consent: rec.juror_consent ? 1 : 0,
+      expert_consent: rec.expert_consent ? 1 : 0,
       interests: JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       registered_at: rec.registered_at,
       creator_name: rec.creator_name || null,
