@@ -928,6 +928,25 @@ describe("Wrong-DISMISS clawback — Stage-3 appeal reversal", () => {
     const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
     expect(reviewerSU).toHaveLength(0);
   });
+
+  test("Stage-2 UPHELD → Stage-3 CONSERVATIVE_LABEL: clawback stands (no reversal)", () => {
+    // Stage-3 relabels rather than fully clearing the content → the dismiss was
+    // still wrong, so the clawback must NOT be reversed. Guards the explicit
+    // `verdict === DISMISSED` check on the reversal (would otherwise fire if the
+    // reversal leaned only on the `overturned` branch and that widened).
+    const fx = _setup();
+    const ids = _seedDismissClawbackAppeal(fx.dag, VERDICT.UPHELD, {
+      declaredOrigin: ORIGIN.AG, claimedOrigin: ORIGIN.OH,
+    });
+    const reveals = _buildExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH], ORIGIN.OH);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.CONSERVATIVE_LABEL);
+    expect(out.overturned).toBe(false);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(0);
+  });
 });
 
 describe("Wrong-DISMISS clawback — Stage-2 NO_QUORUM → Stage-3 first verdict", () => {

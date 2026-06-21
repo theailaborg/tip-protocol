@@ -35,6 +35,7 @@ const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createPrescanCompletionTrigger } = require("./prescan-completion-trigger");
 const { createTxSubmitter } = require("../services/helpers");
+const { nowMs } = require("../../../shared/time");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { encode, decode } = require("../network/proto");
@@ -570,7 +571,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     if (verdictTrigger.size() === 0) return;
     try {
       const round = narwhalRef.current ? narwhalRef.current.currentRound() : 0;
-      verdictTrigger.checkPending(Date.now(), round);
+      verdictTrigger.checkPending(nowMs(), round);
     } catch (_) { /* non-fatal — don't crash the node on a transient error */ }
   }, 3000);
 

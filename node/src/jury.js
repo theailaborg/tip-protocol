@@ -956,9 +956,14 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     // Stage-2 UPHELD applied a clawback to the reviewer who had DISMISSED.
     // Stage-3 overturns to DISMISSED → the dismiss was right after all →
     // give the reviewer their CORRECT_BONUS back (reverse the clawback).
-    // Guard: only when Stage-2 was UPHELD (that's when the clawback fired)
-    // and no escalated_to_dispute review (the two paths are mutually exclusive).
-    if (stage2Verdict === VERDICT.UPHELD && !escalatedReview && REVIEWER.WRONG_DISMISS_CLAWBACK !== 0) {
+    // Guard: only when Stage-2 was UPHELD (that's when the clawback fired) AND
+    // Stage-3 fully clears the content (DISMISSED). The explicit
+    // `verdict === DISMISSED` check makes this self-contained — it does not lean
+    // on the enclosing `if (overturned)` to exclude UPHELD→UPHELD/CONSERVATIVE_LABEL,
+    // so the clawback correctly STANDS whenever Stage-3 still finds a problem.
+    // Also requires no escalated_to_dispute review (the two paths are mutually exclusive).
+    if (stage2Verdict === VERDICT.UPHELD && verdict === VERDICT.DISMISSED
+      && !escalatedReview && REVIEWER.WRONG_DISMISS_CLAWBACK !== 0) {
       const dismissedReview = typeof dag.getPrescanReviewsByCtid === "function"
         ? (dag.getPrescanReviewsByCtid(ctid) || []).find(
           r => r.state === PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
