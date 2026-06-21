@@ -145,6 +145,64 @@ function _mapBusinessRuleReason(error) {
  * @param {Object} [options.cleanRecordTrigger]  Post-round clean-record bonus scheduler
  * @returns {Object} Commit handler
  */
+
+// GH #112: module-level constants shared between _dedupCheck cases and the
+// Family B pre-switch freeze block. Defined here so they're allocated once,
+// not per-tx-call.
+const REVOKE_TYPES = Object.freeze([
+  TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
+  TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
+]);
+const CONTENT_STATUS_MUTATORS = Object.freeze([
+  TX_TYPES.CONTENT_DISPUTED, TX_TYPES.CONTENT_VERIFIED,
+  TX_TYPES.CONTENT_RETRACTED, TX_TYPES.UPDATE_ORIGIN,
+  TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
+]);
+
+/**
+ * Extract the acting identity's tip_id from a tx — the tip_id that
+ * `isRevoked` is checked against in that tx's business-rule or schema guard.
+ * Returns null for types with no identity actor (REVOKE_*, system txs, etc.).
+ * Used by the Family B revocation-freeze check in _dedupCheck.
+ */
+function _actorTipId(tx) {
+  const d = tx.data || {};
+  switch (tx.tx_type) {
+    // Direct tip_id: actor IS the identity performing the action.
+    case TX_TYPES.BIND_DOMAIN:
+    case TX_TYPES.KEY_ROTATED:
+    case TX_TYPES.KEY_RECOVERY:
+    case TX_TYPES.LINK_PLATFORM:
+    case TX_TYPES.UNLINK_PLATFORM:
+    case TX_TYPES.UPDATE_PROFILE:
+      return d.tip_id ?? null;
+    // Content actions — actor field name varies by role.
+    case TX_TYPES.REGISTER_CONTENT:
+      return d.signer_tip_id ?? null;
+    case TX_TYPES.CONTENT_VERIFIED:
+      return d.verifier_tip_id ?? null;
+    case TX_TYPES.CONTENT_RETRACTED:
+    case TX_TYPES.UPDATE_ORIGIN:
+      return d.author_tip_id ?? null;
+    case TX_TYPES.CONTENT_DISPUTED:
+      return d.disputer_tip_id ?? null;
+    // Jury / appeal.
+    case TX_TYPES.JURY_VOTE_COMMIT:
+    case TX_TYPES.JURY_VOTE_REVEAL:
+      return d.juror_tip_id ?? null;
+    case TX_TYPES.APPEAL_FILED:
+      return d.appellant_tip_id ?? null;
+    // PRESCAN_REVIEW_* terminal types: reviewer_tip_id is a required field in
+    // tx.data for all three types — no DAG lookup needed.
+    case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+    case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+      return d.reviewer_tip_id ?? null;
+    default:
+      return null;
+  }
+}
+
 function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
@@ -337,6 +395,26 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    */
   function _dedupCheck(tx, validated) {
     const d = tx.data || {};
+
+    // GH #112 Family B: revocation freeze. If this tx's actor identity is
+    // being revoked in the same batch (REVOKE_* already in validated), drop
+    // this tx. First-wins in canonical order: the freeze fires only when
+    // REVOKE_* precedes the action in validated. If the action lands first,
+    // both commit; cross-round _statefulCheck blocks future actions via
+    // isRevoked() once the revocation commits.
+    const actor = _actorTipId(tx);
+    if (actor) {
+      const inBatchRevoke = validated.find(
+        t => REVOKE_TYPES.includes(t.tx_type) && t.data?.tip_id === actor
+      );
+      if (inBatchRevoke) {
+        return {
+          valid: false,
+          error: `revocation freeze: ${tx.tx_type} dropped — ${actor} is being revoked this batch`,
+        };
+      }
+    }
+
     switch (tx.tx_type) {
 
       case TX_TYPES.ADJUDICATION_RESULT: {
@@ -551,6 +629,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.CONTENT_DISPUTED && t.data?.ctid === d.ctid);
         if (inBatch) return { valid: false, error: `duplicate CONTENT_DISPUTED in batch for ${d.ctid}` };
+        // GH #112 Family A: cross-type content-status conflict guard.
+        const sibling = validated.find(t =>
+          CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.tx_type !== TX_TYPES.CONTENT_DISPUTED && t.data?.ctid === d.ctid);
+        if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
         return { valid: true };
       }
 
@@ -564,6 +646,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.PRESCAN_REVIEW_TRIGGERED && t.data?.ctid === d.ctid);
         if (inBatch) return { valid: false, error: `duplicate PRESCAN_REVIEW_TRIGGERED in batch for ${d.ctid}` };
+        // GH #112 Family A: cross-type content-status conflict guard.
+        const sibling = validated.find(t =>
+          CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.tx_type !== TX_TYPES.PRESCAN_REVIEW_TRIGGERED && t.data?.ctid === d.ctid);
+        if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
         return { valid: true };
       }
 
@@ -605,11 +691,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // Cross-type: all four revoke the whole identity
         // (dag.addRevocation(d.tip_id, ...)) — any pair for the same
         // tip_id in one batch conflicts. First in canonical order wins.
+        // REVOKE_TYPES is hoisted above the switch.
         if (!d.tip_id) return { valid: true };
-        const REVOKE_TYPES = [
-          TX_TYPES.REVOKE_VOLUNTARY, TX_TYPES.REVOKE_VP,
-          TX_TYPES.REVOKE_DECEASED, TX_TYPES.REVOKE_DEVICE,
-        ];
         const inBatch = validated.find(t =>
           REVOKE_TYPES.includes(t.tx_type) && t.data?.tip_id === d.tip_id);
         if (inBatch) return { valid: false, error: `duplicate REVOKE_* in batch for ${d.tip_id}` };
@@ -623,6 +706,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.UPDATE_ORIGIN && t.data?.ctid === d.ctid);
         if (inBatch) return { valid: false, error: `duplicate UPDATE_ORIGIN in batch for ${d.ctid}` };
+        // GH #112 Family A: cross-type content-status conflict guard.
+        const sibling = validated.find(t =>
+          CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.tx_type !== TX_TYPES.UPDATE_ORIGIN && t.data?.ctid === d.ctid);
+        if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
         return { valid: true };
       }
 
@@ -635,18 +722,32 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.CONTENT_RETRACTED && t.data?.ctid === d.ctid);
         if (inBatch) return { valid: false, error: `duplicate CONTENT_RETRACTED in batch for ${d.ctid}` };
+        // GH #112 Family A: cross-type content-status conflict guard.
+        const sibling = validated.find(t =>
+          CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.tx_type !== TX_TYPES.CONTENT_RETRACTED && t.data?.ctid === d.ctid);
+        if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
         return { valid: true };
       }
 
       case TX_TYPES.CONTENT_VERIFIED: {
         // One verification per (verifier, ctid) per batch. Committed
         // history is guarded by dag.hasVerification in rules.canVerify.
+        // Note: same-type dedup uses (verifier_tip_id, ctid) — two
+        // different verifiers for the same content are both valid.
+        // Cross-type (Family A) uses ctid alone: any status-mutating
+        // sibling blocks verification regardless of verifier identity.
+        // A CONTENT_VERIFIED without a verifier identity is malformed and
+        // cannot be a meaningful status mutation — skip both dedup checks.
         if (!d.ctid || !d.verifier_tip_id) return { valid: true };
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.CONTENT_VERIFIED
           && t.data?.ctid === d.ctid
           && t.data?.verifier_tip_id === d.verifier_tip_id);
         if (inBatch) return { valid: false, error: `duplicate CONTENT_VERIFIED in batch for (${d.verifier_tip_id}, ${d.ctid})` };
+        // GH #112 Family A: cross-type content-status conflict guard (ctid-only key).
+        const sibling = validated.find(t =>
+          CONTENT_STATUS_MUTATORS.includes(t.tx_type) && t.tx_type !== TX_TYPES.CONTENT_VERIFIED && t.data?.ctid === d.ctid);
+        if (sibling) return { valid: false, error: `content-status conflict in batch: ${sibling.tx_type} already accepted for ${d.ctid}` };
         return { valid: true };
       }
 
@@ -1668,7 +1769,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     }
 
     try {
-      const schema = SCHEMA_FOR_TX_TYPE[tt] || null;
+      const schema = SCHEMA_FOR_TX_TYPE[tt] ?? null;
       const result = unifiedVerifyTxSignature(tx, schema, dag);
       if (!result.ok) {
         log.warn(`Round-replay signature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${result.error}`);

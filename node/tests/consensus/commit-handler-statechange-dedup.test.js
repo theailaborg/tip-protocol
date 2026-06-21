@@ -787,3 +787,106 @@ describe("GH #87 LOW — UNBIND_DOMAIN in-batch dedup", () => {
     expect(res.dropped).toBe(0);
   });
 });
+
+// ─── GH #112 — cross-TYPE conflicts (sibling-blind _statefulCheck) ───────────
+// #87 deduped same-TYPE pairs. #112 closes the cross-TYPE class: two DIFFERENT
+// tx types that both gate on the same shared state each read the pre-batch
+// value in Phase 1 and both commit. _dedupCheck now blocks the second.
+
+describe("GH #112 Family A — one content-status mutator per ctid per batch (cross-type)", () => {
+
+  test("CONTENT_DISPUTED + CONTENT_VERIFIED same ctid (the issue #112 proof): exactly one commits", () => {
+    const fx = _setup();
+    const tx1 = _makeAutoDisputeTx(fx, CTID_A, "rv_1", T1);
+    const tx2 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2, /content-status conflict/i);
+    // Dispute (first in canonical order) won; no verification attached to disputed content.
+    expect(fx.dag.getContent(CTID_A).status).toBe(CONTENT_STATUS.DISPUTED);
+  });
+
+  test("CONTENT_VERIFIED + CONTENT_DISPUTED same ctid (reverse order): first wins regardless of type", () => {
+    const fx = _setup();
+    const tx1 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 });
+    const tx2 = _makeAutoDisputeTx(fx, CTID_A, "rv_1", T1 + 1000);
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2, /content-status conflict/i);
+  });
+
+  test("CONTENT_DISPUTED + CONTENT_RETRACTED same ctid: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeAutoDisputeTx(fx, CTID_A, "rv_1", T1);
+    const tx2 = _makeRetractTx(fx, { ctid: CTID_A, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2, /content-status conflict/i);
+  });
+
+  test("UPDATE_ORIGIN + CONTENT_VERIFIED same ctid: second dropped", () => {
+    const fx = _setup();
+    const tx1 = _makeUpdateOriginTx(fx, { ctid: CTID_A, newOrigin: "AA", timestamp: T1 });
+    const tx2 = _makeVerifyTx(fx, { ctid: CTID_A, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2, /content-status conflict/i);
+  });
+
+  test("different-type status mutators on DIFFERENT ctids: both commit", () => {
+    const fx = _setup();
+    const tx1 = _makeAutoDisputeTx(fx, CTID_A, "rv_1", T1);
+    const tx2 = _makeVerifyTx(fx, { ctid: CTID_B, verifierTipId: VERIFIER_TIP, verifierKp: fx.verifierKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+});
+
+describe("GH #112 Family B — revocation freeze (REVOKE_* blocks same-batch actions by the revoked identity)", () => {
+
+  test("REVOKE_VOLUNTARY then KEY_ROTATED for same tip_id: action frozen out", () => {
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    _expectSecondDropped(fx, res, tx2, /revocation freeze/i);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+  });
+
+  test("REVOKE_VOLUNTARY(author) + KEY_ROTATED(other identity): both commit (freeze is per-identity)", () => {
+    const fx = _setup();
+    const tx1 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 });
+    const tx2 = _makeKeyRotatedTx(fx, { tipId: TARGET_2_TIP, oldKp: fx.target2Kp, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+  });
+
+  test("KEY_ROTATED then REVOKE_VOLUNTARY for same tip_id (action ordered first): both commit", () => {
+    // Documents the freeze's order-dependence: it only fires when REVOKE_*
+    // PRECEDES the action in canonical order. Action-first commits for the
+    // not-yet-revoked identity; cross-round isRevoked() blocks subsequent
+    // actions once the revocation commits. (The general in-batch overlay
+    // would close this residual; see issue #112 scope.)
+    const fx = _setup();
+    const tx1 = _makeKeyRotatedTx(fx, { tipId: AUTHOR_TIP, oldKp: fx.authorKp, timestamp: T1 });
+    const tx2 = _makeRevokeTx(fx, { txType: TX_TYPES.REVOKE_VOLUNTARY, tipId: AUTHOR_TIP, timestamp: T1 + 1000 });
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+    expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
+  });
+});
