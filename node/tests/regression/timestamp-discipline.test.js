@@ -197,7 +197,7 @@ describe("timestamp schema invariants — SQLite tables", () => {
         violations.join("\n") +
         `\n\nEvery timestamp is integer epoch ms throughout the codebase. ` +
         `Update the CREATE TABLE in node/src/dag.js — and the matching ` +
-        `t.bigInteger(...) declaration in node/src/db/knex-adapter.js.`,
+        `t.bigInteger(...) declaration in node/src/db/migrations/000_baseline.js.`,
       );
     }
     expect(violations).toEqual([]);
@@ -210,20 +210,23 @@ describe("timestamp schema invariants — SQLite tables", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe("timestamp schema invariants — Knex parity", () => {
   test("no t.string(...) declarations on timestamp-named columns", () => {
-    const knexSrc = fs.readFileSync(path.join(NODE_SRC, "db", "knex-adapter.js"), "utf8");
+    // PR #118: schema authority moved from knex-adapter.js to 000_baseline.js
+    const migrationSrc = fs.readFileSync(
+      path.join(NODE_SRC, "db", "migrations", "000_baseline.js"), "utf8",
+    );
     // Match `t.string("colName", ...)` — flag any whose column name
     // looks like a timestamp. Knex `string` maps to VARCHAR — should
     // be bigInteger for ms timestamps.
     const re = /t\.string\(\s*["']([a-z_][a-z0-9_]*)["']/gi;
     const violations = [];
     let m;
-    while ((m = re.exec(knexSrc)) !== null) {
+    while ((m = re.exec(migrationSrc)) !== null) {
       const col = m[1];
       if (!TIMESTAMP_COLUMN_NAME.test(col)) continue;
       if (TIMESTAMP_NAME_EXEMPT({ name: col })) continue;
       // Compute line number for the hit
-      const line = knexSrc.slice(0, m.index).split("\n").length;
-      violations.push(`  db/knex-adapter.js:${line}  ${col} declared as t.string(...) — expected t.bigInteger(...)`);
+      const line = migrationSrc.slice(0, m.index).split("\n").length;
+      violations.push(`  db/migrations/000_baseline.js:${line}  ${col} declared as t.string(...) — expected t.bigInteger(...)`);
     }
     if (violations.length > 0) {
       throw new Error(
@@ -246,24 +249,28 @@ describe("timestamp schema invariants — Knex parity", () => {
 // the knex schema). Both directions checked — adds to either store without
 // the mirror trip the test.
 
-// Parse `await ensure("<table>", t => { ... })` blocks in the knex source
-// and return a Map<tableName, Set<columnName>> of every bigInteger column.
+// Parse `await knex.schema.createTable("<table>", t => { ... })` blocks in the
+// migration baseline file and return a Map<tableName, Set<columnName>> of every
+// bigInteger column. (PR #118 moved schema from knex-adapter.js _ensureSchema()
+// to node/src/db/migrations/000_baseline.js — this function was updated to match.)
 function _parseKnexBigIntegerColumns() {
-  const src = fs.readFileSync(path.join(NODE_SRC, "db", "knex-adapter.js"), "utf8");
+  const src = fs.readFileSync(
+    path.join(NODE_SRC, "db", "migrations", "000_baseline.js"), "utf8",
+  );
   const result = new Map();
-  const ensureRe = /await\s+ensure\(\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
+  const createRe = /await\s+knex\.schema\.createTable\(\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
   let m;
-  while ((m = ensureRe.exec(src)) !== null) {
+  while ((m = createRe.exec(src)) !== null) {
     const tableName = m[1];
     // Walk forward matching braces to find the end of this block.
     let depth = 1;
-    let i = ensureRe.lastIndex;
+    let i = createRe.lastIndex;
     while (i < src.length && depth > 0) {
       if (src[i] === "{") depth++;
       else if (src[i] === "}") depth--;
       i++;
     }
-    const blockSrc = src.slice(ensureRe.lastIndex, i);
+    const blockSrc = src.slice(createRe.lastIndex, i);
     const cols = new Set();
     const colRe = /t\.bigInteger\(\s*["']([a-z_][a-z0-9_]*)["']/g;
     let cm;
@@ -326,7 +333,7 @@ describe("timestamp schema invariants — cross-store drift", () => {
       throw new Error(
         `Found ${missingInKnex.length} timestamp column(s) present in SQLite but missing from knex schema:\n` +
         missingInKnex.join("\n") +
-        `\n\nAdd t.bigInteger("<col>").notNullable() to the matching await ensure() block in db/knex-adapter.js.`,
+        `\n\nAdd t.bigInteger("<col>").notNullable() to the matching createTable block in db/migrations/000_baseline.js.`,
       );
     }
     expect(missingInKnex).toEqual([]);

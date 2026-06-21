@@ -38,11 +38,12 @@ exports.up = async (knex) => {
     t.string("tip_id_type", 32).notNullable().defaultTo("personal");  // personal | organization
     t.integer("founding").notNullable().defaultTo(0);
     t.string("status", 32).notNullable().defaultTo("active");
-    // Opt-in to be selected as an adjudicator across all protocol roles
-    // (Protocol Review reviewer, Stage 2 jury, Stage 3 expert panel).
-    // Runtime filters at selection time decide which role a consenting
-    // user lands in (score, content category, conflict-of-interest).
+    // Independent opt-in per adjudication role (issue #107): pre-scan
+    // reviewer, Stage-2 juror, Stage-3 expert. Each defaults to 0 and is
+    // entered only by its own explicit toggle — no cross-role inheritance.
     t.integer("reviewer_consent").notNullable().defaultTo(0);
+    t.integer("juror_consent").notNullable().defaultTo(0);
+    t.integer("expert_consent").notNullable().defaultTo(0);
     // Denormalised user-picked interest slugs (canonical sort, deduped).
     // Source of truth is the chain of UPDATE_PROFILE txs; this column
     // is the read-side projection for activity feed / discovery /
@@ -90,7 +91,6 @@ exports.up = async (knex) => {
     t.string(ctidCol, 512).primary();
     t.string("origin_code", 8).notNullable();
     t.string("content_hash", 128).notNullable();
-    t.string("perceptual_hash", 128).nullable();
     _id(t, "author_tip_id").notNullable();                       // = authors[0].tip_id (primary byline)
     _id(t, "signer_tip_id").notNullable();                       // the entity that produced the signature; differs from author in employed/hosted
     t.text("authors").nullable();                                 // JSON-encoded authors[] (5-key entries per CNA-2.2)
@@ -171,8 +171,7 @@ exports.up = async (knex) => {
   // table (user's claim cosig in tx.data.cosignatures[], node body sig
   // at tx.signature).
   // Final schema: unlinked_at / unlink_tx_id present;
-  // expires_at / consecutive_failures absent (those were a hotfix,
-  // dropped in the inline ALTER in _ensureSchema — baseline uses final shape).
+  // expires_at / consecutive_failures absent (those were a hotfix — baseline uses final shape).
   await knex.schema.createTable("platform_links", t => {
     _id(t, "id").primary();
     _id(t, "tip_id").notNullable();
@@ -219,6 +218,7 @@ exports.up = async (knex) => {
     t.text("name").nullable();
     t.string("status", 32).notNullable().defaultTo("active");
     t.text("api_endpoint").nullable();   // public API origin; peers redirect reviewers here for this node's media
+    t.bigInteger("updated_at").nullable();  // tx.timestamp of the last node-mutating tx; null until first. Monotonic-replay guard.
     t.bigInteger("registered_at").notNullable();
   });
 
@@ -395,9 +395,74 @@ exports.up = async (knex) => {
     t.bigInteger("completed_at").nullable();
     t.index(["status", "created_at"], "idx_prescan_jobs_status");
   });
+
+  // Off-DAG perceptual similarity index (advisory): NOT mirrored (no _hydrate)
+  // and NOT in state_merkle_root. Cross-node-consistent because the fingerprint
+  // is replicated in the tx, not via consensus over this index.
+  // NOTE: all 5 tables use `tip_ctid` (not client-conditional) — they are
+  // only accessed via KnexAdapter, never via SQLiteStore / dag.js.
+  await knex.schema.createTable("perceptual_fingerprint", t => {
+    t.string("tip_ctid", 512).notNullable();
+    t.integer("component_idx").notNullable();
+    t.string("modality", 16).notNullable();    // text|image|video|audio
+    t.string("profile", 64).notNullable();
+    t.text("pipeline").notNullable();           // JSON
+    t.integer("quality");                        // null for text/audio
+    t.text("fingerprint").notNullable();        // JSON
+    t.bigInteger("created_at").notNullable();
+    t.primary(["tip_ctid", "component_idx"]);
+  });
+
+  await knex.schema.createTable("minhash_band", t => {
+    t.string("profile", 64).notNullable();
+    t.integer("band_idx").notNullable();
+    t.bigInteger("band_hash").notNullable();
+    t.string("tip_ctid", 512).notNullable();
+    t.primary(["profile", "band_idx", "band_hash", "tip_ctid"]);
+    t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
+  });
+
+  await knex.schema.createTable("phash_code", t => {
+    t.string("tip_ctid", 512).notNullable();
+    t.integer("component_idx").notNullable();
+    t.integer("frame").notNullable();            // 0 for image, frame index for video
+    t.string("profile", 64).notNullable();
+    t.string("modality", 16).notNullable();    // image|video
+    t.float("ts");                               // seconds, for video
+    t.integer("quality").notNullable();
+    t.string("pdq", 64).notNullable();          // 64-hex (256-bit)
+    for (let i = 0; i < 16; i++) t.integer(`c${i}`).notNullable();
+    t.primary(["tip_ctid", "component_idx", "frame"]);
+    for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
+  });
+
+  // Audio uses a surrogate clip_id: the landmark index explodes (~20k rows/song),
+  // so rows reference a compact BIGINT clip_id instead of TEXT(512) ctid.
+  await knex.schema.createTable("audio_clip", t => {
+    t.bigIncrements("clip_id");
+    t.string("tip_ctid", 512).notNullable();
+    t.integer("component_idx").notNullable();
+    t.integer("landmark_count").notNullable().defaultTo(0);
+    t.unique(["tip_ctid", "component_idx"], "idx_audio_clip_ctid");
+  });
+
+  await knex.schema.createTable("audio_landmark", t => {
+    t.string("profile", 64).notNullable();
+    t.integer("hash").notNullable();      // 24-bit packed landmark
+    t.bigInteger("clip_id").notNullable(); // -> audio_clip(clip_id)
+    t.integer("t").notNullable();          // anchor frame index
+    t.primary(["profile", "hash", "clip_id", "t"]);
+    t.index(["profile", "hash"], "idx_audio_landmark_lookup");
+  });
 };
 
 exports.down = async (knex) => {
+  // Perceptual tables first (audio_landmark references audio_clip)
+  await knex.schema.dropTableIfExists("audio_landmark");
+  await knex.schema.dropTableIfExists("audio_clip");
+  await knex.schema.dropTableIfExists("phash_code");
+  await knex.schema.dropTableIfExists("minhash_band");
+  await knex.schema.dropTableIfExists("perceptual_fingerprint");
   await knex.schema.dropTableIfExists("prescan_jobs");
   await knex.schema.dropTableIfExists("prescan_reviews");
   await knex.schema.dropTableIfExists("rotation_participation");
