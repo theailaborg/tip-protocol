@@ -64,14 +64,14 @@ function _setup() {
     tip_id: REVIEWER_1, region: "US",
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    reviewer_consent: true,
+    reviewer_consent: true, juror_consent: true,
     registered_at: 1767225600000, tx_id: shake256("reviewer1"),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_2, region: "US",
     public_key: reviewer2Kp.publicKey, root_public_key: reviewer2Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    reviewer_consent: true,
+    reviewer_consent: true, juror_consent: true,
     registered_at: 1767225600000, tx_id: shake256("reviewer2"),
   });
 

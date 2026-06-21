@@ -176,8 +176,9 @@ function _seedDispute(dag, ctid, {
 // actually be formed (>= APPEAL.MIN_VOTES eligible experts). In production the
 // expert pool is a standing set of opted-in, high-score identities that exists
 // before any dispute, so seed it before Stage-2 to exercise the escalation
-// path. Experts must carry reviewer_consent and span enough regions to clear
-// the appeal_max_same_country geo-cap.
+// path. Experts must carry juror_consent + expert_consent (issue #107: roles
+// are opted into independently) and span enough regions to clear the
+// appeal_max_same_country geo-cap.
 const _EXPERT_REGIONS = ["US", "GB", "DE", "JP", "BR"];
 function _seedExpertPool(dag, count = 3, score = 900) {
   const experts = [];
@@ -187,7 +188,8 @@ function _seedExpertPool(dag, count = 3, score = 900) {
       tip_id: e, region: _EXPERT_REGIONS[i % _EXPERT_REGIONS.length],
       public_key: "00", root_public_key: "00", vp_id: VP_ID,
       verification_tier: "T1", founding: false, status: "active",
-      reviewer_consent: true, registered_at: 1767225600000,
+      reviewer_consent: true, juror_consent: true, expert_consent: true,
+      registered_at: 1767225600000,
       tx_id: shake256(`id:${e}`),
     });
     dag.setScore(e, score, 0, 1767225600000);

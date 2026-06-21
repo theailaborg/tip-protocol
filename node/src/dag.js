@@ -62,11 +62,11 @@ function _canonIdentity(r) {
     tip_id_type: r.tip_id_type || "personal",
     founding: r.founding ? 1 : 0,
     status: r.status,
+    // Independent opt-in per adjudication role (issue #107). Each defaults
+    // to 0 (not opted in); only an explicit UPDATE_PROFILE toggle sets it.
     reviewer_consent: r.reviewer_consent ? 1 : 0,
-    // Back-compat: if juror_consent/expert_consent are null (pre-migration row),
-    // inherit from reviewer_consent so existing opted-in users keep all roles.
-    juror_consent:  r.juror_consent  != null ? (r.juror_consent  ? 1 : 0) : (r.reviewer_consent ? 1 : 0),
-    expert_consent: r.expert_consent != null ? (r.expert_consent ? 1 : 0) : (r.reviewer_consent ? 1 : 0),
+    juror_consent: r.juror_consent ? 1 : 0,
+    expert_consent: r.expert_consent ? 1 : 0,
     registered_at: r.registered_at,
     creator_name: r.creator_name || null,
     tx_id: r.tx_id || null,
@@ -1672,12 +1672,12 @@ class SQLiteStore {
         tip_id_type         TEXT NOT NULL DEFAULT 'personal',  -- personal | organization
         founding            INTEGER NOT NULL DEFAULT 0,
         status              TEXT NOT NULL DEFAULT 'active',
-        -- Separate opt-in per adjudication role (issue #107).
-        -- NULL means "not explicitly set" — read path falls back to reviewer_consent
-        -- for back-compat with pre-migration rows.
+        -- Independent opt-in per adjudication role (issue #107). Each defaults
+        -- to 0 (not opted in); a role is entered only by its own explicit
+        -- UPDATE_PROFILE toggle. No cross-role inheritance.
         reviewer_consent    INTEGER NOT NULL DEFAULT 0,
-        juror_consent       INTEGER DEFAULT NULL,
-        expert_consent      INTEGER DEFAULT NULL,
+        juror_consent       INTEGER NOT NULL DEFAULT 0,
+        expert_consent      INTEGER NOT NULL DEFAULT 0,
         -- Denormalised user-picked interest slugs (canonical sort, deduped).
         -- Source of truth is the chain of UPDATE_PROFILE txs; this column
         -- is the read-side projection. JSON-encoded array.
@@ -2983,8 +2983,8 @@ class SQLiteStore {
       rec.founding ? 1 : 0,
       rec.status || "active",
       rec.reviewer_consent ? 1 : 0,
-      rec.juror_consent  != null ? (rec.juror_consent  ? 1 : 0) : null,
-      rec.expert_consent != null ? (rec.expert_consent ? 1 : 0) : null,
+      rec.juror_consent ? 1 : 0,
+      rec.expert_consent ? 1 : 0,
       JSON.stringify(Array.isArray(rec.interests) ? rec.interests : []),
       rec.registered_at, rec.creator_name || null, rec.tx_id || null
     );
@@ -3001,14 +3001,12 @@ class SQLiteStore {
     if (typeof row.interests === "string" && row.interests.length > 0) {
       try { interests = JSON.parse(row.interests); } catch { interests = []; }
     }
-    const reviewerConsent = row.reviewer_consent === 1;
     return {
       ...row,
       founding: row.founding === 1,
-      reviewer_consent: reviewerConsent,
-      // Back-compat: NULL means not yet set → inherit from reviewer_consent.
-      juror_consent:  row.juror_consent  != null ? row.juror_consent  === 1 : reviewerConsent,
-      expert_consent: row.expert_consent != null ? row.expert_consent === 1 : reviewerConsent,
+      reviewer_consent: row.reviewer_consent === 1,
+      juror_consent: row.juror_consent === 1,
+      expert_consent: row.expert_consent === 1,
       interests,
     };
   }

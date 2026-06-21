@@ -181,10 +181,10 @@ function selectJury(dag, scoring, disputeTxId, authorTipId, disputerTipId) {
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
-      // Juror opt-in. juror_consent is the dedicated field (issue #107);
-      // fall back to reviewer_consent for identities registered before the
-      // split so existing opted-in users remain eligible without re-saving.
-      const consent = id.juror_consent !== undefined ? id.juror_consent : id.reviewer_consent;
+      // Juror opt-in (issue #107): seated only when the identity explicitly
+      // set juror_consent. Reviewer/expert consent do NOT imply juror consent
+      // — each adjudication role is opted into independently.
+      const consent = id.juror_consent;
       if (consent !== true && consent !== 1) return false;
       return true;
     })
@@ -239,9 +239,9 @@ function selectExperts(dag, scoring, appealTxId, authorTipId, disputerTipId, cti
       if (dag.isRevoked(id.tip_id)) return false;
       const tipIdType = id.tip_id_type || TIP_ID_TYPES.PERSONAL;
       if (tipIdType !== TIP_ID_TYPES.PERSONAL) return false;
-      // Expert opt-in. expert_consent is the dedicated field (issue #107);
-      // fall back to reviewer_consent for pre-split identities.
-      const consent = id.expert_consent !== undefined ? id.expert_consent : id.reviewer_consent;
+      // Expert opt-in (issue #107): seated only when the identity explicitly
+      // set expert_consent. Independent of reviewer/juror consent.
+      const consent = id.expert_consent;
       if (consent !== true && consent !== 1) return false;
       return true;
     })
