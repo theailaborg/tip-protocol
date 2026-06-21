@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  shake256, perceptualHashText, tipNormalize,
+  shake256, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
@@ -152,8 +152,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       throw schemaError(403, "Content signature verification failed", "signature_invalid");
     }
 
-    const perceptHash = content ? perceptualHashText(content) : null;
-
     // ── Async prescan ───────────────────────────────────────────────────
     // Resolve content_type (publisher's signed hint → server-derived from
     // request shape → server validation/auto-correct). Result is recorded
@@ -193,7 +191,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         // not stored on tx.data. author_tip_id is derived at persist
         // time from signer_tip_id — see commit-handler REGISTER_CONTENT.
         ctid, origin_code: canonicalPayload.origin_code,
-        content_hash: contentHashFull, perceptual_hash: perceptHash,
+        content_hash: contentHashFull,
         // Async-prescan slots — verdict lands later via PRESCAN_COMPLETED.
         // Defaults match the content row's schema defaults so legacy
         // commit-handler paths keep working.

@@ -86,7 +86,6 @@ function _canonContent(r) {
     ctid: r.ctid,
     origin_code: r.origin_code,
     content_hash: r.content_hash,
-    perceptual_hash: r.perceptual_hash || null,
     author_tip_id: r.author_tip_id,
     signer_tip_id: r.signer_tip_id,
     authors: Array.isArray(r.authors) ? r.authors : [],
@@ -1810,7 +1809,6 @@ class SQLiteStore {
         ctid                       TEXT PRIMARY KEY,
         origin_code                TEXT NOT NULL,
         content_hash               TEXT NOT NULL,
-        perceptual_hash            TEXT,
         author_tip_id              TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
         signer_tip_id              TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
         authors                    TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
@@ -2565,13 +2563,13 @@ class SQLiteStore {
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
-           (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
+           (ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
             override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -3215,7 +3213,7 @@ class SQLiteStore {
     const media = Array.isArray(rec.media) ? rec.media : [];
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
-      rec.content_hash, rec.perceptual_hash || null,
+      rec.content_hash,
       rec.author_tip_id, rec.signer_tip_id,
       JSON.stringify(authors),
       rec.attribution_mode || "self",

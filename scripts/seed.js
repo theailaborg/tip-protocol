@@ -60,7 +60,6 @@ const {
   generateNodeId,
   generateCTID,
   hashContent,
-  perceptualHashText,
   signBody,
   computeTxId,
   canonicalTx,
@@ -843,7 +842,6 @@ async function registerSampleContent(identities) {
 
     if (useDirectMode) {
       const registeredAt = nowMs();
-      const perceptHash = perceptualHashText(sample.content);
 
       const contentTxBody = {
         tx_type: TX_TYPES.REGISTER_CONTENT,
@@ -854,7 +852,6 @@ async function registerSampleContent(identities) {
           origin_code: sample.origin,
           origin_label: ORIGIN_LABELS[sample.origin],
           content_hash: contentHash,
-          perceptual_hash: perceptHash,
           author_tip_id: author.tip_id,
           signature,
           prescan_flagged: false,
@@ -868,7 +865,6 @@ async function registerSampleContent(identities) {
         ctid,
         origin_code: sample.origin,
         content_hash: contentHash,
-        perceptual_hash: perceptHash,
         author_tip_id: author.tip_id,
         status: "verified",
         registered_at: registeredAt,

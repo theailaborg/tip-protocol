@@ -33,7 +33,7 @@ const SRC = path.resolve(__dirname, "../src");
 const {
   initCrypto,
   shake256, shake256Multi, tipNormalize,
-  hashContent, perceptualHashText,
+  hashContent,
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
   generateMLDSAKeypair, mldsaSign, signTransaction, verifyTransaction,

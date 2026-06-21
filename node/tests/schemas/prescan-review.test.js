@@ -85,7 +85,7 @@ function _setup() {
   // Seed the content row so business-rules ctid existence check passes
   dag.saveContent({
     ctid: CTID_1, origin_code: "OH",
-    content_hash: "abcd".repeat(16), perceptual_hash: null,
+    content_hash: "abcd".repeat(16),
     author_tip_id: CREATOR, signer_tip_id: CREATOR,
     authors: [{ tip_id: CREATOR, key_mode: "attribution", role: "byline", signed: false, tip_id_type: "personal" }],
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",

@@ -49,7 +49,7 @@ function _setup() {
 
   dag.saveContent({
     ctid: CTID, origin_code: "OH",
-    content_hash: "ab".repeat(32), perceptual_hash: null,
+    content_hash: "ab".repeat(32),
     author_tip_id: AUTHOR, signer_tip_id: AUTHOR,
     authors: [{ tip_id: AUTHOR, tip_id_type: "personal" }],
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",

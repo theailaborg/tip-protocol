@@ -30,7 +30,6 @@ function saveContent(dag, overrides = {}) {
     ctid: CTID,
     origin_code: "OH",
     content_hash: "abcd1234",
-    perceptual_hash: null,
     author_tip_id: "tip://id/US-1234567890abcdef",
     signer_tip_id: "tip://id/US-1234567890abcdef",
     authors: [],

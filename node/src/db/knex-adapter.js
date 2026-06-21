@@ -387,7 +387,6 @@ class KnexAdapter {
       t.string("tip_ctid", 512).primary();
       t.string("origin_code", 8).notNullable();
       t.string("content_hash", 128).notNullable();
-      t.string("perceptual_hash", 128).nullable();
       _id(t, "author_tip_id").notNullable();                       // = authors[0].tip_id (primary byline)
       _id(t, "signer_tip_id").notNullable();                       // the entity that produced the signature; differs from author in employed/hosted
       t.text("authors").nullable();                                 // JSON-encoded authors[] (5-key entries per CNA-2.2)
@@ -1210,7 +1209,6 @@ class KnexAdapter {
       tip_ctid: rec.ctid,
       origin_code: rec.origin_code,
       content_hash: rec.content_hash,
-      perceptual_hash: rec.perceptual_hash || null,
       author_tip_id: rec.author_tip_id,
       signer_tip_id: rec.signer_tip_id,
       authors: JSON.stringify(authors),

@@ -78,7 +78,7 @@ function _seedFlagged(dag, opts = {}) {
   } = opts;
   dag.saveContent({
     ctid, origin_code,
-    content_hash: shake256(ctid), perceptual_hash: null,
+    content_hash: shake256(ctid),
     author_tip_id: author, signer_tip_id: author,
     authors: [{ tip_id: author, tip_id_type: "personal" }],
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",

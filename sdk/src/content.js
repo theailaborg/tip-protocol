@@ -11,7 +11,6 @@
 
 const {
   hashContent,
-  perceptualHashText,
   generateCTID,
   shake256,
   signBody,
@@ -34,14 +33,12 @@ class TIPContentClient {
    * Useful for checking whether content is already registered.
    *
    * @param {string} content
-   * @returns {{ contentHash, perceptualHash, ctidPreview }}
+   * @returns {{ contentHash, ctidPreview }}
    */
   hashLocally(content, originCode = ORIGIN.OH) {
-    const contentHash   = hashContent(content);
-    const perceptualHash = perceptualHashText(content);
+    const contentHash = hashContent(content);
     return {
       contentHash,
-      perceptualHash,
       ctidPreview: `tip://c/${originCode}-${contentHash}-????`,
     };
   }
