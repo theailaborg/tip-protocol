@@ -68,6 +68,34 @@ function getNodeKey(dag, nodeId) {
  * @param {Function} options.isAuthorizedPeer (peerId) => boolean
  * @returns {Object} Consensus interface
  */
+// Poll every time-based trigger's deadline check (#126). The only thing that
+// calls checkPending in normal operation is the commit-handler, which runs
+// inside onOrderedTxs, and Bullshark gates that with `orderedTxs.length > 0`.
+// On an idle cluster rounds still advance (empty-round certs, so deadlines
+// elapse) but onOrderedTxs never fires, stalling every trigger until unrelated
+// mempool traffic wakes the loop. The fallback timer calls this on a short
+// interval so all four triggers fire on a quiet network. Safe to run on every
+// node: each checkPending is leader-gated and its result tx is first-wins, so
+// duplicate fires can't double-apply. Each trigger is error-isolated so one
+// throwing can't starve the others. verdictTrigger keeps its O(1) size() guard
+// (heap-backed); the other three are already cheap when idle (a day-boundary
+// cursor for clean-record, a leader gate + empty indexed query for the prescan
+// pair), so they poll unconditionally.
+function pollPendingTriggers({ verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, now, round }) {
+  if (verdictTrigger && verdictTrigger.size() > 0) {
+    try { verdictTrigger.checkPending(now, round); } catch (_) { /* non-fatal */ }
+  }
+  if (cleanRecordTrigger) {
+    try { cleanRecordTrigger.checkPending(now); } catch (_) { /* non-fatal */ }
+  }
+  if (prescanReviewTrigger) {
+    try { prescanReviewTrigger.checkPending(now, round); } catch (_) { /* non-fatal */ }
+  }
+  if (prescanCompletionTrigger) {
+    try { prescanCompletionTrigger.checkPending(now, round); } catch (_) { /* non-fatal */ }
+  }
+}
+
 function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () => false }) {
   const nodeId = config.nodeRegisteredId || config.nodeId;
 
@@ -85,7 +113,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // triggers' leader-gate logic (`committee[round % N]` for verdicts,
   // `committee[day % N]` for clean-record).
   const narwhalRef = { current: null };
-  let _verdictFallbackTimer = null;
+  let _triggerFallbackTimer = null;
   const getCommittee = (round) => {
     const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
     return getActiveCommittee(dag, r);
@@ -506,7 +534,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      */
     stop() {
       heartbeat.stop();
-      clearInterval(_verdictFallbackTimer);
+      clearInterval(_triggerFallbackTimer);
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();
@@ -584,21 +612,20 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // we wire it up here so post-round verdict batches can hit `addTx`.
   consensusForTrigger.current = consensus;
 
-  // Fallback timer: on idle clusters with no mempool traffic, Bullshark's
-  // `if (orderedTxs.length > 0)` guard prevents onOrderedTxs from firing,
-  // meaning checkPending is never called and verdicts stall indefinitely.
-  // This 3-second poll fires only when verdicts are pending and is safe
-  // because checkPending is idempotent (leader-gated + ADJUDICATION_RESULT
-  // is first-wins, so duplicate fires from multiple nodes are harmless).
-  _verdictFallbackTimer = setInterval(() => {
-    if (verdictTrigger.size() === 0) return;
-    try {
-      const round = narwhalRef.current ? narwhalRef.current.currentRound() : 0;
-      verdictTrigger.checkPending(nowMs(), round);
-    } catch (_) { /* non-fatal — don't crash the node on a transient error */ }
+  // Fallback timer (#126): on idle clusters with no mempool traffic, Bullshark's
+  // `if (orderedTxs.length > 0)` guard prevents onOrderedTxs from firing, so the
+  // commit-handler never calls checkPending and every time-based trigger stalls.
+  // This 3-second poll drives all four (verdict, clean-record, prescan-review,
+  // prescan-completion). See pollPendingTriggers for the safety argument.
+  _triggerFallbackTimer = setInterval(() => {
+    const round = narwhalRef.current ? narwhalRef.current.currentRound() : 0;
+    pollPendingTriggers({
+      verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger,
+      now: nowMs(), round,
+    });
   }, 3000);
 
   return consensus;
 }
 
-module.exports = { initConsensus };
+module.exports = { initConsensus, pollPendingTriggers };
