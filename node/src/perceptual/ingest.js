@@ -65,10 +65,12 @@ function buildIngestRows(fp, opts) {
       }
     }
   } else if (fp.kind === "image") {
-    codes.push(phashRow(ctid, fp.profile, "image", null, null, fp.quality, fp.pdq));
+    // frame 0 (not null): a single image is one frame, and the phash_code key
+    // (ctid, component_idx, frame) needs a non-null frame to dedup on re-ingest.
+    codes.push(phashRow(ctid, componentIdx, fp.profile, "image", 0, null, fp.quality, fp.pdq));
   } else if (fp.kind === "video") {
     for (const f of fp.features || []) {
-      codes.push(phashRow(ctid, fp.profile, "video", f.frame, f.timestamp, f.quality, f.pdq));
+      codes.push(phashRow(ctid, componentIdx, fp.profile, "video", f.frame, f.timestamp, f.quality, f.pdq));
     }
   } else if (fp.kind === "audio") {
     // Index the landmark set as-is. §8.1 lever 2 (cap N/sec, keep loudest peaks)
@@ -86,8 +88,10 @@ function buildIngestRows(fp, opts) {
 }
 
 // One phash_code row: the metadata + the 16 MIH chunk columns c0..c15.
-function phashRow(ctid, profile, modality, frame, ts, quality, pdq) {
-  const row = { ctid, profile, modality, frame, ts, quality, pdq };
+// component_idx ties the row to its source component so re-ingest can replace
+// exactly that component's rows (image: 1 row; video: one per frame).
+function phashRow(ctid, componentIdx, profile, modality, frame, ts, quality, pdq) {
+  const row = { ctid, component_idx: componentIdx, profile, modality, frame, ts, quality, pdq };
   const chunks = indexChunks(pdq);
   for (let i = 0; i < chunks.length; i++) row["c" + i] = chunks[i];
   return row;

@@ -1519,7 +1519,16 @@ class MemoryStore {
     for (const r of rows) this._minhashBands.push({ ...r });
   }
   savePhashCodes(rows) {
-    for (const r of rows) this._phashCodes.push({ ...r });
+    if (!rows || !rows.length) return;
+    // Skip rows already present by (ctid, component_idx, frame): mirrors the
+    // SQLite/Knex INSERT OR IGNORE so a re-ingest cannot duplicate frames.
+    const have = new Set(this._phashCodes.map((c) => `${c.ctid}|${c.component_idx}|${c.frame}`));
+    for (const r of rows) {
+      const key = `${r.ctid}|${r.component_idx}|${r.frame}`;
+      if (have.has(key)) continue;
+      have.add(key);
+      this._phashCodes.push({ ...r });
+    }
   }
   getPerceptualFingerprint(ctid, componentIdx = 0) {
     return this._perceptualFingerprints.get(`${ctid}|${componentIdx}`) || null;
@@ -2302,20 +2311,22 @@ class SQLiteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_minhash_band_lookup ON minhash_band(profile, band_idx, band_hash);
       CREATE TABLE IF NOT EXISTS phash_code (
-        code_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-        ctid      TEXT    NOT NULL,
-        profile   TEXT    NOT NULL,
-        modality  TEXT    NOT NULL,               -- 'image'|'video'
-        frame     INTEGER,                          -- null for image
-        ts        REAL,                             -- seconds, for video
-        quality   INTEGER NOT NULL,
-        pdq       TEXT    NOT NULL,                -- 64-hex (256-bit)
+        ctid          TEXT    NOT NULL,
+        component_idx INTEGER NOT NULL,
+        frame         INTEGER NOT NULL,             -- 0 for image, frame index for video
+        profile       TEXT    NOT NULL,
+        modality      TEXT    NOT NULL,             -- 'image'|'video'
+        ts            REAL,                          -- seconds, for video
+        quality       INTEGER NOT NULL,
+        pdq           TEXT    NOT NULL,             -- 64-hex (256-bit)
         c0  INTEGER NOT NULL, c1  INTEGER NOT NULL, c2  INTEGER NOT NULL, c3  INTEGER NOT NULL,
         c4  INTEGER NOT NULL, c5  INTEGER NOT NULL, c6  INTEGER NOT NULL, c7  INTEGER NOT NULL,
         c8  INTEGER NOT NULL, c9  INTEGER NOT NULL, c10 INTEGER NOT NULL, c11 INTEGER NOT NULL,
-        c12 INTEGER NOT NULL, c13 INTEGER NOT NULL, c14 INTEGER NOT NULL, c15 INTEGER NOT NULL
+        c12 INTEGER NOT NULL, c13 INTEGER NOT NULL, c14 INTEGER NOT NULL, c15 INTEGER NOT NULL,
+        -- Natural key: re-ingest of the same content (always identical frames,
+        -- the fingerprint is fixed per ctid) is ignored, not duplicated.
+        PRIMARY KEY (ctid, component_idx, frame)
       );
-      CREATE INDEX IF NOT EXISTS idx_phash_code_ctid ON phash_code(ctid);
       CREATE INDEX IF NOT EXISTS idx_phash_code_c0  ON phash_code(profile, modality, c0);
       CREATE INDEX IF NOT EXISTS idx_phash_code_c1  ON phash_code(profile, modality, c1);
       CREATE INDEX IF NOT EXISTS idx_phash_code_c2  ON phash_code(profile, modality, c2);
@@ -3083,10 +3094,10 @@ class SQLiteStore {
         `INSERT OR IGNORE INTO minhash_band (profile, band_idx, band_hash, ctid) VALUES (?, ?, ?, ?)`
       ),
       savePhashCode: this.db.prepare(
-        `INSERT INTO phash_code
-           (ctid, profile, modality, frame, ts, quality, pdq,
+        `INSERT OR IGNORE INTO phash_code
+           (ctid, component_idx, frame, profile, modality, ts, quality, pdq,
             c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getPerceptualFingerprint: this.db.prepare(
         "SELECT * FROM perceptual_fingerprint WHERE ctid=? AND component_idx=?"
@@ -4023,9 +4034,13 @@ class SQLiteStore {
     for (const r of rows) this._stmts.saveMinhashBand.run(r.profile, r.band_idx, r.band_hash, r.ctid);
   }
   savePhashCodes(rows) {
+    if (!rows || !rows.length) return;
+    // INSERT OR IGNORE on (ctid, component_idx, frame): a re-ingest of the same
+    // content (frames are fixed per ctid) is skipped, not duplicated. Duplicate
+    // frames would inflate the matchVideo overlap denominator and degrade recall.
     for (const r of rows) {
       this._stmts.savePhashCode.run(
-        r.ctid, r.profile, r.modality, r.frame, r.ts, r.quality, r.pdq,
+        r.ctid, r.component_idx, r.frame, r.profile, r.modality, r.ts, r.quality, r.pdq,
         r.c0, r.c1, r.c2, r.c3, r.c4, r.c5, r.c6, r.c7,
         r.c8, r.c9, r.c10, r.c11, r.c12, r.c13, r.c14, r.c15,
       );
@@ -4053,7 +4068,8 @@ class SQLiteStore {
     const sql =
       `SELECT DISTINCT ctid, profile, modality, frame, ts, quality, pdq
          FROM phash_code
-        WHERE profile=? AND modality=? AND (${conds.join(" OR ")})`;
+        WHERE profile=? AND modality=? AND (${conds.join(" OR ")})
+        ORDER BY ctid, frame, pdq`;
     return this.db.prepare(sql).all(...params);
   }
   getPhashCodesByCtid(ctid) {
@@ -4070,7 +4086,8 @@ class SQLiteStore {
     if (!hashes || !hashes.length) return [];
     const sql =
       `SELECT clip_id, hash, t FROM audio_landmark
-        WHERE profile=? AND hash IN (${hashes.map(() => "?").join(",")})`;
+        WHERE profile=? AND hash IN (${hashes.map(() => "?").join(",")})
+        ORDER BY clip_id, t`;
     return this.db.prepare(sql).all(profile, ...hashes);
   }
   getAudioClip(clipId) {

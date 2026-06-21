@@ -7,6 +7,13 @@ const { ingestFingerprint } = require("../../src/perceptual/ingest");
 const minhash128 = Array.from({ length: 128 }, (_, i) => (i * 2654435761) % 100000);
 const textFp = { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 120, minhash: minhash128 };
 const imageFp = { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 };
+const videoFp = {
+  profile: "cf-video-1", kind: "video",
+  features: [
+    { frame: 0, timestamp: 0, pdq: "cc".repeat(32), quality: 90 },
+    { frame: 1, timestamp: 1, pdq: "dd".repeat(32), quality: 88 },
+  ],
+};
 const audioFp = {
   profile: "cf-audio-landmark-1", kind: "audio", landmarkCount: 5,
   landmarks: [{ hash: 111, t: 1 }, { hash: 222, t: 1 }, { hash: 111, t: 5 }, { hash: 333, t: 2 }, { hash: 444, t: 3 }],
@@ -21,6 +28,9 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
       expect(store._minhashBands.filter((b) => b.ctid === "OH-t")).toHaveLength(32);
 
       expect(await ingestFingerprint(store, imageFp, { ctid: "OH-i" })).toMatchObject({ bands: 0, codes: 1 });
+      expect(store._phashCodes.filter((c) => c.ctid === "OH-i")).toHaveLength(1);
+      // Re-ingest is ignored: the image's single code row is not duplicated.
+      await ingestFingerprint(store, imageFp, { ctid: "OH-i" });
       expect(store._phashCodes.filter((c) => c.ctid === "OH-i")).toHaveLength(1);
 
       expect(await ingestFingerprint(store, audioFp, { ctid: "OH-aud" })).toMatchObject({ landmarks: 5 });
@@ -64,6 +74,31 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
       expect(n.n).toBe(1);
       const bands = store.db.prepare("SELECT COUNT(*) AS n FROM minhash_band WHERE ctid=?").get("OH-t");
       expect(bands.n).toBe(32);
+    });
+
+    test("re-ingesting phash codes is ignored, not duplicated (no duplicate frames)", async () => {
+      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=?").get(ctid).n;
+      await ingestFingerprint(store, videoFp, { ctid: "OH-v" });
+      expect(phashN("OH-v")).toBe(2);
+      // Re-ingest the same video + the image (OH-i, ingested once earlier): counts
+      // must not grow. Without ignore-on-conflict the video would double to 4
+      // frames, inflating the matchVideo overlap denominator and degrading recall.
+      await ingestFingerprint(store, videoFp, { ctid: "OH-v" });
+      await ingestFingerprint(store, imageFp, { ctid: "OH-i" });
+      expect(phashN("OH-v")).toBe(2);
+      expect(phashN("OH-i")).toBe(1);
+    });
+
+    test("re-ingest of one component leaves a sibling component's rows intact", async () => {
+      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=?").get(ctid).n;
+      await ingestFingerprint(store, imageFp, { ctid: "OH-multi", componentIdx: 0 });
+      await ingestFingerprint(store, { ...imageFp, pdq: "cd".repeat(32) }, { ctid: "OH-multi", componentIdx: 1 });
+      expect(phashN("OH-multi")).toBe(2);
+      // Re-ingesting component 0 is ignored and must not touch component 1
+      // (the natural key includes component_idx, so the two images stay distinct).
+      await ingestFingerprint(store, imageFp, { ctid: "OH-multi", componentIdx: 0 });
+      expect(phashN("OH-multi")).toBe(2);
+      expect(store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=? AND component_idx=1").get("OH-multi").n).toBe(1);
     });
   });
 });

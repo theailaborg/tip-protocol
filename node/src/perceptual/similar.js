@@ -16,7 +16,10 @@ const { matchText, matchImage, matchVideo, matchAudio, IMAGE_DISTANCE } = requir
 // scale so candidates from different modalities can be ranked together.
 function _normScore(modality, hit) {
   if (modality === "text") return hit.similarity;                                   // 0-1 (Jaccard)
-  if (modality === "image") return 1 - Math.min(hit.distance, IMAGE_DISTANCE) / IMAGE_DISTANCE; // Hamming -> 0-1
+  // Divide by IMAGE_DISTANCE+1, not IMAGE_DISTANCE: a match at the inclusive floor
+  // (distance === IMAGE_DISTANCE) is still a real near-dup, so it must score > 0
+  // instead of collapsing to 0 and dropping out of the ranked top-N.
+  if (modality === "image") return 1 - Math.min(hit.distance, IMAGE_DISTANCE) / (IMAGE_DISTANCE + 1); // Hamming -> (0,1]
   if (modality === "video") return hit.targetMatchPct / 100;                        // % -> 0-1
   if (modality === "audio") return Math.min(1, hit.scoreRatio);                     // ratio (already 0-1)
   return 0;
@@ -72,7 +75,9 @@ async function findSimilarCtids(dag, ctid, opts = {}) {
 
   return [...best.entries()]
     .map(([id, m]) => ({ ctid: id, ...m }))
-    .sort((a, b) => b.score - a.score)
+    // Tie-break by ctid so the top-N is reproducible across backends (Map
+    // insertion order differs between MemoryStore scan and SQLite/PG row order).
+    .sort((a, b) => (b.score - a.score) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0))
     .slice(0, limit);
 }
 

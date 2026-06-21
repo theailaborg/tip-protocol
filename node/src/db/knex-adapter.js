@@ -728,16 +728,17 @@ class KnexAdapter {
       t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
     });
     await ensure("phash_code", t => {
-      t.bigIncrements("code_id");
       t.string("tip_ctid", 512).notNullable();
+      t.integer("component_idx").notNullable();
+      t.integer("frame").notNullable();            // 0 for image, frame index for video
       t.string("profile", 64).notNullable();
       t.string("modality", 16).notNullable();    // image|video
-      t.integer("frame");                          // null for image
       t.float("ts");                               // seconds, for video
       t.integer("quality").notNullable();
       t.string("pdq", 64).notNullable();          // 64-hex (256-bit)
       for (let i = 0; i < 16; i++) t.integer(`c${i}`).notNullable();
-      t.index(["tip_ctid"], "idx_phash_code_ctid");
+      // Natural key: re-ingest of the same content is ignored, not duplicated.
+      t.primary(["tip_ctid", "component_idx", "frame"]);
       for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
     });
     // Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the landmark
@@ -1312,7 +1313,10 @@ class KnexAdapter {
   savePhashCodes(rows) {
     if (!rows || !rows.length) return;
     const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
-    this._ff(() => this.knex("phash_code").insert(mapped));
+    // INSERT OR IGNORE on (tip_ctid, component_idx, frame): a re-ingest of the
+    // same content (frames fixed per ctid) is skipped, not duplicated.
+    this._ff(() => this.knex("phash_code").insert(mapped)
+      .onConflict(["tip_ctid", "component_idx", "frame"]).ignore());
   }
   async getPerceptualFingerprint(ctid, componentIdx = 0) {
     const row = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid, component_idx: componentIdx }).first();
@@ -1336,7 +1340,8 @@ class KnexAdapter {
       .andWhere(function () {
         for (let i = 0; i < 16; i++) this.orWhereIn(`c${i}`, queryKeys[i]);
       })
-      .distinct("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq");
+      .distinct("tip_ctid", "profile", "modality", "frame", "ts", "quality", "pdq")
+      .orderBy([{ column: "tip_ctid" }, { column: "frame" }, { column: "pdq" }]);
     return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
   }
   async getPhashCodesByCtid(ctid) {
@@ -1360,7 +1365,8 @@ class KnexAdapter {
   async findAudioCandidates(profile, hashes) {
     if (!hashes || !hashes.length) return [];
     return this.knex("audio_landmark").where({ profile }).whereIn("hash", hashes)
-      .select("profile", "hash", "clip_id", "t");
+      .select("clip_id", "hash", "t")
+      .orderBy([{ column: "clip_id" }, { column: "t" }]);
   }
   async getAudioClip(clipId) {
     const row = await this.knex("audio_clip").where({ clip_id: clipId }).first();

@@ -76,12 +76,14 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
       return;
     }
-    // Idempotency by ctid (same pattern as the prescan-job enqueue): if this
-    // ctid is already indexed, it was registered before. The commit-handler is
-    // first-wins, so a re-registration never creates a new record anyway — skip
-    // the re-ingest and keep the existing rows (avoids piling up duplicate
-    // derived rows for the same content). Runs in the background; getPerceptual-
-    // Fingerprint may be sync (SQLite/Memory) or async (Knex).
+    // Fast-path skip if this ctid is already indexed (it was registered before;
+    // the commit-handler is first-wins, so a re-registration never creates a new
+    // record anyway). This is an optimisation, not the correctness guarantee:
+    // every derived store write is idempotent (perceptual_fingerprint/audio_clip
+    // upsert, minhash_band/audio_landmark/phash_code ignore-on-conflict by their
+    // natural key), so a re-ingest that slips past this check (e.g. an all-reject
+    // component 0) cannot duplicate rows. Runs in the background;
+    // getPerceptualFingerprint may be sync (SQLite/Memory) or async (Knex).
     Promise.resolve(dag.getPerceptualFingerprint(ctid, 0))
       .then(async (existing) => {
         if (existing) return; // already indexed — keep older
