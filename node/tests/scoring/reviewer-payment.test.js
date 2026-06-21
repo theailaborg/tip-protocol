@@ -695,3 +695,364 @@ describe("Stage-3 settlement on Stage-2 NO_QUORUM — reviewer first-verdict pay
     expect(reviewerSU).toHaveLength(0);
   });
 });
+
+// ─── Wrong-DISMISS clawback ──────────────────────────────────────────────────
+// When a reviewer DISMISSES content and a later Stage-2 dispute UPHOLDS it,
+// the reviewer was wrong. We reclaim the CORRECT_BONUS paid at dismiss time:
+// net = +5 (dismiss bonus) - 5 (clawback) = 0. The reviewer keeps nothing for
+// a call proven wrong, but is not fined for leniency.
+//
+// If Stage-3 then overturns UPHELD→DISMISSED (dismiss was right after all),
+// the clawback is reversed: reviewer gets the bonus back (net = +5).
+
+describe("Wrong-DISMISS clawback — genesis constant", () => {
+  test("REVIEWER.WRONG_DISMISS_CLAWBACK = -5 (stored negative)", () => {
+    expect(REVIEWER.WRONG_DISMISS_CLAWBACK).toBe(-5);
+  });
+});
+
+describe("Wrong-DISMISS clawback — Stage-2 UPHELD claws back dismissed reviewer", () => {
+
+  function _seedWithDismissedReview(dag, { declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG } = {}) {
+    const authorTipId = "tip://id/author-dismiss";
+    const dismissedReviewerTipId = "tip://id/reviewer-dismissed";
+    _seedIdentity(dag, authorTipId, 600);
+    _seedIdentity(dag, dismissedReviewerTipId, 800);
+
+    dag.saveContent({
+      ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
+      author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
+      registered_at: 1767225600000, tx_id: "00",
+    });
+
+    dag.savePrescanReview({
+      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: authorTipId,
+      assigned_reviewer: dismissedReviewerTipId,
+      triggered_at_round: 1, decided_at_round: 2,
+      state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+      decision_note: "looks fine to me",
+    });
+
+    const thirdPartyDisputerTipId = "tip://id/third-party-disputer";
+    _seedIdentity(dag, thirdPartyDisputerTipId, 700);
+    const disputeTx = _addTx(dag, {
+      tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: 1775001600000,
+      data: {
+        ctid: CTID, disputer_tip_id: thirdPartyDisputerTipId, reason: "origin_mismatch",
+        claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
+        author_tip_id: authorTipId, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        stake: DISPUTE.DISPUTER_STAKE,
+      },
+    });
+
+    const summons = [];
+    const jurors = [];
+    for (let i = 0; i < 7; i++) {
+      const j = `tip://id/juror-d${i}`;
+      _seedIdentity(dag, j, 750);
+      jurors.push(j);
+      summons.push(_addTx(dag, {
+        tx_type: TX_TYPES.JURY_SUMMONS,
+        timestamp: `2026-05-01T00:00:0${i % 10}.${(100 + i).toString().padStart(3, "0")}Z`,
+        data: {
+          ctid: CTID, dispute_tx_id: disputeTx.tx_id, juror_tip_id: j,
+          stake: JURY.JUROR_STAKE, seed: shake256("dseed"), identity_count: 7,
+          commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+        },
+      }));
+    }
+    return { authorTipId, dismissedReviewerTipId, thirdPartyDisputerTipId, jurors, summons, disputeTx };
+  }
+
+  test("Stage-2 UPHELD: dismissed reviewer gets WRONG_DISMISS_CLAWBACK (-5)", () => {
+    const fx = _setup();
+    const ids = _seedWithDismissedReview(fx.dag);
+    const reveals = _buildReveals(ids.jurors, [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+      VOTE.MISMATCH, VOTE.MATCH, VOTE.MATCH,
+    ]);
+
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(1);
+    expect(reviewerSU[0].data.delta).toBe(REVIEWER.WRONG_DISMISS_CLAWBACK);
+    expect(reviewerSU[0].data.delta).toBe(-5);
+    expect(reviewerSU[0].data.reason).toBe(`review_wrong_dismiss_clawback:${REVIEW_ID}`);
+    expect(reviewerSU[0].data.ctid).toBe(CTID);
+  });
+
+  test("Stage-2 DISMISSED: dismissed reviewer gets no clawback (never upheld)", () => {
+    const fx = _setup();
+    const ids = _seedWithDismissedReview(fx.dag);
+    const reveals = _buildReveals(ids.jurors, [
+      VOTE.MATCH, VOTE.MATCH, VOTE.MATCH, VOTE.MATCH,
+      VOTE.MATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+    ]);
+
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(0);
+  });
+
+  test("no prior CLOSED_DISMISSED prescan_review → no clawback event", () => {
+    const fx = _setup();
+    // Use the escalated-review path (no CLOSED_DISMISSED review)
+    const ids = _seedDispute(fx.dag, { withReviewerEscalation: true });
+    const reveals = _buildReveals(ids.jurors, [
+      VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MISMATCH,
+      VOTE.MISMATCH, VOTE.MATCH, VOTE.MATCH,
+    ]);
+
+    const out = buildAdjudicationBatch(CTID, reveals, ids.summons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+
+    const clawbackMatches = out.txs.filter(
+      t => t.tx_type === TX_TYPES.SCORE_UPDATE
+        && (t.data?.reason || "").includes("wrong_dismiss_clawback"),
+    );
+    expect(clawbackMatches).toHaveLength(0);
+  });
+});
+
+describe("Wrong-DISMISS clawback — Stage-3 appeal reversal", () => {
+
+  function _seedDismissClawbackAppeal(dag, stage2Verdict, { declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG } = {}) {
+    const authorTipId = "tip://id/author-dca";
+    const dismissedReviewerTipId = "tip://id/reviewer-dca-dismissed";
+    const thirdPartyDisputerTipId = "tip://id/disputer-dca";
+    _seedIdentity(dag, authorTipId, 600);
+    _seedIdentity(dag, dismissedReviewerTipId, 800);
+    _seedIdentity(dag, thirdPartyDisputerTipId, 700);
+
+    dag.saveContent({
+      ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
+      author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
+      registered_at: 1767225600000, tx_id: "00",
+    });
+
+    dag.savePrescanReview({
+      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: authorTipId,
+      assigned_reviewer: dismissedReviewerTipId,
+      triggered_at_round: 1, decided_at_round: 2,
+      state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+      decision_note: "looks fine",
+    });
+
+    _addTx(dag, {
+      tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: 1775001600000,
+      data: {
+        ctid: CTID, disputer_tip_id: thirdPartyDisputerTipId, reason: "origin_mismatch",
+        claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
+        author_tip_id: authorTipId, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        stake: DISPUTE.DISPUTER_STAKE,
+      },
+    });
+
+    const adjudicationTx = _addTx(dag, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775174400000,
+      data: {
+        ctid: CTID, verdict: stage2Verdict,
+        declared_origin: declaredOrigin, confirmed_origin: claimedOrigin,
+        author_tip_id: authorTipId, disputer_tip_id: thirdPartyDisputerTipId,
+        author_score_delta: stage2Verdict === VERDICT.UPHELD ? -100 : 0,
+        pre_dispute_status: CONTENT_STATUS.REGISTERED, reason: "origin_mismatch",
+      },
+    });
+
+    const appellantTipId = stage2Verdict === VERDICT.UPHELD ? authorTipId : thirdPartyDisputerTipId;
+    _addTx(dag, {
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260800000,
+      data: { ctid: CTID, appellant_tip_id: appellantTipId, stake: JURY.JUROR_STAKE },
+    });
+
+    const expertSummons = [];
+    const experts = [];
+    for (let i = 0; i < 3; i++) {
+      const e = `tip://id/dca-expert-${i}`;
+      _seedIdentity(dag, e, 900);
+      experts.push(e);
+      expertSummons.push(_addTx(dag, {
+        tx_type: TX_TYPES.JURY_SUMMONS,
+        timestamp: `2026-04-05T01:00:0${i}.000Z`,
+        data: {
+          ctid: CTID, dispute_tx_id: adjudicationTx.tx_id, juror_tip_id: e,
+          is_appeal: true, stake: JURY.JUROR_STAKE,
+          seed: shake256("dca-seed"), identity_count: 3,
+          commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+        },
+      }));
+    }
+    return { authorTipId, dismissedReviewerTipId, thirdPartyDisputerTipId, experts, expertSummons };
+  }
+
+  function _buildExpertReveals(experts, votes, confirmedOrigin = ORIGIN.AG) {
+    return experts.slice(0, votes.length).map((e, i) => ({
+      tx_id: shake256(`dca-er-${i}-${votes[i]}`),
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
+      data: {
+        ctid: CTID, juror_tip_id: e, vote: votes[i], is_appeal: true,
+        salt: shake256(`dcas${i}`), confirmed_origin: confirmedOrigin,
+      },
+    }));
+  }
+
+  test("Stage-2 UPHELD → Stage-3 DISMISSED (overturn): clawback reversed (+5)", () => {
+    const fx = _setup();
+    const ids = _seedDismissClawbackAppeal(fx.dag, VERDICT.UPHELD);
+    const reveals = _buildExpertReveals(ids.experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH]);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+    expect(out.overturned).toBe(true);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(1);
+    expect(reviewerSU[0].data.delta).toBe(-REVIEWER.WRONG_DISMISS_CLAWBACK);
+    expect(reviewerSU[0].data.delta).toBe(5);
+    expect(reviewerSU[0].data.reason).toMatch(/wrong_dismiss_clawback reversed/);
+  });
+
+  test("Stage-2 UPHELD → Stage-3 UPHELD (confirm): no reversal (clawback stands)", () => {
+    const fx = _setup();
+    const ids = _seedDismissClawbackAppeal(fx.dag, VERDICT.UPHELD);
+    const reveals = _buildExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH]);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+    expect(out.overturned).toBe(false);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(0);
+  });
+
+  test("Stage-2 UPHELD → Stage-3 CONSERVATIVE_LABEL: clawback stands (no reversal)", () => {
+    // Stage-3 relabels rather than fully clearing the content → the dismiss was
+    // still wrong, so the clawback must NOT be reversed. Guards the explicit
+    // `verdict === DISMISSED` check on the reversal (would otherwise fire if the
+    // reversal leaned only on the `overturned` branch and that widened).
+    const fx = _setup();
+    const ids = _seedDismissClawbackAppeal(fx.dag, VERDICT.UPHELD, {
+      declaredOrigin: ORIGIN.AG, claimedOrigin: ORIGIN.OH,
+    });
+    const reveals = _buildExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH], ORIGIN.OH);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.CONSERVATIVE_LABEL);
+    expect(out.overturned).toBe(false);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(0);
+  });
+});
+
+describe("Wrong-DISMISS clawback — Stage-2 NO_QUORUM → Stage-3 first verdict", () => {
+
+  function _seedNoQuorumWithDismiss(dag, { declaredOrigin = ORIGIN.OH, claimedOrigin = ORIGIN.AG } = {}) {
+    const authorTipId = "tip://id/author-nqd";
+    const dismissedReviewerTipId = "tip://id/reviewer-nqd-dismissed";
+    const disputerTipId = "tip://id/disputer-nqd";
+    _seedIdentity(dag, authorTipId, 600);
+    _seedIdentity(dag, dismissedReviewerTipId, 800);
+    _seedIdentity(dag, disputerTipId, 700);
+
+    dag.saveContent({
+      ctid: CTID, origin_code: declaredOrigin, content_hash: "00",
+      author_tip_id: authorTipId, status: CONTENT_STATUS.DISPUTED,
+      registered_at: 1767225600000, tx_id: "00",
+    });
+
+    dag.savePrescanReview({
+      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: authorTipId,
+      assigned_reviewer: dismissedReviewerTipId,
+      triggered_at_round: 1, decided_at_round: 2,
+      state: PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+      decision_note: "fine",
+    });
+
+    _addTx(dag, {
+      tx_type: TX_TYPES.CONTENT_DISPUTED, timestamp: 1775001600000,
+      data: {
+        ctid: CTID, disputer_tip_id: disputerTipId, reason: "origin_mismatch",
+        claimed_origin: claimedOrigin, declared_origin: declaredOrigin,
+        author_tip_id: authorTipId, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+        stake: DISPUTE.DISPUTER_STAKE,
+      },
+    });
+
+    const adjudicationTx = _addTx(dag, {
+      tx_type: TX_TYPES.ADJUDICATION_RESULT, timestamp: 1775174400000,
+      data: {
+        ctid: CTID, verdict: VERDICT.NO_QUORUM,
+        declared_origin: declaredOrigin, confirmed_origin: null,
+        author_tip_id: authorTipId, disputer_tip_id: disputerTipId,
+        author_score_delta: 0, pre_dispute_status: CONTENT_STATUS.REGISTERED,
+      },
+    });
+
+    _addTx(dag, {
+      tx_type: TX_TYPES.APPEAL_FILED, timestamp: 1775260800000,
+      data: { ctid: CTID, appellant_tip_id: "SYSTEM_AUTO_ESCALATION" },
+    });
+
+    const expertSummons = [];
+    const experts = [];
+    for (let i = 0; i < 3; i++) {
+      const e = `tip://id/nqd-expert-${i}`;
+      _seedIdentity(dag, e, 900);
+      experts.push(e);
+      expertSummons.push(_addTx(dag, {
+        tx_type: TX_TYPES.JURY_SUMMONS,
+        timestamp: `2026-04-06T01:00:0${i}.000Z`,
+        data: {
+          ctid: CTID, dispute_tx_id: adjudicationTx.tx_id, juror_tip_id: e,
+          is_appeal: true, stake: JURY.JUROR_STAKE,
+          seed: shake256("nqd-seed"), identity_count: 3,
+          commit_deadline: 1893456000000, reveal_deadline: 1893456000000,
+        },
+      }));
+    }
+    return { authorTipId, dismissedReviewerTipId, disputerTipId, experts, expertSummons };
+  }
+
+  function _buildNqExpertReveals(experts, votes, confirmedOrigin = ORIGIN.AG) {
+    return experts.map((e, i) => ({
+      tx_id: shake256(`nqd-er-${i}-${votes[i] || VOTE.MATCH}`),
+      tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: 1775433600000,
+      data: {
+        ctid: CTID, juror_tip_id: e, vote: votes[i] || VOTE.MATCH,
+        is_appeal: true, salt: shake256(`nqds${i}`), confirmed_origin: confirmedOrigin,
+      },
+    }));
+  }
+
+  test("NO_QUORUM → Stage-3 UPHELD: dismissed reviewer gets clawback (-5)", () => {
+    const fx = _setup();
+    const ids = _seedNoQuorumWithDismiss(fx.dag);
+    const reveals = _buildNqExpertReveals(ids.experts, [VOTE.MISMATCH, VOTE.MISMATCH, VOTE.MATCH]);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.UPHELD);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(1);
+    expect(reviewerSU[0].data.delta).toBe(REVIEWER.WRONG_DISMISS_CLAWBACK);
+    expect(reviewerSU[0].data.delta).toBe(-5);
+    expect(reviewerSU[0].data.reason).toMatch(/wrong_dismiss_clawback_no_quorum/);
+  });
+
+  test("NO_QUORUM → Stage-3 DISMISSED: dismissed reviewer gets no clawback (DISMISS was correct)", () => {
+    const fx = _setup();
+    const ids = _seedNoQuorumWithDismiss(fx.dag);
+    const reveals = _buildNqExpertReveals(ids.experts, [VOTE.MATCH, VOTE.MATCH, VOTE.MISMATCH]);
+
+    const out = buildAppealBatch(CTID, reveals, ids.expertSummons, fx.dag, fx.scoring, fx.config);
+    expect(out.verdict).toBe(VERDICT.DISMISSED);
+
+    const reviewerSU = _scoreUpdatesFor(out.txs, ids.dismissedReviewerTipId);
+    expect(reviewerSU).toHaveLength(0);
+  });
+});

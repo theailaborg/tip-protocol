@@ -35,6 +35,7 @@ const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createPrescanCompletionTrigger } = require("./prescan-completion-trigger");
 const { createTxSubmitter } = require("../services/helpers");
+const { nowMs } = require("../../../shared/time");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { encode, decode } = require("../network/proto");
@@ -83,6 +84,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // triggers' leader-gate logic (`committee[round % N]` for verdicts,
   // `committee[day % N]` for clean-record).
   const narwhalRef = { current: null };
+  let _verdictFallbackTimer = null;
   const getCommittee = (round) => {
     const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
     return getActiveCommittee(dag, r);
@@ -482,6 +484,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      * Stop consensus gracefully.
      */
     stop() {
+      clearInterval(_verdictFallbackTimer);
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();
@@ -557,6 +560,20 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // Trigger is constructed before the public consensus object exists;
   // we wire it up here so post-round verdict batches can hit `addTx`.
   consensusForTrigger.current = consensus;
+
+  // Fallback timer: on idle clusters with no mempool traffic, Bullshark's
+  // `if (orderedTxs.length > 0)` guard prevents onOrderedTxs from firing,
+  // meaning checkPending is never called and verdicts stall indefinitely.
+  // This 3-second poll fires only when verdicts are pending and is safe
+  // because checkPending is idempotent (leader-gated + ADJUDICATION_RESULT
+  // is first-wins, so duplicate fires from multiple nodes are harmless).
+  _verdictFallbackTimer = setInterval(() => {
+    if (verdictTrigger.size() === 0) return;
+    try {
+      const round = narwhalRef.current ? narwhalRef.current.currentRound() : 0;
+      verdictTrigger.checkPending(nowMs(), round);
+    } catch (_) { /* non-fatal — don't crash the node on a transient error */ }
+  }, 3000);
 
   return consensus;
 }

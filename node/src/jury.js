@@ -13,7 +13,7 @@
 
 const { shake256 } = require("../../shared/crypto");
 const { nowMs, nowPlusMs } = require("../../shared/time");
-const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES } = require("../../shared/constants");
+const { TX_TYPES, ORIGIN, VOTE, VERDICT, CONTENT_STATUS, TIP_ID_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { JURY, APPEAL, DISPUTE, REVIEWER } = require("../../shared/protocol-constants");
 const { nodeSignedAuto } = require("./services/helpers");
 const { getLogger } = require("./logger");
@@ -627,6 +627,30 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     }));
   }
 
+  // ── Wrong-DISMISS clawback (Stage-2) ──────────────────────────────────────
+  // If there was a CLOSED_DISMISSED prescan review for this ctid and Stage-2
+  // rules UPHELD, the reviewer who dismissed the flag was wrong. Reclaim the
+  // CORRECT_BONUS paid at dismiss time (REVIEWER.WRONG_DISMISS_CLAWBACK, stored
+  // as a negative delta). Net for wrong-dismiss reviewer = +5 (dismiss bonus)
+  // + clawback = 0. Guard: only fires when no escalated_to_dispute review
+  // exists (those ride the CONFIRM-bonus path above — a ctid cannot have both).
+  if (verdict === VERDICT.UPHELD && !escalatedReview && REVIEWER.WRONG_DISMISS_CLAWBACK !== 0) {
+    const dismissedReview = typeof dag.getPrescanReviewsByCtid === "function"
+      ? (dag.getPrescanReviewsByCtid(ctid) || []).find(
+        r => r.state === PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+      )
+      : null;
+    if (dismissedReview && dismissedReview.assigned_reviewer) {
+      txs.push(scoring.buildScoreUpdateTx({
+        tipId: dismissedReview.assigned_reviewer,
+        delta: REVIEWER.WRONG_DISMISS_CLAWBACK,
+        reason: `review_wrong_dismiss_clawback:${dismissedReview.review_id}`,
+        ctid, relatedTxId: resultTx.tx_id,
+        timestamp, getRecentPrev, config,
+      }));
+    }
+  }
+
   // Author vindication on DISMISSED. Spec (TIP_Scoring_v2 Reputation §):
   // a creator whose content the jury exonerates earns
   // DISPUTE.VINDICATION_BONUS — the only path that credits the author
@@ -927,6 +951,33 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         }));
       }
     }
+
+    // ── Wrong-DISMISS clawback reversal (Stage-3 overturn UPHELD→DISMISSED) ─
+    // Stage-2 UPHELD applied a clawback to the reviewer who had DISMISSED.
+    // Stage-3 overturns to DISMISSED → the dismiss was right after all →
+    // give the reviewer their CORRECT_BONUS back (reverse the clawback).
+    // Guard: only when Stage-2 was UPHELD (that's when the clawback fired) AND
+    // Stage-3 fully clears the content (DISMISSED). The explicit
+    // `verdict === DISMISSED` check makes this self-contained — it does not lean
+    // on the enclosing `if (overturned)` to exclude UPHELD→UPHELD/CONSERVATIVE_LABEL,
+    // so the clawback correctly STANDS whenever Stage-3 still finds a problem.
+    // Also requires no escalated_to_dispute review (the two paths are mutually exclusive).
+    if (stage2Verdict === VERDICT.UPHELD && verdict === VERDICT.DISMISSED
+      && !escalatedReview && REVIEWER.WRONG_DISMISS_CLAWBACK !== 0) {
+      const dismissedReview = typeof dag.getPrescanReviewsByCtid === "function"
+        ? (dag.getPrescanReviewsByCtid(ctid) || []).find(
+          r => r.state === PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+        )
+        : null;
+      if (dismissedReview && dismissedReview.assigned_reviewer) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: dismissedReview.assigned_reviewer,
+          delta: -REVIEWER.WRONG_DISMISS_CLAWBACK,
+          reason: `Appeal overturned: wrong_dismiss_clawback reversed on ${ctid}`,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        }));
+      }
+    }
   }
   // Not overturned: no settlement event for the appellant. The
   // filing-time stake deduction (in dispute-service.fileAppeal) is the
@@ -986,6 +1037,28 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         ctid, relatedTxId: resultTx.tx_id,
         timestamp, getRecentPrev, config,
       }));
+    }
+
+    // ── Wrong-DISMISS clawback (NO_QUORUM → Stage-3 first authoritative) ────
+    // Stage-3 is the first authoritative verdict after Stage-2 NO_QUORUM.
+    // If Stage-3 UPHELD, the reviewer who DISMISSED the content was wrong →
+    // apply the clawback now (same semantics as Stage-2 UPHELD path above).
+    // Mutually exclusive with the escalated_to_dispute path above.
+    if (verdict === VERDICT.UPHELD && !noQuorumEscalatedReview && REVIEWER.WRONG_DISMISS_CLAWBACK !== 0) {
+      const noQuorumDismissedReview = typeof dag.getPrescanReviewsByCtid === "function"
+        ? (dag.getPrescanReviewsByCtid(ctid) || []).find(
+          r => r.state === PRESCAN_REVIEW_STATES.CLOSED_DISMISSED,
+        )
+        : null;
+      if (noQuorumDismissedReview && noQuorumDismissedReview.assigned_reviewer) {
+        txs.push(scoring.buildScoreUpdateTx({
+          tipId: noQuorumDismissedReview.assigned_reviewer,
+          delta: REVIEWER.WRONG_DISMISS_CLAWBACK,
+          reason: `review_wrong_dismiss_clawback_no_quorum:${noQuorumDismissedReview.review_id}`,
+          ctid, relatedTxId: resultTx.tx_id,
+          timestamp, getRecentPrev, config,
+        }));
+      }
     }
   }
 

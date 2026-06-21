@@ -308,6 +308,11 @@ const REVIEWER = {
   // through Stage-2 (or Stage-3 reversal). Paid alone when the case
   // closes without a public dispute (DISMISS or accept-private).
   get CORRECT_BONUS() { return _rv().reviewer_correct_bonus; },
+  // Signed delta (negative) clawed back from a reviewer whose DISMISS is
+  // later proven wrong by an UPHELD dispute. Same sign convention as
+  // accept_correction_score_delta: stored negative, applied directly.
+  // Default -5 cancels reviewer_correct_bonus (net 0 for a wrong dismiss).
+  get WRONG_DISMISS_CLAWBACK() { return _rv().reviewer_wrong_dismiss_clawback; },
   // Availability gate: more than MAX_NOSHOW_RECUSALS sla_expired
   // auto-recusals within the reviewer's last NOSHOW_SAMPLE_SIZE resolved
   // assignments pauses them from selection. Hard filter — see
