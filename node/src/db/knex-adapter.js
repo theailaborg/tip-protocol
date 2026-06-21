@@ -522,15 +522,9 @@ class KnexAdapter {
       t.text("name").nullable();
       t.string("status", 32).notNullable().defaultTo("active");
       t.text("api_endpoint").nullable();   // public API origin; peers redirect reviewers here for this node's media
-      t.bigInteger("endpoint_updated_at").nullable();  // tx.timestamp of last NODE_ENDPOINT_UPDATED; null until first update; monotonic guard
+      t.bigInteger("updated_at").nullable();  // tx.timestamp of the last node-mutating tx; null until first. Monotonic-replay guard (see commit-handler NODE_ENDPOINT_UPDATED).
       t.bigInteger("registered_at").notNullable();
     });
-    // Migration: add endpoint_updated_at to existing nodes tables (not present before issue #120 fix)
-    if (!(await db.schema.hasColumn("nodes", "endpoint_updated_at"))) {
-      await db.schema.alterTable("nodes", t => {
-        t.bigInteger("endpoint_updated_at").nullable();
-      });
-    }
 
     await ensure("certificates", t => {
       t.string("hash", 128).primary();
@@ -1491,7 +1485,7 @@ class KnexAdapter {
       name: rec.name || null,
       status: rec.status || "active",
       api_endpoint: rec.api_endpoint || null,
-      endpoint_updated_at: null,  // null for new nodes (no update committed yet)
+      updated_at: null,  // null for new nodes (no update committed yet)
       registered_at: rec.registered_at,
     };
     this._ff(() => this._dbInsert("nodes", "node_id", row, "merge"));
@@ -1501,7 +1495,7 @@ class KnexAdapter {
     this.mirror.updateNodeEndpoint(nodeId, apiEndpoint, timestamp);
     this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({
       api_endpoint: apiEndpoint || null,
-      endpoint_updated_at: timestamp ?? null,
+      updated_at: timestamp ?? null,
     }));
   }
 

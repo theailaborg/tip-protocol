@@ -742,7 +742,7 @@ class MemoryStore {
   }
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     const row = this._nodes.get(nodeId);
-    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null, endpoint_updated_at: timestamp ?? null });
+    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null, updated_at: timestamp ?? null });
   }
   getNode(nodeId) {
     const row = this._nodes.get(nodeId);
@@ -1880,7 +1880,7 @@ class SQLiteStore {
         name                 TEXT,
         status               TEXT NOT NULL DEFAULT 'active',
         api_endpoint         TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
-        endpoint_updated_at  INTEGER,                         -- tx.timestamp of last NODE_ENDPOINT_UPDATED; null until first update; monotonic guard
+        updated_at           INTEGER,                         -- tx.timestamp of the last node-mutating tx; null until first. Monotonic-replay guard: every node-mutating tx must bump this AND reject tx.timestamp <= updated_at
         registered_at        INTEGER NOT NULL
       );
 
@@ -2250,14 +2250,6 @@ class SQLiteStore {
       this.db.exec("ALTER TABLE tx_rejections ADD COLUMN subject_tip_id TEXT");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_tx_rej_subject ON tx_rejections(subject_tip_id)");
-
-    // Replay-protection migration: add endpoint_updated_at to nodes for existing DBs.
-    // Fresh DBs already have the column from CREATE TABLE above; ALTER TABLE is a no-op
-    // on them (caught and ignored). Live DBs gain the column with NULL for existing rows
-    // which is correct — no endpoint update has been committed yet on those nodes.
-    try {
-      this.db.exec(`ALTER TABLE nodes ADD COLUMN endpoint_updated_at INTEGER`);
-    } catch (_) { /* column already exists */ }
   }
 
   /**
@@ -2544,11 +2536,11 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,endpoint_updated_at,registered_at)
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,updated_at,registered_at)
          VALUES (?,?,?,?,?,?)`
       ),
       updateNodeEndpoint: this.db.prepare(
-        "UPDATE nodes SET api_endpoint=?, endpoint_updated_at=? WHERE node_id=?"
+        "UPDATE nodes SET api_endpoint=?, updated_at=? WHERE node_id=?"
       ),
       getNode: this.db.prepare(
         `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
@@ -3286,7 +3278,7 @@ class SQLiteStore {
       rec.node_id, rec.name || null,
       rec.status || "active",
       rec.api_endpoint || null,
-      null,  // endpoint_updated_at: null for new nodes (no update committed yet)
+      null,  // updated_at: null for new nodes (no update committed yet)
       rec.registered_at || nowMs()
     );
   }

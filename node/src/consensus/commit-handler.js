@@ -601,13 +601,24 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         if (!existingNode) {
           return { valid: false, error: `NODE_ENDPOINT_UPDATED for unknown node ${d.node_id}` };
         }
-        // equal timestamps are also rejected — ambiguous ordering on the same ms
-        if (existingNode.endpoint_updated_at !== null &&
-            existingNode.endpoint_updated_at !== undefined &&
-            tx.timestamp <= existingNode.endpoint_updated_at) {
+        // One endpoint update per node per batch (first-wins). The monotonic
+        // guard below reads COMMITTED state, so two updates for the same node in
+        // ONE batch would both pass Phase 1 and apply last-wins in Phase 2 — a
+        // stale one ordered last would revert api_endpoint AND move updated_at
+        // backwards. Drop the second here so only the first-in-canonical-order
+        // (which still must clear the monotonic guard) commits.
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.NODE_ENDPOINT_UPDATED && t.data?.node_id === d.node_id);
+        if (inBatch) return { valid: false, error: `duplicate NODE_ENDPOINT_UPDATED in batch for ${d.node_id}` };
+        // Monotonic-replay guard (cross-round): reject any update not strictly
+        // after the node's last update. Equal timestamps are also rejected —
+        // ambiguous ordering on the same ms.
+        if (existingNode.updated_at !== null &&
+            existingNode.updated_at !== undefined &&
+            tx.timestamp <= existingNode.updated_at) {
           return {
             valid: false,
-            error: `NODE_ENDPOINT_UPDATED rejected: tx.timestamp ${tx.timestamp} is not strictly after endpoint_updated_at ${existingNode.endpoint_updated_at}`,
+            error: `NODE_ENDPOINT_UPDATED rejected: tx.timestamp ${tx.timestamp} is not strictly after updated_at ${existingNode.updated_at}`,
           };
         }
         return { valid: true };
