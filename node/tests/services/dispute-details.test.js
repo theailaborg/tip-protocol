@@ -126,10 +126,13 @@ function _signDisputeFields(fields, privateKey) {
   return signBody(fields, privateKey);
 }
 
-function _buildDisputeBody({ disputerTipId, disputerKp, payload, reason = "origin_mismatch", claimed_origin = "AG" }) {
+function _buildDisputeBody({ disputerTipId, disputerKp, payload, reason = "origin_mismatch", claimed_origin = "AG", ctid = "tip://c/x" }) {
   const evidenceSig = _signEvidencePayload(payload, disputerKp.privateKey);
   const evidence_hash = shake256(canonicalJson(payload));
-  const sigFields = { disputer_tip_id: disputerTipId, reason };
+  // ctid is now a required field in the signed payload (issue #121 fix) —
+  // it comes from the route but must be bound into the signature so the
+  // same disputer signature can't be replayed against a different content item.
+  const sigFields = { disputer_tip_id: disputerTipId, reason, ctid };
   if (claimed_origin) sigFields.claimed_origin = claimed_origin;
   sigFields.evidence_hash = evidence_hash;
   const disputeSig = _signDisputeFields(sigFields, disputerKp.privateKey);
@@ -395,9 +398,9 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
   // payload's `description` is unique per claimed_origin so the
   // evidence_hash uniqueness rule doesn't trip across the eligibility
   // matrix tests.
-  function _disputeBodyOnly({ disputerTipId, disputerKp, claimed_origin }) {
+  function _disputeBodyOnly({ disputerTipId, disputerKp, claimed_origin, ctid }) {
     const payload = _validPayload(`origin-matrix-${claimed_origin}-${nowMs()}-${Math.random()}`);
-    return _buildDisputeBody({ disputerTipId, disputerKp, payload, claimed_origin });
+    return _buildDisputeBody({ disputerTipId, disputerKp, payload, claimed_origin, ctid });
   }
 
   test.each([
@@ -414,6 +417,7 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
       disputerTipId: fx.disputerTipId,
       disputerKp: fx.disputerKp,
       claimed_origin: claimed,
+      ctid,
     });
     const out = fx.disputeService.fileDispute(ctid, body);
     expect(out.success).toBe(true);
@@ -434,6 +438,7 @@ describe("fileDispute — origin_mismatch eligibility matrix", () => {
       disputerTipId: fx.disputerTipId,
       disputerKp: fx.disputerKp,
       claimed_origin: claimed,
+      ctid,
     });
     expect(() => fx.disputeService.fileDispute(ctid, body))
       .toThrow(expect.objectContaining({
@@ -458,6 +463,7 @@ describe("fileDispute + evidence — uniqueness rule", () => {
       disputerTipId: fx.disputerTipId,
       disputerKp: fx.disputerKp,
       payload,
+      ctid: ctid1,
     });
     const out1 = fx.disputeService.fileDispute(ctid1, body1);
 
@@ -470,6 +476,7 @@ describe("fileDispute + evidence — uniqueness rule", () => {
       disputerTipId: fx.disputerTipId,
       disputerKp: fx.disputerKp,
       payload,  // identical payload → same hash
+      ctid: ctid2,
     });
 
     // Either layer (persistEvidence binding check OR canDispute uniqueness rule)

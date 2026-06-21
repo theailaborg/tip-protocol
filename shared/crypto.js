@@ -602,6 +602,17 @@ function verifyBodySignature(body, signature, publicKey, fields) {
   return mldsaVerify(shake256(canonicalJson(payload)), signature, publicKey);
 }
 
+/**
+ * Verify a subject signature against a canonical payload object that a schema
+ * registry contract's `buildSigningPayload` produced. Lets API verify sites use
+ * the registry as the SINGLE source of the signed field-set instead of
+ * hand-duplicating field lists (GH #121). The payload is already field-stripped
+ * by buildSignedPayload, so this just canonicalises + verifies.
+ */
+function verifyCanonicalPayload(payload, signature, publicKey) {
+  return mldsaVerify(shake256(canonicalJson(payload)), signature, publicKey);
+}
+
 module.exports = {
   initCrypto,
   shake256,
@@ -634,4 +645,5 @@ module.exports = {
   signBody,
   buildSignedPayload,
   verifyBodySignature,
+  verifyCanonicalPayload,
 };

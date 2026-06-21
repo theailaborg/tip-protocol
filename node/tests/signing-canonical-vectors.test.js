@@ -36,7 +36,7 @@
 const path = require("path");
 
 const { canonicalJson } = require(path.resolve(__dirname, "../../shared/crypto"));
-const { SIGNATURE_SCOPE } = require(path.resolve(__dirname, "../../shared/constants"));
+const { SIGNATURE_SCOPE, TX_TYPES } = require(path.resolve(__dirname, "../../shared/constants"));
 const { TX_SIGNATURE_REGISTRY } = require(path.resolve(__dirname, "../src/schemas/_registry"));
 
 const VECTORS = require("./fixtures/signing-canonical-vectors.json");
@@ -103,5 +103,50 @@ describe("canonical signed-payload golden vectors", () => {
     expect(withOpt).toBeTruthy();
     expect(reqOnly.canonical.includes("confirmed_origin")).toBe(false);
     expect(withOpt.canonical.includes("confirmed_origin")).toBe(true);
+  });
+
+  // ── Replay regression tests (GH #121) ──────────────────────────────────────
+  // These verify that ctid and is_appeal are load-bearing fields in the signed
+  // payload — i.e. swapping either value produces a different canonical string,
+  // so a signature for one context cannot be replayed in another.
+
+  it("JURY_VOTE_COMMIT: signature for ctid A must not verify against ctid B", () => {
+    const contract = TX_SIGNATURE_REGISTRY[TX_TYPES.JURY_VOTE_COMMIT];
+    expect(contract).toBeTruthy();
+
+    const payloadA = contract.buildSigningPayload({
+      juror_tip_id: "tip://id/US-juror",
+      commitment: "commit-hash",
+      ctid: "ctid-case-A",
+      is_appeal: false,
+    });
+    const payloadB = contract.buildSigningPayload({
+      juror_tip_id: "tip://id/US-juror",
+      commitment: "commit-hash",
+      ctid: "ctid-case-B",
+      is_appeal: false,
+    });
+
+    expect(JSON.stringify(payloadA)).not.toBe(JSON.stringify(payloadB));
+  });
+
+  it("JURY_VOTE_COMMIT: Stage-2 signature (is_appeal=false) must not verify against Stage-3 (is_appeal=true)", () => {
+    const contract = TX_SIGNATURE_REGISTRY[TX_TYPES.JURY_VOTE_COMMIT];
+    expect(contract).toBeTruthy();
+
+    const stage2Payload = contract.buildSigningPayload({
+      juror_tip_id: "tip://id/US-juror",
+      commitment: "commit-hash",
+      ctid: "ctid-deadbeef",
+      is_appeal: false,
+    });
+    const stage3Payload = contract.buildSigningPayload({
+      juror_tip_id: "tip://id/US-juror",
+      commitment: "commit-hash",
+      ctid: "ctid-deadbeef",
+      is_appeal: true,
+    });
+
+    expect(JSON.stringify(stage2Payload)).not.toBe(JSON.stringify(stage3Payload));
   });
 });
