@@ -5,12 +5,20 @@
  * Gossipsub silence can't distinguish "peer dead" from "mesh edge stale."
  * This module adds a periodic point-to-point ping over a tiny direct stream
  * so stale connections surface proactively before they cause halts (issue #13
- * class of bug). Each pong also carries the responder's consensus state,
- * giving anti-entropy a free state update without a separate sync-status RPC.
+ * class of bug). Two consecutive missed heartbeats (HEARTBEAT_SUSPECT_MISSES)
+ * mark a peer suspect — a synchronous "peer cannot deliver to me" signal that
+ * gossipsub silence does not give.
+ *
+ * Scope is deliberately liveness-only: divergence detection stays owned by
+ * anti-entropy, whose poll already dials every authorized peer each cycle and
+ * runs checkAndReconcile on committed_round + state_merkle_root. Piggybacking
+ * that state on the pong would duplicate the AE poll at the same cadence and
+ * recompute the full state root on every probe; the heartbeat carries no
+ * consensus state.
  *
  * Protocol: /tip/heartbeat/1.0.0
- *   Ping: HeartbeatPing{ from_node_id, committed_round, merkle_root, ts }
- *   Pong: HeartbeatPong{ node_id, committed_round, merkle_root, join_state, ts }
+ *   Ping: HeartbeatPing{ from_node_id, ts }
+ *   Pong: HeartbeatPong{ node_id, ts }
  *
  * Failure modes:
  *   - Timeout (HEARTBEAT_TIMEOUT_MS): miss counter increments.
@@ -25,7 +33,7 @@
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
-const { encode, decode, bytesToHex, hexToBytes } = require("./proto");
+const { encode, decode } = require("./proto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.heartbeat");
@@ -36,28 +44,22 @@ const log = getLogger("tip.heartbeat");
  * @param {Object}   options
  * @param {Object}   options.network            Network node (handle, openStream, authorizedPeers)
  * @param {Function} options.getSelfNodeId       () => our TIP node_id
- * @param {Function} options.getConsensusState   () => { committed_round, state_merkle_root }
  * @param {Function} [options.isAuthorizedPeer]  (libp2pPeerId) => bool
- * @param {Object}   [options.narwhal]           For join_state in pong
  * @param {Function} [options.onPeerSuspect]     (libp2pPeerId, tipNodeId) => void — called after SUSPECT_MISSES misses
- * @param {Function} [options.onPeerState]       (libp2pPeerId, state) => void — called on each successful pong
  * @param {Object}   [options.log]               Override logger
  * @returns {{ start, stop, registerHandler, peerStates }}
  */
 function createHeartbeatManager({
   network,
   getSelfNodeId,
-  getConsensusState,
   isAuthorizedPeer,
-  narwhal,
   onPeerSuspect,
-  onPeerState,
   log: customLog,
 } = {}) {
   const _log = customLog || log;
 
   // Per-peer liveness state. Key: libp2p peerId string.
-  // { consecutiveMisses, lastSeenAt, lastCommittedRound, lastMerkleRoot, lastJoinState }
+  // { consecutiveMisses, lastSeenAt }
   const _peerState = new Map();
 
   let _running = false;
@@ -78,12 +80,8 @@ function createHeartbeatManager({
         // Drain the ping (we don't need its payload to reply)
         for await (const _chunk of stream.source) { break; }
 
-        const state = getConsensusState ? getConsensusState() : {};
         const pong = encode("HeartbeatPong", {
           nodeId: getSelfNodeId ? (getSelfNodeId() || "") : "",
-          committedRound: state.committed_round || 0,
-          merkleRoot: hexToBytes(state.state_merkle_root || ""),
-          joinState: String(narwhal?.joinState?.() || "ready"),
           ts: nowMs(),
         });
         try { await stream.sink([pong]); } catch { /* ignore */ }
@@ -98,11 +96,8 @@ function createHeartbeatManager({
   // ── Client side: ping one peer ───────────────────────────────────────────
 
   async function _pingPeer(peerId, tipNodeId) {
-    const state = getConsensusState ? getConsensusState() : {};
     const ping = encode("HeartbeatPing", {
       fromNodeId: getSelfNodeId ? (getSelfNodeId() || "") : "",
-      committedRound: state.committed_round || 0,
-      merkleRoot: hexToBytes(state.state_merkle_root || ""),
       ts: nowMs(),
     });
 
@@ -129,7 +124,8 @@ function createHeartbeatManager({
       const pong = decode("HeartbeatPong", Buffer.concat(chunks));
 
       // Guard against identity spoofing: pong's node_id must match our
-      // authorized-peers map entry for this libp2p peerId.
+      // authorized-peers map entry for this libp2p peerId. A mismatch is an
+      // anomaly, not a liveness miss — log and leave the miss counter alone.
       const expectedNodeId = network.authorizedPeers ? (network.authorizedPeers()[peerId] || "") : "";
       if (pong.nodeId && expectedNodeId && pong.nodeId !== expectedNodeId) {
         _log.warn(
@@ -139,28 +135,15 @@ function createHeartbeatManager({
         return;
       }
 
-      // Successful pong — reset miss counter, update state.
+      // Successful pong — reset miss counter.
       const ps = _peerState.get(peerId) || { consecutiveMisses: 0 };
       const wasConsecutiveMisses = ps.consecutiveMisses;
       ps.consecutiveMisses = 0;
       ps.lastSeenAt = nowMs();
-      ps.lastCommittedRound = Number(pong.committedRound || 0);
-      ps.lastMerkleRoot = bytesToHex(pong.merkleRoot || Buffer.alloc(0));
-      ps.lastJoinState = pong.joinState || "ready";
       _peerState.set(peerId, ps);
 
       if (wasConsecutiveMisses > 0) {
         _log.info(`heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} recovered after ${wasConsecutiveMisses} miss(es)`);
-      }
-
-      if (onPeerState) {
-        onPeerState(peerId, {
-          node_id: pong.nodeId || tipNodeId || peerId,
-          committed_round: ps.lastCommittedRound,
-          state_merkle_root: ps.lastMerkleRoot,
-          join_state: ps.lastJoinState,
-          checked_at: ps.lastSeenAt,
-        });
       }
     } catch (err) {
       if (!_running) return;  // stopped during await — ignore

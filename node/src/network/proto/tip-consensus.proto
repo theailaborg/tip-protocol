@@ -581,22 +581,18 @@ message SnapshotEnd {
 //
 // Periodic point-to-point ping over a short-lived direct stream.
 // Fires every ~5s per authorized peer pair. Distinguishes "peer dead" from
-// "channel broken" — both of which gossipsub-silence can't distinguish.
-// Missing two consecutive heartbeats (10s) reliably means the peer cannot
-// deliver to us. Each pong carries the responder's consensus state, giving
-// anti-entropy a free state update without a separate /sync-status RPC.
+// "channel broken", which gossipsub-silence cannot tell apart. Missing two
+// consecutive heartbeats (10s) reliably means the peer cannot deliver to us.
+// Liveness-only: divergence detection stays owned by anti-entropy (whose poll
+// already reconciles committed_round + state_merkle_root with every peer each
+// cycle), so the pong carries no consensus state.
 
 message HeartbeatPing {
   string from_node_id = 1;          // sender's TIP node_id (for logging)
-  uint64 committed_round = 2;       // sender's last committed round
-  bytes  merkle_root = 3;           // sender's state_merkle_root
-  int64  ts = 4;                    // sender wall-clock (epoch ms)
+  int64  ts = 2;                    // sender wall-clock (epoch ms)
 }
 
 message HeartbeatPong {
-  string node_id = 1;               // responder's TIP node_id
-  uint64 committed_round = 2;       // responder's last committed round
-  bytes  merkle_root = 3;           // responder's state_merkle_root
-  string join_state = 4;            // responder's narwhal join state
-  int64  ts = 5;                    // responder wall-clock (epoch ms)
+  string node_id = 1;               // responder's TIP node_id (identity guard)
+  int64  ts = 2;                    // responder wall-clock (epoch ms)
 }

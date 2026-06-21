@@ -2,10 +2,11 @@
  * @file tests/network/heartbeat.test.js
  * @description #47 — Active peer-liveness probe unit tests.
  *
- * Covers:
- *   1. Handler registers and responds with current node state.
- *   2. Unauthorized inbound connections are rejected.
- *   3. Successful ping updates per-peer state and calls onPeerState.
+ * Liveness-only: the heartbeat carries no consensus state (divergence
+ * detection stays owned by anti-entropy). Covers:
+ *   1. Handler registers and responds with a pong carrying its node_id.
+ *   2. Unauthorized inbound connections are rejected without a pong.
+ *   3. Successful pong resets the miss counter and records lastSeenAt.
  *   4. Consecutive misses increment counter and fire onPeerSuspect.
  *   5. Peer recovery after misses resets consecutiveMisses.
  *
@@ -18,10 +19,11 @@
 const path = require("path");
 const SRC = path.resolve(__dirname, "../../src");
 const { loadTypes } = require(path.join(SRC, "network/proto"));
-const { encode, decode, bytesToHex, hexToBytes } = require(path.join(SRC, "network/proto"));
+const { encode, decode } = require(path.join(SRC, "network/proto"));
 const { createHeartbeatManager } = require(path.join(SRC, "network/heartbeat"));
 const { createStreamPair } = require(path.join(SRC, "../tests/helpers/stream-pair"));
 const { CONSENSUS, NETWORK } = require(path.join(SRC, "../../shared/protocol-constants"));
+const { nowMs } = require(path.join(SRC, "../../shared/time"));
 
 const silentLog = { info: () => {}, debug: () => {}, warn: () => {} };
 
@@ -30,14 +32,6 @@ beforeAll(async () => {
 });
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-function mkState({ committed_round = 100, state_merkle_root = "aabb" } = {}) {
-  return { committed_round, state_merkle_root };
-}
-
-function mkNarwhal(joinState = "ready") {
-  return { joinState: () => joinState };
-}
 
 // Build a minimal mock network. openStreamFn: (peerId, proto) => stream | throws
 function mkNetwork({ openStreamFn = null } = {}) {
@@ -54,27 +48,16 @@ function mkNetwork({ openStreamFn = null } = {}) {
   };
 }
 
-// Simulate one complete ping-pong exchange. Returns the pong payload decoded.
-async function doPingPong(hb, peerId, pongPayload) {
-  const net = hb._net; // accessed via closure — see below
-  throw new Error("use direct API");
-}
-
 // ── Handler invocation helper ─────────────────────────────────────────────────
 // Calls the registered handler directly on a stream pair so we don't need
-// to drive the timer loop, and asserts the pong content.
-async function callHandler(net, handlerProto, remoteNodeId, isAuthorized = true) {
+// to drive the timer loop, and returns the decoded pong.
+async function callHandler(net, handlerProto) {
   const proto = handlerProto || NETWORK.HEARTBEAT_PROTOCOL;
   const handler = net.handlers[proto];
   if (!handler) throw new Error(`Handler not registered for ${proto}`);
 
   const { client, server } = createStreamPair();
-  const ping = encode("HeartbeatPing", {
-    fromNodeId: remoteNodeId || "tip://node/caller",
-    committedRound: 50,
-    merkleRoot: hexToBytes("1234"),
-    ts: Date.now(),
-  });
+  const ping = encode("HeartbeatPing", { fromNodeId: "tip://node/caller", ts: nowMs() });
 
   const [, pong] = await Promise.all([
     handler({ stream: server, connection: { remotePeer: { toString: () => "peer-id-1" } } }),
@@ -93,14 +76,12 @@ async function callHandler(net, handlerProto, remoteNodeId, isAuthorized = true)
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("heartbeat handler (server side)", () => {
-  test("responds with current node state", async () => {
+  test("responds with a pong carrying its node_id", async () => {
     const net = mkNetwork();
     const hb = createHeartbeatManager({
       network: net,
       getSelfNodeId: () => "tip://node/self",
-      getConsensusState: () => mkState({ committed_round: 42, state_merkle_root: "deadbeef" }),
       isAuthorizedPeer: () => true,
-      narwhal: mkNarwhal("ready"),
       log: silentLog,
     });
     await hb.registerHandler();
@@ -109,9 +90,7 @@ describe("heartbeat handler (server side)", () => {
 
     expect(pong).not.toBeNull();
     expect(pong.nodeId).toBe("tip://node/self");
-    expect(Number(pong.committedRound)).toBe(42);
-    expect(bytesToHex(pong.merkleRoot)).toBe("deadbeef");
-    expect(pong.joinState).toBe("ready");
+    expect(Number(pong.ts)).toBeGreaterThan(0);
   });
 
   test("returns immediately for unauthorized peers without writing a pong", async () => {
@@ -120,7 +99,6 @@ describe("heartbeat handler (server side)", () => {
     const hb = createHeartbeatManager({
       network: net,
       getSelfNodeId: () => "tip://node/self",
-      getConsensusState: () => mkState(),
       isAuthorizedPeer: () => false,
       log: silentLog,
     });
@@ -144,17 +122,12 @@ describe("heartbeat handler (server side)", () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("heartbeat client side", () => {
-  // Helper: build a heartbeat manager whose _pingPeer we can drive
-  // by manipulating the timer to fire immediately.
-  function mkHeartbeat({ openStreamFn, onPeerState, onPeerSuspect } = {}) {
+  function mkHeartbeat({ openStreamFn, onPeerSuspect } = {}) {
     const net = mkNetwork({ openStreamFn });
     const hb = createHeartbeatManager({
       network: net,
       getSelfNodeId: () => "tip://node/self",
-      getConsensusState: () => mkState({ committed_round: 100 }),
       isAuthorizedPeer: () => true,
-      narwhal: mkNarwhal("ready"),
-      onPeerState,
       onPeerSuspect,
       log: silentLog,
     });
@@ -172,37 +145,22 @@ describe("heartbeat client side", () => {
     return client;
   }
 
-  test("successful pong calls onPeerState with decoded state", async () => {
-    const updates = [];
+  test("successful pong resets miss counter and records lastSeenAt", async () => {
     const { hb } = mkHeartbeat({
-      openStreamFn: () => makePeerStream({
-        nodeId: "tip://node/peer1",
-        committedRound: 200,
-        merkleRoot: hexToBytes("cafebabe"),
-        joinState: "ready",
-        ts: Date.now(),
-      }),
-      onPeerState: (peerId, state) => updates.push({ peerId, state }),
+      openStreamFn: () => makePeerStream({ nodeId: "tip://node/peer1", ts: nowMs() }),
     });
 
-    // Drive one full cycle without relying on setTimeout by starting
-    // and waiting 1 interval. Use a short timeout override via prototype.
-    // Simpler: call start(), let one real timer tick fire with a jest fake-timer.
     jest.useFakeTimers();
     hb.start();
-    // Advance to first tick
     await jest.advanceTimersByTimeAsync(CONSENSUS.HEARTBEAT_INTERVAL_MS + 10);
     hb.stop();
     jest.useRealTimers();
 
-    expect(updates.length).toBeGreaterThan(0);
-    const update = updates.find(u => u.peerId === "peer-id-1") || updates[0];
-    expect(update.state.committed_round).toBe(200);
-    expect(update.state.state_merkle_root).toBe("cafebabe");
-    expect(update.state.join_state).toBe("ready");
-
     const states = hb.peerStates();
+    // peer-id-1's pong node_id matches the authorized map → counted as alive.
+    expect(states["peer-id-1"]).toBeDefined();
     expect(states["peer-id-1"].consecutiveMisses).toBe(0);
+    expect(states["peer-id-1"].lastSeenAt).toBeGreaterThan(0);
   });
 
   test("consecutive misses increment counter and fire onPeerSuspect", async () => {
@@ -232,22 +190,14 @@ describe("heartbeat client side", () => {
 
   test("recovery after misses resets consecutiveMisses to 0", async () => {
     let callCount = 0;
-    const updates = [];
 
     const { hb } = mkHeartbeat({
       openStreamFn: () => {
         callCount++;
         // First 2 calls fail, subsequent calls succeed
         if (callCount <= 2) throw new Error("timeout");
-        return makePeerStream({
-          nodeId: "tip://node/peer1",
-          committedRound: 300,
-          merkleRoot: hexToBytes("aabbcc"),
-          joinState: "ready",
-          ts: Date.now(),
-        });
+        return makePeerStream({ nodeId: "tip://node/peer1", ts: nowMs() });
       },
-      onPeerState: (peerId, state) => updates.push(state),
     });
 
     jest.useFakeTimers();
@@ -260,9 +210,11 @@ describe("heartbeat client side", () => {
     jest.useRealTimers();
 
     const states = hb.peerStates();
-    // After recovery the miss counter should be 0 for the peer that recovered
-    const recovered = Object.entries(states).find(([, ps]) => ps.consecutiveMisses === 0);
+    // After recovery the miss counter is 0 and a sighting was recorded for the
+    // peer whose pong node_id matched the authorized map.
+    const recovered = Object.entries(states).find(
+      ([, ps]) => ps.consecutiveMisses === 0 && ps.lastSeenAt > 0
+    );
     expect(recovered).toBeDefined();
-    expect(updates.some(s => s.committed_round === 300)).toBe(true);
   });
 });

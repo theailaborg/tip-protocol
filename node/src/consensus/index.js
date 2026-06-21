@@ -373,35 +373,19 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   antiEntropyForResync = antiEntropy;
 
   // ── #47 Heartbeat manager — active peer-liveness probe ────────────────
-  // Each pong is a free state update: onPeerState feeds checkAndReconcile
-  // directly so AE detects divergence within one heartbeat interval (~5s)
-  // rather than waiting for the next AE poll cycle (~4s) to overlap.
-  // onPeerSuspect fires after HEARTBEAT_SUSPECT_MISSES consecutive misses —
-  // a faster "peer unreachable" signal than gossipsub silence.
+  // Liveness-only: onPeerSuspect fires after HEARTBEAT_SUSPECT_MISSES
+  // consecutive misses, a synchronous "peer unreachable" signal that
+  // gossipsub silence does not give (the issue #13 class of stale-edge halt).
+  // Divergence detection is left to AE, whose poll already reconciles every
+  // authorized peer each cycle, so the heartbeat carries no consensus state.
   const heartbeat = createHeartbeatManager({
     network,
     getSelfNodeId: () => nodeId,
-    getConsensusState: () => ({
-      committed_round: bullshark.lastCommittedRound(),
-      state_merkle_root: computeStateMerkleRoot(dag),
-    }),
     isAuthorizedPeer,
-    narwhal,
-    onPeerState: async (peerId, state) => {
-      try {
-        const selfState = {
-          round: narwhal.currentRound(),
-          committed_round: bullshark.lastCommittedRound(),
-          consensus_index: bullshark.stats().consensusIndex || 0,
-          state_merkle_root: computeStateMerkleRoot(dag),
-        };
-        await antiEntropy.checkAndReconcile(peerId, state, selfState);
-      } catch { /* best-effort; AE loop is the authoritative reconciler */ }
-    },
     onPeerSuspect: (peerId, tipNodeId) => {
       log.warn(
         `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} is suspect ` +
-        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses) — AE will reconcile`
+        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), AE will reconcile`
       );
     },
   });
