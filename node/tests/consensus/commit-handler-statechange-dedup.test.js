@@ -90,7 +90,7 @@ function _setup() {
 
   const mkContent = (ctid) => dag.saveContent({
     ctid, origin_code: "OH",
-    content_hash: shake256(`content:${ctid}`), perceptual_hash: null,
+    content_hash: shake256(`content:${ctid}`),
     author_tip_id: AUTHOR_TIP, signer_tip_id: AUTHOR_TIP,
     authors: [{ tip_id: AUTHOR_TIP, key_mode: "attribution", role: "byline", signed: false, tip_id_type: "personal" }],
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",

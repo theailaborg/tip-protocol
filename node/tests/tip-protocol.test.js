@@ -33,7 +33,7 @@ const SRC = path.resolve(__dirname, "../src");
 const {
   initCrypto,
   shake256, shake256Multi, tipNormalize,
-  hashContent, perceptualHashText,
+  hashContent,
   generateTIPID, generateCTID, computeTxId,
   computeDedupHash,
   generateMLDSAKeypair, mldsaSign, signTransaction, verifyTransaction,
@@ -106,7 +106,7 @@ function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCod
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
     origin_code: originCode,
-    registered_urls: [],
+    registered_urls: ["https://example.com/post/"], // required as of the registered_urls gate
     extras: {},
     authors: [{ key_mode: "attribution", role: "byline", signed: false,
                  tip_id: authorTipId, tip_id_type: "personal" }],

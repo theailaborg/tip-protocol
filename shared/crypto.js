@@ -346,18 +346,6 @@ function hashContent(content) {
   return full.slice(0, 14); // first 14 hex chars = 56 bits
 }
 
-/**
- * Compute perceptual hash for text (simplified pHash equivalent).
- * For images/audio: use real pHash / Chromaprint in production.
- * @param {string} text
- * @returns {string}
- */
-function perceptualHashText(text) {
-  // Normalise: lowercase, collapse whitespace, strip punctuation
-  const norm = text.toLowerCase().replace(/\s+/g, " ").replace(/[^\w\s]/g, "").trim();
-  return shake256(norm, 16).slice(0, 16);
-}
-
 // ─── DEDUPLICATION HASH (ZK Poseidon — production) ───────────────────────────
 // In production this is computed inside the Groth16 circuit (shared/zk.js).
 // This SHAKE-256 version is provided for reference and offline testing only.
@@ -629,7 +617,6 @@ module.exports = {
   slhdsaVerify,
   tipNormalize,
   hashContent,
-  perceptualHashText,
   computeDedupHash,
   generateTIPID,
   generateVPId,

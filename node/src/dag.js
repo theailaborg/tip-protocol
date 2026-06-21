@@ -86,7 +86,6 @@ function _canonContent(r) {
     ctid: r.ctid,
     origin_code: r.origin_code,
     content_hash: r.content_hash,
-    perceptual_hash: r.perceptual_hash || null,
     author_tip_id: r.author_tip_id,
     signer_tip_id: r.signer_tip_id,
     authors: Array.isArray(r.authors) ? r.authors : [],
@@ -374,6 +373,15 @@ class MemoryStore {
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
     this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
+    // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
+    // state_merkle_root). Source of truth + derived candidate indexes.
+    this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
+    this._minhashBands = [];                    // text LSH index rows
+    this._phashCodes = [];                      // image/video MIH index rows
+    this._audioClips = new Map();               // `${ctid}|${component_idx}` -> { clip_id, ctid, component_idx, landmark_count }
+    this._audioClipById = new Map();            // clip_id -> the same clip row (matcher resolves clip_id -> ctid)
+    this._audioClipSeq = 0;                     // surrogate clip_id allocator (§8.1)
+    this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
     this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
   }
@@ -1503,6 +1511,83 @@ class MemoryStore {
     });
     return true;
   }
+  // ── Perceptual index writes (off-DAG, advisory; not mirrored elsewhere) ────
+  savePerceptualFingerprint(rec) {
+    this._perceptualFingerprints.set(`${rec.ctid}|${rec.component_idx}`, { ...rec });
+  }
+  saveMinhashBands(rows) {
+    for (const r of rows) this._minhashBands.push({ ...r });
+  }
+  savePhashCodes(rows) {
+    if (!rows || !rows.length) return;
+    // Skip rows already present by (ctid, component_idx, frame): mirrors the
+    // SQLite/Knex INSERT OR IGNORE so a re-ingest cannot duplicate frames.
+    const have = new Set(this._phashCodes.map((c) => `${c.ctid}|${c.component_idx}|${c.frame}`));
+    for (const r of rows) {
+      const key = `${r.ctid}|${r.component_idx}|${r.frame}`;
+      if (have.has(key)) continue;
+      have.add(key);
+      this._phashCodes.push({ ...r });
+    }
+  }
+  getPerceptualFingerprint(ctid, componentIdx = 0) {
+    return this._perceptualFingerprints.get(`${ctid}|${componentIdx}`) || null;
+  }
+  // LSH candidate-gen: ctids that share >= 1 band bucket with the query's bands.
+  findMinhashCandidates(profile, bandHashes) {
+    const want = new Set(bandHashes.map((h, i) => i + "|" + h));
+    const ctids = new Set();
+    for (const b of this._minhashBands) {
+      if (b.profile === profile && want.has(b.band_idx + "|" + b.band_hash)) ctids.add(b.ctid);
+    }
+    return [...ctids];
+  }
+  // MIH candidate-gen: codes sharing >= 1 chunk value with the query's per-chunk
+  // Hamming-1 neighborhoods (queryKeys = [[17 keys] x 16]).
+  findPhashCandidates(profile, modality, queryKeys) {
+    const sets = queryKeys.map((keys) => new Set(keys));
+    const out = [];
+    for (const c of this._phashCodes) {
+      if (c.profile !== profile || c.modality !== modality) continue;
+      for (let i = 0; i < 16; i++) {
+        if (sets[i].has(c["c" + i])) { out.push(c); break; }
+      }
+    }
+    return out;
+  }
+  // All phash codes for a ctid (a video's full frame set, for the overlap score).
+  getPhashCodesByCtid(ctid) {
+    return this._phashCodes.filter((c) => c.ctid === ctid);
+  }
+  // Audio (§8.1): a clip gets a surrogate clip_id its landmarks point at; the FULL
+  // landmark_count (scoreRatio denom) is kept even when only a subset is indexed.
+  getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
+    const key = `${ctid}|${componentIdx}`;
+    let clip = this._audioClips.get(key);
+    if (clip) {
+      clip.landmark_count = landmarkCount;
+    } else {
+      clip = { clip_id: ++this._audioClipSeq, ctid, component_idx: componentIdx, landmark_count: landmarkCount };
+      this._audioClips.set(key, clip);
+      this._audioClipById.set(clip.clip_id, clip);
+    }
+    return clip.clip_id;
+  }
+  saveAudioLandmarks(rows) {
+    for (const r of rows) this._audioLandmarks.push({ ...r });
+  }
+  // Inverted-index candidate-gen: landmark rows whose hash is one the query carries.
+  findAudioCandidates(profile, hashes) {
+    const want = new Set(hashes);
+    const out = [];
+    for (const l of this._audioLandmarks) {
+      if (l.profile === profile && want.has(l.hash)) out.push(l);
+    }
+    return out;
+  }
+  getAudioClip(clipId) {
+    return this._audioClipById.get(clipId) || null;
+  }
   getPrescanJob(jobId) {
     return this._prescanJobs.get(jobId) || null;
   }
@@ -1733,7 +1818,6 @@ class SQLiteStore {
         ctid                       TEXT PRIMARY KEY,
         origin_code                TEXT NOT NULL,
         content_hash               TEXT NOT NULL,
-        perceptual_hash            TEXT,
         author_tip_id              TEXT NOT NULL,                  -- = authors[0].tip_id (primary byline) — indexed
         signer_tip_id              TEXT NOT NULL,                  -- the entity that produced the signature; differs from author in employed/hosted modes
         authors                    TEXT,                            -- JSON-encoded authors[] (5-key entries per CNA-2.2)
@@ -2200,6 +2284,85 @@ class SQLiteStore {
         completed_at  INTEGER                                -- ms; null while incomplete
       );
       CREATE INDEX IF NOT EXISTS idx_prescan_jobs_status ON prescan_jobs(status, created_at);
+
+      -- Off-DAG perceptual similarity index (advisory): NOT mirrored, NOT in
+      -- state_merkle_root. Cross-node-consistent because the fingerprint is
+      -- replicated in the tx, not via consensus over this index. Source of truth
+      -- = perceptual_fingerprint; the other three are derived candidate indexes
+      -- (text LSH / image+video MIH / audio inverted). 16-bit MIH chunks are
+      -- INTEGER (unsigned 0..65535 overflows a signed smallint).
+      CREATE TABLE IF NOT EXISTS perceptual_fingerprint (
+        ctid           TEXT    NOT NULL,
+        component_idx  INTEGER NOT NULL,
+        modality       TEXT    NOT NULL,          -- 'text'|'image'|'video'|'audio'
+        profile        TEXT    NOT NULL,
+        pipeline       TEXT    NOT NULL,           -- JSON
+        quality        INTEGER,                    -- null for text/audio
+        fingerprint    TEXT    NOT NULL,           -- JSON: minhash[128]|pdq|features[]|landmarks[]
+        created_at     INTEGER NOT NULL,
+        PRIMARY KEY (ctid, component_idx)
+      );
+      CREATE TABLE IF NOT EXISTS minhash_band (
+        profile    TEXT    NOT NULL,
+        band_idx   INTEGER NOT NULL,
+        band_hash  INTEGER NOT NULL,
+        ctid       TEXT    NOT NULL,
+        PRIMARY KEY (profile, band_idx, band_hash, ctid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_minhash_band_lookup ON minhash_band(profile, band_idx, band_hash);
+      CREATE TABLE IF NOT EXISTS phash_code (
+        ctid          TEXT    NOT NULL,
+        component_idx INTEGER NOT NULL,
+        frame         INTEGER NOT NULL,             -- 0 for image, frame index for video
+        profile       TEXT    NOT NULL,
+        modality      TEXT    NOT NULL,             -- 'image'|'video'
+        ts            REAL,                          -- seconds, for video
+        quality       INTEGER NOT NULL,
+        pdq           TEXT    NOT NULL,             -- 64-hex (256-bit)
+        c0  INTEGER NOT NULL, c1  INTEGER NOT NULL, c2  INTEGER NOT NULL, c3  INTEGER NOT NULL,
+        c4  INTEGER NOT NULL, c5  INTEGER NOT NULL, c6  INTEGER NOT NULL, c7  INTEGER NOT NULL,
+        c8  INTEGER NOT NULL, c9  INTEGER NOT NULL, c10 INTEGER NOT NULL, c11 INTEGER NOT NULL,
+        c12 INTEGER NOT NULL, c13 INTEGER NOT NULL, c14 INTEGER NOT NULL, c15 INTEGER NOT NULL,
+        -- Natural key: re-ingest of the same content (always identical frames,
+        -- the fingerprint is fixed per ctid) is ignored, not duplicated.
+        PRIMARY KEY (ctid, component_idx, frame)
+      );
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c0  ON phash_code(profile, modality, c0);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c1  ON phash_code(profile, modality, c1);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c2  ON phash_code(profile, modality, c2);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c3  ON phash_code(profile, modality, c3);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c4  ON phash_code(profile, modality, c4);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c5  ON phash_code(profile, modality, c5);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c6  ON phash_code(profile, modality, c6);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c7  ON phash_code(profile, modality, c7);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c8  ON phash_code(profile, modality, c8);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c9  ON phash_code(profile, modality, c9);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c10 ON phash_code(profile, modality, c10);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c11 ON phash_code(profile, modality, c11);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c12 ON phash_code(profile, modality, c12);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c13 ON phash_code(profile, modality, c13);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c14 ON phash_code(profile, modality, c14);
+      CREATE INDEX IF NOT EXISTS idx_phash_code_c15 ON phash_code(profile, modality, c15);
+      -- Audio uses a surrogate clip_id (PERCEPTUAL_INDEX_PLAN.md §8.1): the
+      -- landmark index explodes (~20k rows/song), so rows reference a compact
+      -- BIGINT clip_id instead of a TEXT(512) ctid (~5x smaller). The full
+      -- landmark set lives in perceptual_fingerprint.fingerprint; this index is
+      -- rebuildable, so only a strong SUBSET of landmarks need be indexed.
+      CREATE TABLE IF NOT EXISTS audio_clip (
+        clip_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ctid           TEXT    NOT NULL,
+        component_idx  INTEGER NOT NULL,
+        landmark_count INTEGER NOT NULL DEFAULT 0,  -- FULL count (for scoreRatio denom)
+        UNIQUE (ctid, component_idx)
+      );
+      CREATE TABLE IF NOT EXISTS audio_landmark (
+        profile   TEXT    NOT NULL,
+        hash      INTEGER NOT NULL,   -- 24-bit packed (f1,f2,dt) landmark
+        clip_id   INTEGER NOT NULL,   -- -> audio_clip(ctid, component_idx)
+        t         INTEGER NOT NULL,   -- anchor frame index
+        PRIMARY KEY (profile, hash, clip_id, t)
+      );
+      CREATE INDEX IF NOT EXISTS idx_audio_landmark_lookup ON audio_landmark(profile, hash);
     `);
 
     // Backfill creator_name column for pre-existing identities tables
@@ -2411,13 +2574,13 @@ class SQLiteStore {
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
-           (ctid,origin_code,content_hash,perceptual_hash,author_tip_id,signer_tip_id,
+           (ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
             prescan_content_type,prescan_overall_degraded,content_type_hint,
             override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
@@ -2921,6 +3084,44 @@ class SQLiteStore {
                 last_error=?, retries=retries+1
           WHERE job_id=?`
       ),
+      // Perceptual index (off-DAG, advisory).
+      savePerceptualFingerprint: this.db.prepare(
+        `INSERT OR REPLACE INTO perceptual_fingerprint
+           (ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ),
+      saveMinhashBand: this.db.prepare(
+        `INSERT OR IGNORE INTO minhash_band (profile, band_idx, band_hash, ctid) VALUES (?, ?, ?, ?)`
+      ),
+      savePhashCode: this.db.prepare(
+        `INSERT OR IGNORE INTO phash_code
+           (ctid, component_idx, frame, profile, modality, ts, quality, pdq,
+            c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ),
+      getPerceptualFingerprint: this.db.prepare(
+        "SELECT * FROM perceptual_fingerprint WHERE ctid=? AND component_idx=?"
+      ),
+      findMinhashByBand: this.db.prepare(
+        "SELECT ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
+      ),
+      getPhashCodesByCtid: this.db.prepare(
+        "SELECT ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE ctid=?"
+      ),
+      // Audio: surrogate clip_id (§8.1). Upsert refreshes the FULL landmark_count
+      // and RETURNs the clip_id the landmark rows point at.
+      upsertAudioClip: this.db.prepare(
+        `INSERT INTO audio_clip (ctid, component_idx, landmark_count)
+         VALUES (?, ?, ?)
+         ON CONFLICT(ctid, component_idx) DO UPDATE SET landmark_count=excluded.landmark_count
+         RETURNING clip_id`
+      ),
+      saveAudioLandmark: this.db.prepare(
+        "INSERT OR IGNORE INTO audio_landmark (profile, hash, clip_id, t) VALUES (?, ?, ?, ?)"
+      ),
+      getAudioClip: this.db.prepare(
+        "SELECT clip_id, ctid, component_idx, landmark_count FROM audio_clip WHERE clip_id=?"
+      ),
     };
   }
 
@@ -3023,7 +3224,7 @@ class SQLiteStore {
     const media = Array.isArray(rec.media) ? rec.media : [];
     this._stmts.saveContent.run(
       rec.ctid, rec.origin_code,
-      rec.content_hash, rec.perceptual_hash || null,
+      rec.content_hash,
       rec.author_tip_id, rec.signer_tip_id,
       JSON.stringify(authors),
       rec.attribution_mode || "self",
@@ -3822,6 +4023,76 @@ class SQLiteStore {
   getPrescanJobByCtid(ctid) {
     return this._stmts.getPrescanJobByCtid.get(ctid) || null;
   }
+  // ── Perceptual index writes (off-DAG, advisory) ───────────────────────────
+  savePerceptualFingerprint(rec) {
+    this._stmts.savePerceptualFingerprint.run(
+      rec.ctid, rec.component_idx, rec.modality, rec.profile,
+      rec.pipeline, rec.quality, rec.fingerprint, rec.created_at,
+    );
+  }
+  saveMinhashBands(rows) {
+    for (const r of rows) this._stmts.saveMinhashBand.run(r.profile, r.band_idx, r.band_hash, r.ctid);
+  }
+  savePhashCodes(rows) {
+    if (!rows || !rows.length) return;
+    // INSERT OR IGNORE on (ctid, component_idx, frame): a re-ingest of the same
+    // content (frames are fixed per ctid) is skipped, not duplicated. Duplicate
+    // frames would inflate the matchVideo overlap denominator and degrade recall.
+    for (const r of rows) {
+      this._stmts.savePhashCode.run(
+        r.ctid, r.component_idx, r.frame, r.profile, r.modality, r.ts, r.quality, r.pdq,
+        r.c0, r.c1, r.c2, r.c3, r.c4, r.c5, r.c6, r.c7,
+        r.c8, r.c9, r.c10, r.c11, r.c12, r.c13, r.c14, r.c15,
+      );
+    }
+  }
+  getPerceptualFingerprint(ctid, componentIdx = 0) {
+    return this._stmts.getPerceptualFingerprint.get(ctid, componentIdx) || null;
+  }
+  findMinhashCandidates(profile, bandHashes) {
+    const ctids = new Set();
+    for (let i = 0; i < bandHashes.length; i++) {
+      for (const r of this._stmts.findMinhashByBand.all(profile, i, bandHashes[i])) ctids.add(r.ctid);
+    }
+    return [...ctids];
+  }
+  // Dynamic SQL (variable IN-list size); one indexed seek per chunk OR'd together.
+  findPhashCandidates(profile, modality, queryKeys) {
+    const conds = [];
+    const params = [profile, modality];
+    for (let i = 0; i < 16; i++) {
+      const keys = queryKeys[i];
+      conds.push(`c${i} IN (${keys.map(() => "?").join(",")})`);
+      for (const k of keys) params.push(k);
+    }
+    const sql =
+      `SELECT DISTINCT ctid, profile, modality, frame, ts, quality, pdq
+         FROM phash_code
+        WHERE profile=? AND modality=? AND (${conds.join(" OR ")})
+        ORDER BY ctid, frame, pdq`;
+    return this.db.prepare(sql).all(...params);
+  }
+  getPhashCodesByCtid(ctid) {
+    return this._stmts.getPhashCodesByCtid.all(ctid);
+  }
+  getOrCreateAudioClip(ctid, componentIdx, landmarkCount) {
+    return this._stmts.upsertAudioClip.get(ctid, componentIdx, landmarkCount).clip_id;
+  }
+  saveAudioLandmarks(rows) {
+    for (const r of rows) this._stmts.saveAudioLandmark.run(r.profile, r.hash, r.clip_id, r.t);
+  }
+  // Dynamic SQL (variable IN-list size); one indexed seek over (profile, hash).
+  findAudioCandidates(profile, hashes) {
+    if (!hashes || !hashes.length) return [];
+    const sql =
+      `SELECT clip_id, hash, t FROM audio_landmark
+        WHERE profile=? AND hash IN (${hashes.map(() => "?").join(",")})
+        ORDER BY clip_id, t`;
+    return this.db.prepare(sql).all(profile, ...hashes);
+  }
+  getAudioClip(clipId) {
+    return this._stmts.getAudioClip.get(clipId) || null;
+  }
   claimPrescanJob({ workerId, now, claimTimeoutMs }) {
     return this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs) || null;
   }
@@ -4181,6 +4452,17 @@ function _buildDagHandle(store, config) {
 
     // ── Prescan jobs (node-local async classifier queue) ────────────────
     enqueuePrescanJob: (rec) => store.enqueuePrescanJob(rec),
+    savePerceptualFingerprint: (rec) => store.savePerceptualFingerprint(rec),
+    saveMinhashBands: (rows) => store.saveMinhashBands(rows),
+    savePhashCodes: (rows) => store.savePhashCodes(rows),
+    getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
+    findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
+    findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
+    getPhashCodesByCtid: (ctid) => store.getPhashCodesByCtid(ctid),
+    getOrCreateAudioClip: (ctid, idx, landmarkCount) => store.getOrCreateAudioClip(ctid, idx, landmarkCount),
+    saveAudioLandmarks: (rows) => store.saveAudioLandmarks(rows),
+    findAudioCandidates: (profile, hashes) => store.findAudioCandidates(profile, hashes),
+    getAudioClip: (clipId) => store.getAudioClip(clipId),
     getPrescanJob: (jobId) => store.getPrescanJob(jobId),
     getPrescanJobByCtid: (ctid) => store.getPrescanJobByCtid(ctid),
     claimPrescanJob: (opts) => store.claimPrescanJob(opts),

@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  shake256, perceptualHashText, tipNormalize,
+  shake256, tipNormalize,
   generateCTID, verifyBodySignature, verifyTxId,
 } = require("../../../shared/crypto");
 const { nowMs, toIso } = require("../../../shared/time");
@@ -9,6 +9,8 @@ const { TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, CONTENT_STATUS, PRESCAN_N
 const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
+const { ingestFingerprint } = require("../perceptual/ingest");
+const { findSimilarCtids } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -59,6 +61,52 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     }
   }
 
+  // Ingest the client's perceptual fingerprints envelope into the off-DAG
+  // near-dup index, locally on this node. The envelope was already shape- and
+  // commit-verified in validateRequest. Recover the ordered items[] and ingest
+  // each component's `perceptual` object keyed by position. Per-component
+  // fire-and-forget (async, off-DAG, advisory) — a failure must not affect the
+  // registration. No-op when the request carried no fingerprints.
+  function _ingestRequestFingerprints(ctid, fingerprints, createdAt) {
+    if (fingerprints == null) return;
+    let items;
+    try {
+      items = contentRegisterSchema.parseFingerprintItems(fingerprints);
+    } catch (err) {
+      log.warn(`perceptual ingest: recover failed for ${ctid}: ${err.error || err.message}`);
+      return;
+    }
+    // Fast-path skip if this ctid is already indexed (it was registered before;
+    // the commit-handler is first-wins, so a re-registration never creates a new
+    // record anyway). This is an optimisation, not the correctness guarantee:
+    // every derived store write is idempotent (perceptual_fingerprint/audio_clip
+    // upsert, minhash_band/audio_landmark/phash_code ignore-on-conflict by their
+    // natural key), so a re-ingest that slips past this check (e.g. an all-reject
+    // component 0) cannot duplicate rows. Runs in the background;
+    // getPerceptualFingerprint may be sync (SQLite/Memory) or async (Knex).
+    Promise.resolve(dag.getPerceptualFingerprint(ctid, 0))
+      .then(async (existing) => {
+        if (existing) return; // already indexed — keep older
+        for (let i = 0; i < items.length; i++) {
+          const fp = items[i] && items[i].perceptual;
+          if (!fp) continue;
+          await ingestFingerprint(dag, fp, { ctid, componentIdx: i, createdAt });
+        }
+      })
+      .catch((err) => log.warn(`perceptual ingest failed for ${ctid}: ${err.message}`));
+  }
+
+  // True if this signer already has a REGISTER_CONTENT for this exact ctid in
+  // the mempool (submitted, not yet committed). canRegisterContent only sees
+  // COMMITTED content, so this closes the rapid-resubmit race where an identical
+  // registration would slip through and get its fingerprints optimistically
+  // re-ingested before the commit-handler (first-wins) drops it.
+  function _isRegistrationPending(ctid, signerTipId) {
+    if (typeof dag.getMempoolTxsByTipId !== "function") return false;
+    return dag.getMempoolTxsByTipId(signerTipId)
+      .some(t => t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data && t.data.ctid === ctid);
+  }
+
   async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
@@ -106,8 +154,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       throw schemaError(403, "Content signature verification failed", "signature_invalid");
     }
 
-    const perceptHash = content ? perceptualHashText(content) : null;
-
     // ── Async prescan ───────────────────────────────────────────────────
     // Resolve content_type (publisher's signed hint → server-derived from
     // request shape → server validation/auto-correct). Result is recorded
@@ -130,6 +176,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
     if (!valid) throw schemaError(error.status, error.message, error.code);
 
+    // In-flight dedup (committed dedup is canRegisterContent above).
+    if (_isRegistrationPending(ctid, signer_tip_id)) {
+      throw schemaError(409, `Content already pending registration (CTID: ${ctid})`, "content_registration_pending");
+    }
+
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 
     const txBody = {
@@ -142,7 +193,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         // not stored on tx.data. author_tip_id is derived at persist
         // time from signer_tip_id — see commit-handler REGISTER_CONTENT.
         ctid, origin_code: canonicalPayload.origin_code,
-        content_hash: contentHashFull, perceptual_hash: perceptHash,
+        content_hash: contentHashFull,
         // Async-prescan slots — verdict lands later via PRESCAN_COMPLETED.
         // Defaults match the content row's schema defaults so legacy
         // commit-handler paths keep working.
@@ -170,6 +221,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         //    content row and the worker can resolve bytes from storage.
         media: resolvedMedia,
         media_canonical_hash,
+        // ── Perceptual fingerprint commitment (advisory, off-DAG near-dup
+        //    index). ONLY the signed 32-byte fingerprint_commit rides the tx —
+        //    it's a signed field (mirrored so commit-handler can rebuild the
+        //    payload), and stays tiny so it never burdens consensus. The bulky
+        //    `fingerprints` envelope is NOT on tx.data; it's ingested locally
+        //    below from the request body. Cross-node distribution is a later
+        //    step (replicate the off-DAG rows, keyed to this on-chain commit).
+        ...(canonicalPayload.fingerprint_commit
+          ? { fingerprint_commit: canonicalPayload.fingerprint_commit }
+          : {}),
       },
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
@@ -179,6 +240,13 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
     submitTx(signedTx);
+
+    // Perceptual fingerprints: ingest locally into the off-DAG index. The blob
+    // lives only in the request body (validated + commit-checked in
+    // validateRequest), never on tx.data — so only this receiving node indexes
+    // it for now. Fire-and-forget: advisory, must not delay the response;
+    // reject-tier items skip themselves in buildIngestRows.
+    _ingestRequestFingerprints(ctid, body.fingerprints, registeredAt);
 
     _enqueuePrescanJob({
       ctid, content, origin_code, signer_tip_id, ctypeResolution,
@@ -287,6 +355,17 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const originalOriginCode = ctidOriginMatch ? ctidOriginMatch[1] : null;
     const originChanged = !!originalOriginCode && originalOriginCode !== rec.origin_code;
 
+    // Perceptually-similar content (advisory, off-DAG): top-5 near-duplicate
+    // cards, so a content detail page can render "similar content" in the same
+    // call. Also available standalone via GET /content/:ctid/similar. Advisory:
+    // never let an index hiccup break the content detail response.
+    let similar = [];
+    try {
+      similar = (await findSimilarCtids(dag, ctid, { limit: 5 })).map(_similarCard).filter(Boolean);
+    } catch (err) {
+      log.warn(`similar-content lookup failed for ${ctid}: ${err.message || err}`);
+    }
+
     return {
       ...rec,
       media: enrichedMedia,
@@ -316,6 +395,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       }),
       prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
       consensus: { available: false, status: "not_requested" },
+      similar,
     };
   }
 
@@ -592,7 +672,47 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { items, next_cursor };
   }
 
-  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus };
+  // Compact card for a perceptually-similar content item: just enough for the
+  // FE to render a small content card (origin badge, byline, title, one media
+  // ref for a thumbnail, registered date) plus the match score/modality.
+  function _similarCard(match) {
+    const rec = dag.getContent(match.ctid);
+    if (!rec) return null;
+    const author = dag.getIdentity(rec.author_tip_id);
+    return {
+      ctid: match.ctid,
+      origin_code: rec.origin_code,
+      origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      author_tip_id: rec.author_tip_id,
+      author_name: (author && author.creator_name) || null,
+      title: (rec.extras && typeof rec.extras === "object" && rec.extras.title) || null,
+      status: rec.status,
+      registered_at: rec.registered_at,
+      // First media ref so the FE can build a thumbnail URL
+      // (GET /v1/content/:ctid/media/0); null/empty for text-only content.
+      media: Array.isArray(rec.media) ? rec.media.slice(0, 1) : [],
+      similarity: {
+        ...match.metric, // raw per-modality figures; spread FIRST so the fields below always win
+        score: Math.round(match.score * 1000) / 1000, // 0-1, comparable across modalities
+        modality: match.modality,
+        component_idx: match.component_idx,
+      },
+    };
+  }
+
+  // Perceptually-similar content for a ctid: the top-N near-duplicates by score,
+  // each as a UI card. Advisory + off-DAG; single-node coverage for now (only
+  // content this node has indexed). Returns { ctid, count, similar: [...] }.
+  async function findSimilar(ctid, opts = {}) {
+    if (!dag.getContent(ctid)) throw schemaError(404, "Content not found", "content_not_found");
+    const requested = Number(opts.limit);
+    const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 20) : 5;
+    const matches = await findSimilarCtids(dag, ctid, { limit });
+    const similar = matches.map(_similarCard).filter(Boolean);
+    return { ctid, count: similar.length, similar };
+  }
+
+  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
 }
 
 module.exports = { createContentService };

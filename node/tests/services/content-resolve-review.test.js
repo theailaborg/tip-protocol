@@ -66,7 +66,7 @@ function _setup() {
 function _seedContent(dag, { status = CONTENT_STATUS.REGISTERED, origin_code = "OH" } = {}) {
   dag.saveContent({
     ctid: CTID, origin_code,
-    content_hash: "ab".repeat(32), perceptual_hash: null,
+    content_hash: "ab".repeat(32),
     author_tip_id: CREATOR, signer_tip_id: CREATOR,
     authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
     attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",

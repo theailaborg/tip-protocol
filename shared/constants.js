@@ -224,6 +224,25 @@ const ATTRIBUTION_MODES = Object.freeze({
 });
 const ATTRIBUTION_MODE_VALUES = Object.freeze(Object.values(ATTRIBUTION_MODES));
 
+// Perceptual fingerprint (off-DAG advisory near-duplicate index). The client
+// attaches a `fingerprints` envelope to REGISTER_CONTENT (one item per content
+// component: the text body + each media item, in order) plus a
+// `fingerprint_commit` that binds the otherwise-unsigned blob into the signed
+// payload. The commit is shake256 of the VERBATIM serialised item bytes (the
+// envelope's recovered `data`), hashed as received. It is NOT a re-serialisation
+// or canonical-JSON of a parsed object: JS and Python disagree on float/key
+// formatting, so client and server must hash the exact same bytes. See the
+// envelope shape below and NODE_FINGERPRINT_CONTRACT.md. These are the modality
+// kinds the index recognises and the per-content component cap.
+const PERCEPTUAL_FINGERPRINT_KINDS = Object.freeze(["text", "image", "video", "audio"]);
+const PERCEPTUAL_FINGERPRINT_KIND_VALUES = Object.freeze(new Set(PERCEPTUAL_FINGERPRINT_KINDS));
+const PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS = 256;
+// The client packs the per-component fingerprints into a versioned envelope
+// (profile cf-fingerprints-1): { profile, count, commit, encoding, data }. data
+// is the (gzip+base64 or identity) serialised items[] the commit is taken over.
+const PERCEPTUAL_FINGERPRINTS_PROFILE = "cf-fingerprints-1";
+const PERCEPTUAL_FINGERPRINTS_ENCODINGS = Object.freeze(new Set(["gzip+base64", "identity"]));
+
 // Canonical `tip_id_type` values — the kind of TIP-ID an identity is.
 // Locked enum; rejected at REGISTER_IDENTITY validation time and at
 // REGISTER_CONTENT author cross-check time.
@@ -754,6 +773,11 @@ module.exports = {
   CNA22_AUTHOR_KEYS,
   ATTRIBUTION_MODES,
   ATTRIBUTION_MODE_VALUES,
+  PERCEPTUAL_FINGERPRINT_KINDS,
+  PERCEPTUAL_FINGERPRINT_KIND_VALUES,
+  PERCEPTUAL_FINGERPRINT_MAX_COMPONENTS,
+  PERCEPTUAL_FINGERPRINTS_PROFILE,
+  PERCEPTUAL_FINGERPRINTS_ENCODINGS,
   TIP_ID_TYPES,
   TIP_ID_TYPE_VALUES,
   DOMAIN_BINDING_STATUS,

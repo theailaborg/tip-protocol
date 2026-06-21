@@ -109,7 +109,7 @@ function _setup() {
   function seedFlaggedContent({ ctid = CTID_1, registeredAtMs }) {
     dag.saveContent({
       ctid, origin_code: "OH",
-      content_hash: "ab".repeat(32), perceptual_hash: null,
+      content_hash: "ab".repeat(32),
       author_tip_id: CREATOR, signer_tip_id: CREATOR,
       authors: [{ tip_id: CREATOR, key_mode: "attribution", role: "byline", signed: false, tip_id_type: "personal" }],
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
@@ -216,7 +216,7 @@ describe("dag.getContentsNeedingReview", () => {
     // low tier (excluded — never reviewed)
     fx.dag.saveContent({
       ctid: "tip://c/OH-ll1111ll1111ll-0001", origin_code: "OH",
-      content_hash: "cd".repeat(32), perceptual_hash: null,
+      content_hash: "cd".repeat(32),
       author_tip_id: CREATOR, signer_tip_id: CREATOR, authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
       status: CONTENT_STATUS.REGISTERED,
@@ -230,7 +230,7 @@ describe("dag.getContentsNeedingReview", () => {
     // past the 48h grace, regardless of the (now-optional) override flag.
     fx.dag.saveContent({
       ctid: "tip://c/OH-nooverridenoover-0001", origin_code: "OH",
-      content_hash: "ef".repeat(32), perceptual_hash: null,
+      content_hash: "ef".repeat(32),
       author_tip_id: CREATOR, signer_tip_id: CREATOR, authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
       status: CONTENT_STATUS.REGISTERED,
@@ -352,7 +352,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
     // Seed content row (required for the CONTENT_DISPUTED apply path)
     fx.dag.saveContent({
       ctid: CTID_1, origin_code: "OH",
-      content_hash: "ab".repeat(32), perceptual_hash: null,
+      content_hash: "ab".repeat(32),
       author_tip_id: CREATOR, signer_tip_id: CREATOR, authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
       status: CONTENT_STATUS.PENDING_REVIEW,
@@ -402,7 +402,7 @@ describe("prescan-review-trigger — h=R+24 auto-escalation", () => {
     });
     fx.dag.saveContent({
       ctid: CTID_1, origin_code: "OH",
-      content_hash: "ab".repeat(32), perceptual_hash: null,
+      content_hash: "ab".repeat(32),
       author_tip_id: CREATOR, signer_tip_id: CREATOR, authors: [{ tip_id: CREATOR, tip_id_type: "personal" }],
       attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
       status: CONTENT_STATUS.PENDING_REVIEW,

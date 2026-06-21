@@ -58,7 +58,6 @@ function _seedContent(dag, opts) {
     ctid: opts.ctid,
     origin_code: "OH",
     content_hash: "abcd".repeat(16),
-    perceptual_hash: null,
     author_tip_id: AUTHOR_ID,
     signer_tip_id: AUTHOR_ID,
     authors: [{ tip_id: AUTHOR_ID, key_mode: "attribution", role: "byline", signed: false, tip_id_type: "personal" }],

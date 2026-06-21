@@ -18,6 +18,7 @@
  */
 
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -76,7 +77,7 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
  *
  * Per docs/CONTENT_SIGNING.md.
  */
-function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https://example.com/post/"], extras = {} }) {
+function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https://example.com/post/"], extras = {}, fingerprints = null }) {
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
     origin_code: "OH",
@@ -87,6 +88,9 @@ function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https
     signer_tip_id: tipId,
     attribution_mode: "self",
   };
+  // When the client attaches a perceptual fingerprints envelope, bind it by
+  // signing its commit (strip-rule: present → in the 9-field payload).
+  if (fingerprints) fields.fingerprint_commit = schema.fingerprintsCommit(fingerprints);
   const payload = schema.buildSigningPayload(fields, contentHashFull);
   const signature = schema.sign(payload, privKey);
   return {
@@ -95,8 +99,17 @@ function _buildRegisterBody({ tipId, privKey, content, registered_urls = ["https
     content,
     content_type: "text",
     signature,
+    ...(fingerprints ? { fingerprints } : {}),
   };
 }
+
+// Pack an items[] array into the wire envelope the client sends (gzip+base64).
+function _packFingerprints(items) {
+  const json = JSON.stringify(items);
+  const data = require("zlib").gzipSync(Buffer.from(json, "utf8")).toString("base64");
+  return { profile: "cf-fingerprints-1", count: items.length, encoding: "gzip+base64", data };
+}
+const _flush = () => new Promise((r) => setImmediate(r));
 
 // ─── 1. Happy path with DAG-registered signer ─────────────────────────────
 
@@ -124,6 +137,155 @@ describe("content register — DAG-registered signer (canonical happy path)", ()
     expect(tx.data.public_key).toBeUndefined();
     // signer_type was dropped — type resolved from DAG identity, not signed per-message.
     expect(tx.data.signer_type).toBeUndefined();
+  });
+});
+
+// ─── 1b. Perceptual fingerprints — local off-DAG ingest, commit-only on tx ──
+
+describe("content register — perceptual fingerprints (local off-DAG ingest)", () => {
+  const minhash128 = Array.from({ length: 128 }, (_, i) => (i * 2654435761) % 100000);
+  const ITEMS = [
+    { kind: "image", role: "primary", exact: "a".repeat(64),
+      perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
+    { kind: "text", role: "caption",
+      perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: minhash128 } },
+  ];
+
+  test("tx carries ONLY the commit; items ingested into the off-DAG index in order", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("fp-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    const fingerprints = _packFingerprints(ITEMS);
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "post with media", fingerprints });
+    await fx.contentService.register(body);
+    await _flush(); // ingest is fire-and-forget
+
+    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    const ctid = tx.data.ctid;
+    // The bulky envelope never rides the tx — only the signed 32-byte commit.
+    expect(tx.data.fingerprint_commit).toBe(schema.fingerprintsCommit(fingerprints));
+    expect(tx.data.fingerprints).toBeUndefined();
+    // Components ingested locally, keyed by position, into the off-DAG tables.
+    expect(fx.dag.getPerceptualFingerprint(ctid, 0)).toMatchObject({ ctid, modality: "image" });
+    expect(fx.dag.getPerceptualFingerprint(ctid, 1)).toMatchObject({ ctid, modality: "text" });
+  });
+
+  test("no fingerprints → no commit on tx, nothing ingested", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("nofp-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "plain post" });
+    await fx.contentService.register(body);
+    await _flush();
+    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    expect(tx.data.fingerprint_commit).toBeUndefined();
+    expect(fx.dag.getPerceptualFingerprint(tx.data.ctid, 0)).toBeNull();
+  });
+});
+
+// ─── 1c. Similar content — matcher wired into the content API ───────────────
+
+describe("content register — similar content (findSimilar + resolve.similar)", () => {
+  const A = Array.from({ length: 128 }, (_, i) => (i * 7 + 13) % 100000);
+  const NEAR = A.map((v, i) => (i < 10 ? v + 1 : v)); // ~8% changed → shares LSH bands
+  const textEnv = (minhash) => _packFingerprints([
+    { kind: "text", role: "caption", perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash } },
+  ]);
+
+  // The harness's submitTx only records the tx; emulate the commit-handler's
+  // content-row create so resolve()/findSimilar have rows to enrich.
+  function _commit(fx, tx) {
+    const d = tx.data;
+    fx.dag.saveContent({
+      ctid: d.ctid, origin_code: d.origin_code, content_hash: d.content_hash,
+      author_tip_id: (d.authors && d.authors[0] && d.authors[0].tip_id) || d.signer_tip_id,
+      signer_tip_id: d.signer_tip_id, authors: d.authors || [],
+      attribution_mode: d.attribution_mode || "self", extras: d.extras || {},
+      cna_version: d.cna_version, status: "registered",
+      registered_at: tx.timestamp, tx_id: tx.tx_id, registered_urls: d.registered_urls || [],
+      media: d.media || [], media_canonical_hash: d.media_canonical_hash || null,
+    });
+  }
+
+  async function _registerPair(fx, kp, tipId) {
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "alpha original", extras: { title: "Alpha" }, fingerprints: textEnv(A) }));
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "beta near-dup", fingerprints: textEnv(NEAR) }));
+    await _flush(); // local fingerprint ingest is fire-and-forget
+    const reg = fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT");
+    reg.forEach(tx => _commit(fx, tx));
+    return { ctidA: reg[0].data.ctid, ctidB: reg[1].data.ctid };
+  }
+
+  test("findSimilar returns the near-duplicate as a card (score + modality + origin/byline/title)", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const { ctidA, ctidB } = await _registerPair(fx, kp, tipId);
+
+    const res = await fx.contentService.findSimilar(ctidB);
+    expect(res.ctid).toBe(ctidB);
+    const card = res.similar.find(s => s.ctid === ctidA);
+    expect(card).toBeDefined();
+    expect(card.similarity.modality).toBe("text");
+    expect(card.similarity.score).toBeGreaterThan(0.8);
+    expect(card.origin_label).toBe("Original Human");
+    expect(card.title).toBe("Alpha");
+    expect(card.author_tip_id).toBe(tipId);
+  });
+
+  test("audio card score is normalised 0-1; raw landmark count goes to landmark_matches (not score)", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-audio").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    // Two distinct posts (different text → different ctids) that carry the SAME
+    // audio landmark set → a perfect audio match (every landmark aligns at
+    // offset 0, so bestCount = 50). The raw count (50) must NOT leak into the
+    // normalised `score` field — it belongs under `landmark_matches`.
+    const landmarks = Array.from({ length: 50 }, (_, i) => ({ hash: 100000 + i, t: i }));
+    const audioEnv = () => _packFingerprints([
+      { kind: "audio", role: "audio", perceptual: { profile: "cf-audio-landmark-1", kind: "audio", landmarkCount: landmarks.length, landmarks } },
+    ]);
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "audio original", fingerprints: audioEnv() }));
+    await fx.contentService.register(_buildRegisterBody({ tipId, privKey: kp.privateKey, content: "audio re-upload", fingerprints: audioEnv() }));
+    await _flush();
+    const reg = fx.submitted.filter(t => t.tx_type === "REGISTER_CONTENT");
+    reg.forEach(tx => _commit(fx, tx));
+    const [ctidA, ctidB] = [reg[0].data.ctid, reg[1].data.ctid];
+
+    const res = await fx.contentService.findSimilar(ctidB);
+    const card = res.similar.find(s => s.ctid === ctidA);
+    expect(card).toBeDefined();
+    expect(card.similarity.modality).toBe("audio");
+    // The regression guard: `score` is the normalised 0-1 value, never the raw count.
+    expect(card.similarity.score).toBeGreaterThan(0);
+    expect(card.similarity.score).toBeLessThanOrEqual(1);
+    // The raw landmark count is preserved under its own key.
+    expect(card.similarity.landmark_matches).toBe(50);
+    expect(card.similarity.score_ratio).toBeGreaterThan(0);
+  });
+
+  test("resolve() embeds the similar[] cards on the content detail", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("sim-signer2").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const { ctidA, ctidB } = await _registerPair(fx, kp, tipId);
+
+    const detail = await fx.contentService.resolve(ctidB);
+    expect(Array.isArray(detail.similar)).toBe(true);
+    expect(detail.similar.map(s => s.ctid)).toContain(ctidA);
+  });
+
+  test("findSimilar on unknown ctid → 404", async () => {
+    const fx = _setup();
+    await expect(fx.contentService.findSimilar("tip://c/OH-deadbeefdeadbe-0000"))
+      .rejects.toMatchObject({ status: 404, code: "content_not_found" });
   });
 });
 
@@ -227,22 +389,66 @@ describe("content register — registered_urls handling", () => {
     expect(tx.data.registered_urls).toEqual(urls);
   });
 
-  test("empty registered_urls array — content not yet published", async () => {
+  test("empty registered_urls array → 400 (at least one published URL required)", async () => {
     const fx = _setup();
     const kp = generateMLDSAKeypair();
     const tipId = `tip://id/US-${shake256("unpublished-signer").slice(0, 16)}`;
     _seedIdentity(fx.dag, tipId, kp);
 
-    const body = _buildRegisterBody({
-      tipId, privKey: kp.privateKey,
-      content: "unpublished content test",
-      registered_urls: [],
-    });
-    const out = await fx.contentService.register(body);
-    expect(out.confirmation).toBe("proposed");
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "unpublished content test", registered_urls: [] });
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 400, code: "registered_urls_required" });
+  });
 
-    const tx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
-    expect(tx.data.registered_urls).toEqual([]);
+  test("non-http(s) registered_url → 400", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("badurl-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+
+    const body = _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "bad url test", registered_urls: ["ftp://nope"] });
+    await expect(fx.contentService.register(body))
+      .rejects.toMatchObject({ status: 400, code: "registered_urls_invalid" });
+  });
+});
+
+// ─── 4b. Duplicate-content rejection + idempotent ingest ────────────────────
+
+describe("content register — duplicate-ctid guards", () => {
+  test("re-registering identical content while the first is PENDING → 409", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("dup-pending-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const mk = () => _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "duplicate me" });
+
+    await fx.contentService.register(mk());                 // first accepted
+    const firstTx = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT");
+    fx.dag.saveMempoolTx(firstTx);                          // it's now pending in the mempool
+
+    await expect(fx.contentService.register(mk()))          // identical content (same ctid) again
+      .rejects.toMatchObject({ status: 409, code: "content_registration_pending" });
+  });
+
+  test("re-ingesting the same ctid skips — no duplicate perceptual/derived rows", async () => {
+    const fx = _setup();
+    const kp = generateMLDSAKeypair();
+    const tipId = `tip://id/US-${shake256("idempotent-signer").slice(0, 16)}`;
+    _seedIdentity(fx.dag, tipId, kp);
+    const fingerprints = _packFingerprints([
+      { kind: "image", role: "primary", perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
+    ]);
+    const mk = () => _buildRegisterBody({ tipId, privKey: kp.privateKey, content: "idempotent content", fingerprints });
+
+    // The harness submitTx doesn't populate the mempool, so both registrations
+    // reach ingest — exercising the ingest skip-guard directly (the belt-and-
+    // suspenders for the true-simultaneous race the 409 above doesn't cover).
+    await fx.contentService.register(mk()); await _flush();
+    await fx.contentService.register(mk()); await _flush();
+
+    const ctid = fx.submitted.find(t => t.tx_type === "REGISTER_CONTENT").data.ctid;
+    expect(fx.dag.getPerceptualFingerprint(ctid, 0)).toMatchObject({ ctid, modality: "image" });
+    expect(fx.dag.getPhashCodesByCtid(ctid)).toHaveLength(1); // NOT 2 — second ingest was skipped
   });
 });
 

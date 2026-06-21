@@ -21,6 +21,13 @@ function createRouter({ contentService }) {
     res.json(await contentService.resolve(req.params.ctid));
   }));
 
+  // Perceptually-similar content for this ctid: top-N near-duplicates by score,
+  // each as a small content card for the FE. Advisory, off-DAG. ?limit (default
+  // 5, max 20).
+  router.get("/content/:ctid/similar", asyncHandler(async (req, res) => {
+    res.json(await contentService.findSimilar(req.params.ctid, { limit: req.query.limit }));
+  }));
+
   // Lightweight async-prescan poll endpoint. Clients hit this after
   // /content/register (which returns 202 with prescan_status="pending")
   // until prescan_status flips to "completed".

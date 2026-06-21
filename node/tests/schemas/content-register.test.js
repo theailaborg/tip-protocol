@@ -19,6 +19,7 @@
  */
 
 "use strict";
+const { PROFILE: TEXT_PROFILE } = require("tip-content-fingerprint/src/text/constants"); // dynamic: text profile follows the lib
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
@@ -517,6 +518,7 @@ describe("validateRequest — media[] shape checks", () => {
       origin_code: "OH",
       signature: "deadbeef",
       content: "some content",
+      registered_urls: ["https://example.com/post/"], // required as of registered_urls gate
       authors: [{ tip_id: tipId, role: "byline", key_mode: "attribution", signed: false, tip_id_type: "personal" }],
     };
   }
@@ -608,5 +610,186 @@ describe("mediaCanonicalHash — derivation", () => {
     const h1 = schema.mediaCanonicalHash([{ media_id: a }, { media_id: b }]);
     const h2 = schema.mediaCanonicalHash([{ media_id: b }, { media_id: a }]);
     expect(h1).not.toBe(h2);
+  });
+});
+
+// ─── Perceptual fingerprint binding (advisory, off-DAG) ─────────────────────
+
+describe("perceptual fingerprint — commit + signed-payload strip-rule", () => {
+  const zlib = require("zlib");
+  const ITEMS = [
+    { kind: "image", role: "primary", perceptual: { profile: "cf-image-1", kind: "image", pdq: "ab".repeat(32), quality: 95 } },
+    { kind: "text", role: "caption", perceptual: { profile: TEXT_PROFILE, kind: "text", tier: "char", shingle: "char-5", shingles: 100, minhash: [1, 2, 3] } },
+  ];
+  const pack = (items, encoding = "gzip+base64") => {
+    const json = JSON.stringify(items);
+    const data = encoding === "identity" ? json : zlib.gzipSync(Buffer.from(json, "utf8")).toString("base64");
+    return { profile: "cf-fingerprints-1", count: items.length, encoding, data };
+  };
+  const ENVELOPE = pack(ITEMS);
+
+  function expectThrowCode(fn, code) {
+    let err;
+    try { fn(); } catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err.code).toBe(code);
+  }
+
+  const baseInput = {
+    signer_tip_id: "tip://id/US-fp",
+    origin_code: "OH",
+    authors: [{ tip_id: "tip://id/US-fp" }],
+  };
+
+  test("fingerprintsCommit hashes the recovered bytes verbatim; identity and gzip agree", () => {
+    const expected = shake256(JSON.stringify(ITEMS)); // shake256 of the exact decoded bytes
+    expect(schema.fingerprintsCommit(ENVELOPE)).toBe(expected);
+    expect(schema.fingerprintsCommit(pack(ITEMS, "identity"))).toBe(expected);
+  });
+
+  test("parseFingerprintItems recovers the ordered items[] (both encodings)", () => {
+    expect(schema.parseFingerprintItems(ENVELOPE)).toEqual(ITEMS);
+    expect(schema.parseFingerprintItems(pack(ITEMS, "identity"))).toEqual(ITEMS);
+  });
+
+  test("strip-rule: no fingerprint_commit → field absent from canonical payload", () => {
+    const payload = schema.buildSigningPayload(baseInput, CONTENT_HASH);
+    expect(payload).not.toHaveProperty("fingerprint_commit");
+    expect(Object.keys(payload)).toHaveLength(8);
+  });
+
+  test("present fingerprint_commit → bound into the signed payload as the 9th field", () => {
+    const commit = schema.fingerprintsCommit(ENVELOPE);
+    const payload = schema.buildSigningPayload({ ...baseInput, fingerprint_commit: commit }, CONTENT_HASH);
+    expect(payload.fingerprint_commit).toBe(commit);
+    expect(Object.keys(payload)).toHaveLength(9);
+  });
+
+  test("malformed fingerprint_commit (not 64-hex) → reject at build", () => {
+    expectThrowCode(
+      () => schema.buildSigningPayload({ ...baseInput, fingerprint_commit: "nope" }, CONTENT_HASH),
+      "fingerprint_commit_invalid",
+    );
+  });
+});
+
+describe("perceptual fingerprint — validateRequest envelope gate (throws before DAG lookups)", () => {
+  const zlib = require("zlib");
+  const pack = (items, encoding = "gzip+base64") => {
+    const json = JSON.stringify(items);
+    const data = encoding === "identity" ? json : zlib.gzipSync(Buffer.from(json, "utf8")).toString("base64");
+    return { profile: "cf-fingerprints-1", count: items.length, encoding, data };
+  };
+  function expectThrowCode(fn, code) {
+    let err;
+    try { fn(); } catch (e) { err = e; }
+    expect(err).toBeDefined();
+    expect(err.code).toBe(code);
+  }
+  const ITEMS = [{ kind: "audio", role: "audio", perceptual: { profile: "cf-audio-landmark-1", kind: "audio", landmarks: [{ hash: 1, t: 0 }] } }];
+  const ENV = pack(ITEMS);
+  // media:[] satisfies the content/media-required gate without inline content;
+  // the fingerprint branch runs before the authors[]/DAG checks, so a bad
+  // envelope throws without needing a populated DAG.
+  const base = (extra) => ({
+    signer_tip_id: "tip://id/US-fp", origin_code: "OH", signature: "x", media: [], ...extra,
+  });
+  const deps = { mediaLimits: {}, dag: {} };
+
+  test("fingerprints without commit → reject (can't bind)", () => {
+    expectThrowCode(() => schema.validateRequest(base({ fingerprints: ENV }), deps), "fingerprint_commit_required");
+  });
+
+  test("commit without fingerprints → reject (nothing to ingest)", () => {
+    expectThrowCode(
+      () => schema.validateRequest(base({ fingerprint_commit: "a".repeat(64) }), deps),
+      "fingerprint_commit_required",
+    );
+  });
+
+  test("unknown envelope profile → reject", () => {
+    const bad = { ...ENV, profile: "cf-fingerprints-99" };
+    expectThrowCode(
+      () => schema.validateRequest(base({ fingerprints: bad, fingerprint_commit: schema.fingerprintsCommit(bad) }), deps),
+      "fingerprints_profile_invalid",
+    );
+  });
+
+  test("unknown encoding → reject", () => {
+    const bad = { ...ENV, encoding: "brotli" };
+    expectThrowCode(
+      () => schema.validateRequest(base({ fingerprints: bad, fingerprint_commit: "a".repeat(64) }), deps),
+      "fingerprints_encoding_invalid",
+    );
+  });
+
+  test("item with unknown modality kind → reject", () => {
+    const badItems = [{ kind: "hologram", perceptual: { profile: "x", kind: "hologram" } }];
+    const env = pack(badItems);
+    expectThrowCode(
+      () => schema.validateRequest(base({ fingerprints: env, fingerprint_commit: schema.fingerprintsCommit(env) }), deps),
+      "fingerprint_kind_invalid",
+    );
+  });
+
+  test("commit that doesn't match the envelope → reject", () => {
+    expectThrowCode(
+      () => schema.validateRequest(base({ fingerprints: ENV, fingerprint_commit: "b".repeat(64) }), deps),
+      "fingerprint_commit_mismatch",
+    );
+  });
+
+  test("reject-tier item is accepted (no profile required) — passes the fingerprint gate", () => {
+    const items = [{ kind: "image", role: "primary", perceptual: { kind: "image", tier: "reject", reason: "decode_failed" } }];
+    const env = pack(items);
+    let err;
+    try {
+      schema.validateRequest(base({ fingerprints: env, fingerprint_commit: schema.fingerprintsCommit(env) }), deps);
+    } catch (e) { err = e; }
+    // It must NOT fail with a fingerprint_* code (it gets past the gate and
+    // trips a later, unrelated check — authors/DAG — which is fine here).
+    expect(String(err && err.code)).not.toMatch(/^fingerprint/);
+  });
+});
+
+describe("perceptual fingerprint — verifyTx (commit is a signed field; no blob on tx)", () => {
+  function _fakeDag(rec) {
+    return { getIdentity: (tid) => (rec && rec.tip_id === tid ? rec : null), isRevoked: () => false };
+  }
+  const COMMIT = "ab".repeat(32); // a 64-hex commit; the blob it commits to never rides the tx
+
+  // Build a REGISTER_CONTENT tx whose signature covers `fingerprint_commit`.
+  function _signedTx(kp, tipId, { commit } = {}) {
+    const input = { signer_tip_id: tipId, origin_code: "OH", authors: [{ tip_id: tipId }] };
+    if (commit) input.fingerprint_commit = commit;
+    const payload = schema.buildSigningPayload(input, CONTENT_HASH);
+    const signature = schema.sign(payload, kp.privateKey);
+    return {
+      tx_type: "REGISTER_CONTENT",
+      data: {
+        signer_tip_id: tipId, cna_version: "CNA-2.2", attribution_mode: "self",
+        authors: payload.authors, extras: {}, origin_code: "OH", registered_urls: [],
+        content_hash: CONTENT_HASH, signature,
+        ...(commit ? { fingerprint_commit: commit } : {}),
+      },
+    };
+  }
+
+  test("signed fingerprint_commit → verifies ok (covered by the signature)", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-fp-ok";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    expect(schema.verifyTx(_signedTx(kp, tipId, { commit: COMMIT }), dag)).toEqual({ ok: true });
+  });
+
+  test("injected fingerprint_commit not covered by signature → signature_invalid", () => {
+    const kp = generateMLDSAKeypair();
+    const tipId = "tip://id/US-fp-inject";
+    const dag = _fakeDag({ tip_id: tipId, public_key: kp.publicKey });
+    const tx = _signedTx(kp, tipId); // signed WITHOUT a commit
+    tx.data.fingerprint_commit = COMMIT; // attacker adds it post-signing
+    const r = schema.verifyTx(tx, dag);
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("signature_invalid");
   });
 });

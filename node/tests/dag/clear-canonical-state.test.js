@@ -45,7 +45,7 @@ function _seedAllCanonicalTables(dag) {
   });
   dag.saveContent({
     ctid: "tip://c/OH-1111111111111111-aaaa", origin_code: "OH",
-    content_hash: "00".repeat(32), perceptual_hash: null,
+    content_hash: "00".repeat(32),
     author_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa",
     signer_tip_id: "tip://id/US-aaaaaaaaaaaaaaaa",
     authors: [], attribution_mode: "self", extras: {}, cna_version: "CNA-2.2",
