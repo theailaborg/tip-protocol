@@ -30,6 +30,7 @@ const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
 const { createAntiEntropy } = require("./anti-entropy");
+const { createHeartbeatManager } = require("../network/heartbeat");
 const { createVerdictTrigger } = require("./verdict-trigger");
 const { createCleanRecordTrigger } = require("./clean-record-trigger");
 const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
@@ -371,6 +372,24 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   antiEntropyForFiltering = antiEntropy;
   antiEntropyForResync = antiEntropy;
 
+  // ── #47 Heartbeat manager — active peer-liveness probe ────────────────
+  // Liveness-only: onPeerSuspect fires after HEARTBEAT_SUSPECT_MISSES
+  // consecutive misses, a synchronous "peer unreachable" signal that
+  // gossipsub silence does not give (the issue #13 class of stale-edge halt).
+  // Divergence detection is left to AE, whose poll already reconciles every
+  // authorized peer each cycle, so the heartbeat carries no consensus state.
+  const heartbeat = createHeartbeatManager({
+    network,
+    getSelfNodeId: () => nodeId,
+    isAuthorizedPeer,
+    onPeerSuspect: (peerId, tipNodeId) => {
+      log.warn(
+        `heartbeat: peer ${tipNodeId?.slice(-8) || peerId.slice(0, 12)} is suspect ` +
+        `(${CONSENSUS.HEARTBEAT_SUSPECT_MISSES} consecutive misses), AE will reconcile`
+      );
+    },
+  });
+
   // ── Wire network events ────────────────────────────────────────────────
 
   if (network) {
@@ -474,6 +493,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
       await _registerAckReceiver();
       await _registerAckRequestHandler();
+      await heartbeat.registerHandler();
+      heartbeat.start();
       if (awaitPeers) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
@@ -484,6 +505,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      * Stop consensus gracefully.
      */
     stop() {
+      heartbeat.stop();
       clearInterval(_verdictFallbackTimer);
       antiEntropy.stop();
       summary.stop();
@@ -546,6 +568,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
+        heartbeat: { peers: heartbeat.peerStates() },
         verdictTrigger: { pending: verdictTrigger.size() },
         // §4 + #34: chain-walk failure counter for /metrics. Empty
         // object on legacy snapshot-handler implementations that

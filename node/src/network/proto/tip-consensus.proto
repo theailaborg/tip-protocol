@@ -574,3 +574,25 @@ message SnapshotEnd {
                                     // intentionally NOT in state_merkle_root because RP is real-time
                                     // counter state that flickers between commits)
 }
+
+// ─── Heartbeat Protocol (#47 active peer-liveness probe) ─────────────────────
+//
+// Protocol: /tip/heartbeat/1.0.0
+//
+// Periodic point-to-point ping over a short-lived direct stream.
+// Fires every ~5s per authorized peer pair. Distinguishes "peer dead" from
+// "channel broken", which gossipsub-silence cannot tell apart. Missing two
+// consecutive heartbeats (10s) reliably means the peer cannot deliver to us.
+// Liveness-only: divergence detection stays owned by anti-entropy (whose poll
+// already reconciles committed_round + state_merkle_root with every peer each
+// cycle), so the pong carries no consensus state.
+
+message HeartbeatPing {
+  string from_node_id = 1;          // sender's TIP node_id (for logging)
+  int64  ts = 2;                    // sender wall-clock (epoch ms)
+}
+
+message HeartbeatPong {
+  string node_id = 1;               // responder's TIP node_id (identity guard)
+  int64  ts = 2;                    // responder wall-clock (epoch ms)
+}
