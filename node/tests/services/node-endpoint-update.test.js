@@ -15,9 +15,10 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const PC = require(path.join(SHARED, "protocol-constants"));
 const { getGenesisPayload } = require(path.join(SRC, "genesis"));
-const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initCrypto, generateMLDSAKeypair, signTransaction, computeTxId } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES } = require(path.join(SHARED, "constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
+const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const { createGovernanceService } = require(path.join(SRC, "services/governance-service"));
 const schema = require(path.join(SRC, "schemas/node-endpoint-update"));
 
@@ -170,5 +171,103 @@ describe("dag.updateNodeEndpoint", () => {
 
     dag.updateNodeEndpoint(NODE_ID, null);
     expect(dag.getNode(NODE_ID).api_endpoint).toBeNull();
+  });
+});
+
+// ─── Commit-handler: monotonic timestamp guard (PR #120) ──────────────────
+
+function _buildEndpointTx(dag, kp, nodeId, endpoint, timestamp) {
+  const body = {
+    tx_type: TX_TYPES.NODE_ENDPOINT_UPDATED,
+    timestamp,
+    prev: dag.getRecentPrev(),
+    data: { node_id: nodeId, api_endpoint: endpoint },
+  };
+  body.tx_id = computeTxId(body);
+  return signTransaction(body, kp.privateKey);
+}
+
+describe("commit-handler: NODE_ENDPOINT_UPDATED monotonic guard", () => {
+  let dag, kp, handler;
+
+  beforeEach(() => {
+    kp = generateMLDSAKeypair();
+    dag = initDAG({ dbPath: ":memory:" });
+    dag.saveNode({ node_id: NODE_ID, public_key: kp.publicKey, status: "active", registered_at: 1_780_000_000_000 });
+    handler = createCommitHandler({
+      dag,
+      scoring: null,
+      verdictTrigger: null,
+      cleanRecordTrigger: null,
+      prescanReviewTrigger: null,
+      prescanCompletionTrigger: null,
+      config: { nodeRegisteredId: NODE_ID, nodePrivateKey: kp.privateKey },
+      nodeId: NODE_ID,
+    });
+  });
+
+  test("first update commits and advances updated_at", () => {
+    const T1 = 1_780_000_001_000;
+    const tx = _buildEndpointTx(dag, kp, NODE_ID, ENDPOINT, T1);
+    const { committed, dropped } = handler.commitOrderedTxs([tx], 1);
+    expect(committed).toBe(1);
+    expect(dropped).toBe(0);
+    expect(dag.getNode(NODE_ID).updated_at).toBe(T1);
+  });
+
+  test("update with strictly later timestamp is accepted (monotonic advance)", () => {
+    const T1 = 1_780_000_001_000;
+    const T2 = T1 + 5000;
+    handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, ENDPOINT, T1)], 1);
+    const { committed, dropped } = handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, "https://node-b.example.com", T2)], 2);
+    expect(committed).toBe(1);
+    expect(dropped).toBe(0);
+    expect(dag.getNode(NODE_ID).api_endpoint).toBe("https://node-b.example.com");
+  });
+
+  test("update with equal timestamp is rejected (equal is stale)", () => {
+    const T1 = 1_780_000_001_000;
+    handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, ENDPOINT, T1)], 1);
+    const { committed, dropped } = handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, "https://stale.example.com", T1)], 2);
+    expect(committed).toBe(0);
+    expect(dropped).toBe(1);
+  });
+
+  test("update with earlier timestamp is rejected (replay protection)", () => {
+    const T1 = 1_780_000_001_000;
+    const T0 = T1 - 5000;
+    handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, ENDPOINT, T1)], 1);
+    const { committed, dropped } = handler.commitOrderedTxs([_buildEndpointTx(dag, kp, NODE_ID, "https://replay.example.com", T0)], 2);
+    expect(committed).toBe(0);
+    expect(dropped).toBe(1);
+  });
+
+  test("two updates for the SAME node in ONE batch: first-wins, stale-last cannot revert", () => {
+    // Same-batch hazard: both pass the monotonic guard (it reads pre-batch
+    // committed state), then Phase 2 applies last-wins. With the stale tx
+    // ordered LAST and no in-batch dedup, it would revert api_endpoint AND move
+    // updated_at backwards. The dedup drops the second so the first-in-order wins.
+    const T1 = 1_780_000_001_000;
+    const T2 = T1 + 5000;
+    const newer = _buildEndpointTx(dag, kp, NODE_ID, "https://new.example.com", T2);
+    const stale = _buildEndpointTx(dag, kp, NODE_ID, "https://old.example.com", T1);
+    const { committed, dropped } = handler.commitOrderedTxs([newer, stale], 1);
+    expect(committed).toBe(1);
+    expect(dropped).toBe(1);
+    // First-in-canonical-order won; the stale tx did NOT revert the endpoint.
+    expect(dag.getNode(NODE_ID).api_endpoint).toBe("https://new.example.com");
+    expect(dag.getNode(NODE_ID).updated_at).toBe(T2);
+  });
+
+  test("endpoint updates for DIFFERENT nodes in ONE batch: both commit (dedup is per-node)", () => {
+    const kp2 = generateMLDSAKeypair();
+    const NODE_2 = "tip://node/bbbbbbbbbbbbbbbb";
+    dag.saveNode({ node_id: NODE_2, public_key: kp2.publicKey, status: "active", registered_at: 1_780_000_000_000 });
+    const T1 = 1_780_000_001_000;
+    const tx1 = _buildEndpointTx(dag, kp, NODE_ID, "https://a.example.com", T1);
+    const tx2 = _buildEndpointTx(dag, kp2, NODE_2, "https://b.example.com", T1 + 1000);
+    const { committed, dropped } = handler.commitOrderedTxs([tx1, tx2], 1);
+    expect(committed).toBe(2);
+    expect(dropped).toBe(0);
   });
 });

@@ -740,9 +740,9 @@ class MemoryStore {
     void public_key; void algorithm;
     this._nodes.set(rec.node_id, { api_endpoint: null, ...rest });
   }
-  updateNodeEndpoint(nodeId, apiEndpoint) {
+  updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     const row = this._nodes.get(nodeId);
-    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null });
+    if (row) this._nodes.set(nodeId, { ...row, api_endpoint: apiEndpoint || null, updated_at: timestamp ?? null });
   }
   getNode(nodeId) {
     const row = this._nodes.get(nodeId);
@@ -1876,11 +1876,12 @@ class SQLiteStore {
       -- ── Nodes ───────────────────────────────────────────────────────
       -- GH #60: public_key + algorithm live in entity_keys.
       CREATE TABLE IF NOT EXISTS nodes (
-        node_id         TEXT PRIMARY KEY,
-        name            TEXT,
-        status          TEXT NOT NULL DEFAULT 'active',
-        api_endpoint    TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
-        registered_at INTEGER NOT NULL
+        node_id              TEXT PRIMARY KEY,
+        name                 TEXT,
+        status               TEXT NOT NULL DEFAULT 'active',
+        api_endpoint         TEXT,                            -- public API origin (https://host[:port]); peers redirect reviewers here for this node's media
+        updated_at           INTEGER,                         -- tx.timestamp of the last node-mutating tx; null until first. Monotonic-replay guard: every node-mutating tx must bump this AND reject tx.timestamp <= updated_at
+        registered_at        INTEGER NOT NULL
       );
 
       -- ── Consensus: Certificates (Narwhal) ─────────────────────────
@@ -2535,11 +2536,11 @@ class SQLiteStore {
       ),
 
       saveNode: this.db.prepare(
-        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,registered_at)
-         VALUES (?,?,?,?,?)`
+        `INSERT OR REPLACE INTO nodes (node_id,name,status,api_endpoint,updated_at,registered_at)
+         VALUES (?,?,?,?,?,?)`
       ),
       updateNodeEndpoint: this.db.prepare(
-        "UPDATE nodes SET api_endpoint=? WHERE node_id=?"
+        "UPDATE nodes SET api_endpoint=?, updated_at=? WHERE node_id=?"
       ),
       getNode: this.db.prepare(
         `SELECT n.*, k.public_key AS public_key, k.algorithm AS algorithm
@@ -3277,11 +3278,12 @@ class SQLiteStore {
       rec.node_id, rec.name || null,
       rec.status || "active",
       rec.api_endpoint || null,
+      null,  // updated_at: null for new nodes (no update committed yet)
       rec.registered_at || nowMs()
     );
   }
-  updateNodeEndpoint(nodeId, apiEndpoint) {
-    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, nodeId);
+  updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
+    this._stmts.updateNodeEndpoint.run(apiEndpoint || null, timestamp ?? null, nodeId);
   }
   getNode(nodeId) { return this._stmts.getNode.get(nodeId) || null; }
   getAllNodes() { return this._stmts.getAllNodes.all(); }
@@ -4034,7 +4036,7 @@ function _buildDagHandle(store, config) {
 
     // ── Nodes ────────────────────────────────────────────────────────────
     saveNode: (rec) => store.saveNode(rec),
-    updateNodeEndpoint: (nodeId, apiEndpoint) => store.updateNodeEndpoint(nodeId, apiEndpoint),
+    updateNodeEndpoint: (nodeId, apiEndpoint, timestamp) => store.updateNodeEndpoint(nodeId, apiEndpoint, timestamp),
     getNode: (id) => store.getNode(id),
     getAllNodes: () => store.getAllNodes(),
 
