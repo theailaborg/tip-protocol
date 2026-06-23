@@ -341,6 +341,12 @@ const CASES = [
     },
     submit: (h, ctx) => h.services.identity.register(ctx.body),
     readBack: (h, _ctx, tx) => h.dag.getIdentity(tx.data.tip_id),
+    // dedup_hash is classified notPersisted on the identity row, but it MUST
+    // persist in the dedup registry (the replay/sybil guard). Asserting it here
+    // proves the classification is "stored elsewhere", not a silent drop.
+    extraAsserts: (h, _ctx, tx) => {
+      expect(h.dag.getDedupRegistration(tx.data.dedup_hash)).toMatchObject({ tip_id: tx.data.tip_id });
+    },
   },
 
   // ── REGISTER_CONTENT ───────────────────────────────────────────────────────
@@ -495,7 +501,7 @@ const CASES = [
       const verifierTipId = makeTipId("verify-verifier");
       seedIdentity(h.dag, verifierTipId, verifierKp);
       const ctid = await seedRegisteredContent(h, { authorTipId, authorKp });
-      return { ctid, verifierTipId, verifierKp };
+      return { ctid, authorTipId, verifierTipId, verifierKp };
     },
     submit: (h, ctx) => {
       const verdict = "ORIGIN_CONFIRMED";
@@ -505,6 +511,12 @@ const CASES = [
       return h.services.content.verify(ctx.ctid, { verifier_tip_id: ctx.verifierTipId, verdict, signature });
     },
     readBack: (h, _ctx, tx) => h.dag.getTx(tx.tx_id) && h.dag.getTx(tx.tx_id).data,
+    // Derived state beyond the verification record: the author's score moves by
+    // the verification's recorded weighted_delta (single-channel score effect).
+    // This proves the commit actually applied state, not merely stored the tx.
+    extraAsserts: (h, ctx, tx) => {
+      expect(h.scoring.getScore(ctx.authorTipId).score - 750).toBe(tx.data.weighted_delta);
+    },
   },
 
   // ── UPDATE_ORIGIN ──────────────────────────────────────────────────────────
@@ -605,14 +617,14 @@ const CASES = [
   // active key.
   {
     txType: "KEY_ROTATED",
-    name: "OLD-key-signed rotation activates the NEW key in entity_keys",
+    name: "OLD-key-signed rotation activates the NEW key (effective_at -> valid_from_ts)",
     schema: keyRotatedSchema,
-    rename: { new_public_key: "public_key" },
-    // tip_id is the entity_id (not a column on the returned key), effective_at
-    // is stored as valid_from_ts (not surfaced by getActiveKey), and
-    // old_key_fingerprint is a close-reference for the OLD row, none are
-    // fields on the active-key projection.
-    notPersisted: ["tip_id", "effective_at", "old_key_fingerprint"],
+    // The rotation's effective_at lands as the new key row's valid_from_ts.
+    rename: { new_public_key: "public_key", effective_at: "valid_from_ts" },
+    // tip_id is the entity_id (the lookup key, not a column on the row
+    // projection); old_key_fingerprint is the close-reference used to retire
+    // the OLD row, it is not carried onto the NEW key.
+    notPersisted: ["tip_id", "old_key_fingerprint"],
     setup: (h) => {
       const oldKp = generateMLDSAKeypair();
       const tipId = makeTipId("rotate-user");
@@ -630,7 +642,9 @@ const CASES = [
       const signature = keyRotatedSchema.sign(keyRotatedSchema.buildSigningPayload(fields), ctx.oldKp.privateKey);
       return h.services.key.rotateKey({ ...fields, signature });
     },
-    readBack: (h, ctx) => h.dag.getActiveKey("identity", ctx.tipId),
+    // The newly-activated key is the open row (valid_to_ts === null) in the
+    // entity_keys chain; reading the full row lets us assert valid_from_ts too.
+    readBack: (h, ctx) => h.dag.getEntityKeyHistory("identity", ctx.tipId).find((k) => k.valid_to_ts == null) || null,
   },
 
   // ── UNLINK_PLATFORM ────────────────────────────────────────────────────────
