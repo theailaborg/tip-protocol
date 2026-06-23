@@ -250,6 +250,11 @@ class KnexAdapter {
         user: config.dbUser || process.env.DB_USER || "tip",
         password: config.dbPassword || process.env.DB_PASSWORD || "",
       };
+    } else if (client === "better-sqlite3") {
+      // File-SQLite via Knex: a real transaction-capable backend used to
+      // exercise the Knex write path (incl. runInTransaction atomicity)
+      // without a server DB. Production uses pg/mysql2/mssql/oracledb above.
+      connection = { filename: config.dbName || ":memory:" };
     } else {
       connection = {
         host: config.dbHost || process.env.DB_HOST || "localhost",
@@ -276,6 +281,7 @@ class KnexAdapter {
     this.knex = knex({
       client,
       connection,
+      useNullAsDefault: client === "better-sqlite3",
       pool: {
         min: config.dbPoolMin != null ? config.dbPoolMin : Number(process.env.DB_POOL_MIN || 2),
         max: config.dbPoolMax != null ? config.dbPoolMax : Number(process.env.DB_POOL_MAX || 10),
@@ -569,10 +575,18 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
+    // Inside runInTransaction(fn): buffer the write so it joins the single
+    // transaction flushed afterwards, instead of firing on its own connection.
+    if (this._txBuffer) { this._txBuffer.push(fn); return; }
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
       .catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
   }
+
+  // Active connection for writes: the running transaction (during a
+  // runInTransaction flush) else the pooled knex. Lets every write route
+  // through one transaction connection without threading `trx` by hand (C-2).
+  _k(table) { return (this._activeTrx || this.knex)(table); }
 
   // Oracle and SQL Server don't support Knex's .onConflict(). For 'merge' we
   // use UPDATE-first: if the row already exists update it directly (no race);
@@ -582,7 +596,7 @@ class KnexAdapter {
   async _dbInsert(table, pkCols, row, onConflict) {
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
-      const q = this.knex(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
+      const q = this._k(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
       const promise = onConflict === "merge" ? q.merge() : q.ignore();
       // Some tables carry MULTIPLE unique constraints (e.g. commits has PK
       // on round AND a unique index on consensus_index). ON CONFLICT(col)
@@ -603,15 +617,15 @@ class KnexAdapter {
       if (nonPk.length > 0) {
         const updates = {};
         nonPk.forEach(k => { updates[k] = row[k]; });
-        let q = this.knex(table);
+        let q = this._k(table);
         pks.forEach(pk => { q = q.where(pk, row[pk]); });
         const affected = await q.update(updates);
         if (affected === 0) {
-          await this.knex(table).insert(row).catch(async err => {
+          await this._k(table).insert(row).catch(async err => {
             if (!_isDuplicateKeyError(err)) throw err;
             // Concurrent writer inserted between our 0-row UPDATE and INSERT;
             // re-apply our update so our value wins.
-            let q2 = this.knex(table);
+            let q2 = this._k(table);
             pks.forEach(pk => { q2 = q2.where(pk, row[pk]); });
             return q2.update(updates);
           });
@@ -620,7 +634,7 @@ class KnexAdapter {
       }
     }
     // 'ignore' or no non-PK columns to update: INSERT and swallow duplicate
-    return this.knex(table).insert(row).catch(err => {
+    return this._k(table).insert(row).catch(err => {
       if (!_isDuplicateKeyError(err)) throw err;
     });
   }
@@ -740,7 +754,7 @@ class KnexAdapter {
   *iterateEntityKeys() { yield* this.mirror.iterateEntityKeys(); }
   clearEntityKeys() {
     this.mirror.clearEntityKeys();
-    this._ff(() => this.knex("entity_keys").del());
+    this._ff(() => this._k("entity_keys").del());
   }
 
   // ── Content ────────────────────────────────────────────────────────────────
@@ -851,7 +865,7 @@ class KnexAdapter {
   saveMinhashBands(rows) {
     if (!rows || !rows.length) return;
     const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
-    this._ff(() => this.knex("minhash_band").insert(mapped)
+    this._ff(() => this._k("minhash_band").insert(mapped)
       .onConflict(["profile", "band_idx", "band_hash", "tip_ctid"]).ignore());
   }
   savePhashCodes(rows) {
@@ -859,7 +873,7 @@ class KnexAdapter {
     const mapped = rows.map(({ ctid, ...rest }) => ({ tip_ctid: ctid, ...rest }));
     // INSERT OR IGNORE on (tip_ctid, component_idx, frame): a re-ingest of the
     // same content (frames fixed per ctid) is skipped, not duplicated.
-    this._ff(() => this.knex("phash_code").insert(mapped)
+    this._ff(() => this._k("phash_code").insert(mapped)
       .onConflict(["tip_ctid", "component_idx", "frame"]).ignore());
   }
   async getPerceptualFingerprint(ctid, componentIdx = 0) {
@@ -903,7 +917,7 @@ class KnexAdapter {
   }
   saveAudioLandmarks(rows) {
     if (!rows || !rows.length) return;
-    this._ff(() => this.knex("audio_landmark").insert(rows)
+    this._ff(() => this._k("audio_landmark").insert(rows)
       .onConflict(["profile", "hash", "clip_id", "t"]).ignore());
   }
   async findAudioCandidates(profile, hashes) {
@@ -1006,26 +1020,26 @@ class KnexAdapter {
 
   clearCanonicalState() {
     this.mirror.clearCanonicalState();
-    // Fire DB deletes before snapshot rows arrive. Mirror is the authoritative
-    // source for computeStateMerkleRoot; DB cleanup is for restart persistence.
-    // Every table that iterateCanonicalState yields MUST be deleted here,
-    // otherwise leftover rows survive a snapshot install and contribute
-    // to state_merkle_root → permanent Merkle divergence.
-    Promise.all([
-      this.knex("identities").delete(),
-      this.knex("content").delete(),
-      this.knex("scores").delete(),
-      this.knex("dedup_registry").delete(),
-      this.knex("revocations").delete(),
-      this.knex("verification_providers").delete(),
-      this.knex("nodes").delete(),
-      // GH #60 — entity_keys is canonical state too.
-      this.knex("entity_keys").delete(),
-      this.knex("platform_links").delete(),
-      this.knex("domain_bindings").delete(),
-      this.knex("prescan_reviews").delete(),
-      this.knex("interests_registry").delete(),
-    ]).catch(err => this.log.warn(`clearCanonicalState DB flush failed: ${err.message}`));
+    // Mirror is the authoritative source for computeStateMerkleRoot; DB cleanup
+    // is for restart persistence. Every table that iterateCanonicalState yields
+    // MUST be deleted, otherwise leftover rows survive a snapshot install and
+    // contribute to state_merkle_root -> permanent Merkle divergence.
+    //
+    // Buffered via _ff so, during a snapshot install (clearCanonicalState +
+    // row rebuild, both inside runInTransaction), the deletes join the SAME
+    // transaction as the rebuild: clear + rebuild are all-or-nothing, so a
+    // failed install can never leave canonical state wiped (#58/#91).
+    // Serialized (not Promise.all) so they run on the single transaction
+    // connection rather than racing across the pool.
+    const CANONICAL_TABLES = [
+      "identities", "content", "scores", "dedup_registry", "revocations",
+      "verification_providers", "nodes",
+      "entity_keys", // GH #60 — entity_keys is canonical state too.
+      "platform_links", "domain_bindings", "prescan_reviews", "interests_registry",
+    ];
+    this._ff(async () => {
+      for (const t of CANONICAL_TABLES) await this._k(t).delete();
+    });
   }
 
   // ── Revocations ────────────────────────────────────────────────────────────
@@ -1346,15 +1360,43 @@ class KnexAdapter {
   getTxRejectionsByTipId(tipId) { return this.mirror.getTxRejectionsByTipId(tipId); }
   countTxRejections() { return this.mirror.countTxRejections(); }
 
-  // ── DB Transactions ────────────────────────────────────────────────────────
-  // Mirror is already atomic (Map operations). DB writes from inside fn() are
-  // individually fire-and-forgetted via _ff(). Wrapping in knex.transaction()
-  // holds a pool connection for the entire callback while the callback's own
-  // _ff() writes also acquire pool connections → pool exhaustion. Proper
-  // atomicity requires threading `trx` through every write method (C-2).
-  // TODO(C-2): thread trx through _ff() so snapshot installs are truly atomic.
-
-  runInTransaction(fn) { return fn(); }
+  // ── DB Transactions (C-2 / #91) ─────────────────────────────────────────────
+  // The mirror writes inside fn() are synchronous + atomic (Map ops). The DB
+  // writes are queued via _ff(). We BUFFER those queued writes during fn() and
+  // flush them as ONE knex.transaction() so a crash or a mid-batch failure can
+  // never leave a partially-written round / snapshot on the server DB (which on
+  // restart rehydrates a divergent mirror -> state_merkle_root fork -> halt;
+  // #58 was this). No pool connection is held during fn() (writes are buffered,
+  // not executed), so the old "wrap fn() in knex.transaction()" pool-exhaustion
+  // deadlock can't happen: the transaction opens AFTER fn() returns and runs
+  // every buffered write on its single connection (via this._k / this._activeTrx).
+  runInTransaction(fn) {
+    const buffer = [];
+    const prevBuffer = this._txBuffer;
+    this._txBuffer = buffer;
+    let result;
+    try {
+      result = fn();   // sync: mirror writes + buffered DB writes; may throw
+    } finally {
+      this._txBuffer = prevBuffer;
+    }
+    // A synchronous throw above propagates here (buffer discarded, nothing
+    // flushed) — all-or-nothing, matching the SQLite path.
+    if (buffer.length > 0) {
+      this._ffChain = (this._ffChain || Promise.resolve())
+        .then(() => this.knex.transaction(async (trx) => {
+          const prevTrx = this._activeTrx;
+          this._activeTrx = trx;
+          try {
+            for (const w of buffer) await w();   // any throw rolls back the lot
+          } finally {
+            this._activeTrx = prevTrx;
+          }
+        }))
+        .catch(err => this.log.warn(`KnexAdapter transaction rolled back: ${err.message}`));
+    }
+    return result;
+  }
 
   // ── Backfill ──────────────────────────────────────────────────────────────
   // Mirror is hydrated with correct subject_tip_ids during migrate().
