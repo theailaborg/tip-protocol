@@ -59,6 +59,8 @@ function createBus() {
   const topicHandlers = new Map(); // nodeId -> { [topic]: (buf) => void }
   const protoHandlers = new Map(); // nodeId -> { [protocol]: ({stream,connection}) => void }
   const delays = new Map();        // "from->to" -> ticks
+  const partitioned = new Set();   // node ids cut off from the bus
+  const certBufs = [];             // every CERTIFICATES buf ever published (for cert-tail replay)
   const queue = [];
   let tick = 0;
 
@@ -68,7 +70,10 @@ function createBus() {
     close() { /* noop */ },
   });
   const delayFor = (from, to) => delays.get(`${from}->${to}`) || 0;
-  const enqueue = (from, to, run) => queue.push({ to, dueTick: tick + delayFor(from, to), run });
+  const enqueue = (from, to, run) => {
+    if (partitioned.has(from) || partitioned.has(to)) return; // dropped: node is offline
+    queue.push({ to, dueTick: tick + delayFor(from, to), run });
+  };
 
   function adapterFor(nodeId) {
     if (!protoHandlers.has(nodeId)) protoHandlers.set(nodeId, {});
@@ -85,6 +90,7 @@ function createBus() {
       CONSENSUS_ACK_REQUEST_PROTOCOL: "/tip/consensus-ack-request/1.0.0",
       ROTATION_COORD_PROTOCOL: "/tip/rotation-coord/1.0.0",
       publish(topic, buf) {
+        if (topic === TOPICS.CERTIFICATES) certBufs.push(buf); // captured for cert-tail replay
         for (const [otherId, h] of topicHandlers) {
           if (otherId === nodeId) continue;
           const fn = h[topic];
@@ -106,7 +112,7 @@ function createBus() {
       },
       handle(protocol, handler) { protoHandlers.get(nodeId)[protocol] = handler; return Promise.resolve(); },
       sendAckRequest: () => Promise.resolve(null),
-      onPeerAuthorized: () => {},
+      onPeerAuthorized: () => { },
     };
   }
 
@@ -128,6 +134,9 @@ function createBus() {
     adapterFor,
     setTopicHandlers: (nodeId, h) => topicHandlers.set(nodeId, h),
     setDelay: (from, to, ticks) => delays.set(`${from}->${to}`, ticks),
+    partition: (nodeId) => partitioned.add(nodeId),
+    heal: (nodeId) => partitioned.delete(nodeId),
+    certBufs,
     advanceTick: () => { tick += 1; },
     drain,
   };
@@ -154,7 +163,7 @@ function makeNode(nodeId, kp, registered, committeeIds, bus, rejections) {
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
-    onMissingCertsTimeout: () => {},
+    onMissingCertsTimeout: () => { },
     onOrderedTxs: (orderedTxs, round, certTimestamp) => {
       const res = commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
       // No-loss bookkeeping: an ordered tx that did NOT persist was explicitly
@@ -244,11 +253,23 @@ function createInProcessCluster({ nodeCount = 3, committeeSize = nodeCount } = {
     nodes.forEach((n) => { try { if (n.dag.close) n.dag.close(); } catch (_e) { /* ignore */ } });
   }
 
+  // Replay every certificate ever broadcast to a (rejoining) node, the test
+  // standing in for peer-sync's cert-tail fetch. Idempotent: certs the node
+  // already has are ignored; the missing tail gets processed.
+  async function feedCertTail(x) {
+    const node = nodes[typeof x === "number" ? x : all.findIndex((m) => m.nodeId === x)];
+    for (const buf of bus.certBufs) { try { node.narwhal.handleIncomingCertificate(buf); } catch (_e) { /* ignore */ } }
+    await flush();
+  }
+
   return {
     nodes,
     tickRound,
     tickRounds,
     setDelay: (from, to, ticks) => bus.setDelay(idOf(from), idOf(to), ticks),
+    partition: (x) => bus.partition(idOf(x)),
+    heal: (x) => bus.heal(idOf(x)),
+    feedCertTail,
     commitHandlerRejections: rejections,
     stop,
   };
