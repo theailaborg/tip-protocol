@@ -27,7 +27,7 @@ const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
-const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initCrypto, generateMLDSAKeypair, shake256, computeTxId } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
@@ -111,6 +111,7 @@ function createNet() {
     adapterFor,
     setTopicHandlers: (nodeId, h) => topicHandlers.set(nodeId, h),
     addFault: (f) => faults.push(f),
+    removeFault: (f) => { const i = faults.indexOf(f); if (i >= 0) faults.splice(i, 1); },
     clearFaults: () => { faults.length = 0; },
   };
 }
@@ -122,10 +123,10 @@ function createNet() {
 // heartbeat / snapshot subsystems (those are operational, not part of the
 // ack -> quorum -> cert -> anchor path the sub-quorum halt lives in).
 
-function makeNode(nodeId, kp, committee, net) {
+function makeNode(nodeId, kp, registered, committeeIds, net) {
   const dag = initDAG({ dbPath: ":memory:" });
-  // Every node knows the full committee's pubkeys so acks verify cross-node.
-  for (const m of committee) {
+  // Every node knows all registered nodes' pubkeys so acks verify cross-node.
+  for (const m of registered) {
     dag.saveNode({ node_id: m.nodeId, name: m.nodeId, public_key: m.publicKey, status: "active", registered_at: T0 });
   }
   const config = {
@@ -136,16 +137,26 @@ function makeNode(nodeId, kp, committee, net) {
   const mempool = createMempool(dag, { nodeId });
   const commitHandler = createCommitHandler({ dag, scoring, config, nodeId });
 
-  const committeeIds = committee.map((m) => m.nodeId).sort();
-  const getCommittee = () => committeeIds;
+  // The committee is the subset of registered nodes that signs this epoch
+  // (production: 5 nodes registered, committee of 4). Injected so the fault /
+  // halt scenarios control quorum directly.
+  const committee = [...committeeIds].sort();
+  const getCommittee = () => committee;
   const network = net.adapterFor(nodeId);
+
+  // Record every tx id this node orders, in commit order, for the cross-node
+  // ordering + no-loss invariants. Captured at onOrderedTxs (the consensus
+  // output) so it reflects the agreed order regardless of commit-handler.
+  const orderedTxIds = [];
 
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
-    onMissingCertsTimeout: () => { /* step 1: no resync subsystem */ },
-    onOrderedTxs: (orderedTxs, round, certTimestamp) =>
-      commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp }),
+    onMissingCertsTimeout: () => { /* no resync subsystem in this harness */ },
+    onOrderedTxs: (orderedTxs, round, certTimestamp) => {
+      for (const t of orderedTxs) orderedTxIds.push(t.tx_id);
+      return commitHandler.commitOrderedTxs(orderedTxs, round, { certTimestamp });
+    },
     proposer: {
       nodeId, nodePrivateKey: kp.privateKey, nodePublicKey: kp.publicKey,
       submitTx: (tx) => mempool.add(tx),
@@ -183,7 +194,7 @@ function makeNode(nodeId, kp, committee, net) {
     [network.TOPICS.CERTIFICATES]: (buf) => narwhal.handleIncomingCertificate(buf),
   });
 
-  return { nodeId, dag, mempool, narwhal, bullshark, commitHandler, config };
+  return { nodeId, dag, mempool, narwhal, bullshark, commitHandler, config, orderedTxIds };
 }
 
 function waitFor(predicate, { timeoutMs = 30000, intervalMs = 100 } = {}) {
@@ -200,20 +211,47 @@ function waitFor(predicate, { timeoutMs = 30000, intervalMs = 100 } = {}) {
   });
 }
 
-// Boot a committee of `size` real consensus nodes wired to one bus.
-function bootCommittee(net, size) {
-  const committee = Array.from({ length: size }, (_, i) => {
+// Boot `registered` real consensus nodes, of which the first `committee` form
+// the signing committee (default: all registered). Every node instance runs,
+// but only committee members count toward quorum. Returns all node instances.
+function bootCommittee(net, { registered, committee = registered } = {}) {
+  const all = Array.from({ length: registered }, (_, i) => {
     const kp = generateMLDSAKeypair();
     return { nodeId: `tip://node/n${i}`, ...kp };
   });
-  const nodes = committee.map((m) => makeNode(m.nodeId, m, committee, net));
+  const committeeIds = all.slice(0, committee).map((m) => m.nodeId);
+  const nodes = all.map((m) => makeNode(m.nodeId, m, all, committeeIds, net));
   nodes.forEach((n) => n.narwhal.start());
+  // Surface which nodes are committee members for fault scenarios.
+  nodes.forEach((n) => { n.isCommittee = committeeIds.includes(n.nodeId); });
   return nodes;
 }
 
 function stopAll(nodes) {
   nodes.forEach((n) => { try { n.narwhal.stop(); } catch (_e) { /* ignore */ } });
   nodes.forEach((n) => { try { if (n.dag.close) n.dag.close(); } catch (_e) { /* ignore */ } });
+}
+
+// Submit a minimal, content-addressed tx to one node's mempool. Ordering is
+// decided before commit-handler, so a structurally-minimal tx is enough to
+// exercise the consensus ordering + no-loss invariants.
+function submitTestTx(node, i) {
+  const body = {
+    tx_type: "REGISTER_CONTENT", timestamp: T0 + i, prev: [],
+    data: { ctid: `tip://content/soak-${i}`, content_hash: shake256(`soak-${i}`), seq: i },
+  };
+  body.tx_id = computeTxId(body);
+  node.mempool.add(body);
+  return body.tx_id;
+}
+
+// Partition nodes off the bus: drop every message to/from them (full crash /
+// network isolation). Returns a function that heals the partition.
+function partition(net, nodeIds) {
+  const set = new Set(nodeIds);
+  const fault = (m) => set.has(m.from) || set.has(m.to);
+  net.addFault(fault);
+  return () => net.removeFault(fault);
 }
 
 // ── step 1: liveness smoke tests (prove the harness drives a real commit) ──────
@@ -225,7 +263,7 @@ describe("multi-node consensus harness, liveness", () => {
   for (const size of [2, 4]) {
     test(`${size} nodes form a committee and advance anchor commits`, async () => {
       const net = createNet();
-      const nodes = bootCommittee(net, size);
+      const nodes = bootCommittee(net, { registered: size });
       try {
         await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > 0), { timeoutMs: 30000 });
         for (const n of nodes) expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(0);
@@ -234,4 +272,109 @@ describe("multi-node consensus harness, liveness", () => {
       }
     }, 60000);
   }
+});
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── step 2a: tx no-loss + identical ordering across nodes ──────────────────────
+
+describe("multi-node consensus harness, tx ordering", () => {
+  test("every node orders the same submitted txs in the same order (no-loss + agreement)", async () => {
+    const net = createNet();
+    const nodes = bootCommittee(net, { registered: 4 });
+    try {
+      // Submit distinct txs round-robin to different nodes' mempools.
+      const K = 12;
+      const submitted = [];
+      for (let i = 0; i < K; i++) submitted.push(submitTestTx(nodes[i % nodes.length], i));
+      const submittedSet = new Set(submitted);
+
+      // No-loss: every node must eventually order all K submitted txs.
+      await waitFor(() => nodes.every((n) =>
+        new Set(n.orderedTxIds.filter((id) => submittedSet.has(id))).size === K),
+      { timeoutMs: 30000 });
+
+      // Agreement: each node's ordered sequence (restricted to the submitted
+      // set) is the SAME sequence, with no duplicates and nothing missing.
+      const seqs = nodes.map((n) => n.orderedTxIds.filter((id) => submittedSet.has(id)));
+      const reference = seqs[0];
+      expect(reference.length).toBe(K);          // no-loss
+      expect(new Set(reference).size).toBe(K);   // no duplicate ordering
+      for (const s of seqs) expect(s).toEqual(reference); // identical order on every node
+    } finally {
+      stopAll(nodes);
+    }
+  }, 60000);
+});
+
+// ── step 2b: fault tolerance + sub-quorum halt ─────────────────────────────────
+//
+// Models the production scenario: 5 nodes registered, committee of 4.
+// quorum = ceil(2 * 4 / 3) = 3.
+
+describe("multi-node consensus harness, faults", () => {
+  test("committee of 4 tolerates 1 crashed member (liveness holds)", async () => {
+    const net = createNet();
+    const nodes = bootCommittee(net, { registered: 5, committee: 4 });
+    try {
+      await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > 0), { timeoutMs: 30000 });
+
+      // Crash one committee member: 3 of 4 acks remain reachable == quorum.
+      const victim = nodes.find((n) => n.isCommittee);
+      partition(net, [victim.nodeId]);
+
+      const live = nodes.filter((n) => n.isCommittee && n.nodeId !== victim.nodeId);
+      const before = Math.min(...live.map((n) => n.bullshark.lastCommittedRound()));
+      await waitFor(() => live.every((n) => n.bullshark.lastCommittedRound() > before + 2), { timeoutMs: 30000 });
+      for (const n of live) expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(before + 2);
+    } finally {
+      stopAll(nodes);
+    }
+  }, 60000);
+
+  test("committee of 4 halts when 2 members are down (sub-quorum)", async () => {
+    const net = createNet();
+    const nodes = bootCommittee(net, { registered: 5, committee: 4 });
+    try {
+      await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > 0), { timeoutMs: 30000 });
+
+      // Crash two committee members: only 2 of 4 acks reachable < quorum 3.
+      const victims = nodes.filter((n) => n.isCommittee).slice(0, 2);
+      partition(net, victims.map((n) => n.nodeId));
+      const live = nodes.filter((n) => n.isCommittee && !victims.includes(n));
+
+      // Halt oracle: drain any in-flight commit, then assert NO progress across
+      // a multi-round-timeout window.
+      await sleep(6000);
+      const a = live.map((n) => n.bullshark.lastCommittedRound());
+      await sleep(6000);
+      const b = live.map((n) => n.bullshark.lastCommittedRound());
+      expect(b).toEqual(a); // stuck: sub-quorum cannot seal a cert
+    } finally {
+      stopAll(nodes);
+    }
+  }, 60000);
+});
+
+// ── step 2c: soak - no halt over sustained operation ───────────────────────────
+//
+// Default round target is CI-friendly; set TIP_SOAK_ROUNDS to crank it up for a
+// long-running soak (the engine should run indefinitely without halting).
+
+describe("multi-node consensus harness, soak", () => {
+  test("sustained operation advances without halting and stays converged", async () => {
+    const TARGET = Number(process.env.TIP_SOAK_ROUNDS || 40);
+    const net = createNet();
+    const nodes = bootCommittee(net, { registered: 4 });
+    try {
+      // No-halt: every node must reach the round target (a stall fails waitFor).
+      await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() >= TARGET), { timeoutMs: 120000 });
+      const rounds = nodes.map((n) => n.bullshark.lastCommittedRound());
+      // Safety: no node falls far behind the leader.
+      expect(Math.min(...rounds)).toBeGreaterThanOrEqual(TARGET);
+      expect(Math.max(...rounds) - Math.min(...rounds)).toBeLessThanOrEqual(5);
+    } finally {
+      stopAll(nodes);
+    }
+  }, 150000);
 });
