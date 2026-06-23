@@ -28,6 +28,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256, computeTxId } = require(path.join(SHARED, "crypto"));
+const { nowMs } = require(path.join(SHARED, "time"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
@@ -199,12 +200,12 @@ function makeNode(nodeId, kp, registered, committeeIds, net) {
 
 function waitFor(predicate, { timeoutMs = 30000, intervalMs = 100 } = {}) {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    const start = nowMs();
     const tick = () => {
       let ok = false;
       try { ok = predicate(); } catch (_e) { ok = false; }
       if (ok) return resolve(true);
-      if (Date.now() - start > timeoutMs) return reject(new Error("waitFor: timed out"));
+      if (nowMs() - start > timeoutMs) return reject(new Error("waitFor: timed out"));
       setTimeout(tick, intervalMs);
     };
     tick();

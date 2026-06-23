@@ -50,6 +50,7 @@ PC.init(_pc);
 
 // Requires AFTER the re-init so every module binds to the tiny-interval config.
 const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { nowMs } = require(path.join(SHARED, "time"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
@@ -68,12 +69,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function waitFor(predicate, { timeoutMs = 60000, intervalMs = 100 } = {}) {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
+    const start = nowMs();
     const tick = () => {
       let ok = false;
       try { ok = predicate(); } catch (_e) { ok = false; }
       if (ok) return resolve(true);
-      if (Date.now() - start > timeoutMs) return reject(new Error("waitFor: timed out"));
+      if (nowMs() - start > timeoutMs) return reject(new Error("waitFor: timed out"));
       setTimeout(tick, intervalMs);
     };
     tick();
