@@ -102,15 +102,37 @@ async function drain() {
       expect(rows[0].payload_hash).toBe(r1.payload_hash);
     });
 
-    test("saveCommitteeRotation is idempotent (INSERT OR IGNORE)", async () => {
+    test("saveCommitteeRotation is idempotent on identical re-delivery (one row)", async () => {
+      // At a rotation boundary multiple nodes each submit a COMMITTEE_ROTATION
+      // tx for the same rotation_number so the boundary is never missed. The
+      // row is deterministic, so every delivery is identical. Re-applying it
+      // must leave exactly one unchanged row.
       const r2 = rot(2, 200, [{ node_id: "n2", public_key: "pk2" }]);
       a.saveCommitteeRotation(r2);
-      a.saveCommitteeRotation({ ...r2, payload_hash: "tampered" });
+      a.saveCommitteeRotation(r2);
       await drain();
 
       const rows = await a.knex("committee_history").where("rotation_number", 2).select("*");
       expect(rows).toHaveLength(1);
       expect(rows[0].payload_hash).toBe(r2.payload_hash);
+    });
+
+    test("saveCommitteeRotation overwrites a divergent row (INSERT OR REPLACE / snapshot-heal)", async () => {
+      // saveCommitteeRotation is INSERT OR REPLACE / merge, matching SQLiteStore
+      // and the in-memory mirror. A snapshot install carrying the authoritative
+      // row must overwrite a prior local divergent row by rotation_number so a
+      // lagging/diverged node heals — snapshot-handler pre-clears nothing and
+      // relies on this. The last, authoritative write wins.
+      const stale         = rot(4, 400, [{ node_id: "old", public_key: "pk-old" }]);
+      const authoritative = rot(4, 400, [{ node_id: "new", public_key: "pk-new" }]);
+      a.saveCommitteeRotation(stale);
+      a.saveCommitteeRotation(authoritative);
+      await drain();
+
+      const rows = await a.knex("committee_history").where("rotation_number", 4).select("*");
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].committee)).toEqual([{ node_id: "new", public_key: "pk-new" }]);
+      expect(rows[0].payload_hash).toBe(authoritative.payload_hash);
     });
 
     test("round-trip: fresh adapter hydrates committee_history from DB", async () => {

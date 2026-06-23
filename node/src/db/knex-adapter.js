@@ -1402,7 +1402,7 @@ class KnexAdapter {
       committed_at: rec.committed_at || nowMs(),
       local_inserted_at: nowMs(),
     };
-    this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
+    this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "merge"));
   }
 
   getCommitteeRotation(n) { return this.mirror.getCommitteeRotation(n); }
