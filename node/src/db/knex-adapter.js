@@ -1402,7 +1402,13 @@ class KnexAdapter {
       committed_at: rec.committed_at || nowMs(),
       local_inserted_at: nowMs(),
     };
-    this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "ignore"));
+    // "merge" mirrors SQLite's INSERT OR REPLACE: a snapshot install carrying
+    // an authoritative rotation row must overwrite any prior local divergent
+    // row without a destructive clear step. Re-applying the same BFT-committed
+    // row is still idempotent (every column reset to the same canonical value).
+    // Tamper-safety is enforced by canCommitteeRotation() in business-rules
+    // (monotonic rotation_number + ≥2f+1 sigs), not by the DB strategy.
+    this._ff(() => this._dbInsert("committee_history", "rotation_number", row, "merge"));
   }
 
   getCommitteeRotation(n) { return this.mirror.getCommitteeRotation(n); }

@@ -102,15 +102,25 @@ async function drain() {
       expect(rows[0].payload_hash).toBe(r1.payload_hash);
     });
 
-    test("saveCommitteeRotation is idempotent (INSERT OR IGNORE)", async () => {
+    test("saveCommitteeRotation uses INSERT OR REPLACE — re-apply is idempotent, snapshot can overwrite stale row", async () => {
       const r2 = rot(2, 200, [{ node_id: "n2", public_key: "pk2" }]);
+      // First write (e.g. from BFT commit).
       a.saveCommitteeRotation(r2);
-      a.saveCommitteeRotation({ ...r2, payload_hash: "tampered" });
+      await drain();
+
+      // Second write with updated signer set (e.g. snapshot install carrying
+      // a more complete authoritative row). Must overwrite the first.
+      const r2updated = { ...r2, signer_node_ids: ["n0", "n1"], signatures: ["sig-a", "sig-b"] };
+      a.saveCommitteeRotation(r2updated);
       await drain();
 
       const rows = await a.knex("committee_history").where("rotation_number", 2).select("*");
       expect(rows).toHaveLength(1);
+      // payload_hash unchanged (authoritative BFT value preserved).
       expect(rows[0].payload_hash).toBe(r2.payload_hash);
+      // signer set updated by the second (snapshot-authoritative) write.
+      expect(JSON.parse(rows[0].signer_node_ids)).toEqual(["n0", "n1"]);
+      expect(JSON.parse(rows[0].signatures)).toEqual(["sig-a", "sig-b"]);
     });
 
     test("round-trip: fresh adapter hydrates committee_history from DB", async () => {
