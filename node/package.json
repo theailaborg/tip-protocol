@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "gen:schema": "node src/db/gen-schema.js",
     "test": "node --experimental-vm-modules ../node_modules/.bin/jest --runInBand --forceExit",
     "test:watch": "../node_modules/.bin/jest --watch",
     "test:coverage": "../node_modules/.bin/jest --coverage --forceExit",

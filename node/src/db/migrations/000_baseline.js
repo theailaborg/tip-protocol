@@ -7,6 +7,17 @@ function _id(t, col) { return t.string(col, 512); }
 function _pk(t, col) { return t.string(col, 512).primary(); }
 
 exports.up = async (knex) => {
+  // Node-local bookkeeping timestamps (local_inserted_at, mempool.received_at)
+  // auto-stamp the current epoch-ms when a row is inserted WITHOUT the column —
+  // the SQLiteStore inserts omit them and rely on this default (e.g. mempool
+  // ordering + clearMempoolBefore). SQLite expresses it as a default
+  // expression; server engines get a literal 0 because the KnexAdapter always
+  // passes the value explicitly there. Matches dag.js _migrate() (drift-guarded
+  // by tests/db/migration-baseline-schema.test.js).
+  const nowDefault = () => (knex.client.config.client === "better-sqlite3"
+    ? knex.raw("(unixepoch() * 1000)")
+    : 0);
+
   await knex.schema.createTable("transactions", t => {
     _pk(t, "tx_id");
     t.string("tx_type", 64).notNullable();
@@ -20,7 +31,7 @@ exports.up = async (knex) => {
     // For chain-time use `transactions.timestamp` (the author-signed value
     // bound into tx_id). See `local_inserted_at` semantic in the file
     // header.
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.index("tx_type", "idx_txs_type");
     t.index("timestamp", "idx_txs_ts");
     t.index("local_inserted_at", "idx_txs_local_inserted_at");
@@ -233,7 +244,7 @@ exports.up = async (knex) => {
     t.bigInteger("timestamp").notNullable().defaultTo(0);
     // local_inserted_at = node-local write time. Chain-time for a cert
     // is `certificates.timestamp` (BFT-Time = median of acks.signed_at).
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.index("round", "idx_cert_round");
     t.index(["author_node_id", "round"], "idx_cert_author");
   });
@@ -255,7 +266,7 @@ exports.up = async (knex) => {
     t.string("anchor_batch_hash", 128).nullable();
     // local_inserted_at = node-local write time. Chain-time for a
     // commit is `commits.committed_at` (= anchor cert's BFT-Time).
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.unique(["consensus_index"], "idx_commits_index");
   });
 
@@ -265,7 +276,7 @@ exports.up = async (knex) => {
     t.string("batch_hash", 128).notNullable();
     // local_inserted_at = when this node first observed the vote.
     // Pure operational dedup table; not in any canonical projection.
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.primary(["round", "author"]);
     t.index("round", "idx_votes_round");
   });
@@ -274,7 +285,7 @@ exports.up = async (knex) => {
     t.string("tx_id", 128).primary();
     t.text("tx_data").notNullable();
     _id(t, "subject_tip_id").nullable();
-    t.bigInteger("received_at").notNullable().defaultTo(0);
+    t.bigInteger("received_at").notNullable().defaultTo(nowDefault());
     t.index("subject_tip_id", "idx_mempool_subject");
   });
 
@@ -312,7 +323,7 @@ exports.up = async (knex) => {
     // local_inserted_at = node-local write time. Chain-time for the
     // rotation is `committee_history.committed_at` (= committing cert's
     // BFT-Time).
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.index("effective_round", "idx_committee_history_round");
   });
 
@@ -327,7 +338,7 @@ exports.up = async (knex) => {
     t.bigInteger("registered_at").notNullable();
     t.string("registered_by_vp_id", 128).nullable();
     t.string("tx_id", 128).nullable();
-    t.bigInteger("local_inserted_at").notNullable().defaultTo(0);
+    t.bigInteger("local_inserted_at").notNullable().defaultTo(nowDefault());
     t.index("category", "idx_interests_registry_category");
   });
 
@@ -360,6 +371,10 @@ exports.up = async (knex) => {
     t.integer("rotation_number").notNullable();
     t.integer("count").notNullable().defaultTo(0);
     t.primary(["node_id", "rotation_number"]);
+    // Lone rotation_number lookups (getParticipation / cleanup DELETEs) can't
+    // use the (node_id, rotation_number) PK — wrong leftmost column. NOT
+    // redundant with the PK, so safe on Oracle (unlike idx_entity_keys_time).
+    t.index(["rotation_number"], "idx_rotation_participation_rotation");
   });
 
   // Off-chain dispute body store. Per-node, NOT consensus state — see

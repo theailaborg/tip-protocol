@@ -109,6 +109,15 @@ const TIMESTAMP_COLUMN_NAME = /^(timestamp|cert_timestamp|last_updated|.*_at|.*_
 const TIMESTAMP_NAME_EXEMPT = (col) =>
   /_at_round$/.test(col.name) || col.name === "ack_signed_ats";
 
+// SQLite type affinity: any declared type containing "INT" has INTEGER affinity
+// (integer storage, read back as a JS Number). The SQLite schema is now
+// generated from the Knex baseline migration, which declares ms timestamps as
+// `t.bigInteger(...)` -> "bigint" (mandatory: 4-byte "integer" overflows
+// epoch-ms on Postgres). "bigint" and "INTEGER" are the SAME storage class, so
+// the invariant this guards (integer ms, never TEXT/REAL, the scores.last_updated
+// drift incident) is a check on affinity, not on the literal declared spelling.
+const isIntegerAffinity = (declaredType) => /INT/i.test(declaredType || "");
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. Source discipline
@@ -186,8 +195,8 @@ describe("timestamp schema invariants — SQLite tables", () => {
       for (const col of cols) {
         if (!TIMESTAMP_COLUMN_NAME.test(col.name)) continue;
         if (TIMESTAMP_NAME_EXEMPT(col)) continue;
-        if (col.type !== "INTEGER") {
-          violations.push(`  ${table}.${col.name} is ${col.type || "<no-type>"} (expected INTEGER)`);
+        if (!isIntegerAffinity(col.type)) {
+          violations.push(`  ${table}.${col.name} is ${col.type || "<no-type>"} (expected INTEGER affinity)`);
         }
       }
     }
@@ -318,7 +327,7 @@ describe("timestamp schema invariants — cross-store drift", () => {
       for (const col of cols) {
         if (!TIMESTAMP_COLUMN_NAME.test(col.name)) continue;
         if (TIMESTAMP_NAME_EXEMPT(col)) continue;
-        if (col.type !== "INTEGER") continue;        // already enforced by test 2
+        if (!isIntegerAffinity(col.type)) continue;  // already enforced by test 2
         const knexSetForTable = knexCols.get(table);
         if (!knexSetForTable) {
           missingInKnex.push(`  ${table}.${col.name}  (table not found in knex source)`);
@@ -349,7 +358,7 @@ describe("timestamp schema invariants — cross-store drift", () => {
     ).all();
     for (const { name: table } of tables) {
       const cols = rawDb.prepare(`PRAGMA table_info(${table})`).all();
-      sqliteCols.set(table, new Set(cols.filter(c => c.type === "INTEGER").map(c => c.name)));
+      sqliteCols.set(table, new Set(cols.filter(c => isIntegerAffinity(c.type)).map(c => c.name)));
     }
 
     const missingInSqlite = [];
