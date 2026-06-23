@@ -861,7 +861,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
 
     // Clear halt BEFORE enterSyncMode so narwhal can respond to sync transitions.
     // This must happen before the install loop so the node is in the correct state
-    // regardless of which peer we end up using.
+    // regardless of which peer we end up using. #93: capture the halt first so we
+    // can RESTORE it if the repair fails (clearing is only valid on success).
+    const _priorByzHalt = (typeof narwhal.byzantineForkHalt === "function")
+      ? narwhal.byzantineForkHalt() : null;
     if (typeof narwhal.clearByzantineForkHalt === "function") {
       narwhal.clearByzantineForkHalt();
     }
@@ -944,6 +947,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
 
       _log.warn(`anti-entropy: auto-recovery: all ${candidateTipIds.length} candidate peer(s) failed — manual intervention may be needed`);
+      // #93: the repair FAILED, so RESTORE the byzantine-fork halt cleared at the
+      // top. Without this the still-diverged node returns to consensus as if
+      // healthy (clearByzantineForkHalt is only safe after a verified install).
+      // The halt gates _canProduce, so the node stops producing and the operator
+      // is re-signaled; the next AE tick can still retry recovery from here.
+      if (typeof narwhal.haltDueToByzantineFork === "function") {
+        narwhal.haltDueToByzantineFork(_priorByzHalt || {
+          reason: "auto-recovery snapshot install failed (still diverged)",
+          atRound: Number(selfState.round || 0),
+        });
+      }
       // Return narwhal to ready so the deadlock-escape or next recovery tick can
       // retry. Without this, if the node is in syncing (e.g. watchdog reverted it),
       // triggerSnapshotResync is permanently blocked and the node stays stuck.
@@ -1626,12 +1640,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // no new deferred anchor timers ever fire, and the node is permanently stuck.
     // Consistent with the peer-ahead and unanimous-minority recovery paths which
     // both call clearByzantineForkHalt() before _runSnapshotFallback.
-    if (narwhal && typeof narwhal.clearByzantineForkHalt === "function") {
-      const activeHalt = narwhal.byzantineForkHalt && narwhal.byzantineForkHalt();
-      if (activeHalt) {
-        _log.notice(`anti-entropy: triggerSnapshotResync: clearing active halt before snapshot install`);
-        narwhal.clearByzantineForkHalt();
-      }
+    // #93: capture the halt so we can RESTORE it if the resync fails (clearing
+    // is only safe after a verified install). Hoisted so the finally can see it.
+    const _activeHalt = (narwhal && typeof narwhal.byzantineForkHalt === "function")
+      ? narwhal.byzantineForkHalt() : null;
+    let _resyncOk = false;
+    if (_activeHalt && typeof narwhal.clearByzantineForkHalt === "function") {
+      _log.notice(`anti-entropy: triggerSnapshotResync: clearing active halt before snapshot install`);
+      narwhal.clearByzantineForkHalt();
     }
 
     try {
@@ -1659,6 +1675,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           _lastAutoRecoveryAt = nowMs();
           _lastSnapshotResyncCompletedAt = nowMs();
           _log.notice(`anti-entropy: triggerSnapshotResync complete — snapshot installed from ${candidatePeer.slice(0, 12)}, resuming consensus`);
+          _resyncOk = true;
           return "snapshot_installed";
         }
         _log.warn(`anti-entropy: triggerSnapshotResync: snapshot from ${candidatePeer.slice(0, 12)} returned '${result}' — trying next peer`);
@@ -1692,6 +1709,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
             _lastAutoRecoveryAt = nowMs();
             _lastSnapshotResyncCompletedAt = nowMs();
             _log.notice(`anti-entropy: triggerSnapshotResync complete (fresh-majority fallback) — snapshot installed from ${freshBestPeer.slice(0, 12)}, resuming consensus`);
+            _resyncOk = true;
             return "snapshot_installed";
           }
           _log.warn(`anti-entropy: triggerSnapshotResync: fresh-majority snapshot from ${freshBestPeer.slice(0, 12)} returned '${result}'`);
@@ -1701,6 +1719,13 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       _log.warn(`anti-entropy: triggerSnapshotResync: all ${orderedPeerIds.length} peer(s) exhausted`);
       return "snapshot_failed";
     } finally {
+      // #93: if the resync did NOT install (failure or throw) and we cleared an
+      // active byzantine-fork halt above, RESTORE it so the still-diverged node
+      // stays halted (not back in consensus as healthy). The next AE tick, seeing
+      // it still halted, re-triggers recovery, so it keeps retrying safely.
+      if (_activeHalt && !_resyncOk && typeof narwhal.haltDueToByzantineFork === "function") {
+        narwhal.haltDueToByzantineFork(_activeHalt);
+      }
       _snapshotResyncInFlight = false;
     }
   }
