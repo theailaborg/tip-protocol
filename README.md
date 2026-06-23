@@ -473,6 +473,41 @@ Docker: `docker compose -f docker-compose.local.yml --profile mssql up -d`
 > Connection pool defaults are `DB_POOL_MIN=2` / `DB_POOL_MAX=10` and apply to all server-side drivers.
 > The Knex adapter uses an in-memory mirror for reads + fire-and-forget for writes (see `node/src/db/knex-adapter.js`).
 
+### Database Migrations
+
+All schema (DDL) lives in versioned migrations under `node/src/db/migrations/`, not
+in store code. Run them from the `node/` directory. The default environment reads
+`DB_DRIVER`, so the npm scripts apply to whatever DB your `.env` points at:
+
+```bash
+cd node
+npm run db:migrate     # apply all pending migrations
+npm run db:status      # show completed + pending migrations
+npm run db:rollback    # undo the last batch
+npm run db:fresh       # roll everything back, then re-apply from empty
+```
+
+`db:migrate` on a brand-new DB applies `000_baseline.js` and builds the full
+schema from zero. Knex has no `migrate:fresh` (that is a Laravel command);
+`db:fresh` is the knex-native equivalent (`rollback --all` + `migrate:latest`).
+
+To target one engine explicitly (ignoring `DB_DRIVER`), pass `--env` —
+`sqlite` | `pg` | `mariadb` | `mssql` | `oracle`:
+
+```bash
+# Postgres (production)
+npx knex --knexfile knexfile.js --env pg migrate:latest
+
+# Fresh re-run: roll everything back, then re-apply from empty
+npx knex --knexfile knexfile.js --env pg migrate:rollback --all
+npx knex --knexfile knexfile.js --env pg migrate:latest
+```
+
+A fresh node applies `000_baseline.js` (the full schema) on first migrate. Add
+schema changes as new `NNN_description.js` files; see
+`node/src/db/migrations/README.md` for the numbering, tagging
+(consensus-affecting vs node-local), and authoring rules.
+
 ---
 
 ### Media Storage (local / S3)
