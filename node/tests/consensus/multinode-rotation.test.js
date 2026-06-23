@@ -290,4 +290,33 @@ describe("multi-node consensus harness, committee rotation", () => {
       stopAll(nodes);
     }
   }, 130000);
+
+  // The real question behind the live incident: left to run NORMALLY (no fault
+  // injection, nothing dropped), does the actual consensus ever halt itself at a
+  // rotation boundary because the rotation tx didn't commit in time? Drive the
+  // real system through several consecutive epochs and assert it keeps advancing
+  // and every rotation lands in committee_history before its boundary. An
+  // organic, self-inflicted halt would stall the network and time this out.
+  // Set TIP_ROTATION_EPOCHS to push it through more boundaries.
+  test("real system crosses multiple rotation boundaries with no self-inflicted halt (5 nodes, committee 4)", async () => {
+    const EPOCHS = Number(process.env.TIP_ROTATION_EPOCHS || 2);
+    const net = createNet();
+    const nodes = await bootRotationCommittee(net, { registered: 5, committee: 4 });
+    const target = EPOCH_ROUNDS * EPOCHS + 2;
+    try {
+      await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > target), { timeoutMs: 220000 });
+      for (const n of nodes) {
+        expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(target);
+        // Every rotation up to the last boundary crossed committed in time, each
+        // effective exactly at its epoch boundary.
+        for (let r = 1; r <= EPOCHS; r++) {
+          const rot = n.dag.getCommitteeRotation(r);
+          expect(rot).toBeTruthy();
+          expect(rot.effective_round).toBe(EPOCH_ROUNDS * r);
+        }
+      }
+    } finally {
+      stopAll(nodes);
+    }
+  }, 260000);
 });
