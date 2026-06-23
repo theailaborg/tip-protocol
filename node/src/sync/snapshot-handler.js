@@ -43,7 +43,7 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
@@ -466,14 +466,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       try { await stream.sink([reqBuf]); }
       catch (err) { throw new Error(`failed to send request: ${err.message}`); }
 
-      // Read every frame off the stream into a single buffer, then split
-      // into length-prefixed messages. For MVP this buffers the whole
-      // snapshot on the client (small state, bounded memory). Scale fix is
-      // same trigger as issues.md Consensus #32 — swap in a streaming
-      // length-prefix parser when state grows.
-      const chunks = [];
-      for await (const chunk of stream.source) chunks.push(chunk.subarray ? chunk.subarray() : chunk);
-      const body = Buffer.concat(chunks);
+      // Read every frame off the stream into a single buffer, then split into
+      // length-prefixed messages. #94: the read is BOUNDED by a total-byte cap
+      // and an overall deadline so a hostile/buggy peer can't OOM the joiner
+      // (flood) or hang it in `syncing` forever (silence / slow-trickle); a
+      // breach aborts the stream and throws, failing this fetch so we retry
+      // another peer. (Scale fix for legitimately-large state is a streaming
+      // length-prefix parser, deferred, same trigger as issues.md Consensus #32.)
+      const body = await _readBoundedStream(
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
+      );
 
       const frames = _parseLengthPrefixedFrames(body);
       if (frames.length === 0) throw new Error("empty response from peer");
@@ -1324,4 +1326,43 @@ function _emptyHeader(error) {
   };
 }
 
-module.exports = { createSnapshotHandler };
+// Forcibly tear down a stream (abort if the transport supports it, else close),
+// swallowing errors. Used to stop a hostile/slow peer mid-download.
+function _abortStream(stream, err) {
+  try {
+    if (typeof stream.abort === "function") stream.abort(err);
+    else if (typeof stream.close === "function") stream.close();
+  } catch { /* ignore */ }
+}
+
+// #94: read a snapshot body off a stream into one Buffer, bounded by a total-
+// byte cap AND an overall deadline. A flood trips the byte cap; a hang or a
+// slow-trickle trips the deadline. Either aborts the stream and throws, so the
+// fetch fails fast and retries another peer instead of OOM-ing the joiner or
+// hanging it in `syncing` forever (holding the install-once guard).
+async function _readBoundedStream(stream, maxBytes, maxMs) {
+  const chunks = [];
+  let total = 0;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    _abortStream(stream, new Error("snapshot download deadline exceeded"));
+  }, maxMs);
+  try {
+    for await (const chunk of stream.source) {
+      const buf = chunk.subarray ? chunk.subarray() : chunk;
+      total += buf.length;
+      if (total > maxBytes) {
+        _abortStream(stream, new Error("snapshot too large"));
+        throw new Error(`snapshot download exceeds ${maxBytes}-byte cap (received >${total})`);
+      }
+      chunks.push(buf);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  if (timedOut) throw new Error(`snapshot download timed out after ${maxMs}ms`);
+  return Buffer.concat(chunks);
+}
+
+module.exports = { createSnapshotHandler, _readBoundedStream };
