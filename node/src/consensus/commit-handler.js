@@ -1620,8 +1620,11 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // committee) and _dedupCheck (rotation_number monotonic) and
       // _statefulCheck (effective_round monotonic, well-formed committee).
       // All that's left is to persist the row to committee_history.
-      // saveCommitteeRotation uses INSERT OR IGNORE so a re-replay of
-      // the same tx is a no-op (matches replay semantics elsewhere).
+      // saveCommitteeRotation uses INSERT OR REPLACE: re-applying the same
+      // row is a no-op, and a snapshot's authoritative row overwrites a prior
+      // divergent one (snapshot-handler relies on this). _dedupCheck already
+      // rejects duplicate rotation_numbers here, so this path only ever sees
+      // a new rotation or an identical re-replay.
       //
       // committed_at: prefer the BFT-Time `_committedCertTimestamp`
       // (median of acks.signed_at at this anchor commit, deterministic
