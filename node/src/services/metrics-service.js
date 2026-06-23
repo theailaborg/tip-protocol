@@ -174,6 +174,11 @@ function narwhalSection(s) {
     gauge("tip_narwhal_active_participants", "Active committee size (DAG-derived)", n.activeParticipants),
     gauge("tip_narwhal_registered_nodes", "Total registered nodes (includes inactive)", n.registeredNodes),
     gauge("tip_narwhal_mempool_size", "Pending txs in mempool", n.mempoolSize),
+    // #93: byzantine-fork halt visibility. The forked node emits halted=1; the
+    // round it diverged at is fork_round. A halted node stops participating and
+    // auto-retries snapshot recovery until it heals (or an operator steps in).
+    gauge("tip_consensus_byzantine_fork_halted", "1 if THIS node is halted on a byzantine fork (state divergence vs the majority); 0 otherwise. The forked node is the one emitting 1.", n.byzantineForkHalt ? 1 : 0),
+    gauge("tip_consensus_byzantine_fork_round", "Round at which this node's byzantine fork was detected (atRound); 0 when not forked.", n.byzantineForkHalt?.atRound || 0),
     counter("tip_narwhal_rounds_advanced_total", "Total consensus rounds advanced since process start", nm.rounds_advanced),
     counter("tip_narwhal_batches_received_total", "Total batches received (own + peer)", nm.batches_received),
     counter("tip_narwhal_certs_received_total", "Total certificates received from peers", nm.certs_received),
@@ -280,6 +285,16 @@ function committeeSection(s, dag) {
     counter("tip_committee_rotation_committed_total", "Total rotation events that landed in committee_history (excludes the genesis bootstrap row)", committedTotal),
     counter("tip_committee_rotation_failures_total", "COMMITTEE_ROTATION txs rejected at commit-handler (insufficient sigs, gap, payload mismatch, etc.)", failuresTotal),
     counter("tip_snapshot_chain_walk_failures_total", "Snapshot imports rejected because the rotation chain failed cryptographic verification (synthetic-snapshot attack class)", chainWalkFailures),
+    // Snapshot install progress + size (#94). last_install_* describe the most
+    // recent completed install; install_in_progress + the *_rows/_bytes gauges
+    // let operators watch a running install live.
+    counter("tip_snapshot_installs_completed_total", "Snapshot installs that completed successfully", (s.snapshotHandler?.metrics?.installs_completed) || 0),
+    gauge("tip_snapshot_last_install_bytes", "Download size in bytes of the most recently completed snapshot install", (s.snapshotHandler?.metrics?.last_install_bytes) || 0),
+    gauge("tip_snapshot_last_install_rows", "Row count of the most recently completed snapshot install", (s.snapshotHandler?.metrics?.last_install_rows) || 0),
+    gauge("tip_snapshot_install_in_progress", "1 while a snapshot is currently installing; 0 when idle", s.snapshotHandler?.install ? 1 : 0),
+    gauge("tip_snapshot_install_progress_rows", "Rows installed so far in the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.installed) || 0),
+    gauge("tip_snapshot_install_total_rows", "Total rows to install in the in-progress snapshot; 0 when idle", (s.snapshotHandler?.install?.total) || 0),
+    gauge("tip_snapshot_install_bytes", "Download size in bytes of the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.bytes) || 0),
   ].join("\n");
 }
 
