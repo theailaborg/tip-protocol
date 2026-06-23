@@ -107,10 +107,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // can serve multiple minority nodes concurrently (ISSUE_47 Option C).
   let _snapServing = false;
 
+  // Live install progress for operators to poll (surfaced via stats()). null
+  // when idle; during an install: { phase, installed, total, bytes }.
+  let _installProgress = null;
+
   function resetInstallState() {
     _snapInstalled = false;
     _snapInstallInProgress = false;
     _snapServing = false;
+    _installProgress = null;
   }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
@@ -769,7 +774,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         rotations: rotationInstallQueue,
         certs: certInstallQueue,
         rp: rpInstallQueue,
-      });
+      }, body.length);
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
@@ -837,7 +842,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
   }
 
-  function _installSnapshot(header, queues) {
+  function _installSnapshot(header, queues, snapBytes) {
     // Atomic install — every row, every tx, every commit, plus the
     // header's commit row land together or nothing does. Uses DAG's
     // public save* / addTx methods so write paths match normal
@@ -856,9 +861,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //   3. Pre-snapshot commits (#49 — every commit row except the
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
+    // Install progress + size (operators poll via stats(); logs at ~10%).
+    const _snapBytes = snapBytes || 0;
+    const _snapTotalRows = (queues.stateRows?.length || 0) + (queues.txs?.length || 0)
+      + (queues.commits?.length || 0) + (queues.rotations?.length || 0)
+      + (queues.certs?.length || 0) + (queues.rp?.length || 0);
+    const _snapMB = (_snapBytes / (1024 * 1024)).toFixed(1);
+    log.info(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
+    _installProgress = { phase: "installing", installed: 0, total: _snapTotalRows, bytes: _snapBytes };
+    let _stateLogAt = queues.stateRows.length > 0 ? Math.ceil(queues.stateRows.length / 10) : Infinity;
     _snapServing = true;
     try {
-      return dag.runInTransaction(() => {
+      const _installResult = dag.runInTransaction(() => {
         // Wipe all canonical-state tables before installing the peer's rows.
         // Without this, extra rows from this node's divergent history survive
         // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
@@ -871,6 +885,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const { table, row } of queues.stateRows) {
           _installOneRow(table, row);
           stateN++;
+          if (stateN >= _stateLogAt) {
+            const pct = _snapTotalRows > 0 ? Math.floor((stateN / _snapTotalRows) * 100) : 0;
+            log.info(`Snapshot install: ${pct}% (${stateN}/${_snapTotalRows} rows)`);
+            _installProgress = { phase: "state", installed: stateN, total: _snapTotalRows, bytes: _snapBytes };
+            _stateLogAt += Math.ceil(queues.stateRows.length / 10);
+          }
         }
 
         // GH #32 — dedup gate: snapshot install bypasses
@@ -1029,8 +1049,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rotation_txs_skipped: rotationSkipped,
         };
       });
+      log.info(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
+      _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
+      _metrics.last_install_rows = _snapTotalRows;
+      _metrics.last_install_bytes = _snapBytes;
+      return _installResult;
     } finally {
       _snapServing = false;
+      _installProgress = null;
     }
   }
 
@@ -1279,7 +1305,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     resetInstallState,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
-    stats: () => ({ metrics: { ..._metrics } }),
+    stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),
     // Exposed for unit tests
     _handleIncomingSnapshot,
     _verifyRotationChain,
