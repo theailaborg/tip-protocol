@@ -1944,7 +1944,7 @@ class SQLiteStore {
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
-           (ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
+           (tip_ctid,origin_code,content_hash,author_tip_id,signer_tip_id,
             authors,attribution_mode,extras,cna_version,
             status,prescan_flagged,prescan_probability,prescan_tier,
             prescan_status,prescan_completed_at,prescan_assigned_node_id,
@@ -1952,9 +1952,9 @@ class SQLiteStore {
             override,registered_at,registered_urls,media,media_canonical_hash,tx_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
-      getContent: this.db.prepare("SELECT * FROM content WHERE ctid=?"),
-      updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE ctid=?"),
-      updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE ctid=?"),
+      getContent: this.db.prepare("SELECT * FROM content WHERE tip_ctid=?"),
+      updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE tip_ctid=?"),
+      updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
       // M6 retention — content rows with media[] that pre-date a cutoff,
@@ -2221,7 +2221,7 @@ class SQLiteStore {
       // closed_accepted_private etc.) via successive saves.
       savePrescanReview: this.db.prepare(
         `INSERT OR REPLACE INTO prescan_reviews
-           (review_id, ctid, creator_tip_id, assigned_reviewer,
+           (review_id, tip_ctid, creator_tip_id, assigned_reviewer,
             triggered_at_round, triggered_at_ms,
             decided_at_round, confirmed_at_round,
             confirmed_at_ms, state, decision_note, suggested_origin)
@@ -2233,13 +2233,13 @@ class SQLiteStore {
       // Only one open review per CTID at a time — state='triggered' OR
       // 'confirmed' (creator-decision window). Closed states are terminal.
       getOpenPrescanReviewByCtid: this.db.prepare(
-        "SELECT * FROM prescan_reviews WHERE ctid=? AND state IN ('triggered','confirmed') ORDER BY triggered_at_round DESC LIMIT 1"
+        "SELECT * FROM prescan_reviews WHERE tip_ctid=? AND state IN ('triggered','confirmed') ORDER BY triggered_at_round DESC LIMIT 1"
       ),
       getPrescanReviewsByReviewer: this.db.prepare(
         "SELECT * FROM prescan_reviews WHERE assigned_reviewer=? ORDER BY triggered_at_round DESC"
       ),
       getPrescanReviewsByCtid: this.db.prepare(
-        "SELECT * FROM prescan_reviews WHERE ctid=? ORDER BY triggered_at_round DESC"
+        "SELECT * FROM prescan_reviews WHERE tip_ctid=? ORDER BY triggered_at_round DESC"
       ),
       // Phase 2.5 trigger queries. content.registered_at is integer epoch
       // ms; index on (status, prescan_tier) carries the high-selectivity
@@ -2257,7 +2257,7 @@ class SQLiteStore {
       getContentsNeedingReview: this.db.prepare(
         `SELECT c.* FROM content c
          LEFT JOIN prescan_reviews r
-           ON r.ctid = c.ctid AND r.state != 'recused'
+           ON r.tip_ctid = c.tip_ctid AND r.state != 'recused'
          WHERE c.status = 'registered'
            AND c.origin_code = 'OH'
            AND c.prescan_status = 'completed'
@@ -2417,14 +2417,14 @@ class SQLiteStore {
       // concurrent workers correctly.
       enqueuePrescanJob: this.db.prepare(
         `INSERT OR IGNORE INTO prescan_jobs
-           (job_id, ctid, payload, status, claimed_at, claimed_by, retries, last_error, created_at, completed_at)
+           (job_id, tip_ctid, payload, status, claimed_at, claimed_by, retries, last_error, created_at, completed_at)
          VALUES (?, ?, ?, 'queued', NULL, NULL, 0, NULL, ?, NULL)`
       ),
       getPrescanJob: this.db.prepare(
         "SELECT * FROM prescan_jobs WHERE job_id=?"
       ),
       getPrescanJobByCtid: this.db.prepare(
-        "SELECT * FROM prescan_jobs WHERE ctid=?"
+        "SELECT * FROM prescan_jobs WHERE tip_ctid=?"
       ),
       claimPrescanJob: this.db.prepare(
         `UPDATE prescan_jobs
@@ -2457,40 +2457,40 @@ class SQLiteStore {
       // Perceptual index (off-DAG, advisory).
       savePerceptualFingerprint: this.db.prepare(
         `INSERT OR REPLACE INTO perceptual_fingerprint
-           (ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
+           (tip_ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ),
       saveMinhashBand: this.db.prepare(
-        `INSERT OR IGNORE INTO minhash_band (profile, band_idx, band_hash, ctid) VALUES (?, ?, ?, ?)`
+        `INSERT OR IGNORE INTO minhash_band (profile, band_idx, band_hash, tip_ctid) VALUES (?, ?, ?, ?)`
       ),
       savePhashCode: this.db.prepare(
         `INSERT OR IGNORE INTO phash_code
-           (ctid, component_idx, frame, profile, modality, ts, quality, pdq,
+           (tip_ctid, component_idx, frame, profile, modality, ts, quality, pdq,
             c0,c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getPerceptualFingerprint: this.db.prepare(
-        "SELECT * FROM perceptual_fingerprint WHERE ctid=? AND component_idx=?"
+        "SELECT tip_ctid AS ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at FROM perceptual_fingerprint WHERE tip_ctid=? AND component_idx=?"
       ),
       findMinhashByBand: this.db.prepare(
-        "SELECT ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
+        "SELECT tip_ctid AS ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
       ),
       getPhashCodesByCtid: this.db.prepare(
-        "SELECT ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE ctid=?"
+        "SELECT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq FROM phash_code WHERE tip_ctid=?"
       ),
       // Audio: surrogate clip_id (§8.1). Upsert refreshes the FULL landmark_count
       // and RETURNs the clip_id the landmark rows point at.
       upsertAudioClip: this.db.prepare(
-        `INSERT INTO audio_clip (ctid, component_idx, landmark_count)
+        `INSERT INTO audio_clip (tip_ctid, component_idx, landmark_count)
          VALUES (?, ?, ?)
-         ON CONFLICT(ctid, component_idx) DO UPDATE SET landmark_count=excluded.landmark_count
+         ON CONFLICT(tip_ctid, component_idx) DO UPDATE SET landmark_count=excluded.landmark_count
          RETURNING clip_id`
       ),
       saveAudioLandmark: this.db.prepare(
         "INSERT OR IGNORE INTO audio_landmark (profile, hash, clip_id, t) VALUES (?, ?, ?, ?)"
       ),
       getAudioClip: this.db.prepare(
-        "SELECT clip_id, ctid, component_idx, landmark_count FROM audio_clip WHERE clip_id=?"
+        "SELECT clip_id, tip_ctid AS ctid, component_idx, landmark_count FROM audio_clip WHERE clip_id=?"
       ),
     };
   }
@@ -2625,9 +2625,11 @@ class SQLiteStore {
       if (typeof s !== "string" || !s.length) return fallback;
       try { return JSON.parse(s); } catch { return fallback; }
     };
+    // DB column is `tip_ctid` (uniform across all backends); callers use `ctid`.
+    const { tip_ctid, ...rest } = row;
     return {
-      ...row,
-      ctid: row.ctid,
+      ...rest,
+      ctid: tip_ctid,
       registered_urls: (() => { const v = decode(row.registered_urls, []); return Array.isArray(v) ? v : []; })(),
       authors: (() => { const v = decode(row.authors, []); return Array.isArray(v) ? v : []; })(),
       extras: (() => { const v = decode(row.extras, {}); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; })(),
@@ -2650,11 +2652,11 @@ class SQLiteStore {
     if (status) { where.push("status = ?"); params.push(status); }
     if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
     if (cursor) {
-      where.push("(registered_at < ? OR (registered_at = ? AND ctid < ?))");
+      where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");
       params.push(cursor.t, cursor.t, cursor.c);
     }
     const sql = `SELECT * FROM content${where.length ? " WHERE " + where.join(" AND ") : ""}
-      ORDER BY registered_at DESC, ctid DESC LIMIT ?`;
+      ORDER BY registered_at DESC, tip_ctid DESC LIMIT ?`;
     params.push(limit + 1);
     return this.db.prepare(sql).all(...params).map(r => this._hydrateContent(r));
   }
@@ -3094,7 +3096,9 @@ class SQLiteStore {
   }
   _hydratePrescanReview(row) {
     if (!row) return null;
-    return { ...row };
+    // DB column is `tip_ctid` (uniform across all backends); callers use `ctid`.
+    const { tip_ctid, ...rest } = row;
+    return { ...rest, ctid: tip_ctid };
   }
   getPrescanReview(reviewId) {
     return this._hydratePrescanReview(this._stmts.getPrescanReview.get(reviewId));
@@ -3207,7 +3211,7 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
       yield { table: "identities", row: _canonIdentity(r) };
     }
-    for (const r of db.prepare("SELECT * FROM content ORDER BY ctid").iterate()) {
+    for (const r of db.prepare("SELECT * FROM content ORDER BY tip_ctid").iterate()) {
       // _hydrateContent decodes JSON columns (authors, extras, registered_urls)
       // so _canonContent sees parsed values — matching the MemoryStore path.
       // Without this, JSON columns come through as strings and _canonContent's
@@ -3244,7 +3248,9 @@ class SQLiteStore {
       yield { table: "entity_keys", row: _canonEntityKey(r) };
     }
     for (const r of db.prepare("SELECT * FROM prescan_reviews ORDER BY review_id").iterate()) {
-      yield { table: "prescan_reviews", row: _canonPrescanReview(r) };
+      // Hydrate first so _canonPrescanReview sees `ctid` (DB column is tip_ctid),
+      // matching the content path above.
+      yield { table: "prescan_reviews", row: _canonPrescanReview(this._hydratePrescanReview(r)) };
     }
     for (const r of db.prepare("SELECT * FROM interests_registry ORDER BY slug").iterate()) {
       yield { table: "interests_registry", row: _canonInterest(r) };
@@ -3387,7 +3393,9 @@ class SQLiteStore {
   // ── Prescan jobs (node-local async classifier queue) ───────────────────
   _hydratePrescanJob(row) {
     if (!row) return null;
-    return { ...row };
+    // DB column is `tip_ctid` (uniform across all backends); callers use `ctid`.
+    const { tip_ctid, ...rest } = row;
+    return { ...rest, ctid: tip_ctid };
   }
   enqueuePrescanJob(rec) {
     // payload is canonical JSON; pass as-is (SQLite BLOB column).
@@ -3445,10 +3453,10 @@ class SQLiteStore {
       for (const k of keys) params.push(k);
     }
     const sql =
-      `SELECT DISTINCT ctid, profile, modality, frame, ts, quality, pdq
+      `SELECT DISTINCT tip_ctid AS ctid, profile, modality, frame, ts, quality, pdq
          FROM phash_code
         WHERE profile=? AND modality=? AND (${conds.join(" OR ")})
-        ORDER BY ctid, frame, pdq`;
+        ORDER BY tip_ctid, frame, pdq`;
     return this.db.prepare(sql).all(...params);
   }
   getPhashCodesByCtid(ctid) {

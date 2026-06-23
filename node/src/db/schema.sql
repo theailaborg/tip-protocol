@@ -3,7 +3,7 @@
 -- Regenerate with: npm run gen:schema
 -- Verified current by tests/db/migration-baseline-schema.test.js.
 
-CREATE TABLE IF NOT EXISTS `audio_clip` (`clip_id` integer not null primary key autoincrement, `ctid` varchar(512) not null, `component_idx` integer not null, `landmark_count` integer not null default '0');
+CREATE TABLE IF NOT EXISTS `audio_clip` (`clip_id` integer not null primary key autoincrement, `tip_ctid` varchar(512) not null, `component_idx` integer not null, `landmark_count` integer not null default '0');
 
 CREATE TABLE IF NOT EXISTS `audio_landmark` (`profile` varchar(64) not null, `hash` integer not null, `clip_id` bigint not null, `t` integer not null, primary key (`profile`, `hash`, `clip_id`, `t`));
 
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `committee_history` (`rotation_number` integer, `effe
 
 CREATE TABLE IF NOT EXISTS `consensus_meta` (`key` varchar(128), `value` text not null, primary key (`key`));
 
-CREATE TABLE IF NOT EXISTS `content` (`ctid` varchar(512), `origin_code` varchar(8) not null, `content_hash` varchar(128) not null, `author_tip_id` varchar(512) not null, `signer_tip_id` varchar(512) not null, `authors` text null, `attribution_mode` varchar(32) not null default 'self', `extras` text null, `cna_version` varchar(32) not null, `status` varchar(32) not null default 'verified', `dispute_count` integer not null default '0', `verification_count` integer not null default '0', `prescan_flagged` integer not null default '0', `prescan_probability` float not null default '0', `prescan_tier` varchar(16) not null default 'low', `prescan_status` varchar(16) not null default 'completed', `prescan_completed_at` bigint null, `prescan_assigned_node_id` varchar(512) null, `prescan_content_type` varchar(16) null, `prescan_overall_degraded` integer not null default '0', `content_type_hint` varchar(16) null, `override` integer not null default '0', `registered_at` bigint not null, `registered_urls` text null, `media` text null, `media_canonical_hash` varchar(64) null, `tx_id` varchar(512) null, primary key (`ctid`));
+CREATE TABLE IF NOT EXISTS `content` (`tip_ctid` varchar(512), `origin_code` varchar(8) not null, `content_hash` varchar(128) not null, `author_tip_id` varchar(512) not null, `signer_tip_id` varchar(512) not null, `authors` text null, `attribution_mode` varchar(32) not null default 'self', `extras` text null, `cna_version` varchar(32) not null, `status` varchar(32) not null default 'verified', `dispute_count` integer not null default '0', `verification_count` integer not null default '0', `prescan_flagged` integer not null default '0', `prescan_probability` float not null default '0', `prescan_tier` varchar(16) not null default 'low', `prescan_status` varchar(16) not null default 'completed', `prescan_completed_at` bigint null, `prescan_assigned_node_id` varchar(512) null, `prescan_content_type` varchar(16) null, `prescan_overall_degraded` integer not null default '0', `content_type_hint` varchar(16) null, `override` integer not null default '0', `registered_at` bigint not null, `registered_urls` text null, `media` text null, `media_canonical_hash` varchar(64) null, `tx_id` varchar(512) null, primary key (`tip_ctid`));
 
 CREATE TABLE IF NOT EXISTS `dedup_registry` (`dedup_hash` varchar(512), `created_at` bigint not null, `tip_id` varchar(128), primary key (`dedup_hash`));
 
@@ -31,21 +31,21 @@ CREATE TABLE IF NOT EXISTS `interests_registry` (`slug` varchar(40), `label` var
 
 CREATE TABLE IF NOT EXISTS `mempool` (`tx_id` varchar(128), `tx_data` text not null, `subject_tip_id` varchar(512) null, `received_at` bigint not null default (unixepoch() * 1000), primary key (`tx_id`));
 
-CREATE TABLE IF NOT EXISTS `minhash_band` (`profile` varchar(64) not null, `band_idx` integer not null, `band_hash` bigint not null, `ctid` varchar(512) not null, primary key (`profile`, `band_idx`, `band_hash`, `ctid`));
+CREATE TABLE IF NOT EXISTS `minhash_band` (`profile` varchar(64) not null, `band_idx` integer not null, `band_hash` bigint not null, `tip_ctid` varchar(512) not null, primary key (`profile`, `band_idx`, `band_hash`, `tip_ctid`));
 
 CREATE TABLE IF NOT EXISTS `nodes` (`node_id` varchar(512), `name` text null, `status` varchar(32) not null default 'active', `api_endpoint` text null, `updated_at` bigint null, `registered_at` bigint not null, primary key (`node_id`));
 
 CREATE TABLE IF NOT EXISTS `pending_domain_claims` (`domain` varchar(253), `tip_id` varchar(512) not null, `method` varchar(16) not null, `claimed_at` bigint not null, `signature` text not null, `received_at` bigint not null, primary key (`domain`));
 
-CREATE TABLE IF NOT EXISTS `perceptual_fingerprint` (`ctid` varchar(512) not null, `component_idx` integer not null, `modality` varchar(16) not null, `profile` varchar(64) not null, `pipeline` text not null, `quality` integer, `fingerprint` text not null, `created_at` bigint not null, primary key (`ctid`, `component_idx`));
+CREATE TABLE IF NOT EXISTS `perceptual_fingerprint` (`tip_ctid` varchar(512) not null, `component_idx` integer not null, `modality` varchar(16) not null, `profile` varchar(64) not null, `pipeline` text not null, `quality` integer, `fingerprint` text not null, `created_at` bigint not null, primary key (`tip_ctid`, `component_idx`));
 
-CREATE TABLE IF NOT EXISTS `phash_code` (`ctid` varchar(512) not null, `component_idx` integer not null, `frame` integer not null, `profile` varchar(64) not null, `modality` varchar(16) not null, `ts` float, `quality` integer not null, `pdq` varchar(64) not null, `c0` integer not null, `c1` integer not null, `c2` integer not null, `c3` integer not null, `c4` integer not null, `c5` integer not null, `c6` integer not null, `c7` integer not null, `c8` integer not null, `c9` integer not null, `c10` integer not null, `c11` integer not null, `c12` integer not null, `c13` integer not null, `c14` integer not null, `c15` integer not null, primary key (`ctid`, `component_idx`, `frame`));
+CREATE TABLE IF NOT EXISTS `phash_code` (`tip_ctid` varchar(512) not null, `component_idx` integer not null, `frame` integer not null, `profile` varchar(64) not null, `modality` varchar(16) not null, `ts` float, `quality` integer not null, `pdq` varchar(64) not null, `c0` integer not null, `c1` integer not null, `c2` integer not null, `c3` integer not null, `c4` integer not null, `c5` integer not null, `c6` integer not null, `c7` integer not null, `c8` integer not null, `c9` integer not null, `c10` integer not null, `c11` integer not null, `c12` integer not null, `c13` integer not null, `c14` integer not null, `c15` integer not null, primary key (`tip_ctid`, `component_idx`, `frame`));
 
 CREATE TABLE IF NOT EXISTS `platform_links` (`id` varchar(512), `tip_id` varchar(512) not null, `platform` varchar(50) not null, `handle` varchar(255) null, `profile_url` text not null, `status` varchar(32) not null default 'active', `linked_at` bigint not null, `verified_at` bigint not null, `unlinked_at` bigint null, `unlink_tx_id` varchar(512) null, `node_id` varchar(512) not null, `tx_id` varchar(512) not null, primary key (`id`));
 
-CREATE TABLE IF NOT EXISTS `prescan_jobs` (`job_id` varchar(128), `ctid` varchar(512) not null, `payload` blob not null, `status` varchar(16) not null, `claimed_at` bigint null, `claimed_by` varchar(128) null, `retries` integer not null default '0', `last_error` text null, `created_at` bigint not null, `completed_at` bigint null, primary key (`job_id`));
+CREATE TABLE IF NOT EXISTS `prescan_jobs` (`job_id` varchar(128), `tip_ctid` varchar(512) not null, `payload` blob not null, `status` varchar(16) not null, `claimed_at` bigint null, `claimed_by` varchar(128) null, `retries` integer not null default '0', `last_error` text null, `created_at` bigint not null, `completed_at` bigint null, primary key (`job_id`));
 
-CREATE TABLE IF NOT EXISTS `prescan_reviews` (`review_id` varchar(128), `ctid` varchar(512) not null, `creator_tip_id` varchar(512) not null, `assigned_reviewer` varchar(512) null, `triggered_at_round` integer not null, `triggered_at_ms` bigint null, `decided_at_round` integer null, `confirmed_at_round` integer null, `confirmed_at_ms` bigint null, `state` varchar(32) not null default 'triggered', `decision_note` text null, `suggested_origin` varchar(8) null, primary key (`review_id`));
+CREATE TABLE IF NOT EXISTS `prescan_reviews` (`review_id` varchar(128), `tip_ctid` varchar(512) not null, `creator_tip_id` varchar(512) not null, `assigned_reviewer` varchar(512) null, `triggered_at_round` integer not null, `triggered_at_ms` bigint null, `decided_at_round` integer null, `confirmed_at_round` integer null, `confirmed_at_ms` bigint null, `state` varchar(32) not null default 'triggered', `decision_note` text null, `suggested_origin` varchar(8) null, primary key (`review_id`));
 
 CREATE TABLE IF NOT EXISTS `revocations` (`tip_id` varchar(512), `tx_type` varchar(64) not null, `timestamp` bigint not null, `tx_id` varchar(512) not null, primary key (`tip_id`));
 
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS `verification_providers` (`vp_id` varchar(512), `name
 
 CREATE TABLE IF NOT EXISTS `votes_seen` (`round` integer not null, `author` varchar(512) not null, `batch_hash` varchar(128) not null, `local_inserted_at` bigint not null default (unixepoch() * 1000), primary key (`round`, `author`));
 
-CREATE UNIQUE INDEX IF NOT EXISTS `idx_audio_clip_ctid` on `audio_clip` (`ctid`, `component_idx`);
+CREATE UNIQUE INDEX IF NOT EXISTS `idx_audio_clip_ctid` on `audio_clip` (`tip_ctid`, `component_idx`);
 
 CREATE INDEX IF NOT EXISTS `idx_audio_landmark_lookup` on `audio_landmark` (`profile`, `hash`);
 
@@ -143,7 +143,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS `idx_platform_links_tip_plat` on `platform_lin
 
 CREATE INDEX IF NOT EXISTS `idx_prescan_jobs_status` on `prescan_jobs` (`status`, `created_at`);
 
-CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_ctid` on `prescan_reviews` (`ctid`);
+CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_ctid` on `prescan_reviews` (`tip_ctid`);
 
 CREATE INDEX IF NOT EXISTS `idx_prescan_reviews_reviewer` on `prescan_reviews` (`assigned_reviewer`);
 
@@ -165,4 +165,4 @@ CREATE INDEX IF NOT EXISTS `idx_txs_type` on `transactions` (`tx_type`);
 
 CREATE INDEX IF NOT EXISTS `idx_votes_round` on `votes_seen` (`round`);
 
-CREATE UNIQUE INDEX IF NOT EXISTS `prescan_jobs_ctid_unique` on `prescan_jobs` (`ctid`);
+CREATE UNIQUE INDEX IF NOT EXISTS `prescan_jobs_tip_ctid_unique` on `prescan_jobs` (`tip_ctid`);

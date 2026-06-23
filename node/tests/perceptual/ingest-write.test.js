@@ -47,22 +47,22 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
 
     test("text -> rows land in perceptual_fingerprint + minhash_band", async () => {
       await ingestFingerprint(store, textFp, { ctid: "OH-t", createdAt: 7 });
-      const fp = store.db.prepare("SELECT * FROM perceptual_fingerprint WHERE ctid=?").get("OH-t");
-      expect(fp).toMatchObject({ ctid: "OH-t", modality: "text", created_at: 7 });
-      const bands = store.db.prepare("SELECT COUNT(*) AS n FROM minhash_band WHERE ctid=?").get("OH-t");
+      const fp = store.db.prepare("SELECT * FROM perceptual_fingerprint WHERE tip_ctid=?").get("OH-t");
+      expect(fp).toMatchObject({ tip_ctid: "OH-t", modality: "text", created_at: 7 });
+      const bands = store.db.prepare("SELECT COUNT(*) AS n FROM minhash_band WHERE tip_ctid=?").get("OH-t");
       expect(bands.n).toBe(32);
     });
 
     test("image -> a phash_code row with all 16 chunks persisted", async () => {
       await ingestFingerprint(store, imageFp, { ctid: "OH-i" });
-      const code = store.db.prepare("SELECT * FROM phash_code WHERE ctid=?").get("OH-i");
-      expect(code).toMatchObject({ ctid: "OH-i", modality: "image", pdq: "ab".repeat(32), quality: 95 });
+      const code = store.db.prepare("SELECT * FROM phash_code WHERE tip_ctid=?").get("OH-i");
+      expect(code).toMatchObject({ tip_ctid: "OH-i", modality: "image", pdq: "ab".repeat(32), quality: 95 });
       for (let k = 0; k < 16; k++) expect(typeof code["c" + k]).toBe("number");
     });
 
     test("audio -> a clip row + 5 landmark rows referencing it", async () => {
       await ingestFingerprint(store, audioFp, { ctid: "OH-aud" });
-      const clip = store.db.prepare("SELECT clip_id, landmark_count FROM audio_clip WHERE ctid=? AND component_idx=0").get("OH-aud");
+      const clip = store.db.prepare("SELECT clip_id, landmark_count FROM audio_clip WHERE tip_ctid=? AND component_idx=0").get("OH-aud");
       expect(clip.landmark_count).toBe(5);
       const n = store.db.prepare("SELECT COUNT(*) AS n FROM audio_landmark WHERE clip_id=?").get(clip.clip_id);
       expect(n.n).toBe(5);
@@ -70,14 +70,14 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
 
     test("re-ingesting the same fingerprint is idempotent for the fingerprint row + bands", async () => {
       await ingestFingerprint(store, textFp, { ctid: "OH-t", createdAt: 9 }); // REPLACE + IGNORE
-      const n = store.db.prepare("SELECT COUNT(*) AS n FROM perceptual_fingerprint WHERE ctid=?").get("OH-t");
+      const n = store.db.prepare("SELECT COUNT(*) AS n FROM perceptual_fingerprint WHERE tip_ctid=?").get("OH-t");
       expect(n.n).toBe(1);
-      const bands = store.db.prepare("SELECT COUNT(*) AS n FROM minhash_band WHERE ctid=?").get("OH-t");
+      const bands = store.db.prepare("SELECT COUNT(*) AS n FROM minhash_band WHERE tip_ctid=?").get("OH-t");
       expect(bands.n).toBe(32);
     });
 
     test("re-ingesting phash codes is ignored, not duplicated (no duplicate frames)", async () => {
-      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=?").get(ctid).n;
+      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE tip_ctid=?").get(ctid).n;
       await ingestFingerprint(store, videoFp, { ctid: "OH-v" });
       expect(phashN("OH-v")).toBe(2);
       // Re-ingest the same video + the image (OH-i, ingested once earlier): counts
@@ -90,7 +90,7 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
     });
 
     test("re-ingest of one component leaves a sibling component's rows intact", async () => {
-      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=?").get(ctid).n;
+      const phashN = (ctid) => store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE tip_ctid=?").get(ctid).n;
       await ingestFingerprint(store, imageFp, { ctid: "OH-multi", componentIdx: 0 });
       await ingestFingerprint(store, { ...imageFp, pdq: "cd".repeat(32) }, { ctid: "OH-multi", componentIdx: 1 });
       expect(phashN("OH-multi")).toBe(2);
@@ -98,7 +98,7 @@ describe("perceptual ingest write path (step b: write via store methods)", () =>
       // (the natural key includes component_idx, so the two images stay distinct).
       await ingestFingerprint(store, imageFp, { ctid: "OH-multi", componentIdx: 0 });
       expect(phashN("OH-multi")).toBe(2);
-      expect(store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE ctid=? AND component_idx=1").get("OH-multi").n).toBe(1);
+      expect(store.db.prepare("SELECT COUNT(*) AS n FROM phash_code WHERE tip_ctid=? AND component_idx=1").get("OH-multi").n).toBe(1);
     });
   });
 });

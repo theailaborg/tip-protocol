@@ -94,11 +94,10 @@ exports.up = async (knex) => {
   });
 
   await knex.schema.createTable("content", t => {
-    // Column name is client-conditional:
-    //   SQLite (better-sqlite3) → "ctid"    (dag.js SQLiteStore uses "ctid" directly)
-    //   All server-side DBs     → "tip_ctid" (knex-adapter always references "tip_ctid";
-    //                                         also avoids Postgres system-column conflict)
-    const ctidCol = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
+    // `tip_ctid` on every backend: Postgres reserves "ctid", so we use one
+    // consistent column name across all DBs. The SQLiteStore reads it as
+    // "tip_ctid AS ctid"; the in-memory mirror and all callers use `ctid`.
+    const ctidCol = "tip_ctid";
     t.string(ctidCol, 512).primary();
     t.string("origin_code", 8).notNullable();
     t.string("content_hash", 128).notNullable();
@@ -346,10 +345,8 @@ exports.up = async (knex) => {
   // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
   await knex.schema.createTable("prescan_reviews", t => {
     t.string("review_id", 128).primary();
-    // Column name is client-conditional (same pattern as `content` above):
-    //   SQLite (better-sqlite3) → "ctid"
-    //   All server-side DBs     → "tip_ctid"
-    const ctidCol2 = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
+    // `tip_ctid` on every backend (same as `content` above).
+    const ctidCol2 = "tip_ctid";
     _id(t, ctidCol2).notNullable();
     _id(t, "creator_tip_id").notNullable();
     _id(t, "assigned_reviewer").nullable();
@@ -395,10 +392,8 @@ exports.up = async (knex) => {
   // chain as a PRESCAN_COMPLETED tx that every node applies.
   await knex.schema.createTable("prescan_jobs", t => {
     t.string("job_id", 128).primary();
-    // Column name is client-conditional (same pattern as `content`):
-    //   SQLite (better-sqlite3) → "ctid"
-    //   All server-side DBs     → "tip_ctid"
-    const ctidCol3 = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
+    // `tip_ctid` on every backend (same as `content`).
+    const ctidCol3 = "tip_ctid";
     t.string(ctidCol3, 512).notNullable().unique();
     t.binary("payload").notNullable();              // canonical JSON of classifier input
     t.string("status", 16).notNullable();           // 'queued' | 'claimed' | 'done' | 'failed'
@@ -414,11 +409,8 @@ exports.up = async (knex) => {
   // Off-DAG perceptual similarity index (advisory): NOT mirrored (no _hydrate)
   // and NOT in state_merkle_root. Cross-node-consistent because the fingerprint
   // is replicated in the tx, not via consensus over this index.
-  // Column name is client-conditional (same pattern as `content` / `prescan_jobs`):
-  //   SQLite (better-sqlite3) → "ctid"    (dag.js SQLiteStore uses "ctid" directly)
-  //   All server-side DBs     → "tip_ctid" (knex-adapter always references "tip_ctid";
-  //                                         also avoids Postgres system-column conflict)
-  const fpCtidCol = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
+  // `tip_ctid` on every backend (same as `content` / `prescan_jobs`).
+  const fpCtidCol = "tip_ctid";
 
   await knex.schema.createTable("perceptual_fingerprint", t => {
     t.string(fpCtidCol, 512).notNullable();
