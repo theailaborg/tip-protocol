@@ -258,48 +258,22 @@ function stopAll(nodes) {
 // ── the core property: rotation lands before the boundary, no halt ─────────────
 
 describe("multi-node consensus harness, committee rotation", () => {
-  // Production topology: 5 nodes registered, committee of 4 (quorum 3). The 5th
-  // node participates and is admitted at the rotation, so the committee grows
-  // 4 -> 5 across the boundary (the "adding a node grows the committee" path).
-  test("rotation commits before the boundary, no halt, and the committee grows 4 -> 5 (5 nodes, committee 4)", async () => {
-    const net = createNet();
-    const nodes = await bootRotationCommittee(net, { registered: 5, committee: 4 });
-    const committee = nodes.filter((n) => n.isCommittee);
-    try {
-      // Advancing PAST the boundary proves the rotation landed in time: the
-      // producer-pause gate freezes every node AT the boundary (round =
-      // EPOCH_ROUNDS) if rotation 1 is not yet in committee_history. A timeout
-      // here IS the halt the test is guarding against.
-      await waitFor(
-        () => committee.every((n) => n.bullshark.lastCommittedRound() > EPOCH_ROUNDS + 2),
-        { timeoutMs: 100000 },
-      );
-
-      for (const n of committee) {
-        expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(EPOCH_ROUNDS + 2);
-        // Rotation 1 (effective at the boundary) must be in committee_history,
-        // committed BEFORE the boundary (proven by advancing past it).
-        const rot1 = n.dag.getCommitteeRotation(1);
-        expect(rot1).toBeTruthy();
-        expect(rot1.effective_round).toBe(EPOCH_ROUNDS);
-        // All 5 active nodes qualified by participation, so the committee grew
-        // from 4 to 5 across the rotation (adding a node grows the committee).
-        expect(rot1.committee.length).toBe(5);
-      }
-    } finally {
-      stopAll(nodes);
-    }
-  }, 130000);
-
   // The real question behind the live incident: left to run NORMALLY (no fault
-  // injection, nothing dropped), does the actual consensus ever halt itself at a
-  // rotation boundary because the rotation tx didn't commit in time? Drive the
-  // real system through several consecutive epochs and assert it keeps advancing
-  // and every rotation lands in committee_history before its boundary. An
-  // organic, self-inflicted halt would stall the network and time this out.
-  // Set TIP_ROTATION_EPOCHS to push it through more boundaries.
-  test("real system crosses multiple rotation boundaries with no self-inflicted halt (5 nodes, committee 4)", async () => {
-    const EPOCHS = Number(process.env.TIP_ROTATION_EPOCHS || 2);
+  // injection, nothing dropped), does the actual consensus halt itself at a
+  // rotation boundary because the rotation tx didn't commit in time?
+  //
+  // Production topology: 5 nodes registered, committee of 4 (quorum 3). Drive the
+  // real system through one or more epoch boundaries and assert:
+  //   - it never freezes at a boundary (the producer-pause gate halts AT the
+  //     boundary if that rotation isn't in committee_history; advancing past it
+  //     proves the rotation landed in time, a timeout here IS the halt),
+  //   - each rotation is effective exactly at its boundary, and
+  //   - the 5th node is admitted at the first rotation, growing the committee 4->5.
+  //
+  // Default is one boundary for a fast CI run; set TIP_ROTATION_EPOCHS to cross
+  // more (the docker soak does the long, real-network version).
+  test("real system rotates across boundaries with no self-inflicted halt; committee grows 4 -> 5 (5 nodes, committee 4)", async () => {
+    const EPOCHS = Number(process.env.TIP_ROTATION_EPOCHS || 1);
     const net = createNet();
     const nodes = await bootRotationCommittee(net, { registered: 5, committee: 4 });
     const target = EPOCH_ROUNDS * EPOCHS + 2;
@@ -307,13 +281,13 @@ describe("multi-node consensus harness, committee rotation", () => {
       await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > target), { timeoutMs: 220000 });
       for (const n of nodes) {
         expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(target);
-        // Every rotation up to the last boundary crossed committed in time, each
-        // effective exactly at its epoch boundary.
         for (let r = 1; r <= EPOCHS; r++) {
           const rot = n.dag.getCommitteeRotation(r);
-          expect(rot).toBeTruthy();
-          expect(rot.effective_round).toBe(EPOCH_ROUNDS * r);
+          expect(rot).toBeTruthy();                           // rotation r committed in time
+          expect(rot.effective_round).toBe(EPOCH_ROUNDS * r); // effective at its boundary
         }
+        // The 5th node qualified by participation at the first rotation.
+        expect(n.dag.getCommitteeRotation(1).committee.length).toBe(5);
       }
     } finally {
       stopAll(nodes);
