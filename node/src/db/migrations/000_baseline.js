@@ -399,10 +399,14 @@ exports.up = async (knex) => {
   // Off-DAG perceptual similarity index (advisory): NOT mirrored (no _hydrate)
   // and NOT in state_merkle_root. Cross-node-consistent because the fingerprint
   // is replicated in the tx, not via consensus over this index.
-  // NOTE: all 5 tables use `tip_ctid` (not client-conditional) — they are
-  // only accessed via KnexAdapter, never via SQLiteStore / dag.js.
+  // Column name is client-conditional (same pattern as `content` / `prescan_jobs`):
+  //   SQLite (better-sqlite3) → "ctid"    (dag.js SQLiteStore uses "ctid" directly)
+  //   All server-side DBs     → "tip_ctid" (knex-adapter always references "tip_ctid";
+  //                                         also avoids Postgres system-column conflict)
+  const fpCtidCol = knex.client.config.client === "better-sqlite3" ? "ctid" : "tip_ctid";
+
   await knex.schema.createTable("perceptual_fingerprint", t => {
-    t.string("tip_ctid", 512).notNullable();
+    t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
     t.string("modality", 16).notNullable();    // text|image|video|audio
     t.string("profile", 64).notNullable();
@@ -410,20 +414,20 @@ exports.up = async (knex) => {
     t.integer("quality");                        // null for text/audio
     t.text("fingerprint").notNullable();        // JSON
     t.bigInteger("created_at").notNullable();
-    t.primary(["tip_ctid", "component_idx"]);
+    t.primary([fpCtidCol, "component_idx"]);
   });
 
   await knex.schema.createTable("minhash_band", t => {
     t.string("profile", 64).notNullable();
     t.integer("band_idx").notNullable();
     t.bigInteger("band_hash").notNullable();
-    t.string("tip_ctid", 512).notNullable();
-    t.primary(["profile", "band_idx", "band_hash", "tip_ctid"]);
+    t.string(fpCtidCol, 512).notNullable();
+    t.primary(["profile", "band_idx", "band_hash", fpCtidCol]);
     t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
   });
 
   await knex.schema.createTable("phash_code", t => {
-    t.string("tip_ctid", 512).notNullable();
+    t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
     t.integer("frame").notNullable();            // 0 for image, frame index for video
     t.string("profile", 64).notNullable();
@@ -432,7 +436,7 @@ exports.up = async (knex) => {
     t.integer("quality").notNullable();
     t.string("pdq", 64).notNullable();          // 64-hex (256-bit)
     for (let i = 0; i < 16; i++) t.integer(`c${i}`).notNullable();
-    t.primary(["tip_ctid", "component_idx", "frame"]);
+    t.primary([fpCtidCol, "component_idx", "frame"]);
     for (let i = 0; i < 16; i++) t.index(["profile", "modality", `c${i}`], `idx_phash_code_c${i}`);
   });
 
@@ -440,10 +444,10 @@ exports.up = async (knex) => {
   // so rows reference a compact BIGINT clip_id instead of TEXT(512) ctid.
   await knex.schema.createTable("audio_clip", t => {
     t.bigIncrements("clip_id");
-    t.string("tip_ctid", 512).notNullable();
+    t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
     t.integer("landmark_count").notNullable().defaultTo(0);
-    t.unique(["tip_ctid", "component_idx"], "idx_audio_clip_ctid");
+    t.unique([fpCtidCol, "component_idx"], "idx_audio_clip_ctid");
   });
 
   await knex.schema.createTable("audio_landmark", t => {
