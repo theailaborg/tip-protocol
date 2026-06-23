@@ -64,6 +64,19 @@ const CLASSIFIER_CLIENT = Object.freeze({
   FILE_TIMEOUT_MS: 180_000,
 });
 
+// Joiner-side DoS guards for downloading a snapshot from a peer (#94). Local
+// operational caps (NOT consensus state, NOT genesis): each node protects its
+// own memory + liveness, so a divergent value can't fork the chain. Sized
+// generously vs any legitimate snapshot so they trip only on a hostile/buggy
+// peer. The byte cap stops a flood (heap exhaustion); the overall deadline
+// stops a hang or slow-trickle (node stuck in `syncing`, holding the
+// install-once guard). Long-term scale fix is a streaming length-prefix parser
+// (deferred, see snapshot-handler).
+const SNAPSHOT_DOWNLOAD = Object.freeze({
+  MAX_BYTES: 512 * 1024 * 1024,   // 512 MB hard ceiling on a single snapshot download
+  MAX_MS: 180_000,                // 180 s overall deadline for the whole download
+});
+
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
 // Vocabulary enum for the 4-tier categorical model. Threshold values that
 // decide which probability falls into which tier live in genesis under
@@ -757,6 +770,7 @@ module.exports = {
   VERDICT,
   CONTENT_STATUS,
   CLASSIFIER_CLIENT,
+  SNAPSHOT_DOWNLOAD,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

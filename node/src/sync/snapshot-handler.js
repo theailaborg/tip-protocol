@@ -43,7 +43,7 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
@@ -107,10 +107,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // can serve multiple minority nodes concurrently (ISSUE_47 Option C).
   let _snapServing = false;
 
+  // Live install progress for operators to poll (surfaced via stats()). null
+  // when idle; during an install: { phase, installed, total, bytes }.
+  let _installProgress = null;
+
   function resetInstallState() {
     _snapInstalled = false;
     _snapInstallInProgress = false;
     _snapServing = false;
+    _installProgress = null;
   }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
@@ -466,14 +471,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       try { await stream.sink([reqBuf]); }
       catch (err) { throw new Error(`failed to send request: ${err.message}`); }
 
-      // Read every frame off the stream into a single buffer, then split
-      // into length-prefixed messages. For MVP this buffers the whole
-      // snapshot on the client (small state, bounded memory). Scale fix is
-      // same trigger as issues.md Consensus #32 — swap in a streaming
-      // length-prefix parser when state grows.
-      const chunks = [];
-      for await (const chunk of stream.source) chunks.push(chunk.subarray ? chunk.subarray() : chunk);
-      const body = Buffer.concat(chunks);
+      // Read every frame off the stream into a single buffer, then split into
+      // length-prefixed messages. #94: the read is BOUNDED by a total-byte cap
+      // and an overall deadline so a hostile/buggy peer can't OOM the joiner
+      // (flood) or hang it in `syncing` forever (silence / slow-trickle); a
+      // breach aborts the stream and throws, failing this fetch so we retry
+      // another peer. (Scale fix for legitimately-large state is a streaming
+      // length-prefix parser, deferred, same trigger as issues.md Consensus #32.)
+      const body = await _readBoundedStream(
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
+      );
 
       const frames = _parseLengthPrefixedFrames(body);
       if (frames.length === 0) throw new Error("empty response from peer");
@@ -767,7 +774,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         rotations: rotationInstallQueue,
         certs: certInstallQueue,
         rp: rpInstallQueue,
-      });
+      }, body.length);
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
@@ -835,7 +842,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
   }
 
-  function _installSnapshot(header, queues) {
+  function _installSnapshot(header, queues, snapBytes) {
     // Atomic install — every row, every tx, every commit, plus the
     // header's commit row land together or nothing does. Uses DAG's
     // public save* / addTx methods so write paths match normal
@@ -854,9 +861,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     //   3. Pre-snapshot commits (#49 — every commit row except the
     //      latest, which is written from the header at the end)
     //   4. Header's commit row — the freshly-attested checkpoint
+    // Install progress + size (operators poll via stats(); logs at ~10%).
+    const _snapBytes = snapBytes || 0;
+    const _snapTotalRows = (queues.stateRows?.length || 0) + (queues.txs?.length || 0)
+      + (queues.commits?.length || 0) + (queues.rotations?.length || 0)
+      + (queues.certs?.length || 0) + (queues.rp?.length || 0);
+    const _snapMB = (_snapBytes / (1024 * 1024)).toFixed(1);
+    log.info(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
+    _installProgress = { phase: "installing", installed: 0, total: _snapTotalRows, bytes: _snapBytes };
+    let _stateLogAt = queues.stateRows.length > 0 ? Math.ceil(queues.stateRows.length / 10) : Infinity;
     _snapServing = true;
     try {
-      return dag.runInTransaction(() => {
+      const _installResult = dag.runInTransaction(() => {
         // Wipe all canonical-state tables before installing the peer's rows.
         // Without this, extra rows from this node's divergent history survive
         // (INSERT OR REPLACE leaves rows with different PKs; INSERT OR IGNORE
@@ -869,6 +885,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const { table, row } of queues.stateRows) {
           _installOneRow(table, row);
           stateN++;
+          if (stateN >= _stateLogAt) {
+            const pct = _snapTotalRows > 0 ? Math.floor((stateN / _snapTotalRows) * 100) : 0;
+            log.info(`Snapshot install: ${pct}% (${stateN}/${_snapTotalRows} rows)`);
+            _installProgress = { phase: "state", installed: stateN, total: _snapTotalRows, bytes: _snapBytes };
+            _stateLogAt += Math.ceil(queues.stateRows.length / 10);
+          }
         }
 
         // GH #32 — dedup gate: snapshot install bypasses
@@ -1027,8 +1049,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rotation_txs_skipped: rotationSkipped,
         };
       });
+      log.info(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
+      _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
+      _metrics.last_install_rows = _snapTotalRows;
+      _metrics.last_install_bytes = _snapBytes;
+      return _installResult;
     } finally {
       _snapServing = false;
+      _installProgress = null;
     }
   }
 
@@ -1277,7 +1305,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     resetInstallState,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
-    stats: () => ({ metrics: { ..._metrics } }),
+    stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),
     // Exposed for unit tests
     _handleIncomingSnapshot,
     _verifyRotationChain,
@@ -1324,4 +1352,43 @@ function _emptyHeader(error) {
   };
 }
 
-module.exports = { createSnapshotHandler };
+// Forcibly tear down a stream (abort if the transport supports it, else close),
+// swallowing errors. Used to stop a hostile/slow peer mid-download.
+function _abortStream(stream, err) {
+  try {
+    if (typeof stream.abort === "function") stream.abort(err);
+    else if (typeof stream.close === "function") stream.close();
+  } catch { /* ignore */ }
+}
+
+// #94: read a snapshot body off a stream into one Buffer, bounded by a total-
+// byte cap AND an overall deadline. A flood trips the byte cap; a hang or a
+// slow-trickle trips the deadline. Either aborts the stream and throws, so the
+// fetch fails fast and retries another peer instead of OOM-ing the joiner or
+// hanging it in `syncing` forever (holding the install-once guard).
+async function _readBoundedStream(stream, maxBytes, maxMs) {
+  const chunks = [];
+  let total = 0;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    _abortStream(stream, new Error("snapshot download deadline exceeded"));
+  }, maxMs);
+  try {
+    for await (const chunk of stream.source) {
+      const buf = chunk.subarray ? chunk.subarray() : chunk;
+      total += buf.length;
+      if (total > maxBytes) {
+        _abortStream(stream, new Error("snapshot too large"));
+        throw new Error(`snapshot download exceeds ${maxBytes}-byte cap (received >${total})`);
+      }
+      chunks.push(buf);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  if (timedOut) throw new Error(`snapshot download timed out after ${maxMs}ms`);
+  return Buffer.concat(chunks);
+}
+
+module.exports = { createSnapshotHandler, _readBoundedStream };
