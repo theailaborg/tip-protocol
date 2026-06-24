@@ -439,7 +439,7 @@ async function mintGenesisBlock(vpKeypair) {
 // ─── Direct-mode DAG setup ──────────────────────────────────────────────────
 let _dag = null, _scoring = null, _nodeKp = null;
 
-function initDirectDAG() {
+function initDirectDAG(vpKeypair) {
   process.env.ZK_SKIP_VERIFY = "true";
 
   // Reuse the founding-node keypair across re-seeds the same way we cache
@@ -474,6 +474,10 @@ function initDirectDAG() {
     }]);
     ok("Founding node keypair generated and saved to founding-node-keys.json");
   }
+
+  // founding_node must be in genesis.json before initDAG: the DAG bootstrap
+  // builds committee rotation 0 from it. On a fresh seed it isn't embedded yet.
+  embedFoundingNode(vpKeypair);
 
   const cfg = loadConfig();
   // In-memory DAG: seed.js only uses the DAG as scratch space to validate
@@ -540,56 +544,50 @@ async function registerFoundingVP(vpKeypair) {
   return { vpRecord, vpKeypair };
 }
 
-// ─── Step 4b: Register seed node ─────────────────────────────────────────────
-async function registerSeedNode(vpKeypair) {
-  info("Registering seed node in DAG...");
-
-  if (!useDirectMode || !_dag) {
-    warn("Node registration requires direct mode with DAG — skipping");
-    return null;
-  }
-
+// ─── Embed founding_node into genesis.json (must precede initDAG) ─────────────
+// initDAG bootstraps committee rotation 0 from genesis.founding_node, so the
+// node identity + council signature must be written into genesis.json first.
+// council_signature is deterministic, keeping genesis_hash stable across re-seeds.
+function embedFoundingNode(vpKeypair) {
   const nodeId = generateNodeId(_nodeKp.publicKey);
-  const registeredAt = nowMs();
   const nodeName = FOUNDING_NODE_DEF.name;
-
-  const freshGenesis = require("../node/src/genesis");
-  const vpId = freshGenesis.getFoundingVP().vp_id;
-  // GH #60: algorithm is in the canonical signed bytes — the VP attests
-  // the (pubkey, algorithm) pair. Field order is the alphabetical
-  // canonical layout matching schemas/_registry.js NODE_REGISTERED.
+  const vpId = require("../node/src/genesis").getFoundingVP().vp_id;
+  // GH #60: algorithm is in the canonical signed bytes — the VP attests the
+  // (pubkey, algorithm) pair. Alphabetical canonical order matching
+  // schemas/_registry.js NODE_REGISTERED.
   const nodeFields = {
     algorithm: "ml-dsa-65",
     approving_vp_id: vpId,
     name: nodeName,
     public_key: _nodeKp.publicKey,
   };
-  // council_signature is embedded into founding_node inside GENESIS_PAYLOAD →
-  // it must be deterministic for genesis_hash to be stable across re-seeds.
   const councilSig = signBody(nodeFields, vpKeypair.privateKey, { deterministic: true });
-
-  const nodeTxBody = {
-    tx_type: TX_TYPES.NODE_REGISTERED,
-    timestamp: registeredAt,
-    prev: _dag.getRecentPrev(),
-    data: {
-      node_id: nodeId,
-      name: nodeName,
-      public_key: _nodeKp.publicKey,
-      algorithm: "ml-dsa-65",
-      council_signature: councilSig,
-      approving_vp_id: vpId,
-    },
-  };
-  const signedTx = _withTxId(nodeTxBody);
-  _dag.addTx(signedTx);
-  _dag.saveNode({
+  const foundingNodeData = {
     node_id: nodeId,
     name: nodeName,
     public_key: _nodeKp.publicKey,
-    status: "active",
-    registered_at: registeredAt,
-  });
+    council_signature: councilSig,
+    approving_vp_id: vpId,
+  };
+  _patchGenesisJson({ founding_node: foundingNodeData });  // also clears genesis require cache
+  ok("Embedded founding node into genesis.json");
+}
+
+// ─── Step 4b: Confirm seed node + write operator .env ────────────────────────
+// founding_node was embedded before initDAG, so _writeGenesisBlock already wrote
+// the NODE_REGISTERED tx + node row during the genesis bootstrap (same path as
+// `npm start`). Here we confirm it landed and write the node keys to .env.
+async function registerSeedNode() {
+  info("Confirming seed node registration...");
+
+  if (!useDirectMode || !_dag) {
+    warn("Node registration requires direct mode with DAG — skipping");
+    return null;
+  }
+
+  const fn = require("../node/src/genesis").getGenesisPayload().founding_node;
+  if (!fn || !fn.node_id) throw new Error("founding_node not embedded before registerSeedNode — check initDirectDAG order");
+  if (!_dag.getNode(fn.node_id)) throw new Error(`Founding node ${fn.node_id} not in DAG after genesis bootstrap`);
 
   // Write node keys to .env
   const envFile = path.resolve(__dirname, "../.env");
@@ -607,21 +605,9 @@ async function registerSeedNode(vpKeypair) {
     ok("Node keys + log levels written to .env");
   }
 
-  const foundingNodeData = { node_id: nodeId, name: nodeName, public_key: _nodeKp.publicKey, council_signature: councilSig, approving_vp_id: vpId };
-  _patchGenesisJson({ founding_node: foundingNodeData });
-  ok("Wrote founding node to genesis.json");
-
-  // Clear require cache so subsequent steps (mintGenesisBlock, verifyDAGState)
-  // see the just-embedded founding_node when they re-read genesis.js. Without
-  // this, the genesis hash bakes against `founding_node=null` and the STEP 6
-  // verification (which clears cache itself) computes a different hash.
-  Object.keys(require.cache).forEach(key => {
-    if (key.includes("genesis")) delete require.cache[key];
-  });
-
-  ok(`Seed node registered: ${nodeId}`);
-  label("Node ID", nodeId);
-  return { nodeId, name: nodeName, publicKey: _nodeKp.publicKey };
+  ok(`Seed node registered: ${fn.node_id}`);
+  label("Node ID", fn.node_id);
+  return { nodeId: fn.node_id, name: fn.name, publicKey: fn.public_key };
 }
 
 // ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
@@ -1037,19 +1023,17 @@ async function main() {
     // Step 1: Generate founding VP keypair and embed in genesis source files
     const vpKeypair = await embedFoundingVPKey();
 
-    // Step 1b: Initialize real DAG for direct mode. _writeGenesisBlock fires
-    // here from the just-embedded VP + ring keys; founding_node is still
-    // null at this point so the bootstrap walk skips that branch and the
-    // node row gets written explicitly in Step 2b below.
-    if (useDirectMode) initDirectDAG();
+    // Step 1b: Initialize real DAG for direct mode. initDirectDAG embeds
+    // founding_node into genesis.json first (committee rotation 0 bootstraps
+    // from it), then _writeGenesisBlock fires from the full payload.
+    if (useDirectMode) initDirectDAG(vpKeypair);
 
     // Step 2: Founding VP
     const { vpRecord } = await registerFoundingVP(vpKeypair);
 
-    // Step 2b: Register seed node — embeds founding_node into genesis.js +
-    // clears require.cache so the genesis hash computed in Step 3 below
-    // sees the full payload (founding_vp + genesis_ring_keys + founding_node).
-    const seedNode = await registerSeedNode(vpKeypair);
+    // Step 2b: Register the seed node in the DAG (founding_node already embedded
+    // by initDirectDAG; this writes the NODE_REGISTERED tx + node row).
+    const seedNode = await registerSeedNode();
 
     // Step 2c: Re-embed bootstrap tx signatures now that founding_node is set.
     // embedFoundingVPKey() signed over GENESIS_PAYLOAD before founding_node was
