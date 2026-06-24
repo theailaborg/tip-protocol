@@ -28,7 +28,7 @@ const { computeTxId, verifyTxId } = require("../../shared/crypto");
 const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
-const { subjectTipId } = require("./tx-attribution");
+const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
 
 // ─── SQLite loaded lazily ─────────────────────────────────────────────────────
@@ -451,8 +451,11 @@ class MemoryStore {
   // anchor (side-effect is logically latest in the causal chain), tx_id
   // DESC. Single source of truth for activity-feed ordering.
   getTxsBySubject(tipId) {
+    // #40 — match ANY party (recomputed live from tx data), so multi-party
+    // disputes/appeals surface in both the author's and disputer's feed, not
+    // just the actor's. No persisted multi-subject index to drift/backfill.
     return [...this._txs.values()]
-      .filter(t => t.subject_tip_id === tipId)
+      .filter(t => subjectTipIds(t).includes(tipId))
       .sort((a, b) => {
         // Coerce — guards against any DB driver that returns timestamps
         // as strings (PG's node-pg returns bigint as string by default).
@@ -1416,7 +1419,7 @@ class MemoryStore {
   getMempoolTxs() { return [...this._mempool.values()].map(e => e.tx); }
   getMempoolTxsByTipId(tipId) {
     return [...this._mempool.values()]
-      .filter(e => e.subject_tip_id === tipId)
+      .filter(e => subjectTipIds(e.tx).includes(tipId))   // #40 — any party
       .map(e => e.tx);
   }
   deleteMempoolTx(txId) { this._mempool.delete(txId); }
@@ -1479,7 +1482,10 @@ class MemoryStore {
   getTxRejectionsByTipId(tipId) {
     const rows = [];
     for (const r of this._txRejections.values()) {
-      if (r.subject_tip_id === tipId) rows.push(r);
+      // #40 — recompute all parties from the preserved tx body (any party
+      // match). Rejections without a body can't be attributed (same as before).
+      const tx = r.tx_data ? JSON.parse(r.tx_data) : null;
+      if (tx && subjectTipIds(tx).includes(tipId)) rows.push(r);
     }
     rows.sort((a, b) => b.rejected_at_ms - a.rejected_at_ms);
     return rows.map(r => this._parseRejectionRow(r));
@@ -2391,6 +2397,11 @@ class SQLiteStore {
          WHERE subject_tip_id=?
          ORDER BY rejected_at_ms DESC`
       ),
+      // #40 — all rejections, most-recent first; filtered by subjectTipIds()
+      // at read time so the counterparty of a failed dispute/appeal also sees it.
+      getAllTxRejections: this.db.prepare(
+        "SELECT * FROM tx_rejections ORDER BY rejected_at_ms DESC"
+      ),
       countTxRejections: this.db.prepare("SELECT COUNT(*) AS n FROM tx_rejections"),
 
       // Dispute details (off-chain dispute body). INSERT OR IGNORE on
@@ -2520,10 +2531,25 @@ class SQLiteStore {
   // Narrow OR-pattern lookup — scope matches scoring.computeScore's
   // requirements (tip_id || author_tip_id covers every score-affecting role).
   getTxsByTipId(tipId) { return this._stmts.txsByTipId.all(tipId, tipId).map(r => this._parseTx(r)); }
-  // Broad lookup via the denormalised subject_tip_id column. Includes
-  // jurors, verifiers, disputers, and appellants. Powers the activity
-  // feed; scoring still uses getTxsByTipId.
-  getTxsBySubject(tipId) { return this._stmts.txsBySubject.all(tipId).map(r => this._parseTx(r)); }
+  // Broad role-aware lookup powering the activity feed. #40: recompute every
+  // party live from tx data (any-party match) so multi-party disputes/appeals
+  // surface in BOTH parties' feeds, not just the actor's. This is a dev-store
+  // scan (SQLiteStore is dev/test default); production reads go through the
+  // Knex in-memory mirror (MemoryStore.getTxsBySubject). Ordering mirrors that
+  // comparator (timestamp DESC, SCORE_UPDATE-first, tx_id DESC).
+  getTxsBySubject(tipId) {
+    return this._stmts.getAllTxs.all()
+      .map(r => this._parseTx(r))
+      .filter(t => subjectTipIds(t).includes(tipId))
+      .sort((a, b) => {
+        const d = Number(b.timestamp) - Number(a.timestamp);
+        if (d !== 0) return d;
+        const ap = a.tx_type === "SCORE_UPDATE" ? 0 : 1;
+        const bp = b.tx_type === "SCORE_UPDATE" ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        return a.tx_id < b.tx_id ? 1 : -1;
+      });
+  }
   // §14/#49 snapshot full-history streaming. Ordered by tx_id (PK index)
   // so sender + receiver hash rows in the same order → same txs_full_root.
   // Uses better-sqlite3 .iterate() so memory stays bounded at one row.
@@ -3314,7 +3340,10 @@ class SQLiteStore {
     return this._stmts.getMempoolTxs.all().map(r => JSON.parse(r.tx_data));
   }
   getMempoolTxsByTipId(tipId) {
-    return this._stmts.getMempoolTxsByTipId.all(tipId).map(r => JSON.parse(r.tx_data));
+    // #40 — any-party match recomputed from tx data (received_at ASC order).
+    return this._stmts.getMempoolTxs.all()
+      .map(r => JSON.parse(r.tx_data))
+      .filter(tx => subjectTipIds(tx).includes(tipId));
   }
   deleteMempoolTx(txId) {
     this._stmts.deleteMempoolTx.run(txId);
@@ -3381,9 +3410,12 @@ class SQLiteStore {
       .map(r => this._parseRejectionRow(r));
   }
   getTxRejectionsByTipId(tipId) {
-    return this._stmts.getTxRejectionsByTipId
-      .all(tipId)
-      .map(r => this._parseRejectionRow(r));
+    // #40 — recompute every party from the preserved tx body (any-party match),
+    // so the counterparty of a failed dispute/appeal also sees it. Rejections
+    // without a body can't be attributed (same as before).
+    return this._stmts.getAllTxRejections.all()
+      .map(r => this._parseRejectionRow(r))
+      .filter(r => r.tx_data && subjectTipIds(r.tx_data).includes(tipId));
   }
   countTxRejections() { return this._stmts.countTxRejections.get().n; }
 

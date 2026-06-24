@@ -389,7 +389,11 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const appealData = { ...body, ctid };
     if (!verifyCanonicalPayload(_signedPayloadFor(TX_TYPES.APPEAL_FILED, appealData), signature, appellant.public_key)) throw { status: 403, error: "Appellant signature verification failed" };
 
-    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature });
+    // #40 — author_tip_id/disputer_tip_id embedded for activity-feed attribution
+    // so the non-appellant party also sees the appeal. They are OUTSIDE the
+    // appellant's signed payload (which is just {appellant_tip_id, ctid} — see
+    // _registry APPEAL_FILED contract), so the user signature still verifies.
+    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: dag.getRecentPrev(), data: { ctid, appellant_tip_id, author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature });
 
     // Collect batch: appeal + stake + expert summons
     const batchTxs = [appealTx];

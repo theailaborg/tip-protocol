@@ -385,7 +385,9 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       tx_type: TX_TYPES.APPEAL_FILED,
       timestamp,
       prev: getRecentPrev(),
-      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
+      // author/disputer embedded for activity-feed attribution (#40) — both
+      // parties see the appeal in their feed, not just the appellant.
+      data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
     }, config);
     const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
     const canEscalate = experts.experts.length >= APPEAL.MIN_VOTES;
@@ -408,6 +410,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         confirmed_origin: null,
         reason: disputeData.reason,
         author_tip_id: authorTipId,
+        disputer_tip_id: disputerTipId,   // #40 — disputer sees the verdict in their feed
         author_score_delta: 0,
         pre_dispute_status: disputeData.pre_dispute_status || CONTENT_STATUS.REGISTERED,
         match_count: matchCount,
@@ -506,6 +509,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       confirmed_origin,
       reason: disputeData.reason,
       author_tip_id: authorTipId,
+      disputer_tip_id: disputerTipId,   // #40 — disputer sees the verdict in their feed
       author_score_delta: authorScoreDelta,
       // Persisted for commit-handler's content-status restore on
       // DISMISSED/CONSERVATIVE_LABEL — replaces the old direct
@@ -739,6 +743,9 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       data: {
         ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
         tie: appealDeadlock,
+        // #40 — both parties see the appeal result; main path already embeds these.
+        author_tip_id: authorTipId,
+        disputer_tip_id: disputerTipId,
         stage2_verdict: stage2Verdict || null,
         pre_dispute_status: preStatus,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
