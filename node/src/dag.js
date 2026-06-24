@@ -24,7 +24,7 @@
 
 const path = require("path");
 const fs = require("fs");
-const { computeTxId, verifyTxId } = require("../../shared/crypto");
+const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
 const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
@@ -332,6 +332,36 @@ function _canonInterest(r) {
   };
 }
 
+// protocol_params (#39). `value` is the canonical-JSON string the store
+// persists, so it is identical across MemoryStore / SQLite / Knex — no
+// re-encoding here (re-encoding could reorder or reformat and fork the root).
+// effective_from_height / update_tx_id are coerced to a stable JS type so a
+// SQLite bigint and a MemoryStore number canonicalise to the same bytes.
+function _canonProtocolParam(r) {
+  return {
+    param_key: String(r.param_key),
+    value: String(r.value),
+    effective_from_height: Number(r.effective_from_height),
+    update_tx_id: String(r.update_tx_id),
+  };
+}
+
+// Flatten a nested protocol_constants tree into dotted-key leaves, e.g.
+// { jury: { jury_stake: 15 } } -> { "jury.jury_stake": 15 }. Objects recurse;
+// arrays and scalars are leaves. Used to seed protocol_params at genesis.
+function flattenProtocolParams(obj, prefix = "", out = {}) {
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      flattenProtocolParams(v, key, out);
+    } else {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 function _canonCommitteeRotation(r) {
   const committee = Array.isArray(r.committee)
     ? r.committee
@@ -387,6 +417,12 @@ class MemoryStore {
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
     this._interestsRegistry = new Map(); // slug -> {slug, label, category, registered_at, registered_by_vp_id, tx_id}
+    // #39 — governable protocol parameters, temporal/append-only. Keyed by
+    // param_key -> array of rows sorted ASC by effective_from_height. The
+    // active value at a height is the last row with effective_from_height <=
+    // height. `value` is stored as a canonical-JSON string (set once, immutable
+    // per (param_key, effective_from_height)).
+    this._protocolParams = new Map();
     this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
     this._prescanReviews = new Map();  // review_id -> review record (human reviewing AI prescan flag)
     this._mempool = new Map();  // tx_id -> tx
@@ -913,6 +949,7 @@ class MemoryStore {
     this._domainBindings.clear();
     this._prescanReviews.clear();
     this._interestsRegistry.clear();
+    this._protocolParams.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -1121,6 +1158,49 @@ class MemoryStore {
       .map(r => ({ ...r }));
   }
   interestCount() { return this._interestsRegistry.size; }
+
+  // ── Protocol params (#39) ───────────────────────────────────────────
+  // Append-only and immutable per (param_key, effective_from_height): a
+  // re-seed or replay that re-applies the same row is a no-op (INSERT OR
+  // IGNORE semantics), never a rewrite. `rec.value` is a raw JS scalar/array;
+  // it is stored as a canonical-JSON string so every backend holds identical
+  // bytes for state_merkle_root.
+  saveProtocolParam(rec) {
+    const param_key = String(rec.param_key);
+    const effective_from_height = Number(rec.effective_from_height);
+    const value = canonicalJson(rec.value);
+    const update_tx_id = String(rec.update_tx_id);
+    let arr = this._protocolParams.get(param_key);
+    if (!arr) { arr = []; this._protocolParams.set(param_key, arr); }
+    if (arr.some(r => r.effective_from_height === effective_from_height)) return;
+    arr.push({ param_key, value, effective_from_height, update_tx_id });
+    arr.sort((a, b) => a.effective_from_height - b.effective_from_height);
+  }
+  // Active value of a key as of `height` (default: latest). Returns the parsed
+  // JS value of the row with the greatest effective_from_height <= height, or
+  // undefined if the key has no row at/below that height.
+  getProtocolParam(param_key, height = Number.MAX_SAFE_INTEGER) {
+    const arr = this._protocolParams.get(String(param_key));
+    if (!arr || arr.length === 0) return undefined;
+    let chosen;
+    for (const r of arr) {
+      if (r.effective_from_height <= height) chosen = r; else break;
+    }
+    return chosen ? JSON.parse(chosen.value) : undefined;
+  }
+  // All active values as of `height`, as a flat { param_key: value } map.
+  // Used to build the in-memory active view at boot / snapshot install.
+  getActiveProtocolParams(height = Number.MAX_SAFE_INTEGER) {
+    const out = {};
+    for (const [key, arr] of this._protocolParams) {
+      let chosen;
+      for (const r of arr) {
+        if (r.effective_from_height <= height) chosen = r; else break;
+      }
+      if (chosen) out[key] = JSON.parse(chosen.value);
+    }
+    return out;
+  }
 
   // ── Prescan reviews ─────────────────────────────────────────────────
   // INSERT OR REPLACE semantics — the same review_id walks through its
@@ -1367,6 +1447,20 @@ class MemoryStore {
     for (const r of [...this._interestsRegistry.values()]
       .sort((a, b) => cmpBin(a.slug, b.slug))) {
       yield { table: "interests_registry", row: _canonInterest(r) };
+    }
+    // #39 — protocol_params in state_merkle_root so the federation agrees on
+    // every governable parameter (and its activation height). Sorted by
+    // (param_key, effective_from_height) to match the SQLite PK iteration.
+    {
+      const ppRows = [];
+      for (const arr of this._protocolParams.values()) {
+        for (const r of arr) ppRows.push(r);
+      }
+      ppRows.sort((a, b) =>
+        cmpBin(a.param_key, b.param_key) || (a.effective_from_height - b.effective_from_height));
+      for (const r of ppRows) {
+        yield { table: "protocol_params", row: _canonProtocolParam(r) };
+      }
     }
     // #75 rotation_participation is INTENTIONALLY excluded from state_merkle_root.
     // RP is real-time counter state that flickers as anchor walks process certs;
@@ -2214,6 +2308,24 @@ class SQLiteStore {
       ),
       interestCount: this.db.prepare(
         "SELECT COUNT(*) AS n FROM interests_registry"
+      ),
+
+      // #39 — protocol_params. INSERT OR IGNORE: rows are immutable per
+      // (param_key, effective_from_height), so a re-seed / replay of the same
+      // row is a no-op. getProtocolParam picks the active row (greatest
+      // effective_from_height <= a target height).
+      saveProtocolParam: this.db.prepare(
+        `INSERT OR IGNORE INTO protocol_params
+           (param_key, value, effective_from_height, update_tx_id)
+         VALUES (?, ?, ?, ?)`
+      ),
+      getProtocolParam: this.db.prepare(
+        `SELECT value FROM protocol_params
+          WHERE param_key = ? AND effective_from_height <= ?
+          ORDER BY effective_from_height DESC LIMIT 1`
+      ),
+      iterateProtocolParams: this.db.prepare(
+        "SELECT param_key, value, effective_from_height, update_tx_id FROM protocol_params ORDER BY param_key ASC, effective_from_height ASC"
       ),
 
       // Prescan-review accessors. INSERT OR REPLACE so the same row can
@@ -3077,6 +3189,30 @@ class SQLiteStore {
     };
   }
 
+  // ── Protocol params (#39) ───────────────────────────────────────────────
+  saveProtocolParam(rec) {
+    this._stmts.saveProtocolParam.run(
+      String(rec.param_key),
+      canonicalJson(rec.value),
+      Number(rec.effective_from_height),
+      String(rec.update_tx_id),
+    );
+  }
+  getProtocolParam(param_key, height = Number.MAX_SAFE_INTEGER) {
+    const row = this._stmts.getProtocolParam.get(String(param_key), Number(height));
+    return row ? JSON.parse(row.value) : undefined;
+  }
+  getActiveProtocolParams(height = Number.MAX_SAFE_INTEGER) {
+    const h = Number(height);
+    const out = {};
+    // iterateProtocolParams is ordered (param_key ASC, effective_from_height
+    // ASC); the last row at/below h for each key wins.
+    for (const r of this._stmts.iterateProtocolParams.all()) {
+      if (Number(r.effective_from_height) <= h) out[r.param_key] = JSON.parse(r.value);
+    }
+    return out;
+  }
+
   // ── Prescan reviews ─────────────────────────────────────────────────────
   savePrescanReview(rec) {
     this._stmts.savePrescanReview.run(
@@ -3255,6 +3391,11 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM interests_registry ORDER BY slug").iterate()) {
       yield { table: "interests_registry", row: _canonInterest(r) };
     }
+    // #39 — protocol_params (param_key, effective_from_height) order matches
+    // the MemoryStore composite sort so both backends emit identical bytes.
+    for (const r of this._stmts.iterateProtocolParams.iterate()) {
+      yield { table: "protocol_params", row: _canonProtocolParam(r) };
+    }
     // #75 rotation_participation is INTENTIONALLY excluded — see MemoryStore
     // version for rationale. RP ships in its own snapshot stream below.
   }
@@ -3277,6 +3418,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM domain_bindings").run();
       this.db.prepare("DELETE FROM prescan_reviews").run();
       this.db.prepare("DELETE FROM interests_registry").run();
+      this.db.prepare("DELETE FROM protocol_params").run();
     })();
   }
 
@@ -3779,6 +3921,11 @@ function _buildDagHandle(store, config) {
     getAllInterests: () => store.getAllInterests(),
     interestCount: () => store.interestCount(),
 
+    // ── Protocol params (#39) ──────────────────────────────────────────────
+    saveProtocolParam: (rec) => store.saveProtocolParam(rec),
+    getProtocolParam: (key, height) => store.getProtocolParam(key, height),
+    getActiveProtocolParams: (height) => store.getActiveProtocolParams(height),
+
     // ── Prescan reviews (Phase 2 — human reviewing AI prescan flag) ─────
     // savePrescanReview: INSERT OR REPLACE. The same review_id walks through
     //   its state machine (triggered → confirmed → closed_*) via successive
@@ -4000,6 +4147,23 @@ function _writeGenesisBlock(store, config) {
 
   // Genesis transaction — content-addressed tx_id, pre-signed by founding VP
   store.saveTx({ ...GENESIS_TX, tx_id: GENESIS_TX_ID, signature: GENESIS_TX_SIGNATURE });
+
+  // #39 — seed protocol_params at height 0 from the genesis protocol_constants
+  // tree, flattened to dotted keys. These rows are the immutable founding
+  // defaults (also covered by genesis_hash); a future PROTOCOL_PARAM_UPDATE
+  // governance tx appends rows at height > 0 without touching genesis. The
+  // table is in state_merkle_root, so all founding nodes agree byte-for-byte.
+  if (typeof store.saveProtocolParam === "function" && GENESIS_PAYLOAD.protocol_constants) {
+    const flat = flattenProtocolParams(GENESIS_PAYLOAD.protocol_constants);
+    for (const param_key of Object.keys(flat)) {
+      store.saveProtocolParam({
+        param_key,
+        value: flat[param_key],
+        effective_from_height: 0,
+        update_tx_id: GENESIS_TX_ID,
+      });
+    }
+  }
 
   // Bootstrap founding VP from genesis payload (public key embedded by seed script)
   const foundingVP = getFoundingVP();

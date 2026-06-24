@@ -22,6 +22,7 @@
 const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
+const { canonicalJson } = require("../../../shared/crypto");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -534,6 +535,20 @@ class KnexAdapter {
       });
     }
 
+    // Protocol params (#39). The DB already holds the canonical-JSON `value`
+    // string; the mirror's saveProtocolParam re-canonicalises, so we parse
+    // back to the raw scalar before handing it in (parse → save → identical
+    // string), keeping the mirror byte-identical to the DB.
+    const ppRows = await this.knex("protocol_params").select("*");
+    for (const row of ppRows) {
+      this.mirror.saveProtocolParam({
+        param_key: row.param_key,
+        value: JSON.parse(row.value),
+        effective_from_height: Number(row.effective_from_height),
+        update_tx_id: row.update_tx_id,
+      });
+    }
+
     // Rotation participation
     const rpRows = await this.knex("rotation_participation").select("*");
     if (!this.mirror._rotationParticipation) this.mirror._rotationParticipation = new Map();
@@ -1036,6 +1051,7 @@ class KnexAdapter {
       "verification_providers", "nodes",
       "entity_keys", // GH #60 — entity_keys is canonical state too.
       "platform_links", "domain_bindings", "prescan_reviews", "interests_registry",
+      "protocol_params", // #39 — canonical state, cleared + rebuilt on install
     ];
     this._ff(async () => {
       for (const t of CANONICAL_TABLES) await this._k(t).delete();
@@ -1471,6 +1487,23 @@ class KnexAdapter {
   getInterest(slug) { return this.mirror.getInterest(slug); }
   getAllInterests() { return this.mirror.getAllInterests(); }
   interestCount() { return this.mirror.interestCount(); }
+
+  // ── Protocol params (#39) ───────────────────────────────────────────────────
+  // The mirror canonicalises `value` from the raw scalar; the DB row must hold
+  // the IDENTICAL string, so encode once here and reuse it. INSERT OR IGNORE
+  // (rows immutable per (param_key, effective_from_height)).
+  saveProtocolParam(rec) {
+    this.mirror.saveProtocolParam(rec);
+    const row = {
+      param_key: String(rec.param_key),
+      value: canonicalJson(rec.value),
+      effective_from_height: Number(rec.effective_from_height),
+      update_tx_id: String(rec.update_tx_id),
+    };
+    this._ff(() => this._dbInsert("protocol_params", ["param_key", "effective_from_height"], row, "ignore"));
+  }
+  getProtocolParam(key, height) { return this.mirror.getProtocolParam(key, height); }
+  getActiveProtocolParams(height) { return this.mirror.getActiveProtocolParams(height); }
 
   // ── Prescan reviews ────────────────────────────────────────────────────────
 

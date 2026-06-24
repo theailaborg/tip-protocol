@@ -1291,6 +1291,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       case "platform_links":
         dag.savePlatformLink(row);
         break;
+      case "protocol_params":
+        // The canonical row's `value` is the canonical-JSON string; parse it
+        // back to the raw scalar so saveProtocolParam re-encodes to the
+        // identical string. INSERT OR IGNORE means re-applying a genesis-seeded
+        // height-0 row (already written by _writeGenesisBlock on first boot) is
+        // idempotent; height>0 governance rows arrive only via snapshot. (#39)
+        dag.saveProtocolParam({
+          param_key: row.param_key,
+          value: JSON.parse(row.value),
+          effective_from_height: row.effective_from_height,
+          update_tx_id: row.update_tx_id,
+        });
+        break;
       default:
         // Unknown tables are tolerated so adding a new canonical table on
         // the server doesn't hard-fail older joiners — they'll just skip

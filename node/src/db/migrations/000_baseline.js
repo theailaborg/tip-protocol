@@ -341,6 +341,25 @@ exports.up = async (knex) => {
     t.index("category", "idx_interests_registry_category");
   });
 
+  // consensus-affecting — protocol_params participates in state_merkle_root.
+  // Temporal / append-only registry of governable protocol parameters (#39).
+  // Seeded at genesis (effective_from_height = 0) from the genesis
+  // protocol_constants tree, flattened to dotted keys (e.g. "jury.jury_stake").
+  // A future PROTOCOL_PARAM_UPDATE governance tx appends a new row at its
+  // activation height; rows are NEVER updated or deleted. The active value of
+  // a key is the row with the greatest effective_from_height <= current height,
+  // so a replayer reconstructs the exact historical value at every height.
+  // `value` is JSON-encoded so the scalar's type round-trips (int / string /
+  // bool / array). `update_tx_id` is the genesis tx for seed rows, the
+  // governance tx otherwise.
+  await knex.schema.createTable("protocol_params", t => {
+    t.string("param_key", 128).notNullable();
+    t.text("value").notNullable();
+    t.bigInteger("effective_from_height").notNullable();
+    _id(t, "update_tx_id").notNullable();
+    t.primary(["param_key", "effective_from_height"]);
+  });
+
   // Prescan reviews (Phase 2 — human reviewing AI prescan flag).
   // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
   await knex.schema.createTable("prescan_reviews", t => {
@@ -476,6 +495,7 @@ exports.down = async (knex) => {
   await knex.schema.dropTableIfExists("perceptual_fingerprint");
   await knex.schema.dropTableIfExists("prescan_jobs");
   await knex.schema.dropTableIfExists("prescan_reviews");
+  await knex.schema.dropTableIfExists("protocol_params");
   await knex.schema.dropTableIfExists("rotation_participation");
   await knex.schema.dropTableIfExists("dispute_details");
   await knex.schema.dropTableIfExists("interests_registry");
