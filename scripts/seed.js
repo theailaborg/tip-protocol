@@ -3,25 +3,23 @@
  * @file tip-protocol/scripts/seed.js
  * @description Production Seed Script — End-to-End Genesis Block and DAG Bootstrap
  *
+ * Genesis-block-only mint. Reads the founding roster from
+ * genesis-data/genesis-members.json, generates a keypair per member/VP/node,
+ * computes their ids, signs the bootstrap txs, and writes all minted values
+ * (public keys, ids, signatures, seal) into genesis-data/genesis.json. It does
+ * NOT seed sample content — only the genesis block.
+ *
  * This script:
- *   1. Generates founding VP keypair + member keypairs, embeds in genesis
+ *   1. Generates founding VP keypair + member keypairs from the roster
  *   2. Mints and signs the Genesis Block (signed by founding VP)
- *   3. Registers The AI Lab as the founding Verification Provider
- *   3b. Registers the seed node in the DAG + writes keys to .env
+ *   3. Registers The AI Lab as the founding Verification Provider (DAG, direct mode)
+ *   3b. Registers the seed node + writes keys to .env
  *   4. Registers founding identities (Genesis Ring)
- *   5. Registers sample content (dev only, skipped in production)
- *   6. Verifies the full DAG state
- *   7. Writes seed output files
+ *   5. Verifies the full DAG state
+ *   6. Writes seed output files
  *
  * USAGE:
- *   # Full seed (generates everything from scratch):
  *   node --experimental-vm-modules scripts/seed.js
- *
- *   # Skip sample content:
- *   node --experimental-vm-modules scripts/seed.js --no-sample-content
- *
- *   # Seed against a running node via REST API:
- *   node --experimental-vm-modules scripts/seed.js --node-url http://localhost:4000
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  */
@@ -103,12 +101,41 @@ const head = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`); 
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const skipSampleContent = args.includes("--no-sample-content") || process.env.NODE_ENV === "production";
 const nodeUrl = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
 const useDirectMode = args.includes("--direct") || !args.includes("--node-url");
 
 const DATA_DIR = path.resolve(__dirname, "../genesis-data");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
+
+// #39 — the mint writes minted genesis VALUES to genesis.json (the data file
+// genesis.js reads), instead of regex-editing genesis.js source. _patchGenesisJson
+// merges fields into genesis.json and clears the require cache so a subsequent
+// require("genesis") reflects them (GENESIS_PAYLOAD reads founding_* from there).
+function _patchGenesisJson(fields) {
+  const doc = fs.existsSync(GENESIS_FILE) ? JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8")) : {};
+  Object.assign(doc, fields);
+  fs.writeFileSync(GENESIS_FILE, JSON.stringify(doc, null, 2) + "\n");
+  Object.keys(require.cache).forEach(k => { if (k.includes("genesis")) delete require.cache[k]; });
+}
+
+// #39 — the founding ROSTER (who the members/VP/node ARE) is authored in
+// genesis-data/genesis-members.json, the stable source of truth. seed reads it
+// to know who to mint keys for, then writes the minted public keys / ids /
+// signatures into genesis.json. Edit the roster file to change the founding set;
+// never hand-edit the minted output.
+const GENESIS_MEMBERS = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "genesis-members.json"), "utf8"));
+const FOUNDING_VP_DEF = GENESIS_MEMBERS.founding_vp;
+const FOUNDING_NODE_DEF = GENESIS_MEMBERS.founding_node;
+// The VP's static identity (the minted public_key + computed vp_id are merged in
+// at mint time).
+const FOUNDING_VP_TEMPLATE = Object.freeze({
+  name: FOUNDING_VP_DEF.name,
+  short_name: FOUNDING_VP_DEF.short_name,
+  jurisdiction_tier: FOUNDING_VP_DEF.jurisdiction_tier,
+  jurisdiction: FOUNDING_VP_DEF.jurisdiction,
+  url: FOUNDING_VP_DEF.url,
+  email: FOUNDING_VP_DEF.email,
+});
 const SEED_FILE = path.join(DATA_DIR, "seed-output.json");
 
 // ─── Cached-entries envelope ────────────────────────────────────────────────
@@ -212,12 +239,8 @@ function get(url) {
 // `tag` is the stable lookup key for founder-keys.json — adding a new
 // member with a fresh tag generates a fresh keypair on next seed; existing
 // tags reuse cached keypairs so tip_ids stay stable across re-seeds.
-const FOUNDING_MEMBERS = [
-  { name: "The AI Lab Intelligence Unobscured, Inc.", role: "Founding Organization", region: "US", tag: "ai-lab", tip_id_type: "organization" },
-  { name: "Dinesh Mendhe — Founder",   role: "Founder & Sole Inventor",     region: "US", tag: "founder",         tip_id_type: "personal" },
-  { name: "Tushar Bhendarkar — Co-Founder", role: "Co-Founder & Core Engineer", region: "US", tag: "cofounder-tushar", tip_id_type: "personal" },
-  { name: "Vishal — Co-Founder",       role: "Co-Founder & Core Engineer",  region: "US", tag: "cofounder-vishal", tip_id_type: "personal" },
-];
+// Read from the authored roster (genesis-data/genesis-members.json).
+const FOUNDING_MEMBERS = GENESIS_MEMBERS.founding_members;
 
 // Keypairs generated in Step 2, used in Step 5
 let _foundingKeypairs = []; // [{ member, keypair, tipId }]
@@ -227,7 +250,7 @@ async function embedFoundingVPKey() {
   head("STEP 1: Founding VP & Member Keypairs → Genesis Payload");
 
   const vpKeysFile = path.join(DATA_DIR, "founding-vp-keys.json");
-  const VP_TAG = "primary-vp";
+  const VP_TAG = FOUNDING_VP_DEF.tag;
 
   let vpKeypair;
   const cachedVps = loadCachedEntries(vpKeysFile, KEYS_FILE_TYPES.VPS);
@@ -245,7 +268,7 @@ async function embedFoundingVPKey() {
     vpKeypair = generateMLDSAKeypair();
     writeCachedEntries(vpKeysFile, KEYS_FILE_TYPES.VPS, [{
       tag: VP_TAG,
-      name: "The AI Lab Intelligence Unobscured, Inc.",
+      name: FOUNDING_VP_DEF.name,
       region: "US",
       id: generateVPId("US", vpKeypair.publicKey),
       public_key: vpKeypair.publicKey,
@@ -256,37 +279,17 @@ async function embedFoundingVPKey() {
     warn("SECURITY: founding-vp-keys.json is chmod 600. NEVER commit to git.");
   }
 
-  // Embed public key into genesis.js and genesis.py source files
-  const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
-  const genesisPyFile = path.resolve(__dirname, "../python/tip_node/genesis.py");
-
-  for (const file of [genesisJsFile, genesisPyFile]) {
-    let src = fs.readFileSync(file, "utf8");
-    if (src.includes(vpKeypair.publicKey)) {
-      info(`${path.basename(file)} already has the correct VP public key`);
-    } else {
-      // Replace placeholder or any existing key (hex string in quotes after public_key)
-      src = src.replace(
-        /(public_key['":\s]+)["']([a-f0-9]+|GENESIS_VP_PUBLIC_KEY_PLACEHOLDER)["']/,
-        `$1"${vpKeypair.publicKey}"`
-      );
-      fs.writeFileSync(file, src);
-      ok(`Embedded VP public key in ${path.basename(file)}`);
-    }
-  }
-
-  // Compute and embed founding VP ID from public key
+  // Build founding_vp (static template + minted key/id) and write to genesis.json.
   const vpId = generateVPId("US", vpKeypair.publicKey);
-  for (const file of [genesisJsFile, genesisPyFile]) {
-    let src = fs.readFileSync(file, "utf8");
-    // Replace any existing vp_id value (hardcoded or previously generated)
-    src = src.replace(
-      /(vp_id['":\s]+)["'][^"']+["']/,
-      `$1"${vpId}"`
-    );
-    fs.writeFileSync(file, src);
-  }
-  ok(`Embedded VP ID: ${vpId}`);
+  _patchGenesisJson({
+    founding_vp: {
+      vp_id: vpId,
+      ...FOUNDING_VP_TEMPLATE,
+      registered_at: GENESIS_TIMESTAMP,
+      public_key: vpKeypair.publicKey,
+    },
+  });
+  ok(`Embedded founding VP: ${vpId}`);
 
   // Generate (or reuse) founding member keypairs and compute TIP-IDs for
   // genesis_ring. Cache file (founder-keys.json) uses the multi-entry
@@ -313,25 +316,18 @@ async function embedFoundingVPKey() {
   const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
   ok(`${cachedFounders ? "Loaded" : "Generated"} ${genesisRing.length} founding member keypairs`);
 
-  // Embed genesis_ring (TIP-IDs) into genesis source files
-  const ringJson = JSON.stringify(genesisRing);
-  // JS: genesis_ring: [...]
-  let jsSrc = fs.readFileSync(genesisJsFile, "utf8");
-  jsSrc = jsSrc.replace(/genesis_ring:\s*\[.*?\]/s, `genesis_ring: ${ringJson}`);
-  fs.writeFileSync(genesisJsFile, jsSrc);
-  // Python: "genesis_ring": [...]
-  let pySrc = fs.readFileSync(genesisPyFile, "utf8");
-  pySrc = pySrc.replace(/"genesis_ring":\s*\[.*?\]/s, `"genesis_ring": ${ringJson}`);
-  fs.writeFileSync(genesisPyFile, pySrc);
-  ok("Embedded genesis_ring (founding TIP-IDs) in genesis source files");
+  // Write genesis_ring (founding TIP-IDs) to genesis.json.
+  _patchGenesisJson({ genesis_ring: genesisRing });
+  ok("Wrote genesis_ring (founding TIP-IDs) to genesis.json");
 
   // Embed genesis_ring_keys (public keys + dedup hashes + VP signatures for initDAG)
   const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
     const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
     const tipIdType = member.tip_id_type || "personal";
-    // creator_name attested for organizations (so the VP-vouched display
-    // name persists on the identity row). Personal members keep null.
-    const creatorName = tipIdType === "organization" ? member.name : null;
+    // creator_name = the member's authored roster name, persisted on EVERY
+    // genesis identity row (founders display their real name, not just orgs).
+    // Signed into the VP attestation below so it's cryptographically bound.
+    const creatorName = member.name;
     const idFields = {
       region: member.region, public_key: keypair.publicKey, dedup_hash: dedupHash,
       zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
@@ -356,17 +352,10 @@ async function embedFoundingVPKey() {
       vp_signature: vpSignature,
     };
   });
-  jsSrc = fs.readFileSync(genesisJsFile, "utf8");
-  jsSrc = jsSrc.replace(/genesis_ring_keys:\s*\[.*?\]/s, `genesis_ring_keys: ${JSON.stringify(ringKeys)}`);
-  fs.writeFileSync(genesisJsFile, jsSrc);
-  ok("Embedded genesis_ring_keys (public keys + VP signatures) in genesis.js");
-
-  // Clear Node.js require cache so genesis.js is re-read with updated key + ring
-  const genesisModule = require.resolve("../node/src/genesis");
-  delete require.cache[genesisModule];
-  Object.keys(require.cache).forEach(key => {
-    if (key.includes("genesis")) delete require.cache[key];
-  });
+  // Write genesis_ring_keys (public keys + VP signatures) to genesis.json.
+  // _patchGenesisJson already clears the genesis require cache.
+  _patchGenesisJson({ genesis_ring_keys: ringKeys });
+  ok("Wrote genesis_ring_keys (public keys + VP signatures) to genesis.json");
 
   // Compute and embed bootstrap tx signatures (founding VP signs both)
   // Re-read genesis module with the updated VP key + genesis_ring
@@ -393,18 +382,9 @@ async function embedFoundingVPKey() {
   };
   const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey, SIG_DET);
 
-  // Embed signatures in genesis.js
-  let gSrc = fs.readFileSync(genesisJsFile, "utf8");
-  gSrc = gSrc.replace(
-    /GENESIS_TX_SIGNATURE\s*=\s*"[^"]*"/,
-    `GENESIS_TX_SIGNATURE = "${genesisTxSig}"`
-  );
-  gSrc = gSrc.replace(
-    /GENESIS_VP_TX_SIGNATURE\s*=\s*"[^"]*"/,
-    `GENESIS_VP_TX_SIGNATURE = "${vpTxSig}"`
-  );
-  fs.writeFileSync(genesisJsFile, gSrc);
-  ok("Bootstrap tx signatures embedded in genesis.js");
+  // Write bootstrap-tx signatures to genesis.json.
+  _patchGenesisJson({ genesis_tx_signature: genesisTxSig, genesis_vp_tx_signature: vpTxSig });
+  ok("Wrote bootstrap tx signatures to genesis.json");
 
   // Clear require cache again so subsequent steps read updated signatures
   Object.keys(require.cache).forEach(key => {
@@ -423,19 +403,9 @@ async function mintGenesisBlock(vpKeypair) {
   const updatedGenesis = require("../node/src/genesis");
   const updatedPayload = updatedGenesis.GENESIS_PAYLOAD;
 
-  if (fs.existsSync(GENESIS_FILE)) {
-    info("genesis.json already exists — validating...");
-    const existing = JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8"));
-    const expectedHash = updatedGenesis.computeGenesisHash(updatedPayload);
-    if (existing.genesis_hash === expectedHash) {
-      ok(`Genesis block valid. Hash: ${T.cyan}${existing.genesis_hash.slice(0, 32)}...${T.reset}`);
-      return existing;
-    } else {
-      // Key may have changed — delete stale genesis.json and re-mint
-      warn("genesis.json hash mismatch (VP key changed?) — re-minting...");
-      fs.unlinkSync(GENESIS_FILE);
-    }
-  }
+  // Always (re)write genesis.json in the canonical layout below. The mint is
+  // deterministic (same keys → same hash + signature), so re-writing an existing
+  // file just re-normalises its field order; a changed key yields a new hash.
 
   info("Computing genesis hash...");
   const genesisHash = updatedGenesis.computeGenesisHash(updatedPayload);
@@ -451,8 +421,20 @@ async function mintGenesisBlock(vpKeypair) {
   const signature = mldsaSign(genesisHash, vpKeypair.privateKey, { deterministic: true });
   ok("Signature computed");
 
+  // Merge the seal over the EXISTING genesis.json so minted fields not present
+  // in GENESIS_PAYLOAD (the bootstrap-tx signatures) are preserved rather than
+  // wiped by a full overwrite.
+  const existing = fs.existsSync(GENESIS_FILE) ? JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8")) : {};
+  // Explicit genesis.json layout: static protocol definition + seal first, then
+  // the minted genesis member arrays + bootstrap-tx signatures, then the
+  // governable config (protocol_constants + origin_categories) last. The tx
+  // signatures come from `existing` (written by the re-sign step) — they are not
+  // part of GENESIS_PAYLOAD, so they must be carried over explicitly.
   const genesisBlock = {
-    ...updatedPayload,
+    version: updatedPayload.version,
+    protocol: updatedPayload.protocol,
+    initial_dedup_merkle_root: updatedPayload.initial_dedup_merkle_root,
+    notes: updatedPayload.notes,
     genesis_hash: genesisHash,
     canonical_hash: shake256(canonicalJson(updatedPayload)),
     signed_at: nowMs(),
@@ -464,9 +446,18 @@ async function mintGenesisBlock(vpKeypair) {
       platform: process.platform,
       seed_script: "scripts/seed.js",
     },
+    founding_vp: updatedPayload.founding_vp,
+    founding_node: updatedPayload.founding_node,
+    genesis_ring: updatedPayload.genesis_ring,
+    genesis_ring_keys: updatedPayload.genesis_ring_keys,
+    genesis_ring_signatures: updatedPayload.genesis_ring_signatures,
+    genesis_tx_signature: existing.genesis_tx_signature,
+    genesis_vp_tx_signature: existing.genesis_vp_tx_signature,
+    protocol_constants: updatedPayload.protocol_constants,
+    origin_categories: updatedPayload.origin_categories,
   };
 
-  fs.writeFileSync(GENESIS_FILE, JSON.stringify(genesisBlock, null, 2));
+  fs.writeFileSync(GENESIS_FILE, JSON.stringify(genesisBlock, null, 2) + "\n");
   ok(`Genesis block written to: ${GENESIS_FILE}`);
   ok(`${T.bold}Genesis hash: ${T.cyan}${genesisHash}${T.reset}`);
 
@@ -487,7 +478,7 @@ function initDirectDAG() {
   // The companion .tip.json in genesis-data/backups/ is still written at
   // the end of seed.js; that's the operator-facing distribution copy.
   const nodeKeysFile = path.join(DATA_DIR, "founding-node-keys.json");
-  const NODE_TAG = "primary-node";
+  const NODE_TAG = FOUNDING_NODE_DEF.tag;
   const cachedNodes = loadCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES);
   const cachedNode = cachedNodes?.get(NODE_TAG);
   if (cachedNode?.public_key && cachedNode?.private_key) {
@@ -501,7 +492,7 @@ function initDirectDAG() {
     _nodeKp = generateMLDSAKeypair();
     writeCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES, [{
       tag: NODE_TAG,
-      name: "The AI Lab TIP Node",
+      name: FOUNDING_NODE_DEF.name,
       id: generateNodeId(_nodeKp.publicKey),
       public_key: _nodeKp.publicKey,
       private_key: _nodeKp.privateKey,
@@ -588,7 +579,7 @@ async function registerSeedNode(vpKeypair) {
 
   const nodeId = generateNodeId(_nodeKp.publicKey);
   const registeredAt = nowMs();
-  const nodeName = "The AI Lab TIP Node";
+  const nodeName = FOUNDING_NODE_DEF.name;
 
   const freshGenesis = require("../node/src/genesis");
   const vpId = freshGenesis.getFoundingVP().vp_id;
@@ -644,13 +635,10 @@ async function registerSeedNode(vpKeypair) {
     ok("Node keys + log levels written to .env");
   }
 
-  // Embed founding node in genesis.js so initDAG can bootstrap it on any node
-  const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
+  // Write founding node to genesis.json so initDAG can bootstrap it on any node.
   const foundingNodeData = { node_id: nodeId, name: nodeName, public_key: _nodeKp.publicKey, council_signature: councilSig, approving_vp_id: vpId };
-  let gSrc = fs.readFileSync(genesisJsFile, "utf8");
-  gSrc = gSrc.replace(/founding_node:\s*(?:null|{[^}]*})/s, `founding_node: ${JSON.stringify(foundingNodeData)}`);
-  fs.writeFileSync(genesisJsFile, gSrc);
-  ok("Embedded founding node in genesis.js");
+  _patchGenesisJson({ founding_node: foundingNodeData });
+  ok("Wrote founding node to genesis.json");
 
   // Clear require cache so subsequent steps (mintGenesisBlock, verifyDAGState)
   // see the just-embedded founding_node when they re-read genesis.js. Without
@@ -780,7 +768,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       role: member.role,
       tip_id: regResult.tip_id,
       tip_id_type: memberType,
-      creator_name: memberType === "organization" ? member.name : null,
+      creator_name: member.name,
       public_key: keypair.publicKey,
       private_key: keypair.privateKey,  // Stored in seed output — replace with real keys in production
       founding: true,
@@ -797,110 +785,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 
   info(`Genesis Ring: ${identities.length} founding members created`);
   return identities;
-}
-
-// ─── Step 6: Register sample content (all four origin types) ──────────────────
-async function registerSampleContent(identities) {
-  head("STEP 5: Registering Sample Content (All Origin Types)");
-
-  const author = identities.find(i => i.tag === "founder");
-  if (!author) { warn("No founder identity found — skipping content registration"); return []; }
-
-  const samples = [
-    {
-      origin: ORIGIN.OH,
-      title: "TIP™ Protocol — Why the Internet Needs a Trust Layer",
-      content: "The internet was built without an identity layer. HTTP, TCP/IP, DNS, and TLS solve routing, delivery, naming, and encryption. But none of them answer the fundamental question: who created this content, and can I trust it? This was an acceptable gap when content creation required skill and equipment. It is an existential gap now that AI can generate indistinguishable text, images, video, and audio at near-zero marginal cost. TIP™ is the protocol layer that closes this gap.",
-    },
-    {
-      origin: ORIGIN.AA,
-      title: "AI-Assisted: Post-Quantum Cryptography Overview",
-      content: "Post-quantum cryptography refers to cryptographic algorithms that are secure against attacks by quantum computers. The NIST post-quantum standardisation process has selected ML-DSA-65 (Dilithium), SLH-DSA-128s (SPHINCS+), and ML-KEM-768 (Kyber) as the primary algorithms. TIP™ Protocol mandates these algorithms at the protocol level, ensuring long-term security. [This introduction was drafted by the author and expanded with AI assistance for clarity and completeness.]",
-    },
-    {
-      origin: ORIGIN.AG,
-      title: "AI-Generated: Frequently Asked Questions about TIP™",
-      content: "Q: What is TIP™? A: TIP™ (Trust Identity Protocol) is an open, federated protocol for verifying human identity and declaring content provenance. Q: Is TIP™ free? A: Yes — the protocol specification is CC-BY 4.0 and free for everyone. Q: How does the trust score work? A: Scores are computed deterministically from your complete transaction history on the federated DAG. [This FAQ was generated entirely by AI from the protocol specification.]",
-    },
-    {
-      origin: ORIGIN.MX,
-      title: "Mixed: TIP™ Launch Announcement",
-      content: "We are pleased to announce the launch of TIP™ Protocol v2.0. [Human-written announcement] This release includes five critical security and compliance fixes addressing privacy architecture, pre-scan calibration, identity revocation, GDPR compliance, and jurisdiction tier enforcement. [AI-generated technical summary] The cryptographic foundation uses NIST-standardised post-quantum algorithms. [Human-written conclusion] We invite developers, journalists, and researchers to implement TIP™ and join the founding network.",
-    },
-  ];
-
-  const registered = [];
-
-  for (const sample of samples) {
-    const contentHash = hashContent(sample.content);
-    const ctid = generateCTID(sample.origin, contentHash, author.tip_id);
-
-    const ctFields = { author_tip_id: author.tip_id, origin_code: sample.origin, content_hash: contentHash };
-    const signature = signBody(ctFields, author.private_key);
-
-    let result;
-
-    if (useDirectMode) {
-      const registeredAt = nowMs();
-
-      const contentTxBody = {
-        tx_type: TX_TYPES.REGISTER_CONTENT,
-        timestamp: registeredAt,
-        prev: _dag.getRecentPrev(),
-        data: {
-          ctid,
-          origin_code: sample.origin,
-          origin_label: ORIGIN_LABELS[sample.origin],
-          content_hash: contentHash,
-          author_tip_id: author.tip_id,
-          signature,
-          prescan_flagged: false,
-          prescan_probability: 0,
-        },
-      };
-      const signedContentTx = _withTxId(contentTxBody);
-      const tx = _dag.addTx(signedContentTx);
-
-      _dag.saveContent({
-        ctid,
-        origin_code: sample.origin,
-        content_hash: contentHash,
-        author_tip_id: author.tip_id,
-        status: "verified",
-        registered_at: registeredAt,
-        tx_id: tx.tx_id,
-      });
-
-      result = {
-        ctid,
-        origin_code: sample.origin,
-        origin_label: ORIGIN_LABELS[sample.origin],
-        content_hash: contentHash,
-        author_tip_id: author.tip_id,
-        status: "verified",
-        registered_at: registeredAt,
-        tx_id: tx.tx_id,
-      };
-    } else {
-      try {
-        result = await post(`${nodeUrl}/v1/content/register`, {
-          ...ctFields,
-          content: sample.content,
-          signature,
-        });
-      } catch (e) {
-        warn(`Content registration failed for ${sample.origin}: ${e.message}`);
-        result = { ctid, origin_code: sample.origin, status: "local-only" };
-      }
-    }
-
-    registered.push({ ...sample, ctid: result.ctid, status: result.status });
-    ok(`  ${T.bold}${ORIGIN_LABELS[sample.origin]}${T.reset} — ${sample.title.slice(0, 45)}...`);
-    label("    CTID", result.ctid);
-    label("    Status", result.status);
-  }
-
-  return registered;
 }
 
 // ─── Step 7: Full DAG verification ────────────────────────────────────────────
@@ -1001,13 +885,6 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
     name: "Genesis ring size",
     pass: identities.length >= 2,
     detail: `${identities.length} founding members`,
-  });
-
-  // Sample content
-  checks.push({
-    name: "All four origin types registered",
-    pass: content.length === 4,
-    detail: content.map(c => c.origin).join(", "),
   });
 
   // TIP-ID format check
@@ -1235,7 +1112,6 @@ async function main() {
     // embedded, so GENESIS_TX_SIGNATURE / GENESIS_VP_TX_SIGNATURE would be stale
     // at node startup. Re-sign over the complete payload here.
     {
-      const genesisJsFile = path.resolve(__dirname, "../node/src/genesis.js");
       Object.keys(require.cache).forEach(key => { if (key.includes("genesis")) delete require.cache[key]; });
       const freshGenesis = require("../node/src/genesis");
       const SIG_DET = { deterministic: true };
@@ -1253,12 +1129,9 @@ async function main() {
         },
       };
       const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey, SIG_DET);
-      let gSrc = fs.readFileSync(genesisJsFile, "utf8");
-      gSrc = gSrc.replace(/GENESIS_TX_SIGNATURE\s*=\s*"[^"]*"/, `GENESIS_TX_SIGNATURE = "${genesisTxSig}"`);
-      gSrc = gSrc.replace(/GENESIS_VP_TX_SIGNATURE\s*=\s*"[^"]*"/, `GENESIS_VP_TX_SIGNATURE = "${vpTxSig}"`);
-      fs.writeFileSync(genesisJsFile, gSrc);
-      Object.keys(require.cache).forEach(key => { if (key.includes("genesis")) delete require.cache[key]; });
-      ok("Bootstrap tx signatures re-embedded after founding_node update");
+      // Write the re-signed bootstrap-tx signatures to genesis.json.
+      _patchGenesisJson({ genesis_tx_signature: genesisTxSig, genesis_vp_tx_signature: vpTxSig });
+      ok("Re-wrote bootstrap tx signatures to genesis.json after founding_node update");
     }
 
     // Step 3: Mint genesis block (signed by founding VP key) — DEFERRED to
@@ -1271,11 +1144,10 @@ async function main() {
     // Step 4: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
-    // Step 5: Sample content (skipped in production)
-    const content = skipSampleContent ? [] : await registerSampleContent(identities);
-    if (skipSampleContent) info("Sample content skipped (production mode)");
+    // Genesis is block-only — no sample content is seeded.
+    const content = [];
 
-    // Step 6: Verification
+    // Step 5: Verification
     const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
 
     // Step 7: Write output
@@ -1287,7 +1159,6 @@ async function main() {
     label("Chain ID", output.genesis.chain_id);
     label("Founding VP", output.founding_vps[0].vp_id);
     label("Genesis ring members", output.founding_identities.length.toString());
-    label("Sample content", `${output.sample_content.length} records (OH, AA, AG, MX)`);
     if (seedNode) label("Seed node", seedNode.nodeId);
     if (_dag) label("DAG transactions", `${_dag.count()}`);
     label("Validation", allPass ? `${T.green}All checks passed${T.reset}` : `${T.red}Some checks failed${T.reset}`);
