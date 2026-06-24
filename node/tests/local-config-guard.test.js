@@ -68,3 +68,57 @@ describe("Tier-3 local-config / agreed-genesis disjointness (#39/A21)", () => {
     expect(Object.keys(LC).length).toBe(23);
   });
 });
+
+// .env.example documents each Tier-3 knob with its RECOMMENDED default value so
+// an operator can revert a local override. Those values must never drift from
+// the real defaults in shared/local-config.js.
+describe(".env.example Tier-3 recommended defaults match local-config (#39)", () => {
+  const fs = require("fs");
+  const ROOT = path.resolve(__dirname, "../..");
+
+  // Source-of-truth defaults parsed straight from `_num("TIP_X", N)` literals —
+  // independent of process.env, so an ambient override can't skew the check.
+  const lcSource = fs.readFileSync(path.join(SHARED, "local-config.js"), "utf8");
+  const defaults = {};
+  for (const m of lcSource.matchAll(/_num\(\s*"(TIP_[A-Z0-9_]+)"\s*,\s*(\d+)\s*\)/g)) {
+    defaults[m[1]] = Number(m[2]);
+  }
+
+  // Recommended values documented in the .env.example Tier-3 section.
+  const lines = fs.readFileSync(path.join(ROOT, ".env.example"), "utf8").split("\n");
+  const start = lines.findIndex((l) => /Tier-3 Local Tunables/.test(l));
+  const documented = {};
+  if (start >= 0) {
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^#\s*─{3,}/.test(lines[i])) break;   // next section banner
+      const m = lines[i].match(/^#\s*(TIP_[A-Z0-9_]+)\s*=\s*(\S+)\s*$/);
+      if (m) documented[m[1]] = Number(m[2]);
+    }
+  }
+
+  test("parsed all 23 defaults from local-config.js, one per knob", () => {
+    expect(Object.keys(defaults).length).toBe(Object.keys(LC).length);
+    for (const key of Object.keys(LC)) expect(defaults).toHaveProperty("TIP_" + key);
+  });
+
+  test(".env.example has a Tier-3 section listing every knob", () => {
+    expect(start).toBeGreaterThanOrEqual(0);
+    const missing = Object.keys(defaults).filter((e) => !(e in documented));
+    expect(missing).toEqual([]);
+  });
+
+  test(".env.example Tier-3 section has no entry that is not a real knob", () => {
+    const stale = Object.keys(documented).filter((e) => !(e in defaults));
+    expect(stale).toEqual([]);
+  });
+
+  test("each recommended value equals the local-config default (no drift)", () => {
+    const mismatches = [];
+    for (const env of Object.keys(defaults)) {
+      if (documented[env] !== defaults[env]) {
+        mismatches.push(`${env}: .env.example=${documented[env]} default=${defaults[env]}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
