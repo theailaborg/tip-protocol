@@ -60,6 +60,7 @@ function validateRequest(query = {}) {
     origin: null,
     status: null,
     hasMedia: null,
+    url: null,
   };
 
   if (query.limit !== undefined) {
@@ -98,6 +99,21 @@ function validateRequest(query = {}) {
       throw schemaError(400, "has_media must be 1/true or 0/false", "has_media_invalid");
     }
     out.hasMedia = v === "1" || v === "true" ? true : null;
+  }
+  // Exact registered-URL lookup. Used by the VP portal's advisory
+  // duplicate-URL check (read-only): "is this URL already on the DAG?".
+  // Matches an entry of the registered_urls array exactly.
+  if (query.url !== undefined && query.url !== "") {
+    const s = String(query.url);
+    if (s.length > 2048) {
+      throw schemaError(400, "url must be 2048 characters or fewer", "url_invalid");
+    }
+    let parsed;
+    try { parsed = new URL(s); } catch { throw schemaError(400, "url must be a valid URL", "url_invalid"); }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw schemaError(400, "url must be an http(s) URL", "url_invalid");
+    }
+    out.url = s;
   }
 
   return out;

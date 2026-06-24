@@ -558,12 +558,13 @@ class MemoryStore {
   // query. Cursor is an exclusive (registered_at, ctid) tuple; the
   // composite tiebreak makes pagination stable when several rows share
   // a timestamp.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
     let rows = [...this._content.values()];
     if (author) rows = rows.filter(c => c.author_tip_id === author);
     if (origin) rows = rows.filter(c => c.origin_code === origin);
     if (status) rows = rows.filter(c => c.status === status);
     if (hasMedia === true) rows = rows.filter(c => Array.isArray(c.media) && c.media.length > 0);
+    if (url) rows = rows.filter(c => Array.isArray(c.registered_urls) && c.registered_urls.includes(url));
     rows.sort((a, b) => (b.registered_at - a.registered_at) || (a.ctid < b.ctid ? 1 : -1));
     if (cursor) {
       rows = rows.filter(c =>
@@ -2782,13 +2783,23 @@ class SQLiteStore {
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
-  listContent({ author = null, origin = null, status = null, hasMedia = null, limit = 20, cursor = null } = {}) {
+  listContent({ author = null, origin = null, status = null, hasMedia = null, url = null, limit = 20, cursor = null } = {}) {
     const where = [];
     const params = [];
     if (author) { where.push("author_tip_id = ?"); params.push(author); }
     if (origin) { where.push("origin_code = ?"); params.push(origin); }
     if (status) { where.push("status = ?"); params.push(status); }
     if (hasMedia === true) where.push("media IS NOT NULL AND media != '[]'");
+    if (url) {
+      // registered_urls is a JSON-encoded string[]; each entry is wrapped in
+      // double quotes, so matching `"<url>"` as a substring is an EXACT
+      // element match (the quotes delimit it). JSON-escape the url, then
+      // LIKE-escape %/_/\ so user input can't inject wildcards.
+      const jsonInner = JSON.stringify(url).slice(1, -1);
+      const likeEsc = jsonInner.replace(/[\\%_]/g, "\\$&");
+      where.push("registered_urls LIKE ? ESCAPE '\\'");
+      params.push('%"' + likeEsc + '"%');
+    }
     if (cursor) {
       where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");
       params.push(cursor.t, cursor.t, cursor.c);
