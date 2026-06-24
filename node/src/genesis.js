@@ -51,15 +51,8 @@ const GENESIS_TIMESTAMP = 1773532800000; // 2026-03-15T00:00:00.000Z UTC
 const GENESIS_CHAIN_ID = "tip-mainnet-v2";
 const GENESIS_VP_REGION = "US";
 
-// ─── Genesis DATA ────────────────────────────────────────────────────────────
-// #39 — genesis.js holds only the static PROTOCOL DEFINITION (version, protocol
-// block, dedup root, notes). The MINTED anchor (founding members, keys, bootstrap
-// -tx signatures) is written to genesis-data/genesis.json by the mint
-// (scripts/seed.js) and READ here; the governable config (params + taxonomy)
-// lives in genesis-data/genesis-config.json. No minted data is embedded inline.
-// genesis.json may be absent during a fresh mint, so we tolerate {} (seed writes
-// it then re-requires this module); computeGenesisHash is a pure function seed
-// can call on an in-memory payload before the file exists.
+// Minted anchor read from genesis.json, config from genesis-config.json. {} is
+// tolerated during a fresh mint: seed writes the files, then re-requires.
 function _loadGenesisJson(rel) {
   try { return JSON.parse(fs.readFileSync(path.resolve(__dirname, rel), "utf8")); }
   catch { return {}; }
@@ -67,17 +60,12 @@ function _loadGenesisJson(rel) {
 const GENESIS_DOC = _loadGenesisJson("../../genesis-data/genesis.json");
 const GENESIS_CONFIG = _loadGenesisJson("../../genesis-data/genesis-config.json");
 
-// Field order (cosmetic — canonicalJson sorts keys for the hash): genesis
-// MEMBERS first, static protocol definition next, governable config last.
 const GENESIS_PAYLOAD = Object.freeze({
-  // -- Minted anchor: written to genesis.json by scripts/seed.js, read here --
   founding_vp: GENESIS_DOC.founding_vp,
   founding_node: GENESIS_DOC.founding_node,
   genesis_ring: GENESIS_DOC.genesis_ring,
   genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
   genesis_ring_signatures: [],
-
-  // -- Static protocol definition --
   version: "2",
   protocol: {
     name: PROTOCOL.name,
@@ -91,22 +79,12 @@ const GENESIS_PAYLOAD = Object.freeze({
   },
   initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
   notes: "TIP Protocol Genesis Block. This is the immutable foundation of the Trust Identity Protocol network. Once this block is committed to the DAG, its hash anchors every subsequent transaction.",
-
-  // -- Governable config (from genesis-config.json): kept last --
   protocol_constants: GENESIS_CONFIG.protocol_constants,
   origin_categories: GENESIS_CONFIG.origin_categories,
 });
 
-// ─── Genesis hash (chain anchor) ─────────────────────────────────────────────
-// genesis_hash is the IMMUTABLE chain identity and deliberately EXCLUDES the
-// non-cryptographic config: protocol_constants (governable params) AND
-// origin_categories (documentary taxonomy labels, read by nothing at runtime).
-// These are changeable (via a coordinated re-seal or, later, a governance tx),
-// so they are NOT part of chain identity: editing a param or a label must NEVER
-// rotate genesis_hash (#39). The values still LIVE in the genesis payload (the
-// complete founding record) — they are simply not fed into this hash. Agreement
-// on the param values is enforced separately by protocol_params_hash at the
-// handshake (below) and by the protocol_params table inside state_merkle_root.
+// Excludes protocol_constants + origin_categories: governable config is not chain
+// identity, so editing it must never rotate genesis_hash.
 function computeGenesisHash(payload) {
   const { protocol_constants, origin_categories, ...anchor } = payload;
   return shake256(canonicalJson(anchor));
@@ -114,14 +92,9 @@ function computeGenesisHash(payload) {
 
 const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
 
-// ─── Protocol params hash (Tier-2 agreement anchor) ──────────────────────────
-// SHAKE-256 over the protocol_constants sub-object. Now that genesis_hash
-// EXCLUDES protocol_constants, this is the SOLE handshake-time enforcer of
-// param agreement: two nodes with the same chain identity but different param
-// values share a genesis_hash yet differ here, so the handshake rejects the
-// mismatch (network/handshake.js verifies both). Editing a param rotates THIS
-// hash, never genesis_hash. (A future governance tx instead writes the change
-// to the protocol_params table / state_merkle_root and rotates neither hash.)
+// Hash of the FOUNDING params (height-0), not current ones, so the handshake can
+// compare a static value a not-yet-synced joiner already has. Catches a node on a
+// divergent genesis-config before peering; current params are agreed via state root.
 function getProtocolParamsHash() {
   return shake256(canonicalJson(GENESIS_PAYLOAD.protocol_constants));
 }

@@ -7,7 +7,7 @@
  * genesis-data/genesis-members.json, generates a keypair per member/VP/node,
  * computes their ids, signs the bootstrap txs, and writes all minted values
  * (public keys, ids, signatures, seal) into genesis-data/genesis.json. It does
- * NOT seed sample content — only the genesis block.
+ * NOT seed sample content, only the genesis block.
  *
  * This script:
  *   1. Generates founding VP keypair + member keypairs from the roster
@@ -107,10 +107,8 @@ const useDirectMode = args.includes("--direct") || !args.includes("--node-url");
 const DATA_DIR = path.resolve(__dirname, "../genesis-data");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
 
-// #39 — the mint writes minted genesis VALUES to genesis.json (the data file
-// genesis.js reads), instead of regex-editing genesis.js source. _patchGenesisJson
-// merges fields into genesis.json and clears the require cache so a subsequent
-// require("genesis") reflects them (GENESIS_PAYLOAD reads founding_* from there).
+// Merge minted values into genesis.json and clear the require cache so the next
+// require("genesis") picks them up.
 function _patchGenesisJson(fields) {
   const doc = fs.existsSync(GENESIS_FILE) ? JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8")) : {};
   Object.assign(doc, fields);
@@ -118,16 +116,10 @@ function _patchGenesisJson(fields) {
   Object.keys(require.cache).forEach(k => { if (k.includes("genesis")) delete require.cache[k]; });
 }
 
-// #39 — the founding ROSTER (who the members/VP/node ARE) is authored in
-// genesis-data/genesis-members.json, the stable source of truth. seed reads it
-// to know who to mint keys for, then writes the minted public keys / ids /
-// signatures into genesis.json. Edit the roster file to change the founding set;
-// never hand-edit the minted output.
+// Founding roster (the authored source of truth); seed mints keys for these.
 const GENESIS_MEMBERS = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "genesis-members.json"), "utf8"));
 const FOUNDING_VP_DEF = GENESIS_MEMBERS.founding_vp;
 const FOUNDING_NODE_DEF = GENESIS_MEMBERS.founding_node;
-// The VP's static identity (the minted public_key + computed vp_id are merged in
-// at mint time).
 const FOUNDING_VP_TEMPLATE = Object.freeze({
   name: FOUNDING_VP_DEF.name,
   short_name: FOUNDING_VP_DEF.short_name,
@@ -239,7 +231,6 @@ function get(url) {
 // `tag` is the stable lookup key for founder-keys.json — adding a new
 // member with a fresh tag generates a fresh keypair on next seed; existing
 // tags reuse cached keypairs so tip_ids stay stable across re-seeds.
-// Read from the authored roster (genesis-data/genesis-members.json).
 const FOUNDING_MEMBERS = GENESIS_MEMBERS.founding_members;
 
 // Keypairs generated in Step 2, used in Step 5
@@ -316,7 +307,6 @@ async function embedFoundingVPKey() {
   const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
   ok(`${cachedFounders ? "Loaded" : "Generated"} ${genesisRing.length} founding member keypairs`);
 
-  // Write genesis_ring (founding TIP-IDs) to genesis.json.
   _patchGenesisJson({ genesis_ring: genesisRing });
   ok("Wrote genesis_ring (founding TIP-IDs) to genesis.json");
 
@@ -324,9 +314,7 @@ async function embedFoundingVPKey() {
   const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
     const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
     const tipIdType = member.tip_id_type || "personal";
-    // creator_name = the member's authored roster name, persisted on EVERY
-    // genesis identity row (founders display their real name, not just orgs).
-    // Signed into the VP attestation below so it's cryptographically bound.
+    // Every founder gets their roster name (not just orgs); signed below.
     const creatorName = member.name;
     const idFields = {
       region: member.region, public_key: keypair.publicKey, dedup_hash: dedupHash,
@@ -352,8 +340,6 @@ async function embedFoundingVPKey() {
       vp_signature: vpSignature,
     };
   });
-  // Write genesis_ring_keys (public keys + VP signatures) to genesis.json.
-  // _patchGenesisJson already clears the genesis require cache.
   _patchGenesisJson({ genesis_ring_keys: ringKeys });
   ok("Wrote genesis_ring_keys (public keys + VP signatures) to genesis.json");
 
@@ -382,7 +368,6 @@ async function embedFoundingVPKey() {
   };
   const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey, SIG_DET);
 
-  // Write bootstrap-tx signatures to genesis.json.
   _patchGenesisJson({ genesis_tx_signature: genesisTxSig, genesis_vp_tx_signature: vpTxSig });
   ok("Wrote bootstrap tx signatures to genesis.json");
 
@@ -403,9 +388,8 @@ async function mintGenesisBlock(vpKeypair) {
   const updatedGenesis = require("../node/src/genesis");
   const updatedPayload = updatedGenesis.GENESIS_PAYLOAD;
 
-  // Always (re)write genesis.json in the canonical layout below. The mint is
-  // deterministic (same keys → same hash + signature), so re-writing an existing
-  // file just re-normalises its field order; a changed key yields a new hash.
+  // Always re-write in canonical layout; the mint is deterministic, so this just
+  // normalises field order (a changed key yields a new hash).
 
   info("Computing genesis hash...");
   const genesisHash = updatedGenesis.computeGenesisHash(updatedPayload);
@@ -425,11 +409,8 @@ async function mintGenesisBlock(vpKeypair) {
   // in GENESIS_PAYLOAD (the bootstrap-tx signatures) are preserved rather than
   // wiped by a full overwrite.
   const existing = fs.existsSync(GENESIS_FILE) ? JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8")) : {};
-  // Explicit genesis.json layout: static protocol definition + seal first, then
-  // the minted genesis member arrays + bootstrap-tx signatures, then the
-  // governable config (protocol_constants + origin_categories) last. The tx
-  // signatures come from `existing` (written by the re-sign step) — they are not
-  // part of GENESIS_PAYLOAD, so they must be carried over explicitly.
+  // Explicit field order (definition+seal, members, config last). tx signatures
+  // aren't in GENESIS_PAYLOAD, so carry them over from the existing file.
   const genesisBlock = {
     version: updatedPayload.version,
     protocol: updatedPayload.protocol,
@@ -635,7 +616,6 @@ async function registerSeedNode(vpKeypair) {
     ok("Node keys + log levels written to .env");
   }
 
-  // Write founding node to genesis.json so initDAG can bootstrap it on any node.
   const foundingNodeData = { node_id: nodeId, name: nodeName, public_key: _nodeKp.publicKey, council_signature: councilSig, approving_vp_id: vpId };
   _patchGenesisJson({ founding_node: foundingNodeData });
   ok("Wrote founding node to genesis.json");
@@ -1121,11 +1101,11 @@ async function main() {
         timestamp: freshGenesis.GENESIS_TIMESTAMP,
         prev: [freshGenesis.GENESIS_TX_ID, freshGenesis.GENESIS_TX_ID],
         data: {
-          vp_id:             freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
-          name:              freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
-          jurisdiction:      freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction,
+          vp_id: freshGenesis.GENESIS_PAYLOAD.founding_vp.vp_id,
+          name: freshGenesis.GENESIS_PAYLOAD.founding_vp.name,
+          jurisdiction: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction,
           jurisdiction_tier: freshGenesis.GENESIS_PAYLOAD.founding_vp.jurisdiction_tier,
-          public_key:        vpKeypair.publicKey,
+          public_key: vpKeypair.publicKey,
         },
       };
       const vpTxSig = mldsaSign(canonicalTx(vpTxBody), vpKeypair.privateKey, SIG_DET);
