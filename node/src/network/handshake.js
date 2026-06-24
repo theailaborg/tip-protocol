@@ -47,8 +47,9 @@ function createPayload(nodeId, nodePrivateKey, chainId, genesisHash, getLatestRo
 
 /**
  * Verify a peer's handshake signature against the node registry.
- * Rejects peers whose genesis_hash doesn't match ours — prevents joining
- * a forked network that happens to share our chain_id label.
+ * Rejects peers whose genesis_hash doesn't match ours: prevents joining a forked
+ * network, and (since genesis_hash commits to the founding params) a node on a
+ * divergent founding config.
  * @returns {{ valid: boolean, nodeId?: string, error?: string }}
  */
 function verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, chainId, genesisHash, getNodeKey) {

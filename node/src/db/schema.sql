@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS `prescan_jobs` (`job_id` varchar(128), `tip_ctid` var
 
 CREATE TABLE IF NOT EXISTS `prescan_reviews` (`review_id` varchar(128), `tip_ctid` varchar(512) not null, `creator_tip_id` varchar(512) not null, `assigned_reviewer` varchar(512) null, `triggered_at_round` integer not null, `triggered_at_ms` bigint null, `decided_at_round` integer null, `confirmed_at_round` integer null, `confirmed_at_ms` bigint null, `state` varchar(32) not null default 'triggered', `decision_note` text null, `suggested_origin` varchar(8) null, primary key (`review_id`));
 
+CREATE TABLE IF NOT EXISTS `protocol_params` (`param_key` varchar(128) not null, `value` text not null, `effective_from_height` bigint not null, `update_tx_id` varchar(512) not null, primary key (`param_key`, `effective_from_height`));
+
 CREATE TABLE IF NOT EXISTS `revocations` (`tip_id` varchar(512), `tx_type` varchar(64) not null, `timestamp` bigint not null, `tx_id` varchar(512) not null, primary key (`tip_id`));
 
 CREATE TABLE IF NOT EXISTS `rotation_participation` (`node_id` varchar(512) not null, `rotation_number` integer not null, `count` integer not null default '0', primary key (`node_id`, `rotation_number`));

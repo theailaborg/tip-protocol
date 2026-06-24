@@ -19,6 +19,8 @@
 
 "use strict";
 
+const LC = require("./local-config");
+
 let _instance = null;
 
 /**
@@ -354,37 +356,36 @@ const _r = () => get().reputation;
 const _sc = () => get().score;
 
 const CONSENSUS = {
-  get ROUND_TIMEOUT_MS() { return _c().round_timeout_ms; },
-  get BATCH_WAIT_MS() { return _c().batch_wait_ms; },
-  get CONSENSUS_SUMMARY_INTERVAL_MS() { return _c().consensus_summary_interval_ms ?? 60000; },
+  get ROUND_TIMEOUT_MS() { return LC.ROUND_TIMEOUT_MS; },
+  get BATCH_WAIT_MS() { return LC.BATCH_WAIT_MS; },
+  get CONSENSUS_SUMMARY_INTERVAL_MS() { return LC.CONSENSUS_SUMMARY_INTERVAL_MS; },
   get VOTES_RETENTION_ROUNDS() { return _c().votes_retention_rounds ?? 5; },
   get MAX_TXS_PER_CERTIFICATE() { return _c().max_txs_per_certificate; },
-  get MEMPOOL_MAX_SIZE() { return _c().mempool_max_size; },
-  get MEMPOOL_TX_TTL_SECONDS() { return _c().mempool_tx_ttl_seconds; },
+  get MEMPOOL_MAX_SIZE() { return LC.MEMPOOL_MAX_SIZE; },
+  get MEMPOOL_TX_TTL_SECONDS() { return LC.MEMPOOL_TX_TTL_SECONDS; },
   get CERTIFICATE_MAX_BYTES() { return _c().certificate_max_bytes; },
-  get SYNC_BATCH_SIZE() { return _c().sync_batch_size; },
-  get ORDERED_HASH_CACHE_SIZE() { return _c().ordered_hash_cache_size; },
-  get MAX_MSGS_PER_PEER_PER_SEC() { return _c().max_msgs_per_peer_per_sec; },
-  get SYNC_MAX_RETRIES() { return _c().sync_max_retries; },
-  get SYNC_RETRY_BASE_MS() { return _c().sync_retry_base_ms; },
-  get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
-  get HANDSHAKE_TIMEOUT_MS() { return _c().handshake_timeout_ms; },
-  get HANDSHAKE_MAX_RETRIES() { return _c().handshake_max_retries; },
+  get SYNC_BATCH_SIZE() { return LC.SYNC_BATCH_SIZE; },
+  get ORDERED_HASH_CACHE_SIZE() { return LC.ORDERED_HASH_CACHE_SIZE; },
+  get MAX_MSGS_PER_PEER_PER_SEC() { return LC.MAX_MSGS_PER_PEER_PER_SEC; },
+  get SYNC_MAX_RETRIES() { return LC.SYNC_MAX_RETRIES; },
+  get SYNC_RETRY_BASE_MS() { return LC.SYNC_RETRY_BASE_MS; },
+  get HANDSHAKE_TIMEOUT_MS() { return LC.HANDSHAKE_TIMEOUT_MS; },
+  get HANDSHAKE_MAX_RETRIES() { return LC.HANDSHAKE_MAX_RETRIES; },
   get GC_DEPTH() { return _c().gc_depth ?? 500; },
-  get GC_INTERVAL_COMMITS() { return _c().gc_interval_commits ?? 10; },
-  get ANTI_ENTROPY_INTERVAL_MS() { return _c().anti_entropy_interval_ms ?? 4000; },
-  get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return _c().anti_entropy_peer_timeout_ms ?? 2000; },
+  get GC_INTERVAL_COMMITS() { return LC.GC_INTERVAL_COMMITS; },
+  get ANTI_ENTROPY_INTERVAL_MS() { return LC.ANTI_ENTROPY_INTERVAL_MS; },
+  get ANTI_ENTROPY_PEER_TIMEOUT_MS() { return LC.ANTI_ENTROPY_PEER_TIMEOUT_MS; },
   // Snapshot-install collision retry: when two minority nodes race into
   // byzantine_fork recovery, the second may hit a peer that's busy serving
   // the first. Retry the SAME peer this many times with this delay before
   // giving up and moving to the next candidate. See anti-entropy.js (#47).
-  get SNAPSHOT_BUSY_RETRY_MS() { return _c().snapshot_busy_retry_ms ?? 5000; },
-  get SNAPSHOT_BUSY_RETRY_ATTEMPTS() { return _c().snapshot_busy_retry_attempts ?? 1; },
+  get SNAPSHOT_BUSY_RETRY_MS() { return LC.SNAPSHOT_BUSY_RETRY_MS; },
+  get SNAPSHOT_BUSY_RETRY_ATTEMPTS() { return LC.SNAPSHOT_BUSY_RETRY_ATTEMPTS; },
   // Per-call deadline for direct ack stream send (#46) and ack-request
   // round-trip (#48). Caps a slow / hung peer from blocking the local
   // stuck-round retry path. Used in network/node.js sendAckDirect +
   // sendAckRequest.
-  get ACK_STREAM_TIMEOUT_MS() { return _c().ack_stream_timeout_ms ?? 3000; },
+  get ACK_STREAM_TIMEOUT_MS() { return LC.ACK_STREAM_TIMEOUT_MS; },
   // How long bullshark parks a deferred anchor waiting for missing parent certs
   // before triggering snapshot resync. Must be >> gossipsub mesh rebuild time
   // (~10-15s after a reconnect) so transiently missing certs (gossip-lag, not
@@ -393,7 +394,7 @@ const CONSENSUS = {
   // comfortable headroom. Only genuinely GC'd certs (50-60s+ pauses) will still
   // be missing at 60s and require a snapshot resync.
   get BULLSHARK_DEFER_MS() { return _c().bullshark_defer_ms ?? 60000; },
-  get SYNC_DIVERGENCE_GRACE_MS() { return _c().sync_divergence_grace_ms ?? 30000; },
+  get SYNC_DIVERGENCE_GRACE_MS() { return LC.SYNC_DIVERGENCE_GRACE_MS; },
   // Sub-quorum escape: when narwhal is ready but has made no round progress
   // for > this duration, anti-entropy fires a snapshot resync to reset join
   // state + reconnect. Catches the "silently dropped libp2p connection
@@ -407,11 +408,15 @@ const CONSENSUS = {
   get HEARTBEAT_INTERVAL_MS() { return _c().heartbeat_interval_ms ?? 5000; },
   get HEARTBEAT_TIMEOUT_MS() { return _c().heartbeat_timeout_ms ?? 2000; },
   get HEARTBEAT_SUSPECT_MISSES() { return _c().heartbeat_suspect_misses ?? 2; },
-  get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return _c().rotation_coord_rebroadcast_interval_ms ?? 1500; },
-  get SYNC_TOTAL_TIMEOUT_MS() { return _c().sync_total_timeout_ms ?? 30000; },
-  get SYNC_MAX_RESPONSE_BYTES() { return _c().sync_max_response_bytes ?? 1073741824; },
-  // BFT Time — cert.timestamp validation bounds. See genesis.js consensus block.
-  get MAX_ROUND_DURATION_MS() { return _c().max_round_duration_ms ?? 300000; },
+  get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return LC.ROTATION_COORD_REBROADCAST_INTERVAL_MS; },
+  get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
+  get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
+  // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in
+  // the codebase. WARNING: if this is ever wired into cert.timestamp validity
+  // (i.e. used to accept/reject a cert), it becomes state-determining (Tier-2)
+  // and MUST move back into the agreed genesis block — a divergent per-node
+  // value would then fork the chain. Keep it consumer-free while it lives here.
+  get MAX_ROUND_DURATION_MS() { return LC.MAX_ROUND_DURATION_MS; },
   get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
   // §4 + #34 + #75: rotation-period committee model. See genesis.js consensus block.
   get COMMITTEE_ROTATION_INTERVAL_COMMITS() { return _c().committee_rotation_interval_commits ?? 100; },

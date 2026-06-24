@@ -45,23 +45,36 @@ const { log } = require("./logger");
 
 // ─── Genesis Block Constants ──────────────────────────────────────────────────
 // These are FIXED and must never change once the network is live.
-// Integer epoch ms for 2026-03-15T00:00:00.000Z UTC — chain wall-clock
-// anchor. Every node verifies this exact value at startup.
-const GENESIS_TIMESTAMP = 1773532800000; // 2026-03-15T00:00:00.000Z UTC
 const GENESIS_CHAIN_ID = "tip-mainnet-v2";
 const GENESIS_VP_REGION = "US";
 
-// ─── Canonical Genesis Payload ────────────────────────────────────────────────
-// Protocol definition data only. Tx-level fields (tx_type, timestamp, prev)
-// are on the genesis tx wrapper, not here.
-// This is the EXACT data hashed for GENESIS_HASH. Must be byte-for-byte
-// identical across every node in the network.
-// Any edit here MUST be paired with re-running `npm run seed` to regenerate
-// GENESIS_TX_SIGNATURE and GENESIS_VP_TX_SIGNATURE.
+// genesis.json is the minted, self-contained block the node reads at runtime.
+// genesis-config.json is a seed-time input (fresh-mint fallback only). {} is
+// tolerated during a fresh mint: seed writes the files, then re-requires.
+function _loadGenesisJson(rel) {
+  try { return JSON.parse(fs.readFileSync(path.resolve(__dirname, rel), "utf8")); }
+  catch { return {}; }
+}
+const GENESIS_DOC = _loadGenesisJson("../../genesis-data/genesis.json");
+const GENESIS_CONFIG = _loadGenesisJson("../../genesis-data/genesis-config.json");
+
+// Runtime reads protocol_constants from the minted, self-contained genesis.json.
+// genesis-config.json is a seed-time input; the fallback fires only during a fresh
+// mint, before seed has written the params into genesis.json.
+const PROTOCOL_CONSTANTS = GENESIS_DOC.protocol_constants || GENESIS_CONFIG.protocol_constants;
+
+// Chain-birth moment: the BFT-time anchor. The genesis tx timestamp
+// (content-addressed) and the BFT round-1 floor are the same instant.
+const GENESIS_TIMESTAMP = PROTOCOL_CONSTANTS?.consensus?.bft_time_genesis_ms;
+if (typeof GENESIS_TIMESTAMP !== "number") {
+  throw new Error(
+    "genesis protocol_constants.consensus.bft_time_genesis_ms is required (chain genesis timestamp). " +
+    "Run `npm run seed` to mint genesis.json.",
+  );
+}
 
 const GENESIS_PAYLOAD = Object.freeze({
   version: "2",
-
   protocol: {
     name: PROTOCOL.name,
     short: PROTOCOL.short,
@@ -72,431 +85,17 @@ const GENESIS_PAYLOAD = Object.freeze({
     issuer: PROTOCOL.issuer,
     issuer_url: PROTOCOL.issuerUrl,
   },
-
-  // ── Protocol Constants (75 values — immutable, read by all nodes) ──────────
-  // These are loaded into ProtocolConstants singleton at boot.
-  // See my-notes/global-constant.md for the full specification.
-  protocol_constants: {
-    score: {
-      max_total: 1000,
-      max_identity: 530,
-      max_content: 350,
-      max_reputation: 50,
-      max_longevity: 70,
-      initial_identity: 500,
-    },
-    identity: {
-      social_link_bonus: 5,
-      max_social_accounts: 6,
-      max_social_bonus: 30,
-    },
-    content: {
-      registration_credit: 2,
-      verification_credit: 1,
-      oh_cap: 200,
-      aa_cap: 100,
-      ag_cap: 100,
-      mx_cap: 100,
-      per_content_lifetime_cap: 5,
-    },
-    reputation: {
-      clean_period_days: 90,
-      clean_period_bonus: 10,
-      dispute_cleared_bonus: 5,
-    },
-    longevity: {
-      tiers: [
-        { months: 6, points: 15 },
-        { months: 12, points: 30 },
-        { months: 24, points: 45 },
-        { months: 36, points: 60 },
-        { months: 60, points: 70 },
-      ],
-    },
-    penalties: {
-      // Per-pair escalation [1st, 2nd, 3rd+] = base × [1, 2, 3] per spec
-      // (TIP_Trust_Scoring §6 Asymmetric Penalty Structure).
-      oh_as_ag: [-100, -200, -300],   // 1st, 2nd, 3rd offense
-      oh_as_aa: [-40, -80, -120],
-      aa_as_ag: [-25, -50, -75],
-      minor_falsehood: -75,
-      major_falsehood: -300,
-      retraction: -50,
-      device_compromise: -15,
-      lost_dispute_stake: -15,
-      lost_jury_stake: -10,
-      lost_appeal_stake: -25,
-      appeal_restore_percent: 50,
-    },
-    jury: {
-      // Stakes — positive (amounts at risk, code applies ± based on outcome)
-      dispute_stake: 15,
-      jury_stake: 10,
-      appeal_stake: 25,
-      frivolous_dismiss_fee: 5,
-      // Thresholds — positive (score requirements)
-      dispute_filing_min_score: 550,
-      jury_min_score: 700,
-      jury_min_score_fallback: 500,        // Pass-3 floor in jury.js _pickWithGeoCap. When the eligible-at-700 pool can't fill jury_size after geo relaxation, the selector falls back to score >= 500 (verified-tier) rather than admitting arbitrarily-low-score jurors. Never below dispute_filing_min_score.
-      expert_min_score: 850,
-      expert_min_score_fallback: 700,      // Pass-3 floor for selectExperts. Mirrors jury_min_score_fallback — when expert pool at 850 is insufficient, falls back to jury-tier (>=700) rather than open admission.
-      // Sizes and counts
-      jury_size: 7,
-      jury_majority_vote: 3,
-      jury_min_reveals: 5,
-      jury_max_same_country: 3,
-      appeal_max_same_country: 3,          // Geo-cap for selectExperts (Stage 3 appeal panel). Caps any single jurisdiction below the 3-of-5 majority and lets a 5-expert panel form from as few as two countries. Promoted to genesis for governance tunability + audit clarity.
-      jury_cooldown_days: 7,
-      expert_panel_size: 5,
-      expert_min_votes: 3,
-      // Bonuses — positive (always added)
-      jury_majority_bonus: 3,
-      expert_majority_bonus: 7,
-      appeal_win_bonus: 10,
-      vindication_bonus: 5,
-      upheld_bonus: 5,
-      // Penalties — negative (always subtracted). Juror/expert split + no-commit/no-reveal split.
-      // no-commit: summoned but never submitted a commit tx (-1 — light penalty, could be a node outage)
-      // no-reveal: committed but didn't reveal (-8/-10 — deliberate non-reveal is more culpable)
-      jury_minority_penalty: -8,
-      expert_minority_penalty: -10,
-      jury_no_commit_penalty: -1,
-      jury_no_reveal_penalty: -8,
-      expert_no_commit_penalty: -1,
-      expert_no_reveal_penalty: -10,
-      // Timing
-      jury_commit_hours: 72,
-      jury_reveal_hours: 12,
-      appeal_window_hours: 48,
-      appeal_commit_hours: 72,
-      appeal_reveal_hours: 12,
-      // Phase 3 abuse prevention — rolling per-filer rate limit. A
-      // disputer can file at most N disputes within the trailing
-      // window. v1 picks 5 / 30 days (per spec §5.4). Window is in ms
-      // to match the rest of the time constants; the predicate counts
-      // CONTENT_DISPUTED txs by disputer_tip_id within now-window.
-      max_disputes_per_filer_per_window: 5,
-      dispute_filer_window_ms: 2592000000,
-      // AI classifier
-      ai_auto_dismiss_threshold: 0.30,
-      ai_auto_escalate_threshold: 0.90,
-      ai_timeout_seconds: 60,
-    },
-    tiers: {
-      highly_trusted: 850,
-      trusted: 650,
-      verified: 400,
-      caution: 200,
-    },
-    verify_caps: {
-      per_content: 5,
-      per_day: 5,
-      per_month: 30,
-      base_delta: 2,
-      high_trust_delta: 3,
-      high_trust_min: 800,
-    },
-    rate_limits: {
-      max_registrations_per_day: 50,
-      max_verifications_given_per_day: 5,
-      max_verifications_given_per_month: 30,
-      duplicate_perceptual_threshold: 0.90,
-    },
-    prescan: {
-      default: 0.85,
-      conversational: 0.82,
-      creative: 0.87,
-      academic: 0.92,
-      legal: 0.93,
-      floor: 0.80,
-      ceiling: 0.94,
-      // 4-tier categorical model — fixed cutoffs for v1; per-content-type
-      // overrides come in v2 when categorization wires in.
-      tier_thresholds: {
-        elevated: 0.70,
-        high: 0.90,
-        critical: 0.98,
-      },
-      // Creator-history calibration (Claim Group G / FIX-03). Veterans with
-      // clean track records get a one-tier-down adjustment. Never shifts 2
-      // tiers — prevents "build clean history then post AI as OH" gaming.
-      calibration: {
-        moderate_min: 50,
-        veteran_min: 200,
-      },
-
-      // ── Async-prescan worker config ──────────────────────────────────
-      // The worker process polls prescan_jobs, calls the classifier, and
-      // emits PRESCAN_COMPLETED. Retry policy: degraded (soft) failures
-      // and hard errors get separate budgets but share the same backoff
-      // schedule. After both budgets exhaust, fail-open silently —
-      // content moves to REGISTERED without a flag.
-      worker_max_retries_on_degraded: 4,
-      worker_max_retries_on_error: 4,
-      worker_retry_backoff_ms: [5000, 30000, 300000, 1800000],  // 5s, 30s, 5min, 30min
-      worker_claim_timeout_ms: 60000,         // 60s before another worker reclaims a stuck job
-      // Failover: when the original assigned node fails to emit
-      // PRESCAN_COMPLETED within takeover_after_ms, a round-modulo
-      // leader on another node takes over. fail_open_after_ms is the
-      // backstop — past this point, any leader can emit a fail-open
-      // completion so content can't get stuck in PENDING_PRESCAN forever.
-      takeover_after_ms: 600000,              // 10 min
-      fail_open_after_ms: 3600000,            // 1 hour
-      // Client poll hints — surfaced on the 202 response from
-      // /v1/content/register. Wait poll_after_ms before each poll;
-      // give up after poll_max_attempts.
-      poll_after_ms: 2000,
-      poll_max_attempts: 30,
-      // Content-type taxonomy + detection
-      valid_content_types: ["text", "image", "audio", "video", "multi"],
-      // Image + text post split: text length ≥ this → article-with-hero
-      // (content_type="text"), below → photo-with-caption ("image").
-      article_text_threshold_chars: 1000,
-      // When a modality returns degraded signal (error / disagreement /
-      // exact 0.5 neutral), its weight in the aggregation is multiplied
-      // by this. 0.5 = half-weight; 0 would zero it out entirely.
-      degraded_weight_multiplier: 0.5,
-      // Per-content-type modality weight matrix.
-      //
-      // PRIMARY-FLOOR + ASYMMETRIC-LIFT aggregation: the primary modality
-      // (matching content_type — diagonal of this matrix) is the FLOOR
-      // — its probability is the minimum verdict. Off-diagonal entries
-      // are LIFT COEFFICIENTS for secondary modalities, which can ONLY
-      // RAISE the verdict when they vote AI more strongly than primary;
-      // they NEVER dilute a clean primary.
-      //
-      //   final = primary_prob + Σ max(0, secondary_prob - primary_prob) × secondary_weight
-      //   (clamped to [0, 1])
-      //
-      // Diagonal cells are set to 1.00 as a documentation convention
-      // marking "this is the primary." The aggregator skips the primary
-      // in the lift sum (it's the floor, added directly), so the value
-      // is not arithmetic — it's read at a glance to identify each row's
-      // primary modality.
-      //
-      // 'multi' has no single primary; the aggregator falls back to a
-      // traditional weighted average over present modalities.
-      //
-      // Per-row reasoning (off-diagonal lift coefficients):
-      // - text:  image=0.30 (visual companion content), video=0.20
-      //          (embedded video), audio=0.10 (rare in articles)
-      // - image: text=0.30 (caption claim), video=0.20 (carousel clip),
-      //          audio=0.10 (rare)
-      // - audio: text=0.20 (description/lyrics), image=0.15 (cover art),
-      //          video=0.20 (music video case)
-      // - video: audio=0.35 (voice-over AI is the strongest secondary
-      //          signal for AI video), text=0.15 (description), image=0.10
-      //          (thumbnail is just a frame, redundant with video itself)
-      //
-      // See ASYNC_PRESCAN_ARCHITECTURE.md § Modality weight matrix for
-      // full design discussion.
-      modality_weights: {
-        text: { text: 1.00, image: 0.30, audio: 0.10, video: 0.20 },
-        image: { text: 0.30, image: 1.00, audio: 0.10, video: 0.20 },
-        audio: { text: 0.20, image: 0.15, audio: 1.00, video: 0.20 },
-        video: { text: 0.15, image: 0.10, audio: 0.35, video: 1.00 },
-        multi: { text: 0.30, image: 0.30, audio: 0.20, video: 0.30 },
-      },
-    },
-    // ── Content size caps (v1: inline base64 only) ─────────────────────
-    // Hard limits enforced at the API boundary BEFORE the body-parser.
-    // video_max_bytes=0 means video uploads are rejected in v1; lifts
-    // to GB-scale in v2 once the content-storage layer + file_url path
-    // ships. request_body_max_bytes is the Express body-parser limit;
-    // single media + reasonable text fits under 25 MB.
-    // Dev-federation limits: generous caps while clients and the media
-    // pipeline are built out. Revisit before mainnet — video in particular
-    // is upload-supported but NOT classifier-supported yet (verdicts
-    // fail-open as degraded 0.5 until the classifier ships video models).
-    content_limits: {
-      text_max_bytes: 102400,             // 100 KB
-      image_max_bytes: 104857600,         // 100 MB
-      audio_max_bytes: 209715200,         // 200 MB
-      video_max_bytes: 4294967296,        // 4 GB
-      media_items_max: 20,
-      request_body_max_bytes: 26214400,   // 25 MB
-    },
-    reviewer: {
-      // Runtime eligibility gates for reviewer pool. No REGISTER_REVIEWER tx —
-      // selection is a pure function of identity state + DAG history,
-      // mirroring jury selection.
-      min_score: 600,
-      max_overturn_rate: 0.30,
-      accuracy_sample_size: 20,
-      // Creator's accept-private window after PRESCAN_REVIEW_CONFIRMED. The
-      // prescan-review trigger emits an auto-cascade CONTENT_DISPUTED once
-      // this elapses against cert.ts.
-      creator_decision_window_ms: 86400000,
-      // Score delta applied to the creator when they accept the reviewer's
-      // correction privately (Option 1). Negative — accepting the
-      // CONFIRMED finding still carries a small penalty, smaller than the
-      // dispute pipeline's OH→AA range (-10..-30). Stored as the signed
-      // delta directly so the call site does not negate.
-      accept_correction_score_delta: -10,
-      // Age threshold for the dashboard self-correction warning. Once
-      // flagged content is older than this (and still REGISTERED, not
-      // self-corrected, not yet review-triggered), the
-      // content_flagged_for_review notification surfaces on the
-      // creator's /v1/users/:tip_id/dashboard.
-      creator_warning_age_ms: 86400000,
-      // Age (ms since PRESCAN_REVIEW_TRIGGERED's cert.ts) at which the
-      // prescan-review-trigger emits a node-signed auto-recuse on
-      // behalf of an inactive assigned reviewer. Same mechanism as
-      // h=R+24 auto-escalation: deterministic clock (cert.ts), round-
-      // modulo leader gate, content.status flip-back triggers
-      // re-assignment.
-      auto_recuse_age_ms: 172800000,
-      // Reward for completing review work correctly. Paid as a bonus
-      // ON TOP of the disputer-equivalent settlement when the reviewer's
-      // CONFIRM aligns with the eventual dispute verdict, AND paid alone
-      // when the case closes without a public dispute (DISMISS or
-      // creator-accepted-private). On overturn the reviewer takes the
-      // full DISPUTE.DISPUTER_STAKE forfeit — they're treated as the
-      // de-facto disputer of the case they CONFIRMED. See
-      // docs/DISPUTE_SCORING.md "Pre-scan reviewer" section.
-      reviewer_correct_bonus: 5,
-      // Signed delta applied to a reviewer whose DISMISS is later overturned
-      // by an UPHELD dispute (the reviewer said the AI flag was wrong, but the
-      // jury said it was right). Stored negative so the call site does not
-      // negate — same convention as accept_correction_score_delta. Default -5
-      // exactly cancels reviewer_correct_bonus (pure clawback, net 0). Make it
-      // more negative for a real penalty if rubber-stamp dismissing surfaces.
-      reviewer_wrong_dismiss_clawback: -5,
-      // Availability gate (no-show pause). An assignment that dies by
-      // node-signed auto-recuse (recusal_reason "sla_expired") is a
-      // no-show. More than max_noshow_recusals of them within the
-      // reviewer's last noshow_sample_size RESOLVED assignments pauses
-      // selection until the rolling window clears. Manual recusals and
-      // still-open assignments never count. Hard filter — never relaxed
-      // by the selection cascade: relaxing would re-assign the case to
-      // someone already ignoring assignments and burn another 48h SLA.
-      max_noshow_recusals: 3,
-      noshow_sample_size: 10,
-    },
-    content_grace: {
-      // Self-correction windows. Unflagged content keeps the original 24h
-      // window; HIGH/CRITICAL prescan-flagged content with override gets 48h,
-      // matching the time before reviewer engagement at h=48.
-      unflagged_ms: 86400000,    // 24h
-      flagged_ms: 172800000,     // 48h
-    },
-    media_retention: {
-      // Three-case retention — clock anchor depends on the ctid's
-      // lifecycle so far:
-      //
-      //   never disputed              → registered_at + base_retention_ms
-      //   only ADJUDICATION_RESULT    → adjudication.ts + post_adjudication_ms
-      //   APPEAL_RESULT reached       → appeal.ts + post_appeal_ms
-      //
-      // post_adjudication_ms (7d) safely covers the 2d appeal-filing
-      // window — by the time the clock hits, no further appeal can land.
-      // Orphan uploads (no content row ever referenced the media_id)
-      // are deleted after orphan_upload_ms.
-      base_retention_ms: 1814400000,     // 21d — never disputed
-      post_adjudication_ms: 604800000,   //  7d — after ADJUDICATION_RESULT, no appeal
-      post_appeal_ms: 604800000,         //  7d — after APPEAL_RESULT (terminal)
-      orphan_upload_ms: 86400000,        // 24h
-    },
-    consensus: {
-      round_timeout_ms: 2000,             // max time to wait for 2/3 certificates per round
-      batch_wait_ms: 500,                 // inter-round delay (reference Narwhal max_header_delay)
-      consensus_summary_interval_ms: 60000, // periodic consensus heartbeat summary (cadence of INFO roll-up log)
-      votes_retention_rounds: 5,          // §1 equivocation defense: keep votes_seen rows for this many recent rounds before auto-prune
-      max_txs_per_certificate: 500,       // max txs drained from mempool per certificate
-      mempool_max_size: 10000,            // max pending txs in mempool
-      mempool_tx_ttl_seconds: 300,        // evict txs older than 5 minutes
-      certificate_max_bytes: 1048576,     // 1 MB max certificate size
-      sync_batch_size: 100,               // certificates per sync response batch
-      ordered_hash_cache_size: 10000,     // max cert hashes kept in Bullshark ordering dedup
-      max_msgs_per_peer_per_sec: 100,    // rate limit: max GossipSub messages per peer per second
-      sync_max_retries: 5,               // max retry attempts for certificate sync after peer connect
-      sync_retry_base_ms: 1000,          // base delay between retries (multiplied by attempt number)
-      participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
-      handshake_timeout_ms: 10000,      // max time to complete TIP handshake after connection
-      handshake_max_retries: 3,         // max dial attempts for handshake before giving up
-      gc_depth: 500,                     // cert GC: retain this many rounds of certs behind last committed round; older rows pruned from DAG + in-memory waiters. At 2s rounds = ~17 min of history, enough for consensus parent refs, cert waiter, and brief-offline recovery (anti-entropy covers longer gaps). Reference Narwhal uses 50-500 depending on committee size.
-      gc_interval_commits: 10,          // cert GC: run prune every Nth commit (modulo-based throttle). At ~one commit every few seconds this runs ~20-60s apart, keeping SQLite churn bounded.
-      anti_entropy_interval_ms: 4000,    // §28: how often the anti-entropy loop polls every authorized peer for its sync state. Default = 2 × batch_wait_ms. Shorter = faster divergence detection, more network chatter; longer = slower but cheaper. 4s is light chatter (~one RPC per peer per 4s).
-      anti_entropy_peer_timeout_ms: 2000, // §28: per-peer RPC deadline. Slow peer must not block the loop — times out and marked stale, retried next cycle.
-      snapshot_busy_retry_ms: 5000,      // §47: when two minority nodes race into byzantine_fork recovery simultaneously, the second may hit the same majority peer mid-install. Retry the SAME peer this many ms apart before moving to the next candidate. Set close to typical snapshot-install duration so the busy peer is likely free on retry.
-      snapshot_busy_retry_attempts: 1,   // §47: how many retries against the same busy peer before giving up and trying the next. 1 is enough for the 2-minority-node race; raise if snapshots take longer than snapshot_busy_retry_ms or if more concurrent races are expected.
-      ack_stream_timeout_ms: 3000,       // §46 / #48: per-call deadline for direct-stream ack send (sendAckDirect) and ack-request round-trip (sendAckRequest). Caps a slow / hung peer from blocking the local stuck-round retry path. 3s is generous against normal libp2p stream latency (~tens of ms) and tight enough that a single bad peer doesn't stall the retry loop.
-      sync_divergence_grace_ms: 30000,   // §28: time-bounded catch-up race guard for the divergence detector. A non-ready peer briefly showing divergent state at the same committed_round during snapshot install / cert replay is normal and must not trigger halt; divergence persisting at the same committed_round longer than this is malicious-or-corrupted (an honest replay reaching the same committed_round must produce the same state_root) and the joinState exemption is dropped to flag it as byzantine. 30s covers worst-case mid-install windows (large snapshots, slow disks) while keeping malicious-peer detection responsive.
-      rotation_coord_rebroadcast_interval_ms: 1500, // multi-sig committee rotation: re-broadcast the open proposal + accumulated sigs at this cadence while inflight. Defends against transient delivery failures so partial sig sets accumulate across retries. 1.5s gives ~20 retries within a typical 30s aggregation deadline.
-      sync_total_timeout_ms: 30000,      // §19 framed sync: total deadline for a single syncFromPeer call. Protects a joiner against a hanging/adversarial peer that accepts the stream then writes slowly. 30s covers normal catch-up on any realistic DAG size; caller (peer-sync retry) handles the failure.
-      sync_max_response_bytes: 1073741824, // §19: cumulative byte cap on a single sync response (1 GB). Per-frame cap (snapshot_max_frame_bytes=16MB) bounds individual frames; this one bounds total stream size against a peer that drip-feeds infinite small frames. Aborts the read loop.
-      max_round_duration_ms: 300000,     // BFT-time bound: cert.timestamp must lie in [prev_cert.timestamp + 1, prev_cert.timestamp + max_round_duration_ms]. Caps how far time can advance per round so a colluding majority can't jump the clock to expire pending deadlines. 5 min is generous (2-3 orders of magnitude above legitimate per-round drift) and tight enough to defend against meaningful skew. Reference: Tendermint Block.Time validation uses a similar deviation bound.
-      bft_time_genesis_ms: GENESIS_TIMESTAMP, // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. One source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
-      // ─── #75 Rotation-period model ──────────────────────────────────────
-      // Committee changes only at rotation boundaries — every node hits the
-      // boundary at the same `consensus_index` (Bullshark anchor count),
-      // which is bit-identical across all nodes. At each boundary, every
-      // node deterministically computes the next rotation's committee from
-      // the `rotation_participation` counter table (incremented on every
-      // anchor commit). Within a rotation period, getActiveCommittee is a
-      // pure lookup against committee_history — no per-round divergent
-      // computation. Replaces the pre-#75 cert-history span check, which
-      // could not stay deterministic under per-node cert GC timing (#74).
-      committee_rotation_interval_commits: 100,        // rotation period length in anchor commits (consensus_index). Testnet: 100 anchors ≈ 200 rounds ≈ 3 min at 2s rounds. Production override: 43200 ≈ 24h. Deterministic boundary at consensus_index % this == 0. Smaller = faster admission, more rotation churn; larger = longer admission delay, less churn.
-      committee_rotation_participation_pct_of_interval: 70,  // committee admission threshold for next rotation: a node qualifies when its rotation_participation count (raw anchor-walk credits — NOT a fraction of total participation) reaches `ceil(INTERVAL * pct/100)`. With INTERVAL=100 and pct=70 the threshold is `>= 70 credits`, easy to clear since each anchor walk yields several credits per active node. Genesis members are exempt — always in committee while registered+active. Old key `committee_rotation_min_participation_pct` is still read for backward compat.
-    },
-    network: {
-      chain_id: "tip-mainnet-v2",
-      handshake_protocol: "/tip/handshake/1.0.0",
-      snapshot_protocol: "/tip/state-snapshot/1.0.0",
-      sync_status_protocol: "/tip/sync-status/1.0.0",
-      peer_announce_protocol: "/tip/peer-announce/1.0.0",
-      snapshot_length_prefix_bytes: 4,
-      snapshot_max_frame_bytes: 16777216,   // 16 MB per frame — hard cap against hostile peers
-      score_cache_ttl_seconds: 21600,
-      revocation_cascade_days: 90,
-      warrant_canary_max_days: 90,
-      canary_advisory_window_days: 30,
-      origin_grace_period_hours: 24,
-    },
-  },
-
-  origin_categories: {
-    OH: { label: "Original Human", color_hint: "blue" },
-    AA: { label: "AI-Assisted", color_hint: "purple" },
-    AG: { label: "AI-Generated", color_hint: "amber" },
-    MX: { label: "Mixed / Composite", color_hint: "gray" },
-  },
-
-  founding_vp: {
-    vp_id: "tip://vp/US-a47ca857e68d9b9f",
-    name: "The AI Lab Intelligence Unobscured, Inc.",
-    short_name: "The AI Lab",
-    jurisdiction_tier: "green",
-    jurisdiction: "US",
-    url: "https://theailab.org",
-    email: "trust@theailab.org",
-    registered_at: GENESIS_TIMESTAMP,
-    // Public key embedded by seed script. All nodes read this — never generate random keys.
-    // Private key held by founding operator (env: TIP_FOUNDING_VP_PRIVATE_KEY).
-    public_key: "afcb8f9db0a9afa04c706126b05d6a83d552350e64eb1db688ebc164104d0a6c2c753def4d808445c8c8754f834cc74b79a0892387f28a4879bd8d36e57b220ecb762dddf12945b74d64ed1f01a87a6021502f96640e5a45d733e632739a6f0a71e78d8b3efeb96fb4c088c0283966b0ca283ad5542251911f89a0059079e0a42eda519c16c15ce84d90fc85e9fa3254e0158a175f6a049466d5b12dac9ba6fe4103a4860132d43d5c5b34a1fd599c6a0d0241543363cb7253547f4026f72e5a940c61dd811b21f366a89e425ce474cbb8c37125304a576e3bf15c327e18d82ba420d326b4455e594b791fc398d10907486e271402a037841cc698b05e8b9cc529c52494f806ce6d97cd14b1e8229484e8dd391526986a5c82db4fa2c5b3bf1034013ea7cad73250ff4fb3bfe3cc7c3168e25037b411b14b0b82cfcb956c8a57e6fbf19c3b4a56aa9d698e66bd133583c9b92c5cf8584894022b1054ae757b7a32c8837b75dca480ab8af6997c3da2cc61b2e813a823de4699f9567cc2c8181f372ac3abe6b7e7995df466205bb72d37c5fc4342d06a79bb18931b189fbee970978fc1d794ef95dc20ec33879a95c4074f2987b9455fac598d6ab3e686068bc088150352c45f8601858bd98fd03334d5e8359e629ed40d46cb80a3d9fcf931a2bb30a926012daa0dac878cbda1a790250011268a7125c4f676db3b9f613b6735848155d5b5451a18d672fdacb9608e8d11e3728fdbb968606fc3b9ffc11e540b12d77a2722e3a7df4e1ce8ea8cee007e003429186af795e741e5c1f626113dc733f1130ae3b55bf8b3455bde90c170ff58da4ee99e49d8c489a95f4d76fcf2dd3ad19d47e990c09ec1fe2886e85e295f808d2840afb270306394cee97c729d06a8b14e0c8dd4d4b95b6f37126d8c5c9707d018b042546669fab369d26d8a08420a9e1f847813206bac3033adbfe6a4f0a5a8139dfa3148c4dbad6b693ce108982b0459584964adfa3936abbd927fd732b83cd13248688401d3f4c186ae220952b7399328a94e3115730b6e6ad75084ead2414cf62c57ab46b9481e2b8db5125bf67f4d30bc4d723cb563c5b866df9696cc4ace1f85d3194447dfb23cd76b396551bf3f031431a1935af66830d41adaa0838dc99e3feb071620cede5e2cefed4e6e42d99bc5efef437e387d4924cdba37fa12f2c8ac834ff1852d2cac2c894034cc82b77bd7de0500fc8fbe4cee4ba43a9ccb0a55faa6f3448e3ce1c6b916564a4b88b5be55653820f070257a465aee4a57c25eb89a7e026fbeba2c932e2c95f298c411f462916fdab2bd9698cf7dafb6d77d5a63f5da36eb9313e4468ee8ba9f4b4cecc780dc83c5a9b2cfa41aa9c2de55f56e3e0d2473a9f9d32d7f8ed9622949f1fe2263057fc559bdb3ad24f13582e1b1f147907f6a606ff0f8e5bcf624552c99d521304e667c0aa144c49d1e859769e524609d1a2d7de05576415d9c1192cad50b682aeb64744393105d0efc5110d848466f0127884f9ee0279b44ae40257c9857716ba692ebb00cd907289058aff58ab8ca4915dbd059a91267271796f8df55ad936b38cdf71da99424d4b869042966bb215b322fc440a8b323ecc82bb3573ec61594f43e52d97b105bc9e7741b3df627a6d420cbac5fd8a6a71953148b23fc9d197119e5aafec4cf9065b7cd6770487772e62aa34759e3e621ad8ed4cb2388586efe5518e52489f37a719a295470be0785d106763c1cee2726f0ae21f6d982a24020733837ec2ed3afd02879e04464cebe282a528b1e7d38081386993ca3cf953484a4980cce74d0d9b3135e731a0a53a72fedc3eb6a60e3d1b8fa4fd303e44ef83e7615f082e57db1461531491714d751b53a18f3194144634026156ad80240daedcc4d4bbcbdbf7e4e142dc9d1433eb1df05b41d18b41c1e9803f5afea19e4dbd0ea2f76fb151231a1895706659d5a7d502d0e584e746ecf7287328c27161158ff03460cd0c1b0987294d386ffe4998f54f13b22363e786028592ce07332f7c9d025a8072d57fcebaf7178b661a4e00e63ade244b0b463ffcabb193142f5782a4d8bca5b980ec0909079ebd83c3754420f24f346f87117708272ad591043c2c6892b459963b0aeb440b624b7991394346652e83f45351a8a6bbbc7aff3c0b3e05d1f5e2895f8abf44d7d8ab1b67182aa6c9d8c90f11c98e0aff583cba3dcd8fbea5a31b55cf7573e5030db5c6f11a1458288c985880eeb84aa0301295e59e69813b5607570786edc9bbc76159d0ad94288719e1e4e148cc8aeea691e9f308c56c260029017b259262aaab33bd484bde7e3fa3319737b14c5cdb8644528b74eadfdfec2bc993469251df44739b39a66b5be0a825499f8c9bd6f2aaf6e0486090e0ec17b238cbae9cbe6740dab74b1db7e55eff0e71c619d5495e436f17d5c9b77153222ba83eac3b86dfc72f24a7df8e9530bf0c40395c0729a2254632dde34b461f7af569a5b1bb61d1b4bc6b5a19b77c433cf20949112e531ccc31f0ceb70b864be776c536720ad2580f8c0b3b7852b01b24f81e7e0820acb03e873a3b9a7a1f561aae87e58d2e4c8bb65ceba3ecee508c8be816bb85fecf2088f043569974714f36c71a227d77caf23b5108c10fda1703b5f5664e1a8e659dd8acb20f39a444c2fb61264ca29d9f916ca362e5339c827deb93cbddd5db0519ac65f846a501fa0198c45ba8f82674b48a30f0d2c140ac272f5b3182f51503198a312",
-  },
-
-  // Founding node commitment (public key hash only — not the full key)
-  // The full public key is registered in the VP_REGISTERED transaction
-  // Founding node — registered by seed script, bootstrapped by initDAG.
-  // { node_id, name, public_key, council_signature }
-  founding_node: {"node_id":"tip://node/efbe3707224fb785","name":"The AI Lab TIP Node","public_key":"e3582e5ea1a51a8c72d7df3c6d3934b2550d408afed09bbc3134fc4f47fccd65cc9095b8f137233a21b1996076bcc0e77b90e540d07cdb4a6c8c172da9b9f4bead2d0b53c564ca947cc165191e9c0016ae1614ff3db44179e01cd12085a33614728e40c671aeb25e01f33a26078bccd73ab5905c40e3bde58e5715d357f01aaa6d22598fa7ee002ebd06f74328eb8bb85c38c17ae144d7304c01c74545f17ceba5ab3960d76bd3a065140f08c58cd73cae8f5338d46a7da96fd181577c47fc0f6398295e939b85f7effe05a10af0be44f8f4b16814e55b5f6560137ef59fd52b8bedb18b42138d2b17f19898a85d21ac2e575b3ce62cc857b5ba54451e6c2fc5f798e5d58ebd5f5c2a9dfab895803bf5c87377a9a1265d231b8cdebf0735235a70825298f995129e83fb84b5e059043aca0fd57fe230a1a77e64427d5009d4c87db6d790b99c7a475bd2339dafa7c6b9c1b625818622cec61a8e4d1b187da869e3db102768d5b9d74684cb40491afb6f7569f35fbdfed8938ebce06ffacac5bedd72f9063d7774da6396641307a0edc3abbb45ce72d0a1b4f561ee075742516e600f269385732f648b2b51fd6b3667781fa31161ba1b93d2b0be79c77ccf78cd9d94d64c77ad161f7efef5e88f2584b85babd7f9ecf7bd22a30abff89b501494fe1c3670582682c2d9ce28c2c24690854052314c058789b866f2fe75e340cf9bac240c4ccc993d3b0e24522db1a96e13fb18fa4a48b82759a5303808233c59431c09151aed6ba43f625014422d9d4a34ba24e51bb122d8b2aac66d048ba1275d50899d994780268d5a62e91e5b68704eccbe21f92912f1cef5598ef2e2e2bad7e1812a88105725d5b86e1437edd11c9764a9d6a888c5895cf0ea08ca1c6678119234310da4974cff35c0cd0b6cb53ba2d2c21de0ebe7eec712e6751363d234a1d43ef01354fbc073e2c541d18256481a3e85ca514a4659530a7a672184cc480e540d294856060c2fcba5b5c88065fc0fbe3d590ff0f22dbb2f88c62a2e03f4eeaa0a78d62410388d6c91c5e5f52a47f1616932ec82d6f654448a229eaed7eb8023733ee4ba6ac39bec5b579f243e99f30a3cbb971da0c6817b045dd3693622dc1688281e2501328320e232cc789d1e84bfea102fc2d519217ca0fc55f9c1a6750fb7e230f4219526afbad4b1f6c440db3ad52ca4769c9c542f8ab94a8c46502c00e32e43b2e81fc2900162c794f50699e1362d3256bb6310f901f7a68d6749952a48c820a47e77f4f8f9a325a82934cfaa7ebaedff1983421ed30d8e24cc56c407ea9a0d783c580a92e1656f148489186d3a08a53fbbb1359350a022f5e4754b8c2bc593e52848569ef638943e38914637acf06630003d4f2bf450dc88cc72189e5b4813b9666d076b0481e1193c6b9f141fa3563e883888c5a2f6107625880c44f1dcedaa5311015c52433e3058729c1a08fd6c9f215f195abe6e3082e53de2563ef77cb9d065b82c413c28b4f2dc6bc63a90a07d9613ff061a15c9c67adf9ab9908c73f18af65be7b532cde81ccab012c03004556d1aae7295d3517ee94ae718f5cb1b4844474610b6bdc1b2c08a7bfbaad1f4185a481e0b03d68df14fcd0c0cbf1b5fde9d123866ce91e76176178e89024a421f9232883e20a52688d447305aa355db349aa0b54b58e64ea77ec6a8262589129c52c3f9e8cf0245539bad9056f252bb85296868ce4ea4975e24485873d61fa74032b9f15f58deba79c0f53080b660a23677a7a1828f588991b280c16a6f3f704e651387ad4618d34ac47175d2e2e2ad36dba5f9535cdf066638ede3cde621db21998a65c27c1d0d0a09965f616477d4eecc64da7c176bb668082f83d5e594fb6aec1c4a1970f4d97accd86dcb52052ea59ace6de2982523067ed99b33f01362afa43347195438339ae03d4fd84f5cbafacb6e7f1ad121a1fccb8b0228c2ab81d8bf6c7932ed670c100aeba2d28cb517b94880a5a631d7a42b8a59c1d051233db96a9a025310eea86fabe50daaeae36783b24c442ca648cfc2be9be43627c092c2f3a7dbbc65ccdd10a1a6b2bc600654281ec8cb8fc41f171c37d66be079ec4dcc2d9cc1a60b40d298995f3683c69e4130c8ad0b355d9f470469ee45139d048ad534bf9a9440947eaaf24ec45798e167962a34a0d97af3da602e32909c7a09ecf07a18f77b89caadd186f8d57ccc1277be910bb7f6e811b681a077b7f86221b393a02ed699e253f288fd8cca06ab937ba0843e2b949adaa8516cfeb34972346c30188d35d52a9a4c0a2d7834b49796320a2ae1615a7733cd256483524952c641bd4a90e72e90cc9c3d45307f5bd4ce3f8819874ece04a7e76fdb425e73a4b9d5dc5d1dbc7cfbf76645cd1ffc09b81bb1f22ee4ed44e4378448f003103916db89e8e7dda7bb7c81ecf76f266a13bb37dd10818c1f9fd69a32ae5778ddd8b146fdbf8ab93287b7ef1259c6cc3fce9c93d00053acab40451d0f82970bd518281339648685174490c8f17410900d0246c8159cc66a12eb4f8a001c3186770fd49db2e9c649d2d4b11bf7d2d9e554ed485d26afe494fcef6eda11e67bb5adba7b155f33ed6809aee7c5d2d44b8ea44215b4d696c501732fb620cc116106c1621741c0dd908b451519c11c1497e2938b11116ea6f6f61ea77942728bb21ecd1e3b7bffc42abd4f32991f0dd956120ad37fe54eecfa27652f6aab31768d6132fa7bcf6a56e6f7442d07154a91c103ea","council_signature":"03f402d6b3ff1cf11e1147d69d908480971c7325e3af113a42234de139df1127ee13dced00d58bb0f1939c9d52a5eb90e381883d3801b936d5303c039e270bb8abd23bac219d0f0dbbf21838efa226580d1c3a9db8d35737cec76e798515ab5fd40b56fa6cf3072f0777abe9cf3907e8a33d8e20e2c79f59ac4056d1557be5531e115af207b43ce6b44e7d01081daf7e8c933b8a27f53c44c94df5962c3cf1a78082ddbf69ddfed9eb1adb800511192a74f2aef5b5e46621540aec454ac304751e9dcfbd398a1091b91d866c3ccd591dda682947653e994abaa5c10938110081b0d6cb10cb51952e2aaf042acf4fb16c8e1cf43077110c342407b1936b46396a31ed914ab006ed83234ca473780c44c749cae3ef37dead6f9728d4576ec5ae7b8172efcd197af541074be2d4308490643c4ef694404ff24855695c99e53082efec7d8c17972922e4d86bce6731b011d4905889f576cba22c1ca200a71501f1d46914829e5736a27957b49e5a4dc5c81228ce2391ac65b3ceb604e63acbe9e90dd37d91a72c2f43198c5226f993d2d8226b2b36bf21c09f75f47354f493d7593284c7b0bd3c7841dfb0f188f1e0959af4b449649a60117f6dd8e7a2333ffcff76c69302a2c9e2793ecdeb0925deaa12ca2a5089467f3a3ecca86f7c2fe7143c948bff1b42f6b0fad1e6f53cd3d202ecd50572234942fbe53bfc2f43c83a88b3dd34bb70f1388f95aac27ad6ab16df26f038a523af29d9cc6bccdac6e1d3bcf3e786838faaa2b83fedc75db3c9a3485c5f6ebdcdc48668998d7034c2b49023f1973a174987d15ba0748f45c544b0f4e4b91afb82fff961eef8318024fbace91fac0c8c885a1c49992fef043ee0dc85f9f679c7611d782b78a5f94d119f2cea78597821c739aea03a0999d7acdaec91b068e8cf20265028e2e46b42c345006b115208e2f8c991856fb82fd0f44fd211764af05992f2213ab8401946f2f2eb9eb159d0b7fc721c0173a1f901269341057c4854a72d43ed7e489666003ffe4ef893739102bbe2a91ad244ced2d32ed217f0410ed9bfeef9dff3c651bd8487aa7430aa6f9dfc0678dc015498e371ab1f88dfdfbea3b36113c9276a44ed6969c082a3df5e9fee6b31bccb108202425af0f354ac1e9f917fb9a255be57b9e09964bdf0e7a722e52d3870fe7381bbb5eb084c88542e1e6d3bb2cdeb160620f271445bb4aba1a7ef4ab209b02daf22b6191a104efbe37f5502e49978c431a638797c4a595e2beb5005e68109228f88658e8242dc498d166f0be8dbd2b5496ee8ae40f602aaa740ce4516e7be0ab22af5cddcea2d8ae4948b2cbe543ba689a1215debadc79af579f1421599f54ee659b87088831cf5c815652b74fbd33e4a96bc05731189eaca8a9e49e7113cb0a0528ee229be49898437345f901c9b942052b56bf32d4f2c878ffc8a98da6d9f4af1bf52baf24067133c1dbe3ff0a8051a34747c825dfc343ecf3c1a6193aeddbfeebd2fddffd41ccf1ba1294d26e12217cca89dd81dc974cff08adaa7d972c18f20129abd85be628cfbe988996d9b867b37513cfaa5500a035346c109f5ed83e9b30dc44b69c142c2c64bd2e7ca0df96d927f7c7a811209c4c1d985cddc9d76e8858d3574c67c54855bc2ff642208719ccd109cd2025b9e7dc9ce28c858b30d4c382b247eeb46bb344eeb7a35ad4c219bf9656dc8fb4f57ea2dda54f0ef40fe09142cabbeb8af1bff93153fbe73817aeb9ed85ff456d94a90607843b1db8f963f6ce3cb127b645296f4607fb08e325bc28859e879bc4734be648b815394b22e99b159c8490b72438d85497ed38d5c4940d31c618934e050981be61ea3c963bd5948e76596b113c872ced4de1d0524975c093dbf2ec5d4286a4b0292482d8a4741eeb8bc7b1e02a46c17fc1c80939455bc9afb7453d58e36b0235340db7ee8ae4be5fc107c88e84e6d986c699d21eeb8577d64f855de15431beb9c20a1b944cd3bed4827e5841026fe4a16327e6d0b0ce7e57a03da27e62b756cc92cb9d29cea06dd7e8c2ca43e005984e76c8f88c8a4091b227a80550dcb3da166438362578744ac16ce990a00967fb82abc70b80283fdc6ca887d2f09197ea0e7ce8ed7872251b69be150a052993cc63797411ea1aff60533af9e72e8f11151670cc67cd85512b12436bbbd2902fa978acc25d7ac427eed463bcbaf11263c50bbf5bd4c604f000c64ca86f738026ffb40e82ac1e22e7b2e4d82041b74e7768228180faf42b07df3502a23df93e87cb9c49332fad731d33a93397613d52a8f1e1125b2462196caf9a5b0796c0d047caf4fa94e04d993349f1087a5ef6086189bdf3a874625fc18023e9a0d17dbe0d38a5a333ea77d4f5e91190382efb5c3ae1643a736cbafc916ecbdbc842d79351c08425d8f428f2611805c433280c7944fd1e7c94eaf29b786913215248ba5a34ec232c9d2c1c1e978fafb01cd752bb264613100df1459aae41b07a165da0b03031d02b29f97bf826d5b53bf34c0b5611090aba6c71a307057e9ff42db610ea561c0add28bb7bbd79e9a46813a9d5f482ae8b0b6b590d73c5fcee1e9ac1b40629389c73a1c0b73a1e062e7c56358450ca6bafc0d27594fbf7c9f76b3cbb75f42375092bca90ace86d64941cb4e53fbfdd8dc29b8e861f6ae5cab461079b04ab14f68bc62fd28abffb0b1286dd4d42e76472b7db2395faf92f55e45ca24bf1ad9e7d570158e4dd6f14f438ca580344df15036a6dd1838ecaaea960b944ebef99db943923db34603951b566fc0d7e0703a4133a52d0be54e0d749d0f3ca39c0abf68c6a00d14e2d77c81c84b7c2e996c3520d67aa96926bf8ec0909cb9cadf0d87f1dea74586df0228fe3827dffc6ca2a6faccbeffde0029154ae144ae74d9d1c1e0dfa9cc62f3e2daec18838a05d11389d41aa7b1b27299c782953131f427e97e3a28500a67f3bf924a76fbd8bc8e42d0d6337958ffd1488a571c5912b8142d5d0fc7da8742956a587c5d99b44b5fb7d912a4da58ff328e9a1f29be5bb0f56ca80117d1fb4387989ca3c769cf8f45eef17d757ff41e97430b8841c367291199b1b240307e896b8d093f70564898a1f734abddeecb8a3e648f807f1e29a932bcfc67f1d11b0c04f4d64cad83b91b25d7a26a88a55d211fec83843d57b4a5266beb05b127e8d3399a4de9d5b698c1d41625d9379014408038567c4896a062df6ab665598be3162a7e75a127a140771d50109f01202e41220306076c139d712258d61329ff11d3d2f00047a1d892177cc5608242d9c4708258b2c73b165dee0bf4d17fbdf7ac6bb71df0de808b791ad23a22fe05df507d4034ad45b03aaafde3c32b5d78af1199bc460e552c02f576294db971a71bb767cd87c55c405f12948b5c4000d6c894f6e30a872773c8cc9e0fad9814d50a67af5b5f787fd793f15d3d07bd32eb3b6ddba5743151f2a8eedf9296aecea5ac014a3c813814e3139cdee4b98616b06da7493a64339ec20d75c12975a93755fb10dabbcf7b8e65f74a8d3ac5b5da6897f3aa281eb09befbc3518e2134b7e2fe25e82e4b9b50297d3c66f6b6545ac6ad4123febc64d247a5798f11996cacde6a2fa012b2e38d44e1026886c95caa2afd9fc4d699046e564b15ae50c1b7fb2d253836ae53aff67ba8e7d7dcafc8eaa389fae7fdc27d18ef406b6c9a08d06a4db2f20540395d65fcb05ae2dac3cc2804c08b54272dd13dd82173f03d72b9630d346c6fd6dc227a9b7042487eae563a9893f782b06d86ca2e5e947f29d8b9f82046b58612469b25c32268f09d1782408a5ff59ad7fdd7e21a8e670f4a990cdb5f5616d5a57fe14c38a0a2fbe7eb112ae31b087d87c8aac2c85beebfd6ed9ae224ee8a712ced24cf6a1fa85683b97d557612b7fbc36582762c4c8a1c14e16ed521e3c2799eccd8db76311997f194f8b047ba6a8c079868143dcc2d997d0eae465a9d44fe981644354da190e6428f5ded74d0016aa84899f0eef08115ba028732556d808515ac309f9658fefb3ff47e3c12d082a520197c419230697fb08cdbb0c7ef29a6edd1aa3eea1947557edad7fd5abc43f2ea5c857b124b1f899599db755cbc104764bf4f6426071570f919e236745f1b12fab2299b96cc1790e22764da3ee98b653d7811f58853b1d33dd319dddbfd3fd04ac05a5af9f8cf60e322c309fed7e213321ebf60a1c0a5da02d0e61bc79748d35b9fe61b36ae50b8283c64cb68cc7230577433797c7272bc0d1b16ef782cf3b52886405d750a4447ee037f02653d0bde081eadf8ddae51e05e0f6af7f8c2e0f16b1be7ef069da16502c3ef0009b5710ab390dda9ae87d74cf0acae022ce316a7c0eec57dda4072b4925712fd9515b66bb959cab064a626c74c1d3a72ea04ad157e77d10798564169791bb00f77ff1c8d29983e396039075338be4c9895d7676e5ef4f92a98673c211fcde0554ad52a7eba2a2477a33bdd7261e59816f057ebc2e53478407b760febdcfea8779d5a0a78c175ceef2830479a0d7f4cbffac669616bc4af2b5d46f0eaab79b5decfba8a9ad68b3bc70b3f9f159e21a2b49687fadc2c3e8f50a4e5a6aba02389ba0acdee80721264b727b86daf914174c5abed9f7384a4b6876c1c5d8dd00000000000000000000080d141d242d","approving_vp_id":"tip://vp/US-a47ca857e68d9b9f"}, // embedded by seed script
-
-  // Genesis Ring — founding verified members
-  // TIP-IDs, public keys, and VP signatures are embedded by the seed script.
-  // initDAG uses this data to reconstruct identical identity txs on every node.
-  genesis_ring: ["tip://id/US-b952598ecc9e7dbc","tip://id/US-73ddf5359d03b14c","tip://id/US-02debc7b60b07301","tip://id/US-59a3dd1ddd4aa7a6"],
-  genesis_ring_keys: [{"tip_id":"tip://id/US-b952598ecc9e7dbc","region":"US","public_key":"51a60e6c1b8a5a7ac8832df66aecb17b7706ef8400ecd36561c0e30fb2a7941ffc09844849060e25c89951b20b1d2b6997fb594caac7bb119b5331f802aeb8830a60db878084e63258596e8517eb2dafc0b03c63d27a497dacaeefb56d15f820f24497a96aec4c4af732755a791bd05524e41efae4289936e0189184a5c12c93c11ed5383255487744124b72363ae2690c955cef2207626bb80831c9496f794f27d212eaefca82d4d6acf445bfbf92252548c9b0e3e5f22672479c916bcb4fefdb3874d5eeba0c8318b4a8cbfb30cbe4d0598f2880104ac555476dc111a7af505aa7256cacc4936905039ba795b26f867f1bfefcd983d8c6a66b75fc0308510f15487ed1d204fd55823dbecf72a43dbea2dee961c9b85dcedbe38af5134ae99ca36bd042a2a772363ad4c5af60345c1898eb9f490932cb6b20825534a0184161c7414964d00140d1568bb86972c9439fad396ee946a809d6c93fa386e7eb3852101e72d6b8ed2df21c7065adf448c3b32a59f3087bf0f357258fda9168f7952099079e44859f7e052a1b3b2e7b50a76fb3e4ff805314ef0def66ed217cf673135ae8c7be9cfc494c0b23e8029f98698cfb7ce0150c20ac9bb89a260039d988aa33cd813b07bea23844a7c29547efb0c21837e14f0df2a4f5e66d552038229bae8f4c50ab92eab4e276ed1f04030d3e770698aeaeed03dcc187690bed314feefdb6e873772ddc86b53c7cf89e9eee3b42ff0491bc93ff0df94b1dd0a2703600853034359851f682813faaf60e6503b451efdacf1f3c61b9bf6dbf1198d3be7b0c09ea53d39b6f934cab861e6d2dcbe8f066a797590d34e77a90d7c60a35336dae87c7fb19be9161d564df49781ca4314bbbc0f8642cacac5cb01613a5859deb79d837b4d40672f42f0edb095737db3c84a86d35d109e04ac211ae3d943b5eb6b5e3b5f0d4875d455a322ea79a2d2c3894e99c6b2ef791b04cdb011eade664d002c7c4be9b187436eda5267cd081db220bb69b767ee239295bbb32aecc23a13fe5e9398b0cc5dea2bcffe7e717b72120651abb284fed29e84e9ca3d02636193c3c5f323d661651350e5f03fa007aa0e02bb5f6843f16179cc3d2f35a8ed5448e834ea907f3fa49e96fc9f77a36081c749b074a067a901e2f5bab241f54bf99aa86d34b50d861c5e649e0063f6ea8d21d528436bd7dc3fbe2f902f493d9e0235f64ade6a8ca6fb4b6722ae9e6a1df9d1967dd60b18b41b6a6b58747c563238ba8653d42d637d05b99bbc20d411932a66646e1729cc1ce55682a1e6a9eec0d75ea4565de7f4a37f950658bf625a6c89f3f109f1c8157819b48e21183acca003e1aab3485a9fc5198fa1bb5d728dd1b5d8977de59fd3b3d496c3e7e099e312781a9e341e84218d023ca3836a994b827e77988eeadd1b13979d825bc601fcef052801ebc039cf41124f4314b7da7ce4e3fd40a6c8812dacc5fd8529989a9d9a2941832f5eae3dd6d24b1ba1d7187e925efc273b68a0d7a90d6c531314635543a910b408546b17555b03fa12e35d0493ac41ac75c80afd0d38f6bf41bd50059268d4a1a3b344a2cda540a1bf55bd6aa5832c026ac746169b3338eaf85abc9601c638b675018a15eb6343d3c91e0edae06e0e6a5426f525d2449f97579112ee08a166271407825800bb15b92aa6eedfd234b69faff5419752c66b61d8c3370fc62decfd3d6d5d42f8b6665f679508da9d5cfca619108bc62b0261797213d5c533976839e677763c311999dd526500d329973b5ff19dea9b1a0801079ec6389a3f30a2ea56369e54e6171ff8c9d2c3f8f79006b3b90be0463f4bcbbb7372de04e7f5a44bb23ea4869f6b6254634f55284b7e2fe449416b88f1ab7a6a778d4dbb7c88f3507ba65420cfa3ba6d79c7dcf7e98816d95de78601c92977886114e16f76d2e0eb30cc6c84b44ec3b25f03d4963d78b8ef6ecd0295d9dad3b52bf62abe3bc3b3d1da6d8898d26c5cd9af7915a74e3c30f7cf96ff670b90c8a9ae33e0ffd667fb04507854705ecf75ca61e172a08155c0b93d54f94c80b2672c214ce5c4e9e5c33a571a13d6842d2f1c3f78b4fc9cbad762118b3041261cd12b0073f764878e9bf5a48a8a4dc53297bad9bc01e8a9dcb1b3244a1cbd2a1df9042597c01ea55f8d2cb12f4eca22323a0c78490d4948975ae44219a4653b29b150d8bc42ef5e34cb39cce3a32ac29ae376629bb0e5fa9f16d397401bd8e902d001fb64061fc80f79c2f8fbcb71a8f74ef3442cd1df5ca447814608add64a8e5bf0b0d232c88688df025a0130b152093ab1d38da03ba2963b8185e78bd20fb56fa3029a4c0d2b4153f70bb3369c3acd79823bd5d0904eb5cbcfa29bffb235d8f66ff2c1263f4a010812336e56230d4f9a23f99673429496037a63d366d6006a07e796d119563fbcebc87e05bf9d2f2456914ff7b3662a3d35d84b0a41bac88adaed8a982cc202df41be815b57d99ed90289e5fc86b2c8c458c85a064c2ff02b91b63c7f4a1fdea5b230ca99475bcd7b1be3fe3db5563f31b31a9855484a47de4311d0a6d82da728acdf023bbebea8d08fc33126f9dd18091a51a7da4b88b7dab3f1bc55cd96fd8434c8535db51321425e461ab5ce82f516f48ba192c808df606ce32d9aa67e0a0cc37b56edeb8681c9233cc8e1f9652a8f67ebfffcb8fec6f1269b840623ce3c6cabbdbf1b35a3899ce192dc2d880e611cfefe4866a300b5b65904e696da73aa202a5a4","dedup_hash":"92661839774354454942","tip_id_type":"organization","creator_name":"The AI Lab Intelligence Unobscured, Inc.","vp_signature":"333fd2708dcc201b7b9c555568809244e60143d4c89ad28ca840b2d41baa2480b8bad27125523a6cd816164ec08fe28f8068032702d55a34d1e8185f81cc2271d4a8552262753a63afb957dc9f2d54127d2ea50079592c9dafcd63cc1b7e40b9f92c3f0c50008dc51e4be514347b260e74ed2deb28678621b985603f521d203da1e42c994270c212bb42f6274a6163eaca50587593fb82fd57f1834e9f4ebaef409eed59b85eeba90d058dc42b3a076ebe1ddbc6bf59f9faa7b82b7c361527d03a0ce9c48980214663a539ac0b5f527b1ffd9f3c31708ccb807ce54ed1bee2b4882c89c03243f09283950da08c46f650b72fafb407d10a26bf0d2f9717ff235a8f21b5875761ad0cd38be89e96a0dcb64a71b560823e4c30a58bc35bc0f246b0dd46f3b7be48b28d6bce3b2b25b70dd22c5d0ddb169cc547292b0ec8c75a65b11268f043b8f0435a804a35e701c8ed976bec3984c8be0b9d5af7b26a7db5d7d73dab3f26eab84ff2a640c0fdb26c36b502e1c27c728a485e672399a79b8132713a6365e906241d6a8446707ba71b98c067998d539dee2ee0ed1546c3adffbf7757ded6cb85ec4be41de0ece0dced96d7bfc13bcd52f910d2f07ac4cab0a02ce11ed732dc11c9fd5e98804a795a58682d8249a6c6503e2b03a6f8a6f101da50081df12840f8ac88cccabdb615134893631d4e32399b23c0c01f4c245407f6704bdf4a70373898641d6c47640d6615d718305a9c0a79aa15601ffc1ebaa31a9005437c4bd58793ba241083af656f17fda23d4f83ce705f321f11388da606c92ca22c0d42731db8ef7635274f53728094464acc9400032df8da48cbadffd816c01183158c2ebe4b625848d8d6cbf8ae25df8eb10970acac65bba143c7b5f766fe088873e0a3305378a1ec7f770b6c9bcc9568c090f00154cde6105b411af65de1b641dbfa5206c71331c0df9b6419b3a8565ee227cd3d44f5d32f7c13ad62682a33453d4248b3313f06d4f7a8674164755a87540f8aa487fecef68667df0e8307d6b3193659731634831d517578c749f96c6803f956790162c32f88d39e6d80e8b2da5be23d1e298979da97d11fdcf7cf2d8f284672319aadc10e405709d3c7854d79df4523d4b2a99d7ac0361330b69df09e54ec2ff5b1d9c39f228c87e18eb97627dc7305681b068ec7aea74fe8299349635e87d7afaddcd707a23131379f5462f06c0e61cf38ea152aebc17f8c010f49dc4b61b9fe11e76559f0592029c14157d2dfc5f1e2481e208a8dc8f6109ec32a4b3bff771b68115237fe3d2cda90c3f42dae475b951dd8fcc4d8f4a40f475379d86107ec6e8c331c21298e8ca8286915ded1d1527cf89d86a197ed196069c1397bfafe5df984b13c7363a17e0477808e3eab71425a3d505ad2f23e716240cdfe3c91b6ee58fd43c857e9359df9c182067123911f2220010f6b27cd23ba6ab192b1cf2c6295ca2bf64fa88b8385a397d31a4d9be680111f402c00fbf631ca5e5c57920f54da31ae9dfd63fdbe55ac615d934c5839407631a433ac70f8d487dc1c23ebe9416dc3c3deeb520101ee23dd3555c6f905666a9f684235d24d8b8cc33c65ea5e14e447d63ec583f9397638531767c40a9edb79e3523789dde6873edb67a9a7d0262757db1d525c42cabe8c1ad7fbe2f0140c90eaac6efcc3b1e27a86d47f4fd0c5015d70a42048bf8ba071ba791a9d7a819072ece8f8d4cd06213dbcb9bdb207ef8500e8648bb55cd3dc349920e55097a9f803acd6f86e12dc3ee7958352580c9b08bc1046bc56db9b314b50b22097109786c91c2c7c912451ef5b7eb8c76434d3739e43bea6436e7f5d66fc1fd2e21497b94a06b5b644937ee3afca6f65cf79d18a7b1661949205fb78e03514afd886afeec81d259a83fe847034db748a82e26eb37e722c3efe75d5eae62e4e3fd51dafa244301e0661d0ccb27070d16f13302a0c927a0256b02a5be974d5701cadfabe678304a0735f6846b499897efc311d9880fab23b2ad34d3984685bcc4c4ebca30839e76f4655ecc83826c8507bcc461b921cc61b06855f1a6c1cbd4e44806b9d01f402c0c425d9ec14e0564eb59357a4128ec3b4c6ad588f7e69338b4448f3662fb8b4abdbc389c58a6008e03495afde391e76a5901b71060164de863ed1984654180a9e4c4c6bb4da98fa48acb06de1d8e0838017855dcf1eed98fd3ba97df009bee67eae83de0b3baa316dcc5d3c8bc3f45cd840fc53193e99d3d4f286d335319c0d47cedf99c1d230e60dc7f3204e6b81d7bf76c5229f4e9e4861ca4b911a131af22e6c9a08f0098e4aa34e0e76368d8f757378e0b6242cd398201b155d921bb79b2df82a7ac7d4684f6789337d3dce4ca41f4d1700a76b1686213c48274a7cac2246a5c292e9a6399ddc66fa9988da15b8b64760cb5f529e7cd10fc6480bd69e97ff4cbefc1a85c2c24925cca515a57ba9094c1cc04ae5058f3586ef3e27b0ca6649cca4179b8f67e3607653386d343631726ddce120fa1ce07be5c1a3f2651bbb334e90c3d2178e9416056062be82a82ace9ebcc807d4e163f21d6e30985ec17183a449cf6e9171987c98a56f4ce35905dc4786e0d6c26c9c91e971882623f90ae345c4b7d8077e0a57578008835bd0a55519bffe7265f0fcee42d4b60ee32452a73598a02050e80850b12c560399ae6cac39c42cd8886d61ac8ffe18b8e31a43629c156b3710260f18c97644f1435202596fe58d9155f9e2649684d86b66b166eb51bbcd67b8312d427fceb6955753f4e7dee814ce8d61a38f2262e74a0c52a5f036b9658409e29cd87053e0d1cf5c7d5728153cf458067f105d3bf5529171d134575f68dd6936a3a414ea93b25e50241d2457267a90cbcf85e3e9bdb2bacb200253a19ba5ed8c5b72e067c334021df19ac3510971695a7f7483b9ea8d72b00206e3431749437c391563278a37730f1ccae81cbab0e9e17d5fd2620b1b9ea5b48a78063ec7d622d68397c99a28f8312fdf6e49bac3e2fef95d21041823e7fd8f562beada9a963c05d3447a2fd30b2f5172bf885eb48f4da2ffa084efea7864f5bf2336a0bdbd0efc995c74cfe9884963fc3a010ed0a4bbae29a567fa8aef7765349c345addd1ebe953647ae1a0d91c5ac61d1ea854b2f7e9bae845f00d83ddea64779a514ad574eed3283ca4165ae6b5f370bd32c49a100dc3777803a7523fe775a1f800e4b0ceb54807fb7f88fadc7dd1ef25315afa6189c0d5b3e36313154a0dc3cef17a61ab8a418ac72662ce2c6057a3808adfec614d748793231fad0fb778edd281b2af2be6c3706b6d4278c5bd0109a049728aee4416e4a7f0cddde28b97009e551bbc5f5263d2b3f8309b237a233ba7920ae4cbbd581fa1671b1acdf8da4573bd803e716e37451700e4e1ef6386f971764418859b0ee90112171c2865f79724742cec773b8f9439f76845b2874b14db1bf57a5aa0a6bcf9fa8d9fbee258509f94d3951e17191349019a14bb288967404796e1cbe8b03294d1d61e1c2a9c1b8ef389273aca2334232c123d970060905ba6e07de7c52e457a38d363c65a8a90c02815c1ad6fc926c795e2764c444390603c35eeaf94c5fd756fab4c96a1e34785271fcfabfb11415cdc20693ead0c81610ec92e4b498251fdbad991cfb7a20fa69b28b2db105358e498b1344174edac1e41ea5be203110fb340d0d72cf0952dc43e06953abfed0530c4e980d0ff5e6784fcc210784424611aa6dbb1ae033c484266aac192b54bd95e31365966064cac455c01fd3b2bbe6428efeb00e64b81a2c632a087ea1d8026111c21f5d994042327eb57bc9ca301dd24f5b2e31f6ee33faba0dd97ecf7ce37750d4de814f2dc3378eefbb4792bf11454baabccacea48c63668f200c989e71be33fa4a2c1d66f47574e843b8ed47b4fd5b203771420319ad9b2992181c862e769267be8d4dc623a3833985609987ad5021aa83e79442bcc3fb1f915ad783a0e3c38b5aa7c7bdb527e2a615651565dd85377c9c45e460767e5ff066368419a9ec66df868f8afc284080bfcae84e3abb6c8b5cbed2c1460fb308b2ce36183876777d326e26ce17bd71ac26add7fa391ac817c8f78704258c215f982ba7f1bed2daed8ecc423036b498b73f86c1f31700879c09155500cd30cd2619925e44217debb26dae0c913c8900800b1443151dd0b39e5044cf1a52037bab7e193ca157010efa38c3726ff8f90b1e32eda53579f01b89f08b6c363d016a8e55f0d0fa339d5f3f701e886a4f0647bf851fa07c858bae059c3c52927297d1157e50050dcd181f8e2a247bacf572ff7bb1fb93c0a65b6e22e42b8da3c95854dbabb48b8d8cb598dfcbe95cc46d9a2bcf8a87a1d2a6b4b9bc5417c0c05fdefa605a25b7e6f84d0e4f180ec9abbdf093512e738bc08dde44819b5c450c884b7c8ab7467b20b13353fb7beb778f61c3da096283b024c2b800ddc8a6676e5a297fd0a0e2f4d2a0ca23e3c0d768ce1a64eca8e4dac89b4b2c1d0d758a630afaabe40eb05aea2a5dca860bdbee8ac1c53a12183b2ea3a35e7568c6809dff50746dcd7d9a6770ca9f92e637d7f93a5ade637595ac6c7d3575e6eb2c54b536b8b8efc050b597b86919cea215090edeef400000000000000000000000000000000080e13192127"},{"tip_id":"tip://id/US-73ddf5359d03b14c","region":"US","public_key":"e67f9fef0b8651f29215fb302c4b03b0036f2278290a6df75818ba513b8c49a15161452194787836ea7a2d9f00c66b74699271130b3c7f24f1352efd661b419b83dd8481dd0bbf75bf67858fcc4e0ba623a3bb4f0b98837599f56ca51c37733057960f85c67bf8e9372ec8274827068fa95be01c23419e0ba53c757fdc2dad11a869f1633d7db3bfc9b5b7257d9a06de103705e4d56465d81c2fa0f3efed2c2889d2a13b5126913f4af94118b9fe00bcbac497cd76997c35353dfe0c6a11f7020eb1379a3accab06b47970973a758747106956520cc5e8c3fb0bbe2f2557078b7b6f8a17e84cdefacbea38f61eef282cf2674d0d0aa42ca6a1752edbaad48dca5124b9896fdd7c15c2fec988e92488de1ddce66a590708e53d1d11d09b20417ab75c6f57af10559ad76412fc25df58f737b141309b460d49401f438f14c66b0e4f8497b588f6b5a7108d47e2bc2fe8a08e3cd858a52ca6e1aad92174a1f0e2968cd6052fce8edf36272c9f57e26c97f75b8fb3eda1b34bcfa36d6dfa7b99928a544d8a5f384fdc11486187fd53223dc7cc64d727e61307833f35c035e19435d2f81e96dc3634c7407250a365ce328afac1bba961fdefb63abc578132d0273040097f3afba4686dd7a14413a1a755a0a8ca58a4d6fab65ba378b1fe4586a3761cbc9bc0ec15c3acb231a4a201e7658b4122198809210da27dc385729bfb47fb76661111a7d6dd5cbdacb4bf4cc022edc3f5c1eeb0548452480e7dba419ea974be7653adcd365f27e5b551949bb161d26b5534f1330f5da25286af817fa55cabe3a9ba1e39dd11b1756c3a8d196160b502d59e2a5c9f5577ce0ad0b70ee74f67c5fc8d80e7ef3576453c608a8af520f9c3250d5df8a0518c1e60dfa6053ab822d3346a75bd6912dac5274b3fa77b1b253a2ed722bd2ad0e3ad42b9d51860c99b00defa4b65dbd531e820b0e0a442ce985c376c3388b67e9fbc1be514b621317f3a3866660dad2ee9e7d8ca9313b06647dc7ef7e03fb6af3d357c3bd7e6557cf817471ad0344320f8a913155a038a62e3c4d65f125447299fb915bf238c73ec2579d502ca4da3be1726aa6a1befc2592c55c65cba1dda63dfb9962c17b0fc1e898f480518abc7c94c62905d5dc6ba3854ba7a276c74786cca7582e2702ce95a8a97b9074e97df36e34f3c0a059c2de58285ec879229da4d3dcb5ffd4a0db551e8bccf0bee65d61b1539e780999dd9528f7c6f5f3ef92746481fe5abb49c01d37fc769dde51968cc08805ae589091aa856bef7c4b63a5ccb4f0b0996311146ddaaca6cabfc8d51e9b1095ee1068c96af71dc9c9df0d6d9c8fc8aa2d8230d2bcd7eff02e168ce8c1b858117bc3e033383c262cc1b8e29fb464436c82dc98266d60c75fe43fe22a86bd1063408118a3fb08c2b4b62cd7a36a0823d9b76f9ef5dabfd72265ecab4958411123ced7a57735b79c3781d23bb9c48f7018e345faa61916befeeb88d6d963f1589eacdc77afef466999fa847cb0f58a87f25df06aadbf238839009cec8fefb474e02b5f19b86e61b47c1627c04cc3d2661b9c9ee87f262fc6fc05a199e54ac381f5710540d86bd3ed120142e0e4d5fd16d2a209ed87584b8bf8154cfade208dbdc836ae825a9fedd48f753fe40ac5593963d4af2258683994cdaaa68f63aee247cd3d3c0e5bfcb7fbdb3801900bffa2a97a0186791108ac763f599e8d174b44d8177a1b6fd8359be94f4a253e969bc6cf40c788fdcc3a28b55e0152c0e0589b914efbfa81789f1f2b45d7ee9f68cbd8927f462183546ed18c8a5826c4e986a3d6ea4c224f22bdc9952eba5de8589a64be04f587cb9fff7412960f67303ad11acae8d892441a28e8bfb725b8a0cf402099d74d0ef60a796001dddb4bf1a8ce60ce097f9f71fdb37400bf97d85f7dd9c9dbb145469fd2553d22adc7f34a4d88db609f127f0a5bc0a8efcf0f151745a7f2de8cfee815d028284d77583e1e78c97b4888d0046cadaba1e747706fb03424ee0771635440f095153d4aa8deabb6553a622c2e40129ab6727d62993009839229f4cec885e9f1501db8afab78549bf5da1a9b89efe9297aaf82995c2fc6cc575411e3a32732e1343e7b22f7f1978e13e426bbeb6794997403bce8c8c3ed93b0726e85f638b7d670b9e9577a5add383aa4e0fe81c7b5b68101e5d27ae042c45e102a8a1109380da0fd21073f1b16c8bfc60b054179d99ec363fe666b907b95112b27fef4e5e424956202bfd62db51dc813920a8be2497df5dd4346dd4f09b818f2b812b04d17c0a95f2b62131f3984c97573afa44d97b012ae664b984d94abbce7559561e32e70e92731aa678daf82bc268885da63ea651f5e617ed1696d4d3d9a17fa5be59c2b60838b8ef4132c4800f9f7acd0bfbd47b6fc512a57ce3198cc76ad54b21a931c39c84c1b2fcf76917b0c5cdc6d680d0416b04f7075f30a2922b247a1721d7b0bd2f3a715c735269cd013541b00e6a490af4a4fdc754f2cb06846d2958b59acaa78b0689a1caa02f9dd55b72b8681e7a52a1ae626b06889a46d22401f45b3cf12bf75e4436b0b8f09c6a11dff3d1ec471050ce8e4d25792f30194a355b35b571c5424e8f63155c2c6dcbc0f5f68cfbda79f0c70cd175a50660a7498955b7d4501d5a3d6a2cd25b3152334e0a275f9dbc04df13de0fabaf17baaed7d4639a2757bf4bd30caf0865076df1d5fd875ed420de279a1e54836a1f2188cca2706e7601c9ac88be","dedup_hash":"23702933538943712392","tip_id_type":"personal","vp_signature":"ab9f2544cad1380c09d6127e6410d4c038c9c5607dae188de8910ae82508144e71f1750ff2b6a69ae54212e8e050afd8242a88c137ad09e6ec6bdd50ee6accda9fe692e88b9e84d73e7765f218feed5c2a9bd502875b398b6019534fe250676bfb7a1551bd6a49671541ac15360c4efd67adf4960696438d72037f888d931f11f2acc0a088b3d9c3b57a887e57bc329cf074dc0919b1ff9dcef8cd8150ab8ccb24d5240f34ceff8329d2a99a78476e929215cd7c00dbb797c615f1c2e7eeedb0d576cc820f72b86306a5f2614149b06e8229fa81613932103a1ceb813e78b5b934fcc69e2f4e40fe2f6094fffd250341aad30e042dbbcfc4d28a339187dd9c822f81a13da9c438fb408ad901b296355da997bd80bd04ebc5e842e93f1f3f886aea9a1972f63075e7abac43230844ba8740e90d4a2420738ac353aae56d01030a1c0bd5e0b75ee54ce3059e2cfdac0cc20dbb798a13a36a4e3bbe43449f035656816e4a69216bb67cdb1e1ff81ad5e4053f21830d4c78d9123dbf3e5bd56e9232753c28999e30064cb3265097176df78f4e9431491b11c053dc7b6ac08457a14361a3e12b886642bc7cacd086d636503ae6886705d889d49a274c057b82bba4cda7848683658e173be68895964d4eafaec70f50aecb9b5266d3903225e948160243b5a27767965d3ea27722f96ff8b7b662740fed4afbd83bc8ee8587badcbd418765cafcae4d62a8803b40e783ea864856fc85d0421eaae0613d7556671cfe4580917aef36e5dc5e4970cdbbb2c4d0a28ce1a540d558077fc4cbffe243f6aefb836161d9eefe84a2d4eddaaef9eb163ba158fb7939f5075c643f85223c5e690b071aaa4baa45f47bf7361c25a6649cfc032189272f0942b0686cd14c58ed2f50994f41a283e084ad92228d102f11a226bb4a1832ee753486c136d2318dbc26596f88a64f57ddb92803a9adcec8a7d572bbea7e20ed4afd1aebc9f182c260db1d0bc3cb804f914e8682f44e49604d5ea4c2a763bf44ab6cf4c556327ec426c130505b7202fe64864688a27ebe24d03b816cc9701185dbe8147e5c94251e5649a4c8c5bb43894c0c1048a15655c9ebfb5a189e6963e27140f8a42503e76ffd04bd3bac7a40e7f96d6d04718b23f3e7b07e62d495ce211addcc92c918d86211ee4f70b48ad59e6d7b581342eeaeaf818e5ef2ca49b4d61bd19b4896ba9207407cb83afe1d6e3dba3503b6d6f05f03f7377e015352d43d4040c3f65d0c1c93f0de88410f490db988167a12a800d154d1e9dbdfa374f20bb929c130cafd4bdee68f7aaf06039bcd9ce3ce01e0432ea2070282b06a1c3cca28096ff4a2b830e8743ae47558a299dec0a6b82be756388f125e08e458f63f007ddd00627354b4efd776c395afae63b6045268cc6beaddcf4f7a826304fc5875174d3a6debb5a8e66fdfa6727940b99169e77f803cd0e61cccfbb39e6fa3ad0f795d238b7425e0c55813674bac51252efba30f6cf5e0e5ad1007a5b21565cb9fa52e4d23eaf62deaa8d5e97cf48a2f62bed734bd94214bfe732b45b3739d65d30ddfd83bf70c0cf1a8de68b5b1c4846e3038d87e2e8657daa278aa40f54fe45ac5633fcc5429b7040ba5d35a9c208dcb724c89073861477c2177a7b4394f3a3252fe105419652d25a0799de21b9238d44f8a7db252aca353c2c7f54f99e7ee55826d136ba8ba92e8b302f3481aef2dcce4cb9038333ebf176449f6e99ab3f55f0bd1e10720a5fb6ae933b6a11ee3f29ba780370ed620a966b9aa6647dcddc7cf1d04852e01032d7406149e01ae3adefa3def7dd8f3e42108f24bd28bf80b3d3aa10861de12a16903b3625d245649c39860b2529b7d163d468610e4607efee83fc805cab90c74c03b4d7c8d619e167397ff90dcf73630e82021a7019f73c1c346cd459686b876c4d1ff2195524ffad2c6c8ccfee82a6114ed5d6af65f489484d1c42b1666542b35f67a6ea073bbc723d678f69a0aba9a2e431efd2bc2d7a8ccf411645a15170baa9dca8960a79db0f2cf5405e4ec177656b7303f22369c184c911aef5c25dba1904c2aefd4a884a42d9a4ab393631cf82baecb5f86b8341539e06cdb26472411ff9bc4fd037cb7a736ceb3abfe62db68928bb49564c30eefeaaf21392130a163cc8214b92d0f0e0bc4dfb6beac9de77f0c987949bb8337b5fc53a19e32edd4103c0587ac915c768c655b9ab0b48a3206929253eaebc0c63c41fce08004e87424457ad214001984bf09bc1961c9dc0ef5ba35ca1fbfc85d327569ae37344bbe9cf5f3109cce6750dcc122f2dcc514ee7c8a224035f49f5747cfbd31e2ad00c5983294fe49b67a4c0fd856a23f9075c3472f971c23abfad75f46f28aced2380a3ffce9f0ad6eb6dafb74c83f94cefc5d07111bd118595332a8a74bc59e358e0cdf17dd29cf8ea8b426c74fd8fc1150a668abda6aea443f604de6e7c4584d43566311c82f9220ec2f58542b03f54c9a4b8a6a5870341a9478fdc011ef55e9705e3086ba3cea2b4b4fde4b05716802b05aa5bafe871443d2d2f4bcb5a00ff15592cd8076b31fb8165763a6cd75a21582756de3d8f53e677eaf8c1187a38cb9b9143f47fcc337099b53a4a6ecbe95765081bb19d37517f25c79f1ad439a2a0c32f5e833b50b4589e32b72cf840745bc0d98b570134077955da2a195abd1ede98e240db46627a1134559211d1338db6d8b4b98f6f6d4a2bd2a12dd11f3a881b410d1488ca6bcc99619f32bb7e650282faace6433ff98d102b63a7c369580e3ea1890e2da8affb437b2406253282755df4901924868cb593ba7c50e46e0b93ea7bb405f0ae5e7dbdaa84e310837acb459791c6b2ffbd8ae2961df3ccc5281d7f471a13d4651c12c3ffc2f91e8847e835441f2b1aa65f80b9e8029f9878061b8afaf132e4a4b542b2658263551619da307b62099e278fdfa2697913a4200848dd5274058bd77eb9a77d4e3e5ca48e85d6821c864c0bd02213b71b0e31078858276ae8a5bb476e407d40b597de2f71de226f4797fbc139ac8c5d68d5d11b565fb4f1d352dd5c7237ce6bdb59808a7cf9239a660cfbb5ddd62f11b134b64fc8b3309c090866231daa7907f3a771657762de183e570cf7770bfda7b260a546c51e67929dd504b09bce183eaa23e9cc63b32868ca27de37d4f8f6055269e365b58b596e878a963c266476b055112423d5c2f52fd902b28b1b31659d2f3d99a631b16b34c2bf3d0cdd496ed0ed6ed1ce132f274ba6ae352fc57af5cce823766dd01022844848458cce95023f4877f07d3fb8ab1c46ef4b8d21daed95b0f7f7452c153f3ce72c955a9ca4a99655d6041bc4d608aac7e4bb92562841dac4ecd481366baae7cd63199b1755b00c5866556231b6bbd25f83b3ce60fd3aac244f6191331d9764e807c158e1c4c8a0c4ea61872266b39d86ea2fd51c84bb44b5079119592c8e2c1bf32bd2f2afde306c7c17230c03c5bbfeee07e242e6373009da53606ece9ddee2616b4cfb486302527e3f1bfecbeef596aa372f2f9832e66f7cd9568ac0b9d768e27368d395b889ed5728455595622861d5aec5edf0d4eaae34dc587b8191ea4b8dacdafdb90aa0d276a2a00621ed77ce4875315af0895e1312df2b2a56b8ca1209f98192ae878fc42a392f9ae6b7e33417588ea58a4a13845be30665763501d1bb02e7401da18ce5a55734608203e172ec76fa6a5acb921f58d56bfdd6dbc7a7ec1053a093aaab1c90eb60081b07afb67ae5e58ae1661bd9aa030d4bad9e9fc5fb5bc05799e17a8cc542952c9f319a1220b6510db735db16bd9c85d387e3f5214075c894683a799d68e802179d4052e38858cc5d584d3188f802e4283b8d63d1ccf9b620405e600aa2a50bb9594653543757eef4b9e19bcdd2a1f9052ff201f5f868c23d454758fddd2861351aa6121bb0bdb7ce0fa81542d3537a2c942c2ef1afb5b08edcc8bc3e006cd5f783709b052cfb9ce81d7ace528da3231af141d07dfed56b61552ccac005823202b0a5a3fce3655068ffe20a7a2874366875291a6923b2d1c15edc8ca331aef9801c6339d77b58e8c19e9413ae89adeadc4b4b6f55a2d1487f0d43e064f2486a52baa243283385f8ce2d164ba68f43f885d1461b0cccee9c696954493675f856a326c32c06b289c8f3744bfc2260e4a9a5842ccdf932974f0a7756c6a16c51202d40e6701670ccba53f9c311afaa3b78284a50f624f59535a80cfa66851345c6f874c20fe65d193a565d202ee61a5e1327469a09c7832bfc60bef4ca69434c1c066b2752f34e986028197ef0816b03c7f31b5dd1a7440f74d3385a8db6455876ea81a3a6c0e7da495bb7c3e0aca7712c69df59efd9812ab5a7ae09a45cbdd4cd84957e80370d32fff87ebab3e4febba7fce9a3a9274646a9d75cb74dab93441107351888ce256d3dbf8e7d2b8149384d5172dfeda6755adec3d86e0c81a3a6e02bb1e2f723ab6801725225b2a5ccd83de4dd0f663395770c5b9af12741ea89a67b01092a3b81bd62b02393fcd6de4fc18de052f447b16767497d32b2f80ee3a4432718f5954666347025ca06985b3fafd0f48507b7ccef3f80617383c679aa1e26fb1394e7bfc0000000000000000000000000000000000000000000000000000000004050d15171b"},{"tip_id":"tip://id/US-02debc7b60b07301","region":"US","public_key":"30bd77bbaacd350d02e81a8b8015d3467d8738639d3acbffccf9870c4cb69b94011955b06bb844ef953fa010bbf6eaf9473fbc805ffd151bf746d93945338fa9c86375769c95ecbf4a48cbfaa20e433b1834a68501fcf9f53426aefec34b2008050a81d6b344e765c950464f0be948c62d2abf965087b6da794858dd218f89abcb7066c3f01e83e94f42ba275a3eb7ab5d83afa71ed2060b398e99d35a00862e78e7dd2a6ba81a537e5faa1662f9467ef947667a0cd9e595cc5c92c69e0879da22a20ee8cf09f142a3f6ccb581f84b1d37a33ed628f22f2e9a5e8c951f1df01bf6b995d35b46acebfcc4e206c0fc29e79684d390a875075b10b40212031ea0f6a752df332e4d844426e6c6372039a386f911ed7168fa9b344d6063a52d99a49ebd89028c047cd17c3cd85ab3a1111ad7286bd10b54ec9eb97afbcb96bd4d3b46b1da26917822c2ad106da8ad180977519070fd19bab935007a0779ce6623d79d3a1e09297ab34438deda83a575632a292850eb45f5bd1611537388e6d77a95b6917f3c24027309d4c6617767c11cf71e950ac1ff891a16cd5da9fde8828f18565f1a9c86f3660218250bc282807271216dface6cd37f57f327f006e5bddf1276f61414d4b1ae74bf3d8d9dfd5acd173451993419c3549f299a388a0d15216f27935415297e12e066bdca6407d9c14f3c1df4bc6e1b4e0c96a1d2e812735f8721a213c57ab194a194345491e56d29ab8a8527264642eb5f47f10e62aca9e6f5e308c993619770efea8e544746475ce0fd56f7d78dfd1916913fff4c5840aadee79a5be3e8be45a302743e3c224e5a433a5ffef772a7f9cb72dd1859e6654f6dbbae19edeb2b6af3ce74f517c4d41d6a0b1edb97591066fa0dd14da8bdebe9a5f934985ca9dc28b75bc51aff20c130de1b324af6aac68f9d9cc21fb1583471314ea8c082e533835db4d3060b1e5c1d671cb774547bd837745e89e2f0a05e19a99b1fef9c29108dfb09b201b5db72cca1ec33ee661e852449e4f36032f650bec0b9f0a9672a437c977076b44fb105871a7372bd394e09256b513d7c5fa0b8442b6d68ee870fdf35da802e644e2d2cc65a92ccf69f3b73499e1ae6805c6dfa34c59e4b20abe354f45bed04f64fb8337aaad18b1ac613cc264998245a83d2ff746b910bab9ae0f5b2836c06c988f603bb6e284a6513620ea64202117b9d8213363c96850df1452cd3b5a06f62fd7b7e97547bdad2d3ee3b36a52c797fa736a607beab99f011384307da50fd45d54aa613c087ba8bbea6e7be962835424a62217f37995c90907054677c48fb9b3ada679547e3710dedbc17f3c5484e20f0b4cd531bfb9eb2b0eb9c000b73e1311f22608b8d0e7901fc771808cab885d635ed42337e971355b6066fce22719385df659986e234c2dc916c5fd58d82811d7f9c6503157b7bf267c530b5ee225645ec481c342787b29f30b08a912244e75150e208eb2ea559b54e727f5a1b903f29af11ddde1e05b7ea9538278b96cf58bbc577472e398b33d242ee7460c89c5dcf543a52af66322fc7dc73d5bae13c47dc2eb67e507f811141caa573f6a59e7ca6217c9df5913914c27b3398ac7613798b1d5645d280b66b341808a7d8589e610e486a0d71e8cb558c36b24a10c31614f468ac4fff800177609404993c5a09b11c5c52fac8cb4ca7b1dca6955d94d95593e7619e5e2ad5e8ac73a48d2737f906c77ccb649e6b124d9cc9181b60ab8a441b09913efa4b589437d8c2c6cc4500fbe15c15f1eac4864485d51c8402e65b6645c4dadf6a7c5b80430a85028c19aaa6aadbd20b92e4eb11f4082a86dc5ce3ec664934f321e0ea0bf46236d8f4aaa818de103b15d1c68f0b3dc3757759a6435cc44f01191ba577cc708949e7ccaab328fd3555ed5b9cdfb46e90cf8ed91e6c4e805a20ff6f75c3e877ef24be2e69d923b43c426fe1a1c3cfc754974792e0333fb2ef615b3a973c7d85f958198599735e82fd9831cc2ca0d81b5d59e95045888c46645614cd04afe780256ead7309b080fd2fe63128efe05553d4e37883ff53484d05318489bcf7403b8f90e51d00df0638b6c083ba018ea1140223a56ef03635a87119798b1255e460101e8a0cb70f7200aed50d24c688c099572996145b7deefeb5d19db22c3caee3dafd6635b50d1637810e88be87cdff8e8ec5543ecbf88ad6b11028fa640c20561559ef09a80450263893ca5c99a22caa90c2f726e53df0ed8f2dcc621a197bd7b0483447b51538511fe37f74411367d84d6e59d97060ff2cf98779b45ba8a6d26fc29202779ad0099eede1ebdef90df6c83a133a78fddedc27ecec4bb39c43ffba38a4ab36aaf3a3a41832512a017cc566a9381691021eb9942395db32e52343fc59b605914983c35a492e415d28bdd59d2c9103e3282b5be053800d03f6d283b27d4a40f4442dd3e19b0087970d6dcd7611ef966230dd94c39084e0e94b9c75713133bcad7699f64729062a4fbaecc79bba80e6d9d0416f41b6977b3b65d2fd7ebe3047877af0e3418ace5adaa25d0fa3da1de8b2969c70288daa102f60babca4fdd1629ba23c1e2c632186111ae81ee9ec18b72e3753371c5c7d02c73130ec424af2d1399e6832b456f947f8a7f4402739f211d08be6cb4c1f7d92b1473c66dd60dc0ccc2850db12e09d1426cdba45b3aea99bf75d3dc5d1fdac991946ac37955a24d5c92c3bb48475dc7ba10ac5d7d1dbba263ed24bcb595852fccb3a","dedup_hash":"74146165765493969290","tip_id_type":"personal","vp_signature":"06e0f9774007bf113643ddb1daac09be87fe6249b98aadcf52183cc829feb055079587b466371dbbc532d2acf4663ce34041ca59acb282dd2576b9e0551cb3c7bda0208147b9faac1e5fd25adeef4963bf1993515843bcf8d2e2129e70c40df20e513987f57c4f5fb86760431dee29cfd3fd96f43835b6b5faed630c9c83042208c8e44a336b0c9d5028261f6e5a6a5c74a90321aea238cbd054edc041a968e5e6fdad5c5fb89e15899ad004fb75356c1a875ad32d0d1d3b0013c7d3bb33addb1343fd01250832af450f6e6eccaa7df17258e0db43b45ebf0b5cca2b9970db272fd6652b4bee5a5e47d9485fc548cb45df2ed77d8067b9fde551adf17e42ce09a5e23afb848d8df02b49b0624895f8023dfe74f48d7a543a0af9f04d3dfa373338581676d3debc5bc41a0b65141f17b0750ad26c830bf3a50824fd9b8ddccaff9157ec09539d1d2b3349e7e1ca2311ce56c7284c7e5148cf1f0e26dd9c2a244b6127df740950636992a7ebaf60d6ab12975382e35268085ca50fbe8d3622cd763e2bc50eb446ba937839ac6773395adc6aa11086a329d6bfc5a34ec38354f50a193c4f335275b193ae3999af9e3f156e0dd247611164a38249066668c583ac1269f0a8b8887e3551ca0da62f85dd07b3c5cd8e2beb648edd165708056344881e853e00e404e31b5413d1a757f8696728bccda0e4388b09f7df1c62d1f5a60e32d482e6b53b4bdbb6d31040ade030866c8eb49f5bd93c2e52e425826f3815abbddb7434195e4fd3fcd62137559ca0d32e018f53f3fca7259d71f8172def8b31111b09cfdb90e8f889e795a9eb5a35611eba5b33d1bdf567857094bf68b6070ce197fd2e241fc4ff83fbc0bc477c6d4dc326a6bdf1b6928834d6cc4f075604e238fffc7ceeab52b4da6df582d0dbad6b7e5baf26ab9936b602590f03938fc344c643a017e7bcbee7c4b289dd981c04ec965b998f95da99fe49a7dd7f7b2d98deadf79700accccbca138358b5260db65db93435087c86da0edfda5f78f20ebaa72065eb778c7d15faf168e16794289b43a37c74778d4570fcda6dd4c50a1449cd0e57d76f3146acc1a20449fa0b81fc021980c798068759181ae331b61eddc4d31b5935b437ee91192c581f5585bc01dee64d3b110578ed164c17fd77191670dcbf555f43ec27e746b523d17340cb19e72f15bf1a83b4f80eddae7446a29acf0c01271751278ef215cdaa3d2c5d33036970427aca5fce6f20c1c35cbc01976b1bbd5e935100f5cec67d7a032303b05258ea6b840d1e6e22217513caa082135813df0341161a483318f50ef80644590b7eec19e060ca46eb1e3695acd69c1875950473910bf45788b8a8a4cd1271fb84bd7482d25bf8680cb07869eb8279c242018104e74b90399992992da4a1e8a858f96c53a72302669780349ae8d7ff425225f498ddbfad36b32a1e396baaaaf8092d2a53d0c7c59f97cfaf5df6a127f16e0435fb012143a1a94db3c9f763e6bc33f69bd86cf50e8eebb9992904ad7188f8466ac26e9696d60cc9b76bd7d7c2acdae3336c975c02c0b36663d262b7ca2e82b017a8256351c2095e970c7a41b8c02ad61651e680209eb8660605d32520977c311e19eae9ecc1a96c07307e1a2d647b0392adc834e83c060d2826df2162f5ce42f0e422739784373a0a0cc7c36d8c80725232a9020b56d2adfbc6a1153767bf4e71e3b03797d5792fa22137be6f39fbe167afebc4bc10fab674f84af4668d21058705fe7ee0187dee09c4700233495800b092f2073a8bcceb015454f2030872d59483143d606406bf35f0d0611b43c2813b5a8e18cc3a935763192c5a600cf06ac8714a1e03211c1fb40a5d29fbcdac0b74986f492b6d5b48a546e3aa25830b6f72d73d5e31011e2c3e08675f3e6b58ae0587e9149dabe4a7f7779dcad1645d7dd758b86e33a5f9bfb2a9d8e1cfec4ab3971026f1a753c48a5c456a98a68c3dcfb8f55b081e1c8081797a7b5773e7880d57be0ba9db68628d7a98c161262c1294b49f579fa516da6dd54c213d26d3613a52b4a37da6aa3f0db49160575ac00fd147aec89a7dcc1511ef63a53fe50990ad49a3a1b816ba0f17c3f8347d0f9d4f4def57682daff4f0b4d66c1a0bd70db2a9d7da1ea92449c14116470f3d7bf3ceec10cf3de8bbbb74af081fae59e714e725fd5961537f6fa2d7b78c63d7aca57902190386341ceb18ea26e53fe4dedc36749265e5af423ea1737e93459e785d0257bc50c5855ff7a9a9b9003b166c35a5f0cf6b8d4e5618f533a1c35a7da88b8d0e296a3dab7ae9bd5eadd955ded55ff1ae87751cbc865e88d51c4f304ec280701229bc3b21fb3023ee7423d7aa70ead5d115dd6d69c57bba12c822014193eb2b7292230c4c0ee1ae5e6c93c75a1e5028b8bc78eb8d7c55289eaa9759f46094e9ff0e342282a5b7ad0d4bb8fdc9cbc551520e07a82d0092d64581c8bb7a2c93c757eea9c5f40edc30206269bf6fea5bc046c54954368dc79e968083298f49fa09c3acbef79ad6bf207f04e89ba48bf029630dc651979cc281d95938c70aec2eb89d6fc6486e2d1bf9c5a13b9089d787ef20a2514943ce54e30c38b55c15466797e961be1def60892526e1702c7e82fd4f281cbdbbeacbc07a6c2edcad5b90ba1d2e81e3256e4d919b9c3c295c09ae4b2ed5022265e0406846c980d5ba081147c1a268456931b943858aded06888f2c516b7f84893123ef4f4992392e5dab96fca205477bba5f2dab2a8dbb1855af71af132480d5ac125f9cf9078360c1a035734aba82205a5b40148947f5d2c6a4d3c7efb11517350fb43f581150ca90206946d900ef4d3ef10a575bec8b7928c73166ef4f74c1811b9fcc1ec4fc3c3a6fee9917eca5dcee42eaa02fb839728f4030c180a4ce4365ac94e4b2f36e5acc9c14b04ca2e6dffb892f57eeaa828730a04f56c6c94805d58f027a241e947afe61e04706e8a473bc8349489025a27b53ca433b958bd9f8135ec2dd1800beade6271d2b85f1a93060082248b7f2c2ee7f0243382eca4d1e6f5445e4445e9e146f8de713fd22039b9db38f9ee6c9ef7cedc007b36c9e38753fc43f5595ea09156d0f96dcae06995fbf7fd35b34fd106bc7f8fdc43c29bf09bdc28ece9e1fc039c7d23b6afd4839e39c64215a1d4e7a0e5981bb3e9b431d8741efe32c957fbd8f876890abf4f10be583b7cb7edb4de336e684871ed3401db40763c8e5d51bc4daeda401befb6e6ceda5bce39cc4024b5efe8d2a8a98f0a83155e0e6e3f19feb7e509e60a88ab1c07016c4942b4714ccc356d23b614929ebc1a35a746cdce31a024bb095b01ce9c3191e6b7ffd372808408e820af40022de2c8ff1f5821611d8d483c692858dfff625004397bfb2f30e80c0ed4ca089abffcd4986038482e2170b7800300ab4767f6f6ecfc8702018d243d350f55c2c1a5213dec88ecb0b721a063ab38e0020d89b2a337640dd7f21a5bfc4bec154d8c3d83027be6aa3f25d899b28bcc4c320c537b24ed94055f8b6cc1bc8fc03b984e7c022ec78e9365f7051f95891f426eb029b6c26c33cc0f8c700612c90e01d6a9dfffeb5320d0aa27aeeba4e5680a83fdcb945924bf675bddbd9b20314ed5258f00533300c8ee0db36fa427b098938316518a697aa0506f25590b90bbb55530b2ad51186f2227c5f07e94f674a783dc205cb15614cde281e867ae5817c496695c4995ac659bdc007e540cf9a99ffcb2e7cacfe0b78b1ed564195425c6f394216f97b61246365d12f728f542e76c2b6861ca495e5b5969b100c1c314e23439af6fbc2daa4436c7acd90916c4ee4143894e2b6d210fb0d9fdfbfac0f44d2f3f89504ad3337c263e3246eb904384c49615de2fc5c4f2799b1cca34766ee1dc677fe74bec66c2446a2d358622be7d01db4b1ec250742ff35a2ffc35d2e0c02194760bb1fdc68092feb10b62a46213c12e5126c294ee1ee9e324e5f62dbd9590afe6804a9a981a1159cfbe2d867b5f035049c13386f7c57b4c6389f5f174e0c1eb6766855284234da957ba66d61b1961704674ed5f7bdae01b8244c3a951f6581a5f316c8eb8096b63524b80cfddc2aed2da8e98b369adec08277ed4611bc1188788fc6569d0b5ce43641bb1b2a3bdb7aa4d74c9d887de3e0caa48ac3e1339a7414f7c25fc61c2bfc5eee28ae18ee26220b0ac8b348020110e8e028edcc168f98df4e7aeace2b2b751d787eba4672c228a854d13d6c42cc1fd8af558a1283ad361ee312a19fa38db75740593760c92ade97c987eb2756b91c69b43440cf7f4a93255786a3692fe3c87afbd35721f7177ff55e37b541ae83b7c0ae1c08b71e7211b6ed6b4206b4e6ff778d5ecfba9b3e294ed0eb28896f89a51103cb7e0d6c984312c112d5effd3ff2067074764a31ece3548463d68e6c6c2c0281d58f8d1cac85af560c9638ae9d1f2de74deac6bed2fbe47210c22e4c47eef370f8c6ae2a411df5b7eef80dfc823ab68c15dabe0c337c187db171a54979541e7e49e4d750dd121efe8bdb46b369584fa746128f93299d57e31e9a0e40b7e83672217f967cb6a8de698a42464869d9e9dbb3f4dbec5fd437e8a90d6494e557bafb3cbf40a1c224e7697eaf60000000000000000000000000000000000000000000005070c111921"},{"tip_id":"tip://id/US-59a3dd1ddd4aa7a6","region":"US","public_key":"fb56936de7e726add1acdbd166af09659dbf979be5b551710f75ad43c54a57e108200e7900f48710d895b3f18c09c81021071f574380fa945a7051fbd33cb7fe44b457e1bc901352e5b9fa5e46cbfee46dea17865771028b01a2842c72872baff962e53d5fafece3ed0fe19c4ff948f227d588446a9f8893054ba459b4a482d73f02c71c9e2d356b58b0446566dc493f000a9715ed5925d98f18f285bdb37fa14326163f73e94b4d176a3b6979d25991f754ea2e9c1f9cd9d3308c88062a7909a9fbea6232bcb4b707e37e2762bf38d7a30dd2fb73f54b63471d740f8ffe837df421ae8f1794d75c950067cbd632137983b88e2a072df0c8c749f5c52c8afb2645de25b3374a93c435cc22a2ccc041a4f8683197eb6c0f99719a91159dc368134dc05009ea5e9590c8aab0dcb1ce18734ba2c44719a207de113c09ab807b0b3e6709fd9fd337ae03b0af89b6ee39b13445620862dcd169d5bb76973562bd984908fe5739b78b1c55d21ff3008443b96bb4c5f2ea2e8571885520a3b685b735163fac34907001139f747e45c0be4b257d7147a80bc368c9ef3c6f68cf63cd9cded40a885bce99408e09d39e9982d8ae0fd3f7cf943a5119a904bfb9db3b23c7e2d86d4ea56749e5b9bdd9a25094e31cda1742aeb5ed6e65e6c500f83f77955793ca7747dfe8d554d1e447c0b34426cf35a2912e9a9f98647189c6990df15020ba8c66ae4de534be51132ac84c31b31a0b760277c2dc7dcac6962dd20232191a465503e9a61698e9ff4ee90baac3968a94a254310bfe031aa53d3abeb1d70622086bd5a019b3342e50cfeb6724a695cc2e10f495bdbc65a04a437539f8f0cf51021027581ac1c9432b123b928628596b70c95e61b78918e7e0f9f5f4f66a85f9d38d6c8e1462a2250dc08a1175cb4ea7e60f1de9a776366729bc3a90a19a462abccf166d210c78baf6c7633352469b399e7113607bdfc589a462c4f7b4d8197a411a52248d93a340e98d4226d38458c6d18727d99af531bcd9582590e7e56acb712284e7004b0bb27c3f555d49a95bb976a02bf415d10e2fd5413d902e8e95d494d443856f1c75a571a38ddef8022fb80c16be2b115fe808a3c36d4b378f16455416f31bfd2aa6d3b09cd7aac9214080d6deccb87c8742309433ba6764e2c8536b5cf88e9bd03b90ad1d656b820d538d91f25ce3549f481b2f01b9cb92977c5dfeaac52a71f615e15f5ddb36b6cb8d5702af23be0978a4a89501ac3258aed4509718d37000c86ac6a9b78cc997b22e41fd5926a48945c319be7dc6b361ef64d7a9a74781acf428e27ddb82f1e448dacf9e95b7d3e3451d1d9168631cb482352caf1e3cd5471de7bdfb679e62180d1ede96f20fddc508fc3fd338a5acb3668bffd485225a6ae8a84ac3577f6340ce50a0df3757c54bad77a759d8c36417190ae74931b2833b4f5e1cca55d08ab0126ab60ab000c2a905793a95d39075be09b159d27eea3dec54902e0562a7d20f49027cc75663ca621f5c7a494abc30fa034831639bd12e3e38a1df75f828437397a9b49a4da876caa6d85e6589f526ab22cca340858ff625943ab1ab5dea02921f20bd5764a7b7b2001d9dbed795f35c7dc5f047183059dda1f0bef3d0732b21dd971907ac461701fe93ee4dd204121a1ae20b84e45fb699a24d31f0e1cbad18225c633650fdcbf980e6829355bb8897d2f2e2c30bddedce511a2b1b77b47fe626fe1bdf75a03adc45b15e24f05850196703ba99fbee5a2c0a2b81123f36f51480ab5ffcb168d0dacb8a30f2dc05d06aaa9254a494894a29b21c0e4fb272f94a5de117f29f37165aebf9da3f8c88ad2c307504efc2f4cf6246015621a4a679cc69d217f88f7a5558bb6f7ae8f1ccdce47ccd530883694f77a7a96cc24ed3ab151b752bbc549568a4e457831590cd00a6b16b00265d0969c63793757434c21bbd4820a70ba3e4f25bf71259e48272bf31ef67d3b0b22cf28dd1bc12eee634ed1b3611b15f3db64f5766f1b0ef1f3d634ed66235c0a68d019e84763328c612f55bcbef05fbe3977760771ed17b2a0e3c0ee1f126cede890f1f744f8401edfbb0f880be37739a116382efde0df5f066933c8c1f4f9ffee521038152ffeb2058c812e471c497907c4d27511032d5ea30fb3c3999a2dd466b78c94cc2a0b0bc69304107bc7b21362b5f6ec5a8d13a09482d78525b3cc8f4019d13c6abc0fed3b96d56894d0d21c6c35241b77ced1f931d5cdbbf13f14bcfe7296a57a429942ffd84f733a35ee42a3c2eb3052d24f0c793216c62c320f14e0db5f64b3d3a8fa921c1bf91710132a31373afd1a7e2b4e97dbf01ee87469ab75799f502d094975628fd742f600358b7c8a9a21a1c95ee886e4dfa395ee806d4f305b48f2419be01ab1aaa58bbfb48b11b2a57ab3e1ed6d79f9d8efd579e1ebcc727b3a2591a538f2730de452f4221e283233471864808de53b4d872b4f498a8e7380b18de8876a6c8e24280d17076cfc6c6715d9be8af1b34f715386df4a3424d59f8ba3f3e7549d67f262576ab1005b9b6d5eb21dda21dd784bc2ecb74d96edae336daea431273c78439abd4646e802ba5097277a53b2f432ec55042e7a4aeeb86f06b2031a73f226b513a5d7242392ef67710b8b0da9732d936961d4339c926f6b8475198b2c87aa09c5f900491c461d5eb719c3396daadb248feb1b2ec1d42ec6d877b7b2a09bd267245cadeb4a0e49f59873b30d9bafa43ea85e338f6","dedup_hash":"70044443154882484498","tip_id_type":"personal","vp_signature":"467f11e27537c8a588f1013f955dcb0e0c93a8f5ac9979757f694d791bfae1f09de6c948cc92ae009155be0fe35fe8a7a3209bc92fc13b98944387e07bdd16e8f9e563e3f97ad3c0c072fab481d021adb3ee462ac727eeed6146b1a784523c0e6b0dff51a7c66e5c168ccd0c7c984112d275397d6591fa40de493d49e4c61d4a003878d81461ba4468b6643c5729490e841af25c965584eb436920706ee41d577e76a3da451654c081359abbcff34a8f7069d1df597696f588cd36e1181b52c251c19c1ec9b59a9f8a62f23c17e7276580588f8825df80919b522fa5d077aa01cbbab0ea9bd7b47161bfaf4664644667541f77d3d6cec7b1893632af5a6c8b72400088f5d5b5a00b84273f21d3c98ac9e7db89cab51a85dc0db63eb054531c7b2a31e1e36c3ece1d9d28962e36142eea7505f26d9e1b2cfa775b98d81d754ad71c568db1515e203d67257a3eb42c43f547635d98e4a354fd3b9cd2b3a8d970b6e9f11480c29eaf96a50c228559b00f363b293dd2c04088976a7b33b1741081aab52a18875ba55df5e7f7365399ad49aec32744d37b469467c594730c05e047afee87e8fa4a07f41a5849878f2cad2f1da82a33314e5ac469d377e558d9e61655617f5d077000c0b5389c6f303ad86c2c4a61c099172ca3f15478466a0989aa8de53584c3a87e443a1f1702cf06523ce3712223c206096238905f48a537e26dbc26d3b4ec39ac4abb691fb1844ed0f5b494c775789aed5913ff5443f2713ab3f3dd743a75b326511c3a2cea5cf80e2240e52c51462fba99e1ff169480ea4b5172e5b4ede6cce1c7f7e020c4dce3704d167a6cb89bbe4f70586ad96c1d6edd317a5b77eb349fd3a9cc4e6c3422ad8b6f4df0ea942f2eaaf377b4d0eaa4f91292fce91a0ae9e24cd876ffdf307706af9eff65caa57edc5eb80a1c3c79337b58d22f649d9d8db66193d0c2843f47f6cf80b088bd6827ac3d741e26c308bb299c45f6f16f125cc79902514e5e665384949d368bca1bd35d84080198659e86845758c24a121cab34ba5f6ca55058a58d6fedddd1e81177649afb9f000de4e38d103ed294936e1000a10f7f5efd9dd28f398314f854a9f59c1d0d9ca98f5d12574b38809fb1042c9ec8a27d7b4eb712516eb786b383b1239222eea2aa7267dd45dd296369f09d1801fa4faa8a417b82de9f499107be54b7876bb0497e90a7334996d8c51c1e2c4f82a58a46884eb9f8677c7b4d228554febb37238909aa1d345994031b20751390ecfa707121ee6c428479f469615fd7e2c733c0aab66630c56582b0b4a784dcdff7172fdd046dbbb1ec42cfd39b4cccc3a8d15cd4254b167f28791be140cde12db216ec0ba459fedbfff5dcab0c0d0612db8e6081008c82f779ad8901a76c9f3a7a11496c9438af5f150f2d681ba16644421791f9e649ef324acde24df33e7cec680990a3e063821f103df9c55df942eaa8fba5b7ae346ab4231713a3a49418c2d634b061099f0f810aad7c662b0211364b97336c2f7d3c652c7fe63197acb2613ae87384131a9eb88187e977e90689645e4f3a13db19e18dae8d088c0ce6be9a8ac9af73f8d9dfc806bfce8a92695ef33a6a39a7ec3616c7a96ca812ed5bb6158090457362d021a4d92d3a4c373902cc5a5bc3f47754cc9491988cf5b65aff5032ed6c0d0f5d17f03474bcfaf7c8814e49bc1fa3e9d9603b8351769a30f52ddc4b6702b157686e85a4d1bdf20ab09b28e6b2f028cd23c1d770018b7fc72950d9db8bcd519f03ad79bc779087d366f6c64b7b8436a56a975ee51d73f24aa8526e35e8e7acc50a4896396248f69e625d1cf20d085f20c1c8dd5b5274595d234afb61d7fe71befeda015d9c7d8beaca291c8d8c58f6cb5efa60b2a76fe7089270ac776295eac50579a71cf7d5211c6ec32ada04ed72f9ef283cf3b7e335e04a7e72796b4a680c6bb9db5691366d6620c1bea4161124a208ec535def759bbe549cffa3a9928ddb1781f1c1daafbb51d71ed908aae27a111645ead994c395b833aeb55114f96759590f1b89f58a5df05f5f2a29c3fdeafb70b2d581e870b955984304f209270c8f3a73c17d14682cfd5474178e720d9f668482d39b4880728a42a39ea8bad93fbf3223e2da955ffb51aa15a319d5960980af6fc4b488da76533398351030260a05c4253eab7f6d8e19b20e6713c5602438c6199b4c1a1fb02843e146b47905b811b5ddde1de3b558a1afe74c61f2231a71008e87f13d6ae6f22ad0598fb4ef56da448c2b07526c3026cc27371ee03906cdcbc768c15dc6e5206b45f412bbf328df7de6f47721805343b43fdd0084ba9a085fbaf52e3bb304a96373c46a699c5dd2fec534dad181623ed370b9c88e307ebe1fec1226b66c138bd6498b14c8e12a7d728f07100e5f2d6fc45cb4f31d06558b29469a966ccae9abf1f1a4b848f4cd2f94ba626c0a4fabf53f8b1102145363f433efb07ed6481cacc82481be5906166494c630b0437e654be09922d66fbdfa32ae4a0eab42a3c0b2cbd78481afd0bfeec89e9f59a1b0ebb82bdcec758533e140b339bb9ba9785720a32379b7aba68271e080eb7904add7128f33efd8cd868f84094218a0c430fece5a25ef67c5dc844e60488beeaad90bde3ff74278e99360b1e9455440099fdb6ea465d13f350e5f2e77249a9cefc127432497ff9c626b0ed3a7129b848195cc3bf718fd0dd69a6995a1d0f9ceab291fddb677dbc95a30a9fb91a9150bc7880f8a3bd2ceb3b79bf6c58bbb9f513ad0bef238a9b5b7f04408b2a9ac7e1f6cb93e1dd80186b2f504ab08a2d44eed56a8c062f59f5eb9920f7ecb0e51a3bbb99b0ded41eb023be6d86514551b01b6a4fadb6790f4fdcef8d94c8a18bd422c59acd53344febd3994e2d5ab85b8f0aa7412f004dc075c1fbe21a1c317b1c06b3d991a2ac9d1e9db749cccb07a56387b47bcbb308ede3596e1e1bd477053ed950e3db952b61de11be24ac072b174ff012f53f2ee32f52e4a4034757cbdc0648b384e60d908e0dd1f8dba8ca29f435590132f559c48ab37e8f178d6516313b010bb277a6cd088341f8fd35620982b88283fbadbbc2656bb5923f5998744a8d9ab80b9e5e3c4f5e3e0d5f417bbce8e6fb1682778b9471af39d9653258b8b70db17b783a6291568fc9a0be012d3d6a3c871c14f8d6b81108d9f1f13ee898f7700ae273740fdaef3ac549ac8069f10a145fcb493482ad77d6032d4e80d30441125e4ceeae09ef39a06b79ca41d367a7d8f3f57c5255a2bfb69809209a43f15af92cdb0e8705e92781dcdefb4c71ebe5b2e62c75d48faf20c899606f6e4d8e784ea93aecd6c87d08a27cc47dbfe25a9164d495597bbee61d452532f57c241d92bd7ed6c4c8a6f864518078d3436114eafb2695282910685702a3e427c624450a8eb14617ad86db16cf79d600cce6ac15d4c98800dba6dadbfa90dcc454e9e28f2c4dc6cf7fd3e9eed577bcfdd722c3e809b7d31c57b889fc4af9837cf6f823b455aa629b54f438d6248d619df55ed66ac643fdee96908d21109d063da60d7b32009be7159c44dc1b0387f15f84014fdedb0af8343c308066647d66ef7f21de6a449177cd1d15e0c271334b8bcf1fb0c46fe33f40c7003dde2bdeb369192f2f7b6174a93f5ca28f1dfb5a143a38caffae2d4099ae03564710df0af3502c905839244a12b8c7c13f46ee68e412d1a2104d80bf441ecfa5b3cbcc43f64618b194c91ca7bd61f0dc23a9d0838767adca5b8cf99d5374d791127791ea9ea70ea5d3db05596b69e1b082f0c5bf1d421b0b1d6c3a80c3c60477613e08504a82f8105cd3d8ecc1a888aa8b6012c74776a819ae30856c38eb995a741ac8785bdc834a28ff2dcb10bcfb54d12361d0f3a55f84160438ce886397d74c6320fd79e4f71f28412ca730ea046abc5e0c7a3314ff54eb224d037ee8e8fdeff2ad2efdb9eb7d38a669baf93d87a0a02d464285d79bf70cd8bef4a682754ae694c399e2442387d368f455a4854f80f82b7f33be1ebb113bc8362d0a74fd06236ebaa00d9b5b93ec4e73c346cb4d63dc6e9761e6527f2b07b1a443dca02fa4573b2c90268bf8db0e1b8c628b1657176614eb30037a88057804c16b1dbffd9cd80c2d0ca9290a934adc51a499b33ce2bd5661e4d191d32a30d00848cef27a801a83012dc14babfa6a69c0cb369aed1e81a0046c419790fd07c8d018d278dcc2bb1804fe9bc707a3a9befcd31b01dd62a89a8d5e89a16477de02c9a3ce055daaa52b3de5ad5bfe2323fc9c4ba1001a2a8e9154548204e65d6c6067a00ad79b040855085940f6f83776b6ab44f0792f57874736a32d4ec3e926c21b34347d22f1a4e310caa3f2e7034c96c5606e63ac755ad93701bbeb216e28c1c37afb4a26229369490eab48fb155c545bfafe667638ea0adfb26578d585b6d3876c9d5e3492fb6af33ea2621b7fac6ebb839af7cd1215aa7f078755bca47fab16c664a71b3a5895af7afdd4dd89f9a787397ed11f1c412163548df2ee4f58ce946f44d3d24b43936bd8015e974a1e2c9fe25c8cbb71228d42030b1d403f5973c1b7438e59e1836416a9cd31e353d73a2c9dfeaf70811192c3b71a0f20a4a52565886a4a7eff70b2f58c1daf2ff000000000000000000000000000000060f17212628"}],     // [{ tip_id, region, public_key, dedup_hash, vp_signature }] — embedded by seed
-  genesis_ring_signatures: [], // [signature_hex] — one per identity registration tx, same order as genesis_ring
-
-  // Merkle root of the initial dedup registry (empty at genesis)
-  initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
-
   notes: "TIP Protocol Genesis Block. This is the immutable foundation of the Trust Identity Protocol network. Once this block is committed to the DAG, its hash anchors every subsequent transaction.",
+  founding_vp: GENESIS_DOC.founding_vp,
+  founding_node: GENESIS_DOC.founding_node,
+  genesis_ring: GENESIS_DOC.genesis_ring,
+  genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
+  protocol_constants: PROTOCOL_CONSTANTS,
 });
 
-// ─── Genesis hash (chain anchor) ─────────────────────────────────────────────
+// Commits to the whole founding record, including the height-0 params. Those are
+// frozen, so genesis_hash stays stable; live param changes go through governance
+// (the protocol_params table / state root), not this payload.
 function computeGenesisHash(payload) {
   return shake256(canonicalJson(payload));
 }
@@ -516,8 +115,10 @@ const GENESIS_TX_ID = computeTxId(GENESIS_TX);
 
 // Pre-computed signatures from seed script (founding VP signs both bootstrap txs).
 // Placeholder until seed runs — seed replaces these with real ML-DSA-65 signatures.
-let GENESIS_TX_SIGNATURE = "4c7e3e14cdd2270da1e8043951c5a117383c5e28e58f77a6a0d24058220a19ef26658fa722384d9ebf9929f9a36669d03d046f5181e473d26c69fd8eaf4cc9ed468159301fb7dcc98d547ba701317a285581f9c6d3aa590fbef40d9eab0f8efbef86003c3cc92501b862c976ff7ec1d853f2a914fe934add08fca182eba844d06757f38940403783a74e33a8a256987a7089411a55d0368c66a5dd29c3ca2936ca3304e8b2a20c572356c420ce21a42c8f8cbfdb940e82a9a7b6463e449a83e082e07d0f9b0d6bc456e8bf8c797329088988afdda5e7109e1121b8902302401884cfdae1889968a78f1f616a088ab483705f92b7a4bf40224f766f8199bcf8875819cc44e0b8a0d5db272ae823a8128350f4943628ed113025ccfa29a48ad77a62dfebf11e0bcbae7e721aa2b8606752a3a1fd40a1aee3afef133fd772ce01206cbef9b9d303975bda16379f4acfe9dd29410876f254a166423d8e5370b7536d422f9a09b2d4d34f3fe6f4be331cbda89bdbb6f3a0937a9db00422bced3e15ff8578eabb8aa27a3f7b771fc0c7620206123255d328ff07fa3339760a4a8b6688b930996d7ef4033a47cd11aa34bc4fc3b1ebfe42b7b2669d9ecb1b08e4af7466df5f4e1c645877ec60d4dcee93d9b6d708e57412001618dee6105a61b02638dcddfad1b2b7428898fea7ae664f52cd545a43fdb0564770c34e71c2ae85ed0744af65dfc72992efdddabcaeef34576829d6721a9f9594ba186a57d649e1dd052023663de88ec978c063f8020cbca17b3d50b2787797d25d6e5bd655cdb860195393bd425f87d2a1d07cb2b4e973704a6ab0dd0d275ec43d72eb646b0383c0398ccd00b27c9c08279a7075c555f5a2f7e05cbb328fc4d800c744cf435d25231975cec7f65e5db61945259371ac84bdddd39c143ef54e6a355563533e87e46c1f1d8314932f704cb8b8cf2269ba630de86fc501ad2ed4d3d73dd60b536a7997404d4ccb82b4d9b3b503ce6bc0b8d6c92fa5c5362595cfe7d55add65f0d6b3568efc92886ff774aa5572721ca787f045156fc33fcba4dc0ff45d09251d2eca8728885ac4507e62937d06c3a636d5ec3a642774696dfcfcbd4ba4ae4f745ec5c0a1af4df92b9e96267178016023b925fcbdeda52950698507b163f11766b92215ed17237a54b664f1272e2233712ffe2e295ad47ba21f19942c31e4b6b48aecc9100d480d273ac8ba1a2220bff311baf493088a229cc3f39810b324a133ecfcd2339ddfb69f774adf2f1cbad7c091ff8fa7314e57bf0043499f3cd3b24e2b15da6439c1893e2b56f3328b30b4353f9c9c3ca7f6c6803b10028d22d3989684aee6be353e034d26e2a0d4c65f3bf306c7f6422c4d1f12a6ea4539b420c4f469972717a616791c7f038d20cff8a90c17416ba5b2ff81562ddc3f25f0ae4ed4577b880245d352fd6af61f0d7a0a42d349f819ca6e0cbf375ed59b5ba3a9caeb2c9ddc5e0dcd94229f32ee51d4ab00eeb639822dc5cd3a2f87b031951197fa3f12d2100ce83aa661d0076528f57a3147277492ccae2bc2aed766f4e7a06d8dec72a4b3841a49faa4785c71862c7f83f43693d5641ecafb824ba339f9a7e6f9614253fa635ded962afa84211aaf531c992baee982c46370beda94168d75be1456189bd760109a8090bdd3dbcb1aae8f54dabe2317013bedcf74427504b5639179a9b47b425721cf2968cc52f1912630d20f402736cab77af6dcc6ef79ee50a0f51c58d20b2fb6750f8fe2f19c6946a193abce74697f480e6b5587effb5567a7a830b58a20b4b625b97af06100c084b3ec683fa7755c711696b931581543410ab9d93e32372bdac0140e991e09f1a6a3e2e459cb90ceb5fa46948b1c9a4285a3569d9fe642817fdc70777609504c6210c5cb2fbbcc96818a91941931ab669d6c28ee8f908019d62486510de27841ab8f62adb3ebac5d4df5f753e9210a168e58933c49dcda435e4d640aa36ff478985386309d064c7f33972bb8200b5592cbbead5e1a0bacc0de95dd3a59ec80faf25375f4d9f07089203d704359da96b6186777a61e07922e0b42c64f0434c89a5699e7c1f31ea41f7f5ae90da0debd939356b00d87c7846027fc38e6d9e20e388563e6eac37c48c5ab8e3121de37e16cfe1754ad36c44a2cebef29dabdba531c7078d0c9991a0044f419432b383a5505903bff6afaf4e18bd0894261ee2ff5a0896eed261bceda0849cbf8999235ee8dc8a7a0ce2bbba14b32bdc8d8a8a57ce07c55e65bc13a211f34b2f3343469a5b00e1b38d5ce0f52256aefbbac3d5f53feab3169beda9f0ba74a7486ad5a646e3dbb40faf673e28d5508c0fe625bbc3ce9373545ea2d7e69068bacde827e15eead5aef4e891091ee9a722961bff52e423260ccf6b933f4024544b8669998f3bebb10216982b5c0acfe2eb1c5a1aa2ec350618c9a1d0fe4c1bbc89fd6a83d6a0b0171fcdafe281c1af5d986b65c2799f16a33803c850d028adc3d1f9f80595651609bcda76b99faeeb79318c49518c4767d72a65abde17cbf8513158cb8a6413b3b0b162676648d62d9045d02cf3901c01bc098b4e90adfe2c8baf66a9c239067f30fc5844245ecc0056e26f50b777d47616a7dec4cb3616a83ee599ca972dc8c239543515060420b13f9759a75b4d3e1aa5cd11affd01e96d2ea873e28411ea02de1de2e83a52e6a91716a5e8b2085c42af40977b71b87115c2f8a8a3450632d2c1f3e68727131c0b00d40ba7362ed3ea38cbe933e0492dbafa45d16dc52c722e843f9683253d4ab1e5068aa2f23506a9fa95c2fd9df7a94e9d924b11a97cbac7d8a40b1cd56407b575fefe8cb34afbd29b0419cae5e51ace674d1502251243f61ab42ed0c132fd970e6e94fb3d7e5c9c362fec54a042eb618ce932ce879a38e5d8d620ba30b8a28bb112de64424e7164b2a84c27e094cf995b94008ebb0c31c4b0f7b534a88c808b437129b46e717be13cd661eb938c420ee335f54ccb2a6e291587da0fedc74753e2e17fa5bd6e68fea6a19d45cd9221c6790ea5b636834974293a05c11d82c777f1c63e5eae235d1c1b64dc455942c5978464f36d6e83e19e4199e7e64437082c76264d61be3b61a2ff26f4b504594e9f599aa353cc6367d55aa86d0d8e89b25172e711220f128abe22391a22a71543a7b966fbb61bb1e51040c1c120723622d2e5903ce7153e7c31b3afb939b8406c40db709f28e1390ed32917e1a6d0107c5518458da8cec014fd30cf65d4e5be24225f0075afcb8452d7c0aae16d3e9b929d53342ec70af3f548c9c24834eb023e8597943d9a3fcf778ae9c36951b0d9682d1c040bf277e1fe7afd0b4591c14aac8af27219699cda6ea0e32ff724762c6003ba0146d4b7265d34d59da3131b3c72c425942a673ec86c727684895e1d1744e472dd235e3dc4d7fe0fcc01aa2d33104fd952506481a16566c6655a8bede38a401e40c630b42b8ee01fc21a4a937a656f4c56535b6a649f2ac19c36b3fa80a30299cc21a5d2e40fb3661c89a0e30ef4f1f815d8ece0aaa3d995bae4267d8f42d2b63605a8cc4447aee4c25c0ef09f8ccd17cac0beb7df03598cd8df5997f8ed5bac2b4b27a452817f905750131c9cc53e5110a096d20ecd7dfad844ffacc0f5d48e61cd955a3e716047231c0d98a7ff25b471b48710503c3fa1b8baa9355e9ebde1a6115f4318f65c93234e5c02df00706bf81d03a681dfcdb6f02277a12637ad0786045c3e0116c718b163dce5ec1b4316da03e0266eb042edc1aadb9e4c7843bfaa5ee208f85c70ea9ccfbd05641c85333c2c1cf7c4f7e256aaa419bcfaa25e01a072a236d4c5ad0a6c74a67af56cc3c5d6b90bfe9e16d0511f31bef7cf6c9cccdf72d84f1e4ee11bb19923c487cf60497bddad762b312eaf8029e1dce2e818ac08f6df3cd83b7cf3928228b94d09a7d120b98b3f42dfff2eda07e6a7d920e92336f64b86cd584a6a154a24097776cf6c478cc45ecd1eb017593d6df0df2982ef7f882eeafcfa334ddb8ff5d2b18572d122da4c7e0499ba2b938a4fce939db708b7ffe242aa71bb5182f7f64671fe55d71a43f03654e45f3a09063a941341a0efbf1912f2d35764f08903f36443a8465d052cb22641ccffa67a09565f38c9c915db80f7ca8e1b3764c036a3328c40ea3c1c8c9407b1c226734cc0a10f148b1a1f15915777185dc909225c3bc113c51eb0e351b20582e639c967b8a278f2da3dda554758af683c0eccf01ec909101b6185a386cefd443d3811a6b1969a65816b66999c616459fd3306e91c96ef29e66b0823a598db0c5970913dd467df473b5273987008f1a0b0c50aedc64f1510095616a51f64254b364a1ccafd33ed41ec22f8b8708f4d667c85f31c8a71d4bbc43473e1ea570c3f1752058eadd47d03ed08116ce230a3aa7139340978c453ce63c285a55af26269073ae43b729aa9ebb303b4bd8abc470f7256a354da3459dd2e5a4138daf9b07069aa99cf5b5c966cca36b7ac51243cd47288b64739f3e7b4d4071f3629f7446882bd5c6beb441ea4004bf7c89a1fa1f328bf706d823548b436dc22e8087be19276894a5ace922707a878ed9ed65b1c5ee282caad8072d3f535f7c9da9000000000000000000000000000000000000000000040b12161a22";
-let GENESIS_VP_TX_SIGNATURE = "c0b1f5d668e24f2c67735d0f7d9070fffe49f7accdd38a7473167ed9a02bc6b5b497b03e094a1fb9515218c545f02d4fa5443b36463feda5b672d199639781db0e83b6a762cf99902fa40bd406c26b7fe654003d8033ae4c34608d7fbcbc825d29f80db4730836f9e936bca8ed04addc860e8d52702789fe5de326c871365063785cb8e7d4622683ec6d6377dbedb728fb840b9dffce05d69dbc49e83cfa3fb6bcd325e157f3882497a1ba6a2b196aa5edd913e9c161955daf476a307d9b626f47e05891c7928f708634984e34197c91752958db7fa72bcacdb4d8ee613951f260b249fcd4a99379b6a2fc9d508cde0f1f4ee780aab5ea9adddfd38307a156f5fec6df2c6bc635d59ba994bcd59f5c9c6e3ce8c3bba58c98dec1b63b0de1508bce35f2d2333dfe4e2bdc4b04eae784f8cc628fdd49cd55812ddd16ab998628a77dce50b4788851d9616fea52314e31cd13aa7fb551dda29db2d03d0c97b8da51855618cc6b425cb690019e150ab26a7563f510b1ccf405bb6277fa8678bd96e9a1b894a9eac82659746f690dafa526e1f5837414aa5dcb9e515bd4986833ac90cf7ed0b533969c8a0b6de3a81fecf42e1b6b9786c2aaf762a4c48e3f5d8c235c2ec4d762f2b52dd2ff4ed50346b17eae9e5c3e8bb1ddacdcafca89335a46237c0fe351e892217f63d8780d3c6bfd5674c4349c0e1016460e20756a4c89179ad601c518efaf8819dc6eddd81a9b819f57ded77f38fbb0974f267ee86c682fc4541c1c8875e1ad6e9ccfced652769e908c19069967722e69e6abdb26cfb09310b476d49af1d76f7856eb30909a2ac13a4bbe92897503f7438e7c198c324bdbd3a62b1c6d70f1ace67d3a98c70e9be19ed10633f240d5e18f949327e6fa10202b29ae0cab34019c196b7e684b391ec71b0b04ffcd1c0d21d339f267555be3c618ecd4beeb599e36bb0b270b2db0bd4b44b969fc851e910d7f919956e6106a9e08dcc13777072bf752d6128b0e535ea22c3cbd6ff1911a76f3578732be70a26a2b6bc3bd95dde6fc33b5a6e938559edd06d6a75d19a66455e508a76a24c6b95b0186c3622bc05652aebda8df52398fdaa2b67286869a7f06f147dd48354483e0f7ab88c689e8436eee5260f3349d60e6f9b2a848490f0eb97627fbd5a14100f57e3255e870316ade3ad5119966d986d73c9f68501a03542f223228a17e8ff4c76648ff427203f715f1eb69ba7653e076c621bb407e7ec6df2baadf01b76cdfdddf83e6222e97b39fd8e7cd607e9aef2955f2801e951be1dc0ff67d01df30a02e645d0545ab6bccff69cae684188ab83334508867ed2ad3a272b7ca385e26e052deeb9a7796374ba56b4a307275bf2356d4287061dc7a363d16a0fcea74df1a8d06e4d11b96a38f0744dea9490bb447c9948bae97d3e219435a938b54d26f8c5e5345acb8abdb8a4edea3711002632786ea3130e52408e08ee703e9abb9ef2c69e6aa4a67b0d41daef361f9d955a8ff9aafeec7475c6e758501a0068d837313f3317b6de33afa355ab9500aa06e88c18e7f671e1595209c98062874980ed9cdfccef9cf7bc4b4259fdb4016b3dcf17d0e72db19034b3759966a442132f1d9d658f5d234aa4bc1e7a17d6911de74c1856e893ecdd830c1172bc3ca6f5dfa6c42e74602ca7d30a0855730d58262e3dbaf3062598a1b16e9da44f8eca9b5ada21d132f278f8c13684c25f474617c74e3e44f8dad2a4478ec6f1b769ec3db9790c3f5e31d03c2f1510f9c88be329d751f315067b2e22019464615de12da77a8f9bf1633095983fdc651399e00a0c258960248575ae82877d6943e84e4c6922d79d5f27933cd8d0455756d50a5fe9b158ec08734337967cb22aaecbc8c93e0f15c9f3949b3bcd7ce2db16b936500a955356d2db6b936690f1a32859008c5892ab1c1800b395733bf928959e53df1471dc8158d722855ecf7509f23a867c1189f0aafc03352dc5384602a78008d1e6330e5b7c6655cd25884d232f03a3f88e16994f5b1eaad5f82a630295e52cce75579745efed800c53f27838387aec367849cd63864237935d821a2da89f5db61fcb36aac852587ebbe57cb053fbd369adef2fd20e226610421d464ce189831afd32da8ad2a52f312b643591ad50f15437ce43b371e8c738635623a22252c0ffee1a7abfa145220a308d8d0ef22021db328501981b3097ff44fb72b2c065094af854dd55c9d06f406bb43ac7a3be508a649c2c412fc98057885bd515968d7623b37a7e365726a09818726ae3025aa444a14b2aa4cb16200c3b7257b1cc257155ded77915d45274dfc1cb0dde6fc3fb2fa479501c637700999756cc1367e3f177a6fd1e76e10344465e2baf465b472903755fd08f96bc8380759f81bec861fbceb0414bc9b6430f605c67a5a12c557d61a4f580b7a51bd5e6ba28921e03a2110c28a394254ba18a6dcb16a0e1609bba8b037fae559ccdf392a18b493e049e4952ab91fd41b2b88742189077bbbf33a468ca1088ec85bd1bb00877c60f40286efb4bd2c043a874b34f91f4f240d55642dffd8ca98ef05730b5f56df8642d35edbb7d86d460023dcf77762cc7c8b2008c106b8b89b8759b936abbe7a39924ac024a10039e2a13e205fb917e7b3574fc11dc39f5da31bc2390915f60d193da64b3e7c213f2fcd690239512e92dbfceb4c1a78c4a51d6d514a75afefc647adfbd9ab225980bee305f9e4b26e21d52d1b70e923cb0862a9304fd2acddbb70ec538b5d246c23a8f8b48d994779546eb77a374604e462742348f8d353a9037328e1523fd9762ac1fec3466fa38a63f9d936db4f7c4c22cb15de44bf7284401a3aa3ad32ddc1b7db90f40914e178b6dce6d8f48f57bebdfffab28abb2f6fdd2a97f7ce82a991c8fb6ddf3c2a3a47dd77f35fa46cdcda47b6fb390dc402468157ba4b283951fad6202bc56423d285a50600cc0b0016591593eca4ee4a53396cdcc9560a64ce95781d1727c01a578e2a79ce2062fcd509fc91c4840b8736990094b27015f3f23d2fc56708f13742dcd4939ba80d1023db073ee8df83ccf9bd0947b9accf3123cbe6d7391a3e1c336322d22add8c0cb10ff1bebc2bea6be1135c772b234947105cef0413dfc777ed3c28258e4414b20002f40860643e64c3e60f38bfebfa50238d052b1110d08256f73351c4f5f9255a52a9f9c51d161119e0bde7f0501781dec975112dbe5d027361e1680f4110d78bc71d6d5ed36af25d76372e219c99a0ed8eec0358792ef6c8dcb71bf4bf7c16a90c4b061e40ed8189f21bad55ba84e26e2895b0276a083521d642572a76d8c439d1d307cbb93fb56be82578cbdfbf4769c98979dc14b6c200695c952603fba61286d6c3344c5110c59cf32f0e9a9d1493a11d8009427de486fa4ee8c9efe8185b7ebd03321a232d40042a9188432a85bb400a453633651f01fc43ae8bc1b5eafea3dc49ee279fdb46212d040cb1102eb03a1799a85413e53b95059a437499dcdfcd9cc542df9b671c156f6deaaf6db9d254a76828547f2228d5fa0830af3484772bf5433feef5e3a6c137ea13d569f0ce02901e4229ca7112f752f956c7f198bd4dae4d080c37c8e329eb5e00ea3e3ee079899e1f4479375d14f7dcb7472a6f5f31a6ef4c9ca231ef7321319be77591df84c8899b19d8e71e30c827e13ec277e19573d73cb2aa4da7790c30b756ed6253a0e7a29adff8a71db6682105eb6b9a551f2ea8a95d3fb936a583e805a20e4aa414def1e41fd4bb32a7d1632369f65631d8585c4cb8db212822f624f31c0e73824ef2b21ae5a2ce98fdcade2e5af71d72fc317a6030bba22c7c077dc0760d4d1fd6724f8b563b4170584131e2e0c0c5e2c4d6b2721bc9e84ffee3c76ac1ab8b557a37913aaff6a6c6184a02c3ecc910bf4c246bf842a64b6534cc14ab1e6ec493c6c26bf1ba69b0abbfee1e90e1a814660ba5b765446533855bb8961c20237a69f264e913b8779f2b07d57937696df6813f5887262ac3e394d9e64a9628f19b1641381bf2f6e52cada6af8e2324dbe0b8a69199bc37be2c166b6925022604af2bbfb78aee2c9a2f55b5cf0b5bc5f3cfe351556eaa8c4020b3050d8a928a418a8ab5c1492e4686ca50e10ba6f8b9dcf7115ccce51f5f3ff2e6498bc94f146c8f8f02ff7073d9122f2aa101520e333810daf5c85af6b7a5b391603b5d0d1b8a0668679472818b3fd5267c0193deb2cc3a99fc46de699eae45becb9dc0814dc01dc89d4d7e42578b506928d8c2e5065d251071cd3d7a18d73166eb0c3ab9b3193021807d0a22a7a01150dabf23cb20e222d2606607e3e66d4411b6949b2bfb75587c3545ce91a1d2b1f02f8d1d5762298e989c7ff9591227c1081be8ac0c83cb749db3827dbf868f23a8b790ffabc6bf9ab1f5d92ba32c1e662b347d886872320f6367ab745ac533af6121485016a5972d03a8703289fde4be49e161f3e1ce8611b9bb4c3d0bdbc0c254aa0e43f4d7f8b717fca57bfc7e3d9a5873c225fb40607676519372b8dd3f09a35e55cedbcba0ab256e803915d3769a8d921e1082c35056dd9f86a1c6fe5c3e143f4f6be9ecf731415d7291aed7f7041014295c7b97e92b384865668da8b720c0000c29485592b9e80000000000000000000000000000070f171f2129";
+// Bootstrap-tx signatures (founding VP signs both genesis txs). Read from
+// genesis.json; the mint regenerates them there whenever the payload changes.
+let GENESIS_TX_SIGNATURE = GENESIS_DOC.genesis_tx_signature || "";
+let GENESIS_VP_TX_SIGNATURE = GENESIS_DOC.genesis_vp_tx_signature || "";
 
 // ─── Load or create genesis block ────────────────────────────────────────────
 
@@ -557,7 +158,6 @@ function buildGenesisBlock(genesisDataDir, signingKey) {
   const block = {
     ...GENESIS_PAYLOAD,
     genesis_hash: GENESIS_HASH,
-    canonical_hash: shake256(canonicalJson(GENESIS_PAYLOAD)),
     signed_at: nowMs(),
     signer_public_key: devKey.publicKey,
     // Deterministic so the auto-generated dev genesis is reproducible across
