@@ -64,7 +64,7 @@ const {
   canonicalJson,
 } = require("../shared/crypto");
 
-const { TX_TYPES, ORIGIN, ORIGIN_LABELS, PROTOCOL } = require("../shared/constants");
+const { TX_TYPES, PROTOCOL } = require("../shared/constants");
 const PC = require("../shared/protocol-constants");
 const {
   GENESIS_TX_ID,
@@ -759,7 +759,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 }
 
 // ─── Step 7: Full DAG verification ────────────────────────────────────────────
-async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content) {
+async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities) {
   head("STEP 6: DAG State Verification");
 
   const checks = [];
@@ -810,8 +810,8 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
     const txCount = _dag.count();
     checks.push({
       name: "DAG transaction count",
-      pass: txCount >= 2 + identities.length + content.length,
-      detail: `${txCount} txs (expected >= ${2 + identities.length + content.length})`,
+      pass: txCount >= 2 + identities.length,
+      detail: `${txCount} txs (expected >= ${2 + identities.length})`,
     });
 
     // Verify each identity exists in DAG
@@ -824,18 +824,6 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
       name: "Identities in DAG",
       pass: idOk === identities.length,
       detail: `${idOk} / ${identities.length}`,
-    });
-
-    // Verify each content exists in DAG
-    let ctOk = 0;
-    for (const c of content) {
-      const rec = _dag.getContent(c.ctid);
-      if (rec) ctOk++;
-    }
-    checks.push({
-      name: "Content in DAG",
-      pass: ctOk === content.length,
-      detail: `${ctOk} / ${content.length}`,
     });
 
     // Verify tx_ids are content-addressed
@@ -864,14 +852,6 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
     name: "TIP-ID format valid",
     pass: badIds.length === 0,
     detail: badIds.length === 0 ? "All valid" : `Invalid: ${badIds.map(i => i.tip_id).join(", ")}`,
-  });
-
-  // CTID format check
-  const badCtids = content.filter(c => c.ctid && !/^tip:\/\/c\/(OH|AA|AG|MX)-/.test(c.ctid));
-  checks.push({
-    name: "CTID format valid",
-    pass: badCtids.length === 0,
-    detail: badCtids.length === 0 ? "All valid" : `Invalid: ${badCtids.map(c => c.ctid).join(", ")}`,
   });
 
   // Node health check (only in API mode)
@@ -907,7 +887,7 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, con
 }
 
 // ─── Step 8: Write seed output ────────────────────────────────────────────────
-async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content, seedNode) {
+async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, seedNode) {
   head("STEP 7: Writing Seed Output");
 
   // Observer-facing summary. Plural arrays everywhere so n=1 today and
@@ -951,13 +931,6 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, co
       score: i.score,
       registered_at: i.registered_at,
       ...(i.creator_name ? { creator_name: i.creator_name } : {}),
-    })),
-    sample_content: content.map(c => ({
-      origin: c.origin,
-      origin_label: ORIGIN_LABELS[c.origin],
-      title: c.title,
-      ctid: c.ctid,
-      status: c.status,
     })),
   };
 
@@ -1115,14 +1088,11 @@ async function main() {
     // Step 4: Genesis Ring
     const identities = await createGenesisRing(vpRecord, vpKeypair);
 
-    // Genesis is block-only — no sample content is seeded.
-    const content = [];
-
     // Step 5: Verification
-    const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities, content);
+    const allPass = await verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities);
 
     // Step 7: Write output
-    const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, content, seedNode);
+    const output = await writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, seedNode);
 
     // ── Final summary ────────────────────────────────────────────────────────
     head("SEED COMPLETE");
