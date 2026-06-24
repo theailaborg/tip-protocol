@@ -61,11 +61,6 @@ const GENESIS_DOC = _loadGenesisJson("../../genesis-data/genesis.json");
 const GENESIS_CONFIG = _loadGenesisJson("../../genesis-data/genesis-config.json");
 
 const GENESIS_PAYLOAD = Object.freeze({
-  founding_vp: GENESIS_DOC.founding_vp,
-  founding_node: GENESIS_DOC.founding_node,
-  genesis_ring: GENESIS_DOC.genesis_ring,
-  genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
-  genesis_ring_signatures: [],
   version: "2",
   protocol: {
     name: PROTOCOL.name,
@@ -77,8 +72,11 @@ const GENESIS_PAYLOAD = Object.freeze({
     issuer: PROTOCOL.issuer,
     issuer_url: PROTOCOL.issuerUrl,
   },
-  initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
   notes: "TIP Protocol Genesis Block. This is the immutable foundation of the Trust Identity Protocol network. Once this block is committed to the DAG, its hash anchors every subsequent transaction.",
+  founding_vp: GENESIS_DOC.founding_vp,
+  founding_node: GENESIS_DOC.founding_node,
+  genesis_ring: GENESIS_DOC.genesis_ring,
+  genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
   protocol_constants: GENESIS_CONFIG.protocol_constants,
 });
 
@@ -147,7 +145,6 @@ function buildGenesisBlock(genesisDataDir, signingKey) {
   const block = {
     ...GENESIS_PAYLOAD,
     genesis_hash: GENESIS_HASH,
-    canonical_hash: shake256(canonicalJson(GENESIS_PAYLOAD)),
     signed_at: nowMs(),
     signer_public_key: devKey.publicKey,
     // Deterministic so the auto-generated dev genesis is reproducible across
