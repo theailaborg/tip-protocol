@@ -199,8 +199,10 @@ describe("prescan-review-trigger — SLA auto-recuse", () => {
     expect(tx.data.node_id).toBe(NODE_ID);
     expect(tx.data.review_id).toBe("rv_recuse_me");
     expect(tx.data.recusal_reason).toBe("sla_expired");
-    // Node-signed, so no data.signature / data.reviewer_tip_id.
-    expect(tx.data.reviewer_tip_id).toBeUndefined();
+    // Node-signed (no data.signature), but carries reviewer_tip_id + creator_tip_id
+    // for activity-feed attribution (#40) — the recused reviewer + creator see it.
+    expect(tx.data.reviewer_tip_id).toBe(REVIEWER_1);
+    expect(tx.data.creator_tip_id).toBe(CREATOR);
     expect(tx.data.signature).toBeUndefined();
     expect(typeof tx.signature).toBe("string");
   });

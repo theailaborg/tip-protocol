@@ -65,6 +65,8 @@ function subjectTipIds(tx) {
     case TX_TYPES.REVOKE_DEVICE:
     case TX_TYPES.KEY_ROTATED:
     case TX_TYPES.KEY_RECOVERY:
+    case TX_TYPES.UPDATE_PROFILE:
+    case TX_TYPES.BIND_DOMAIN:   // d.tip_id is the claimant identity
       return _clean([d.tip_id]);
 
     // ── Author actions on owned content ─────────────────────────────────
@@ -84,14 +86,25 @@ function subjectTipIds(tx) {
     case TX_TYPES.JURY_SUMMONS:
       return _clean([d.juror_tip_id]);
 
+    // ── Multi-party: prescan reviews ────────────────────────────────────
+    // A reviewer reviews a creator's content; both see the review lifecycle.
+    case TX_TYPES.PRESCAN_REVIEW_TRIGGERED:
+      return _clean([d.assigned_reviewer_tip_id, d.creator_tip_id]);
+    case TX_TYPES.PRESCAN_REVIEW_DISMISSED:
+    case TX_TYPES.PRESCAN_REVIEW_CONFIRMED:
+    case TX_TYPES.PRESCAN_REVIEW_RECUSED:
+      // creator_tip_id embedded by review-service.js so the creator also sees
+      // the verdict on their content, not just the reviewer's own action.
+      return _clean([d.reviewer_tip_id, d.creator_tip_id]);
+
     // ── Multi-party: disputes & appeals (#40) ───────────────────────────
     // Both parties see the whole lifecycle, not just their own action.
     case TX_TYPES.CONTENT_DISPUTED:
-      // Auto-cascade disputes (REVOKE_VP fallout / reviewer escalation) have
-      // no human disputer — leave them unattributed so they don't pollute a
-      // feed. (#40 preserves this.)
-      if (d.auto) return [];
-      return _clean([d.disputer_tip_id, d.author_tip_id]);
+      // The author ALWAYS sees a dispute on their content. The disputer sees it
+      // too: a human disputer for user-filed disputes, or for auto-cascade the
+      // reviewer escalation (disputer_tip_id) / escalating creator
+      // (escalated_by_tip_id). Window-expiry auto-disputes embed author_tip_id.
+      return _clean([d.disputer_tip_id, d.author_tip_id, d.escalated_by_tip_id]);
 
     case TX_TYPES.ADJUDICATION_RESULT:
       // The author being adjudicated AND the disputer who filed it both see
@@ -112,13 +125,20 @@ function subjectTipIds(tx) {
       // author/disputer embedded on every APPEAL_RESULT path by jury.js (#40).
       return _clean([d.author_tip_id, d.disputer_tip_id]);
 
-    // ── No individual owner ─────────────────────────────────────────────
-    // VP_REGISTERED / NODE_REGISTERED are about organizations.
-    // AI_CLASSIFIER_RESULT is system-generated, ties to ctid only.
+    // ── No individual owner — org / system / consensus level ────────────
+    // VP_*/NODE_* are about organizations; AI_CLASSIFIER_RESULT and
+    // PRESCAN_COMPLETED are system results tied to a ctid; INTEREST_REGISTERED
+    // is governance; COMMITTEE_ROTATION is consensus; UNBIND_DOMAIN is
+    // node-emitted on revocation with no human party in its payload.
     case TX_TYPES.VP_REGISTERED:
+    case TX_TYPES.VP_SUSPENDED:
     case TX_TYPES.NODE_REGISTERED:
     case TX_TYPES.NODE_ENDPOINT_UPDATED:
     case TX_TYPES.AI_CLASSIFIER_RESULT:
+    case TX_TYPES.PRESCAN_COMPLETED:
+    case TX_TYPES.INTEREST_REGISTERED:
+    case TX_TYPES.COMMITTEE_ROTATION:
+    case TX_TYPES.UNBIND_DOMAIN:
       return [];
 
     default:

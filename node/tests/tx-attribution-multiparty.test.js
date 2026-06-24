@@ -6,7 +6,7 @@
  *
  *   1. subjectTipIds(tx) — pure mapping returns all parties (deduped, primary
  *      actor first). Single-party txs return a 1-element array; org/system and
- *      auto-cascade txs return [].
+ *      auto-cascade disputes still surface to the author (their content).
  *   2. getTxsBySubject(tipId) — both the author's and the disputer's lookup
  *      return the whole lifecycle, proven on SQLiteStore and MemoryStore (the
  *      Knex read path delegates to the MemoryStore mirror).
@@ -33,9 +33,13 @@ describe("subjectTipIds — multi-party mappings (#40)", () => {
     expect(subjectTipIds({ tx_type: TX_TYPES.CONTENT_DISPUTED, data: { disputer_tip_id: DISPUTER, author_tip_id: AUTHOR } }))
       .toEqual([DISPUTER, AUTHOR]);
   });
-  test("CONTENT_DISPUTED (auto-cascade) → [] (still unattributed)", () => {
+  test("CONTENT_DISPUTED (auto-cascade, window-expiry) → [author] (author sees the dispute on their content)", () => {
     expect(subjectTipIds({ tx_type: TX_TYPES.CONTENT_DISPUTED, data: { auto: true, author_tip_id: AUTHOR } }))
-      .toEqual([]);
+      .toEqual([AUTHOR]);
+  });
+  test("CONTENT_DISPUTED (auto-cascade, reviewer escalation) → [reviewer-disputer, escalating author]", () => {
+    expect(subjectTipIds({ tx_type: TX_TYPES.CONTENT_DISPUTED, data: { auto: true, disputer_tip_id: DISPUTER, escalated_by_tip_id: AUTHOR } }))
+      .toEqual([DISPUTER, AUTHOR]);
   });
   test("ADJUDICATION_RESULT → [author, disputer] (disputer now sees the verdict)", () => {
     expect(subjectTipIds({ tx_type: TX_TYPES.ADJUDICATION_RESULT, data: { author_tip_id: AUTHOR, disputer_tip_id: DISPUTER } }))
@@ -95,14 +99,87 @@ describe.each(STORES)("getTxsBySubject both-party lifecycle — %s (#40)", (_nam
   test("disputer sees the dispute, the verdict AND the appeal result", () => {
     expect(ids(DISPUTER)).toEqual(["adj1", "apres1", "disp1"]);
   });
-  test("author sees the dispute filed against them, the verdict AND the appeal result", () => {
-    expect(ids(AUTHOR)).toEqual(["adj1", "apres1", "disp1"]);
+  test("author sees the dispute, the verdict, the appeal result AND the auto-cascade dispute on their content", () => {
+    expect(ids(AUTHOR)).toEqual(["adj1", "apres1", "auto1", "disp1"]);
   });
-  test("auto-cascade dispute is in NOBODY's feed", () => {
-    expect(ids(AUTHOR)).not.toContain("auto1");
+  test("auto-cascade dispute (no human disputer) is in the author's feed, not the disputer's", () => {
+    expect(ids(AUTHOR)).toContain("auto1");
     expect(ids(DISPUTER)).not.toContain("auto1");
   });
   test("an uninvolved party sees nothing", () => {
     expect(ids("tip://id/IN-stranger")).toEqual([]);
+  });
+});
+
+// ─── Completeness guard ──────────────────────────────────────────────────────
+// Every TX_TYPES value MUST be explicitly classified in subjectTipIds — a new
+// tx type that forgets attribution would silently fall through to [] and never
+// surface in any feed. The EXPECTED map is the single source of truth for which
+// parties each tx attributes to; multi-party types list all parties. The normal
+// (non-auto, user-filed) path is encoded here — auto/dedup variants are covered
+// by the targeted tests above.
+describe("subjectTipIds — completeness guard (every tx_type classified)", () => {
+  const EXPECTED = {
+    // Self-affecting (subject IS the tip_id)
+    [TX_TYPES.REGISTER_IDENTITY]: ["tip_id"],
+    [TX_TYPES.UPDATE_DEVICE_BINDING]: ["tip_id"],
+    [TX_TYPES.UPDATE_PROFILE]: ["tip_id"],
+    [TX_TYPES.LINK_PLATFORM]: ["tip_id"],
+    [TX_TYPES.UNLINK_PLATFORM]: ["tip_id"],
+    [TX_TYPES.KEY_ROTATED]: ["tip_id"],
+    [TX_TYPES.KEY_RECOVERY]: ["tip_id"],
+    [TX_TYPES.SCORE_UPDATE]: ["tip_id"],
+    [TX_TYPES.REVOKE_VOLUNTARY]: ["tip_id"],
+    [TX_TYPES.REVOKE_VP]: ["tip_id"],
+    [TX_TYPES.REVOKE_DECEASED]: ["tip_id"],
+    [TX_TYPES.REVOKE_DEVICE]: ["tip_id"],
+    [TX_TYPES.BIND_DOMAIN]: ["tip_id"],
+    // Author / actor single-party
+    [TX_TYPES.REGISTER_CONTENT]: ["signer_tip_id"],
+    [TX_TYPES.UPDATE_ORIGIN]: ["author_tip_id"],
+    [TX_TYPES.CONTENT_RETRACTED]: ["author_tip_id"],
+    [TX_TYPES.CONTENT_VERIFIED]: ["verifier_tip_id"],
+    [TX_TYPES.JURY_SUMMONS]: ["juror_tip_id"],
+    [TX_TYPES.JURY_VOTE_COMMIT]: ["juror_tip_id"],
+    [TX_TYPES.JURY_VOTE_REVEAL]: ["juror_tip_id"],
+    // Multi-party — prescan reviews
+    [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: ["assigned_reviewer_tip_id", "creator_tip_id"],
+    [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: ["reviewer_tip_id", "creator_tip_id"],
+    [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: ["reviewer_tip_id", "creator_tip_id"],
+    [TX_TYPES.PRESCAN_REVIEW_RECUSED]: ["reviewer_tip_id", "creator_tip_id"],
+    // Multi-party — disputes & appeals (#40)
+    [TX_TYPES.CONTENT_DISPUTED]: ["disputer_tip_id", "author_tip_id"],
+    [TX_TYPES.ADJUDICATION_RESULT]: ["author_tip_id", "disputer_tip_id"],
+    [TX_TYPES.APPEAL_FILED]: ["appellant_tip_id", "author_tip_id", "disputer_tip_id"],
+    [TX_TYPES.APPEAL_RESULT]: ["author_tip_id", "disputer_tip_id"],
+    // Org / system / consensus — no human party
+    [TX_TYPES.PRESCAN_COMPLETED]: [],
+    [TX_TYPES.UNBIND_DOMAIN]: [],
+    [TX_TYPES.AI_CLASSIFIER_RESULT]: [],
+    [TX_TYPES.VP_REGISTERED]: [],
+    [TX_TYPES.VP_SUSPENDED]: [],
+    [TX_TYPES.NODE_REGISTERED]: [],
+    [TX_TYPES.NODE_ENDPOINT_UPDATED]: [],
+    [TX_TYPES.INTEREST_REGISTERED]: [],
+    [TX_TYPES.COMMITTEE_ROTATION]: [],
+  };
+
+  const ALL_FIELDS = [
+    "tip_id", "signer_tip_id", "author_tip_id", "disputer_tip_id", "appellant_tip_id",
+    "verifier_tip_id", "juror_tip_id", "reviewer_tip_id", "assigned_reviewer_tip_id", "creator_tip_id",
+  ];
+
+  test("every TX_TYPES value is explicitly classified (no silent default)", () => {
+    const missing = Object.values(TX_TYPES).filter((t) => !(t in EXPECTED));
+    expect(missing).toEqual([]);
+  });
+
+  test("subjectTipIds returns exactly the expected parties for each tx type", () => {
+    for (const [type, fields] of Object.entries(EXPECTED)) {
+      const data = {};
+      for (const f of ALL_FIELDS) data[f] = `val:${f}`;   // unique value per field
+      const got = subjectTipIds({ tx_type: type, data });
+      expect(new Set(got)).toEqual(new Set(fields.map((f) => `val:${f}`)));
+    }
   });
 });

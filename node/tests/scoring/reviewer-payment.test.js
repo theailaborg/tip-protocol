@@ -195,11 +195,11 @@ describe("PRESCAN_REVIEW_DISMISSED → reviewer paired bonus", () => {
     fx.dag.setScore(reviewerTipId, 800, 0, 1767225600000);
     fx.dag.saveContent({
       ctid: CTID, origin_code: ORIGIN.OH, content_hash: "00",
-      author_tip_id: "tip://id/some-author", status: CONTENT_STATUS.PENDING_REVIEW,
+      author_tip_id: "tip://id/US-aaaaaaaaaaaaaaab", status: CONTENT_STATUS.PENDING_REVIEW,
       registered_at: 1767225600000, tx_id: "00",
     });
     fx.dag.savePrescanReview({
-      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: "tip://id/some-author",
+      review_id: REVIEW_ID, ctid: CTID, creator_tip_id: "tip://id/US-aaaaaaaaaaaaaaab",
       assigned_reviewer: reviewerTipId, triggered_at_round: 1,
       state: reviewState,
     });

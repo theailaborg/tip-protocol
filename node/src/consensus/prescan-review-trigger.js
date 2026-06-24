@@ -148,6 +148,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         const tx = _buildAutoDisputeTx({
           ctid: review.ctid,
           reviewId: review.review_id,
+          creatorTipId: review.creator_tip_id,
           suggestedOrigin: review.suggested_origin,
         });
 
@@ -182,7 +183,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     return signTransaction(txBody, _nodePrivateKey);
   }
 
-  function _buildAutoDisputeTx({ ctid, reviewId, suggestedOrigin }) {
+  function _buildAutoDisputeTx({ ctid, reviewId, creatorTipId, suggestedOrigin }) {
     const txBody = {
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp: nowMs(),
@@ -193,6 +194,9 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         auto: true,
         node_id: _myNodeId,
         source_review_id: reviewId,
+        // #40 — the author sees the auto-dispute on their content. Deterministic
+        // (review.creator_tip_id), so every node embeds the same value.
+        author_tip_id: creatorTipId,
         suggested_origin: suggestedOrigin || null,
       },
     };
@@ -221,7 +225,11 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
 
     for (const review of reviews) {
       try {
-        const tx = _buildAutoRecuseTx({ reviewId: review.review_id });
+        const tx = _buildAutoRecuseTx({
+          reviewId: review.review_id,
+          reviewerTipId: review.assigned_reviewer,
+          creatorTipId: review.creator_tip_id,
+        });
         try {
           submitTx(tx);
           log.info(`Auto-recuse proposed for review_id=${review.review_id} (assigned=${review.assigned_reviewer})`);
@@ -235,7 +243,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     }
   }
 
-  function _buildAutoRecuseTx({ reviewId }) {
+  function _buildAutoRecuseTx({ reviewId, reviewerTipId, creatorTipId }) {
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
@@ -244,6 +252,11 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         review_id: reviewId,
         auto: true,
         node_id: _myNodeId,
+        // #40 — the recused reviewer (+ creator) see the SLA recusal in their
+        // feed. Attribution only; the tx is still node-signed (no reviewer sig).
+        // Deterministic (from the review record), so every node embeds the same.
+        reviewer_tip_id: reviewerTipId,
+        creator_tip_id: creatorTipId,
         recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
       },
     };
