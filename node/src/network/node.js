@@ -21,7 +21,7 @@
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { shake256 } = require("../../../shared/crypto");
-const { GENESIS_CHAIN_ID, getGenesisHash, getProtocolParamsHash } = require("../genesis");
+const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
 const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
@@ -201,7 +201,6 @@ async function createNetworkNode(options = {}) {
     // label; two forks could share the same string. The hash can't collide
     // unless the entire genesis payload is identical. See issue #17.
     genesisHash: getGenesisHash(),
-    protocolParamsHash: getProtocolParamsHash(),
     handshakeProtocol: NETWORK.HANDSHAKE_PROTOCOL,
     handshakeTimeoutMs: CONSENSUS.HANDSHAKE_TIMEOUT_MS,
     authorizedPeers: _authorizedPeers,

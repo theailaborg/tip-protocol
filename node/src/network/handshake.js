@@ -38,20 +38,21 @@ const log = getLogger("tip.handshake");
  * and the signature. Peers with mismatched genesis are rejected even if
  * their chain_id label happens to match.
  */
-function createPayload(nodeId, nodePrivateKey, chainId, genesisHash, protocolParamsHash, getLatestRound) {
+function createPayload(nodeId, nodePrivateKey, chainId, genesisHash, getLatestRound) {
   const round = getLatestRound();
-  const payload = `${nodeId}:${round}:${chainId}:${genesisHash}:${protocolParamsHash}`;
+  const payload = `${nodeId}:${round}:${chainId}:${genesisHash}`;
   const signature = nodePrivateKey ? mldsaSign(payload, nodePrivateKey) : "";
-  return { nodeId, round, chainId, genesisHash, protocolParamsHash, signature };
+  return { nodeId, round, chainId, genesisHash, signature };
 }
 
 /**
  * Verify a peer's handshake signature against the node registry.
- * Rejects peers whose genesis_hash doesn't match ours — prevents joining
- * a forked network that happens to share our chain_id label.
+ * Rejects peers whose genesis_hash doesn't match ours: prevents joining a forked
+ * network, and (since genesis_hash commits to the founding params) a node on a
+ * divergent founding config.
  * @returns {{ valid: boolean, nodeId?: string, error?: string }}
  */
-function verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, peerProtocolParamsHash, chainId, genesisHash, protocolParamsHash, getNodeKey) {
+function verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, chainId, genesisHash, getNodeKey) {
   if (peerChainId !== chainId) {
     return { valid: false, error: `Chain ID mismatch: ${peerChainId} !== ${chainId}` };
   }
@@ -60,16 +61,12 @@ function verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHa
     return { valid: false, error: `Genesis hash mismatch: peer=${(peerGenesisHash || "").slice(0, 16)} ours=${genesisHash.slice(0, 16)}` };
   }
 
-  if (!peerProtocolParamsHash || peerProtocolParamsHash !== protocolParamsHash) {
-    return { valid: false, error: `Protocol params hash mismatch: peer=${(peerProtocolParamsHash || "").slice(0, 16)} ours=${protocolParamsHash.slice(0, 16)}` };
-  }
-
   const pubKey = getNodeKey(peerNodeId);
   if (!pubKey) {
     return { valid: false, error: `Node ${peerNodeId} not in registry` };
   }
 
-  const payload = `${peerNodeId}:${peerRound}:${peerChainId}:${peerGenesisHash}:${peerProtocolParamsHash}`;
+  const payload = `${peerNodeId}:${peerRound}:${peerChainId}:${peerGenesisHash}`;
   if (!mldsaVerify(payload, peerSignature, pubKey)) {
     return { valid: false, error: `Invalid signature from ${peerNodeId}` };
   }
@@ -106,10 +103,9 @@ async function handleIncoming({ stream, connection }, ctx) {
     const peerRound = Number(msg.latestRound || 0);
     const peerSignature = bytesToHex(msg.signature) || "";
     const peerGenesisHash = bytesToHex(msg.genesisHash) || "";
-    const peerProtocolParamsHash = bytesToHex(msg.protocolParamsHash) || "";
 
     // Verify against node registry + genesis anchor
-    const result = verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, peerProtocolParamsHash, ctx.chainId, ctx.genesisHash, ctx.protocolParamsHash, ctx.getNodeKey);
+    const result = verify(peerNodeId, peerChainId, peerRound, peerSignature, peerGenesisHash, ctx.chainId, ctx.genesisHash, ctx.getNodeKey);
 
     if (!result.valid) {
       log.warn(`Rejected from ${remotePeerId.slice(0, 12)}: ${result.error}`);
@@ -138,7 +134,7 @@ async function handleIncoming({ stream, connection }, ctx) {
     // list reflects our current authorized set + live connection addresses
     // at this moment; stale entries are omitted (peers we've lost
     // connection to don't make useful bootstrap hints).
-    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.protocolParamsHash, ctx.getLatestRound);
+    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
     const knownPeers = await buildKnownPeers(ctx.node, ctx.authorizedPeers, remotePeerId, ctx.peerIdFromString);
     const ack = encode("HandshakeAck", {
       nodeId: hs.nodeId,
@@ -147,7 +143,6 @@ async function handleIncoming({ stream, connection }, ctx) {
       syncNeeded: Math.abs(peerRound - hs.round) > 2,
       signature: hexToBytes(hs.signature),
       genesisHash: hexToBytes(hs.genesisHash),
-      protocolParamsHash: hexToBytes(hs.protocolParamsHash),
       knownPeers: knownPeers.map(kp => ({ nodeId: kp.node_id, multiaddrs: kp.multiaddrs })),
     });
 
@@ -197,7 +192,7 @@ async function initiate(remotePeerId, ctx) {
 
   try {
     // Send our handshake
-    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.protocolParamsHash, ctx.getLatestRound);
+    const hs = createPayload(ctx.nodeId, ctx.nodePrivateKey, ctx.chainId, ctx.genesisHash, ctx.getLatestRound);
     const msg = encode("Handshake", {
       nodeId: hs.nodeId,
       publicKey: Buffer.alloc(0), // not needed — registry has the key
@@ -207,7 +202,6 @@ async function initiate(remotePeerId, ctx) {
       chainId: hs.chainId,
       signature: hexToBytes(hs.signature),
       genesisHash: hexToBytes(hs.genesisHash),
-      protocolParamsHash: hexToBytes(hs.protocolParamsHash),
     });
 
     await stream.sink([msg]);
@@ -249,9 +243,8 @@ async function initiate(remotePeerId, ctx) {
     const peerRound = Number(ack.latestRound || 0);
     const peerSignature = bytesToHex(ack.signature) || "";
     const peerGenesisHash = bytesToHex(ack.genesisHash) || "";
-    const peerProtocolParamsHash = bytesToHex(ack.protocolParamsHash) || "";
 
-    const result = verify(peerNodeId, ctx.chainId, peerRound, peerSignature, peerGenesisHash, peerProtocolParamsHash, ctx.chainId, ctx.genesisHash, ctx.protocolParamsHash, ctx.getNodeKey);
+    const result = verify(peerNodeId, ctx.chainId, peerRound, peerSignature, peerGenesisHash, ctx.chainId, ctx.genesisHash, ctx.getNodeKey);
     await stream.close();
 
     if (!result.valid) {

@@ -435,7 +435,6 @@ async function mintGenesisBlock(vpKeypair) {
     genesis_tx_signature: existing.genesis_tx_signature,
     genesis_vp_tx_signature: existing.genesis_vp_tx_signature,
     protocol_constants: updatedPayload.protocol_constants,
-    origin_categories: updatedPayload.origin_categories,
   };
 
   fs.writeFileSync(GENESIS_FILE, JSON.stringify(genesisBlock, null, 2) + "\n");

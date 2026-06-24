@@ -241,9 +241,8 @@ message Handshake {
   bytes merkle_root = 4;       // node's current Merkle root
   string protocol_version = 5; // e.g. "2.0.0"
   string chain_id = 6;         // human-readable label (e.g. "tip-mainnet-v2")
-  bytes signature = 7;         // signature over (node_id + latest_round + chain_id + genesis_hash + protocol_params_hash)
+  bytes signature = 7;         // signature over (node_id + latest_round + chain_id + genesis_hash)
   bytes genesis_hash = 8;      // SHAKE-256 hash of canonical genesis payload — cryptographic anchor
-  bytes protocol_params_hash = 9; // SHAKE-256 of protocol_constants only — forward-compat for Phase 2 governance
 }
 
 /**
@@ -278,7 +277,6 @@ message HandshakeAck {
   // dials each and runs TIP handshake against them — no env-var list
   // to maintain. Excludes the joiner itself and the responder.
   repeated KnownPeer known_peers = 8;
-  bytes protocol_params_hash = 9; // SHAKE-256 of protocol_constants only — forward-compat for Phase 2 governance
 }
 
 // ─── Sync-status Protocol (§28 anti-entropy) ─────────────────────────────────

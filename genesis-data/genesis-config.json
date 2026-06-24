@@ -263,23 +263,5 @@
       "canary_advisory_window_days": 30,
       "origin_grace_period_hours": 24
     }
-  },
-  "origin_categories": {
-    "OH": {
-      "label": "Original Human",
-      "color_hint": "blue"
-    },
-    "AA": {
-      "label": "AI-Assisted",
-      "color_hint": "purple"
-    },
-    "AG": {
-      "label": "AI-Generated",
-      "color_hint": "amber"
-    },
-    "MX": {
-      "label": "Mixed / Composite",
-      "color_hint": "gray"
-    }
   }
 }

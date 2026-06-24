@@ -80,24 +80,16 @@ const GENESIS_PAYLOAD = Object.freeze({
   initial_dedup_merkle_root: shake256("empty-dedup-registry-v2"),
   notes: "TIP Protocol Genesis Block. This is the immutable foundation of the Trust Identity Protocol network. Once this block is committed to the DAG, its hash anchors every subsequent transaction.",
   protocol_constants: GENESIS_CONFIG.protocol_constants,
-  origin_categories: GENESIS_CONFIG.origin_categories,
 });
 
-// Excludes protocol_constants + origin_categories: governable config is not chain
-// identity, so editing it must never rotate genesis_hash.
+// Commits to the whole founding record, including the height-0 params. Those are
+// frozen, so genesis_hash stays stable; live param changes go through governance
+// (the protocol_params table / state root), not this payload.
 function computeGenesisHash(payload) {
-  const { protocol_constants, origin_categories, ...anchor } = payload;
-  return shake256(canonicalJson(anchor));
+  return shake256(canonicalJson(payload));
 }
 
 const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
-
-// Hash of the FOUNDING params (height-0), not current ones, so the handshake can
-// compare a static value a not-yet-synced joiner already has. Catches a node on a
-// divergent genesis-config before peering; current params are agreed via state root.
-function getProtocolParamsHash() {
-  return shake256(canonicalJson(GENESIS_PAYLOAD.protocol_constants));
-}
 
 // ─── Content-addressed genesis tx ID ────────────────────────────────────────
 // Computed from the canonical form of the genesis tx, just like all other txs.
@@ -322,7 +314,6 @@ module.exports = {
   buildGenesisBlock,
   validateGenesisBlock,
   getGenesisHash,
-  getProtocolParamsHash,
   getChainId,
   getGenesisPayload,
   getFoundingVP,
