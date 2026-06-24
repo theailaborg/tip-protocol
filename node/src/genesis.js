@@ -48,7 +48,8 @@ const { log } = require("./logger");
 const GENESIS_CHAIN_ID = "tip-mainnet-v2";
 const GENESIS_VP_REGION = "US";
 
-// Minted anchor read from genesis.json, config from genesis-config.json. {} is
+// genesis.json is the minted, self-contained block the node reads at runtime.
+// genesis-config.json is a seed-time input (fresh-mint fallback only). {} is
 // tolerated during a fresh mint: seed writes the files, then re-requires.
 function _loadGenesisJson(rel) {
   try { return JSON.parse(fs.readFileSync(path.resolve(__dirname, rel), "utf8")); }
@@ -57,13 +58,18 @@ function _loadGenesisJson(rel) {
 const GENESIS_DOC = _loadGenesisJson("../../genesis-data/genesis.json");
 const GENESIS_CONFIG = _loadGenesisJson("../../genesis-data/genesis-config.json");
 
-// Chain-birth moment, single source: authored in genesis-config.json as the
-// BFT-time anchor. The genesis tx timestamp (content-addressed) and the BFT
-// round-1 floor are the same instant, so both read this one value.
-const GENESIS_TIMESTAMP = GENESIS_CONFIG.protocol_constants?.consensus?.bft_time_genesis_ms;
+// Runtime reads protocol_constants from the minted, self-contained genesis.json.
+// genesis-config.json is a seed-time input; the fallback fires only during a fresh
+// mint, before seed has written the params into genesis.json.
+const PROTOCOL_CONSTANTS = GENESIS_DOC.protocol_constants || GENESIS_CONFIG.protocol_constants;
+
+// Chain-birth moment: the BFT-time anchor. The genesis tx timestamp
+// (content-addressed) and the BFT round-1 floor are the same instant.
+const GENESIS_TIMESTAMP = PROTOCOL_CONSTANTS?.consensus?.bft_time_genesis_ms;
 if (typeof GENESIS_TIMESTAMP !== "number") {
   throw new Error(
-    "genesis-config.json: protocol_constants.consensus.bft_time_genesis_ms is required (chain genesis timestamp).",
+    "genesis protocol_constants.consensus.bft_time_genesis_ms is required (chain genesis timestamp). " +
+    "Run `npm run seed` to mint genesis.json.",
   );
 }
 
@@ -84,7 +90,7 @@ const GENESIS_PAYLOAD = Object.freeze({
   founding_node: GENESIS_DOC.founding_node,
   genesis_ring: GENESIS_DOC.genesis_ring,
   genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
-  protocol_constants: GENESIS_CONFIG.protocol_constants,
+  protocol_constants: PROTOCOL_CONSTANTS,
 });
 
 // Commits to the whole founding record, including the height-0 params. Those are

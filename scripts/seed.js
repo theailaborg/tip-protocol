@@ -116,6 +116,15 @@ function _patchGenesisJson(fields) {
   Object.keys(require.cache).forEach(k => { if (k.includes("genesis")) delete require.cache[k]; });
 }
 
+// Mirror the authored protocol_constants (genesis-config.json) into genesis.json
+// before the payload is read, so the minted block is self-contained and a re-seed
+// applies genesis-config edits. genesis.js reads them from genesis.json at runtime.
+function embedProtocolConstants() {
+  const cfg = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "genesis-config.json"), "utf8"));
+  if (!cfg.protocol_constants) throw new Error("genesis-config.json is missing protocol_constants");
+  _patchGenesisJson({ protocol_constants: cfg.protocol_constants });
+}
+
 // Founding roster (the authored source of truth); seed mints keys for these.
 const GENESIS_MEMBERS = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "genesis-members.json"), "utf8"));
 const FOUNDING_VP_DEF = GENESIS_MEMBERS.founding_vp;
@@ -1019,6 +1028,11 @@ async function main() {
   try {
     // Initialize post-quantum crypto libraries
     await initCrypto();
+
+    // Step 0: copy authored protocol_constants into genesis.json before any
+    // payload read, so the minted block is self-contained and edits to
+    // genesis-config.json take effect on re-seed.
+    embedProtocolConstants();
 
     // Step 1: Generate founding VP keypair and embed in genesis source files
     const vpKeypair = await embedFoundingVPKey();
