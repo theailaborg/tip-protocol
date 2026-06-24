@@ -63,9 +63,11 @@ COPY circuits/         ./circuits/
 COPY browser-extensio[n]/*.zip ./browser-extension/
 COPY package.json      ./package.json
 
-# Genesis state is bootstrapped from genesis.js constants by initDAG — no seed.db needed.
-# genesis.json is copied for hash verification / metadata only.
-COPY genesis-data/genesis.json ./genesis-data/genesis.json
+# Genesis is the source-of-truth DATA the node reads at boot: genesis.json is the
+# minted block; genesis-config.json holds protocol_constants (incl. the BFT-time
+# anchor genesis.js reads). Both are required for the node to start.
+COPY genesis-data/genesis.json        ./genesis-data/genesis.json
+COPY genesis-data/genesis-config.json ./genesis-data/genesis-config.json
 
 # Copy license/notice if they exist
 COPY NOTICE.tx[t]      ./
