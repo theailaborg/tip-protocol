@@ -111,6 +111,10 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
+        // #40 — creator sees the verdict on their content. Outside the
+        // reviewer's signed payload {review_id, reviewer_tip_id}, so the
+        // signature still verifies.
+        creator_tip_id: review?.creator_tip_id ?? null,
         decision_note: safeBody.decision_note ?? null,
       },
       signature: safeBody.signature,
@@ -150,6 +154,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
     }
 
+    const review = dag.getPrescanReview(reviewId);
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
       timestamp: nowMs(),
@@ -157,6 +162,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
+        // #40 — creator sees the verdict; outside the signed payload.
+        creator_tip_id: review?.creator_tip_id ?? null,
         suggested_origin: safeBody.suggested_origin,
         decision_note: safeBody.decision_note ?? null,
       },
@@ -180,6 +187,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       throw schemaError(403, "Reviewer signature verification failed", "signature_invalid");
     }
 
+    const review = dag.getPrescanReview(reviewId);
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
@@ -187,6 +195,8 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
+        // #40 — creator sees the recusal on their content; outside signed payload.
+        creator_tip_id: review?.creator_tip_id ?? null,
         recusal_reason: safeBody.recusal_reason ?? null,
       },
       signature: safeBody.signature,
