@@ -45,9 +45,6 @@ const { log } = require("./logger");
 
 // ─── Genesis Block Constants ──────────────────────────────────────────────────
 // These are FIXED and must never change once the network is live.
-// Integer epoch ms for 2026-03-15T00:00:00.000Z UTC — chain wall-clock
-// anchor. Every node verifies this exact value at startup.
-const GENESIS_TIMESTAMP = 1773532800000; // 2026-03-15T00:00:00.000Z UTC
 const GENESIS_CHAIN_ID = "tip-mainnet-v2";
 const GENESIS_VP_REGION = "US";
 
@@ -59,6 +56,16 @@ function _loadGenesisJson(rel) {
 }
 const GENESIS_DOC = _loadGenesisJson("../../genesis-data/genesis.json");
 const GENESIS_CONFIG = _loadGenesisJson("../../genesis-data/genesis-config.json");
+
+// Chain-birth moment, single source: authored in genesis-config.json as the
+// BFT-time anchor. The genesis tx timestamp (content-addressed) and the BFT
+// round-1 floor are the same instant, so both read this one value.
+const GENESIS_TIMESTAMP = GENESIS_CONFIG.protocol_constants?.consensus?.bft_time_genesis_ms;
+if (typeof GENESIS_TIMESTAMP !== "number") {
+  throw new Error(
+    "genesis-config.json: protocol_constants.consensus.bft_time_genesis_ms is required (chain genesis timestamp).",
+  );
+}
 
 const GENESIS_PAYLOAD = Object.freeze({
   version: "2",
