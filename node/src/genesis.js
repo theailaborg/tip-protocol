@@ -59,6 +59,11 @@ const GENESIS_VP_REGION = "US";
 // Any edit here MUST be paired with re-running `npm run seed` to regenerate
 // GENESIS_TX_SIGNATURE and GENESIS_VP_TX_SIGNATURE.
 
+// #39 — the non-cryptographic portion of genesis (tunable params + taxonomy
+// labels) lives in its own JSON file so this module stays readable. genesis.json
+// (the sealed artifact) still embeds the full payload; this file is the source.
+const GENESIS_CONFIG = require("../../genesis-data/genesis-config.json");
+
 const GENESIS_PAYLOAD = Object.freeze({
   version: "2",
 
@@ -76,373 +81,13 @@ const GENESIS_PAYLOAD = Object.freeze({
   // ── Protocol Constants (75 values — immutable, read by all nodes) ──────────
   // These are loaded into ProtocolConstants singleton at boot.
   // See my-notes/global-constant.md for the full specification.
-  protocol_constants: {
-    score: {
-      max_total: 1000,
-      max_identity: 530,
-      max_content: 350,
-      max_reputation: 50,
-      max_longevity: 70,
-      initial_identity: 500,
-    },
-    identity: {
-      social_link_bonus: 5,
-      max_social_accounts: 6,
-      max_social_bonus: 30,
-    },
-    content: {
-      registration_credit: 2,
-      verification_credit: 1,
-      oh_cap: 200,
-      aa_cap: 100,
-      ag_cap: 100,
-      mx_cap: 100,
-      per_content_lifetime_cap: 5,
-    },
-    reputation: {
-      clean_period_days: 90,
-      clean_period_bonus: 10,
-      dispute_cleared_bonus: 5,
-    },
-    longevity: {
-      tiers: [
-        { months: 6, points: 15 },
-        { months: 12, points: 30 },
-        { months: 24, points: 45 },
-        { months: 36, points: 60 },
-        { months: 60, points: 70 },
-      ],
-    },
-    penalties: {
-      // Per-pair escalation [1st, 2nd, 3rd+] = base × [1, 2, 3] per spec
-      // (TIP_Trust_Scoring §6 Asymmetric Penalty Structure).
-      oh_as_ag: [-100, -200, -300],   // 1st, 2nd, 3rd offense
-      oh_as_aa: [-40, -80, -120],
-      aa_as_ag: [-25, -50, -75],
-      minor_falsehood: -75,
-      major_falsehood: -300,
-      retraction: -50,
-      device_compromise: -15,
-      lost_dispute_stake: -15,
-      lost_jury_stake: -10,
-      lost_appeal_stake: -25,
-      appeal_restore_percent: 50,
-    },
-    jury: {
-      // Stakes — positive (amounts at risk, code applies ± based on outcome)
-      dispute_stake: 15,
-      jury_stake: 10,
-      appeal_stake: 25,
-      frivolous_dismiss_fee: 5,
-      // Thresholds — positive (score requirements)
-      dispute_filing_min_score: 550,
-      jury_min_score: 700,
-      jury_min_score_fallback: 500,        // Pass-3 floor in jury.js _pickWithGeoCap. When the eligible-at-700 pool can't fill jury_size after geo relaxation, the selector falls back to score >= 500 (verified-tier) rather than admitting arbitrarily-low-score jurors. Never below dispute_filing_min_score.
-      expert_min_score: 850,
-      expert_min_score_fallback: 700,      // Pass-3 floor for selectExperts. Mirrors jury_min_score_fallback — when expert pool at 850 is insufficient, falls back to jury-tier (>=700) rather than open admission.
-      // Sizes and counts
-      jury_size: 7,
-      jury_majority_vote: 3,
-      jury_min_reveals: 5,
-      jury_max_same_country: 3,
-      appeal_max_same_country: 3,          // Geo-cap for selectExperts (Stage 3 appeal panel). Caps any single jurisdiction below the 3-of-5 majority and lets a 5-expert panel form from as few as two countries. Promoted to genesis for governance tunability + audit clarity.
-      jury_cooldown_days: 7,
-      expert_panel_size: 5,
-      expert_min_votes: 3,
-      // Bonuses — positive (always added)
-      jury_majority_bonus: 3,
-      expert_majority_bonus: 7,
-      appeal_win_bonus: 10,
-      vindication_bonus: 5,
-      upheld_bonus: 5,
-      // Penalties — negative (always subtracted). Juror/expert split + no-commit/no-reveal split.
-      // no-commit: summoned but never submitted a commit tx (-1 — light penalty, could be a node outage)
-      // no-reveal: committed but didn't reveal (-8/-10 — deliberate non-reveal is more culpable)
-      jury_minority_penalty: -8,
-      expert_minority_penalty: -10,
-      jury_no_commit_penalty: -1,
-      jury_no_reveal_penalty: -8,
-      expert_no_commit_penalty: -1,
-      expert_no_reveal_penalty: -10,
-      // Timing
-      jury_commit_hours: 72,
-      jury_reveal_hours: 12,
-      appeal_window_hours: 48,
-      appeal_commit_hours: 72,
-      appeal_reveal_hours: 12,
-      // Phase 3 abuse prevention — rolling per-filer rate limit. A
-      // disputer can file at most N disputes within the trailing
-      // window. v1 picks 5 / 30 days (per spec §5.4). Window is in ms
-      // to match the rest of the time constants; the predicate counts
-      // CONTENT_DISPUTED txs by disputer_tip_id within now-window.
-      max_disputes_per_filer_per_window: 5,
-      dispute_filer_window_ms: 2592000000,
-      // AI classifier
-      ai_auto_dismiss_threshold: 0.30,
-      ai_auto_escalate_threshold: 0.90,
-      ai_timeout_seconds: 60,
-    },
-    tiers: {
-      highly_trusted: 850,
-      trusted: 650,
-      verified: 400,
-      caution: 200,
-    },
-    verify_caps: {
-      per_content: 5,
-      per_day: 5,
-      per_month: 30,
-      base_delta: 2,
-      high_trust_delta: 3,
-      high_trust_min: 800,
-    },
-    rate_limits: {
-      max_registrations_per_day: 50,
-      max_verifications_given_per_day: 5,
-      max_verifications_given_per_month: 30,
-      duplicate_perceptual_threshold: 0.90,
-    },
-    prescan: {
-      default: 0.85,
-      conversational: 0.82,
-      creative: 0.87,
-      academic: 0.92,
-      legal: 0.93,
-      floor: 0.80,
-      ceiling: 0.94,
-      // 4-tier categorical model — fixed cutoffs for v1; per-content-type
-      // overrides come in v2 when categorization wires in.
-      tier_thresholds: {
-        elevated: 0.70,
-        high: 0.90,
-        critical: 0.98,
-      },
-      // Creator-history calibration (Claim Group G / FIX-03). Veterans with
-      // clean track records get a one-tier-down adjustment. Never shifts 2
-      // tiers — prevents "build clean history then post AI as OH" gaming.
-      calibration: {
-        moderate_min: 50,
-        veteran_min: 200,
-      },
-
-      // ── Async-prescan worker config ──────────────────────────────────
-      // The worker process polls prescan_jobs, calls the classifier, and
-      // emits PRESCAN_COMPLETED. Retry policy: degraded (soft) failures
-      // and hard errors get separate budgets but share the same backoff
-      // schedule. After both budgets exhaust, fail-open silently —
-      // content moves to REGISTERED without a flag.
-      worker_max_retries_on_degraded: 4,
-      worker_max_retries_on_error: 4,
-      worker_retry_backoff_ms: [5000, 30000, 300000, 1800000],  // 5s, 30s, 5min, 30min
-      worker_claim_timeout_ms: 60000,         // 60s before another worker reclaims a stuck job
-      // Failover: when the original assigned node fails to emit
-      // PRESCAN_COMPLETED within takeover_after_ms, a round-modulo
-      // leader on another node takes over. fail_open_after_ms is the
-      // backstop — past this point, any leader can emit a fail-open
-      // completion so content can't get stuck in PENDING_PRESCAN forever.
-      takeover_after_ms: 600000,              // 10 min
-      fail_open_after_ms: 3600000,            // 1 hour
-      // Client poll hints — surfaced on the 202 response from
-      // /v1/content/register. Wait poll_after_ms before each poll;
-      // give up after poll_max_attempts.
-      poll_after_ms: 2000,
-      poll_max_attempts: 30,
-      // Content-type taxonomy + detection
-      valid_content_types: ["text", "image", "audio", "video", "multi"],
-      // Image + text post split: text length ≥ this → article-with-hero
-      // (content_type="text"), below → photo-with-caption ("image").
-      article_text_threshold_chars: 1000,
-      // When a modality returns degraded signal (error / disagreement /
-      // exact 0.5 neutral), its weight in the aggregation is multiplied
-      // by this. 0.5 = half-weight; 0 would zero it out entirely.
-      degraded_weight_multiplier: 0.5,
-      // Per-content-type modality weight matrix.
-      //
-      // PRIMARY-FLOOR + ASYMMETRIC-LIFT aggregation: the primary modality
-      // (matching content_type — diagonal of this matrix) is the FLOOR
-      // — its probability is the minimum verdict. Off-diagonal entries
-      // are LIFT COEFFICIENTS for secondary modalities, which can ONLY
-      // RAISE the verdict when they vote AI more strongly than primary;
-      // they NEVER dilute a clean primary.
-      //
-      //   final = primary_prob + Σ max(0, secondary_prob - primary_prob) × secondary_weight
-      //   (clamped to [0, 1])
-      //
-      // Diagonal cells are set to 1.00 as a documentation convention
-      // marking "this is the primary." The aggregator skips the primary
-      // in the lift sum (it's the floor, added directly), so the value
-      // is not arithmetic — it's read at a glance to identify each row's
-      // primary modality.
-      //
-      // 'multi' has no single primary; the aggregator falls back to a
-      // traditional weighted average over present modalities.
-      //
-      // Per-row reasoning (off-diagonal lift coefficients):
-      // - text:  image=0.30 (visual companion content), video=0.20
-      //          (embedded video), audio=0.10 (rare in articles)
-      // - image: text=0.30 (caption claim), video=0.20 (carousel clip),
-      //          audio=0.10 (rare)
-      // - audio: text=0.20 (description/lyrics), image=0.15 (cover art),
-      //          video=0.20 (music video case)
-      // - video: audio=0.35 (voice-over AI is the strongest secondary
-      //          signal for AI video), text=0.15 (description), image=0.10
-      //          (thumbnail is just a frame, redundant with video itself)
-      //
-      // See ASYNC_PRESCAN_ARCHITECTURE.md § Modality weight matrix for
-      // full design discussion.
-      modality_weights: {
-        text: { text: 1.00, image: 0.30, audio: 0.10, video: 0.20 },
-        image: { text: 0.30, image: 1.00, audio: 0.10, video: 0.20 },
-        audio: { text: 0.20, image: 0.15, audio: 1.00, video: 0.20 },
-        video: { text: 0.15, image: 0.10, audio: 0.35, video: 1.00 },
-        multi: { text: 0.30, image: 0.30, audio: 0.20, video: 0.30 },
-      },
-    },
-    // ── Content size caps (v1: inline base64 only) ─────────────────────
-    // Hard limits enforced at the API boundary BEFORE the body-parser.
-    // video_max_bytes=0 means video uploads are rejected in v1; lifts
-    // to GB-scale in v2 once the content-storage layer + file_url path
-    // ships. request_body_max_bytes is the Express body-parser limit;
-    // single media + reasonable text fits under 25 MB.
-    // Dev-federation limits: generous caps while clients and the media
-    // pipeline are built out. Revisit before mainnet — video in particular
-    // is upload-supported but NOT classifier-supported yet (verdicts
-    // fail-open as degraded 0.5 until the classifier ships video models).
-    content_limits: {
-      text_max_bytes: 102400,             // 100 KB
-      image_max_bytes: 104857600,         // 100 MB
-      audio_max_bytes: 209715200,         // 200 MB
-      video_max_bytes: 4294967296,        // 4 GB
-      media_items_max: 20,
-      request_body_max_bytes: 26214400,   // 25 MB
-    },
-    reviewer: {
-      // Runtime eligibility gates for reviewer pool. No REGISTER_REVIEWER tx —
-      // selection is a pure function of identity state + DAG history,
-      // mirroring jury selection.
-      min_score: 600,
-      max_overturn_rate: 0.30,
-      accuracy_sample_size: 20,
-      // Creator's accept-private window after PRESCAN_REVIEW_CONFIRMED. The
-      // prescan-review trigger emits an auto-cascade CONTENT_DISPUTED once
-      // this elapses against cert.ts.
-      creator_decision_window_ms: 86400000,
-      // Score delta applied to the creator when they accept the reviewer's
-      // correction privately (Option 1). Negative — accepting the
-      // CONFIRMED finding still carries a small penalty, smaller than the
-      // dispute pipeline's OH→AA range (-10..-30). Stored as the signed
-      // delta directly so the call site does not negate.
-      accept_correction_score_delta: -10,
-      // Age threshold for the dashboard self-correction warning. Once
-      // flagged content is older than this (and still REGISTERED, not
-      // self-corrected, not yet review-triggered), the
-      // content_flagged_for_review notification surfaces on the
-      // creator's /v1/users/:tip_id/dashboard.
-      creator_warning_age_ms: 86400000,
-      // Age (ms since PRESCAN_REVIEW_TRIGGERED's cert.ts) at which the
-      // prescan-review-trigger emits a node-signed auto-recuse on
-      // behalf of an inactive assigned reviewer. Same mechanism as
-      // h=R+24 auto-escalation: deterministic clock (cert.ts), round-
-      // modulo leader gate, content.status flip-back triggers
-      // re-assignment.
-      auto_recuse_age_ms: 172800000,
-      // Reward for completing review work correctly. Paid as a bonus
-      // ON TOP of the disputer-equivalent settlement when the reviewer's
-      // CONFIRM aligns with the eventual dispute verdict, AND paid alone
-      // when the case closes without a public dispute (DISMISS or
-      // creator-accepted-private). On overturn the reviewer takes the
-      // full DISPUTE.DISPUTER_STAKE forfeit — they're treated as the
-      // de-facto disputer of the case they CONFIRMED. See
-      // docs/DISPUTE_SCORING.md "Pre-scan reviewer" section.
-      reviewer_correct_bonus: 5,
-      // Signed delta applied to a reviewer whose DISMISS is later overturned
-      // by an UPHELD dispute (the reviewer said the AI flag was wrong, but the
-      // jury said it was right). Stored negative so the call site does not
-      // negate — same convention as accept_correction_score_delta. Default -5
-      // exactly cancels reviewer_correct_bonus (pure clawback, net 0). Make it
-      // more negative for a real penalty if rubber-stamp dismissing surfaces.
-      reviewer_wrong_dismiss_clawback: -5,
-      // Availability gate (no-show pause). An assignment that dies by
-      // node-signed auto-recuse (recusal_reason "sla_expired") is a
-      // no-show. More than max_noshow_recusals of them within the
-      // reviewer's last noshow_sample_size RESOLVED assignments pauses
-      // selection until the rolling window clears. Manual recusals and
-      // still-open assignments never count. Hard filter — never relaxed
-      // by the selection cascade: relaxing would re-assign the case to
-      // someone already ignoring assignments and burn another 48h SLA.
-      max_noshow_recusals: 3,
-      noshow_sample_size: 10,
-    },
-    content_grace: {
-      // Self-correction windows. Unflagged content keeps the original 24h
-      // window; HIGH/CRITICAL prescan-flagged content with override gets 48h,
-      // matching the time before reviewer engagement at h=48.
-      unflagged_ms: 86400000,    // 24h
-      flagged_ms: 172800000,     // 48h
-    },
-    media_retention: {
-      // Three-case retention — clock anchor depends on the ctid's
-      // lifecycle so far:
-      //
-      //   never disputed              → registered_at + base_retention_ms
-      //   only ADJUDICATION_RESULT    → adjudication.ts + post_adjudication_ms
-      //   APPEAL_RESULT reached       → appeal.ts + post_appeal_ms
-      //
-      // post_adjudication_ms (7d) safely covers the 2d appeal-filing
-      // window — by the time the clock hits, no further appeal can land.
-      // Orphan uploads (no content row ever referenced the media_id)
-      // are deleted after orphan_upload_ms.
-      base_retention_ms: 1814400000,     // 21d — never disputed
-      post_adjudication_ms: 604800000,   //  7d — after ADJUDICATION_RESULT, no appeal
-      post_appeal_ms: 604800000,         //  7d — after APPEAL_RESULT (terminal)
-      orphan_upload_ms: 86400000,        // 24h
-    },
-    consensus: {
-      // Tier-2 — state-determining; all nodes must agree (enforced via genesis_hash).
-      // Tier-1 — bft_time_genesis_ms is the BFT-time chain anchor; any change is a new chain.
-      // Tier-3 tunables (timing/capacity/retries) are in shared/local-config.js — read from
-      // TIP_* env vars with defaults matching the original genesis values, excluded from hash.
-      votes_retention_rounds: 5,          // §1 equivocation defense: keep votes_seen rows for this many recent rounds before auto-prune
-      max_txs_per_certificate: 500,       // max txs drained from mempool per certificate
-      certificate_max_bytes: 1048576,     // 1 MB max certificate size
-      participant_inactive_rounds: 4,    // remove participant from active set if no cert in this many rounds
-      gc_depth: 500,                     // cert GC: retain this many rounds of certs behind last committed round; older rows pruned from DAG + in-memory waiters. At 2s rounds = ~17 min of history, enough for consensus parent refs, cert waiter, and brief-offline recovery (anti-entropy covers longer gaps). Reference Narwhal uses 50-500 depending on committee size.
-      bft_time_genesis_ms: GENESIS_TIMESTAMP, // BFT-time floor for round 1. Round 1 has no prev_cert.timestamp, so its cert.timestamp must be >= bft_time_genesis_ms. One source of truth for the network's launch anchor. Frozen at genesis (part of genesis hash); never change post-launch.
-      // ─── #75 Rotation-period model ──────────────────────────────────────
-      // Committee changes only at rotation boundaries — every node hits the
-      // boundary at the same `consensus_index` (Bullshark anchor count),
-      // which is bit-identical across all nodes. At each boundary, every
-      // node deterministically computes the next rotation's committee from
-      // the `rotation_participation` counter table (incremented on every
-      // anchor commit). Within a rotation period, getActiveCommittee is a
-      // pure lookup against committee_history — no per-round divergent
-      // computation. Replaces the pre-#75 cert-history span check, which
-      // could not stay deterministic under per-node cert GC timing (#74).
-      committee_rotation_interval_commits: 100,        // rotation period length in anchor commits (consensus_index). Testnet: 100 anchors ≈ 200 rounds ≈ 3 min at 2s rounds. Production override: 43200 ≈ 24h. Deterministic boundary at consensus_index % this == 0. Smaller = faster admission, more rotation churn; larger = longer admission delay, less churn.
-      committee_rotation_participation_pct_of_interval: 70,  // committee admission threshold for next rotation: a node qualifies when its rotation_participation count (raw anchor-walk credits — NOT a fraction of total participation) reaches `ceil(INTERVAL * pct/100)`. With INTERVAL=100 and pct=70 the threshold is `>= 70 credits`, easy to clear since each anchor walk yields several credits per active node. Genesis members are exempt — always in committee while registered+active. Old key `committee_rotation_min_participation_pct` is still read for backward compat.
-    },
-    network: {
-      chain_id: "tip-mainnet-v2",
-      handshake_protocol: "/tip/handshake/1.0.0",
-      snapshot_protocol: "/tip/state-snapshot/1.0.0",
-      sync_status_protocol: "/tip/sync-status/1.0.0",
-      peer_announce_protocol: "/tip/peer-announce/1.0.0",
-      snapshot_length_prefix_bytes: 4,
-      snapshot_max_frame_bytes: 16777216,   // 16 MB per frame — hard cap against hostile peers
-      score_cache_ttl_seconds: 21600,
-      revocation_cascade_days: 90,
-      warrant_canary_max_days: 90,
-      canary_advisory_window_days: 30,
-      origin_grace_period_hours: 24,
-    },
-  },
-
-  origin_categories: {
-    OH: { label: "Original Human", color_hint: "blue" },
-    AA: { label: "AI-Assisted", color_hint: "purple" },
-    AG: { label: "AI-Generated", color_hint: "amber" },
-    MX: { label: "Mixed / Composite", color_hint: "gray" },
-  },
+  // #39 — protocol_constants (governable params) + origin_categories
+  // (documentary taxonomy labels) are authored in genesis-data/genesis-config.json
+  // to keep this file readable. Both are EXCLUDED from genesis_hash by
+  // computeGenesisHash (neither is chain identity); they remain in the full
+  // genesis payload / genesis.json record.
+  protocol_constants: GENESIS_CONFIG.protocol_constants,
+  origin_categories: GENESIS_CONFIG.origin_categories,
 
   founding_vp: {
     vp_id: "tip://vp/US-0794ae15e9db4b90",
@@ -478,17 +123,30 @@ const GENESIS_PAYLOAD = Object.freeze({
 });
 
 // ─── Genesis hash (chain anchor) ─────────────────────────────────────────────
+// genesis_hash is the IMMUTABLE chain identity and deliberately EXCLUDES the
+// non-cryptographic config: protocol_constants (governable params) AND
+// origin_categories (documentary taxonomy labels, read by nothing at runtime).
+// These are changeable (via a coordinated re-seal or, later, a governance tx),
+// so they are NOT part of chain identity: editing a param or a label must NEVER
+// rotate genesis_hash (#39). The values still LIVE in the genesis payload (the
+// complete founding record) — they are simply not fed into this hash. Agreement
+// on the param values is enforced separately by protocol_params_hash at the
+// handshake (below) and by the protocol_params table inside state_merkle_root.
 function computeGenesisHash(payload) {
-  return shake256(canonicalJson(payload));
+  const { protocol_constants, origin_categories, ...anchor } = payload;
+  return shake256(canonicalJson(anchor));
 }
 
 const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
 
-// ─── Protocol params hash (forward-compat: Tier-2 governance anchor) ─────────
-// SHAKE-256 over the protocol_constants sub-object only.  In Phase 1 this is
-// redundant with genesis_hash (Tier-2 is still inside the genesis anchor), but
-// it establishes the handshake field so Phase 2 can move Tier-2 params to a
-// separate governance tx without changing the handshake wire format.
+// ─── Protocol params hash (Tier-2 agreement anchor) ──────────────────────────
+// SHAKE-256 over the protocol_constants sub-object. Now that genesis_hash
+// EXCLUDES protocol_constants, this is the SOLE handshake-time enforcer of
+// param agreement: two nodes with the same chain identity but different param
+// values share a genesis_hash yet differ here, so the handshake rejects the
+// mismatch (network/handshake.js verifies both). Editing a param rotates THIS
+// hash, never genesis_hash. (A future governance tx instead writes the change
+// to the protocol_params table / state_merkle_root and rotates neither hash.)
 function getProtocolParamsHash() {
   return shake256(canonicalJson(GENESIS_PAYLOAD.protocol_constants));
 }

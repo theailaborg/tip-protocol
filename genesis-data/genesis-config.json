@@ -1,0 +1,285 @@
+{
+  "protocol_constants": {
+    "score": {
+      "max_total": 1000,
+      "max_identity": 530,
+      "max_content": 350,
+      "max_reputation": 50,
+      "max_longevity": 70,
+      "initial_identity": 500
+    },
+    "identity": {
+      "social_link_bonus": 5,
+      "max_social_accounts": 6,
+      "max_social_bonus": 30
+    },
+    "content": {
+      "registration_credit": 2,
+      "verification_credit": 1,
+      "oh_cap": 200,
+      "aa_cap": 100,
+      "ag_cap": 100,
+      "mx_cap": 100,
+      "per_content_lifetime_cap": 5
+    },
+    "reputation": {
+      "clean_period_days": 90,
+      "clean_period_bonus": 10,
+      "dispute_cleared_bonus": 5
+    },
+    "longevity": {
+      "tiers": [
+        {
+          "months": 6,
+          "points": 15
+        },
+        {
+          "months": 12,
+          "points": 30
+        },
+        {
+          "months": 24,
+          "points": 45
+        },
+        {
+          "months": 36,
+          "points": 60
+        },
+        {
+          "months": 60,
+          "points": 70
+        }
+      ]
+    },
+    "penalties": {
+      "oh_as_ag": [
+        -100,
+        -200,
+        -300
+      ],
+      "oh_as_aa": [
+        -40,
+        -80,
+        -120
+      ],
+      "aa_as_ag": [
+        -25,
+        -50,
+        -75
+      ],
+      "minor_falsehood": -75,
+      "major_falsehood": -300,
+      "retraction": -50,
+      "device_compromise": -15,
+      "lost_dispute_stake": -15,
+      "lost_jury_stake": -10,
+      "lost_appeal_stake": -25,
+      "appeal_restore_percent": 50
+    },
+    "jury": {
+      "dispute_stake": 15,
+      "jury_stake": 10,
+      "appeal_stake": 25,
+      "frivolous_dismiss_fee": 5,
+      "dispute_filing_min_score": 550,
+      "jury_min_score": 700,
+      "jury_min_score_fallback": 500,
+      "expert_min_score": 850,
+      "expert_min_score_fallback": 700,
+      "jury_size": 7,
+      "jury_majority_vote": 3,
+      "jury_min_reveals": 5,
+      "jury_max_same_country": 3,
+      "appeal_max_same_country": 3,
+      "jury_cooldown_days": 7,
+      "expert_panel_size": 5,
+      "expert_min_votes": 3,
+      "jury_majority_bonus": 3,
+      "expert_majority_bonus": 7,
+      "appeal_win_bonus": 10,
+      "vindication_bonus": 5,
+      "upheld_bonus": 5,
+      "jury_minority_penalty": -8,
+      "expert_minority_penalty": -10,
+      "jury_no_commit_penalty": -1,
+      "jury_no_reveal_penalty": -8,
+      "expert_no_commit_penalty": -1,
+      "expert_no_reveal_penalty": -10,
+      "jury_commit_hours": 72,
+      "jury_reveal_hours": 12,
+      "appeal_window_hours": 48,
+      "appeal_commit_hours": 72,
+      "appeal_reveal_hours": 12,
+      "max_disputes_per_filer_per_window": 5,
+      "dispute_filer_window_ms": 2592000000,
+      "ai_auto_dismiss_threshold": 0.3,
+      "ai_auto_escalate_threshold": 0.9,
+      "ai_timeout_seconds": 60
+    },
+    "tiers": {
+      "highly_trusted": 850,
+      "trusted": 650,
+      "verified": 400,
+      "caution": 200
+    },
+    "verify_caps": {
+      "per_content": 5,
+      "per_day": 5,
+      "per_month": 30,
+      "base_delta": 2,
+      "high_trust_delta": 3,
+      "high_trust_min": 800
+    },
+    "rate_limits": {
+      "max_registrations_per_day": 50,
+      "max_verifications_given_per_day": 5,
+      "max_verifications_given_per_month": 30,
+      "duplicate_perceptual_threshold": 0.9
+    },
+    "prescan": {
+      "default": 0.85,
+      "conversational": 0.82,
+      "creative": 0.87,
+      "academic": 0.92,
+      "legal": 0.93,
+      "floor": 0.8,
+      "ceiling": 0.94,
+      "tier_thresholds": {
+        "elevated": 0.7,
+        "high": 0.9,
+        "critical": 0.98
+      },
+      "calibration": {
+        "moderate_min": 50,
+        "veteran_min": 200
+      },
+      "worker_max_retries_on_degraded": 4,
+      "worker_max_retries_on_error": 4,
+      "worker_retry_backoff_ms": [
+        5000,
+        30000,
+        300000,
+        1800000
+      ],
+      "worker_claim_timeout_ms": 60000,
+      "takeover_after_ms": 600000,
+      "fail_open_after_ms": 3600000,
+      "poll_after_ms": 2000,
+      "poll_max_attempts": 30,
+      "valid_content_types": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "multi"
+      ],
+      "article_text_threshold_chars": 1000,
+      "degraded_weight_multiplier": 0.5,
+      "modality_weights": {
+        "text": {
+          "text": 1,
+          "image": 0.3,
+          "audio": 0.1,
+          "video": 0.2
+        },
+        "image": {
+          "text": 0.3,
+          "image": 1,
+          "audio": 0.1,
+          "video": 0.2
+        },
+        "audio": {
+          "text": 0.2,
+          "image": 0.15,
+          "audio": 1,
+          "video": 0.2
+        },
+        "video": {
+          "text": 0.15,
+          "image": 0.1,
+          "audio": 0.35,
+          "video": 1
+        },
+        "multi": {
+          "text": 0.3,
+          "image": 0.3,
+          "audio": 0.2,
+          "video": 0.3
+        }
+      }
+    },
+    "content_limits": {
+      "text_max_bytes": 102400,
+      "image_max_bytes": 104857600,
+      "audio_max_bytes": 209715200,
+      "video_max_bytes": 4294967296,
+      "media_items_max": 20,
+      "request_body_max_bytes": 26214400
+    },
+    "reviewer": {
+      "min_score": 600,
+      "max_overturn_rate": 0.3,
+      "accuracy_sample_size": 20,
+      "creator_decision_window_ms": 86400000,
+      "accept_correction_score_delta": -10,
+      "creator_warning_age_ms": 86400000,
+      "auto_recuse_age_ms": 172800000,
+      "reviewer_correct_bonus": 5,
+      "reviewer_wrong_dismiss_clawback": -5,
+      "max_noshow_recusals": 3,
+      "noshow_sample_size": 10
+    },
+    "content_grace": {
+      "unflagged_ms": 86400000,
+      "flagged_ms": 172800000
+    },
+    "media_retention": {
+      "base_retention_ms": 1814400000,
+      "post_adjudication_ms": 604800000,
+      "post_appeal_ms": 604800000,
+      "orphan_upload_ms": 86400000
+    },
+    "consensus": {
+      "votes_retention_rounds": 5,
+      "max_txs_per_certificate": 500,
+      "certificate_max_bytes": 1048576,
+      "participant_inactive_rounds": 4,
+      "gc_depth": 500,
+      "bft_time_genesis_ms": 1773532800000,
+      "committee_rotation_interval_commits": 100,
+      "committee_rotation_participation_pct_of_interval": 70
+    },
+    "network": {
+      "chain_id": "tip-mainnet-v2",
+      "handshake_protocol": "/tip/handshake/1.0.0",
+      "snapshot_protocol": "/tip/state-snapshot/1.0.0",
+      "sync_status_protocol": "/tip/sync-status/1.0.0",
+      "peer_announce_protocol": "/tip/peer-announce/1.0.0",
+      "snapshot_length_prefix_bytes": 4,
+      "snapshot_max_frame_bytes": 16777216,
+      "score_cache_ttl_seconds": 21600,
+      "revocation_cascade_days": 90,
+      "warrant_canary_max_days": 90,
+      "canary_advisory_window_days": 30,
+      "origin_grace_period_hours": 24
+    }
+  },
+  "origin_categories": {
+    "OH": {
+      "label": "Original Human",
+      "color_hint": "blue"
+    },
+    "AA": {
+      "label": "AI-Assisted",
+      "color_hint": "purple"
+    },
+    "AG": {
+      "label": "AI-Generated",
+      "color_hint": "amber"
+    },
+    "MX": {
+      "label": "Mixed / Composite",
+      "color_hint": "gray"
+    }
+  }
+}
