@@ -26,7 +26,6 @@ const AGREED_CONSENSUS_KEYS = [
   "votes_retention_rounds",
   "max_txs_per_certificate",
   "certificate_max_bytes",
-  "participant_inactive_rounds",
   "gc_depth",
   "bft_time_genesis_ms",
   "committee_rotation_interval_commits",

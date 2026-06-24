@@ -243,7 +243,6 @@
       "votes_retention_rounds": 5,
       "max_txs_per_certificate": 500,
       "certificate_max_bytes": 1048576,
-      "participant_inactive_rounds": 4,
       "gc_depth": 500,
       "bft_time_genesis_ms": 1773532800000,
       "committee_rotation_interval_commits": 100,

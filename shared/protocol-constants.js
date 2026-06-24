@@ -369,7 +369,6 @@ const CONSENSUS = {
   get MAX_MSGS_PER_PEER_PER_SEC() { return LC.MAX_MSGS_PER_PEER_PER_SEC; },
   get SYNC_MAX_RETRIES() { return LC.SYNC_MAX_RETRIES; },
   get SYNC_RETRY_BASE_MS() { return LC.SYNC_RETRY_BASE_MS; },
-  get PARTICIPANT_INACTIVE_ROUNDS() { return _c().participant_inactive_rounds; },
   get HANDSHAKE_TIMEOUT_MS() { return LC.HANDSHAKE_TIMEOUT_MS; },
   get HANDSHAKE_MAX_RETRIES() { return LC.HANDSHAKE_MAX_RETRIES; },
   get GC_DEPTH() { return _c().gc_depth ?? 500; },
