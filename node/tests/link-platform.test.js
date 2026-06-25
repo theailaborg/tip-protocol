@@ -278,6 +278,28 @@ describe("LINK_PLATFORM validateRequest — canonical platform (#86 hardening)",
     expect(err && err.code).not.toBe("platform_not_canonical");
     expect(err && err.code).not.toBe("unknown_platform");
   });
+
+  test("accepts rooverse with a web.rooverse.app URL (OAuth-only platform)", () => {
+    // Rooverse is a known platform; its profile_url matches the allowed host.
+    // With no OAuth bundle the expected stop is oauth_required (403) — NOT
+    // unknown_platform / invalid_profile_url. This is the exact case that was
+    // returning HTTP 400 unknown_platform before rooverse was allow-listed.
+    const body = _body({ platform: "rooverse", profile_url: "https://web.rooverse.app/user/alice" });
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err && err.code).not.toBe("unknown_platform");
+    expect(err && err.code).not.toBe("invalid_profile_url");
+    expect(err && err.code).toBe("oauth_required");
+  });
+
+  test("rejects rooverse with a non-rooverse profile_url domain", () => {
+    const body = _body({ platform: "rooverse", profile_url: "https://evil.com/alice" });
+    let err;
+    try { linkPlatformSchema.validateRequest(body, { now: body.claimed_at }); }
+    catch (e) { err = e; }
+    expect(err && err.code).toBe("invalid_profile_url");
+  });
 });
 
 describe("identityService.linkPlatform v2 (node-attested)", () => {
@@ -553,6 +575,58 @@ describe("identityService.linkPlatform v2 (node-attested)", () => {
     const r = linkPlatformSchema.verifyTx(tampered, dag2);
     expect(r.ok).toBe(false);
     expect(r.code).toBe("vp_oauth_signature_invalid");
+  });
+
+  test("linkPlatform OAuth path for rooverse: full verifyTx replay round-trip", async () => {
+    // rooverse-specific replay coverage. The OAuth replay path is platform-
+    // agnostic, but rooverse is consensus-deployed to all nodes, so exercise it
+    // explicitly to lock the VP↔node proof symmetry against future drift.
+    submitted.length = 0;
+    const oauthVpKeys = await generateMLDSAKeypair();
+    const oauthVpId = "tip://vp/oauth-rooverse";
+    dag2.saveVP({ vp_id: oauthVpId, public_key: oauthVpKeys.publicKey, status: "active", tx_id: "g-vp-rooverse" });
+
+    // Mirrors the live VP flow: skip_url_match makes the user-typed
+    // web.rooverse.app URL canonical, and the handle is the URL slug.
+    const profileUrl = "https://web.rooverse.app/user/alice_roo";
+    const claimedAt = nowMs();
+    const vpOauthVerifiedAt = nowMs();
+    const vpOauthHandle = "alice_roo";
+
+    const oauthProof = {
+      claimed_at: claimedAt,
+      handle: vpOauthHandle,
+      platform: "rooverse",
+      profile_url: profileUrl,
+      tip_id: userTipId,
+      verified_at: vpOauthVerifiedAt,
+      vp_id: oauthVpId,
+    };
+    const vpOauthSignature = signPayload(oauthProof, oauthVpKeys.privateKey);
+
+    const result = await identityService2.linkPlatform({
+      tipId: userTipId,
+      platform: "rooverse",
+      profileUrl,
+      claimSignature: makeClaimSig("rooverse", profileUrl, claimedAt),
+      claimedAt,
+      vpId: oauthVpId,
+      vpOauthSignature,
+      vpOauthHandle,
+      vpOauthVerifiedAt,
+    });
+
+    expect(result.confirmation).toBe("proposed");
+    const linkTx = submitted.find(t => t.tx_type === TX_TYPES.LINK_PLATFORM);
+    expect(linkTx).toBeDefined();
+    expect(linkTx.data.platform).toBe("rooverse");
+    expect(linkTx.data.handle).toBe(vpOauthHandle);
+
+    // Replay round-trip — verifyTx must re-verify the subject cosignature AND
+    // the VP OAuth signature from tx.data alone (the consensus replay path).
+    dag2.updatePlatformLinkStatus(userTipId, "rooverse", { status: "unlinked" });
+    const verifyResult = linkPlatformSchema.verifyTx(linkTx, dag2);
+    expect(verifyResult.ok).toBe(true);
   });
 
   test("linkPlatform throws 400 for unknown platform", async () => {
