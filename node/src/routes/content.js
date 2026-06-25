@@ -21,6 +21,14 @@ function createRouter({ contentService }) {
     res.json(await contentService.resolve(req.params.ctid));
   }));
 
+  // OG card read — slim, crawler-cacheable projection used by the Open
+  // Graph edge functions. Separate path from /content/:ctid so the
+  // browser-extension contract is never affected.
+  router.get("/content/:ctid/og", asyncHandler((req, res) => {
+    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+    res.json(contentService.resolveForOg(req.params.ctid));
+  }));
+
   // Perceptually-similar content for this ctid: top-N near-duplicates by score,
   // each as a small content card for the FE. Advisory, off-DAG. ?limit (default
   // 5, max 20).

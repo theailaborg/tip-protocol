@@ -399,6 +399,35 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
+  // Slim, read-only projection for the Open Graph card renderer. Reuses
+  // the same DAG read + label/score derivation as resolve(), but returns
+  // only the fields the OG card needs. Kept separate from resolve() so the
+  // browser-extension contract on GET /v1/content/:ctid is never affected.
+  function resolveForOg(ctid) {
+    const rec = dag.getContent(ctid);
+    if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
+    const author = dag.getIdentity(rec.author_tip_id);
+    const sc = scoring.getScore(rec.author_tip_id);
+    const registeredUrl =
+      rec.registered_url ||
+      (Array.isArray(rec.registered_urls) && rec.registered_urls.length > 0
+        ? rec.registered_urls[0]
+        : null);
+    return {
+      ctid: rec.ctid,
+      origin_code: rec.origin_code,
+      origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      status: rec.status,
+      title: (rec.extras && typeof rec.extras === "object" && rec.extras.title) || null,
+      author_name: (author && author.creator_name) || null,
+      author_tip_id: rec.author_tip_id,
+      author_score: sc.score,
+      author_tier: sc.tier.label,
+      registered_url: registeredUrl,
+      created_at: rec.registered_at || null,
+    };
+  }
+
   /**
    * Latest prescan-review row + counts for this ctid. content.status
    * already covers REGISTERED / PENDING_REVIEW / DISPUTED / VERIFIED /
@@ -712,7 +741,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     return { ctid, count: similar.length, similar };
   }
 
-  return { register, resolve, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
+  return { register, resolve, resolveForOg, list, verify, updateOrigin, retract, getPrescanStatus, findSimilar };
 }
 
 module.exports = { createContentService };
