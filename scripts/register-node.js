@@ -297,6 +297,23 @@ async function main() {
   const dbPoolMax = process.env.DB_POOL_MAX || "";
   const composeProfiles = process.env.COMPOSE_PROFILES || "";
 
+  // Operational config carried from the seed node's env (media, classifier,
+  // prescan, rate-limit, dev) so a new node matches it. Not consensus-critical.
+  const mediaBackend    = process.env.TIP_MEDIA_BACKEND    || "";
+  const mediaFsPath     = process.env.TIP_MEDIA_FS_PATH     || "";
+  const mediaPresignTtl = process.env.TIP_MEDIA_PRESIGN_TTL_SEC || "";
+  const mediaS3Bucket   = process.env.TIP_MEDIA_S3_BUCKET   || "";
+  const mediaS3Region   = process.env.TIP_MEDIA_S3_REGION   || "";
+  const mediaS3Kms      = process.env.TIP_MEDIA_S3_KMS_KEY_ID || "";
+  const classifierUrl   = process.env.TIP_CLASSIFIER_URL   || "";
+  const classifierFb    = process.env.TIP_CLASSIFIER_FALLBACK || "";
+  const prescanConc     = process.env.TIP_PRESCAN_CONCURRENCY || "";
+  const rateLimitMax    = process.env.TIP_RATE_LIMIT_MAX   || "";
+  const devAllowLocal   = process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS || "";
+  const devBypassVote   = process.env.TIP_DEV_BYPASS_VOTE_WINDOWS || "";
+  const devForceTier    = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
+  const devLocalFetch   = process.env.TIP_DEV_LOCALHOST_FETCH_HOST || "";
+
   // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`.
   // Mirrors .env.example design: same section order, same one-line inline-
   // comment style, same compact per-engine quick reference. Values are
@@ -384,6 +401,29 @@ async function main() {
     `TIP_LOG_LEVEL=warn`,
     `TIP_CONSOLE_LEVEL=warn`,
     `TIP_LOG_DIR=${logDirRel}`,
+    ``,
+    `# ─── Media Storage ──────────────────────────────────────────────────────────`,
+    `TIP_MEDIA_BACKEND=${v(mediaBackend, "fs")}                  # fs | s3`,
+    `TIP_MEDIA_FS_PATH=${v(mediaFsPath, "./data/media")}`,
+    `TIP_MEDIA_PRESIGN_TTL_SEC=${v(mediaPresignTtl, "300")}`,
+    `TIP_MEDIA_S3_BUCKET=${mediaS3Bucket}`,
+    `TIP_MEDIA_S3_REGION=${mediaS3Region}`,
+    `TIP_MEDIA_S3_KMS_KEY_ID=${mediaS3Kms}`,
+    ``,
+    `# ─── Prescan / Classifier ───────────────────────────────────────────────────`,
+    `TIP_CLASSIFIER_URL=${classifierUrl}`,
+    `TIP_CLASSIFIER_FALLBACK=${v(classifierFb, "1")}`,
+    `TIP_PRESCAN_CONCURRENCY=${v(prescanConc, "4")}`,
+    ``,
+    `# ─── API ────────────────────────────────────────────────────────────────────`,
+    `TIP_PUBLIC_URL=http://localhost:${apiPort}`,
+    `TIP_RATE_LIMIT_MAX=${v(rateLimitMax, "200")}                 # per-IP req/min; raise for load tests`,
+    ``,
+    `# ─── Dev toggles (non-production only) ───────────────────────────────────────`,
+    `TIP_DEV_ALLOW_LOCALHOST_DOMAINS=${v(devAllowLocal, "0")}`,
+    `TIP_DEV_BYPASS_VOTE_WINDOWS=${v(devBypassVote, "0")}`,
+    `TIP_DEV_FORCE_PRESCAN_TIER=${devForceTier}`,
+    `TIP_DEV_LOCALHOST_FETCH_HOST=${devLocalFetch}`,
     ``,
     `# ─── CORS ───────────────────────────────────────────────────────────────────`,
     `TIP_CORS_ORIGINS=*                         # comma-separated origins; '*' for dev only`,
