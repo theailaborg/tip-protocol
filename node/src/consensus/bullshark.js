@@ -1008,6 +1008,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const targetRotation = epochOf(currentRound);
     if (targetRotation !== missingRotation) return; // round/epoch drifted
     try {
+      // Drop expired in-flight first so a wedged proposal is rebuilt fresh this
+      // retry instead of re-broadcast stale; runs on every paused node so it self-heals.
+      proposer.coordinator?.pruneExpired?.();
       _maybeProposeCommitteeRotation(currentRound, latestNum, proposer.nodeId, /* forceLeader */ true);
     } catch (err) {
       log.warn(`tryRotationProposal: threw — ${(err && err.message) || err}`);

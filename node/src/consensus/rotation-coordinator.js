@@ -208,14 +208,24 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     const existing = _inFlight.get(rotation_number);
     if (existing && existing.submittedAt != null) return false;
 
-    if (existing) {
-      // Retry path — preserve accumulated sigs across bullshark's
-      // per-anchor proposeRotation calls. Resetting inflight here would
-      // throw away peer sigs that arrived between retries.
+    // Reuse only while unexpired AND still the same committee everyone signs.
+    // Past the deadline, or if our recomputed payload_hash changed (DAG healed
+    // under us), the accrued sigs are dead, so rebuild fresh below.
+    const reusable = existing
+      && nowMs() <= existing.deadline
+      && existing.proposal.payload_hash === payload_hash;
+    if (reusable) {
+      // Preserve accumulated sigs across bullshark's per-anchor retries.
       _broadcast(_encodeProposal(existing.proposal));
       log.debug(`Rotation ${rotation_number}: re-broadcast proposal (sigs ${existing.sigs.size}/${existing.prevCommittee.size})`);
       _maybeSubmit(rotation_number);
       return true;
+    }
+    if (existing) {
+      // Rebuilds track the committee as the DAG converges; once it stabilizes
+      // the hash stops changing and sigs accumulate, so the boundary self-heals.
+      log.warn(`Rotation ${rotation_number}: in-flight stale (expired or committee changed) at ${existing.sigs.size}/${existing.prevCommittee.size} sigs; rebuilding fresh proposal`);
+      _inFlight.delete(rotation_number);
     }
 
     const message = `rotation:${payload_hash}:${identity.nodeId}`;
@@ -459,16 +469,20 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
       log.error(`Rotation ${rotation_number}: tx build failed — ${err.message}`);
       return;
     }
-    inflight.submittedAt = nowMs();
+    inflight.submittedAt = nowMs(); // set first to guard re-entrant double-submit; rolled back below on failure
 
     try {
       const r = submitTx(tx);
       if (r && typeof r.catch === "function") {
-        r.catch(err => log.warn(`Rotation ${rotation_number} submit rejected: ${(err && err.message) || err}`));
+        r.catch(err => {
+          log.warn(`Rotation ${rotation_number} submit rejected: ${(err && err.message) || err}`);
+          inflight.submittedAt = null; // async reject: let the next retry re-submit (commit-handler dedups)
+        });
       }
       log.info(`Rotation ${rotation_number}: submitted with ${signer_node_ids.length}/${inflight.prevCommittee.size} sigs (quorum=${required})`);
     } catch (err) {
       log.warn(`Rotation ${rotation_number} submitTx threw: ${(err && err.message) || err}`);
+      inflight.submittedAt = null; // sync throw: same, so the wedge clears on the next retry not after pruneExpired
     }
     // NOTE: keep the re-broadcast timer running after submission. Peers may
     // still be below quorum (e.g., late-connecting node missed our initial
