@@ -1308,7 +1308,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function _getQuorum() {
-    return computeQuorum(_getCommittee().length);
+    // Pass the round: a no-arg getActiveCommittee picks the latest rotation
+    // regardless of effective_round, prematurely inflating quorum at a boundary.
+    return computeQuorum(_getCommittee(_currentRound).length);
   }
 
   // Wire format ser/de for Batch/BatchAck/Certificate lives in

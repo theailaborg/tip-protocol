@@ -293,4 +293,25 @@ describe("multi-node consensus harness, committee rotation", () => {
       stopAll(nodes);
     }
   }, 260000);
+
+  // Regression for the premature-quorum bug: a single-member committee admitting
+  // a second node. The 1->2 rotation commits, then _getQuorum() must stay 1 until
+  // the rotation's effective_round (not jump to 2 the instant it commits), or the
+  // lone producer starves on a 2nd ack that no active member can give. With the
+  // round-aware _getQuorum fix this grows cleanly; without it, it stalls ~1 round
+  // after the rotation commits.
+  test("single-member committee grows 1 -> 2 cleanly (premature-quorum regression)", async () => {
+    const net = createNet();
+    const nodes = await bootRotationCommittee(net, { registered: 2, committee: 1 });
+    const target = EPOCH_ROUNDS + 2; // just past the first boundary (rotation effective)
+    try {
+      await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() > target), { timeoutMs: 90000 });
+      for (const n of nodes) expect(n.bullshark.lastCommittedRound()).toBeGreaterThan(target);
+      const rot1 = nodes[0].dag.getCommitteeRotation(1);
+      expect(rot1).toBeTruthy();              // rotation 1 committed
+      expect(rot1.committee.length).toBe(2);  // committee actually grew 1 -> 2
+    } finally {
+      stopAll(nodes);
+    }
+  }, 110000);
 });
