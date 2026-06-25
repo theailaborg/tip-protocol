@@ -401,6 +401,13 @@ const ALLOWED_PLATFORMS = Object.freeze({
   bluesky: [/^https?:\/\/bsky\.app\/profile\/[^/?#]/i],
   threads: [/^https?:\/\/(www\.)?threads\.net\/@[^/?#]/i],
   mastodon: [/^https?:\/\/[^/]+\/@[^/?#]/i],
+  // Rooverse — human-only social platform served from web.rooverse.app.
+  // OIDC/login-gated (no static bio to scrape), so linking is OAuth-only
+  // (see OAUTH_REQUIRED_PLATFORMS) and intentionally has NO bio-fetcher
+  // EXTRACTOR entry — the handle comes from the VP OAuth attestation, not a
+  // scraped bio. The public profile path is not fixed, so match the host
+  // plus any non-empty first path segment.
+  rooverse: [/^https?:\/\/(www\.|web\.)?rooverse\.app\/[^/?#]/i],
 });
 
 // Platforms that render bios with JavaScript or are login-gated — static
@@ -408,6 +415,7 @@ const ALLOWED_PLATFORMS = Object.freeze({
 // OAuth proof on the link request (vp_oauth_signature + vp_id).
 const OAUTH_REQUIRED_PLATFORMS = Object.freeze(new Set([
   "twitter", "x", "instagram", "tiktok", "threads", "facebook", "linkedin", "youtube",
+  "rooverse",
 ]));
 
 const INITIAL_INTERESTS_SEED = Object.freeze([
