@@ -22,7 +22,7 @@
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { shake256 } = require("../../../shared/crypto");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
-const { handleIncoming, initiate } = require("./handshake");
+const { handleIncoming, initiate, unauthorizedPeers } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
 const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
 const { buildKnownPeers, buildPeerEntry, broadcastAnnounce, registerAnnounceHandler } = require("./peer-discovery");
@@ -401,11 +401,7 @@ async function createNetworkNode(options = {}) {
   function reHandshakeUnauthorized() {
     let conns = [];
     try { conns = node.getConnections(); } catch { return; }
-    const seen = new Set();
-    for (const conn of conns) {
-      const pid = conn.remotePeer && conn.remotePeer.toString();
-      if (!pid || seen.has(pid) || _authorizedPeers.has(pid)) continue;
-      seen.add(pid);
+    for (const pid of unauthorizedPeers(conns, _authorizedPeers)) {
       initiate(pid, ctx).catch(() => { });
     }
   }

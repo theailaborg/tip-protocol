@@ -14,7 +14,7 @@ const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
-const { createPayload, verify } = require(path.join(SRC, "network", "handshake"));
+const { createPayload, verify, unauthorizedPeers } = require(path.join(SRC, "network", "handshake"));
 
 const CHAIN_ID = "tip-test-chain";
 const GENESIS_HASH = "a".repeat(64);
@@ -82,5 +82,31 @@ describe("handshake verify() — genesis-hash agreement", () => {
     expect(hs.genesisHash).toBe(GENESIS_HASH);
     expect(typeof hs.signature).toBe("string");
     expect(hs.signature.length).toBeGreaterThan(0);
+  });
+});
+
+// reHandshakeUnauthorized's peer-selection: connected peers we have NOT authorized.
+describe("unauthorizedPeers (re-handshake selection)", () => {
+  const conn = (id) => ({ remotePeer: { toString: () => id } });
+
+  test("returns connected peers absent from the authorized set", () => {
+    const authorized = new Map([["peer-A", "tip://node/A"]]);
+    const out = unauthorizedPeers([conn("peer-A"), conn("peer-B"), conn("peer-C")], authorized);
+    expect(out).toEqual(["peer-B", "peer-C"]); // peer-A skipped (authorized)
+  });
+
+  test("skips already-authorized peers (no redundant re-handshake)", () => {
+    const authorized = new Map([["peer-A", "tip://node/A"], ["peer-B", "tip://node/B"]]);
+    expect(unauthorizedPeers([conn("peer-A"), conn("peer-B")], authorized)).toEqual([]);
+  });
+
+  test("dedups multiple connections to the same peer", () => {
+    const out = unauthorizedPeers([conn("peer-A"), conn("peer-A"), conn("peer-B")], new Map());
+    expect(out).toEqual(["peer-A", "peer-B"]);
+  });
+
+  test("empty / missing connections → empty", () => {
+    expect(unauthorizedPeers([], new Map())).toEqual([]);
+    expect(unauthorizedPeers(null, new Map())).toEqual([]);
   });
 });

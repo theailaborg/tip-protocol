@@ -278,4 +278,20 @@ async function initiate(remotePeerId, ctx) {
   }
 }
 
-module.exports = { createPayload, verify, handleIncoming, initiate };
+/**
+ * Connected peers (libp2p peerId strings) we have not authorized yet — the set
+ * reHandshakeUnauthorized retries. Dedups by peerId; skips authorized peers.
+ */
+function unauthorizedPeers(connections, authorizedPeers) {
+  const seen = new Set();
+  const out = [];
+  for (const conn of connections || []) {
+    const pid = conn && conn.remotePeer && conn.remotePeer.toString();
+    if (!pid || seen.has(pid) || authorizedPeers.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+  }
+  return out;
+}
+
+module.exports = { createPayload, verify, handleIncoming, initiate, unauthorizedPeers };
