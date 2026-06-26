@@ -1650,3 +1650,119 @@ describe("byzantine-fork halt", () => {
     expect(status.byzantine_fork_halt.atRound).toBe(10);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Recovery: resync-from-behind guard + stuck-ahead syncing escape.
+//
+// A 2-node committee (quorum 2-of-2, zero fault tolerance) that desyncs by a
+// few rounds wedged live: the behind node's escape installed an OLDER snapshot
+// checkpoint (committed 1292 → checkpoint 1272), throwing away 20 rounds, then
+// re-replayed and re-wedged in a tight loop; meanwhile the ahead node sat stuck
+// in syncing because the equal-round promotion never fires when every peer is
+// behind. These cover both halves.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("recovery: resync-from-behind guard", () => {
+  test("triggerSnapshotResync skips when no peer is ahead (no regression)", async () => {
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal({ joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-A": "tip://node/A" } }),
+      syncHandler: fakeSyncHandler(), snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 1292 }),
+      log: silentLog(),
+    });
+
+    // Cache a peer at the SAME committed round — not ahead of us.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 1292, state_merkle_root: "aabbcc" }),
+      selfState({ committed_round: 1292 })
+    );
+
+    const result = await ae.triggerSnapshotResync(0, 0);
+    expect(result).toBe("no_peer_ahead");
+    expect(snap._calls).toHaveLength(0); // never installed → cannot regress
+  });
+
+  test("triggerSnapshotResync proceeds when a peer is genuinely ahead", async () => {
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal({ joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-A": "tip://node/A" } }),
+      syncHandler: fakeSyncHandler(), snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 1250 }),
+      log: silentLog(),
+    });
+
+    // Cache a peer AHEAD of us — a legitimate resync source.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 1292, state_merkle_root: "aabbcc" }),
+      selfState({ committed_round: 1250 })
+    );
+
+    const result = await ae.triggerSnapshotResync(0, 0);
+    expect(result).not.toBe("no_peer_ahead"); // guard must NOT false-skip a real catch-up
+  });
+});
+
+describe("recovery: stuck-ahead syncing escape", () => {
+  test("most-advanced node stuck in syncing exits to ready", async () => {
+    const narwhal = fakeNarwhal({ joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    // Only known peer is BEHIND us, and we are stuck in syncing.
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 90, state_merkle_root: "zzz" }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(result).toBe("ahead");
+    expect(narwhal._calls.exit).toEqual([100]); // exited syncing at our committed round
+    expect(narwhal.joinState()).toBe("ready");
+  });
+
+  test("does NOT exit syncing when a known peer is still ahead", async () => {
+    let state = "syncing";
+    const calls = { exit: [] };
+    const narwhal = {
+      joinState: () => state,
+      enterSyncMode: () => { state = "syncing"; },
+      exitSyncMode: (r) => { calls.exit.push(r); state = "ready"; },
+      _setState: (s) => { state = s; },
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    // Cache an AHEAD peer first (this setup call itself escapes syncing).
+    await ae.checkAndReconcile(
+      "peer-B",
+      peerStatus({ node_id: "tip://node/B", committed_round: 110 }),
+      selfState({ committed_round: 100 })
+    );
+    calls.exit.length = 0;
+    narwhal._setState("syncing");
+
+    // Now reconcile a behind peer: peer-B is still ahead, so we must stay syncing.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 90 }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(calls.exit).toEqual([]); // did NOT exit — a peer is genuinely ahead
+    expect(narwhal.joinState()).toBe("syncing");
+  });
+});

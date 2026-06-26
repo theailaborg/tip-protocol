@@ -1257,6 +1257,33 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
+    // Stuck-ahead escape. A node that entered syncing (watchdog / peer-auth)
+    // while being the most-advanced node has nothing to pull, yet the equal-
+    // round promotion above never fires (every peer is behind), so it stays in
+    // syncing forever and starves the committee of its acks (live: an ahead node
+    // sat stuck_syncing while its behind peer deferred resync to it). If self is
+    // in syncing and no known peer is ahead, exit to ready; a genuine fork is
+    // still caught later by the equal-round root check once the peer catches up.
+    if (
+      peerCommitted < selfCommitted
+      && narwhal
+      && typeof narwhal.joinState === "function"
+      && narwhal.joinState() === "syncing"
+      && typeof narwhal.exitSyncMode === "function"
+    ) {
+      let peerAhead = false;
+      for (const [, cached] of _lastStatus.entries()) {
+        if (Number((cached && cached.committed_round) || 0) > selfCommitted) { peerAhead = true; break; }
+      }
+      if (!peerAhead) {
+        _log.warn(
+          `anti-entropy: stuck in syncing while most-advanced (committed=${selfCommitted}, ` +
+          `peer ${peerStatus.node_id || peerId.slice(0, 12)} at ${peerCommitted}); exiting syncing to resume production`
+        );
+        narwhal.exitSyncMode(selfCommitted);
+      }
+    }
+
     return peerCommitted < selfCommitted ? "ahead" : "equal";
   }
 
@@ -1338,9 +1365,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // deployment via the protocol-constants block in genesis.
     if (!_running) return;
     if (!_snapshotResyncInFlight && narwhal) {
-      const joinState  = typeof narwhal.joinState === "function" ? narwhal.joinState() : null;
-      const lastAdvAt  = typeof narwhal.lastRoundAdvanceAt === "function" ? narwhal.lastRoundAdvanceAt() : 0;
-      const staleMs    = lastAdvAt > 0 ? nowMs() - lastAdvAt : 0;
+      const joinState = typeof narwhal.joinState === "function" ? narwhal.joinState() : null;
+      const lastAdvAt = typeof narwhal.lastRoundAdvanceAt === "function" ? narwhal.lastRoundAdvanceAt() : 0;
+      const staleMs = lastAdvAt > 0 ? nowMs() - lastAdvAt : 0;
       const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
       if (
         joinState === "ready" &&
@@ -1494,6 +1521,33 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // that corrupt the node's committed state and trigger a divergence loop.
     _snapshotResyncInFlight = true;
 
+    // Resync-from-behind guard. A snapshot install REPLACES canonical state with
+    // the source checkpoint then replays forward, so resyncing to a source that
+    // is not strictly ahead of us regresses state (live: a node at committed 1292
+    // kept installing a 1272 checkpoint and ping-ponged, knocking the 2-node
+    // committee below quorum each cycle). When no known peer is ahead, skip:
+    // narwhal keeps retrying the stalled round and finalizes once quorum returns.
+    // Exception: a byzantine-fork-halted node is on wrong state and needs a
+    // corrective resync even at the same round, so only guard when NOT halted.
+    const _selfByzHaltResync = narwhal && typeof narwhal.byzantineForkHalt === "function"
+      ? narwhal.byzantineForkHalt() : null;
+    let _selfCommittedNow = 0;
+    try { const _s = getConsensusState ? getConsensusState() : {}; _selfCommittedNow = Number(_s.committed_round || 0); }
+    catch { /* best-effort — fall through to the fresh-check backstop below */ }
+    let _maxPeerCommitted = 0;
+    for (const [, s] of _lastStatus.entries()) {
+      const cr = Number((s && s.committed_round) || 0);
+      if (cr > _maxPeerCommitted) _maxPeerCommitted = cr;
+    }
+    if (!_selfByzHaltResync && _lastStatus.size > 0 && _selfCommittedNow > 0 && _maxPeerCommitted <= _selfCommittedNow) {
+      _log.warn(
+        `anti-entropy: triggerSnapshotResync: no peer ahead of committed_round=${_selfCommittedNow} ` +
+        `(best peer at ${_maxPeerCommitted}); skipping resync to avoid regressing state`
+      );
+      _snapshotResyncInFlight = false;
+      return "no_peer_ahead";
+    }
+
     // Serialization guard: if any peer is currently syncing/catching_up, defer
     // this resync with jitter. With BULLSHARK_DEFER_MS=60s, snapshot resyncs are
     // rare (only genuinely GC'd certs trigger them). If two nodes hit the timer
@@ -1611,6 +1665,19 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _snapshotResyncInFlight = false;
         return "deferred";
       }
+      // Resync-from-behind backstop: the cache is ~4s stale, so re-check the
+      // freshly-queried primary. If it is not strictly ahead of us, installing
+      // its checkpoint would regress state — skip rather than ping-pong.
+      const _freshCommitted = Number(freshPeerStatus.committed_round || 0);
+      if (!_selfByzHaltResync && _selfCommittedNow > 0 && _freshCommitted <= _selfCommittedNow) {
+        _log.warn(
+          `anti-entropy: triggerSnapshotResync: fresh-check — primary ${bestPeerId.slice(0, 12)} ` +
+          `committed_round=${_freshCommitted} not ahead of ours ${_selfCommittedNow}; skipping resync`
+        );
+        _snapshotResyncInFlight = false;
+        return "no_peer_ahead";
+      }
+
       // Bug A fix: verify the fresh root still matches the majority root we tallied.
       // The _lastStatus cache is ~4s stale — a peer that was on the majority root when
       // we tallied may have since installed a minority snapshot and drifted. Installing
