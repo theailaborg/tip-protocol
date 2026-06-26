@@ -402,6 +402,10 @@ const CONSENSUS = {
   // → 2/4 certs forever" class the existing byzantine_fork escape doesn't
   // cover. See anti-entropy.js sub_quorum escape (issue #13).
   get SUB_QUORUM_ESCAPE_MS() { return _c().sub_quorum_escape_ms ?? 60000; },
+  // Rounds below committed_round to re-pull on sub_quorum escape, healing an
+  // uncommitted-frontier partition. Per-node tuning (no chain-fork risk), so it
+  // lives in local-config.
+  get FRONTIER_RECONCILE_LOOKBACK_ROUNDS() { return LC.FRONTIER_RECONCILE_LOOKBACK_ROUNDS; },
   // #47 Active heartbeat / peer-liveness probe. Each node pings every
   // authorized peer every HEARTBEAT_INTERVAL_MS over /tip/heartbeat/1.0.0.
   // HEARTBEAT_TIMEOUT_MS caps a slow/hung peer's response. After
