@@ -1708,6 +1708,46 @@ describe("recovery: resync-from-behind guard", () => {
   });
 });
 
+describe("recovery: don't pull-sync from a non-ready peer", () => {
+  test("peer ahead but join_state=catching_up → no pull, returns peer_not_ready", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 102, join_state: "catching_up" }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(result).toBe("peer_not_ready");
+    expect(sync._calls).toHaveLength(0); // never pulled from a catching-up joiner
+  });
+
+  test("peer ahead AND ready → still pulls (no false skip)", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 112, join_state: "ready" }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(result).toBe("behind");
+    expect(sync._calls).toHaveLength(1); // a ready ahead-peer is a valid source
+  });
+});
+
 describe("recovery: stuck-ahead syncing escape", () => {
   test("most-advanced node stuck in syncing exits to ready", async () => {
     const narwhal = fakeNarwhal({ joinState: "syncing" });

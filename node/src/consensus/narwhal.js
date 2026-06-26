@@ -1402,6 +1402,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _lastRoundAdvanceAt = nowMs();
     _stopWatchdog();
     if (_running) _scheduleNextRound(0);
+
+    // Sync finished — registry now current, so re-run the handshake with any peer
+    // we rejected ("not in registry") while mid-catch-up stale.
+    if (network && typeof network.reHandshakeUnauthorized === "function") {
+      network.reHandshakeUnauthorized();
+    }
   }
 
   function _startWatchdog() {

@@ -394,6 +394,22 @@ async function createNetworkNode(options = {}) {
     }
   }
 
+  // Re-handshake connected-but-unauthorized peers. The one-shot peer:connect path
+  // can permanently miss the window (a joiner rejects us while mid-catch-up stale,
+  // then no new peer:connect fires). initiate() runs over the existing connection
+  // via dialProtocol and no-ops on already-authorized peers.
+  function reHandshakeUnauthorized() {
+    let conns = [];
+    try { conns = node.getConnections(); } catch { return; }
+    const seen = new Set();
+    for (const conn of conns) {
+      const pid = conn.remotePeer && conn.remotePeer.toString();
+      if (!pid || seen.has(pid) || _authorizedPeers.has(pid)) continue;
+      seen.add(pid);
+      initiate(pid, ctx).catch(() => { });
+    }
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
   return {
     /** The underlying libp2p node */
@@ -467,6 +483,7 @@ async function createNetworkNode(options = {}) {
     broadcastToAuthorized,
     sendAckDirect,
     sendAckRequest,
+    reHandshakeUnauthorized,
     ROTATION_COORD_PROTOCOL,
     CONSENSUS_ACK_PROTOCOL,
     CONSENSUS_ACK_REQUEST_PROTOCOL,

@@ -123,6 +123,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // snapshot install doesn't immediately heal the divergence (e.g. because
   // the installed snapshot is still processed while the AE tick sees stale data).
   let _lastAutoRecoveryAt = 0;
+  let _lastReHandshakeAt = 0;
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
   let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
@@ -992,6 +993,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const peerRoot = String(peerStatus.state_merkle_root || "");
 
     if (peerCommitted > selfCommitted) {
+      // Don't pull from a still-syncing peer: a catching-up joiner fast-forwards its
+      // round to chase the head, so it transiently leads ours while holding no
+      // committed data we lack. Pulling is wasted thrash — wait for a ready peer.
+      const peerJoin = String(peerStatus.join_state || "ready");
+      if (peerJoin === "syncing" || peerJoin === "catching_up") {
+        return "peer_not_ready";
+      }
+
       // If we have an active byzantine_fork halt, a cert-gap pull cannot heal
       // the divergence — we committed wrong state at a past round and need a
       // full snapshot resync. The unanimous-minority path (Option B) only fires
@@ -1257,13 +1266,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
-    // Stuck-ahead escape. A node that entered syncing (watchdog / peer-auth)
-    // while being the most-advanced node has nothing to pull, yet the equal-
-    // round promotion above never fires (every peer is behind), so it stays in
-    // syncing forever and starves the committee of its acks (live: an ahead node
-    // sat stuck_syncing while its behind peer deferred resync to it). If self is
-    // in syncing and no known peer is ahead, exit to ready; a genuine fork is
-    // still caught later by the equal-round root check once the peer catches up.
+    // Stuck-ahead escape: a node stuck in syncing while most-advanced has nothing to
+    // pull and the equal-round promotion never fires (all peers behind), so it stays
+    // syncing forever, starving the committee of acks. Forks still caught at equal round.
     if (
       peerCommitted < selfCommitted
       && narwhal
@@ -1381,6 +1386,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         triggerSnapshotResync(0, 0).catch(err =>
           _log.warn(`anti-entropy: sub_quorum escape resync failed: ${err.message}`)
         );
+      }
+    }
+
+    // Re-handshake backstop: while ready, periodically retry the handshake with any
+    // connected-but-unauthorized peer (a peer that was stale when it rejected us, or
+    // dropped transiently). Ready-gated + throttled so it never adds to mid-sync churn.
+    if (!_running) return;
+    if (network && typeof network.reHandshakeUnauthorized === "function") {
+      const joinSt = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
+      if (joinSt === "ready" && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
+        _lastReHandshakeAt = nowMs();
+        network.reHandshakeUnauthorized();
       }
     }
   }
@@ -1521,14 +1538,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // that corrupt the node's committed state and trigger a divergence loop.
     _snapshotResyncInFlight = true;
 
-    // Resync-from-behind guard. A snapshot install REPLACES canonical state with
-    // the source checkpoint then replays forward, so resyncing to a source that
-    // is not strictly ahead of us regresses state (live: a node at committed 1292
-    // kept installing a 1272 checkpoint and ping-ponged, knocking the 2-node
-    // committee below quorum each cycle). When no known peer is ahead, skip:
-    // narwhal keeps retrying the stalled round and finalizes once quorum returns.
-    // Exception: a byzantine-fork-halted node is on wrong state and needs a
-    // corrective resync even at the same round, so only guard when NOT halted.
+    // Resync-from-behind guard: a snapshot install replaces canonical state with the
+    // source checkpoint, so resyncing to a source not strictly ahead regresses us
+    // (live: a node at 1292 kept installing a 1272 checkpoint and ping-ponged).
+    // Skip unless byzantine-halted, where a same-round corrective resync is valid.
     const _selfByzHaltResync = narwhal && typeof narwhal.byzantineForkHalt === "function"
       ? narwhal.byzantineForkHalt() : null;
     let _selfCommittedNow = 0;
@@ -1665,9 +1678,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _snapshotResyncInFlight = false;
         return "deferred";
       }
-      // Resync-from-behind backstop: the cache is ~4s stale, so re-check the
-      // freshly-queried primary. If it is not strictly ahead of us, installing
-      // its checkpoint would regress state — skip rather than ping-pong.
+      // Backstop: the cache is ~4s stale, so re-check the fresh primary; if it is
+      // not strictly ahead, installing its checkpoint would regress us.
       const _freshCommitted = Number(freshPeerStatus.committed_round || 0);
       if (!_selfByzHaltResync && _selfCommittedNow > 0 && _freshCommitted <= _selfCommittedNow) {
         _log.warn(
