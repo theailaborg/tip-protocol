@@ -1276,9 +1276,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       && narwhal.joinState() === "syncing"
       && typeof narwhal.exitSyncMode === "function"
     ) {
+      // Verify "ahead" against our own imported frontier, not the peer's unsigned
+      // committed_round: a faked round can't exceed certs we've verified on import,
+      // and while syncing we don't produce, so selfState.round only advances via
+      // verified imports. A lying peer therefore can't pin us in syncing.
+      const selfFrontier = Number(selfState.round || selfCommitted);
       let peerAhead = false;
       for (const [, cached] of _lastStatus.entries()) {
-        if (Number((cached && cached.committed_round) || 0) > selfCommitted) { peerAhead = true; break; }
+        const cr = Number((cached && cached.committed_round) || 0);
+        if (cr > selfCommitted && cr <= selfFrontier) { peerAhead = true; break; }
       }
       if (!peerAhead) {
         _log.warn(

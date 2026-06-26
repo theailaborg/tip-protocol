@@ -1762,7 +1762,7 @@ describe("recovery: stuck-ahead syncing escape", () => {
     const result = await ae.checkAndReconcile(
       "peer-id",
       peerStatus({ committed_round: 90, state_merkle_root: "zzz" }),
-      selfState({ committed_round: 100 })
+      selfState({ committed_round: 100, round: 100 })
     );
 
     expect(result).toBe("ahead");
@@ -1795,14 +1795,52 @@ describe("recovery: stuck-ahead syncing escape", () => {
     calls.exit.length = 0;
     narwhal._setState("syncing");
 
-    // Now reconcile a behind peer: peer-B is still ahead, so we must stay syncing.
+    // We've imported certs up to round 110 (round=110) but only finalized to 100,
+    // so peer-B's claim of 110 is within our verified frontier — genuinely ahead.
     await ae.checkAndReconcile(
       "peer-A",
       peerStatus({ node_id: "tip://node/A", committed_round: 90 }),
-      selfState({ committed_round: 100 })
+      selfState({ committed_round: 100, round: 110 })
     );
 
-    expect(calls.exit).toEqual([]); // did NOT exit — a peer is genuinely ahead
+    expect(calls.exit).toEqual([]); // did NOT exit — a peer is verified-ahead
     expect(narwhal.joinState()).toBe("syncing");
+  });
+
+  test("a faked ahead round above our frontier does NOT pin us in syncing", async () => {
+    let state = "syncing";
+    const calls = { exit: [] };
+    const narwhal = {
+      joinState: () => state,
+      enterSyncMode: () => { state = "syncing"; },
+      exitSyncMode: (r) => { calls.exit.push(r); state = "ready"; },
+      _setState: (s) => { state = s; },
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, round: 100 }),
+      log: silentLog(),
+    });
+
+    // Cache a LYING peer claiming a round far beyond our verified frontier (100).
+    await ae.checkAndReconcile(
+      "liar",
+      peerStatus({ node_id: "tip://node/liar", committed_round: 99999 }),
+      selfState({ committed_round: 100, round: 100 })
+    );
+    calls.exit.length = 0;
+    narwhal._setState("syncing");
+
+    // Reconcile a behind peer: the liar's 99999 exceeds our frontier (100) and is
+    // therefore unverified, so it must NOT keep us stuck — we exit.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 90 }),
+      selfState({ committed_round: 100, round: 100 })
+    );
+
+    expect(calls.exit).toEqual([100]); // faked round ignored → exited
+    expect(state).toBe("ready");
   });
 });
