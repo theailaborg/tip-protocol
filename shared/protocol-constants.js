@@ -416,6 +416,11 @@ const CONSENSUS = {
   get HEARTBEAT_TIMEOUT_MS() { return _c().heartbeat_timeout_ms ?? 2000; },
   get HEARTBEAT_SUSPECT_MISSES() { return _c().heartbeat_suspect_misses ?? 2; },
   get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return LC.ROTATION_COORD_REBROADCAST_INTERVAL_MS; },
+  // Pull-repair: a stuck node fetches the assembled rotation tx from a peer.
+  // Per-node operational tunables (no chain-fork risk) — single-tx fetch, so
+  // a tight timeout and small byte cap (vs the GB-scale full cert sync).
+  get ROTATION_REPAIR_TIMEOUT_MS() { return LC.ROTATION_REPAIR_TIMEOUT_MS; },
+  get ROTATION_REPAIR_MAX_RESPONSE_BYTES() { return LC.ROTATION_REPAIR_MAX_RESPONSE_BYTES; },
   get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
   get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
   // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in

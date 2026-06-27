@@ -41,7 +41,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
+const { mldsaSign, mldsaVerify, computeTxId, shake256, canonicalJson } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { GENESIS_TIMESTAMP } = require("../genesis");
@@ -78,8 +78,8 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   for (let i = 0; i < signer_node_ids.length; i++) {
     cosignatures.push({
       signer_kind: "node",
-      signer_ref:  signer_node_ids[i],
-      signature:   signatures[i],
+      signer_ref: signer_node_ids[i],
+      signature: signatures[i],
     });
   }
   cosignatures.sort((a, b) => a.signer_ref < b.signer_ref ? -1 : a.signer_ref > b.signer_ref ? 1 : 0);
@@ -149,7 +149,7 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
  * @param {Function} opts.submitTx      — (tx) => promise/result, used to publish COMMITTEE_ROTATION when quorum reached
  * @param {number} opts.deadlineMs      — drop in-flight after this many ms (default 30s)
  */
-function createRotationCoordinator({ dag, network, proto, identity, submitTx, deadlineMs = 30_000 }) {
+function createRotationCoordinator({ dag, network, proto, identity, submitTx, mempool = null, deadlineMs = 30_000 }) {
   if (!dag) throw new Error("rotation-coordinator: dag required");
   if (!network || typeof network.publish !== "function") throw new Error("rotation-coordinator: network.publish required");
   if (!proto || typeof proto.encode !== "function" || typeof proto.decode !== "function") {
@@ -372,7 +372,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     } else {
       const inflight = _inFlight.get(rotation_number);
       if (!inflight.sigs.has(proposer_node_id)
-          && inflight.proposal.payload_hash === payload_hash) {
+        && inflight.proposal.payload_hash === payload_hash) {
         inflight.sigs.set(proposer_node_id, proposer_signature);
         log.debug(`Rotation ${rotation_number}: merged peer ${proposer_node_id.slice(-12)}'s proposer sig (sigs ${inflight.sigs.size}/${inflight.prevCommittee.size})`);
       }
@@ -383,7 +383,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     // above may have just bumped sigs over quorum even when we don't sign
     // here — call _maybeSubmit at the end either way.
     if (prevPubkeys.has(identity.nodeId)
-        && !_inFlight.get(rotation_number).sigs.has(identity.nodeId)) {
+      && !_inFlight.get(rotation_number).sigs.has(identity.nodeId)) {
       const ourMsg = `rotation:${payload_hash}:${identity.nodeId}`;
       const ourSig = mldsaSign(ourMsg, identity.privateKey);
       _inFlight.get(rotation_number).sigs.set(identity.nodeId, ourSig);
@@ -610,8 +610,171 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     if (_protocolRegistered) return;
     if (!network || typeof network.handle !== "function" || !network.ROTATION_COORD_PROTOCOL) return;
     await network.handle(network.ROTATION_COORD_PROTOCOL, _handleIncomingStream);
+    if (network.ROTATION_REPAIR_PROTOCOL) {
+      await network.handle(network.ROTATION_REPAIR_PROTOCOL, _handleRepairRequest);
+    }
     _protocolRegistered = true;
     log.info(`rotation-coord protocol registered: ${network.ROTATION_COORD_PROTOCOL}`);
+  }
+
+  // ── Pull-repair ──────────────────────────────────────────────────────────────
+  // The coord protocol is push-only: a node whose outbound push breaks after a
+  // reconnect strands its signatures, and a node still below quorum has no way
+  // to obtain the assembled tx. These handlers add a request/response FETCH
+  // path — a stuck node pulls the 2f+1-signed rotation tx from a peer that
+  // already built it. The peer answers on the requester's stream (the direction
+  // that survives a one-directional partition; same shape as cert-sync), so
+  // recovery never depends on the broken push.
+
+  // Serve side: answer "do you hold the assembled tx for rotation N?" from our
+  // mempool. Read-all-then-respond — the caller half-closes its write side
+  // after sending the request, which ends the for-await.
+  async function _handleRepairRequest({ stream, connection }) {
+    const remotePeerId = connection?.remotePeer?.toString?.() || "";
+    try {
+      const chunks = [];
+      for await (const chunk of stream.source) chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+      let rotation_number = null;
+      try { rotation_number = Number(JSON.parse(Buffer.concat(chunks).toString("utf8")).rotation_number); }
+      catch { rotation_number = null; }
+      let tx = null;
+      if (rotation_number && mempool && typeof mempool.peekRotationTx === "function") {
+        tx = mempool.peekRotationTx(rotation_number) || null;
+      }
+      await stream.sink([Buffer.from(JSON.stringify({ rotation_number, tx }), "utf8")]);
+    } catch (err) {
+      log.debug(`rotation-repair serve from ${remotePeerId.slice(0, 12)} failed: ${err.message}`);
+    } finally {
+      try { await stream.close(); } catch { /* ignore */ }
+    }
+  }
+
+  // Request side: invoked when stuck at the boundary with no rotation tx in our
+  // mempool. Dial authorized peers in turn; the first that returns a tx we can
+  // verify wins. Self-limiting: once accepted, the tx lands in mempool, the
+  // carve-out succeeds, and the producer-pause stops nudging.
+  let _repairInFlight = false;
+  async function requestTxRepair() {
+    if (_repairInFlight) return false;   // the pause nudge fires every ~1.5s; don't stack dial storms
+    if (!network || typeof network.openStream !== "function" || !network.ROTATION_REPAIR_PROTOCOL) return false;
+    // Fetch the NEXT rotation to apply (latest+1), NOT epochOf(round). Rotations
+    // apply in order, the proposer always submits latest+1, and that is the tx
+    // the carve-out drains and peers actually hold. Across a multi-epoch gap
+    // epochOf(round) > latest+1 and no peer holds it, so fetching it finds none.
+    const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    const rotation_number = (latest ? latest.rotation_number : 0) + 1;
+    const existing = _inFlight.get(rotation_number);
+    if (existing && existing.submittedAt != null) return false;   // we already built + submitted it
+    _repairInFlight = true;
+    try {
+      const peers = (typeof network.peers === "function") ? network.peers() : [];
+      const reqBody = Buffer.from(JSON.stringify({ rotation_number }), "utf8");
+      for (const peerId of peers) {
+        let stream;
+        try { stream = await network.openStream(peerId, network.ROTATION_REPAIR_PROTOCOL); }
+        catch (err) { log.debug(`rotation-repair: dial ${peerId.slice(0, 12)} failed: ${err.message}`); continue; }
+        try {
+          await stream.sink([reqBody]);
+          const tx = await _readRepairResponse(stream);
+          if (tx && _acceptRepairedTx(tx, rotation_number)) {
+            log.notice(`rotation-repair: fetched rotation ${rotation_number} tx from ${peerId.slice(0, 12)} -> injected to mempool`);
+            return true;
+          }
+        } catch (err) {
+          log.debug(`rotation-repair: request to ${peerId.slice(0, 12)} failed: ${err.message}`);
+        } finally {
+          try { await stream.close(); } catch { /* ignore */ }
+        }
+      }
+      return false;
+    } finally {
+      _repairInFlight = false;
+    }
+  }
+
+  async function _readRepairResponse(stream) {
+    const maxBytes = CONSENSUS.ROTATION_REPAIR_MAX_RESPONSE_BYTES;
+    const timeoutMs = CONSENSUS.ROTATION_REPAIR_TIMEOUT_MS;
+    const readPromise = (async () => {
+      const chunks = [];
+      let total = 0;
+      for await (const chunk of stream.source) {
+        const c = chunk.subarray ? chunk.subarray() : chunk;
+        total += c.length;
+        if (total > maxBytes) throw new Error(`repair response exceeded ${maxBytes} bytes`);
+        chunks.push(c);
+      }
+      return chunks;
+    })();
+    let timer;
+    const timeout = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => { try { stream.close(); } catch { /* ignore */ } reject(new Error(`repair timeout ${timeoutMs}ms`)); }, timeoutMs);
+    });
+    let chunks;
+    try { chunks = await Promise.race([readPromise, timeout]); }
+    finally { clearTimeout(timer); }
+    if (!chunks.length) return null;
+    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")).tx || null; }
+    catch { return null; }
+  }
+
+  // Validate a fetched rotation tx, then rebuild it LOCALLY so the injected
+  // tx_id is deterministic (the peer's timestamp/tx_id are NOT covered by the
+  // cosignatures, so never trust them). Accept only with ≥ quorum valid
+  // previous-committee signatures over a payload_hash that binds its committee.
+  function _acceptRepairedTx(receivedTx, expectedRotation) {
+    const d = receivedTx && receivedTx.data;
+    if (!receivedTx || receivedTx.tx_type !== TX_TYPES.COMMITTEE_ROTATION || !d) return false;
+    if (Number(d.rotation_number) !== Number(expectedRotation)) return false;
+
+    const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    const expectedNext = latest ? latest.rotation_number + 1 : 1;
+    if (Number(d.rotation_number) !== expectedNext) return false;
+
+    const recomputed = shake256(canonicalJson({
+      rotation_number: d.rotation_number, effective_round: d.effective_round, committee: d.new_committee,
+    }));
+    if (recomputed !== d.payload_hash) return false;
+
+    const prevCommittee = Array.isArray(latest?.committee) ? latest.committee : [];
+    const prevPubkeys = new Map(prevCommittee.map(m => [m.node_id, m.public_key]));
+    const required = computeQuorum(prevCommittee.length);
+    const valid = new Map();
+    for (const c of (Array.isArray(d.cosignatures) ? d.cosignatures : [])) {
+      const signer = c.signer_ref;
+      if (!signer || valid.has(signer) || !prevPubkeys.has(signer)) continue;
+      let okSig = false;
+      try { okSig = mldsaVerify(`rotation:${d.payload_hash}:${signer}`, c.signature, prevPubkeys.get(signer)); }
+      catch { okSig = false; }   // malformed signature bytes from an untrusted peer
+      if (okSig) valid.set(signer, c.signature);
+    }
+    if (valid.size < required) return false;
+
+    const signer_node_ids = [...valid.keys()].sort();
+    const signatures = signer_node_ids.map(id => valid.get(id));
+    let tx;
+    try {
+      tx = buildRotationTx(dag, {
+        rotation_number: d.rotation_number, effective_round: d.effective_round,
+        new_committee: d.new_committee, payload_hash: d.payload_hash,
+      }, signer_node_ids, signatures);
+    } catch (err) {
+      log.debug(`rotation-repair: rebuild failed — ${err.message}`);
+      return false;
+    }
+    try {
+      const r = submitTx(tx);
+      if (r && typeof r.catch === "function") r.catch(() => { });
+      // Suppress a redundant self-submit: if our own aggregation later crosses
+      // quorum it would build a second (possibly different-subset) tx for the
+      // same rotation. The injected tx is canonical and already in the mempool.
+      const inflight = _inFlight.get(d.rotation_number);
+      if (inflight && inflight.submittedAt == null) inflight.submittedAt = nowMs();
+      return true;
+    } catch (err) {
+      log.debug(`rotation-repair: submit of fetched tx failed — ${err.message}`);
+      return false;
+    }
   }
 
   function stop() {
@@ -643,10 +806,13 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     pruneExpired,
     resetInflight,
     hasOpenInflight,
+    requestTxRepair,
     stop,
     // Test-only introspection.
     _state: () => _inFlight,
     _rebroadcastTick: () => _rebroadcastTick(),
+    _handleRepairRequest: (args) => _handleRepairRequest(args),
+    _acceptRepairedTx: (tx, rotation_number) => _acceptRepairedTx(tx, rotation_number),
   };
 }
 

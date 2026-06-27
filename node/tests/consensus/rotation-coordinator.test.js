@@ -873,3 +873,184 @@ describe("#68 rotation coordinator", () => {
   });
 
 });
+
+// ── Pull-repair: fetch the assembled rotation tx from a peer ──────────────────
+// The coord push channel can strand a node below quorum (one-directional
+// partition). Pull-repair lets it FETCH the 2f+1-signed tx from a peer that
+// built it, re-validate, rebuild locally (deterministic tx_id), and inject.
+describe("rotation pull-repair", () => {
+  const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
+
+  function _idFor(keys) {
+    return keys.map((k, i) => ({ node_id: `tip://node/${"ABCDE"[i]}`, public_key: k.publicKey }));
+  }
+
+  // Build a valid rotation-2 tx signed by the given committee-index set.
+  function _validRotationTx(dag, ids, keys, signerIdxs, { rotation_number = 2, effective_round = 400 } = {}) {
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number, effective_round, committee: new_committee });
+    const pairs = signerIdxs
+      .map(i => [ids[i].node_id, mldsaSign(`rotation:${payload_hash}:${ids[i].node_id}`, keys[i].privateKey)])
+      .sort((a, b) => a[0] < b[0] ? -1 : 1);
+    return buildRotationTx(dag, { rotation_number, effective_round, new_committee, payload_hash },
+      pairs.map(p => p[0]), pairs.map(p => p[1]));
+  }
+
+  function _repairNetwork({ openStreamImpl, peers = ["peer1"] } = {}) {
+    return {
+      TOPICS: { ROTATION_COORDINATION: TOPIC },
+      publish: () => {},
+      ROTATION_REPAIR_PROTOCOL: "/tip/rotation-repair/1.0.0",
+      peers: () => peers,
+      openStream: openStreamImpl || (async () => { throw new Error("no peer"); }),
+      handle: async () => {},
+    };
+  }
+
+  function _buildRepair({ dag, keys, submitted = [], mempool = { peekRotationTx: () => null }, network }) {
+    const coord = createRotationCoordinator({
+      dag, network, mempool,
+      proto: { encode, decode },
+      identity: { nodeId: `tip://node/A`, privateKey: keys[0].privateKey, publicKey: keys[0].publicKey },
+      submitTx: (tx) => { submitted.push(tx); },
+      deadlineMs: 5000,
+    });
+    return { coord, submitted };
+  }
+
+  // A request-side stream whose source yields a fixed JSON response.
+  function _responseStream(responseObj) {
+    return {
+      sink: async (it) => { for await (const _c of it) { /* drain request */ } },
+      source: (async function* () { yield Buffer.from(JSON.stringify(responseObj), "utf8"); })(),
+      close: async () => {},
+    };
+  }
+
+  test("_acceptRepairedTx accepts a valid quorum-signed tx and injects it", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);                       // latest = rotation 1 → expectedNext = 2
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);  // A+B = quorum(3)=2
+
+    expect(coord._acceptRepairedTx(tx, 2)).toBe(true);
+    expect(submitted).toHaveLength(1);
+    expect(Number(submitted[0].data.rotation_number)).toBe(2);
+    expect(submitted[0].data.cosignatures.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("_acceptRepairedTx rejects a tx below quorum", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const tx = _validRotationTx(dag, ids, keys, [0]);     // only A = 1 < quorum 2
+
+    expect(coord._acceptRepairedTx(tx, 2)).toBe(false);
+    expect(submitted).toHaveLength(0);
+  });
+
+  test("_acceptRepairedTx rejects a tx with a forged signature (drops below quorum)", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);
+    // Replace B's sig with a valid-length sig over the WRONG message.
+    const bEntry = tx.data.cosignatures.find(c => c.signer_ref === ids[1].node_id);
+    bEntry.signature = mldsaSign(`rotation:WRONGHASH:${ids[1].node_id}`, keys[1].privateKey);
+
+    expect(coord._acceptRepairedTx(tx, 2)).toBe(false);   // only A valid → 1 < 2
+    expect(submitted).toHaveLength(0);
+  });
+
+  test("_acceptRepairedTx rejects a tx whose committee does not bind its payload_hash", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);
+    tx.data.new_committee = [...tx.data.new_committee, { node_id: "tip://node/Z", public_key: "ab".repeat(32) }];
+
+    expect(coord._acceptRepairedTx(tx, 2)).toBe(false);   // recomputed payload_hash no longer matches
+    expect(submitted).toHaveLength(0);
+  });
+
+  test("_acceptRepairedTx rejects a tx for the wrong rotation_number", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);  // rotation 2
+
+    expect(coord._acceptRepairedTx(tx, 3)).toBe(false);   // we asked for 3
+    expect(submitted).toHaveLength(0);
+  });
+
+  test("_handleRepairRequest serves the mempool tx for the requested rotation, null otherwise", async () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);
+    const mempool = { peekRotationTx: (n) => Number(n) === 2 ? tx : null };
+    const { coord } = _buildRepair({ dag, keys, mempool, network: _repairNetwork() });
+
+    async function serve(rotation_number) {
+      const written = [];
+      const stream = {
+        source: (async function* () { yield Buffer.from(JSON.stringify({ rotation_number }), "utf8"); })(),
+        sink: async (it) => { for await (const c of it) written.push(Buffer.from(c)); },
+        close: async () => {},
+      };
+      await coord._handleRepairRequest({ stream, connection: { remotePeer: { toString: () => "peerX" } } });
+      return JSON.parse(Buffer.concat(written).toString("utf8"));
+    }
+
+    const hit = await serve(2);
+    expect(Number(hit.tx.data.rotation_number)).toBe(2);
+    const miss = await serve(99);
+    expect(miss.tx).toBeNull();
+  });
+
+  test("requestTxRepair fetches latest+1 from a peer and injects it (ignores epochOf drift)", async () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);                       // latest = rotation 1 → target = 2
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);
+    const submitted = [];
+    const network = _repairNetwork({
+      peers: ["peer1"],
+      openStreamImpl: async () => _responseStream({ rotation_number: 2, tx }),
+    });
+    const { coord } = _buildRepair({ dag, keys, submitted, network });
+
+    const ok = await coord.requestTxRepair();             // no arg — derives latest+1 = 2
+    expect(ok).toBe(true);
+    expect(submitted).toHaveLength(1);
+    expect(Number(submitted[0].data.rotation_number)).toBe(2);
+  });
+
+  test("requestTxRepair skips a peer that has no tx and tries the next", async () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const tx = _validRotationTx(dag, ids, keys, [0, 1]);
+    const submitted = [];
+    const responses = { peer1: { rotation_number: 2, tx: null }, peer2: { rotation_number: 2, tx } };
+    const network = _repairNetwork({
+      peers: ["peer1", "peer2"],
+      openStreamImpl: async (peerId) => _responseStream(responses[peerId]),
+    });
+    const { coord } = _buildRepair({ dag, keys, submitted, network });
+
+    const ok = await coord.requestTxRepair();
+    expect(ok).toBe(true);
+    expect(submitted).toHaveLength(1);
+  });
+});
