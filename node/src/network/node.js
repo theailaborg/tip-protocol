@@ -24,6 +24,7 @@ const { nowMs } = require("../../../shared/time");
 const { shake256 } = require("../../../shared/crypto");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
+const { eventLoopMonitor } = require("../lib/event-loop-monitor");
 const { createRateLimiter } = require("./rate-limiter");
 const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
 const { buildKnownPeers, buildPeerEntry, broadcastAnnounce, registerAnnounceHandler } = require("./peer-discovery");
@@ -120,9 +121,17 @@ async function createNetworkNode(options = {}) {
   // State
   let _topicHandlers = {};
   const _authorizedPeers = new Map();
-  // peerId -> { tipNodeId, at }: recorded on disconnect for fast re-auth (see peer:connect).
+  // peerId -> { tipNodeId, at } recorded on disconnect, for fast re-auth on a
+  // quick reconnect (see the peer:connect handler).
   const _recentlyAuthed = new Map();
   let _onPeerAuthorized = null;
+
+  // Cumulative connection-churn counters. Gauges (current peer count) alias
+  // through sub-scrape flaps; these survive so rate() exposes the flap itself.
+  const _netMetrics = {
+    connects: 0, disconnects: 0, conn_closes: 0,
+    handshakes_initiated: 0, rehandshakes: 0, fast_reauths: 0,
+  };
 
   // Deterministic peer ID from TIP node ID 
   // Same TIP node ID = same libp2p peer ID across restarts.
@@ -182,6 +191,18 @@ async function createNetworkNode(options = {}) {
   log.info(`libp2p node started on port ${port}`);
   log.info(`Peer ID: ${node.peerId.toString()}`);
   for (const addr of node.getMultiaddrs()) log.info(`Listening: ${addr.toString()}`);
+
+  // Rawest flap signal: every libp2p connection teardown (incl. pre-auth),
+  // counted for rate() and logged with the recent event-loop max so a drop
+  // caused by a thread stall is visible as "close right after high lag".
+  node.addEventListener("connection:close", (event) => {
+    _netMetrics.conn_closes++;
+    const conn = event.detail;
+    const pid = (conn && conn.remotePeer && conn.remotePeer.toString()) || "?";
+    const openedAt = conn && conn.timeline && conn.timeline.open;
+    const ageMs = openedAt ? (nowMs() - openedAt) : -1;
+    log.debug(`connection:close ${pid.slice(0, 16)}... dir=${conn && conn.direction} age=${ageMs}ms streams=${conn && conn.streams ? conn.streams.length : "?"} | recent event-loop max=${Math.round(eventLoopMonitor.sample().max_ms)}ms`);
+  });
 
   // ── GossipSub + DirectPeers (needed by handshake ctx below) ────────────
   const pubsub = node.services.pubsub;
@@ -290,10 +311,16 @@ async function createNetworkNode(options = {}) {
 
   node.addEventListener("peer:connect", (event) => {
     const remotePeerId = event.detail.toString();
-    // Within the grace window a reconnecting (Noise-authenticated) peerId we recently
-    // verified restores auth without a fresh ML-DSA handshake — the binding can't change.
+    _netMetrics.connects++;
+    // Fast re-authorization. libp2p drops connections under event-loop load and the
+    // same peer reconnects within seconds; a full ML-DSA re-handshake every flap is
+    // the main re-auth churn under stress. A reconnecting peerId is Noise-authenticated
+    // (provably the same libp2p identity), and we verified its peerId->nodeId binding
+    // moments ago, so within the grace window we restore authorization without a fresh
+    // handshake. The binding can't change (peerId is the key hash; nodeId is registered).
     const recent = _recentlyAuthed.get(remotePeerId);
     if (canFastReauth(recent, _authorizedPeers.has(remotePeerId), nowMs(), CONSENSUS.HANDSHAKE_REAUTH_GRACE_MS)) {
+      _netMetrics.fast_reauths++;
       _recentlyAuthed.delete(remotePeerId);
       _authorizedPeers.set(remotePeerId, recent.tipNodeId);
       ctx.onPeerAuthorized(remotePeerId, recent.tipNodeId);
@@ -303,6 +330,9 @@ async function createNetworkNode(options = {}) {
     const myPeerId = node.peerId.toString();
     // Only one side initiates handshake — lower peerId goes first (deterministic)
     if (myPeerId < remotePeerId) {
+      // Count only real initiations: initiate() no-ops on an already-authorized
+      // peer (redundant peer:connect), so guarding here keeps the counter honest.
+      if (!_authorizedPeers.has(remotePeerId)) _netMetrics.handshakes_initiated++;
       log.info(`Peer connected: ${remotePeerId.slice(0, 16)}... — initiating handshake (we are lower ID)`);
       initiate(remotePeerId, ctx);
     } else {
@@ -312,9 +342,10 @@ async function createNetworkNode(options = {}) {
 
   node.addEventListener("peer:disconnect", (event) => {
     const remotePeerId = event.detail.toString();
+    _netMetrics.disconnects++;
     const tipNodeId = _authorizedPeers.get(remotePeerId);
-    // Remember the binding for a quick-reconnect fast-reauth; still de-authorize below
-    // so dialKnownPeers (which only dials unauthorized peers) re-dials.
+    // Remember the binding so a quick reconnect skips the re-handshake (see peer:connect).
+    // We still de-authorize now so dialKnownPeers re-dials (it only dials unauthorized peers).
     if (tipNodeId) {
       const cutoff = nowMs() - CONSENSUS.HANDSHAKE_REAUTH_GRACE_MS;
       for (const [pid, e] of _recentlyAuthed) if (e.at < cutoff) _recentlyAuthed.delete(pid);
@@ -422,6 +453,7 @@ async function createNetworkNode(options = {}) {
     let conns = [];
     try { conns = node.getConnections(); } catch { return; }
     for (const pid of unauthorizedPeers(conns, _authorizedPeers)) {
+      _netMetrics.rehandshakes++;
       initiate(pid, ctx).catch(() => { });
     }
   }
@@ -455,6 +487,19 @@ async function createNetworkNode(options = {}) {
 
     /** Snapshot of gossipsub DirectPeers set (for tests + ops diagnostics) */
     directPeers: () => directPeers.list(),
+
+    /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth). */
+    metrics: () => ({ ..._netMetrics }),
+
+    /** GossipSub mesh peers per subscribed topic; N+B liveness rides on the mesh. */
+    meshPeers: () => {
+      const out = {};
+      for (const t of Object.values(TOPICS)) {
+        try { out[t] = (pubsub.getMeshPeers?.(t) || []).length; }
+        catch { out[t] = 0; }
+      }
+      return out;
+    },
 
     /**
      * Build the `known_peers` list for sharing with another peer (#48).
