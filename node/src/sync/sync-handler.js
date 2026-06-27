@@ -50,7 +50,7 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.network     libp2p network node
  * @param {Function} options.isAuthorizedPeer  (peerId) => boolean
  */
-function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
+function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null }) {
   // Build Merkle tree from existing certificates
   let _merkle = _buildMerkleFromDAG();
 
@@ -432,6 +432,13 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false }) {
       if (imported > 0) _merkle = _buildMerkleFromDAG();
 
       log.info(`Sync: imported ${imported}/${certFrames.length} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
+      // Drive bullshark to commit up to the peer's frontier (gossip certs commit
+      // via onCertSaved, synced ones don't). Drive even when imported is 0: a
+      // behind node that already holds the certs must still advance committed.
+      if (typeof onCertsImported === "function" && peerLatestRound > 0) {
+        try { onCertsImported(Math.max(maxRound, peerLatestRound)); }
+        catch (err) { log.warn(`Sync: onCertsImported failed: ${err.message}`); }
+      }
       return { imported, fromRound, toRound: maxRound, peerLatestRound };
     } catch (err) {
       throw new Error(`Sync stream error with ${peerId.slice(0, 12)}: ${err.message}`);
