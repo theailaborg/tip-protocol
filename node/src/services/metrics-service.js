@@ -38,6 +38,8 @@ const { nowMs } = require("../../../shared/time");
 // Pure Prometheus text-format helpers live in lib/ — they're reusable
 // from any emitter and don't belong in a TIP-specific service file.
 const { line, gauge, counter } = require("../lib/prom-format");
+const { eventLoopMonitor } = require("../lib/event-loop-monitor");
+const { CONSENSUS } = require("../../../shared/protocol-constants");
 
 // ── Section builders ──────────────────────────────────────────────────────
 //
@@ -55,6 +57,21 @@ function processSection(config) {
     gauge("tip_process_memory_rss_bytes", "Resident Set Size of the node process", mem.rss),
     gauge("tip_process_memory_heap_used_bytes", "Node heap bytes currently allocated", mem.heapUsed),
     gauge("tip_process_memory_heap_total_bytes", "Node heap capacity", mem.heapTotal),
+  ].join("\n");
+}
+
+/**
+ * Event-loop delay over the last sampling window. The node runs consensus on
+ * one thread; a stall here (sync crypto, merkle rebuild, GC) is what makes a
+ * node miss libp2p deadlines and drop peers. Overlay max_ms against
+ * tip_consensus_stale_ms to see whether a round-stall trails a loop-stall.
+ */
+function eventLoopSection() {
+  const s = eventLoopMonitor.sample();
+  return [
+    gauge("tip_process_event_loop_lag_max_ms", "Max event-loop delay over the last 1s window (ms)", s.max_ms),
+    gauge("tip_process_event_loop_lag_p99_ms", "p99 event-loop delay over the last 1s window (ms)", s.p99_ms),
+    gauge("tip_process_event_loop_lag_mean_ms", "Mean event-loop delay over the last 1s window (ms)", s.mean_ms),
   ].join("\n");
 }
 
@@ -102,6 +119,31 @@ function networkSection(network, dag) {
     gauge("tip_network_peers_authorized", "Count of peers that completed TIP handshake and are currently connected", net.peerCount?.() ?? 0),
     gauge("tip_network_direct_peers", "Count of peers in gossipsub DirectPeers mesh (bypass random mesh selection)", (net.directPeers?.() || []).length),
   ];
+
+  // Connection-churn counters. The gauges above only show the current count;
+  // a node that drops and reconnects between two scrapes is invisible to them.
+  // rate() over these exposes the flap that "node goes offline randomly" is.
+  const cm = (net.metrics?.()) || {};
+  out.push(counter("tip_network_peer_connects_total", "libp2p peer:connect events since process start", cm.connects));
+  out.push(counter("tip_network_peer_disconnects_total", "libp2p peer:disconnect events since process start", cm.disconnects));
+  out.push(counter("tip_network_connection_closes_total", "libp2p connection:close events (incl. pre-auth), the rawest flap signal", cm.conn_closes));
+  out.push(counter("tip_network_handshakes_initiated_total", "Full ML-DSA handshakes this node initiated (no-op skips excluded)", cm.handshakes_initiated));
+  out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
+  out.push(counter("tip_network_fast_reauths_total", "Reconnects authorized within the grace window without a full handshake", cm.fast_reauths));
+
+  // GossipSub RANDOM-mesh size per topic. TIP pins committee members via
+  // DirectPeers, so this is expected to be ~0 and is NOT the connectivity
+  // signal; use tip_network_direct_peers / tip_network_connectivity_complete.
+  // Kept only as a fallback-health indicator: if DirectPeers ever fails, cert
+  // propagation would lean on this mesh, and a non-trivial value here would
+  // signal that fallback is active.
+  const mesh = (net.meshPeers?.()) || {};
+  const meshTopics = Object.entries(mesh);
+  if (meshTopics.length > 0) {
+    out.push("# HELP tip_network_gossip_mesh_peers GossipSub random-mesh peer count per topic. Expected ~0 under DirectPeers; non-zero means cert propagation fell back to the random mesh. For committee connectivity use tip_network_direct_peers.");
+    out.push("# TYPE tip_network_gossip_mesh_peers gauge");
+    for (const [topic, n] of meshTopics) out.push(line("tip_network_gossip_mesh_peers", n, { topic }));
+  }
 
   const authorized = net.authorizedPeers ? net.authorizedPeers() : {};
   const peerTipIds = Object.values(authorized).filter(Boolean);
@@ -298,6 +340,46 @@ function committeeSection(s, dag) {
   ].join("\n");
 }
 
+/**
+ * Consensus quality: the at-a-glance "is this node healthy and is the
+ * federation fragile" signals, derived from existing stats:
+ *   quorum_margin       active participants beyond quorum. 0 = at the edge,
+ *                       any single drop halts. The core fragility number.
+ *   connectivity_complete  1 if this node is connected to every other active
+ *                       committee member (authorized peers >= active-1).
+ *   heartbeat_suspect_peers  peers this node currently can't reach (>= the
+ *                       suspect threshold of consecutive misses). The trigger
+ *                       for the anti-entropy reconciliation storm.
+ */
+function consensusQualitySection(s, network) {
+  const n = s.narwhal || {};
+  const active = Number(n.activeParticipants || 0);
+  const quorum = Number(n.quorum || 0);
+  const authorized = network?.current?.peerCount?.() ?? 0;
+  const expectedPeers = Math.max(0, active - 1);
+
+  let suspect = 0, withMisses = 0, tracked = 0;
+  // heartbeat.peerStates() returns a plain object (peerId -> {consecutiveMisses}).
+  const peers = s.heartbeat?.peers;
+  if (peers && typeof peers === "object") {
+    for (const ps of Object.values(peers)) {
+      tracked++;
+      const m = (ps && ps.consecutiveMisses) || 0;
+      if (m > 0) withMisses++;
+      if (m >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES) suspect++;
+    }
+  }
+
+  return [
+    gauge("tip_consensus_quorum_margin", "Active participants beyond quorum (active - quorum). 0 = at the edge; any single drop halts the federation.", active - quorum),
+    gauge("tip_consensus_expected_peers", "Peers this node should be connected to for full mesh (active committee - 1).", expectedPeers),
+    gauge("tip_network_connectivity_complete", "1 if authorized peers >= expected (connected to every active committee member); 0 if degraded.", authorized >= expectedPeers ? 1 : 0),
+    gauge("tip_heartbeat_tracked_peers", "Peers tracked by the heartbeat liveness manager.", tracked),
+    gauge("tip_heartbeat_peers_with_misses", "Peers with >=1 consecutive heartbeat miss (early churn signal).", withMisses),
+    gauge("tip_heartbeat_suspect_peers", "Peers at/over the suspect threshold of consecutive misses; each triggers anti-entropy reconciliation. Sustained >0 = the jitter feedback loop is active.", suspect),
+  ].join("\n");
+}
+
 function antiEntropySection(s) {
   const ae = s.antiEntropy || {};
   const aem = ae.metrics || {};
@@ -408,6 +490,7 @@ function createMetricsService({ dag, config, consensus, network }) {
   function buildBody() {
     const sections = [];
     sections.push(processSection(config));
+    sections.push(eventLoopSection());
     sections.push(dagSection(dag));
     sections.push(registrySection(dag));
 
@@ -419,6 +502,7 @@ function createMetricsService({ dag, config, consensus, network }) {
       const stats = cons.stats();
       sections.push(narwhalSection(stats));
       sections.push(bullsharkSection(stats));
+      sections.push(consensusQualitySection(stats, network));
       sections.push(mempoolSection(stats));
       sections.push(antiEntropySection(stats));
       sections.push(committeeSection(stats, dag));   // §4 + #34
