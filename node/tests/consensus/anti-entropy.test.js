@@ -31,6 +31,7 @@ const { initCrypto } = require(path.join(SHARED, "crypto"));
 const { createAntiEntropy } = require(path.join(SRC, "consensus", "anti-entropy"));
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
 const { createStreamPair } = require("../helpers/stream-pair");
+const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
 
 beforeAll(async () => {
   await initCrypto();
@@ -1648,5 +1649,359 @@ describe("byzantine-fork halt", () => {
     expect(status.divergence.distinct_peers_observed).toBe(2);
     expect(status.byzantine_fork_halt).not.toBeNull();
     expect(status.byzantine_fork_halt.atRound).toBe(10);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Recovery: resync-from-behind guard + stuck-ahead syncing escape.
+//
+// A 2-node committee (quorum 2-of-2, zero fault tolerance) that desyncs by a
+// few rounds wedged live: the behind node's escape installed an OLDER snapshot
+// checkpoint (committed 1292 → checkpoint 1272), throwing away 20 rounds, then
+// re-replayed and re-wedged in a tight loop; meanwhile the ahead node sat stuck
+// in syncing because the equal-round promotion never fires when every peer is
+// behind. These cover both halves.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("recovery: resync-from-behind guard", () => {
+  test("triggerSnapshotResync skips when no peer is ahead (no regression)", async () => {
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal({ joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-A": "tip://node/A" } }),
+      syncHandler: fakeSyncHandler(), snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 1292 }),
+      log: silentLog(),
+    });
+
+    // Cache a peer at the SAME committed round — not ahead of us.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 1292, state_merkle_root: "aabbcc" }),
+      selfState({ committed_round: 1292 })
+    );
+
+    const result = await ae.triggerSnapshotResync(0, 0);
+    expect(result).toBe("no_peer_ahead");
+    expect(snap._calls).toHaveLength(0); // never installed → cannot regress
+  });
+
+  test("triggerSnapshotResync proceeds when a peer is genuinely ahead", async () => {
+    const snap = fakeSnapshotHandler();
+    const narwhal = fakeNarwhal({ joinState: "ready" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { "peer-A": "tip://node/A" } }),
+      syncHandler: fakeSyncHandler(), snapshotHandler: snap, narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 1250 }),
+      log: silentLog(),
+    });
+
+    // Cache a peer AHEAD of us — a legitimate resync source.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 1292, state_merkle_root: "aabbcc" }),
+      selfState({ committed_round: 1250 })
+    );
+
+    const result = await ae.triggerSnapshotResync(0, 0);
+    expect(result).not.toBe("no_peer_ahead"); // guard must NOT false-skip a real catch-up
+  });
+});
+
+describe("recovery: don't pull-sync from a non-ready peer", () => {
+  test("peer ahead but join_state=catching_up → no pull, returns peer_not_ready", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 102, join_state: "catching_up" }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(result).toBe("peer_not_ready");
+    expect(sync._calls).toHaveLength(0); // never pulled from a catching-up joiner
+  });
+
+  test("peer ahead AND ready → still pulls (no false skip)", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: sync,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 112, join_state: "ready" }),
+      selfState({ committed_round: 100 })
+    );
+
+    expect(result).toBe("behind");
+    expect(sync._calls).toHaveLength(1); // a ready ahead-peer is a valid source
+  });
+});
+
+describe("recovery: stuck-ahead syncing escape", () => {
+  test("most-advanced node stuck in syncing exits to ready", async () => {
+    const narwhal = fakeNarwhal({ joinState: "syncing" });
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    // Only known peer is BEHIND us, and we are stuck in syncing.
+    const result = await ae.checkAndReconcile(
+      "peer-id",
+      peerStatus({ committed_round: 90, state_merkle_root: "zzz" }),
+      selfState({ committed_round: 100, round: 100 })
+    );
+
+    expect(result).toBe("ahead");
+    expect(narwhal._calls.exit).toEqual([100]); // exited syncing at our committed round
+    expect(narwhal.joinState()).toBe("ready");
+  });
+
+  test("does NOT exit syncing when a known peer is still ahead", async () => {
+    let state = "syncing";
+    const calls = { exit: [] };
+    const narwhal = {
+      joinState: () => state,
+      enterSyncMode: () => { state = "syncing"; },
+      exitSyncMode: (r) => { calls.exit.push(r); state = "ready"; },
+      _setState: (s) => { state = s; },
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100 }),
+      log: silentLog(),
+    });
+
+    // Cache an AHEAD peer first (this setup call itself escapes syncing).
+    await ae.checkAndReconcile(
+      "peer-B",
+      peerStatus({ node_id: "tip://node/B", committed_round: 110 }),
+      selfState({ committed_round: 100 })
+    );
+    calls.exit.length = 0;
+    narwhal._setState("syncing");
+
+    // We've imported certs up to round 110 (round=110) but only finalized to 100,
+    // so peer-B's claim of 110 is within our verified frontier — genuinely ahead.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 90 }),
+      selfState({ committed_round: 100, round: 110 })
+    );
+
+    expect(calls.exit).toEqual([]); // did NOT exit — a peer is verified-ahead
+    expect(narwhal.joinState()).toBe("syncing");
+  });
+
+  test("a faked ahead round above our frontier does NOT pin us in syncing", async () => {
+    let state = "syncing";
+    const calls = { exit: [] };
+    const narwhal = {
+      joinState: () => state,
+      enterSyncMode: () => { state = "syncing"; },
+      exitSyncMode: (r) => { calls.exit.push(r); state = "ready"; },
+      _setState: (s) => { state = s; },
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork(), syncHandler: fakeSyncHandler(), narwhal,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 100, round: 100 }),
+      log: silentLog(),
+    });
+
+    // Cache a LYING peer claiming a round far beyond our verified frontier (100).
+    await ae.checkAndReconcile(
+      "liar",
+      peerStatus({ node_id: "tip://node/liar", committed_round: 99999 }),
+      selfState({ committed_round: 100, round: 100 })
+    );
+    calls.exit.length = 0;
+    narwhal._setState("syncing");
+
+    // Reconcile a behind peer: the liar's 99999 exceeds our frontier (100) and is
+    // therefore unverified, so it must NOT keep us stuck — we exit.
+    await ae.checkAndReconcile(
+      "peer-A",
+      peerStatus({ node_id: "tip://node/A", committed_round: 90 }),
+      selfState({ committed_round: 100, round: 100 })
+    );
+
+    expect(calls.exit).toEqual([100]); // faked round ignored → exited
+    expect(state).toBe("ready");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Frontier reconciliation: heal a same-committed-round cert partition
+// ═══════════════════════════════════════════════════════════════════════════
+describe("frontier reconciliation (sub_quorum escape)", () => {
+  // staleForMs ago = last round advance, so _runOnce sees staleMs ≈ staleForMs.
+  function fakeNarwhal({ joinState = "ready", staleForMs = 0, byzHalt = null } = {}) {
+    const advAt = nowMs() - staleForMs;
+    return {
+      joinState: () => joinState,
+      lastRoundAdvanceAt: () => advAt,
+      byzantineForkHalt: () => byzHalt,
+    };
+  }
+  // Read lazily inside tests; PC.init runs in setup, after describe collection.
+  const stuckMs = () => CONSENSUS.SUB_QUORUM_ESCAPE_MS + 5000;
+  const lookback = () => CONSENSUS.FRONTIER_RECONCILE_LOOKBACK_ROUNDS;
+
+  test("_pullFrontierFromPeers pulls from every authorized peer at committed - lookback", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A", pB: "tip://node/B" } }),
+      syncHandler: sync,
+      getSelfNodeId: () => "tip://node/self",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    await ae._pullFrontierFromPeers();
+
+    expect(sync._calls.map(c => c.peerId).sort()).toEqual(["pA", "pB"]);
+    for (const c of sync._calls) expect(c.opts).toEqual({ fromRound: 1000 - lookback() });
+  });
+
+  test("_pullFrontierFromPeers floors fromRound at 1 when committed < lookback", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A" } }),
+      syncHandler: sync,
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 5 }),
+      log: silentLog(),
+    });
+
+    await ae._pullFrontierFromPeers();
+
+    expect(sync._calls[0].opts).toEqual({ fromRound: 1 });
+  });
+
+  test("_pullFrontierFromPeers with no authorized peers → no calls, no throw", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: {} }),
+      syncHandler: sync,
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    await expect(ae._pullFrontierFromPeers()).resolves.toBeUndefined();
+    expect(sync._calls).toHaveLength(0);
+  });
+
+  test("_pullFrontierFromPeers: one peer throwing doesn't block the others", async () => {
+    const calls = [];
+    const sync = {
+      syncFromPeer: async (peerId, opts) => {
+        calls.push({ peerId, opts });
+        if (peerId === "pB") throw new Error("boom");
+        return { imported: 0 };
+      },
+      _calls: calls,
+    };
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A", pB: "tip://node/B", pC: "tip://node/C" } }),
+      syncHandler: sync,
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    await expect(ae._pullFrontierFromPeers()).resolves.toBeUndefined();
+    expect(calls.map(c => c.peerId).sort()).toEqual(["pA", "pB", "pC"]);
+  });
+
+  test("stuck-ready node reconciles the frontier from all peers", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A", pB: "tip://node/B" } }),
+      syncHandler: sync,
+      narwhal: fakeNarwhal({ joinState: "ready", staleForMs: stuckMs() }),
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    ae._setRunning(true);
+    await ae._runOnce();
+    ae._setRunning(false);
+
+    const frontier = sync._calls.filter(c => c.opts.fromRound === 1000 - lookback());
+    expect(frontier.map(c => c.peerId).sort()).toEqual(["pA", "pB"]);
+  });
+
+  test("healthy (recently advanced) node does NOT reconcile the frontier", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A" } }),
+      syncHandler: sync,
+      narwhal: fakeNarwhal({ joinState: "ready", staleForMs: 0 }),
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    ae._setRunning(true);
+    await ae._runOnce();
+    ae._setRunning(false);
+
+    expect(sync._calls).toHaveLength(0);
+  });
+
+  test("stuck but NOT ready (syncing) does NOT reconcile the frontier", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A" } }),
+      syncHandler: sync,
+      narwhal: fakeNarwhal({ joinState: "syncing", staleForMs: stuckMs() }),
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    ae._setRunning(true);
+    await ae._runOnce();
+    ae._setRunning(false);
+
+    expect(sync._calls).toHaveLength(0);
+  });
+
+  test("frontier reconciliation is throttled: two cycles back-to-back fire it once", async () => {
+    const sync = fakeSyncHandler();
+    const ae = createAntiEntropy({
+      network: fakeNetwork({ authorized: { pA: "tip://node/A" } }),
+      syncHandler: sync,
+      narwhal: fakeNarwhal({ joinState: "ready", staleForMs: stuckMs() }),
+      getSelfNodeId: () => "x",
+      getConsensusState: () => selfState({ committed_round: 1000 }),
+      log: silentLog(),
+    });
+
+    ae._setRunning(true);
+    await ae._runOnce();
+    await ae._runOnce();
+    ae._setRunning(false);
+
+    const frontier = sync._calls.filter(c => c.opts.fromRound === 1000 - lookback());
+    expect(frontier).toHaveLength(1);
   });
 });

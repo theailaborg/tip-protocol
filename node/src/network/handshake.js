@@ -278,4 +278,26 @@ async function initiate(remotePeerId, ctx) {
   }
 }
 
-module.exports = { createPayload, verify, handleIncoming, initiate };
+/**
+ * Connected peers (libp2p peerId strings) we have not authorized yet — the set
+ * reHandshakeUnauthorized retries. Dedups by peerId; skips authorized peers.
+ */
+function unauthorizedPeers(connections, authorizedPeers) {
+  const seen = new Set();
+  const out = [];
+  for (const conn of connections || []) {
+    const pid = conn && conn.remotePeer && conn.remotePeer.toString();
+    if (!pid || seen.has(pid) || authorizedPeers.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+  }
+  return out;
+}
+
+// Skip the ML-DSA handshake only for a peer authorized within the grace window
+// that isn't currently authorized; past the window the cached binding is stale.
+function canFastReauth(recent, isAuthorized, now, graceMs) {
+  return !!recent && !isAuthorized && (now - recent.at) < graceMs;
+}
+
+module.exports = { createPayload, verify, handleIncoming, initiate, unauthorizedPeers, canFastReauth };

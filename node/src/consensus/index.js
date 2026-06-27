@@ -168,7 +168,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
-  const syncHandler = createSyncHandler({ dag, network, isAuthorizedPeer });
+  // Late-bound to bullshark.driveCommit (bullshark is created below): sync-
+  // imported certs must drive commit, or a behind node holds them uncommitted.
+  let _driveCommitAfterSync = null;
+  const syncHandler = createSyncHandler({
+    dag, network, isAuthorizedPeer,
+    onCertsImported: (round) => { if (_driveCommitAfterSync) _driveCommitAfterSync(round); },
+  });
 
   // ── Create snapshot handler (§14 state-snapshot fast-sync) ─────────────────
   // Serves the latest committed state + 2f+1 acks to new joiners so they
@@ -250,6 +256,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       }) : null,
     } : null,
   });
+  _driveCommitAfterSync = (round) => bullshark.driveCommit(round);
 
   // Deferred AE ref — narwhal needs to call AE's isPeerDivergent at batch-
   // ack time, but AE is constructed AFTER narwhal (it takes narwhal as a

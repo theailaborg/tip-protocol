@@ -123,6 +123,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // snapshot install doesn't immediately heal the divergence (e.g. because
   // the installed snapshot is still processed while the AE tick sees stale data).
   let _lastAutoRecoveryAt = 0;
+  let _lastReHandshakeAt = 0;
+  let _lastFrontierReconcileAt = 0;
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
   let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
@@ -480,6 +482,27 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
       return "snapshot_failed";
     }
+  }
+
+  // Heal an uncommitted-frontier partition: peers share our committed_round but
+  // hold disjoint certs, so committed-round-gated paths skip it. Additive pull.
+  async function _pullFrontierFromPeers() {
+    if (!syncHandler || typeof syncHandler.syncFromPeer !== "function") return;
+    if (!network || typeof network.authorizedPeers !== "function") return;
+    let peerIds = [];
+    try { peerIds = Object.keys(network.authorizedPeers()); } catch { /* best-effort */ }
+    if (peerIds.length === 0) return;
+    const state = getConsensusState ? getConsensusState() : {};
+    const committed = Number(state.committed_round || 0);
+    const fromRound = Math.max(1, committed - CONSENSUS.FRONTIER_RECONCILE_LOOKBACK_ROUNDS);
+    _log.warn(
+      `anti-entropy: frontier reconciliation: pulling rounds ${fromRound}+ from ` +
+      `${peerIds.length} authorized peer(s) to heal uncommitted-frontier divergence`
+    );
+    await Promise.all(peerIds.map(pid =>
+      syncHandler.syncFromPeer(pid, { fromRound })
+        .catch(e => _log.warn(`anti-entropy: frontier pull from ${pid.slice(0, 12)} failed: ${e.message}`))
+    ));
   }
 
   // ──────────────────────────────────────────────────────────────────────
@@ -992,6 +1015,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const peerRoot = String(peerStatus.state_merkle_root || "");
 
     if (peerCommitted > selfCommitted) {
+      // Don't pull from a still-syncing peer: a catching-up joiner fast-forwards its
+      // round to chase the head, so it transiently leads ours while holding no
+      // committed data we lack. Pulling is wasted thrash — wait for a ready peer.
+      const peerJoin = String(peerStatus.join_state || "ready");
+      if (peerJoin === "syncing" || peerJoin === "catching_up") {
+        return "peer_not_ready";
+      }
+
       // If we have an active byzantine_fork halt, a cert-gap pull cannot heal
       // the divergence — we committed wrong state at a past round and need a
       // full snapshot resync. The unanimous-minority path (Option B) only fires
@@ -1257,6 +1288,35 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
+    // Stuck-ahead escape: a node stuck in syncing while most-advanced has nothing to
+    // pull and the equal-round promotion never fires (all peers behind), so it stays
+    // syncing forever, starving the committee of acks. Forks still caught at equal round.
+    if (
+      peerCommitted < selfCommitted
+      && narwhal
+      && typeof narwhal.joinState === "function"
+      && narwhal.joinState() === "syncing"
+      && typeof narwhal.exitSyncMode === "function"
+    ) {
+      // Verify "ahead" against our own imported frontier, not the peer's unsigned
+      // committed_round: a faked round can't exceed certs we've verified on import,
+      // and while syncing we don't produce, so selfState.round only advances via
+      // verified imports. A lying peer therefore can't pin us in syncing.
+      const selfFrontier = Number(selfState.round || selfCommitted);
+      let peerAhead = false;
+      for (const [, cached] of _lastStatus.entries()) {
+        const cr = Number((cached && cached.committed_round) || 0);
+        if (cr > selfCommitted && cr <= selfFrontier) { peerAhead = true; break; }
+      }
+      if (!peerAhead) {
+        _log.warn(
+          `anti-entropy: stuck in syncing while most-advanced (committed=${selfCommitted}, ` +
+          `peer ${peerStatus.node_id || peerId.slice(0, 12)} at ${peerCommitted}); exiting syncing to resume production`
+        );
+        narwhal.exitSyncMode(selfCommitted);
+      }
+    }
+
     return peerCommitted < selfCommitted ? "ahead" : "equal";
   }
 
@@ -1338,13 +1398,23 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // deployment via the protocol-constants block in genesis.
     if (!_running) return;
     if (!_snapshotResyncInFlight && narwhal) {
-      const joinState  = typeof narwhal.joinState === "function" ? narwhal.joinState() : null;
-      const lastAdvAt  = typeof narwhal.lastRoundAdvanceAt === "function" ? narwhal.lastRoundAdvanceAt() : 0;
-      const staleMs    = lastAdvAt > 0 ? nowMs() - lastAdvAt : 0;
+      const joinState = typeof narwhal.joinState === "function" ? narwhal.joinState() : null;
+      const lastAdvAt = typeof narwhal.lastRoundAdvanceAt === "function" ? narwhal.lastRoundAdvanceAt() : 0;
+      const staleMs = lastAdvAt > 0 ? nowMs() - lastAdvAt : 0;
       const sinceLastMs = nowMs() - _lastAutoRecoveryAt;
+      const stuckReady = joinState === "ready" && staleMs > CONSENSUS.SUB_QUORUM_ESCAPE_MS;
+      // Own throttle so it leaves the snapshot/byzantine cooldown untouched;
+      // awaited so it can't race the resync below.
+      if (stuckReady && nowMs() - _lastFrontierReconcileAt > CONSENSUS.SUB_QUORUM_ESCAPE_MS) {
+        _lastFrontierReconcileAt = nowMs();
+        _log.warn(
+          `anti-entropy: sub_quorum escape: no round advance for ${Math.round(staleMs / 1000)}s; ` +
+          `reconciling frontier from peers`
+        );
+        await _pullFrontierFromPeers().catch(() => {});
+      }
       if (
-        joinState === "ready" &&
-        staleMs > CONSENSUS.SUB_QUORUM_ESCAPE_MS &&
+        stuckReady &&
         (_lastAutoRecoveryAt === 0 || sinceLastMs > CONSENSUS.SUB_QUORUM_ESCAPE_MS)
       ) {
         _log.warn(
@@ -1354,6 +1424,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         triggerSnapshotResync(0, 0).catch(err =>
           _log.warn(`anti-entropy: sub_quorum escape resync failed: ${err.message}`)
         );
+      }
+    }
+
+    // Re-handshake backstop: while ready, periodically retry the handshake with any
+    // connected-but-unauthorized peer (a peer that was stale when it rejected us, or
+    // dropped transiently). Ready-gated + throttled so it never adds to mid-sync churn.
+    if (!_running) return;
+    if (network && typeof network.reHandshakeUnauthorized === "function") {
+      const joinSt = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
+      if (joinSt === "ready" && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
+        _lastReHandshakeAt = nowMs();
+        network.reHandshakeUnauthorized();
       }
     }
   }
@@ -1494,6 +1576,29 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     // that corrupt the node's committed state and trigger a divergence loop.
     _snapshotResyncInFlight = true;
 
+    // Resync-from-behind guard: a snapshot install replaces canonical state with the
+    // source checkpoint, so resyncing to a source not strictly ahead regresses us
+    // (live: a node at 1292 kept installing a 1272 checkpoint and ping-ponged).
+    // Skip unless byzantine-halted, where a same-round corrective resync is valid.
+    const _selfByzHaltResync = narwhal && typeof narwhal.byzantineForkHalt === "function"
+      ? narwhal.byzantineForkHalt() : null;
+    let _selfCommittedNow = 0;
+    try { const _s = getConsensusState ? getConsensusState() : {}; _selfCommittedNow = Number(_s.committed_round || 0); }
+    catch { /* best-effort — fall through to the fresh-check backstop below */ }
+    let _maxPeerCommitted = 0;
+    for (const [, s] of _lastStatus.entries()) {
+      const cr = Number((s && s.committed_round) || 0);
+      if (cr > _maxPeerCommitted) _maxPeerCommitted = cr;
+    }
+    if (!_selfByzHaltResync && _lastStatus.size > 0 && _selfCommittedNow > 0 && _maxPeerCommitted <= _selfCommittedNow) {
+      _log.warn(
+        `anti-entropy: triggerSnapshotResync: no peer ahead of committed_round=${_selfCommittedNow} ` +
+        `(best peer at ${_maxPeerCommitted}); skipping resync to avoid regressing state`
+      );
+      _snapshotResyncInFlight = false;
+      return "no_peer_ahead";
+    }
+
     // Serialization guard: if any peer is currently syncing/catching_up, defer
     // this resync with jitter. With BULLSHARK_DEFER_MS=60s, snapshot resyncs are
     // rare (only genuinely GC'd certs trigger them). If two nodes hit the timer
@@ -1611,6 +1716,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         _snapshotResyncInFlight = false;
         return "deferred";
       }
+      // Backstop: the cache is ~4s stale, so re-check the fresh primary; if it is
+      // not strictly ahead, installing its checkpoint would regress us.
+      const _freshCommitted = Number(freshPeerStatus.committed_round || 0);
+      if (!_selfByzHaltResync && _selfCommittedNow > 0 && _freshCommitted <= _selfCommittedNow) {
+        _log.warn(
+          `anti-entropy: triggerSnapshotResync: fresh-check — primary ${bestPeerId.slice(0, 12)} ` +
+          `committed_round=${_freshCommitted} not ahead of ours ${_selfCommittedNow}; skipping resync`
+        );
+        _snapshotResyncInFlight = false;
+        return "no_peer_ahead";
+      }
+
       // Bug A fix: verify the fresh root still matches the majority root we tallied.
       // The _lastStatus cache is ~4s stale — a peer that was on the majority root when
       // we tallied may have since installed a minority snapshot and drifted. Installing
@@ -1748,6 +1865,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     triggerSnapshotResync,
     isSnapshotResyncThrottled,
     _handleIncomingSyncStatus,
+    // Exposed for tests: drive one reconcile cycle / the frontier pull directly.
+    _runOnce,
+    _pullFrontierFromPeers,
+    _setRunning: (v) => { _running = !!v; },
     // Exposed for metrics scraping + tests.
     stats: () => ({ metrics: { ..._metrics }, last_status_size: _lastStatus.size }),
     SYNC_STATUS_PROTOCOL,

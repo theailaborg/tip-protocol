@@ -181,6 +181,23 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     }
   }
 
+  // Catch up the committed frontier from certs already in the DAG: cert-sync
+  // imports certs without driving commit (gossip does, via onCertSaved), so a
+  // synced-but-behind node would otherwise hold the certs and never commit them.
+  function driveCommit(uptoRound) {
+    const target = Number(uptoRound) || 0;
+    let advanced = 0;
+    for (let vr = _lastCommittedRound + 1; vr <= target; vr++) {
+      if (vr % 2 !== 0 || vr <= _lastCommittedRound) continue;   // anchors check on even rounds
+      const before = _lastCommittedRound;
+      try { _checkAnchorCommit(vr); }
+      catch (err) { log.warn(`driveCommit: anchor check failed at round ${vr}: ${err.message}`); }
+      if (_lastCommittedRound > before) advanced++;
+    }
+    if (advanced > 0) log.info(`Bullshark: driveCommit committed ${advanced} anchor(s) up to round ${_lastCommittedRound}`);
+    return _lastCommittedRound;
+  }
+
   /**
    * Check if the leader's certificate from the propose round is committed.
    */
@@ -1008,6 +1025,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const targetRotation = epochOf(currentRound);
     if (targetRotation !== missingRotation) return; // round/epoch drifted
     try {
+      // Drop expired in-flight first so a wedged proposal is rebuilt fresh this
+      // retry instead of re-broadcast stale; runs on every paused node so it self-heals.
+      proposer.coordinator?.pruneExpired?.();
       _maybeProposeCommitteeRotation(currentRound, latestNum, proposer.nodeId, /* forceLeader */ true);
     } catch (err) {
       log.warn(`tryRotationProposal: threw — ${(err && err.message) || err}`);
@@ -1037,6 +1057,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
   return {
     onRoundComplete,
+    driveCommit,
     onCertSaved,
     tryRotationProposal,
 

@@ -20,9 +20,10 @@
 "use strict";
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
+const { nowMs } = require("../../../shared/time");
 const { shake256 } = require("../../../shared/crypto");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
-const { handleIncoming, initiate } = require("./handshake");
+const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
 const { createRateLimiter } = require("./rate-limiter");
 const { createDirectPeersManager, makeAuthorizationWrapper } = require("./direct-peers");
 const { buildKnownPeers, buildPeerEntry, broadcastAnnounce, registerAnnounceHandler } = require("./peer-discovery");
@@ -119,6 +120,8 @@ async function createNetworkNode(options = {}) {
   // State
   let _topicHandlers = {};
   const _authorizedPeers = new Map();
+  // peerId -> { tipNodeId, at }: recorded on disconnect for fast re-auth (see peer:connect).
+  const _recentlyAuthed = new Map();
   let _onPeerAuthorized = null;
 
   // Deterministic peer ID from TIP node ID 
@@ -287,6 +290,16 @@ async function createNetworkNode(options = {}) {
 
   node.addEventListener("peer:connect", (event) => {
     const remotePeerId = event.detail.toString();
+    // Within the grace window a reconnecting (Noise-authenticated) peerId we recently
+    // verified restores auth without a fresh ML-DSA handshake — the binding can't change.
+    const recent = _recentlyAuthed.get(remotePeerId);
+    if (canFastReauth(recent, _authorizedPeers.has(remotePeerId), nowMs(), CONSENSUS.HANDSHAKE_REAUTH_GRACE_MS)) {
+      _recentlyAuthed.delete(remotePeerId);
+      _authorizedPeers.set(remotePeerId, recent.tipNodeId);
+      ctx.onPeerAuthorized(remotePeerId, recent.tipNodeId);
+      log.info(`Peer reconnected within grace — restored auth without re-handshake: ${remotePeerId.slice(0, 16)}... (${recent.tipNodeId})`);
+      return;
+    }
     const myPeerId = node.peerId.toString();
     // Only one side initiates handshake — lower peerId goes first (deterministic)
     if (myPeerId < remotePeerId) {
@@ -300,6 +313,13 @@ async function createNetworkNode(options = {}) {
   node.addEventListener("peer:disconnect", (event) => {
     const remotePeerId = event.detail.toString();
     const tipNodeId = _authorizedPeers.get(remotePeerId);
+    // Remember the binding for a quick-reconnect fast-reauth; still de-authorize below
+    // so dialKnownPeers (which only dials unauthorized peers) re-dials.
+    if (tipNodeId) {
+      const cutoff = nowMs() - CONSENSUS.HANDSHAKE_REAUTH_GRACE_MS;
+      for (const [pid, e] of _recentlyAuthed) if (e.at < cutoff) _recentlyAuthed.delete(pid);
+      _recentlyAuthed.set(remotePeerId, { tipNodeId, at: nowMs() });
+    }
     _authorizedPeers.delete(remotePeerId);
     directPeers.remove(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
@@ -394,6 +414,18 @@ async function createNetworkNode(options = {}) {
     }
   }
 
+  // Re-handshake connected-but-unauthorized peers. The one-shot peer:connect path
+  // can permanently miss the window (a joiner rejects us while mid-catch-up stale,
+  // then no new peer:connect fires). initiate() runs over the existing connection
+  // via dialProtocol and no-ops on already-authorized peers.
+  function reHandshakeUnauthorized() {
+    let conns = [];
+    try { conns = node.getConnections(); } catch { return; }
+    for (const pid of unauthorizedPeers(conns, _authorizedPeers)) {
+      initiate(pid, ctx).catch(() => { });
+    }
+  }
+
   // ── Public interface ───────────────────────────────────────────────────
   return {
     /** The underlying libp2p node */
@@ -467,6 +499,7 @@ async function createNetworkNode(options = {}) {
     broadcastToAuthorized,
     sendAckDirect,
     sendAckRequest,
+    reHandshakeUnauthorized,
     ROTATION_COORD_PROTOCOL,
     CONSENSUS_ACK_PROTOCOL,
     CONSENSUS_ACK_REQUEST_PROTOCOL,

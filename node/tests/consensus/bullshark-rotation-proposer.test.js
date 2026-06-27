@@ -144,6 +144,20 @@ function _driveAnchorCommit(dag, bullshark, { proposeRound, voteRound, leader, v
 }
 
 /**
+ * Seed a committable anchor's certs into the DAG WITHOUT calling onRoundComplete
+ * (mirrors cert-sync import: certs land in the DAG but nothing drives commit).
+ */
+function _seedAnchorCerts(dag, { proposeRound, voteRound, leader, voteAuthors }) {
+  const proposeCert = _buildCert({ round: proposeRound, author: leader });
+  dag.saveCertificate(proposeCert);
+  for (const author of voteAuthors) {
+    const vc = _buildCert({ round: voteRound, author, hash: shake256(`vc-${voteRound}-${author}`) });
+    vc.parent_hashes = [proposeCert.hash];
+    dag.saveCertificate(vc);
+  }
+}
+
+/**
  * Pre-populate rotation_participation for a rotation. Useful for
  * driving the boundary computation deterministically.
  */
@@ -569,5 +583,38 @@ describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
     _driveOneTx(fx.dag, fx.bullshark);
 
     expect(fx.savedCommits).toHaveLength(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// driveCommit: catch up the committed frontier from already-synced certs.
+// Gossip-received certs commit via onCertSaved; cert-sync-imported ones don't,
+// so a behind node would hold the certs but never advance committed_round.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("bullshark driveCommit (cert-sync catch-up)", () => {
+  test("commits anchors that are in the DAG but were never driven", () => {
+    const fx = _setup({ withProposer: false });
+    // As if cert-sync imported three committable anchors: certs are in the DAG,
+    // but onRoundComplete was never called (sync does not drive commit).
+    for (const r of [2, 4, 6]) {
+      _seedAnchorCerts(fx.dag, {
+        proposeRound: r - 1, voteRound: r,
+        leader: FOUNDING.node_id, voteAuthors: [FOUNDING.node_id],
+      });
+    }
+
+    // The bug: all the certs are present, but nothing is committed.
+    expect(fx.bullshark.lastCommittedRound()).toBe(0);
+
+    // The fix: driveCommit walks the synced rounds and commits them.
+    const after = fx.bullshark.driveCommit(6);
+    expect(after).toBeGreaterThan(0);
+    expect(fx.bullshark.lastCommittedRound()).toBe(after);
+  });
+
+  test("driveCommit is a no-op when there is nothing new to commit", () => {
+    const fx = _setup({ withProposer: false });
+    expect(fx.bullshark.driveCommit(0)).toBe(0);
+    expect(fx.bullshark.lastCommittedRound()).toBe(0);
   });
 });

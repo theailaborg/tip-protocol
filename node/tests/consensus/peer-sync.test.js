@@ -439,8 +439,8 @@ describe("shouldSyncFromPeer (asymmetric pre-flight)", () => {
     expect(result).toBe(true);
   });
 
-  test("bullshark.lastCommittedRound missing → treats self as 0; any peer ahead triggers sync", async () => {
-    const queryPeerStatus = async () => ({ committed_round: 1 });
+  test("bullshark.lastCommittedRound missing → treats self as 0; a far-ahead peer triggers sync", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 5000 });
     const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark: {}, queryPeerStatus });
     expect(result).toBe(true);
   });
@@ -473,8 +473,22 @@ describe("shouldSyncFromPeer (asymmetric pre-flight)", () => {
     expect(result).toBe(false);
   });
 
-  test("boundary: self = peer - 1 (behind by one) → returns true", async () => {
+  test("behind by one (within tolerance) → false — AE/gossip catches up, no heavy sync", async () => {
     const queryPeerStatus = async () => ({ committed_round: 101 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("behind within tolerance (peer ahead by 20) → false (deferred to AE)", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 120 });
+    const bullshark = { lastCommittedRound: () => 100 };
+    const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
+    expect(result).toBe(false);
+  });
+
+  test("behind beyond tolerance (peer ahead by 21) → true (heavy sync warranted)", async () => {
+    const queryPeerStatus = async () => ({ committed_round: 121 });
     const bullshark = { lastCommittedRound: () => 100 };
     const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
     expect(result).toBe(true);

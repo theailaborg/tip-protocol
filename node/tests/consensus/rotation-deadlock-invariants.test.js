@@ -165,6 +165,42 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
   });
 
   // -----------------------------------------------------------------------
+  // INVARIANT 2b: a multi-epoch rotation gap heals one rotation at a time.
+  //
+  // If the network ever advances past several epoch boundaries with no
+  // rotation committed (live trigger: the epoch length changed under a run),
+  // the carve-out must target latest+1 (the next missing rotation the proposer
+  // actually submits), NOT epochOf(currentRound) (the far boundary). Pre-fix it
+  // peeked the far rotation, found nothing, and producer-paused forever.
+  test("multi-epoch gap: carve-out targets latest+1, not the far epoch, and never pauses", () => {
+    jest.useFakeTimers();
+    try {
+      let paused = 0;
+      const fx = buildNarwhal({ seedRotations: 5, onProducerPaused: () => { paused += 1; } });
+      // Current round sits in epoch 10, but the latest committed rotation is 5.
+      fx.narwhal.exitSyncMode(fx.epochLength * 10 - 1);
+
+      // Only the NEXT missing rotation (latest+1 = 6) is in mempool; the proposer
+      // never makes the far one (10) directly.
+      const rotTx = makeRotationTx(6, fx.epochLength * 6);
+      expect(fx.mempool.add(rotTx).added).toBe(true);
+
+      fx.narwhal.start();
+      for (let i = 0; i < 5; i++) jest.advanceTimersByTime(50);
+
+      // Fixed: drains rotation 6 every round (re-carve), never producer-pauses,
+      // so the gap walks 6 -> 7 -> ... -> 10 as each commits. Pre-fix peeked
+      // rotation 10, found nothing, and paused permanently.
+      expect(paused).toBe(0);
+      expect(fx.mempool.peekRotationTx(6)).not.toBeNull();
+
+      fx.narwhal.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // -----------------------------------------------------------------------
   // INVARIANT 3: commit-handler drops duplicate COMMITTEE_ROTATION silently
   //
   // Why it matters: re-carving across rounds means the SAME rotation_number

@@ -289,10 +289,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       // needs to drain the rotation tx for the cert to form. Without this
       // carve-out the federation deadlocks when the rotation tx lands in
       // mempool but no node can drain it (everyone paused).
+      // Drain the NEXT missing rotation (latest+1), capped at the epoch we need:
+      // the proposer always submits latest+1, so targeting epochOf(currentRound)
+      // directly deadlocks across a multi-epoch gap (the two never meet).
+      const _latestRot = typeof dag.getLatestRotation === "function" ? dag.getLatestRotation() : null;
+      const _carveRotation = Math.min((_latestRot ? _latestRot.rotation_number : 0) + 1, targetRotation);
       _carveOutRotationTx = typeof mempool.peekRotationTx === "function"
-        ? mempool.peekRotationTx(targetRotation) : null;
+        ? mempool.peekRotationTx(_carveRotation) : null;
       if (!_carveOutRotationTx) {
-        log.debug(`Round ${_currentRound}: pausing production — rotation ${targetRotation} not in local committee_history (atomic boundary)`);
+        log.debug(`Round ${_currentRound}: pausing production: rotation ${targetRotation} not in committee_history (next to apply: ${_carveRotation})`);
         if (_onProducerPaused) {
           const now = nowMs();
           if (now - _lastProducerPausedAt > 1500) {
@@ -308,7 +313,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
         _scheduleNextRound(50);
         return;
       }
-      log.notice(`Round ${_currentRound}: producer-pause carve-out — producing rotation-only batch for rotation ${targetRotation}`);
+      log.notice(`Round ${_currentRound}: producer-pause carve-out: producing rotation-only batch for rotation ${_carveRotation}`);
     }
 
     _resetRoundState();
@@ -1308,7 +1313,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function _getQuorum() {
-    return computeQuorum(_getCommittee().length);
+    // Pass the round: a no-arg getActiveCommittee picks the latest rotation
+    // regardless of effective_round, prematurely inflating quorum at a boundary.
+    return computeQuorum(_getCommittee(_currentRound).length);
   }
 
   // Wire format ser/de for Batch/BatchAck/Certificate lives in
@@ -1400,6 +1407,12 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     _lastRoundAdvanceAt = nowMs();
     _stopWatchdog();
     if (_running) _scheduleNextRound(0);
+
+    // Sync finished — registry now current, so re-run the handshake with any peer
+    // we rejected ("not in registry") while mid-catch-up stale.
+    if (network && typeof network.reHandshakeUnauthorized === "function") {
+      network.reHandshakeUnauthorized();
+    }
   }
 
   function _startWatchdog() {
