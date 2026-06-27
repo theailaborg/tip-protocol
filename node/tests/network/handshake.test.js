@@ -14,7 +14,7 @@ const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
-const { createPayload, verify, unauthorizedPeers } = require(path.join(SRC, "network", "handshake"));
+const { createPayload, verify, unauthorizedPeers, canFastReauth } = require(path.join(SRC, "network", "handshake"));
 
 const CHAIN_ID = "tip-test-chain";
 const GENESIS_HASH = "a".repeat(64);
@@ -108,5 +108,29 @@ describe("unauthorizedPeers (re-handshake selection)", () => {
   test("empty / missing connections → empty", () => {
     expect(unauthorizedPeers([], new Map())).toEqual([]);
     expect(unauthorizedPeers(null, new Map())).toEqual([]);
+  });
+});
+
+// De-auth grace: a quick reconnect skips the ML-DSA handshake; a stale binding does not.
+describe("canFastReauth (de-auth grace)", () => {
+  const GRACE = 15000;
+
+  test("reconnect within grace + not currently authorized → fast re-auth", () => {
+    const recent = { tipNodeId: "tip://node/A", at: 1000 };
+    expect(canFastReauth(recent, false, 1000 + 5000, GRACE)).toBe(true);
+  });
+
+  test("after grace passes → NOT fast re-auth (must full-handshake again)", () => {
+    const recent = { tipNodeId: "tip://node/A", at: 1000 };
+    expect(canFastReauth(recent, false, 1000 + GRACE + 1, GRACE)).toBe(false);
+  });
+
+  test("already authorized → NOT fast re-auth (no redundant restore)", () => {
+    const recent = { tipNodeId: "tip://node/A", at: 1000 };
+    expect(canFastReauth(recent, true, 1000 + 100, GRACE)).toBe(false);
+  });
+
+  test("no remembered binding → NOT fast re-auth (full handshake)", () => {
+    expect(canFastReauth(undefined, false, 5000, GRACE)).toBe(false);
   });
 });

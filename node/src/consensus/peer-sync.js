@@ -196,11 +196,13 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
     const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
       ? Number(bullshark.lastCommittedRound() || 0) : 0;
     const peerCommitted = Number(peerStatus.committed_round || 0);
-    if (selfCommitted >= peerCommitted) {
-      log.info(`Peer ${tipNodeId} caught up (self=${selfCommitted}, peer=${peerCommitted}) — skipping sync`);
+    // A small lag heals via gossip + the light AE cert-pull; only a gap beyond the
+    // tolerance warrants the heavy enterSyncMode (avoids self-suppression on jitter).
+    if (peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS) {
+      log.info(`Peer ${tipNodeId} within tolerance (self=${selfCommitted}, peer=${peerCommitted}) — skipping heavy sync, AE will catch up`);
       return false;
     }
-    log.info(`Peer ${tipNodeId} ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
+    log.info(`Peer ${tipNodeId} far ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
     return true;
   } catch (err) {
     log.debug(`Peer ${tipNodeId} sync-status query failed (${err.message}) — proceeding with sync`);

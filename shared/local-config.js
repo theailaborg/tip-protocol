@@ -32,6 +32,7 @@ const LOCAL_CONFIG = Object.freeze({
   ROTATION_COORD_REBROADCAST_INTERVAL_MS: _num("TIP_ROTATION_COORD_REBROADCAST_INTERVAL_MS", 1500),
   HANDSHAKE_TIMEOUT_MS:                _num("TIP_HANDSHAKE_TIMEOUT_MS",                10000),
   HANDSHAKE_REHANDSHAKE_INTERVAL_MS:  _num("TIP_HANDSHAKE_REHANDSHAKE_INTERVAL_MS",  20000),
+  HANDSHAKE_REAUTH_GRACE_MS:          _num("TIP_HANDSHAKE_REAUTH_GRACE_MS",          15000),
   SYNC_TOTAL_TIMEOUT_MS:               _num("TIP_SYNC_TOTAL_TIMEOUT_MS",               30000),
   MAX_ROUND_DURATION_MS:               _num("TIP_MAX_ROUND_DURATION_MS",               300000),
 
@@ -39,6 +40,9 @@ const LOCAL_CONFIG = Object.freeze({
   MEMPOOL_MAX_SIZE:                    _num("TIP_MEMPOOL_MAX_SIZE",                    10000),
   MEMPOOL_TX_TTL_SECONDS:              _num("TIP_MEMPOOL_TX_TTL_SECONDS",              300),
   SYNC_BATCH_SIZE:                     _num("TIP_SYNC_BATCH_SIZE",                     100),
+  // Lag within this many rounds heals via gossip + AE; only a larger gap (a real
+  // joiner) warrants the heavy enterSyncMode path.
+  SYNC_FROM_PEER_TOLERANCE_ROUNDS:     _num("TIP_SYNC_FROM_PEER_TOLERANCE_ROUNDS",     20),
   ORDERED_HASH_CACHE_SIZE:             _num("TIP_ORDERED_HASH_CACHE_SIZE",             10000),
   MAX_MSGS_PER_PEER_PER_SEC:           _num("TIP_MAX_MSGS_PER_PEER_PER_SEC",           100),
   SYNC_MAX_RESPONSE_BYTES:             _num("TIP_SYNC_MAX_RESPONSE_BYTES",             1073741824),
