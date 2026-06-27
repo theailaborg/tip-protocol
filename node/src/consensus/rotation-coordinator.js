@@ -554,6 +554,11 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
   }
 
   function _rebroadcastTick() {
+    // Age out inflights on our own timer, not only via the producer-pause
+    // nudge. A node that reached quorum and carved out never re-enters that
+    // nudge path, so without this its submitted inflight (and the futile push
+    // rebroadcast under a one-directional partition) would live forever.
+    pruneExpired();
     const now = nowMs();
     let anyAlive = false;
     for (const [rotation, inflight] of _inFlight) {

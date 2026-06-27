@@ -696,6 +696,52 @@ describe("#68 rotation coordinator", () => {
     coord.stop();
   });
 
+  // rotation-liveness: pruneExpired now also runs on the coordinator's OWN
+  // timer (via _rebroadcastTick), not only through the producer-pause nudge.
+  // A node that reached quorum and carved out never re-enters the nudge path,
+  // so without this its submitted inflight (and the futile push re-broadcast
+  // under a one-directional partition) would live forever.
+  test("rebroadcast tick ages out a long-submitted inflight without the producer-pause nudge", () => {
+    const a = generateMLDSAKeypair();
+    const b = generateMLDSAKeypair();
+    const ids = [
+      { node_id: "tip://node/A", public_key: a.publicKey },
+      { node_id: "tip://node/B", public_key: b.publicKey },
+    ];
+    const dag = _setupDagWith(ids);
+
+    const submitted = [];
+    const { coord } = _buildCoordinator({
+      dag,
+      identity: { nodeId: ids[0].node_id, privateKey: a.privateKey, publicKey: a.publicKey },
+      submitted,
+    });
+
+    const new_committee = ids;
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: new_committee });
+
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee, payload_hash,
+      prevCommitteeNodeIds: ids.map(m => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map(m => [m.node_id, m.public_key])),
+    });
+    const bSig = mldsaSign(`rotation:${payload_hash}:${ids[1].node_id}`, b.privateKey);
+    coord.handleIncoming(_sigMsg({
+      rotationNumber: 2, payloadHash: payload_hash,
+      signerNodeId: ids[1].node_id, signature: hexToBytes(bSig),
+    }), "peer-b");
+    expect(coord._state().get(2).submittedAt).not.toBeNull();
+
+    // Backdate past deadlineMs*2 (deadlineMs=5000 → 10000), then fire the timer
+    // tick directly — NOT pruneExpired(). This is the only path a carved-out
+    // node has, since it never triggers the producer-pause nudge.
+    coord._state().get(2).submittedAt = nowMs() - 11_000;
+    coord._rebroadcastTick();
+
+    expect(coord._state().has(2)).toBe(false);
+    coord.stop();
+  });
+
   // Fix C: stop() clears the timer (no leak).
   test("stop() clears the re-broadcast interval", () => {
     const a = generateMLDSAKeypair();
