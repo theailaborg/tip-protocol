@@ -416,3 +416,24 @@ describe("surgical 2-hold / 3-stuck boundary wedge", () => {
     }
   }, 240000);
 });
+
+// Producer-pause liveness bound: a stuck boundary must be observable (the live
+// halt had no visibility). The pause is never bypassed; only surfaced.
+describe("producer-pause liveness metric", () => {
+  const ROTATION = "/tip/rotation-coord/1.0.0";
+
+  test("producerPausedMs climbs above zero while stuck at a boundary, and is zero before it", async () => {
+    const net = createNet();
+    const nodes = await bootRotationCommittee(net, { registered: 5, committee: 5, enableRepair: false });
+    net.addFault((meta) => meta.protocol === ROTATION);
+    try {
+      expect(nodes.every((n) => n.narwhal.stats().producerPausedMs === 0)).toBe(true);
+      // No rotation ever aggregates, so the cluster pauses at the boundary and
+      // the metric reports the stuck duration.
+      await waitFor(() => nodes.every((n) => n.narwhal.stats().producerPausedMs > 0), { timeoutMs: 120000 });
+      for (const n of nodes) expect(n.narwhal.stats().producerPausedMs).toBeGreaterThan(0);
+    } finally {
+      stopAll(nodes);
+    }
+  }, 150000);
+});

@@ -420,6 +420,9 @@ const CONSENSUS = {
   // tight timeout and small byte cap vs the GB-scale full cert sync.
   get ROTATION_REPAIR_TIMEOUT_MS() { return LC.ROTATION_REPAIR_TIMEOUT_MS; },
   get ROTATION_REPAIR_MAX_RESPONSE_BYTES() { return LC.ROTATION_REPAIR_MAX_RESPONSE_BYTES; },
+  // Producer-pause liveness bound: a stuck boundary past this is logged loudly
+  // and surfaced as a metric. Observability only; never bypasses the pause.
+  get PRODUCER_PAUSE_ESCALATE_MS() { return LC.PRODUCER_PAUSE_ESCALATE_MS; },
   get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
   get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
   // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in
