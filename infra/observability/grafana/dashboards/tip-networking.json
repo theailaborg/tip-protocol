@@ -42,7 +42,7 @@
     {
       "id": 500,
       "type": "row",
-      "title": "Connectivity",
+      "title": "At a glance  (green = healthy, red = investigate)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -53,6 +53,530 @@
     },
     {
       "id": 501,
+      "type": "stat",
+      "title": "Under-connected nodes",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(tip_network_connectivity_complete == 0) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes not at full mesh (connectivity_complete = 0). 0 is healthy; anything else means a node is missing peer connections."
+    },
+    {
+      "id": 502,
+      "type": "stat",
+      "title": "Full-mesh nodes",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_network_connectivity_complete) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes currently at full mesh connectivity."
+    },
+    {
+      "id": 503,
+      "type": "stat",
+      "title": "Suspect peers",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_heartbeat_suspect_peers) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Heartbeat-suspect peers across the fleet. 0 is healthy."
+    },
+    {
+      "id": 504,
+      "type": "stat",
+      "title": "Disconnect flap (/min)",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_peer_disconnects_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Fleet-wide peer disconnect rate. Sustained > 0 is the flap that reads as 'nodes randomly drop'."
+    },
+    {
+      "id": 505,
+      "type": "stat",
+      "title": "Re-handshakes (/min)",
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_rehandshakes_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Fleet-wide re-handshakes of connected-but-unauthorized peers (auth-window recovery)."
+    },
+    {
+      "id": 506,
+      "type": "stat",
+      "title": "Auto-heals fired (/min)",
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_force_redials_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Force-close + re-dial events that rebuild a half-dead connection. > 0 means the transport auto-heal fired (needs this branch deployed to emit)."
+    },
+    {
+      "id": 507,
+      "type": "row",
+      "title": "Per-node connectivity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 508,
+      "type": "table",
+      "title": "Per-node connectivity",
+      "description": "Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters.",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "Registry",
+          "instant": true,
+          "format": "table",
+          "expr": "group by (node, name) (tip_node_registry_info)"
+        },
+        {
+          "refId": "Authorized",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_peers_authorized)"
+        },
+        {
+          "refId": "Direct",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_direct_peers)"
+        },
+        {
+          "refId": "Mesh",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_connectivity_complete)"
+        },
+        {
+          "refId": "Peers",
+          "instant": true,
+          "format": "table",
+          "expr": "group by (node, peers) (last_over_time(tip_network_peer_list[10s]))"
+        },
+        {
+          "refId": "Disconnects",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_peer_disconnects_total)"
+        },
+        {
+          "refId": "Rehs",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_rehandshakes_total)"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "node",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #Registry": true,
+              "Value #Peers": true,
+              "Time 1": true,
+              "__name__ 1": true,
+              "Time 2": true,
+              "__name__ 2": true,
+              "Time 3": true,
+              "__name__ 3": true,
+              "Time 4": true,
+              "__name__ 4": true,
+              "Time 5": true,
+              "__name__ 5": true,
+              "Time 6": true,
+              "__name__ 6": true,
+              "Time 7": true,
+              "__name__ 7": true
+            },
+            "indexByName": {
+              "node": 0,
+              "name": 1,
+              "Value #Authorized": 2,
+              "Value #Direct": 3,
+              "Value #Mesh": 4,
+              "peers": 5,
+              "Value #Disconnects": 6,
+              "Value #Rehs": 7
+            },
+            "renameByName": {
+              "node": "Node",
+              "name": "Name",
+              "Value #Authorized": "Authorized peers",
+              "Value #Direct": "Connected peers",
+              "Value #Mesh": "Full mesh",
+              "peers": "Connected to",
+              "Value #Disconnects": "Disconnects",
+              "Value #Rehs": "Re-handshakes"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full mesh"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "partial",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "full",
+                        "color": "green"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "-",
+                        "color": "text"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 509,
+      "type": "row",
+      "title": "Connectivity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 510,
       "type": "timeseries",
       "title": "Authorized peers per node",
       "datasource": {
@@ -114,13 +638,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 1,
+        "y": 20,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 502,
+      "id": 511,
       "type": "timeseries",
       "title": "Connectivity complete (1 = full mesh)",
       "datasource": {
@@ -166,25 +690,25 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 1,
+        "y": 20,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 503,
+      "id": 512,
       "type": "row",
       "title": "Connection churn (the flap signal)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 31,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 504,
+      "id": 513,
       "type": "timeseries",
       "title": "Connects per node (/min)",
       "datasource": {
@@ -230,13 +754,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 13,
+        "y": 32,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 505,
+      "id": 514,
       "type": "timeseries",
       "title": "Disconnects per node (/min)",
       "datasource": {
@@ -282,13 +806,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 13,
+        "y": 32,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 506,
+      "id": 515,
       "type": "timeseries",
       "title": "Connection closes per node (/min)",
       "datasource": {
@@ -334,13 +858,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 43,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 507,
+      "id": 516,
       "type": "timeseries",
       "title": "Fast re-auths per node (/min)",
       "datasource": {
@@ -386,13 +910,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 24,
+        "y": 43,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 508,
+      "id": 517,
       "type": "timeseries",
       "title": "Re-handshakes per node (/min)",
       "datasource": {
@@ -438,25 +962,25 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 35,
+        "y": 54,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 509,
+      "id": 518,
       "type": "row",
       "title": "Heartbeat",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 65,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 510,
+      "id": 519,
       "type": "timeseries",
       "title": "Heartbeat suspect peers",
       "datasource": {
@@ -518,92 +1042,25 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 47,
-        "w": 12,
+        "y": 66,
+        "w": 24,
         "h": 11
       }
     },
     {
-      "id": 511,
-      "type": "stat",
-      "title": "Suspect peers",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "Peers any node currently can't reach via heartbeat.\n\nNormal: 0.\nAct if: >0 sustained, each suspect triggers an anti-entropy sync storm (the jitter feedback loop).",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(tip_heartbeat_suspect_peers) or vector(0)",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "0 CALM"
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        }
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 47,
-        "w": 8,
-        "h": 4
-      }
-    },
-    {
-      "id": 512,
+      "id": 520,
       "type": "row",
       "title": "Comms health  (per-channel outbound delivery + transport auto-heal)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 77,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 513,
+      "id": 521,
       "type": "timeseries",
       "title": "Outbound send failures per peer (/min)",
       "datasource": {
@@ -649,13 +1106,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 59,
+        "y": 78,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 514,
+      "id": 522,
       "type": "timeseries",
       "title": "Time since last successful send (per peer)",
       "datasource": {
@@ -701,13 +1158,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 59,
+        "y": 78,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 515,
+      "id": 523,
       "type": "timeseries",
       "title": "Transport auto-heals (/min)",
       "datasource": {
@@ -753,7 +1210,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 89,
         "w": 12,
         "h": 11
       }
