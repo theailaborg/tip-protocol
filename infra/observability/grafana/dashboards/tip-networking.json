@@ -1,0 +1,1219 @@
+{
+  "uid": "tip-networking",
+  "title": "TIP Networking",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "tags": [
+    "tip",
+    "consensus",
+    "health"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-tip"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "query": {
+          "query": "label_values(tip_node_registry_info, node)",
+          "refId": "vars"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 500,
+      "type": "row",
+      "title": "At a glance  (green = healthy, red = investigate)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 501,
+      "type": "stat",
+      "title": "Under-connected nodes",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(tip_network_connectivity_complete == 0) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes not at full mesh (connectivity_complete = 0). 0 is healthy; anything else means a node is missing peer connections."
+    },
+    {
+      "id": 502,
+      "type": "stat",
+      "title": "Full-mesh nodes",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_network_connectivity_complete) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes currently at full mesh connectivity."
+    },
+    {
+      "id": 503,
+      "type": "stat",
+      "title": "Suspect peers",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_heartbeat_suspect_peers) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Heartbeat-suspect peers across the fleet. 0 is healthy."
+    },
+    {
+      "id": 504,
+      "type": "stat",
+      "title": "Disconnect flap (/min)",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_peer_disconnects_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Fleet-wide peer disconnect rate. Sustained > 0 is the flap that reads as 'nodes randomly drop'."
+    },
+    {
+      "id": 505,
+      "type": "stat",
+      "title": "Re-handshakes (/min)",
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_rehandshakes_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Fleet-wide re-handshakes of connected-but-unauthorized peers (auth-window recovery)."
+    },
+    {
+      "id": 506,
+      "type": "stat",
+      "title": "Auto-heals fired (/min)",
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_network_force_redials_total[5m])) * 60 or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 1
+        }
+      },
+      "description": "Force-close + re-dial events that rebuild a half-dead connection. > 0 means the transport auto-heal fired (needs this branch deployed to emit)."
+    },
+    {
+      "id": 507,
+      "type": "row",
+      "title": "Per-node connectivity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 508,
+      "type": "table",
+      "title": "Per-node connectivity",
+      "description": "Per-node mesh view: authorized vs connected peers, full-mesh flag, who each node is connected to, and churn counters.",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "Registry",
+          "instant": true,
+          "format": "table",
+          "expr": "group by (node, name) (tip_node_registry_info)"
+        },
+        {
+          "refId": "Authorized",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_peers_authorized)"
+        },
+        {
+          "refId": "Direct",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_direct_peers)"
+        },
+        {
+          "refId": "Mesh",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_connectivity_complete)"
+        },
+        {
+          "refId": "Peers",
+          "instant": true,
+          "format": "table",
+          "expr": "group by (node, peers) (last_over_time(tip_network_peer_list[10s]))"
+        },
+        {
+          "refId": "Disconnects",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_peer_disconnects_total)"
+        },
+        {
+          "refId": "Rehs",
+          "instant": true,
+          "format": "table",
+          "expr": "max by (node) (tip_network_rehandshakes_total)"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "node",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #Registry": true,
+              "Value #Peers": true,
+              "Time 1": true,
+              "__name__ 1": true,
+              "Time 2": true,
+              "__name__ 2": true,
+              "Time 3": true,
+              "__name__ 3": true,
+              "Time 4": true,
+              "__name__ 4": true,
+              "Time 5": true,
+              "__name__ 5": true,
+              "Time 6": true,
+              "__name__ 6": true,
+              "Time 7": true,
+              "__name__ 7": true
+            },
+            "indexByName": {
+              "node": 0,
+              "name": 1,
+              "Value #Authorized": 2,
+              "Value #Direct": 3,
+              "Value #Mesh": 4,
+              "peers": 5,
+              "Value #Disconnects": 6,
+              "Value #Rehs": 7
+            },
+            "renameByName": {
+              "node": "Node",
+              "name": "Name",
+              "Value #Authorized": "Authorized peers",
+              "Value #Direct": "Connected peers",
+              "Value #Mesh": "Full mesh",
+              "peers": "Connected to",
+              "Value #Disconnects": "Disconnects",
+              "Value #Rehs": "Re-handshakes"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Full mesh"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "partial",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "full",
+                        "color": "green"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "-",
+                        "color": "text"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 509,
+      "type": "row",
+      "title": "Connectivity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 510,
+      "type": "timeseries",
+      "title": "Authorized peers per node",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Connected + handshaked committee peers.\n\nNormal: 4 (for a 5-node committee).\nAct if: <4 on any node, it lost a committee peer (reduces its quorum view).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_network_peers_authorized{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 4
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 511,
+      "type": "timeseries",
+      "title": "Connectivity complete (1 = full mesh)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "1 when a node is connected to every active committee member.\n\nNormal: 1 for all.\nAct if: drops to 0, that node is missing a peer and may park commits.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_network_connectivity_complete{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 512,
+      "type": "row",
+      "title": "Connection churn (the flap signal)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 513,
+      "type": "timeseries",
+      "title": "Connects per node (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "libp2p peer:connect rate. Paired with disconnects, this is the flap that reads as 'node goes offline randomly'.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_peer_connects_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 514,
+      "type": "timeseries",
+      "title": "Disconnects per node (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Rate of libp2p peer disconnects.\n\nNormal: ~0.\nAct if: sustained spikes, peers are flapping (usually downstream of a stall; recovered by fast-reauth but still disrupts a round).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_peer_disconnects_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 515,
+      "type": "timeseries",
+      "title": "Connection closes per node (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "libp2p connection:close rate (incl. pre-auth) - the rawest flap signal.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_connection_closes_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 516,
+      "type": "timeseries",
+      "title": "Fast re-auths per node (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Reconnects restored within the 15s grace window (no full handshake).\n\nNormal: ~0.\nAct if: tracks the disconnect rate and stays high, confirms hard peer flapping is ongoing.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_fast_reauths_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 43,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 517,
+      "type": "timeseries",
+      "title": "Re-handshakes per node (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Re-handshakes of connected-but-unauthorized peers (recovery of a stale auth window).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_rehandshakes_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 518,
+      "type": "row",
+      "title": "Heartbeat",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 519,
+      "type": "timeseries",
+      "title": "Heartbeat suspect peers",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Peers each node currently marks suspect (missed heartbeats).\n\nNormal: 0.\nAct if: >0 sustained, this is the trigger: suspect, then anti-entropy reconcile, then sync storm.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_heartbeat_suspect_peers{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 24,
+        "h": 11
+      }
+    },
+    {
+      "id": 520,
+      "type": "row",
+      "title": "Comms health  (per-channel outbound delivery + transport auto-heal)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 521,
+      "type": "timeseries",
+      "title": "Outbound send failures per peer (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Direct-stream send failures from a node to a peer. A line that climbs while the peer stays connected is a silent one-directional partition (the rotation-halt root cause).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_network_peer_send_failures_total{node=~\"$node\"}[5m]) * 60",
+          "legendFormat": "{{node}} -> {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 78,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 522,
+      "type": "timeseries",
+      "title": "Time since last successful send (per peer)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Milliseconds since the last successful outbound send to a peer. High while connected = a broken outbound push.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_network_peer_last_send_ok_age_ms{node=~\"$node\"}",
+          "legendFormat": "{{node}} -> {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 78,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 523,
+      "type": "timeseries",
+      "title": "Transport auto-heals (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Force-close + re-dial events that rebuild a half-dead connection after sustained one-directional send failures. Spikes mean the auto-heal fired.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_network_force_redials_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cpm",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 89,
+        "w": 12,
+        "h": 11
+      }
+    }
+  ]
+}

@@ -231,6 +231,27 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_network_direct_peers\{node="tip:\/\/node\/self"\} 3$/m);
   });
 
+  test("per-peer channel-health + force-redial metrics appear", async () => {
+    const app = makeApp({
+      consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },
+      network: {
+        current: {
+          peerCount: () => 2,
+          directPeers: () => ["a", "b"],
+          metrics: () => ({ connects: 5, disconnects: 1, conn_closes: 1, handshakes_initiated: 2, rehandshakes: 0, fast_reauths: 1, force_redials: 3 }),
+          channelHealth: () => [
+            { peerId: "p1", tipNodeId: "tip://node/feedface1234", sendOk: 10, sendFail: 4, consecutiveFail: 2, lastOkAgeMs: 5000 },
+          ],
+        },
+      },
+    });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/^tip_network_force_redials_total\{node="tip:\/\/node\/self"\} 3$/m);
+    expect(res.text).toMatch(/tip_network_peer_send_failures_total\{[^}]*peer="feedface1234"[^}]*\} 4/);
+    expect(res.text).toMatch(/tip_network_peer_send_consecutive_failures\{[^}]*peer="feedface1234"[^}]*\} 2/);
+    expect(res.text).toMatch(/tip_network_peer_last_send_ok_age_ms\{[^}]*peer="feedface1234"[^}]*\} 5000/);
+  });
+
   test("mempool capacity emitted when available", async () => {
     const app = makeApp({
       consensus: {

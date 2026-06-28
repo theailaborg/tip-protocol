@@ -423,6 +423,11 @@ const CONSENSUS = {
   // Producer-pause liveness bound: a stuck boundary past this is logged loudly
   // and surfaced as a metric. Observability only; never bypasses the pause.
   get PRODUCER_PAUSE_ESCALATE_MS() { return LC.PRODUCER_PAUSE_ESCALATE_MS; },
+  // Transport auto-heal: after this many consecutive outbound send failures to a
+  // peer, force-close + re-dial (rebuild the half-dead connection). Cooldown
+  // bounds re-dial churn. Per-node operational tunables.
+  get CHANNEL_HEAL_FAIL_THRESHOLD() { return LC.CHANNEL_HEAL_FAIL_THRESHOLD; },
+  get CHANNEL_HEAL_COOLDOWN_MS() { return LC.CHANNEL_HEAL_COOLDOWN_MS; },
   get SYNC_TOTAL_TIMEOUT_MS() { return LC.SYNC_TOTAL_TIMEOUT_MS; },
   get SYNC_MAX_RESPONSE_BYTES() { return LC.SYNC_MAX_RESPONSE_BYTES; },
   // Tier-3 local tunable (shared/local-config.js). Currently has NO consumer in
