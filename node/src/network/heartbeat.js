@@ -213,7 +213,12 @@ function createHeartbeatManager({
   }
 
   function peerStates() {
-    return Object.fromEntries(_peerState);
+    const authorized = (network && network.authorizedPeers && network.authorizedPeers()) || {};
+    const out = {};
+    for (const [peerId, ps] of _peerState) {
+      out[peerId] = { ...ps, tipNodeId: authorized[peerId] || null };
+    }
+    return out;
   }
 
   return { start, stop, registerHandler, peerStates };

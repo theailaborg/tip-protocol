@@ -252,6 +252,25 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/tip_network_peer_last_send_ok_age_ms\{[^}]*peer="feedface1234"[^}]*\} 5000/);
   });
 
+  test("per-peer heartbeat consecutive-misses (send/receive direction matrix) appears", async () => {
+    const app = makeApp({
+      consensus: {
+        current: {
+          stats: () => fakeStats({
+            heartbeat: { peers: {
+              p1: { consecutiveMisses: 3, tipNodeId: "tip://node/deadbeef0001" },
+              p2: { consecutiveMisses: 0, tipNodeId: "tip://node/deadbeef0002" },
+            } },
+          }),
+          isConsensusHalted: () => ({ halted: false, reason: "healthy" }),
+        },
+      },
+    });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/tip_heartbeat_peer_consecutive_misses\{[^}]*peer="deadbeef0001"[^}]*\} 3/);
+    expect(res.text).toMatch(/tip_heartbeat_peer_consecutive_misses\{[^}]*peer="deadbeef0002"[^}]*\} 0/);
+  });
+
   test("mempool capacity emitted when available", async () => {
     const app = makeApp({
       consensus: {
