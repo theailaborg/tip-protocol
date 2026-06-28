@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "row",
-      "title": "ACTION NEEDED?  (green = healthy, red = investigate)",
+      "title": "Action needed?  (green = healthy, red = investigate)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -121,6 +121,65 @@
     {
       "id": 3,
       "type": "stat",
+      "title": "Consensus divergence (byzantine-fork canary)",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 8,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_consensus_divergence_total)",
+          "legendFormat": "total"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "text": {
+          "titleSize": 14,
+          "valueSize": 26
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "**Consensus divergence** - Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event - page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
+    },
+    {
+      "id": 4,
+      "type": "stat",
       "title": "Nodes online",
       "datasource": {
         "type": "prometheus",
@@ -174,14 +233,14 @@
         }
       },
       "gridPos": {
-        "x": 8,
+        "x": 16,
         "y": 1,
         "w": 8,
         "h": 4
       }
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "stat",
       "title": "Quorum margin (min)",
       "datasource": {
@@ -232,14 +291,64 @@
         }
       },
       "gridPos": {
-        "x": 16,
-        "y": 1,
+        "x": 0,
+        "y": 5,
         "w": 8,
         "h": 4
       }
     },
     {
-      "id": 5,
+      "id": 6,
+      "type": "stat",
+      "title": "Quorum threshold",
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 6,
+        "h": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_narwhal_quorum and on(instance) (up{job=\"tip-federation\"} == 1))"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "**Quorum threshold** - The 2f+1 majority needed for Bullshark to commit an anchor, derived from the active committee size. For N nodes: quorum = floor(2N/3) + 1.\n\n**Healthy**: stable value matching the active committee.\n\n**Trouble**: changes unexpectedly = committee membership shifted (could be legitimate auto-derivation from `recent_producers` or a node being silently dropped)."
+    },
+    {
+      "id": 7,
       "type": "stat",
       "title": "Worst event-loop stall",
       "datasource": {
@@ -294,14 +403,14 @@
         }
       },
       "gridPos": {
-        "x": 0,
+        "x": 14,
         "y": 5,
         "w": 8,
         "h": 4
       }
     },
     {
-      "id": 6,
+      "id": 8,
       "type": "stat",
       "title": "Suspect peers",
       "datasource": {
@@ -361,14 +470,14 @@
         }
       },
       "gridPos": {
-        "x": 8,
-        "y": 5,
+        "x": 0,
+        "y": 9,
         "w": 8,
         "h": 4
       }
     },
     {
-      "id": 7,
+      "id": 9,
       "type": "stat",
       "title": "Commit rate",
       "datasource": {
@@ -419,26 +528,26 @@
         }
       },
       "gridPos": {
-        "x": 16,
-        "y": 5,
+        "x": 8,
+        "y": 9,
         "w": 8,
         "h": 4
       }
     },
     {
-      "id": 8,
+      "id": 10,
       "type": "row",
       "title": "Consensus progress",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 13,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 9,
+      "id": 11,
       "type": "timeseries",
       "title": "Committed round per node",
       "datasource": {
@@ -484,13 +593,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 14,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 10,
+      "id": 12,
       "type": "timeseries",
       "title": "Commit spread: leader minus laggard",
       "datasource": {
@@ -556,25 +665,311 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 10,
+        "y": 14,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 11,
+      "id": 13,
+      "type": "bargauge",
+      "title": "Consensus index (anchor commits since genesis) - per node",
+      "description": "**Consensus index** - Network-wide count of anchor commits. Persisted via `consensus_meta` (#44) so it survives restart on idle networks; joining nodes adopt the cluster's value at snapshot install time via `peer_consensus_index` (Cosmos/Sui pattern), so all caught-up nodes converge to the same value.\n\n**Healthy**: all online nodes report the same value (modulo 1-2 of in-flight drift), monotonically increasing.\n\n**Trouble**: a node's value frozen for > 3 minutes = consensus halted on that node. Sustained large absolute-value drift between nodes = a joiner didn't pick up snapshot-based convergence; check sync logs.\n\nFor commit rate, see the next panel (Consensus advance rate) - it's sourced from a per-process counter that's immune to snapshot-adoption jumps. Alert: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((tip_bullshark_consensus_index{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "titleSize": 13,
+          "valueSize": 16
+        },
+        "valueMode": "color",
+        "namePlacement": "left",
+        "minVizWidth": 0,
+        "minVizHeight": 22,
+        "sizing": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "max": null,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "bargauge",
+      "title": "Consensus advance rate (anchors/min) - per node",
+      "description": "**Consensus advance rate (anchors/min)** - Rate at which Bullshark commits anchor certs, per minute, over a 5-minute window. Sourced from `tip_bullshark_anchors_committed_total` - a per-process counter that ticks only on real local anchor commits.\n\n**Why not `rate(consensus_index)`?** `consensus_index` jumps when a joining node adopts the peer's network-wide value via `peer_consensus_index` (snapshot fast-sync). That one-step jump produces a spurious rate spike for ~5 min after each new joiner. The per-process anchor counter is immune to those jumps.\n\n**Healthy**: ~25-30 anchors/min on every node, all within ~1/min of each other (Bullshark commits at ~2s cadence).\n\n**Trouble**:\n- Any node < 1/min for 3+ min = consensus halted on that node\n- One node consistently lower than others = lagging, AE should auto-recover\n- All nodes drop together = federation-wide halt (check halt-status panel)\n\nAlertmanager: `rate(tip_bullshark_anchors_committed_total[5m]) == 0 for: 3m`.",
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[5m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) * 60) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "titleSize": 13,
+          "valueSize": 16
+        },
+        "valueMode": "color",
+        "namePlacement": "left",
+        "minVizWidth": 0,
+        "minVizHeight": 22,
+        "sizing": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "max": 35,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Narwhal current round",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((tip_narwhal_current_round{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Bullshark commits / 5s",
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_bullshark_anchors_committed_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
+      "description": "**Bullshark commits / 5s** - Rate of anchor commits in 5-second windows.\n\n**Healthy**: ~2-3 commits per 5s on a 2-second-round network. All nodes show the same rate.\n\n**Trouble**: zero or sporadic - consensus is failing to make progress (check halt status + peer connectivity)."
+    },
+    {
+      "id": 17,
       "type": "row",
-      "title": "Jitter & event-loop stalls  (the root signal)",
+      "title": "Quorum, jitter & certs",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 42,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 12,
+      "id": 18,
+      "type": "timeseries",
+      "title": "Quorum margin per node",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "active participants minus quorum, per node.\n\nNormal: >=1.\nAct if: 0, at the edge; the next drop halts that node.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_consensus_quorum_margin{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 19,
       "type": "timeseries",
       "title": "Event-loop stall per node (ms)",
       "datasource": {
@@ -639,14 +1034,14 @@
         }
       },
       "gridPos": {
-        "x": 0,
-        "y": 22,
+        "x": 12,
+        "y": 43,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 13,
+      "id": 20,
       "type": "timeseries",
       "title": "Nodes online over time",
       "datasource": {
@@ -691,141 +1086,25 @@
         }
       },
       "gridPos": {
-        "x": 12,
-        "y": 22,
-        "w": 12,
-        "h": 11
-      }
-    },
-    {
-      "id": 14,
-      "type": "timeseries",
-      "title": "Disconnects per node (/min)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "Rate of libp2p peer disconnects.\n\nNormal: ~0.\nAct if: sustained spikes, peers are flapping (usually downstream of a stall; recovered by fast-reauth but still disrupts a round).",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(rate(tip_network_peer_disconnects_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cpm",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
         "x": 0,
-        "y": 33,
+        "y": 54,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 15,
+      "id": 21,
       "type": "timeseries",
-      "title": "Fast re-auths per node (/min)",
+      "title": "Pending / parked certs",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Reconnects restored within the 15s grace window (no full handshake).\n\nNormal: ~0.\nAct if: tracks the disconnect rate and stays high, confirms hard peer flapping is ongoing.",
+      "description": "Certs parked waiting on missing parents before an anchor can commit.\n\nNormal: 0 to low.\nAct if: climbs, anchors can't finalize because parent certs haven't arrived (a peer is behind/stalled).",
       "targets": [
         {
           "refId": "A",
-          "expr": "(rate(tip_network_fast_reauths_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "cpm",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 33,
-        "w": 12,
-        "h": 11
-      }
-    },
-    {
-      "id": 16,
-      "type": "row",
-      "title": "Feedback loop  (why the jitter sustains)",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 44,
-        "w": 24,
-        "h": 1
-      }
-    },
-    {
-      "id": 17,
-      "type": "timeseries",
-      "title": "Heartbeat suspect peers",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "Peers each node currently marks suspect (missed heartbeats).\n\nNormal: 0.\nAct if: >0 sustained, this is the trigger: suspect, then anti-entropy reconcile, then sync storm.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(tip_heartbeat_suspect_peers{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "expr": "(tip_narwhal_pending_certs{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
           "legendFormat": "{{name}}"
         }
       ],
@@ -837,26 +1116,74 @@
             "lineInterpolation": "stepAfter",
             "lineWidth": 2,
             "fillOpacity": 8,
-            "showPoints": "never",
-            "thresholdsStyle": {
-              "mode": "line"
-            }
+            "showPoints": "never"
           },
           "color": {
             "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 54,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Liveness & recovery",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Producer-pause stuck duration (rotation boundary)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Milliseconds a node has been producer-paused at a rotation boundary with no tx to carve. Sustained > 0 means a stuck boundary; pull-repair runs and the pause is never bypassed.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_consensus_producer_paused_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
+          "color": {
+            "mode": "palette-classic"
           }
         }
       },
@@ -876,13 +1203,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 66,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 18,
+      "id": 24,
       "type": "timeseries",
       "title": "Anti-entropy gap-pulls (/min)",
       "datasource": {
@@ -928,40 +1255,45 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 45,
+        "y": 66,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 19,
+      "id": 25,
       "type": "timeseries",
-      "title": "Pending / parked certs",
+      "title": "Cert GC (rounds pruned)",
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 12,
+        "h": 11
+      },
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Certs parked waiting on missing parents before an anchor can commit.\n\nNormal: 0 to low.\nAct if: climbs, anchors can't finalize because parent certs haven't arrived (a peer is behind/stalled).",
       "targets": [
         {
           "refId": "A",
-          "expr": "(tip_narwhal_pending_certs{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
+          "expr": "(rate(tip_bullshark_gc_runs_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
           "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "fillOpacity": 8,
+            "fillOpacity": 5,
             "showPoints": "never"
           },
           "color": {
             "mode": "palette-classic"
-          }
+          },
+          "unit": "ops"
         }
       },
       "options": {
@@ -969,236 +1301,26 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "lastNotNull",
-            "max"
+            "mean"
           ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
         }
       },
-      "gridPos": {
-        "x": 0,
-        "y": 56,
-        "w": 12,
-        "h": 11
-      }
+      "description": "**Cert GC (rounds pruned)** - Cumulative count of certificate rows pruned by Bullshark's GC trigger (every `gc_interval_commits`, prunes certs older than `gc_depth` rounds).\n\n**Healthy**: linearly growing, lagging the anchor commit rate by gc_depth rounds.\n\n**Trouble**: stuck at 0 with high commit count = GC isn't firing (check `TIP_GC_DISABLED` env). Sudden huge jump = lots of certs pruned at once (after a long offline period)."
     },
     {
-      "id": 20,
-      "type": "row",
-      "title": "Connectivity & quorum",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 67,
-        "w": 24,
-        "h": 1
-      }
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Authorized peers per node",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "Connected + handshaked committee peers.\n\nNormal: 4 (for a 5-node committee).\nAct if: <4 on any node, it lost a committee peer (reduces its quorum view).",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(tip_network_peers_authorized{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "thresholdsStyle": {
-              "mode": "line"
-            }
-          },
-          "color": {
-            "mode": "palette-classic"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 4
-              }
-            ]
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 68,
-        "w": 12,
-        "h": 11
-      }
-    },
-    {
-      "id": 22,
-      "type": "timeseries",
-      "title": "Connectivity complete (1 = full mesh)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "1 when a node is connected to every active committee member.\n\nNormal: 1 for all.\nAct if: drops to 0, that node is missing a peer and may park commits.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(tip_network_connectivity_complete{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 68,
-        "w": 12,
-        "h": 11
-      }
-    },
-    {
-      "id": 23,
-      "type": "timeseries",
-      "title": "Quorum margin per node",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prom-tip"
-      },
-      "description": "active participants minus quorum, per node.\n\nNormal: >=1.\nAct if: 0, at the edge; the next drop halts that node.",
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(tip_consensus_quorum_margin{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info)))",
-          "legendFormat": "{{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "thresholdsStyle": {
-              "mode": "line"
-            }
-          },
-          "color": {
-            "mode": "palette-classic"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 79,
-        "w": 12,
-        "h": 11
-      }
-    },
-    {
-      "id": 24,
+      "id": 26,
       "type": "row",
       "title": "Throughput & capacity  (load-test view)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 88,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 25,
+      "id": 27,
       "type": "timeseries",
       "title": "Offered vs committed tx rate (/min)",
       "datasource": {
@@ -1254,13 +1376,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 91,
+        "y": 89,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 26,
+      "id": 28,
       "type": "timeseries",
       "title": "Mempool backlog per node (the knee detector)",
       "datasource": {
@@ -1306,10 +1428,110 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 91,
+        "y": 89,
         "w": 12,
         "h": 11
       }
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Mempool throughput (submit / drain rate)",
+      "description": "**Mempool throughput** - Cumulative-counter rate of txs entering and leaving the mempool, per second.\n\n- **received**: `rate(tip_mempool_received_total[1m])` - submit rate (txs accepted into the mempool)\n- **drained**: `rate(tip_mempool_drained_total[1m])` - commit rate (txs pulled into Narwhal batches)\n\n**Healthy**: drained tracks received closely on a busy network. On idle, both stay flat at 0.\n\n**Trouble**:\n- received > drained sustained = consensus can't keep up; mempool grows unbounded (see Mempool size over time)\n- received > 0 with drained = 0 = halt-gate is engaged or batches aren't being pulled (#26/#27)\n- drained > received = catching up on backlog (transient, healthy)\n\nThese counters fix the sampling blind spot of the gauge: gauge can return to 0 between scrapes; counters never miss transient flow.",
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 24,
+        "h": 11
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(rate(tip_mempool_received_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}} received"
+        },
+        {
+          "refId": "B",
+          "expr": "(rate(tip_mempool_drained_total{node=~\"$node\"}[1m]) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}} drained"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Mempool size over time",
+      "gridPos": {
+        "x": 0,
+        "y": 111,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))) and on(instance) (up{job=\"tip-federation\"} == 1)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "**Mempool size over time** - Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line - submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
     }
   ]
 }
