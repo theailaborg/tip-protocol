@@ -334,7 +334,11 @@ function committeeSection(s, dag) {
       // where reason_detail mentions rotation + tx_type column matches.
       // Using the existing accessor avoids adding a new index.
       const rows = dag.getTxRejectionsByReason("revalidation_failed", { limit: 10000 }) || [];
-      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION").length;
+      // Exclude benign idempotent rejections of the coordinator's periodic
+      // re-broadcasts (already-applied / duplicate-in-batch / superseded). Only
+      // genuine failures (insufficient sigs, payload mismatch, gap) count here.
+      const benign = /already (exists|in this batch)|non-monotonic/i;
+      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION" && !benign.test(r.reason_detail || "")).length;
     }
   } catch { /* ignore */ }
 
@@ -346,7 +350,7 @@ function committeeSection(s, dag) {
     gauge("tip_committee_history_size", "Total rows in committee_history (includes rotation 0 bootstrap)", totalRotations),
     counter("tip_committee_rotation_proposals_total", "Total COMMITTEE_ROTATION txs the bullshark proposer has attempted to submit (regardless of downstream success)", proposals),
     counter("tip_committee_rotation_committed_total", "Total rotation events that landed in committee_history (excludes the genesis bootstrap row)", committedTotal),
-    counter("tip_committee_rotation_failures_total", "COMMITTEE_ROTATION txs rejected at commit-handler (insufficient sigs, gap, payload mismatch, etc.)", failuresTotal),
+    counter("tip_committee_rotation_failures_total", "Genuine COMMITTEE_ROTATION rejections at commit-handler (insufficient sigs, gap, payload mismatch); benign re-broadcast duplicates (already-applied / non-monotonic) are excluded.", failuresTotal),
     counter("tip_snapshot_chain_walk_failures_total", "Snapshot imports rejected because the rotation chain failed cryptographic verification (synthetic-snapshot attack class)", chainWalkFailures),
     // Snapshot install progress + size (#94). last_install_* describe the most
     // recent completed install; install_in_progress + the *_rows/_bytes gauges
