@@ -80,13 +80,9 @@ const TOPICS = Object.freeze({
 // the existing TCP/QUIC connection between authorized peers — no mesh, no
 // scoring, no topic warmth required.
 const ROTATION_COORD_PROTOCOL = "/tip/rotation-coord/1.0.0";
-// Pull-repair for rotation coordination. The coord protocol above is push-only
-// (broadcastToAuthorized); a node whose OUTBOUND push breaks after a reconnect
-// strands its signatures, and a node below quorum has no way to ask for the
-// assembled tx. This request/response protocol lets a stuck node FETCH the
-// 2f+1-signed rotation tx from a peer that has it, riding the answer-direction
-// (peer responds on the requester's stream) that survives a one-directional
-// partition. Mirrors the cert-sync pull that already keeps the DAG converged.
+// Pull-repair: a node below quorum FETCHES the 2f+1-signed rotation tx from a
+// peer that has it (request/response), riding the answer-direction that survives
+// a broken outbound push. The coord protocol above is push-only.
 const ROTATION_REPAIR_PROTOCOL = "/tip/rotation-repair/1.0.0";
 // Direct-stream protocol for BatchAck delivery (Issue #46 structural fix).
 // Acks are point-to-point — only the batch author needs them — so gossipsub

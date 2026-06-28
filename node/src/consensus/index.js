@@ -294,12 +294,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       if (bullshark && typeof bullshark.tryRotationProposal === "function") {
         bullshark.tryRotationProposal(round, missingRotation);
       }
-      // Pull-repair: if we are paused with no rotation tx of our own (our
-      // aggregation never reached quorum, e.g. a one-directional partition
-      // stranded a peer's signatures), fetch the assembled tx from a peer that
-      // built it. The coordinator fetches latest+1 (the next rotation to apply,
-      // which peers hold), not epochOf(round). Fire-and-forget; self-limits
-      // once the tx lands in mempool.
+      // Pull-repair: paused with no rotation tx of our own (aggregation never
+      // reached quorum), so fetch the assembled tx from a peer. Fire-and-forget.
       const coord = bullshark && bullshark.rotationCoordinator && bullshark.rotationCoordinator();
       if (coord && typeof coord.requestTxRepair === "function") {
         Promise.resolve(coord.requestTxRepair()).catch(() => {});

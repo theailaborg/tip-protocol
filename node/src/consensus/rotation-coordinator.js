@@ -554,10 +554,8 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
   }
 
   function _rebroadcastTick() {
-    // Age out inflights on our own timer, not only via the producer-pause
-    // nudge. A node that reached quorum and carved out never re-enters that
-    // nudge path, so without this its submitted inflight (and the futile push
-    // rebroadcast under a one-directional partition) would live forever.
+    // Age out inflights on our own timer too: a node that carved out never
+    // re-enters the producer-pause nudge, the only other prune trigger.
     pruneExpired();
     const now = nowMs();
     let anyAlive = false;
@@ -618,17 +616,11 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
   }
 
   // ── Pull-repair ──────────────────────────────────────────────────────────────
-  // The coord protocol is push-only: a node whose outbound push breaks after a
-  // reconnect strands its signatures, and a node still below quorum has no way
-  // to obtain the assembled tx. These handlers add a request/response FETCH
-  // path — a stuck node pulls the 2f+1-signed rotation tx from a peer that
-  // already built it. The peer answers on the requester's stream (the direction
-  // that survives a one-directional partition; same shape as cert-sync), so
-  // recovery never depends on the broken push.
+  // A node below quorum FETCHES the 2f+1-signed tx from a peer that has it
+  // (request/response), riding the answer-direction that survives a broken push.
 
-  // Serve side: answer "do you hold the assembled tx for rotation N?" from our
-  // mempool. Read-all-then-respond — the caller half-closes its write side
-  // after sending the request, which ends the for-await.
+  // Serve: reply with our mempool's rotation-N tx (or null). The caller
+  // half-closes its write side after the request, which ends the for-await.
   async function _handleRepairRequest({ stream, connection }) {
     const remotePeerId = connection?.remotePeer?.toString?.() || "";
     try {
@@ -649,18 +641,15 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
     }
   }
 
-  // Request side: invoked when stuck at the boundary with no rotation tx in our
-  // mempool. Dial authorized peers in turn; the first that returns a tx we can
-  // verify wins. Self-limiting: once accepted, the tx lands in mempool, the
-  // carve-out succeeds, and the producer-pause stops nudging.
+  // Dial peers in turn; first verifiable tx wins. Self-limiting: once accepted
+  // the tx lands in mempool, the carve-out succeeds, and the pause stops nudging.
   let _repairInFlight = false;
   async function requestTxRepair() {
     if (_repairInFlight) return false;   // the pause nudge fires every ~1.5s; don't stack dial storms
     if (!network || typeof network.openStream !== "function" || !network.ROTATION_REPAIR_PROTOCOL) return false;
-    // Fetch the NEXT rotation to apply (latest+1), NOT epochOf(round). Rotations
-    // apply in order, the proposer always submits latest+1, and that is the tx
-    // the carve-out drains and peers actually hold. Across a multi-epoch gap
-    // epochOf(round) > latest+1 and no peer holds it, so fetching it finds none.
+    // Fetch latest+1, NOT epochOf(round): rotations apply in order and that is
+    // the tx peers hold. Across a multi-epoch gap epochOf > latest+1 and no peer
+    // has it. Mirrors the carve-out's min(latest+1, targetRotation).
     const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
     const rotation_number = (latest ? latest.rotation_number : 0) + 1;
     const existing = _inFlight.get(rotation_number);
@@ -718,10 +707,9 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
     catch { return null; }
   }
 
-  // Validate a fetched rotation tx, then rebuild it LOCALLY so the injected
-  // tx_id is deterministic (the peer's timestamp/tx_id are NOT covered by the
-  // cosignatures, so never trust them). Accept only with ≥ quorum valid
-  // previous-committee signatures over a payload_hash that binds its committee.
+  // Rebuild LOCALLY for a deterministic tx_id (the peer's timestamp/tx_id are
+  // not covered by the sigs). Accept only with >= quorum valid prev-committee
+  // sigs over a payload_hash that binds the committee.
   function _acceptRepairedTx(receivedTx, expectedRotation) {
     const d = receivedTx && receivedTx.data;
     if (!receivedTx || receivedTx.tx_type !== TX_TYPES.COMMITTEE_ROTATION || !d) return false;
@@ -759,20 +747,19 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
         new_committee: d.new_committee, payload_hash: d.payload_hash,
       }, signer_node_ids, signatures);
     } catch (err) {
-      log.debug(`rotation-repair: rebuild failed — ${err.message}`);
+      log.debug(`rotation-repair: rebuild failed: ${err.message}`);
       return false;
     }
     try {
       const r = submitTx(tx);
       if (r && typeof r.catch === "function") r.catch(() => { });
-      // Suppress a redundant self-submit: if our own aggregation later crosses
-      // quorum it would build a second (possibly different-subset) tx for the
-      // same rotation. The injected tx is canonical and already in the mempool.
+      // Suppress a redundant self-submit if our own aggregation later reaches
+      // quorum: the injected tx is canonical and already in the mempool.
       const inflight = _inFlight.get(d.rotation_number);
       if (inflight && inflight.submittedAt == null) inflight.submittedAt = nowMs();
       return true;
     } catch (err) {
-      log.debug(`rotation-repair: submit of fetched tx failed — ${err.message}`);
+      log.debug(`rotation-repair: submit of fetched tx failed: ${err.message}`);
       return false;
     }
   }

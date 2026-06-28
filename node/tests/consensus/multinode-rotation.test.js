@@ -115,10 +115,8 @@ function createNet() {
       CONSENSUS_ACK_REQUEST_PROTOCOL: "/tip/consensus-ack-request/1.0.0",
       ROTATION_COORD_PROTOCOL: ROTATION,
       ROTATION_REPAIR_PROTOCOL: REPAIR,
-      // Pull-repair is request/response: the requester dials, the responder
-      // answers ON THE REQUESTER'S stream. That direction survives a broken
-      // outbound push (same shape as cert-sync), so it is NOT subject to the
-      // rotation-coord push faults.
+      // Request/response: the responder answers on the requester's stream, so
+      // repair is not subject to the rotation-coord push faults.
       peers: () => [...protoHandlers.keys()].filter((id) => id !== nodeId),
       async openStream(peerId, protocol) {
         const handler = protoHandlers.get(peerId)?.[protocol];
@@ -346,22 +344,10 @@ describe("multi-node consensus harness, committee rotation", () => {
   }, 110000);
 });
 
-// ── surgical reproduction of the live 2-hold / 3-stuck boundary wedge ───────────
-//
-// The live halt was a rare timing coincidence: signature propagation was delayed
-// enough (a 5h reconnect) that the rotation tx missed its early commit and hit
-// the boundary carve-out, where only the 2 nodes that had gathered quorum could
-// produce -> 2 certs < quorum -> permanent wedge. That delay cannot be
-// manufactured on demand, so instead of waiting for the wedge to form NATURALLY
-// we CONSTRUCT its exact state and prove pull-repair resolves it:
-//
-//   1. Drop ALL rotation-coord traffic so no node aggregates; the cluster runs
-//      normally to the boundary and PAUSES there with no rotation tx anywhere.
-//   2. Inject the valid quorum-signed rotation-1 tx into exactly 2 nodes
-//      (the "holders") -- the precise 2-hold / 3-stuck state.
-//   3. WITHOUT repair the 3 stuck nodes can never get the tx -> wedge.
-//      WITH repair they fetch it from a holder, carve out, and the rotation
-//      commits on all 5.
+// The natural wedge needs a rare sig-delay that can't be manufactured on demand,
+// so we CONSTRUCT its exact 2-hold / 3-stuck state (drop all rotation-coord, drive
+// to participation, inject the valid tx into 2 nodes) and assert pull-repair lets
+// the 3 stuck nodes fetch the tx that only the holders built.
 describe("surgical 2-hold / 3-stuck boundary wedge", () => {
   const ROTATION = "/tip/rotation-coord/1.0.0";
 
@@ -411,19 +397,15 @@ describe("surgical 2-hold / 3-stuck boundary wedge", () => {
       expect([h0, h1].every((n) => !!n.mempool.peekRotationTx(1))).toBe(true);
       expect([s0, s1, s2].every((n) => !n.mempool.peekRotationTx(1))).toBe(true);
 
-      // Repair: each stuck node fetches the assembled tx from a holder over the
-      // (still-alive) answer direction, re-validates it, and injects it. This
-      // exercises the REAL serve handler + committee/quorum validation across
-      // five independent coordinators, not a mock.
+      // Repair: each stuck node fetches the tx from a holder via the REAL serve
+      // handler + committee/quorum validation across five coordinators, not a mock.
       for (const n of [s0, s1, s2]) {
         const ok = await n.coordinator.requestTxRepair();
         expect(ok).toBe(true);
       }
 
-      // All five now hold the rotation tx -> every node can carve it out and the
-      // boundary can commit. (The carve/commit itself is ordinary consensus,
-      // covered by the no-halt tests above; the novel, previously-impossible
-      // step is the stuck nodes OBTAINING the tx, asserted here.)
+      // All five now hold the tx. The carve/commit is ordinary consensus (the
+      // no-halt tests above); the novel step is the stuck nodes OBTAINING it.
       expect(nodes.every((n) => !!n.mempool.peekRotationTx(1))).toBe(true);
       // The repaired tx is the same canonical rotation-1 tx (deterministic rebuild).
       for (const n of [s0, s1, s2]) {

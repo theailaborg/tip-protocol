@@ -732,9 +732,9 @@ describe("#68 rotation coordinator", () => {
     }), "peer-b");
     expect(coord._state().get(2).submittedAt).not.toBeNull();
 
-    // Backdate past deadlineMs*2 (deadlineMs=5000 → 10000), then fire the timer
-    // tick directly — NOT pruneExpired(). This is the only path a carved-out
-    // node has, since it never triggers the producer-pause nudge.
+    // Backdate past deadlineMs*2 (deadlineMs=5000, so 10000), then fire the timer
+    // tick directly, NOT pruneExpired(): the only path a carved-out node has,
+    // since it never triggers the producer-pause nudge.
     coord._state().get(2).submittedAt = nowMs() - 11_000;
     coord._rebroadcastTick();
 
@@ -1030,7 +1030,7 @@ describe("rotation pull-repair", () => {
     });
     const { coord } = _buildRepair({ dag, keys, submitted, network });
 
-    const ok = await coord.requestTxRepair();             // no arg — derives latest+1 = 2
+    const ok = await coord.requestTxRepair();             // no arg: derives latest+1 = 2
     expect(ok).toBe(true);
     expect(submitted).toHaveLength(1);
     expect(Number(submitted[0].data.rotation_number)).toBe(2);
