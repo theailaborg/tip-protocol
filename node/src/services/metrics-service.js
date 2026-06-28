@@ -334,7 +334,11 @@ function committeeSection(s, dag) {
       // where reason_detail mentions rotation + tx_type column matches.
       // Using the existing accessor avoids adding a new index.
       const rows = dag.getTxRejectionsByReason("revalidation_failed", { limit: 10000 }) || [];
-      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION").length;
+      // Exclude benign idempotent rejections of the coordinator's periodic
+      // re-broadcasts (already-applied / duplicate-in-batch / superseded). Only
+      // genuine failures (insufficient sigs, payload mismatch, gap) count here.
+      const benign = /already (exists|in this batch)|non-monotonic/i;
+      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION" && !benign.test(r.reason_detail || "")).length;
     }
   } catch { /* ignore */ }
 
@@ -346,7 +350,7 @@ function committeeSection(s, dag) {
     gauge("tip_committee_history_size", "Total rows in committee_history (includes rotation 0 bootstrap)", totalRotations),
     counter("tip_committee_rotation_proposals_total", "Total COMMITTEE_ROTATION txs the bullshark proposer has attempted to submit (regardless of downstream success)", proposals),
     counter("tip_committee_rotation_committed_total", "Total rotation events that landed in committee_history (excludes the genesis bootstrap row)", committedTotal),
-    counter("tip_committee_rotation_failures_total", "COMMITTEE_ROTATION txs rejected at commit-handler (insufficient sigs, gap, payload mismatch, etc.)", failuresTotal),
+    counter("tip_committee_rotation_failures_total", "Genuine COMMITTEE_ROTATION rejections at commit-handler (insufficient sigs, gap, payload mismatch); benign re-broadcast duplicates (already-applied / non-monotonic) are excluded.", failuresTotal),
     counter("tip_snapshot_chain_walk_failures_total", "Snapshot imports rejected because the rotation chain failed cryptographic verification (synthetic-snapshot attack class)", chainWalkFailures),
     // Snapshot install progress + size (#94). last_install_* describe the most
     // recent completed install; install_in_progress + the *_rows/_bytes gauges
@@ -380,14 +384,23 @@ function consensusQualitySection(s, network) {
   const expectedPeers = Math.max(0, active - 1);
 
   let suspect = 0, withMisses = 0, tracked = 0;
-  // heartbeat.peerStates() returns a plain object (peerId -> {consecutiveMisses}).
+  // heartbeat.peerStates() returns a plain object (peerId -> {consecutiveMisses, tipNodeId}).
   const peers = s.heartbeat?.peers;
+  // Per-peer directed edge. A heartbeat pong rides the prober's inbound stream,
+  // so a node with a broken OUTBOUND dial keeps answering probes (column stays 0)
+  // while its own probes all fail (row goes high): all-high row + all-zero column
+  // = that node can receive but not send. All-high row AND column = can't receive.
+  const peerLines = [];
   if (peers && typeof peers === "object") {
-    for (const ps of Object.values(peers)) {
+    peerLines.push("# HELP tip_heartbeat_peer_consecutive_misses Consecutive heartbeat misses from this node to a peer (0 = healthy round-trip). As a node x peer matrix, an all-high row with an all-zero column = that node can receive but not send.");
+    peerLines.push("# TYPE tip_heartbeat_peer_consecutive_misses gauge");
+    for (const [peerId, ps] of Object.entries(peers)) {
       tracked++;
       const m = (ps && ps.consecutiveMisses) || 0;
       if (m > 0) withMisses++;
       if (m >= CONSENSUS.HEARTBEAT_SUSPECT_MISSES) suspect++;
+      const peer = String((ps && ps.tipNodeId) || peerId).slice(-12);
+      peerLines.push(line("tip_heartbeat_peer_consecutive_misses", m, { peer }));
     }
   }
 
@@ -398,6 +411,7 @@ function consensusQualitySection(s, network) {
     gauge("tip_heartbeat_tracked_peers", "Peers tracked by the heartbeat liveness manager.", tracked),
     gauge("tip_heartbeat_peers_with_misses", "Peers with >=1 consecutive heartbeat miss (early churn signal).", withMisses),
     gauge("tip_heartbeat_suspect_peers", "Peers at/over the suspect threshold of consecutive misses; each triggers anti-entropy reconciliation. Sustained >0 = the jitter feedback loop is active.", suspect),
+    ...peerLines,
   ].join("\n");
 }
 

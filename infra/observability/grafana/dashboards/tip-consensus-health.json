@@ -1532,6 +1532,579 @@
         }
       },
       "description": "**Mempool size over time** - Per-node pending-tx queue size, time series.\n\n**Healthy on idle**: flat at 0.\n\n**Healthy on bursts**: brief spikes that drain quickly.\n\n**Trouble**: monotonically growing line - submissions outpacing commits. Investigate consensus liveness or rate-limit upstream."
+    },
+    {
+      "id": 31,
+      "type": "row",
+      "title": "Halt & fork forensics",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 118,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 32,
+      "type": "table",
+      "title": "Halt reason per node",
+      "description": "Current halt reason carried as a label. 'ok' = healthy. Tells you WHY a node halted (sub-quorum / stale / fork), not just that it did.",
+      "gridPos": {
+        "x": 0,
+        "y": 119,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "expr": "tip_consensus_halt_reason * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "node": true,
+              "Value": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "name": "Node",
+              "reason": "Halt reason"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Byzantine fork (halted / detection round)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Per node: 1 when this node halted on a state-divergence fork, plus the round it was detected. The node emitting 1 is the forked one.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_consensus_byzantine_fork_halted{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} halted"
+        },
+        {
+          "refId": "B",
+          "expr": "tip_consensus_byzantine_fork_round{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} fork round"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 125,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Time since last round advance (stale)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Milliseconds since this node's last Narwhal round advance. A climbing line that never resets is a stuck node before the halt gate trips.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_consensus_stale_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 125,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "Cert pipeline",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 136,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Cert parking (parked / unblocked / pruned, /min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Certs held on a missing parent (parked), released when the parent arrives (unblocked), or dropped by GC (pruned). Parked climbing faster than unblocked = a propagation leak.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_narwhal_certs_parked_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} parked"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tip_narwhal_certs_unblocked_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} unblocked"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(tip_narwhal_pending_certs_pruned_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} pruned"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 137,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "Batch-ack delivery (direct / fallback / rebroadcast, /min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "BatchAcks sent on the direct stream vs fallen back to gossipsub vs re-broadcast on duplicate. A rising fallback share is the early signal of a broken direct push.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_narwhal_acks_sent_direct_total[2m])) * 60",
+          "legendFormat": "direct"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tip_narwhal_acks_sent_fallback_total[2m])) * 60",
+          "legendFormat": "fallback (gossip)"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(tip_narwhal_acks_rebroadcast_total[2m])) * 60",
+          "legendFormat": "rebroadcast"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 137,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Byzantine defenses & stalls (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Equivocations refused (vote-digest mismatch), round fast-forwards, and own-batch retries while stuck. A retry storm with no fast-forwards is a one-sided stall.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_narwhal_equivocation_refused_total[5m])) * 60",
+          "legendFormat": "equivocations refused"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tip_narwhal_fast_forwards_total[5m])) * 60",
+          "legendFormat": "fast-forwards"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(tip_narwhal_retries_total[5m])) * 60",
+          "legendFormat": "retries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 148,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 39,
+      "type": "row",
+      "title": "Runtime & GC",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 159,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Event-loop lag (max / p99 / mean)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Per-node event-loop delay. max catches rare spikes; p99/mean catch chronic stalls (sync ML-DSA verify, big merkle rebuilds) that starve consensus.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_process_event_loop_lag_max_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} max"
+        },
+        {
+          "refId": "B",
+          "expr": "tip_process_event_loop_lag_p99_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} p99"
+        },
+        {
+          "refId": "C",
+          "expr": "tip_process_event_loop_lag_mean_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} mean"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 160,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Bullshark GC (runs / failures / skipped, /min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "DAG garbage collection. Failures > 0 = SQLite errors; skipped > 0 = TIP_GC_DISABLED left on, which leaks the cert table.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_bullshark_gc_runs_total[5m])) * 60",
+          "legendFormat": "runs"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tip_bullshark_gc_failures_total[5m])) * 60",
+          "legendFormat": "failures"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(tip_bullshark_gc_skipped_disabled_total[5m])) * 60",
+          "legendFormat": "skipped (disabled)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 160,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Mempool rejections / evictions (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Submits rejected (full / duplicate / malformed) and txs evicted on TTL. A spike in rejections is a load or DOS signature.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tip_mempool_rejected_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} rejected"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tip_mempool_evicted_total{node=~\"$node\"}[2m]) * 60 * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} evicted"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 171,
+        "w": 12,
+        "h": 11
+      }
     }
   ]
 }

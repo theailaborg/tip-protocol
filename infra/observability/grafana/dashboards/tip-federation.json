@@ -1423,7 +1423,7 @@
     {
       "id": 1019,
       "type": "row",
-      "title": "Trends",
+      "title": "DAG inventory & capacity",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -1434,6 +1434,338 @@
     },
     {
       "id": 1020,
+      "type": "stat",
+      "title": "DAG transactions",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_tx_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Total transactions committed to the DAG (fleet max)."
+    },
+    {
+      "id": 1021,
+      "type": "stat",
+      "title": "DAG certificates",
+      "gridPos": {
+        "x": 8,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_cert_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Certificates currently in the DAG, bounded by cert GC (fleet max)."
+    },
+    {
+      "id": 1022,
+      "type": "stat",
+      "title": "Registered nodes (DAG)",
+      "gridPos": {
+        "x": 16,
+        "y": 43,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_registered_nodes)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes in the DAG registry, active + inactive (fleet max)."
+    },
+    {
+      "id": 1023,
+      "type": "table",
+      "title": "Cert-DAG merkle root per node",
+      "description": "Current certificate-DAG merkle root per node. All nodes should show the SAME root; a divergent root is a fork before anti-entropy flags it.",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "expr": "tip_cert_merkle_root_info * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "node": true,
+              "Value": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "name": "Node",
+              "root": "Merkle root"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 1024,
+      "type": "timeseries",
+      "title": "Mempool size vs capacity",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Per-node mempool depth against its capacity ceiling. Size approaching capacity is back-pressure.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_mempool_size{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} size"
+        },
+        {
+          "refId": "B",
+          "expr": "tip_mempool_capacity{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} capacity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 1025,
+      "type": "timeseries",
+      "title": "Producer-pause per node (rotation boundary)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Milliseconds each node has been producer-paused at a rotation boundary. Sustained > 0 is a stuck boundary.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_consensus_producer_paused_ms{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 53,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 1026,
+      "type": "row",
+      "title": "Trends",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 1027,
       "type": "timeseries",
       "title": "Nodes online over time",
       "datasource": {
@@ -1479,18 +1811,18 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 65,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 1021,
+      "id": 1028,
       "type": "timeseries",
       "title": "Narwhal current round",
       "gridPos": {
         "x": 12,
-        "y": 43,
+        "y": 65,
         "w": 12,
         "h": 11
       },
@@ -1531,12 +1863,12 @@
       "description": "**Narwhal current round** - The round Narwhal is currently producing batches at. Always 1-2 rounds ahead of `last_committed_round` since Bullshark needs the next wave's votes before finalizing.\n\n**Healthy**: linear monotonic growth on all nodes; convergent across the federation.\n\n**Trouble**: flat line on any node = production stalled (likely halt-gate); large drift between nodes = sync gap that anti-entropy should auto-recover (#28/#46)."
     },
     {
-      "id": 1022,
+      "id": 1029,
       "type": "timeseries",
       "title": "Txs committed (cumulative)",
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 76,
         "w": 12,
         "h": 11
       },
