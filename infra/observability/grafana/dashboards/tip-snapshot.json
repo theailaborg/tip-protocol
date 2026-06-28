@@ -1,0 +1,386 @@
+{
+  "uid": "tip-snapshot",
+  "title": "TIP Snapshot & Recovery",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "tags": [
+    "tip",
+    "consensus",
+    "health"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom-tip"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "query": {
+          "query": "label_values(tip_node_registry_info, node)",
+          "refId": "vars"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 2000,
+      "type": "row",
+      "title": "Snapshot status  (green = healthy, red = investigate)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 2001,
+      "type": "stat",
+      "title": "Installs in progress",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_snapshot_install_in_progress) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Nodes currently installing a state snapshot. Sustained > 0 may be a snapshot loop."
+    },
+    {
+      "id": 2002,
+      "type": "stat",
+      "title": "Installs completed (total)",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_snapshot_installs_completed_total) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "State-snapshot installs that completed successfully across the fleet."
+    },
+    {
+      "id": 2003,
+      "type": "stat",
+      "title": "Chain-walk failures (total)",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_snapshot_chain_walk_failures_total) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Snapshot imports rejected for failing rotation chain-of-trust verification. > 0 = a rejected (possibly malicious) snapshot."
+    },
+    {
+      "id": 2004,
+      "type": "row",
+      "title": "Install progress",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 2005,
+      "type": "timeseries",
+      "title": "Install progress (rows installed / total)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "For an in-progress snapshot: rows installed so far vs total. A flat 'installed' below 'total' is a stalled install.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_snapshot_install_progress_rows{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} installed"
+        },
+        {
+          "refId": "B",
+          "expr": "tip_snapshot_install_total_rows{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 2006,
+      "type": "timeseries",
+      "title": "Install in progress (per node)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "1 while a node is installing a snapshot, 0 idle. Flapping = repeated install attempts.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_snapshot_install_in_progress{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 2007,
+      "type": "timeseries",
+      "title": "Last completed install size",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Download size in bytes of each node's most recent completed snapshot install.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_snapshot_last_install_bytes{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 12,
+        "h": 11
+      }
+    }
+  ]
+}

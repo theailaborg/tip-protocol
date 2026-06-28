@@ -566,7 +566,7 @@
     {
       "id": 509,
       "type": "row",
-      "title": "Connectivity",
+      "title": "Send / receive direction  (which node can't send?)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -577,6 +577,153 @@
     },
     {
       "id": 510,
+      "type": "table",
+      "title": "Comms direction matrix (row can't reach column)",
+      "description": "Consecutive heartbeat misses; rows = observing node, columns = peer. A row that is all-red while its own column stays green = that node can receive but not send (broken outbound dial). Row and column both red = can't receive / partitioned.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "expr": "tip_heartbeat_peer_consecutive_misses * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "node": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        },
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "peer",
+            "rowField": "name",
+            "valueField": "Value"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "color-background"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 511,
+      "type": "timeseries",
+      "title": "Consecutive send failures per peer",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Current consecutive outbound-send failures to a peer (resets on success or auto-heal). The first thing to climb when a node goes one-directionally deaf.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_network_peer_send_consecutive_failures{node=~\"$node\"}",
+          "legendFormat": "{{node}} -> {{peer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 512,
+      "type": "row",
+      "title": "Connectivity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 513,
       "type": "timeseries",
       "title": "Authorized peers per node",
       "datasource": {
@@ -638,13 +785,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 42,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 511,
+      "id": 514,
       "type": "timeseries",
       "title": "Connectivity complete (1 = full mesh)",
       "datasource": {
@@ -690,25 +837,25 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 42,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 512,
+      "id": 515,
       "type": "row",
       "title": "Connection churn (the flap signal)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 53,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 513,
+      "id": 516,
       "type": "timeseries",
       "title": "Connects per node (/min)",
       "datasource": {
@@ -754,13 +901,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 54,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 514,
+      "id": 517,
       "type": "timeseries",
       "title": "Disconnects per node (/min)",
       "datasource": {
@@ -806,13 +953,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 54,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 515,
+      "id": 518,
       "type": "timeseries",
       "title": "Connection closes per node (/min)",
       "datasource": {
@@ -858,13 +1005,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 65,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 516,
+      "id": 519,
       "type": "timeseries",
       "title": "Fast re-auths per node (/min)",
       "datasource": {
@@ -910,13 +1057,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 43,
+        "y": 65,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 517,
+      "id": 520,
       "type": "timeseries",
       "title": "Re-handshakes per node (/min)",
       "datasource": {
@@ -962,25 +1109,25 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 76,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 518,
+      "id": 521,
       "type": "row",
       "title": "Heartbeat",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 87,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 519,
+      "id": 522,
       "type": "timeseries",
       "title": "Heartbeat suspect peers",
       "datasource": {
@@ -1042,25 +1189,25 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 88,
         "w": 24,
         "h": 11
       }
     },
     {
-      "id": 520,
+      "id": 523,
       "type": "row",
       "title": "Comms health  (per-channel outbound delivery + transport auto-heal)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 77,
+        "y": 99,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 521,
+      "id": 524,
       "type": "timeseries",
       "title": "Outbound send failures per peer (/min)",
       "datasource": {
@@ -1106,13 +1253,13 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 78,
+        "y": 100,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 522,
+      "id": 525,
       "type": "timeseries",
       "title": "Time since last successful send (per peer)",
       "datasource": {
@@ -1158,13 +1305,13 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 78,
+        "y": 100,
         "w": 12,
         "h": 11
       }
     },
     {
-      "id": 523,
+      "id": 526,
       "type": "timeseries",
       "title": "Transport auto-heals (/min)",
       "datasource": {
@@ -1210,7 +1357,264 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 89,
+        "y": 111,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 527,
+      "type": "row",
+      "title": "Heartbeat & mesh detail",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 122,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 528,
+      "type": "timeseries",
+      "title": "Heartbeat health (tracked / with-misses / suspect)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Per node: peers tracked, peers with >=1 miss (early churn), and peers at the suspect threshold. with-misses rising before suspect is the leading indicator.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_heartbeat_tracked_peers{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} tracked"
+        },
+        {
+          "refId": "B",
+          "expr": "tip_heartbeat_peers_with_misses{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} with-misses"
+        },
+        {
+          "refId": "C",
+          "expr": "tip_heartbeat_suspect_peers{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} suspect"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 123,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 529,
+      "type": "timeseries",
+      "title": "GossipSub mesh peers (fallback detector)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Random-mesh peer count per topic. TIP pins committee members via DirectPeers, so this should sit at ~0; a non-trivial value means cert propagation has fallen back to the gossip mesh.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tip_network_gossip_mesh_peers{node=~\"$node\"} * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}} {{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 123,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 530,
+      "type": "row",
+      "title": "Anti-entropy & security",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 134,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 531,
+      "type": "timeseries",
+      "title": "Anti-entropy RPC health (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Sync-status RPC failures and timeouts. If these climb, gaps_pulled never fires and divergence goes undetected (fail-open).",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_antientropy_peer_rpc_failures_total[5m])) * 60",
+          "legendFormat": "rpc failures"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tip_antientropy_peer_rpc_timeouts_total[5m])) * 60",
+          "legendFormat": "rpc timeouts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 135,
+        "w": 12,
+        "h": 11
+      }
+    },
+    {
+      "id": 532,
+      "type": "timeseries",
+      "title": "Authorization violations (/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Spoofing-guard trips: a peer claiming a different node_id than authorized, and unauthorized query/inbound attempts. Sustained > 0 warrants investigation.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tip_antientropy_peer_identity_mismatch_total[5m])) * 60",
+          "legendFormat": "identity mismatch"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tip_antientropy_peer_unauthorized_query_total[5m])) * 60",
+          "legendFormat": "unauthorized query"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(tip_antientropy_peer_unauthorized_inbound_total[5m])) * 60",
+          "legendFormat": "unauthorized inbound"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 135,
         "w": 12,
         "h": 11
       }
