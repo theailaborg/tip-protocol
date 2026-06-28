@@ -1053,4 +1053,56 @@ describe("rotation pull-repair", () => {
     expect(ok).toBe(true);
     expect(submitted).toHaveLength(1);
   });
+
+  // F1 pre-quorum case: no node has the assembled tx yet, so there is nothing to
+  // fetch. A node below quorum pulls a peer's collected signatures, merges the
+  // missing one, crosses quorum, and builds + submits the tx itself.
+  test("requestTxRepair (F1): merge a peer's pulled sigs to reach quorum and submit", async () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);                       // latest rotation 1 -> propose 2; quorum(3)=2
+    const submitted = [];
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: ids });
+    const bSig = mldsaSign(`rotation:${payload_hash}:${ids[1].node_id}`, keys[1].privateKey);
+    const network = _repairNetwork({
+      peers: ["peer1"],
+      openStreamImpl: async () => _responseStream({
+        rotation_number: 2, tx: null, sigs: [{ signer_node_id: ids[1].node_id, signature: bSig }],
+      }),
+    });
+    const { coord } = _buildRepair({ dag, keys, submitted, network });
+
+    // Node A proposes: inflight holds only A's own sig (1 < quorum 2).
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee: ids, payload_hash,
+      prevCommitteeNodeIds: ids.map((m) => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map((m) => [m.node_id, m.public_key])),
+    });
+    expect(coord._state().get(2).sigs.size).toBe(1);
+    expect(submitted).toHaveLength(0);
+
+    const ok = await coord.requestTxRepair();
+    expect(ok).toBe(true);
+    expect(submitted).toHaveLength(1);
+    expect(coord._state().get(2).sigs.size).toBe(2);   // A + pulled B
+  });
+
+  test("requestTxRepair (F1): a pulled sig with a mismatched payload_hash is rejected", () => {
+    const keys = [generateMLDSAKeypair(), generateMLDSAKeypair(), generateMLDSAKeypair()];
+    const ids = _idFor(keys);
+    const dag = _setupDagWith(ids);
+    const submitted = [];
+    const { coord } = _buildRepair({ dag, keys, submitted, network: _repairNetwork() });
+    const payload_hash = _payloadHash({ rotation_number: 2, effective_round: 400, committee: ids });
+    coord.proposeRotation({
+      rotation_number: 2, effective_round: 400, new_committee: ids, payload_hash,
+      prevCommitteeNodeIds: ids.map((m) => m.node_id),
+      prevPubkeys: Object.fromEntries(ids.map((m) => [m.node_id, m.public_key])),
+    });
+    // B signs a DIFFERENT payload_hash; merging it must not count toward quorum.
+    const bSigWrong = mldsaSign(`rotation:deadbeef:${ids[1].node_id}`, keys[1].privateKey);
+    coord._mergePulledSig(2, payload_hash, ids[1].node_id, bSigWrong);
+    expect(coord._state().get(2).sigs.size).toBe(1);   // still just A; bad sig dropped
+    expect(submitted).toHaveLength(0);
+  });
 });
