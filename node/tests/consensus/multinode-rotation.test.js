@@ -49,7 +49,7 @@ _pc.consensus.committee_rotation_participation_pct_of_interval = 5;
 PC.init(_pc);
 
 // Requires AFTER the re-init so every module binds to the tiny-interval config.
-const { initCrypto, generateMLDSAKeypair } = require(path.join(SHARED, "crypto"));
+const { initCrypto, generateMLDSAKeypair, mldsaSign, shake256, canonicalJson } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
@@ -57,7 +57,7 @@ const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
 const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
 const { createBullshark } = require(path.join(SRC, "consensus", "bullshark"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
-const { createRotationCoordinator } = require(path.join(SRC, "consensus", "rotation-coordinator"));
+const { createRotationCoordinator, buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
 const participants = require(path.join(SRC, "consensus", "participants"));
 const { loadTypes, encode, decode } = require(path.join(SRC, "network", "proto"));
 
@@ -108,11 +108,37 @@ function createNet() {
       if (handler) setImmediate(() => { try { handler({ stream: fakeStream(buf), connection: conn() }); } catch (_e) { /* ignore */ } });
     };
 
+    const REPAIR = "/tip/rotation-repair/1.0.0";
     return {
       TOPICS,
       CONSENSUS_ACK_PROTOCOL: ACK,
       CONSENSUS_ACK_REQUEST_PROTOCOL: "/tip/consensus-ack-request/1.0.0",
       ROTATION_COORD_PROTOCOL: ROTATION,
+      ROTATION_REPAIR_PROTOCOL: REPAIR,
+      // Pull-repair is request/response: the requester dials, the responder
+      // answers ON THE REQUESTER'S stream. That direction survives a broken
+      // outbound push (same shape as cert-sync), so it is NOT subject to the
+      // rotation-coord push faults.
+      peers: () => [...protoHandlers.keys()].filter((id) => id !== nodeId),
+      async openStream(peerId, protocol) {
+        const handler = protoHandlers.get(peerId)?.[protocol];
+        const responseChunks = [];
+        return {
+          sink: async (it) => {
+            const parts = [];
+            for await (const c of it) parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+            if (!handler) return;
+            const serverStream = {
+              source: (async function* () { yield Buffer.concat(parts); })(),
+              sink: async (sit) => { for await (const sc of sit) responseChunks.push(Buffer.isBuffer(sc) ? sc : Buffer.from(sc)); },
+              close: async () => { },
+            };
+            await handler({ stream: serverStream, connection: conn() });
+          },
+          source: (async function* () { for (const c of responseChunks) yield c; })(),
+          close: async () => { },
+        };
+      },
       publish(topic, buf) {
         for (const [otherId, h] of topicHandlers) {
           if (otherId === nodeId || drop({ from: nodeId, to: otherId, topic })) continue;
@@ -154,7 +180,8 @@ function createNet() {
 // and wires the REAL rotation coordinator, so a rotation actually flows through
 // proposal -> 2f+1 sigs -> aggregated tx -> consensus -> committee_history.
 
-async function makeRotationNode(nodeId, kp, registered, committee0, net) {
+async function makeRotationNode(nodeId, kp, registered, committee0, net, opts = {}) {
+  const { enableRepair = false } = opts;
   const dag = initDAG({ dbPath: ":memory:" });
   for (const m of registered) {
     dag.saveNode({ node_id: m.nodeId, name: m.nodeId, public_key: m.publicKey, status: "active", registered_at: T0 });
@@ -185,7 +212,7 @@ async function makeRotationNode(nodeId, kp, registered, committee0, net) {
   const network = net.adapterFor(nodeId);
 
   const coordinator = createRotationCoordinator({
-    dag, network, proto: { encode, decode },
+    dag, network, mempool, proto: { encode, decode },
     identity: { nodeId, privateKey: kp.privateKey, publicKey: kp.publicKey },
     submitTx: (tx) => mempool.add(tx),
   });
@@ -212,6 +239,9 @@ async function makeRotationNode(nodeId, kp, registered, committee0, net) {
     onCertSaved: (cert) => { if (typeof bullshark.onCertSaved === "function") bullshark.onCertSaved(cert.hash); },
     onProducerPaused: (round, missingRotation) => {
       if (typeof bullshark.tryRotationProposal === "function") bullshark.tryRotationProposal(round, missingRotation);
+      if (enableRepair && typeof coordinator.requestTxRepair === "function") {
+        Promise.resolve(coordinator.requestTxRepair()).catch(() => { });
+      }
     },
     isPeerDivergent: () => false,
     peerJoinState: () => "ready",
@@ -235,7 +265,7 @@ async function makeRotationNode(nodeId, kp, registered, committee0, net) {
   return { nodeId, dag, mempool, narwhal, bullshark, coordinator, config };
 }
 
-async function bootRotationCommittee(net, { registered, committee = registered } = {}) {
+async function bootRotationCommittee(net, { registered, committee = registered, enableRepair = false } = {}) {
   const all = Array.from({ length: registered }, (_, i) => {
     const kp = generateMLDSAKeypair();
     return { nodeId: `tip://node/n${i}`, ...kp };
@@ -243,7 +273,7 @@ async function bootRotationCommittee(net, { registered, committee = registered }
   const committee0 = all.slice(0, committee);
   const committeeSet = new Set(committee0.map((m) => m.nodeId));
   const nodes = [];
-  for (const m of all) nodes.push(await makeRotationNode(m.nodeId, m, all, committee0, net));
+  for (const m of all) nodes.push(await makeRotationNode(m.nodeId, m, all, committee0, net, { enableRepair }));
   nodes.forEach((n) => { n.isCommittee = committeeSet.has(n.nodeId); });
   nodes.forEach((n) => n.narwhal.start());
   return nodes;
@@ -314,4 +344,93 @@ describe("multi-node consensus harness, committee rotation", () => {
       stopAll(nodes);
     }
   }, 110000);
+});
+
+// ── surgical reproduction of the live 2-hold / 3-stuck boundary wedge ───────────
+//
+// The live halt was a rare timing coincidence: signature propagation was delayed
+// enough (a 5h reconnect) that the rotation tx missed its early commit and hit
+// the boundary carve-out, where only the 2 nodes that had gathered quorum could
+// produce -> 2 certs < quorum -> permanent wedge. That delay cannot be
+// manufactured on demand, so instead of waiting for the wedge to form NATURALLY
+// we CONSTRUCT its exact state and prove pull-repair resolves it:
+//
+//   1. Drop ALL rotation-coord traffic so no node aggregates; the cluster runs
+//      normally to the boundary and PAUSES there with no rotation tx anywhere.
+//   2. Inject the valid quorum-signed rotation-1 tx into exactly 2 nodes
+//      (the "holders") -- the precise 2-hold / 3-stuck state.
+//   3. WITHOUT repair the 3 stuck nodes can never get the tx -> wedge.
+//      WITH repair they fetch it from a holder, carve out, and the rotation
+//      commits on all 5.
+describe("surgical 2-hold / 3-stuck boundary wedge", () => {
+  const ROTATION = "/tip/rotation-coord/1.0.0";
+
+  // Build the deterministic, quorum-signed rotation-1 tx from the live committee
+  // derivation + the nodes' own keys (signerCount = quorum of the prev committee).
+  function buildRotation1Tx(nodes, signerCount) {
+    const dag0 = nodes[0].dag;
+    const newCommittee = participants.computeNextRotationCommittee(dag0, 0); // finishing rotation 0
+    const rotation_number = 1;
+    const effective_round = EPOCH_ROUNDS;                                    // 1 * EPOCH_LENGTH_ROUNDS
+    const payload_hash = shake256(canonicalJson({ rotation_number, effective_round, committee: newCommittee }));
+    const keyByNodeId = new Map(nodes.map((n) => [n.nodeId, n.config.nodePrivateKey]));
+    const signers = newCommittee.slice(0, signerCount).map((m) => m.node_id).sort();
+    const signatures = signers.map((id) => mldsaSign(`rotation:${payload_hash}:${id}`, keyByNodeId.get(id)));
+    return buildRotationTx(dag0, { rotation_number, effective_round, new_committee: newCommittee, payload_hash }, signers, signatures);
+  }
+
+  async function driveForParticipation(nodes) {
+    // A handful of committed rounds give every member the participation credits
+    // that make the rotation-1 committee derivation deterministic and full (all
+    // 5). All rotation-coord is dropped, so rotation 1 never commits and latest
+    // stays 0 -- no need to march all the way to the boundary.
+    await waitFor(() => nodes.every((n) => n.bullshark.lastCommittedRound() >= 6), { timeoutMs: 90000 });
+  }
+
+  test("the 3 stuck nodes pull the assembled rotation tx from the 2 holders (repair) and cannot get it without (control)", async () => {
+    const net = createNet();
+    const nodes = await bootRotationCommittee(net, { registered: 5, committee: 5, enableRepair: false });
+    net.addFault((meta) => meta.protocol === ROTATION);
+    try {
+      // Accrue participation so the rotation-1 committee derivation is full and
+      // deterministic across all 5 nodes (latestRotation stays 0).
+      await driveForParticipation(nodes);
+      // Freeze consensus so the injected wedge state is stable: narwhal would
+      // otherwise drain the injected tx within a round, masking the repair path.
+      nodes.forEach((n) => n.narwhal.stop());
+      await sleep(500);
+
+      // Construct the exact 2-hold / 3-stuck state: the valid quorum-signed
+      // rotation-1 tx lives only in the 2 holders' mempools.
+      const tx = buildRotation1Tx(nodes, 4); // quorum(5) = 4 sigs
+      const [h0, h1, s0, s1, s2] = nodes;
+      h0.mempool.add(tx);
+      h1.mempool.add(tx);
+
+      // Control: without repair the 3 stuck nodes have no path to the tx.
+      expect([h0, h1].every((n) => !!n.mempool.peekRotationTx(1))).toBe(true);
+      expect([s0, s1, s2].every((n) => !n.mempool.peekRotationTx(1))).toBe(true);
+
+      // Repair: each stuck node fetches the assembled tx from a holder over the
+      // (still-alive) answer direction, re-validates it, and injects it. This
+      // exercises the REAL serve handler + committee/quorum validation across
+      // five independent coordinators, not a mock.
+      for (const n of [s0, s1, s2]) {
+        const ok = await n.coordinator.requestTxRepair();
+        expect(ok).toBe(true);
+      }
+
+      // All five now hold the rotation tx -> every node can carve it out and the
+      // boundary can commit. (The carve/commit itself is ordinary consensus,
+      // covered by the no-halt tests above; the novel, previously-impossible
+      // step is the stuck nodes OBTAINING the tx, asserted here.)
+      expect(nodes.every((n) => !!n.mempool.peekRotationTx(1))).toBe(true);
+      // The repaired tx is the same canonical rotation-1 tx (deterministic rebuild).
+      for (const n of [s0, s1, s2]) {
+        expect(Number(n.mempool.peekRotationTx(1).data.rotation_number)).toBe(1);
+      }
+    } finally {
+      stopAll(nodes);
+    }
+  }, 240000);
 });
