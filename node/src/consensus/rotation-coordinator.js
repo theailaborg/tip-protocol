@@ -41,7 +41,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { mldsaSign, mldsaVerify, computeTxId } = require("../../../shared/crypto");
+const { mldsaSign, mldsaVerify, computeTxId, shake256, canonicalJson } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { GENESIS_TIMESTAMP } = require("../genesis");
@@ -78,8 +78,8 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   for (let i = 0; i < signer_node_ids.length; i++) {
     cosignatures.push({
       signer_kind: "node",
-      signer_ref:  signer_node_ids[i],
-      signature:   signatures[i],
+      signer_ref: signer_node_ids[i],
+      signature: signatures[i],
     });
   }
   cosignatures.sort((a, b) => a.signer_ref < b.signer_ref ? -1 : a.signer_ref > b.signer_ref ? 1 : 0);
@@ -149,7 +149,7 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
  * @param {Function} opts.submitTx      — (tx) => promise/result, used to publish COMMITTEE_ROTATION when quorum reached
  * @param {number} opts.deadlineMs      — drop in-flight after this many ms (default 30s)
  */
-function createRotationCoordinator({ dag, network, proto, identity, submitTx, deadlineMs = 30_000 }) {
+function createRotationCoordinator({ dag, network, proto, identity, submitTx, mempool = null, deadlineMs = 30_000 }) {
   if (!dag) throw new Error("rotation-coordinator: dag required");
   if (!network || typeof network.publish !== "function") throw new Error("rotation-coordinator: network.publish required");
   if (!proto || typeof proto.encode !== "function" || typeof proto.decode !== "function") {
@@ -372,7 +372,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     } else {
       const inflight = _inFlight.get(rotation_number);
       if (!inflight.sigs.has(proposer_node_id)
-          && inflight.proposal.payload_hash === payload_hash) {
+        && inflight.proposal.payload_hash === payload_hash) {
         inflight.sigs.set(proposer_node_id, proposer_signature);
         log.debug(`Rotation ${rotation_number}: merged peer ${proposer_node_id.slice(-12)}'s proposer sig (sigs ${inflight.sigs.size}/${inflight.prevCommittee.size})`);
       }
@@ -383,7 +383,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     // above may have just bumped sigs over quorum even when we don't sign
     // here — call _maybeSubmit at the end either way.
     if (prevPubkeys.has(identity.nodeId)
-        && !_inFlight.get(rotation_number).sigs.has(identity.nodeId)) {
+      && !_inFlight.get(rotation_number).sigs.has(identity.nodeId)) {
       const ourMsg = `rotation:${payload_hash}:${identity.nodeId}`;
       const ourSig = mldsaSign(ourMsg, identity.privateKey);
       _inFlight.get(rotation_number).sigs.set(identity.nodeId, ourSig);
@@ -554,6 +554,9 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
   }
 
   function _rebroadcastTick() {
+    // Age out inflights on our own timer too: a node that carved out never
+    // re-enters the producer-pause nudge, the only other prune trigger.
+    pruneExpired();
     const now = nowMs();
     let anyAlive = false;
     for (const [rotation, inflight] of _inFlight) {
@@ -605,8 +608,189 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     if (_protocolRegistered) return;
     if (!network || typeof network.handle !== "function" || !network.ROTATION_COORD_PROTOCOL) return;
     await network.handle(network.ROTATION_COORD_PROTOCOL, _handleIncomingStream);
+    if (network.ROTATION_REPAIR_PROTOCOL) {
+      await network.handle(network.ROTATION_REPAIR_PROTOCOL, _handleRepairRequest);
+    }
     _protocolRegistered = true;
     log.info(`rotation-coord protocol registered: ${network.ROTATION_COORD_PROTOCOL}`);
+  }
+
+  // ── Pull-repair ──────────────────────────────────────────────────────────────
+  // A node below quorum recovers from a peer over the answer-direction (survives
+  // a broken push): FETCH the assembled tx if a peer has it (F3), else pull the
+  // peer's collected SIGNATURES to reach quorum and build the tx itself (F1).
+
+  // Serve: reply with our mempool's rotation-N tx (or null), plus our collected
+  // sigs when our inflight matches the requester's payload_hash.
+  async function _handleRepairRequest({ stream, connection }) {
+    const remotePeerId = connection?.remotePeer?.toString?.() || "";
+    try {
+      const chunks = [];
+      for await (const chunk of stream.source) chunks.push(chunk.subarray ? chunk.subarray() : chunk);
+      let req = null;
+      try { req = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { req = null; }
+      const rotation_number = req ? Number(req.rotation_number) : null;
+      let tx = null;
+      const sigs = [];
+      if (rotation_number) {
+        if (mempool && typeof mempool.peekRotationTx === "function") tx = mempool.peekRotationTx(rotation_number) || null;
+        const inflight = _inFlight.get(rotation_number);
+        if (inflight && req.payload_hash && inflight.proposal.payload_hash === req.payload_hash) {
+          for (const [signer, sig] of inflight.sigs) sigs.push({ signer_node_id: signer, signature: sig });
+        }
+      }
+      await stream.sink([Buffer.from(JSON.stringify({ rotation_number, tx, sigs }), "utf8")]);
+    } catch (err) {
+      log.debug(`rotation-repair serve from ${remotePeerId.slice(0, 12)} failed: ${err.message}`);
+    } finally {
+      try { await stream.close(); } catch { /* ignore */ }
+    }
+  }
+
+  // Dial peers in turn. Accept a fetched tx (F3); otherwise merge a peer's sigs
+  // into our inflight (F1) until we cross quorum and build the tx ourselves.
+  let _repairInFlight = false;
+  async function requestTxRepair() {
+    if (_repairInFlight) return false;   // the pause nudge fires every ~1.5s; don't stack dial storms
+    if (!network || typeof network.openStream !== "function" || !network.ROTATION_REPAIR_PROTOCOL) return false;
+    // Fetch latest+1, NOT epochOf(round): rotations apply in order and that is
+    // the tx peers hold. Mirrors the carve-out's min(latest+1, targetRotation).
+    const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    const rotation_number = (latest ? latest.rotation_number : 0) + 1;
+    const existing = _inFlight.get(rotation_number);
+    if (existing && existing.submittedAt != null) return false;   // we already built + submitted it
+    _repairInFlight = true;
+    try {
+      const peers = (typeof network.peers === "function") ? network.peers() : [];
+      const myHash = existing ? existing.proposal.payload_hash : null;
+      const reqBody = Buffer.from(JSON.stringify({ rotation_number, payload_hash: myHash }), "utf8");
+      for (const peerId of peers) {
+        let stream;
+        try { stream = await network.openStream(peerId, network.ROTATION_REPAIR_PROTOCOL); }
+        catch (err) { log.debug(`rotation-repair: dial ${peerId.slice(0, 12)} failed: ${err.message}`); continue; }
+        try {
+          await stream.sink([reqBody]);
+          const resp = await _readRepairResponse(stream);
+          if (resp && resp.tx && _acceptRepairedTx(resp.tx, rotation_number)) {
+            log.notice(`rotation-repair: fetched rotation ${rotation_number} tx from ${peerId.slice(0, 12)} -> mempool`);
+            return true;
+          }
+          if (resp && Array.isArray(resp.sigs) && resp.sigs.length && myHash) {
+            for (const s of resp.sigs) _mergePulledSig(rotation_number, myHash, s.signer_node_id, s.signature);
+            if (_inFlight.get(rotation_number)?.submittedAt != null) {
+              log.notice(`rotation-repair: reached quorum via pulled sigs from ${peerId.slice(0, 12)} -> rotation ${rotation_number} submitted`);
+              return true;
+            }
+          }
+        } catch (err) {
+          log.debug(`rotation-repair: request to ${peerId.slice(0, 12)} failed: ${err.message}`);
+        } finally {
+          try { await stream.close(); } catch { /* ignore */ }
+        }
+      }
+      return false;
+    } finally {
+      _repairInFlight = false;
+    }
+  }
+
+  // F1: merge a peer's pulled signature into our inflight (same checks as
+  // _onSignature, but from a hex sig). Crossing quorum triggers _maybeSubmit.
+  function _mergePulledSig(rotation_number, payload_hash, signer_node_id, signatureHex) {
+    const inflight = _inFlight.get(rotation_number);
+    if (!inflight || inflight.submittedAt != null) return;
+    if (inflight.proposal.payload_hash !== payload_hash) return;
+    if (!signer_node_id || !inflight.prevCommittee.has(signer_node_id) || inflight.sigs.has(signer_node_id)) return;
+    const pubkey = inflight.prevPubkeys.get(signer_node_id);
+    let ok = false;
+    try { ok = pubkey && mldsaVerify(`rotation:${payload_hash}:${signer_node_id}`, signatureHex, pubkey); }
+    catch { ok = false; }
+    if (!ok) return;
+    inflight.sigs.set(signer_node_id, signatureHex);
+    _maybeSubmit(rotation_number);
+  }
+
+  async function _readRepairResponse(stream) {
+    const maxBytes = CONSENSUS.ROTATION_REPAIR_MAX_RESPONSE_BYTES;
+    const timeoutMs = CONSENSUS.ROTATION_REPAIR_TIMEOUT_MS;
+    const readPromise = (async () => {
+      const chunks = [];
+      let total = 0;
+      for await (const chunk of stream.source) {
+        const c = chunk.subarray ? chunk.subarray() : chunk;
+        total += c.length;
+        if (total > maxBytes) throw new Error(`repair response exceeded ${maxBytes} bytes`);
+        chunks.push(c);
+      }
+      return chunks;
+    })();
+    let timer;
+    const timeout = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => { try { stream.close(); } catch { /* ignore */ } reject(new Error(`repair timeout ${timeoutMs}ms`)); }, timeoutMs);
+    });
+    let chunks;
+    try { chunks = await Promise.race([readPromise, timeout]); }
+    finally { clearTimeout(timer); }
+    if (!chunks.length) return null;
+    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) || null; }
+    catch { return null; }
+  }
+
+  // Rebuild LOCALLY for a deterministic tx_id (the peer's timestamp/tx_id are
+  // not covered by the sigs). Accept only with >= quorum valid prev-committee
+  // sigs over a payload_hash that binds the committee.
+  function _acceptRepairedTx(receivedTx, expectedRotation) {
+    const d = receivedTx && receivedTx.data;
+    if (!receivedTx || receivedTx.tx_type !== TX_TYPES.COMMITTEE_ROTATION || !d) return false;
+    if (Number(d.rotation_number) !== Number(expectedRotation)) return false;
+
+    const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    const expectedNext = latest ? latest.rotation_number + 1 : 1;
+    if (Number(d.rotation_number) !== expectedNext) return false;
+
+    const recomputed = shake256(canonicalJson({
+      rotation_number: d.rotation_number, effective_round: d.effective_round, committee: d.new_committee,
+    }));
+    if (recomputed !== d.payload_hash) return false;
+
+    const prevCommittee = Array.isArray(latest?.committee) ? latest.committee : [];
+    const prevPubkeys = new Map(prevCommittee.map(m => [m.node_id, m.public_key]));
+    const required = computeQuorum(prevCommittee.length);
+    const valid = new Map();
+    for (const c of (Array.isArray(d.cosignatures) ? d.cosignatures : [])) {
+      const signer = c.signer_ref;
+      if (!signer || valid.has(signer) || !prevPubkeys.has(signer)) continue;
+      let okSig = false;
+      try { okSig = mldsaVerify(`rotation:${d.payload_hash}:${signer}`, c.signature, prevPubkeys.get(signer)); }
+      catch { okSig = false; }   // malformed signature bytes from an untrusted peer
+      if (okSig) valid.set(signer, c.signature);
+    }
+    if (valid.size < required) return false;
+
+    const signer_node_ids = [...valid.keys()].sort();
+    const signatures = signer_node_ids.map(id => valid.get(id));
+    let tx;
+    try {
+      tx = buildRotationTx(dag, {
+        rotation_number: d.rotation_number, effective_round: d.effective_round,
+        new_committee: d.new_committee, payload_hash: d.payload_hash,
+      }, signer_node_ids, signatures);
+    } catch (err) {
+      log.debug(`rotation-repair: rebuild failed: ${err.message}`);
+      return false;
+    }
+    try {
+      const r = submitTx(tx);
+      if (r && typeof r.catch === "function") r.catch(() => { });
+      // Suppress a redundant self-submit if our own aggregation later reaches
+      // quorum: the injected tx is canonical and already in the mempool.
+      const inflight = _inFlight.get(d.rotation_number);
+      if (inflight && inflight.submittedAt == null) inflight.submittedAt = nowMs();
+      return true;
+    } catch (err) {
+      log.debug(`rotation-repair: submit of fetched tx failed: ${err.message}`);
+      return false;
+    }
   }
 
   function stop() {
@@ -638,10 +822,14 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, de
     pruneExpired,
     resetInflight,
     hasOpenInflight,
+    requestTxRepair,
     stop,
     // Test-only introspection.
     _state: () => _inFlight,
     _rebroadcastTick: () => _rebroadcastTick(),
+    _handleRepairRequest: (args) => _handleRepairRequest(args),
+    _acceptRepairedTx: (tx, rotation_number) => _acceptRepairedTx(tx, rotation_number),
+    _mergePulledSig: (rn, ph, signer, sigHex) => _mergePulledSig(rn, ph, signer, sigHex),
   };
 }
 

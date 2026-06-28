@@ -216,6 +216,7 @@ function narwhalSection(s) {
     gauge("tip_narwhal_active_participants", "Active committee size (DAG-derived)", n.activeParticipants),
     gauge("tip_narwhal_registered_nodes", "Total registered nodes (includes inactive)", n.registeredNodes),
     gauge("tip_narwhal_mempool_size", "Pending txs in mempool", n.mempoolSize),
+    gauge("tip_consensus_producer_paused_ms", "Milliseconds this node has been producer-paused at a rotation boundary (no rotation tx to carve); 0 when producing. Sustained > 0 means a stuck boundary; pull-repair runs but production stays gated, never bypassed.", n.producerPausedMs),
     // #93: byzantine-fork halt visibility. The forked node emits halted=1; the
     // round it diverged at is fork_round. A halted node stops participating and
     // auto-retries snapshot recovery until it heals (or an operator steps in).

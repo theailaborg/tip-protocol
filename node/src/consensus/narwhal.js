@@ -73,6 +73,10 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // doesn't need that frequency. 1.5s matches the rotation-coord
   // re-broadcast cadence so each cycle gets one fresh proposal attempt.
   let _lastProducerPausedAt = 0;
+  // #75 producer-pause liveness bound: when the boundary pause started (null =
+  // not paused) + last escalation log, so a stuck boundary is observable.
+  let _pausedSince = null;
+  let _lastPauseEscalateAt = 0;
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -297,7 +301,15 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       _carveOutRotationTx = typeof mempool.peekRotationTx === "function"
         ? mempool.peekRotationTx(_carveRotation) : null;
       if (!_carveOutRotationTx) {
+        if (_pausedSince == null) _pausedSince = nowMs();
+        const pausedMs = nowMs() - _pausedSince;
         log.debug(`Round ${_currentRound}: pausing production: rotation ${targetRotation} not in committee_history (next to apply: ${_carveRotation})`);
+        // Liveness bound: a brief pause is normal; a sustained one is a stuck
+        // boundary. Surface it loudly. Production stays gated, never bypassed.
+        if (pausedMs > CONSENSUS.PRODUCER_PAUSE_ESCALATE_MS && nowMs() - _lastPauseEscalateAt > CONSENSUS.PRODUCER_PAUSE_ESCALATE_MS) {
+          _lastPauseEscalateAt = nowMs();
+          log.warn(`Producer-pause stuck ${Math.round(pausedMs / 1000)}s at rotation ${targetRotation} boundary (round ${_currentRound}); recovery running, production stays gated`);
+        }
         if (_onProducerPaused) {
           const now = nowMs();
           if (now - _lastProducerPausedAt > 1500) {
@@ -316,6 +328,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       log.notice(`Round ${_currentRound}: producer-pause carve-out: producing rotation-only batch for rotation ${_carveRotation}`);
     }
 
+    _pausedSince = null;   // producing (carve-out or normal): clear the pause clock
     _resetRoundState();
 
     // Phase 1: Create batch from mempool and broadcast.
@@ -1532,6 +1545,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
       lastRoundAdvanceAt: _lastRoundAdvanceAt,
+      producerPausedMs: _pausedSince ? nowMs() - _pausedSince : 0,
       syncEnteredAt: _syncEnteredAt,
       catchingUpEnteredAt: _catchingUpEnteredAt,
       catchUpTarget: _catchUpTarget,

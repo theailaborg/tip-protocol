@@ -246,6 +246,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       coordinator: (network && network.publish) ? createRotationCoordinator({
         dag,
         network,
+        mempool,
         proto: { encode, decode },
         identity: {
           nodeId: config.nodeRegisteredId || config.nodeId,
@@ -292,6 +293,12 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     onProducerPaused: (round, missingRotation) => {
       if (bullshark && typeof bullshark.tryRotationProposal === "function") {
         bullshark.tryRotationProposal(round, missingRotation);
+      }
+      // Pull-repair: paused with no rotation tx of our own (aggregation never
+      // reached quorum), so fetch the assembled tx from a peer. Fire-and-forget.
+      const coord = bullshark && bullshark.rotationCoordinator && bullshark.rotationCoordinator();
+      if (coord && typeof coord.requestTxRepair === "function") {
+        Promise.resolve(coord.requestTxRepair()).catch(() => {});
       }
     },
     // Ack-filter — defense layer that denies attestation to peers whose
