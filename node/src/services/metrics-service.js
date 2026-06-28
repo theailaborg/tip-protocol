@@ -130,6 +130,26 @@ function networkSection(network, dag) {
   out.push(counter("tip_network_handshakes_initiated_total", "Full ML-DSA handshakes this node initiated (no-op skips excluded)", cm.handshakes_initiated));
   out.push(counter("tip_network_rehandshakes_total", "Re-handshakes of connected-but-unauthorized peers", cm.rehandshakes));
   out.push(counter("tip_network_fast_reauths_total", "Reconnects authorized within the grace window without a full handshake", cm.fast_reauths));
+  out.push(counter("tip_network_force_redials_total", "Transport rebuilds (force-close + re-dial) after sustained one-directional send failures to a peer", cm.force_redials));
+
+  // Per-peer outbound delivery health: a peer whose send failures climb (or whose
+  // last-ok age grows) while it stays connected is the silent one-directional
+  // partition; force_redials above is the auto-heal response.
+  const channels = (net.channelHealth?.()) || [];
+  if (channels.length > 0) {
+    out.push("# HELP tip_network_peer_send_failures_total Outbound direct-stream send failures to a peer since process start.");
+    out.push("# TYPE tip_network_peer_send_failures_total counter");
+    out.push("# HELP tip_network_peer_send_consecutive_failures Consecutive outbound send failures to a peer right now (resets on success or force-redial).");
+    out.push("# TYPE tip_network_peer_send_consecutive_failures gauge");
+    out.push("# HELP tip_network_peer_last_send_ok_age_ms Milliseconds since the last successful outbound send to a peer; high while connected means a broken outbound push.");
+    out.push("# TYPE tip_network_peer_last_send_ok_age_ms gauge");
+    for (const c of channels) {
+      const peer = String(c.tipNodeId || c.peerId || "?").slice(-12);
+      out.push(line("tip_network_peer_send_failures_total", c.sendFail, { peer }));
+      out.push(line("tip_network_peer_send_consecutive_failures", c.consecutiveFail, { peer }));
+      out.push(line("tip_network_peer_last_send_ok_age_ms", c.lastOkAgeMs, { peer }));
+    }
+  }
 
   // GossipSub RANDOM-mesh size per topic. TIP pins committee members via
   // DirectPeers, so this is expected to be ~0 and is NOT the connectivity

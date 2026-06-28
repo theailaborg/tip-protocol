@@ -21,6 +21,7 @@
 
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
+const { createChannelHealth } = require("./channel-health");
 const { shake256 } = require("../../../shared/crypto");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
@@ -134,8 +135,13 @@ async function createNetworkNode(options = {}) {
   // through sub-scrape flaps; these survive so rate() exposes the flap itself.
   const _netMetrics = {
     connects: 0, disconnects: 0, conn_closes: 0,
-    handshakes_initiated: 0, rehandshakes: 0, fast_reauths: 0,
+    handshakes_initiated: 0, rehandshakes: 0, fast_reauths: 0, force_redials: 0,
   };
+  // Per-peer outbound-delivery health + force-redial decision (transport auto-heal).
+  const _channelHealth = createChannelHealth({
+    healThreshold: CONSENSUS.CHANNEL_HEAL_FAIL_THRESHOLD,
+    healCooldownMs: CONSENSUS.CHANNEL_HEAL_COOLDOWN_MS,
+  });
 
   // Deterministic peer ID from TIP node ID 
   // Same TIP node ID = same libp2p peer ID across restarts.
@@ -357,11 +363,26 @@ async function createNetworkNode(options = {}) {
     }
     _authorizedPeers.delete(remotePeerId);
     directPeers.remove(remotePeerId);
+    _channelHealth.forget(remotePeerId);
     log.info(`Peer disconnected: ${remotePeerId.slice(0, 16)}...${tipNodeId ? ` (${tipNodeId})` : ""}`);
 
     // If this was a bootstrap peer, restart its retry chain.
     bootstrapReconnect.onPeerDisconnect(remotePeerId);
   });
+
+  // Transport auto-heal: sustained one-directional send failures mean the
+  // connection is half-dead (the re-handshake re-auths it but never rebuilds the
+  // transport). Force-close it and re-dial a fresh one.
+  async function _forceRedial(peerId) {
+    _netMetrics.force_redials++;
+    log.warn(`channel-health: rebuilding transport to ${peerId.slice(0, 12)} after sustained outbound send failures`);
+    try {
+      const conns = node.getConnections(peerIdFromString(peerId));
+      for (const c of conns) { try { await c.close(); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+    try { await node.dial(peerIdFromString(peerId)); }
+    catch (err) { log.debug(`channel-health: re-dial to ${peerId.slice(0, 12)} failed: ${err.message}`); }
+  }
 
   // One-shot broadcast to every authorized peer over a direct stream.
   // Each peer gets its own dial → write(buf) → close. Failures on one
@@ -379,8 +400,10 @@ async function createNetworkNode(options = {}) {
         }, timeoutMs);
         stream = await node.dialProtocol(peerIdFromString(peerId), protocol);
         await stream.sink([buf]);
+        _channelHealth.recordSend(peerId, true);
       } catch (err) {
         log.debug(`broadcastToAuthorized to ${peerId.slice(0, 12)} on ${protocol} failed: ${err.message}`);
+        if (_channelHealth.recordSend(peerId, false)) _forceRedial(peerId);
       } finally {
         if (timer) clearTimeout(timer);
         try { if (stream) stream.close(); } catch { /* ignore */ }
@@ -407,9 +430,11 @@ async function createNetworkNode(options = {}) {
       }, CONSENSUS.ACK_STREAM_TIMEOUT_MS);
       stream = await node.dialProtocol(peerIdFromString(targetPeerId), CONSENSUS_ACK_PROTOCOL);
       await stream.sink([ackBuf]);
+      _channelHealth.recordSend(targetPeerId, true);
       return true;
     } catch (err) {
       log.debug(`sendAckDirect to ${authorNodeId.slice(-8)} failed: ${err.message}`);
+      if (_channelHealth.recordSend(targetPeerId, false)) _forceRedial(targetPeerId);
       return false;
     } finally {
       if (timer) clearTimeout(timer);
@@ -492,8 +517,13 @@ async function createNetworkNode(options = {}) {
     /** Snapshot of gossipsub DirectPeers set (for tests + ops diagnostics) */
     directPeers: () => directPeers.list(),
 
-    /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth). */
+    /** Cumulative connection-churn counters (connects/disconnects/closes/re-auth/force-redials). */
     metrics: () => ({ ..._netMetrics }),
+
+    /** Per-peer outbound delivery health (send ok/fail, consecutive fails, last-ok age). */
+    channelHealth: () => _channelHealth.snapshot().map((c) => ({
+      ...c, tipNodeId: _authorizedPeers.get(c.peerId) || null,
+    })),
 
     /** GossipSub mesh peers per subscribed topic; N+B liveness rides on the mesh. */
     meshPeers: () => {
