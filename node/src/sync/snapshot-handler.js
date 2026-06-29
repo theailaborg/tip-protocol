@@ -1209,8 +1209,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
 
       const trustedSize = Object.keys(trustedPubkeys).length;
-      const f = Math.floor((trustedSize - 1) / 3);
-      const quorum = 2 * f + 1;
+      const quorum = computeQuorum(trustedSize);
       if (validSigs < quorum) {
         throw new Error(
           `rotation ${rot.rotation_number}: insufficient sigs from previous committee — ` +

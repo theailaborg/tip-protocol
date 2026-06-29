@@ -1,7 +1,7 @@
 /**
  * @file tests/consensus/bft-thresholds.test.js
  * @description Direct unit tests for the BFT primitives in certificate.js:
- *   - computeQuorum(n)        = ceil(2n/3)
+ *   - computeQuorum(n)        = ceil(2n/3)  (the ">2/3" quorum; NOT 2f+1)
  *   - bftHaltThreshold(n)     = max(floor((n-1)/3) + 1, 2), Infinity for n<=1
  *
  * Single source of truth tests — anti-entropy delegates to bftHaltThreshold,
@@ -18,11 +18,21 @@ const path = require("path");
 const SRC = path.resolve(__dirname, "../../src");
 const { computeQuorum, bftHaltThreshold } = require(path.join(SRC, "consensus", "certificate"));
 
-describe("computeQuorum — ceil(2n/3)", () => {
+describe("computeQuorum — ceil(2n/3) (smallest quorum guaranteeing honest overlap)", () => {
+  // The unsafe 2f+1 shorthand would give n=5→3, n=6→3, n=8→5 here — too small at
+  // non-3f+1 sizes. ceil(2n/3) is the tight, correct minimum.
   test.each([
-    [1, 1], [2, 2], [3, 2], [4, 3], [5, 4], [6, 4], [7, 5], [10, 7], [100, 67],
+    [1, 1], [2, 2], [3, 2], [4, 3], [5, 4], [6, 4], [7, 5], [8, 6], [9, 6], [10, 7], [100, 67],
   ])("n=%i → quorum=%i", (n, expected) => {
     expect(computeQuorum(n)).toBe(expected);
+  });
+
+  test("quorum is always a strict majority that guarantees honest overlap (2q > n+f)", () => {
+    for (let n = 1; n <= 30; n++) {
+      const q = computeQuorum(n);
+      const f = Math.floor((n - 1) / 3);
+      expect(2 * q - n).toBeGreaterThanOrEqual(f + 1); // two quorums share >= f+1 -> an honest node
+    }
   });
 });
 

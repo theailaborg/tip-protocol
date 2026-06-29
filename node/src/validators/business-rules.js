@@ -550,14 +550,12 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
     }
   }
 
-  // #68 Part A — tighten quorum to ceil(2n/3), the same formula used for
-  // cert quorum. The pre-fix BFT 2f+1 formula degenerated to quorum=1 for
-  // prevSize ≤ 3, letting any single member of the previous committee
-  // unilaterally rotate membership. ceil(2n/3) gives prevSize=2→2,
-  // prevSize=3→2, prevSize=4→3, prevSize=5→4, prevSize=6→4 — i.e., a true
-  // honest-majority threshold for membership change. Pairs with #68 Part B
-  // (multi-sig coordinator in consensus/rotation-coordinator.js) which
-  // produces the aggregated signatures this gate now requires.
+  // Membership change uses the same quorum as cert quorum: computeQuorum
+  // (ceil(2n/3)). The old 2f+1 formula degenerated to quorum=1 for prevSize ≤ 3,
+  // letting a single member of the previous committee unilaterally rotate
+  // membership. computeQuorum gives prevSize 2→2, 3→2, 4→3, 5→4, 6→4 — an
+  // honest-supermajority threshold. The aggregated previous-committee signatures
+  // this gate requires are produced by the multi-sig rotation coordinator.
   const prevSize = prev.committee.length;
   const quorum = computeQuorum(prevSize);
   if (validSigs < quorum) {
