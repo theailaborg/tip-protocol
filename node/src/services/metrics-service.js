@@ -345,6 +345,47 @@ function committeeSection(s, dag) {
   const proposals = (s.bullshark?.metrics?.committee_rotation_proposals) || 0;
   const chainWalkFailures = (s.snapshotHandler?.metrics?.chain_walk_failures) || 0;
 
+  // Committee admission progress: per-member participation credits accrued for
+  // the in-progress rotation window vs the required threshold, plus whether each
+  // member is in the active committee now. Lets operators watch a late joiner
+  // climb from registered-but-pending to admitted.
+  const participationLines = [];
+  try {
+    const required = Math.ceil(
+      (CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS *
+        CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL) / 100);
+    participationLines.push(gauge("tip_committee_participation_required",
+      "Participation credits a registered node must accrue in a rotation window to be admitted to the committee (ceil(interval*pct/100)); genesis members are exempt", required));
+    // The window currently accruing is epochOf(round) = floor(round/EPOCH_LEN);
+    // its tally decides admission at that epoch's boundary. Fall back to the
+    // just-finished window right after a boundary, before the new one ticks.
+    const round = Number(s.bullshark?.lastCommittedRound || 0);
+    const epochLen = CONSENSUS.EPOCH_LENGTH_ROUNDS || 200;
+    const accruing = Math.floor(round / epochLen);
+    const getPart = typeof dag.getRotationParticipation === "function"
+      ? (r) => dag.getRotationParticipation(r) || [] : () => [];
+    let tallies = getPart(accruing);
+    if (tallies.length === 0 && accruing > 0) tallies = getPart(accruing - 1);
+    const members = new Set();
+    try {
+      const rec = dag.getCommitteeAtRound && dag.getCommitteeAtRound(round);
+      let list = rec && (rec.committee ?? rec.members);
+      if (typeof list === "string") { try { list = JSON.parse(list); } catch { list = []; } }
+      if (Array.isArray(list)) for (const m of list) members.add(typeof m === "string" ? m : (m && (m.node_id || m.id)));
+    } catch { /* ignore */ }
+    if (tallies.length > 0) {
+      participationLines.push("# HELP tip_committee_participation_credits Participation credits a member has accrued for the in-progress rotation window (label member identifies the node). Compare against tip_committee_participation_required.");
+      participationLines.push("# TYPE tip_committee_participation_credits gauge");
+      participationLines.push("# HELP tip_committee_member 1 if the member is in the active committee at the current round, else 0 (registered but not yet admitted).");
+      participationLines.push("# TYPE tip_committee_member gauge");
+      for (const t of tallies) {
+        const member = String(t.node_id || "");
+        participationLines.push(line("tip_committee_participation_credits", t.count, { member }));
+        participationLines.push(line("tip_committee_member", members.has(t.node_id) ? 1 : 0, { member }));
+      }
+    }
+  } catch { /* ignore */ }
+
   return [
     gauge("tip_committee_current_rotation_number", "Latest rotation_number in committee_history (0 = genesis bootstrap, no rotation has fired yet)", currentRotation),
     gauge("tip_committee_history_size", "Total rows in committee_history (includes rotation 0 bootstrap)", totalRotations),
@@ -362,6 +403,7 @@ function committeeSection(s, dag) {
     gauge("tip_snapshot_install_progress_rows", "Rows installed so far in the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.installed) || 0),
     gauge("tip_snapshot_install_total_rows", "Total rows to install in the in-progress snapshot; 0 when idle", (s.snapshotHandler?.install?.total) || 0),
     gauge("tip_snapshot_install_bytes", "Download size in bytes of the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.bytes) || 0),
+    ...participationLines,
   ].join("\n");
 }
 
