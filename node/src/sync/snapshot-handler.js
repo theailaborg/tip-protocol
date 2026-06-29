@@ -107,6 +107,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // can serve multiple minority nodes concurrently (ISSUE_47 Option C).
   let _snapServing = false;
 
+  // Bound concurrent snapshot serves. A far-behind joiner's snapshot is heavy to
+  // build (full-table materialization + thousands of framed rows); serving
+  // several at once starves this node's own consensus loop (the rejoin-halt root
+  // cause). Excess joiners are declined and pick another helper.
+  let _activeServes = 0;
+  const MAX_CONCURRENT_SERVES = 1;
+
   // Live install progress for operators to poll (surfaced via stats()). null
   // when idle; during an install: { phase, installed, total, bytes }.
   let _installProgress = null;
@@ -200,6 +207,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
       await stream.sink([_frame(errHeader)]);
       log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
+      return;
+    }
+
+    if (_activeServes >= MAX_CONCURRENT_SERVES) {
+      const errHeader = encode("SnapshotHeader", _emptyHeader("serve capacity reached, try another peer"));
+      await stream.sink([_frame(errHeader)]);
+      log.info(`Snapshot: declined ${remotePeer}: ${_activeServes} serve(s) already active`);
       return;
     }
 
@@ -316,8 +330,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // the same deferred-commit/forced-partial-commit divergence we fixed elsewhere.
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
+    _activeServes++;
     try {
       await stream.sink((async function* () {
+        // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
+        // firing during a large serve; without it the row flood starves the loop.
+        let _yielded = 0;
+        const _breathe = async () => { if ((++_yielded & 255) === 0) await new Promise((r) => setImmediate(r)); };
         yield _frame(headerBuf);
 
         // Phase A: derived state (existing — covered by state_merkle_root).
@@ -328,6 +347,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           });
           yield _frame(rowBuf);
           stateRowsSent++;
+          await _breathe();
         }
 
         // Phase B: full transactions table (#49). Source has every tx ever
@@ -337,6 +357,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const tx of dag.iterateAllTransactions()) {
           yield _frameFullHistoryRow("SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
+          await _breathe();
         }
         txsFullRoot = txRoot.finalize();
 
@@ -347,6 +368,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
           yield _frameFullHistoryRow("SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
+          await _breathe();
         }
         commitsFullRoot = commitRoot.finalize();
 
@@ -379,6 +401,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             yield _frameFullHistoryRow("SnapshotCertRow",
               canonicalJson(canonCert(cert)), certRoot);
             certRowsSent++;
+            await _breathe();
           }
         }
         certsFullRoot = certRoot.finalize();
@@ -422,6 +445,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     } catch (err) {
       log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
       return;
+    } finally {
+      _activeServes--;
     }
 
     log.info(
