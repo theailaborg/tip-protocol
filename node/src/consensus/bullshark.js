@@ -944,11 +944,12 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       if (!cert || !cert.hash || visited.has(cert.hash)) continue;
       visited.add(cert.hash);
 
-      if (!_orderedCertHashes.has(cert.hash)) {
-        collectedCerts.push(cert);
-        // Don't mark in _orderedCertHashes yet when there are missing parents —
-        // we may need to re-walk from scratch once they arrive.
-      }
+      // Stop at the committed frontier: an already-ordered cert's ancestry is
+      // already ordered, and certs below it have been GC'd. Descending further
+      // records those GC'd certs as false "missing" gaps and parks the commit
+      // forever (the sub-quorum halt observed on a single-node loss).
+      if (_orderedCertHashes.has(cert.hash)) continue;
+      collectedCerts.push(cert);
 
       for (const parentHash of (cert.parent_hashes || [])) {
         if (visited.has(parentHash)) continue;
@@ -1066,6 +1067,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     /** Get the leader for a specific round */
     getLeader: _getLeader,
+
+    /** Test hook: the anchored-cert ancestry walk (committed-frontier bound). */
+    _walkAnchoredCertChain,
 
     /** Get the last committed round */
     lastCommittedRound: () => _lastCommittedRound,
