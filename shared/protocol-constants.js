@@ -373,6 +373,7 @@ const CONSENSUS = {
   get HANDSHAKE_MAX_RETRIES() { return LC.HANDSHAKE_MAX_RETRIES; },
   get HANDSHAKE_REHANDSHAKE_INTERVAL_MS() { return LC.HANDSHAKE_REHANDSHAKE_INTERVAL_MS; },
   get HANDSHAKE_REAUTH_GRACE_MS() { return LC.HANDSHAKE_REAUTH_GRACE_MS; },
+  get CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS() { return LC.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS; },
   get SYNC_FROM_PEER_TOLERANCE_ROUNDS() { return LC.SYNC_FROM_PEER_TOLERANCE_ROUNDS; },
   get GC_DEPTH() { return _c().gc_depth ?? 500; },
   get GC_INTERVAL_COMMITS() { return LC.GC_INTERVAL_COMMITS; },
@@ -413,8 +414,8 @@ const CONSENSUS = {
   // HEARTBEAT_TIMEOUT_MS caps a slow/hung peer's response. After
   // HEARTBEAT_SUSPECT_MISSES consecutive timeouts, onPeerSuspect fires.
   get HEARTBEAT_INTERVAL_MS() { return _c().heartbeat_interval_ms ?? 5000; },
-  get HEARTBEAT_TIMEOUT_MS() { return _c().heartbeat_timeout_ms ?? 2000; },
-  get HEARTBEAT_SUSPECT_MISSES() { return _c().heartbeat_suspect_misses ?? 2; },
+  get HEARTBEAT_TIMEOUT_MS() { return _c().heartbeat_timeout_ms ?? 3000; },
+  get HEARTBEAT_SUSPECT_MISSES() { return _c().heartbeat_suspect_misses ?? 3; },
   get ROTATION_COORD_REBROADCAST_INTERVAL_MS() { return LC.ROTATION_COORD_REBROADCAST_INTERVAL_MS; },
   // Pull-repair single-tx fetch: per-node tunables (no chain-fork risk), so a
   // tight timeout and small byte cap vs the GB-scale full cert sync.
