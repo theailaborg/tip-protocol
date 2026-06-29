@@ -64,8 +64,8 @@ describe("Tier-3 local-config / agreed-genesis disjointness (#39/A21)", () => {
     }
   });
 
-  test("the local tunable set is exactly the 23 documented in issue #39", () => {
-    expect(Object.keys(LC).length).toBe(23);
+  test("the local tunable set size is pinned (bump this + document the knob in .env.example when adding one)", () => {
+    expect(Object.keys(LC).length).toBe(33);
   });
 });
 

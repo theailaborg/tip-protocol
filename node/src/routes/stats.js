@@ -27,6 +27,7 @@
 
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
+const { computeQuorum } = require("../consensus/certificate");
 const { nowIso } = require("../../../shared/time");
 
 function createRouter({ dag, config, consensus, network }) {
@@ -157,7 +158,7 @@ function createRouter({ dag, config, consensus, network }) {
       registered: registered.sort(),
       active_committee: activeCommittee,
       active_committee_size: activeCommittee.length,
-      quorum: Math.ceil((2 * activeCommittee.length) / 3),
+      quorum: computeQuorum(activeCommittee.length),
       timestamp: nowIso(),
     });
   }));

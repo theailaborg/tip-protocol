@@ -18,6 +18,7 @@
 "use strict";
 
 import http from "node:http";
+import { nowMs, toIso } from "../shared/time.js";
 
 const arg = (k, d) => {
   const hit = process.argv.find((a) => a.startsWith(`--${k}=`));
@@ -87,7 +88,7 @@ function syncState(m) {
 }
 
 async function tick() {
-  const now = Date.now();
+  const now = nowMs();
   const bodies = await Promise.all(HOSTS.map(fetchMetrics));
 
   const rows = [];
@@ -124,7 +125,7 @@ async function tick() {
   const f1 = (x) => x.toFixed(1);
 
   const lines = [];
-  lines.push(`\x1b[2J\x1b[H consensus trace  ${new Date(now).toISOString()}  every ${INTERVAL_MS / 1000}s`);
+  lines.push(`\x1b[2J\x1b[H consensus trace  ${toIso(now)}  every ${INTERVAL_MS / 1000}s`);
   lines.push(
     " " + pad("node", 5) + padL("round", 8) + padL("commit", 8) + padL("stale", 7) +
     padL("peer", 5) + padL("mesh", 5) + padL("loopMx", 8) + padL("clos/s", 7) +

@@ -294,9 +294,13 @@ function verifyCertificate(cert, getNodeKey, quorum) {
 }
 
 /**
- * Compute the quorum threshold for a given number of nodes.
- * BFT requires 2f+1 where n >= 3f+1, so quorum = ceil(2n/3).
- * @param {number} nodeCount  Total registered nodes
+ * BFT quorum = ceil(2n/3): the smallest quorum that forces any two quorums to
+ * overlap in an honest node (2q - n >= f+1). It's the ">2/3 of voting power" rule
+ * of Sui/Tendermint/HotStuff (they use floor(2n/3)+1, equal except one stricter at
+ * n divisible by 3). NOT 2f+1 — that only equals this at n=3f+1 and is unsafe
+ * otherwise (n=5 it gives 3, which forks under one byzantine node). Single source
+ * of truth — every caller MUST use this, never a hand-rolled formula.
+ * @param {number} nodeCount  Committee size (n)
  * @returns {number}
  */
 function computeQuorum(nodeCount) {

@@ -493,7 +493,7 @@
         },
         {
           "refId": "CatchSecs",
-          "expr": "max by (node) (tip_narwhal_catching_up_duration_seconds) or max by (node) (vector(0))",
+          "expr": "max by (node) (tip_narwhal_catching_up_duration_seconds)",
           "format": "table",
           "instant": true,
           "datasource": null
