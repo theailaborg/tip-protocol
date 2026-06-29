@@ -68,6 +68,20 @@ Drop a Grafana JSON export into `grafana/dashboards/`. The provisioning
 config (`grafana/provisioning/`) auto-loads everything in that
 directory on Grafana startup, no UI import step needed.
 
+## Sidebar quick-access
+
+All TIP dashboards are provisioned into a `TIP` folder, and `tip-home` is the
+default home page. To pin every dashboard to Grafana's left sidebar (the
+"Starred" section, one click each), run:
+
+```bash
+./grafana/star-dashboards.sh
+```
+
+Stars are per-user runtime state (in Grafana's DB, not provisioned), so re-run
+this after `docker compose down -v`. It defaults to `admin:admin` on
+`http://localhost:3030`; override with `GF_AUTH` / `GF_URL`.
+
 ## Dashboards & panels reference
 
 The stack provisions **six dashboards** from `grafana/dashboards/`, auto-loaded
