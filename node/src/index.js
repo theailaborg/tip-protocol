@@ -45,7 +45,7 @@ const processErrors = require("./process-error-handler");
 
 // Process-level error boundary for the long-running loops Express can't reach
 // (consensus ticks, p2p streams, anti-entropy). captureError classifies + counts;
-// transient continues, the narrow fatal set shuts down. See process-error-handler.js.
+// observe-only, nothing here halts the node. See process-error-handler.js.
 process.on("uncaughtException", (err, origin) => {
   processErrors.captureError(err, { origin: origin || "uncaughtException" });
 });
