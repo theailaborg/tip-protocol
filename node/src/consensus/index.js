@@ -190,6 +190,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const bullshark = createBullshark({
     dag,
     getNodeIds: getCommittee,
+    // Keep the cert-DAG merkle GC-aligned: re-source the sync-handler tree when
+    // bullshark prunes old certs, so all nodes' roots reflect the same live set.
+    onCertsPruned: () => { try { syncHandler.onCertsPruned(); } catch { /* ignore */ } },
     onMissingCertsTimeout: (voteRound, missingCount) => {
       if (antiEntropyForResync && typeof antiEntropyForResync.triggerSnapshotResync === "function") {
         // Stagger resync by node_id so all nodes don't simultaneously enter
