@@ -388,5 +388,20 @@
         "h": 11
       }
     }
+  ],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "apps",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "tip"
+      ],
+      "targetBlank": false,
+      "title": "TIP dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
   ]
 }
