@@ -211,7 +211,20 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   const droppingNodeId = nodeId
     || (config && (config.nodeRegisteredId || config.nodeId))
     || "unknown";
-  const _persistRejection = createRejectionSink({ dag, nodeId: droppingNodeId });
+  const _rawPersistRejection = createRejectionSink({ dag, nodeId: droppingNodeId });
+
+  // O(1) counter for /metrics (was a per-scrape 10k-row scan); benign re-broadcast
+  // duplicates excluded to match the metric's intent.
+  const _metrics = { committee_rotation_failures: 0 };
+  const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
+  const _persistRejection = (tx, reason, detail, opts) => {
+    if (reason === TX_REJECTION_REASON.REVALIDATION_FAILED
+      && tx?.tx_type === TX_TYPES.COMMITTEE_ROTATION
+      && !_benignRotation.test(String(detail || ""))) {
+      _metrics.committee_rotation_failures++;
+    }
+    return _rawPersistRejection(tx, reason, detail, opts);
+  };
 
 
   /**
@@ -1829,7 +1842,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     }
   }
 
-  return { commitOrderedTxs };
+  return { commitOrderedTxs, metrics: () => ({ ..._metrics }) };
 }
 
 module.exports = { createCommitHandler };

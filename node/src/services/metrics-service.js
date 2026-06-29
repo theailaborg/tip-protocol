@@ -326,21 +326,8 @@ function committeeSection(s, dag) {
     }
   } catch { /* ignore */ }
 
-  try {
-    if (typeof dag.getTxRejectionsByReason === "function") {
-      // tx_rejections doesn't directly index by tx_type, but
-      // REVALIDATION_FAILED is the only reason that hits a
-      // COMMITTEE_ROTATION tx (signature/quorum check). Count rows
-      // where reason_detail mentions rotation + tx_type column matches.
-      // Using the existing accessor avoids adding a new index.
-      const rows = dag.getTxRejectionsByReason("revalidation_failed", { limit: 10000 }) || [];
-      // Exclude benign idempotent rejections of the coordinator's periodic
-      // re-broadcasts (already-applied / duplicate-in-batch / superseded). Only
-      // genuine failures (insufficient sigs, payload mismatch, gap) count here.
-      const benign = /already (exists|in this batch)|non-monotonic/i;
-      failuresTotal = rows.filter(r => r.tx_type === "COMMITTEE_ROTATION" && !benign.test(r.reason_detail || "")).length;
-    }
-  } catch { /* ignore */ }
+  // O(1) commit-handler counter; replaces a per-scrape 10k-row tx_rejection scan.
+  failuresTotal = Number(s.commitHandler?.metrics?.committee_rotation_failures || 0);
 
   const proposals = (s.bullshark?.metrics?.committee_rotation_proposals) || 0;
   const chainWalkFailures = (s.snapshotHandler?.metrics?.chain_walk_failures) || 0;
