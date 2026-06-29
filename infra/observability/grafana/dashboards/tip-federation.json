@@ -449,7 +449,7 @@
       "id": 1008,
       "type": "table",
       "title": "Federation status - registered nodes, online state, join state, connections",
-      "description": "One row per TIP node in the DAG registry. **Status** = registered status from the DAG. **Online** = whether the node is currently emitting metrics. **Sync state** = `ready` (advancing normally) or `syncing` (catching up; suppresses round production). **Sync duration** = seconds since the node entered sync mode (- when ready). Color thresholds: blue < 60s (normal catch-up), orange 60-180s (slow), red > 180s (likely stuck - see #66). **Connected to** = comma-separated names of peers it currently sees. Empty cells for offline nodes. Pairs with the dedicated halt-status panel below - sync info shows the *cause* of a halt (stuck node), halt-status shows the *effect* (quorum unreachable).",
+      "description": "One row per TIP node in the DAG registry. **Status** = registered status from the DAG. **Online** = whether the node is currently emitting metrics. **Sync state** = `ready` (advancing normally) or `syncing` (catching up; suppresses round production). **Sync duration** = seconds since the node entered sync mode (- when ready). Color thresholds: blue < 60s (normal catch-up), orange 60-180s (slow), red > 180s (likely stuck - see #66). **Connected to** = comma-separated names of peers it currently sees. Empty cells for offline nodes. Pairs with the dedicated halt-status panel below - sync info shows the *cause* of a halt (stuck node), halt-status shows the *effect* (quorum unreachable). **Contribution (credits)** = participation credits accrued this rotation window; the cell turns green once it reaches the admission threshold. **Admission threshold = ceil(COMMITTEE_ROTATION_INTERVAL_COMMITS x COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL / 100) = ceil(100 x 70 / 100) = 70 credits** (from shared/protocol-constants.js; the live value is exposed as the `tip_committee_participation_required` metric). A registered node is admitted to the committee at the next rotation boundary once its Contribution reaches that threshold; genesis members are exempt. **In committee** = currently an active committee member (pending = registered, awaiting admission at the next boundary).",
       "gridPos": {
         "x": 0,
         "y": 7,
@@ -497,6 +497,18 @@
           "format": "table",
           "instant": true,
           "datasource": null
+        },
+        {
+          "refId": "Credits",
+          "format": "table",
+          "instant": true,
+          "expr": "max by (node) (label_replace(max by (member) (tip_committee_participation_credits), \"node\", \"$1\", \"member\", \"(.+)\"))"
+        },
+        {
+          "refId": "InCommittee",
+          "format": "table",
+          "instant": true,
+          "expr": "max by (node) (label_replace(max by (member) (tip_committee_member), \"node\", \"$1\", \"member\", \"(.+)\"))"
         }
       ],
       "transformations": [
@@ -548,7 +560,21 @@
               "role": true,
               "Value": true,
               "Value #Registry": true,
-              "Value #Peers": true
+              "Value #Peers": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time 7": true,
+              "Time 8": true,
+              "Time 9": true,
+              "__name__ 5": true,
+              "__name__ 6": true,
+              "__name__ 7": true,
+              "__name__ 8": true,
+              "member": true,
+              "member 1": true,
+              "member 2": true,
+              "member 3": true,
+              "member 4": true
             },
             "indexByName": {
               "node": 0,
@@ -557,8 +583,10 @@
               "Value #Online": 3,
               "Value #SyncState": 4,
               "Value #SyncSecs": 5,
-              "peers": 7,
-              "Value #CatchSecs": 6
+              "peers": 9,
+              "Value #CatchSecs": 6,
+              "Value #InCommittee": 7,
+              "Value #Credits": 8
             },
             "renameByName": {
               "node": "Node",
@@ -568,7 +596,9 @@
               "Value #SyncState": "Join state",
               "Value #SyncSecs": "Sync duration",
               "peers": "Connected to",
-              "Value #CatchSecs": "Catch-up duration"
+              "Value #CatchSecs": "Catch-up duration",
+              "Value #Credits": "Contribution (credits)",
+              "Value #InCommittee": "In committee"
             }
           }
         }
@@ -891,6 +921,70 @@
               {
                 "id": "noValue",
                 "value": "-"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Contribution (credits)"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "yellow",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 70
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In committee"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "pending",
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
               }
             ]
           }
