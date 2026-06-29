@@ -40,6 +40,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
+const { safeSetInterval } = require("../safe-timer");
 
 const { mldsaSign, mldsaVerify, computeTxId, shake256, canonicalJson } = require("../../../shared/crypto");
 const { TX_TYPES } = require("../../../shared/constants");
@@ -546,7 +547,7 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
 
   function _startRebroadcast() {
     if (_rebroadcastTimer) return;
-    _rebroadcastTimer = setInterval(_rebroadcastTick, CONSENSUS.ROTATION_COORD_REBROADCAST_INTERVAL_MS);
+    _rebroadcastTimer = safeSetInterval(_rebroadcastTick, CONSENSUS.ROTATION_COORD_REBROADCAST_INTERVAL_MS, "consensus.rotation.rebroadcast");
   }
 
   function _stopRebroadcast() {

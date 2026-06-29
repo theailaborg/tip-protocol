@@ -41,30 +41,17 @@ const { initPrescanWorker } = require("./init-prescan-worker");
 const { initMediaRetention } = require("./init-media-retention");
 const { initEndpointAnnounce } = require("./init-endpoint-announce");
 const { createMediaStorage } = require("./services/media-storage");
+const processErrors = require("./process-error-handler");
 
-// Process-level error boundary for the consensus loops + libp2p stream
-// handlers + scheduled timers. Without these, any throw inside a
-// setTimeout/setInterval callback or unhandled promise rejection
-// (e.g. transient SQLite contention from concurrent snapshot serving,
-// peer message decode failure, network blip) crashes the node — taking
-// it out of consensus and forcing operator restart.
-//
-// Policy: log loudly, keep running. The Express error handler in
-// `middleware/error-handler.js` covers the HTTP request lifecycle;
-// these handlers cover everything else (consensus ticks, p2p streams,
-// anti-entropy loop, snapshot streamer, rotation-coord handlers).
-//
-// For a BFT node, "log + continue" is strictly better than "exit": a
-// crashed node loses liveness, while a node operating on degraded
-// state will be caught by anti-entropy state_merkle_root divergence
-// detection within seconds. Truly fatal errors (schema corruption,
-// OOM) self-handle via specific catches at lower layers.
+// Process-level error boundary for the long-running loops Express can't reach
+// (consensus ticks, p2p streams, anti-entropy). captureError classifies + counts;
+// transient continues, the narrow fatal set shuts down. See process-error-handler.js.
 process.on("uncaughtException", (err, origin) => {
-  log.error(`UNCAUGHT EXCEPTION (${origin}): ${err.stack || err.message || err}`);
+  processErrors.captureError(err, { origin: origin || "uncaughtException" });
 });
 process.on("unhandledRejection", (reason) => {
-  const msg = (reason && (reason.stack || reason.message)) || reason;
-  log.error(`UNHANDLED REJECTION: ${msg}`);
+  const err = reason instanceof Error ? reason : new Error(String((reason && (reason.message || reason)) || reason));
+  processErrors.captureError(err, { origin: "unhandledRejection" });
 });
 
 async function main() {
@@ -223,6 +210,10 @@ async function main() {
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
+
+  // Identity for the structured error records. The process error boundary is
+  // observe-only: it never halts the node (no shutdown hook is registered).
+  processErrors.init({ nodeId: config.nodeId });
 }
 
 main().catch(err => {

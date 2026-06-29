@@ -27,6 +27,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
+const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const {
@@ -1441,7 +1442,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _startWatchdog() {
     if (_watchdogTimer) return;
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
-    _watchdogTimer = setInterval(_watchdogCheck, tick);
+    _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
 
   function _stopWatchdog() {
