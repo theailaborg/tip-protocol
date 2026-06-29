@@ -61,7 +61,7 @@ const log = getLogger("tip.bullshark");
  *                                              dag.getNode(nodeId)?.public_key.
  * @returns {Object} Bullshark instance
  */
-function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout }) {
+function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCertsTimeout, onCertsPruned }) {
   // Track which certificates have already been ordered (by hash)
   const _orderedCertHashes = new Set();
 
@@ -840,6 +840,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       _metrics.gc_runs++;
       if (n > 0) {
         _metrics.certs_pruned += n;
+        // Keep the sync-handler's cert-DAG merkle GC-aligned with the live set.
+        if (typeof onCertsPruned === "function") {
+          try { onCertsPruned(); } catch (err) { log.warn(`onCertsPruned hook failed: ${err.message}`); }
+        }
         log.info(`Cert GC: pruned ${n} certs with round < ${cutoff} (retaining last ${gcDepth} rounds)`);
 
         // Reclaim freed SQLite pages back to the filesystem. Without this

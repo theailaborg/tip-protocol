@@ -1246,6 +1246,7 @@ class KnexAdapter {
   // the full cert window post-_hydrate.
   *iterateCertsByRoundRange(from, to) { yield* this.mirror.iterateCertsByRoundRange(from, to); }
   certificateCount() { return this.mirror.certificateCount(); }
+  getAllCertificateHashes() { return this.mirror.getAllCertificateHashes(); }
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);

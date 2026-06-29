@@ -959,6 +959,7 @@ class MemoryStore {
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
   saveCertificate(cert) { this._certs.set(cert.hash, { ...cert }); }
   getCertificate(hash) { return this._certs.get(hash) || null; }
+  getAllCertificateHashes() { return [...this._certs.keys()]; }
   getCertificatesByRound(round) {
     return [...this._certs.values()]
       .filter(c => c.round === round)
@@ -2236,6 +2237,7 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?)`
       ),
       getCert: this.db.prepare("SELECT * FROM certificates WHERE hash=?"),
+      getAllCertHashes: this.db.prepare("SELECT hash FROM certificates"),
       getCertsByRound: this.db.prepare("SELECT * FROM certificates WHERE round=? ORDER BY author_node_id"),
       getCertsByAuthorRound: this.db.prepare("SELECT * FROM certificates WHERE author_node_id=? AND round=?"),
       getLatestRound: this.db.prepare("SELECT MAX(round) AS latest FROM certificates"),
@@ -3079,6 +3081,7 @@ class SQLiteStore {
     const row = this._stmts.getCert.get(hash);
     return row ? this._parseCert(row) : null;
   }
+  getAllCertificateHashes() { return this._stmts.getAllCertHashes.all().map(r => r.hash); }
   getCertificatesByRound(round) {
     return this._stmts.getCertsByRound.all(round).map(r => this._parseCert(r));
   }
@@ -3903,6 +3906,7 @@ function _buildDagHandle(store, config) {
     // ── Certificates (Narwhal consensus) ─────────────────────────────────
     saveCertificate: (cert) => store.saveCertificate(cert),
     getCertificate: (hash) => store.getCertificate(hash),
+    getAllCertificateHashes: () => store.getAllCertificateHashes(),
     getCertificatesByRound: (round) => store.getCertificatesByRound(round),
     getCertificateByAuthorRound: (author, r) => store.getCertificateByAuthorRound(author, r),
     getLatestRound: () => store.getLatestRound(),

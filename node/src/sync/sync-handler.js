@@ -55,38 +55,33 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
   let _merkle = _buildMerkleFromDAG();
 
   /**
-   * Build Merkle tree from all persisted certificates.
-   * Iterates rounds in ascending order and uses getCertificatesByRound, which
-   * returns certs sorted by author_node_id. This gives a canonical ordering
-   * that's identical across nodes with identical DAG state, making the root
-   * a deterministic summary of "what's in my DAG."
+   * Build the Merkle tree from the live cert set in a single O(cert_count) read.
+   * createMerkleTree sorts the leaves, so the root is a deterministic summary of
+   * "what's in my DAG", identical across nodes holding the same live cert set.
+   * Used for the one-time startup build and for GC re-alignment; steady-state
+   * updates go through add()/addBatch() on the persistent tree, not a rebuild.
    */
   function _buildMerkleFromDAG() {
-    const latestRound = dag.getLatestRound();
-    const hashes = [];
-    for (let r = 1; r <= latestRound; r++) {
-      try {
-        const certs = dag.getCertificatesByRound(r);
-        for (const cert of certs) hashes.push(cert.hash);
-      } catch (err) {
-        log.warn(`Failed to load certs for round ${r}: ${err.message}`);
-      }
-    }
-    const tree = createMerkleTree({ initialHashes: hashes });
-    // Debug: this rebuilds on every cert save and is chatty. Operators can
-    // read the current root via /v1/stats or the merkleRoot() export.
-    log.debug(`Merkle tree built: ${hashes.length} certificates, root: ${tree.root().slice(0, 16)}...`);
-    return tree;
+    const hashes = dag.getAllCertificateHashes ? dag.getAllCertificateHashes() : [];
+    return createMerkleTree({ initialHashes: hashes });
   }
 
   /**
-   * Rebuild the Merkle tree from DAG state so the root reflects every
-   * saved cert in canonical (round, author_node_id) order. Called whenever
-   * a new certificate is saved — either via anchor commit, live gossip, or
-   * sync import. The rebuild cost is O(N) certs, which is trivial for the
-   * permissioned-federation scale TIP targets.
+   * A cert was saved (anchor commit or live gossip). Insert its leaf into the
+   * persistent tree (sorted insert + mark dirty); the tree recompute defers to
+   * the next root() read. Cheap, per-cert, no DAG scan — replaces the former
+   * full rebuild whose cost grew with uptime.
    */
-  function onCertificateCommitted(_certHash) {
+  function onCertificateCommitted(certHash) {
+    if (certHash) _merkle.add(certHash);
+  }
+
+  /**
+   * The bullshark cert-GC pruned old certs from the DAG. Re-source the tree from
+   * the post-prune live set so its leaves stay GC-aligned across nodes. Cheap
+   * (single read) and infrequent (per GC tick, not per cert).
+   */
+  function onCertsPruned() {
     _merkle = _buildMerkleFromDAG();
   }
 
@@ -413,6 +408,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
 
       let imported = 0;
       let maxRound = fromRound;
+      const importedHashes = [];
       for (const certFrame of certFrames) {
         try {
           const msg = decode("Certificate", certFrame);
@@ -421,6 +417,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
           if (!dag.getCertificate(cert.hash)) {
             dag.saveCertificate(cert);
             imported++;
+            importedHashes.push(cert.hash);
             if (cert.round > maxRound) maxRound = cert.round;
           }
         } catch (err) {
@@ -428,8 +425,9 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
         }
       }
 
-      // Rebuild merkle once for the whole batch — deterministic from DAG state.
-      if (imported > 0) _merkle = _buildMerkleFromDAG();
+      // Incremental: add the imported leaves in one batch (sorted inserts + mark
+      // dirty); the recompute defers to the next root() read.
+      if (importedHashes.length > 0) _merkle.addBatch(importedHashes);
 
       log.info(`Sync: imported ${imported}/${certFrames.length} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
       // Drive bullshark to commit up to the peer's frontier (gossip certs commit
@@ -454,8 +452,9 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
     registerProtocol,
     syncFromPeer,
     onCertificateCommitted,
+    onCertsPruned,
     merkleRoot,
-    merkleTree: _merkle,
+    merkleTree: () => _merkle,
     SYNC_PROTOCOL,
     // Exposed for tests and for ops replay: run the server-side handler
     // against an arbitrary stream pair. Production paths always reach it
