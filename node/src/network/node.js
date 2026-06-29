@@ -178,6 +178,11 @@ async function createNetworkNode(options = {}) {
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     peerDiscovery,
+    // Raise libp2p's ping-timeout floor so a brief event-loop stall doesn't abort
+    // a healthy committee connection (default floor is 5s; stalls can exceed it).
+    connectionMonitor: {
+      pingTimeout: { minTimeout: CONSENSUS.CONNECTION_MONITOR_PING_TIMEOUT_FLOOR_MS },
+    },
     services: {
       identify: identify(),
       pubsub: gossipsub({
