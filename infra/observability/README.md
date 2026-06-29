@@ -68,11 +68,18 @@ Drop a Grafana JSON export into `grafana/dashboards/`. The provisioning
 config (`grafana/provisioning/`) auto-loads everything in that
 directory on Grafana startup, no UI import step needed.
 
-## Sidebar quick-access
+## Quick access & navigation
 
 All TIP dashboards are provisioned into a `TIP` folder, and `tip-home` is the
-default home page. To pin every dashboard to Grafana's left sidebar (the
-"Starred" section, one click each), run:
+default home page. There are two ways to jump between them:
+
+**Top-bar dropdown (works anonymously).** Every dashboard carries a provisioned
+`TIP dashboards` dropdown in its top-right link bar (a tag-based `links` entry on
+each dashboard JSON). One click hops to any of the six, no login required. This
+is the durable, no-setup path.
+
+**Left sidebar "Starred" (logged-in users).** To pin every dashboard to
+Grafana's left sidebar as a direct link, run:
 
 ```bash
 ./grafana/star-dashboards.sh
@@ -80,7 +87,9 @@ default home page. To pin every dashboard to Grafana's left sidebar (the
 
 Stars are per-user runtime state (in Grafana's DB, not provisioned), so re-run
 this after `docker compose down -v`. It defaults to `admin:admin` on
-`http://localhost:3030`; override with `GF_AUTH` / `GF_URL`.
+`http://localhost:3030`; override with `GF_AUTH` / `GF_URL`. Note: anonymous
+viewers cannot hold stars (a Grafana limitation), so the Starred sidebar only
+shows once you log in as admin; use the top-bar dropdown otherwise.
 
 ## Dashboards & panels reference
 
