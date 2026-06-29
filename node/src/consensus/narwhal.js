@@ -1031,7 +1031,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // line to spot gossip-lag asymmetry at sealing time.
     const committeeShort = _getCommittee(_currentRound).map(id => id.slice(-8)).join(",");
     const ackerShort = acks.map(a => (a.acker_node_id || "").slice(-8)).join(",");
-    log.info(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
+    log.debug(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
 
     _tryAdvanceRound();
   }
