@@ -27,6 +27,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
+const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const {
@@ -1030,7 +1031,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // line to spot gossip-lag asymmetry at sealing time.
     const committeeShort = _getCommittee(_currentRound).map(id => id.slice(-8)).join(",");
     const ackerShort = acks.map(a => (a.acker_node_id || "").slice(-8)).join(",");
-    log.info(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
+    log.debug(`Round ${_currentRound}: cert sealed (${acks.length} acks [${ackerShort}], ${(cert.batch.txs || []).length} txs) | author's committee view: [${committeeShort}] (size=${_getCommittee(_currentRound).length}, quorum=${_getQuorum()})`);
 
     _tryAdvanceRound();
   }
@@ -1441,7 +1442,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _startWatchdog() {
     if (_watchdogTimer) return;
     const tick = Math.max(500, Math.floor(CONSENSUS.ROUND_TIMEOUT_MS / 2));
-    _watchdogTimer = setInterval(_watchdogCheck, tick);
+    _watchdogTimer = safeSetInterval(_watchdogCheck, tick, "narwhal.watchdog");
   }
 
   function _stopWatchdog() {

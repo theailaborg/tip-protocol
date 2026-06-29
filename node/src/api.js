@@ -18,6 +18,7 @@ const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 
 const { errorHandler } = require("./middleware/error-handler");
+const { getLogger, access: logAccess } = require("./logger");
 const { requestId } = require("./middleware/request-id");
 const { createConsensusGate } = require("./middleware/consensus-gate");
 const { createTimestampFormat } = require("./middleware/timestamp-format");
@@ -110,7 +111,14 @@ function createApp({ dag, scoring, config, consensus: consensusRef = null, netwo
   //   - outgoing: integer ms in response bodies → ISO 8601
   app.use(createTimestampFormat({ outgoing: true, incoming: true }));
   morgan.token("req-id", (req) => req.id);
-  app.use(morgan("[:date[iso]] :req-id :method :url :status :response-time ms"));
+  // Routine requests go ONLY to access.log (audit trail, separate from the
+  // debug/error logs). A failed request (>=400) is the exception: it surfaces in
+  // the main logs at warn so it isn't buried. Internal probes are dropped.
+  const httpLog = getLogger("tip.http");
+  const _accessFmt = ":req-id :method :url :status :response-time ms";
+  const _isProbe = (req) => req.path === "/metrics" || req.path === "/health" || req.path === "/v1/health";
+  app.use(morgan(_accessFmt, { stream: { write: (l) => logAccess(l.trimEnd()) }, skip: (req, res) => _isProbe(req) || res.statusCode >= 400 }));
+  app.use(morgan(_accessFmt, { stream: { write: (l) => httpLog.warn(l.trimEnd()) }, skip: (req, res) => res.statusCode < 400 }));
 
   const limiter = rateLimit({
     windowMs: config.rateLimitWindow, max: config.rateLimitMax,

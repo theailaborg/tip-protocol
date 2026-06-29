@@ -368,13 +368,250 @@
       "description": "Current committee rotation number."
     },
     {
+      "id": 3020,
+      "type": "row",
+      "title": "Process health & errors (observe-only \u2014 never halts the node)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 3021,
+      "type": "stat",
+      "title": "Fatal-severity errors",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_process_fatal_errors_total) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Errors flagged fatal-severity by driver code (e.g. store corruption). OBSERVE-ONLY: the node is NOT halted, consensus continues - but investigate the node. 0 is healthy."
+    },
+    {
+      "id": 3022,
+      "type": "stat",
+      "title": "safeTimer throws",
+      "gridPos": {
+        "x": 8,
+        "y": 10,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(tip_safe_timer_threw_total) or vector(0)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Throws/rejections caught inside scheduled timer loops (narwhal.watchdog, rotation rebroadcast, summary). Non-zero means a loop callback is faulting; find which by the label in the panel below or the tip.errors logs."
+    },
+    {
+      "id": 3023,
+      "type": "stat",
+      "title": "Process errors (uncaught + rejections)",
+      "gridPos": {
+        "x": 16,
+        "y": 10,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(tip_process_uncaught_exceptions_total) or vector(0)) + (sum(tip_process_unhandled_rejections_total) or vector(0))"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "description": "Cumulative uncaught exceptions + unhandled rejections captured by the process boundary. A steady climb signals a recurring fault; break it down by category below."
+    },
+    {
+      "id": 3024,
+      "type": "timeseries",
+      "title": "Process errors by category / label (over window)",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (category) (increase(tip_process_uncaught_exceptions_total[$__rate_interval]))",
+          "legendFormat": "uncaught {{category}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (category) (increase(tip_process_unhandled_rejections_total[$__rate_interval]))",
+          "legendFormat": "rejection {{category}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (label) (increase(tip_safe_timer_threw_total[$__rate_interval]))",
+          "legendFormat": "timer {{label}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Errors over the dashboard window, split by classified category and by safeTimer label. Empty = healthy. Shows WHICH class of fault is occurring (network / decode / store_contention / store_corruption / oom / unknown)."
+    },
+    {
       "id": 3007,
       "type": "row",
       "title": "Dashboards",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 20,
         "w": 24,
         "h": 1
       }
@@ -386,7 +623,7 @@
       "datasource": null,
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 21,
         "w": 24,
         "h": 12
       },

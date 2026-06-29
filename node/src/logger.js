@@ -5,10 +5,12 @@
  *
  * Features:
  *   - Console output (colored by level) — threshold via TIP_CONSOLE_LEVEL
- *   - File logging: logs/{date}/error.log, info.log, debug.log
+ *   - File logging: logs/{date}/error.log, info.log, debug.log, access.log
  *       - debug.log always captures EVERYTHING regardless of console level,
  *         so operators can investigate without losing detail when running
  *         a quiet console.
+ *       - access.log is HTTP request audit only (via access()), kept out of
+ *         the level system so request noise never reaches the other logs.
  *   - Source labels for tracing (e.g. [tip.api], [tip.narwhal])
  *   - rateWarn(key, ttlSec, ...msg): dedup repeating warnings by key
  *
@@ -65,6 +67,7 @@ function _getStreams() {
       error: fs.createWriteStream(path.join(dir, "error.log"), { flags: "a" }),
       info: fs.createWriteStream(path.join(dir, "info.log"), { flags: "a" }),
       debug: fs.createWriteStream(path.join(dir, "debug.log"), { flags: "a" }),
+      access: fs.createWriteStream(path.join(dir, "access.log"), { flags: "a" }),
     };
   }
   return _streams;
@@ -187,4 +190,15 @@ function getLogger(source) {
 // Default logger (backward compatible — no source label)
 const log = getLogger("");
 
-module.exports = { log, getLogger };
+// HTTP access log — its own file, deliberately OUT of the level system: routine
+// requests are audit noise that shouldn't reach console / info / debug / error.
+// (Failed requests are routed to the regular logger separately by the caller.)
+function access(line) {
+  if (_suppressFileLogging) return;
+  try {
+    const streams = _getStreams();
+    if (streams.access) streams.access.write(`[${nowIso()}]${_nodeTag} ${line}\n`);
+  } catch { /* never crash on a log write */ }
+}
+
+module.exports = { log, getLogger, access };

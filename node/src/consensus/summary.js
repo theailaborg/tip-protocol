@@ -20,6 +20,7 @@
 "use strict";
 
 const { nowMs } = require("../../../shared/time");
+const { safeSetInterval } = require("../safe-timer");
 
 const { getLogger } = require("../logger");
 
@@ -87,7 +88,7 @@ function createConsensusSummary({ narwhal, bullshark, intervalMs }) {
     start() {
       if (_timer) return;
       _last = null;
-      _timer = setInterval(_tick, intervalMs);
+      _timer = safeSetInterval(_tick, intervalMs, "consensus.summary");
       // Summary shouldn't keep the process alive on shutdown
       if (_timer.unref) _timer.unref();
     },

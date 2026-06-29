@@ -194,7 +194,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       catch (err) { log.warn(`driveCommit: anchor check failed at round ${vr}: ${err.message}`); }
       if (_lastCommittedRound > before) advanced++;
     }
-    if (advanced > 0) log.info(`Bullshark: driveCommit committed ${advanced} anchor(s) up to round ${_lastCommittedRound}`);
+    if (advanced > 0) log.debug(`Bullshark: driveCommit committed ${advanced} anchor(s) up to round ${_lastCommittedRound}`);
     return _lastCommittedRound;
   }
 

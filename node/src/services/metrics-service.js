@@ -39,6 +39,7 @@ const { nowMs } = require("../../../shared/time");
 // from any emitter and don't belong in a TIP-specific service file.
 const { line, gauge, counter } = require("../lib/prom-format");
 const { eventLoopMonitor } = require("../lib/event-loop-monitor");
+const processErrors = require("../process-error-handler");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 
 // ── Section builders ──────────────────────────────────────────────────────
@@ -73,6 +74,25 @@ function eventLoopSection() {
     gauge("tip_process_event_loop_lag_p99_ms", "p99 event-loop delay over the last 1s window (ms)", s.p99_ms),
     gauge("tip_process_event_loop_lag_mean_ms", "Mean event-loop delay over the last 1s window (ms)", s.mean_ms),
   ].join("\n");
+}
+
+// Process-level error counters (process-error-handler). A family appears once
+// its first error of that kind is seen; absence means zero (alert on increase()).
+function processErrorSection() {
+  const m = processErrors.getMetrics();
+  const out = [];
+  const family = (name, help, byKey, keyLabel) => {
+    const keys = Object.keys(byKey);
+    if (keys.length === 0) return;
+    out.push(`# HELP ${name} ${help}`);
+    out.push(`# TYPE ${name} counter`);
+    for (const k of keys) out.push(line(name, byKey[k], { [keyLabel]: k }));
+  };
+  family("tip_process_uncaught_exceptions_total", "Uncaught exceptions since start, by classified category.", m.uncaught, "category");
+  family("tip_process_unhandled_rejections_total", "Unhandled promise rejections since start, by category.", m.unhandled, "category");
+  family("tip_process_fatal_errors_total", "Errors flagged fatal-severity by driver code (e.g. store corruption); observe-only, does NOT halt the node.", m.fatal, "category");
+  family("tip_safe_timer_threw_total", "safeTimer callback throws/rejections since start, by timer label.", m.timer, "label");
+  return out.length ? out.join("\n") : null;
 }
 
 function dagSection(dag) {
@@ -220,9 +240,9 @@ function narwhalSection(s) {
     gauge("tip_narwhal_syncing", "1 if Narwhal is in sync mode (round production suppressed while catching up); 0 if ready", n.joinState === "syncing" ? 1 : 0),
     // Tri-state join FSM exposed as three indicator gauges. Dashboards can
     // mux these into one column or chart the timeline of transitions.
-    gauge("tip_narwhal_join_state_ready",       "1 when Narwhal is ready (cert production active)",                  n.joinState === "ready" ? 1 : 0),
+    gauge("tip_narwhal_join_state_ready", "1 when Narwhal is ready (cert production active)", n.joinState === "ready" ? 1 : 0),
     gauge("tip_narwhal_join_state_catching_up", "1 when Narwhal is catching_up (cert tail closing, no production)", n.joinState === "catching_up" ? 1 : 0),
-    gauge("tip_narwhal_join_state_syncing",     "1 when Narwhal is syncing (snapshot installing)",                   n.joinState === "syncing" ? 1 : 0),
+    gauge("tip_narwhal_join_state_syncing", "1 when Narwhal is syncing (snapshot installing)", n.joinState === "syncing" ? 1 : 0),
     gauge("tip_narwhal_sync_duration_seconds", "Seconds since the node entered syncing; 0 when not syncing. Sustained > 3× round timeout means sync attempts are looping",
       n.joinState === "syncing" && n.syncEnteredAt ? Math.floor((nowMs() - n.syncEnteredAt) / 1000) : 0),
     gauge("tip_narwhal_catching_up_duration_seconds", "Seconds since the node entered catching_up; 0 when not catching_up. Sustained > 10× round timeout flips back to syncing for a fresher snapshot",
@@ -555,6 +575,8 @@ function createMetricsService({ dag, config, consensus, network }) {
     const sections = [];
     sections.push(processSection(config));
     sections.push(eventLoopSection());
+    const peBlock = processErrorSection();
+    if (peBlock) sections.push(peBlock);
     sections.push(dagSection(dag));
     sections.push(registrySection(dag));
 
