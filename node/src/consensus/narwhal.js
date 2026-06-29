@@ -64,7 +64,7 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
@@ -1040,7 +1040,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   /**
    * Handle an incoming certificate from a peer (via CERTIFICATES topic).
    */
-  function handleIncomingCertificate(data) {
+  async function handleIncomingCertificate(data) {
     if (!_running) return;
 
     // Don't wake on certificates — they're just data to store.
@@ -1070,7 +1070,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // ack-count validation matches what the author used when signing.
     const committeeAtCertRound = _getCommittee(cert.round);
     const quorum = computeQuorum(committeeAtCertRound.length);
-    const result = verifyCertificate(cert, getNodeKey, quorum);
+    // Resolve author + acker pubkeys here (the worker has no DAG), then verify on
+    // the pool so a catch-up burst can't block the loop.
+    const pubkeyMap = {};
+    const _addPk = (id) => { if (id && !(id in pubkeyMap)) pubkeyMap[id] = getNodeKey(id); };
+    _addPk(cert.author_node_id);
+    for (const ack of (cert.acknowledgments || [])) _addPk(ack.acker_node_id);
+    const result = cryptoPool
+      ? await cryptoPool.verifyCert(cert, pubkeyMap, quorum)
+      : verifyCertificate(cert, getNodeKey, quorum);
+    // A concurrent handler may have persisted this cert while we awaited verify.
+    if (dag.getCertificate(cert.hash)) return;
     if (!result.valid) {
       // Extra context on rejection — surfaces gossip-lag asymmetry where
       // author and validator computed different committees from different

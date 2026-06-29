@@ -23,6 +23,7 @@ const { createBullshark } = require("./bullshark");
 const { createRotationCoordinator } = require("./rotation-coordinator");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
+const { createCryptoPool } = require("../lib/crypto-pool");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { computeHaltStatus } = require("./halt-status");
 const { computeStateMerkleRoot } = require("./state-root");
@@ -272,8 +273,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   let antiEntropyForFiltering = null;
   let antiEntropyForResync = null;
 
+  // Off-thread verify pool: keeps a catch-up / rejoin burst of cert verifies off
+  // the consensus loop. Size via TIP_CRYPTO_POOL_SIZE (0 = sync on the main thread).
+  const _poolSize = process.env.TIP_CRYPTO_POOL_SIZE;
+  const cryptoPool = createCryptoPool({ size: (_poolSize != null && _poolSize !== "") ? Number(_poolSize) : undefined });
+
   const narwhal = createNarwhal({
-    dag, mempool, network, config,
+    dag, mempool, network, config, cryptoPool,
     getNodeKey: (nId) => getNodeKey(dag, nId),
     getNodeCount: () => getNodeCount(dag),
     getCommittee,
@@ -567,7 +573,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     handlers: {
       onBatch: (data) => narwhal.handleIncomingBatch(data),
       onAck: (data) => narwhal.handleIncomingAck(data),
-      onCertificate: (data) => narwhal.handleIncomingCertificate(data),
+      onCertificate: (data) => { narwhal.handleIncomingCertificate(data).catch((err) => log.warn(`handleIncomingCertificate failed: ${err.message}`)); },
       // RotationProposal / RotationSignature dispatch is now via direct
       // libp2p stream (/tip/rotation-coord/1.0.0); see coord.registerProtocol.
     },
