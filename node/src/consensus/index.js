@@ -610,6 +610,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       return {
         narwhal: narwhal.stats(),
         bullshark: bullshark.stats(),
+        commitHandler: { metrics: commitHandler.metrics() },
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
         antiEntropy: antiEntropy.stats(),
