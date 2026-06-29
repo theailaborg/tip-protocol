@@ -1908,5 +1908,20 @@
       },
       "description": "**Txs committed (cumulative)** - Running total of transactions ordered through Bullshark since this process started.\n\n**Healthy**: stairs-monotonically-up, matching activity level. Resets on process restart (Prometheus runtime counter).\n\n**Trouble**: flat line during expected activity = consensus stalled or no submissions reaching the network."
     }
+  ],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "apps",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "tip"
+      ],
+      "targetBlank": false,
+      "title": "TIP dashboards",
+      "tooltip": "",
+      "type": "dashboards"
+    }
   ]
 }
