@@ -158,7 +158,7 @@
     {
       "id": 3003,
       "type": "stat",
-      "title": "Consensus divergence",
+      "title": "Byzantine fork (active)",
       "gridPos": {
         "x": 16,
         "y": 1,
@@ -172,7 +172,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(tip_consensus_divergence_total) or vector(0)"
+          "expr": "max(tip_consensus_byzantine_fork_halted) or vector(0)"
         }
       ],
       "options": {
@@ -207,7 +207,7 @@
           }
         }
       },
-      "description": "Byzantine-fork canary across the fleet. 0 is healthy."
+      "description": "1 if ANY node is currently fork-halted (active byzantine fork) - red is a real, present-tense emergency. 0 is healthy. This is the active-state gauge, not the lifetime divergence counter (that cumulative count, which never resets, lives on the Consensus Health dashboard as a 15m rate)."
     },
     {
       "id": 3004,

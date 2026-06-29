@@ -389,7 +389,7 @@
     {
       "id": 1007,
       "type": "stat",
-      "title": "Consensus divergence (byzantine-fork canary)",
+      "title": "Byzantine fork active (any node halted)",
       "gridPos": {
         "x": 16,
         "y": 4,
@@ -403,8 +403,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(tip_consensus_divergence_total)",
-          "legendFormat": "total"
+          "expr": "max(tip_consensus_byzantine_fork_halted) or vector(0)",
+          "legendFormat": "fork-halted"
         }
       ],
       "options": {
@@ -443,7 +443,7 @@
           }
         }
       },
-      "description": "**Consensus divergence** - Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event - page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
+      "description": "**Byzantine fork active** - 1 if ANY node is currently fork-halted (`tip_consensus_byzantine_fork_halted`). This is the present-tense emergency gauge: red means a fork is happening right now.\n\n**Healthy**: 0.\n\n**Trouble**: 1 means a node has halted on a state-root divergence it could not reconcile. Page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one.\n\nNote: transient divergences during catch-up/rejoin are auto-healed by resync and do NOT set this gauge - they only tick the lifetime `tip_consensus_divergence_total` counter (shown as a 15m rate on Consensus Health)."
     },
     {
       "id": 1008,

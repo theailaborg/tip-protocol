@@ -121,7 +121,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Consensus divergence (byzantine-fork canary)",
+      "title": "Divergence detections (15m, auto-healed)",
       "gridPos": {
         "x": 6,
         "y": 1,
@@ -135,8 +135,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(tip_consensus_divergence_total)",
-          "legendFormat": "total"
+          "expr": "sum(increase(tip_consensus_divergence_total[15m]))",
+          "legendFormat": "detections/15m"
         }
       ],
       "options": {
@@ -168,14 +168,14 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "yellow",
                 "value": 1
               }
             ]
           }
         }
       },
-      "description": "**Consensus divergence** - Cumulative count of byzantine-fork events: anti-entropy saw two peers at the same `committed_round` but with different `state_merkle_root`.\n\n**Healthy**: 0. This counter SHOULD never tick. It's a canary, not a liveness signal.\n\n**Trouble**: any value > 0 means two nodes have diverged on canonical state at the same round. This is a critical safety event - page immediately. Do NOT auto-resolve. Investigate which fork is correct, halt the wrong one."
+      "description": "**Divergence detections (15m)** - Rate of state-root divergences anti-entropy *detected and auto-healed* in the last 15m (`tip_consensus_divergence_total` is a lifetime counter; this is its windowed increase).\n\n**Healthy**: 0 at steady state. Non-zero during catch-up/rejoin is EXPECTED and benign - a behind node legitimately differs from the frontier until it finishes resyncing; the canary fires, then the resync reconciles it. Yellow = recent reconcile activity to be aware of, not an emergency.\n\n**The real fork emergency** is the 'Byzantine fork (halted / detection round)' panel: that fires only when a node could NOT reconcile and halted. Watch that one for paging."
     },
     {
       "id": 4,
