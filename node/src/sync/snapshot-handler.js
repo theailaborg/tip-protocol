@@ -31,7 +31,7 @@
  *   For MVP, signature verification uses public keys FROM THE INCOMING
  *   SNAPSHOT's nodes table. A malicious snapshot could invent nodes +
  *   matching private keys — we catch this later because the genesis
- *   founding_node + genesis_ring_keys MUST be present in the snapshot
+ *   founding_nodes + genesis_ring_keys MUST be present in the snapshot
  *   (joiner verifies against its own genesis). Full "walk committee
  *   from genesis through every commit's ack_signer_ids" chain-of-trust
  *   verification is deferred; see issues.md §14 hardening.
@@ -374,7 +374,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
         // Phase D: committee_history rotations (§4 + #34). Every rotation
         // since genesis, in rotation_number order. The joiner walks this
-        // chain forward, anchored at LOCAL genesis founding_node, and
+        // chain forward, anchored at the LOCAL genesis committee, and
         // verifies each transition's sigs against the previously-trusted
         // committee.
         const rotationRoot = createRotationsFullRootBuilder();
@@ -618,8 +618,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       //      txs/commits roots, catches truncation/tampering of the stream)
       //   2. Cryptographic chain-of-trust — walk rotations forward from
       //      genesis, verify each transition's sigs come from the
-      //      previously-trusted committee. Anchored at LOCAL genesis
-      //      founding_node (NOT the peer-provided nodes table) — that's
+      //      previously-trusted committee. Anchored at the LOCAL genesis
+      //      committee (NOT the peer-provided nodes table), that's
       //      what closes the synthetic-snapshot attack.
       const rotationsRoot = createRotationsFullRootBuilder();
       const rotationInstallQueue = _decodeFullHistoryFrames(
@@ -736,7 +736,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         if (seen.has(signer)) continue;          // no double-counting a signer
         if (!committeeSet.has(signer)) continue; // non-committee sig doesn't count toward quorum
         // Pubkey lookup prefers the CHAIN-ANCHORED committee (cryptographically
-        // verified via _verifyRotationChain back to LOCAL genesis founding_node)
+        // verified via _verifyRotationChain back to the LOCAL genesis committee)
         // over the peer-provided nodes table. Empty chain (pre-§4 peer or
         // legacy snapshot) falls through to nodePubKeys for backwards compat —
         // those snapshots predate chain-of-trust and rely on the older trust
@@ -1088,11 +1088,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   /**
    * §4 + #34 — chain-of-trust walk for incoming snapshot rotations.
    *
-   * Anchored at LOCAL genesis founding_node (hardcoded in this node's
-   * binary, NOT from the peer-controlled snapshot). Walks rotations in
+   * Anchored at the LOCAL genesis committee (founding_nodes, hardcoded in this
+   * node's binary, NOT from the peer-controlled snapshot). Walks rotations in
    * rotation_number order:
-   *   - Rotation 0: must match local genesis (founding_node + its pubkey),
-   *     no signers/sigs (genesis IS the trust anchor).
+   *   - Rotation 0: must match the local genesis committee (every founding node
+   *     id + pubkey), no signers/sigs (genesis IS the trust anchor).
    *   - Rotation N (N>=1): must have ≥ 2f+1 sigs from the previously-
    *     trusted committee, signed over `rotation:${payload_hash}:${signer}`.
    *     payload_hash is recomputed from the canonical claim and must match.
@@ -1100,7 +1100,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    * Throws on any failure; the snapshot install is rejected atomically
    * before any state lands. This is the core defense against the
    * synthetic-snapshot attack — a fabricated chain breaks at rotation 1
-   * because the attacker can't produce founding_node's signature.
+   * because the attacker can't produce a genesis member's signature.
    */
   function _verifyRotationChain(rotations) {
     if (!Array.isArray(rotations) || rotations.length === 0) {

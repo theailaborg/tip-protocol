@@ -83,7 +83,7 @@ function _rotationTx({ rotation_number, payload_hash, signer_node_ids = ["tip://
 // dedup-gate path is exercised via `queues.txs`. Fill the fields that
 // `dag.saveCommit` reads + a few that the install body coerces.
 function _minimalHeader() {
-  const founding = getGenesisPayload().founding_node;
+  const founding = getGenesisPayload().founding_nodes[0];
   return {
     round: 1,
     anchorCertHash: Buffer.from("aa".repeat(32), "hex"),

@@ -556,7 +556,7 @@ message SnapshotCertRow {
  * §4 + #34: `rotations_full_root` is the same shape — flat hash over
  * canonical rows of `committee_history`. Wire-format integrity for the
  * rotation chain. The CHAIN-OF-TRUST verification (sigs from previous
- * committee, anchored at LOCAL genesis founding_node) runs separately
+ * committee, anchored at LOCAL genesis founding_nodes) runs separately
  * AFTER the root match passes; mismatch on either step rejects.
  */
 message SnapshotEnd {
