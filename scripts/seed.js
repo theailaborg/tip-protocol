@@ -911,13 +911,13 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
       jurisdiction_tier: vpRecord.jurisdiction_tier,
       public_key: vpRecord.public_key || vpKeypair.publicKey,
     }],
-    founding_nodes: seedNode ? [{
-      tag: "primary-node",
-      node_id: seedNode.nodeId,
-      name: seedNode.name,
-      public_key: seedNode.publicKey,
+    founding_nodes: _foundingNodeKps.map(({ def, kp }) => ({
+      tag: def.tag,
+      node_id: generateNodeId(kp.publicKey),
+      name: def.name,
+      public_key: kp.publicKey,
       approving_vp_tag: "primary-vp",
-    }] : [],
+    })),
     founding_identities: identities.map(i => ({
       tag: i.tag,
       tip_id: i.tip_id,
@@ -998,19 +998,20 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
   fs.writeFileSync(path.join(backupDir, toFileName(vpRecord.vp_id)), vpBackup, { mode: 0o600 });
   ok(`  Backup: ${toFileName(vpRecord.vp_id)} — ${vpRecord.name} (VP)`);
 
-  // Node backup
-  if (_nodeKp && seedNode) {
+  // Node backups: one per founding node so each operator can be handed its key.
+  for (const { def, kp } of _foundingNodeKps) {
+    const nodeId = generateNodeId(kp.publicKey);
     const nodeBackup = JSON.stringify({
       v: 1,
       type: "node",
-      name: seedNode.name,
-      node_id: seedNode.nodeId,
-      public_key: _nodeKp.publicKey,
-      private_key: _nodeKp.privateKey,
+      name: def.name,
+      node_id: nodeId,
+      public_key: kp.publicKey,
+      private_key: kp.privateKey,
       created: nowMs(),
     }, null, 2);
-    fs.writeFileSync(path.join(backupDir, toFileName(seedNode.nodeId)), nodeBackup, { mode: 0o600 });
-    ok(`  Backup: ${toFileName(seedNode.nodeId)} — ${seedNode.name} (Node)`);
+    fs.writeFileSync(path.join(backupDir, toFileName(nodeId)), nodeBackup, { mode: 0o600 });
+    ok(`  Backup: ${toFileName(nodeId)} (${def.name}, Node)`);
   }
 
   ok(`Backup .tip.json files written to: ${backupDir}`);

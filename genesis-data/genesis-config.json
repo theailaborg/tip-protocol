@@ -5,6 +5,7 @@
       "max_identity": 530,
       "max_content": 350,
       "max_reputation": 50,
+      "max_longevity": 70,
       "initial_identity": 500
     },
     "identity": {
@@ -12,10 +13,43 @@
       "max_social_accounts": 6,
       "max_social_bonus": 30
     },
+    "content": {
+      "registration_credit": 2,
+      "verification_credit": 1,
+      "oh_cap": 200,
+      "aa_cap": 100,
+      "ag_cap": 100,
+      "mx_cap": 100,
+      "per_content_lifetime_cap": 5
+    },
     "reputation": {
       "clean_period_days": 90,
       "clean_period_bonus": 10,
       "dispute_cleared_bonus": 5
+    },
+    "longevity": {
+      "tiers": [
+        {
+          "months": 6,
+          "points": 15
+        },
+        {
+          "months": 12,
+          "points": 30
+        },
+        {
+          "months": 24,
+          "points": 45
+        },
+        {
+          "months": 36,
+          "points": 60
+        },
+        {
+          "months": 60,
+          "points": 70
+        }
+      ]
     },
     "penalties": {
       "oh_as_ag": [
@@ -36,7 +70,8 @@
       "minor_falsehood": -75,
       "major_falsehood": -300,
       "retraction": -50,
-      "device_compromise": -15
+      "device_compromise": -15,
+      "appeal_restore_percent": 50
     },
     "jury": {
       "dispute_stake": 15,
@@ -93,6 +128,10 @@
     },
     "prescan": {
       "default": 0.85,
+      "conversational": 0.82,
+      "creative": 0.87,
+      "academic": 0.92,
+      "legal": 0.93,
       "floor": 0.8,
       "ceiling": 0.94,
       "tier_thresholds": {

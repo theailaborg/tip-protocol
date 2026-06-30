@@ -498,6 +498,7 @@ const SCORE = {
   get MAX_IDENTITY() { return _sc().max_identity; },
   get MAX_CONTENT() { return _sc().max_content; },
   get MAX_REPUTATION() { return _sc().max_reputation; },
+  get MAX_LONGEVITY() { return _sc().max_longevity; },
   get INITIAL_IDENTITY() { return _sc().initial_identity; },
 };
 
