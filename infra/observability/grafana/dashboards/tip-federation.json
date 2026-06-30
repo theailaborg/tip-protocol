@@ -222,7 +222,7 @@
           }
         }
       },
-      "description": "**Active committee (max)** - Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG → split-brain on quorum denominator. Investigate immediately."
+      "description": "**Active committee (max)** - Largest active-committee value reported across all online nodes. Should be identical across all nodes since the committee is deterministically derived from DAG state.\n\n**Healthy**: matches what each per-node tile shows below.\n\n**Trouble**: differs from the per-node \"Active committee size\" panel = nodes computing different committees from the same DAG \u2192 split-brain on quorum denominator. Investigate immediately."
     },
     {
       "id": 1004,
@@ -1136,7 +1136,7 @@
           }
         }
       },
-      "description": "**Halt status** - 0 = consensus advancing normally; 1 = halted (no new commits for > 3× round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational - bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
+      "description": "**Halt status** - 0 = consensus advancing normally; 1 = halted (no new commits for > 3\u00d7 round timeout, default ~6s).\n\n**Healthy**: 0 (OK) on all nodes.\n\n**Trouble**: any node showing 1 (HALTED) means quorum is lost. Recovery is operational - bring more committee nodes online so 2f+1 quorum returns. While halted, this node returns 503 on POST/PUT under /v1/ (consensus-gate middleware) so clients retry instead of silently piling into mempool."
     },
     {
       "id": 1011,
@@ -1240,7 +1240,7 @@
           }
         }
       },
-      "description": "**Active committee size** - Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active ∩ producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator - quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
+      "description": "**Active committee size** - Number of nodes in the currently-derived consensus committee on each node. Committee derives from `registered_active \u2229 producers_in_last_K_rounds`, so it auto-includes producing nodes and excludes silent ones.\n\n**Healthy**: identical across all nodes (every node computes the same committee deterministically from its DAG state). Equal to the count of currently-producing registered nodes.\n\n**Trouble**: drift between nodes means split-brain on quorum denominator - quorum calculations diverge, certs may not validate cross-node. A value of 0 means no quorum is possible (halt-gate will trip)."
     },
     {
       "id": 1013,
@@ -1678,13 +1678,91 @@
     },
     {
       "id": 1023,
-      "type": "table",
-      "title": "Cert-DAG merkle root per node",
-      "description": "Current certificate-DAG merkle root per node. All nodes should show the SAME root; a divergent root is a fork before anti-entropy flags it.",
+      "type": "stat",
+      "title": "Consensus state agreement",
       "gridPos": {
         "x": 0,
         "y": 47,
-        "w": 24,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Green when every node shares the same state_merkle_root at the same committed round: no byzantine-fork halt and no divergence detected. This is the consensus-critical agreement signal. (Replaced the raw cert-DAG merkle-root table, which flickers by design as the cert set differs at the frontier and GC horizon, and was not actionable.)",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(max(tip_consensus_byzantine_fork_halted) or vector(0)) + clamp_max(sum(rate(tip_consensus_divergence_total[5m])) or vector(0), 1)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "\u2713 In agreement",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 0.0001,
+                "to": 1000000,
+                "result": {
+                  "text": "\u2717 State divergence - investigate",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.0001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1030,
+      "type": "table",
+      "title": "State merkle root per node (must match at same round)",
+      "description": "Latest committed (2f+1-signed) state_merkle_root per node. Unlike the old cert-DAG root, this MUST be identical across nodes at the same committed round; a divergent root at the same round is a real byzantine fork. A transient difference only means a node is one commit behind (see committed round on the Federation status table).",
+      "gridPos": {
+        "x": 8,
+        "y": 47,
+        "w": 16,
         "h": 6
       },
       "datasource": {
@@ -1696,7 +1774,7 @@
           "refId": "A",
           "instant": true,
           "format": "table",
-          "expr": "tip_cert_merkle_root_info * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))"
+          "expr": "tip_state_merkle_root_info * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))"
         }
       ],
       "transformations": [
@@ -1714,7 +1792,7 @@
             "indexByName": {},
             "renameByName": {
               "name": "Node",
-              "root": "Merkle root"
+              "root": "State merkle root"
             }
           }
         }

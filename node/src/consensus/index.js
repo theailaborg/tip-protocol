@@ -619,6 +619,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         commitHandler: { metrics: commitHandler.metrics() },
         mempool: mempool.stats(),
         merkleRoot: syncHandler.merkleRoot(),
+        // Latest committed (2f+1-signed) state root: must match across nodes at
+        // the same committed round; the consensus-critical agreement signal.
+        stateMerkleRoot: (() => { try { return dag.getLatestCommit?.()?.state_merkle_root || ""; } catch { return ""; } })(),
         antiEntropy: antiEntropy.stats(),
         heartbeat: { peers: heartbeat.peerStates() },
         verdictTrigger: { pending: verdictTrigger.size() },
