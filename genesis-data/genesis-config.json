@@ -5,7 +5,6 @@
       "max_identity": 530,
       "max_content": 350,
       "max_reputation": 50,
-      "max_longevity": 70,
       "initial_identity": 500
     },
     "identity": {
@@ -13,43 +12,10 @@
       "max_social_accounts": 6,
       "max_social_bonus": 30
     },
-    "content": {
-      "registration_credit": 2,
-      "verification_credit": 1,
-      "oh_cap": 200,
-      "aa_cap": 100,
-      "ag_cap": 100,
-      "mx_cap": 100,
-      "per_content_lifetime_cap": 5
-    },
     "reputation": {
       "clean_period_days": 90,
       "clean_period_bonus": 10,
       "dispute_cleared_bonus": 5
-    },
-    "longevity": {
-      "tiers": [
-        {
-          "months": 6,
-          "points": 15
-        },
-        {
-          "months": 12,
-          "points": 30
-        },
-        {
-          "months": 24,
-          "points": 45
-        },
-        {
-          "months": 36,
-          "points": 60
-        },
-        {
-          "months": 60,
-          "points": 70
-        }
-      ]
     },
     "penalties": {
       "oh_as_ag": [
@@ -70,11 +36,7 @@
       "minor_falsehood": -75,
       "major_falsehood": -300,
       "retraction": -50,
-      "device_compromise": -15,
-      "lost_dispute_stake": -15,
-      "lost_jury_stake": -10,
-      "lost_appeal_stake": -25,
-      "appeal_restore_percent": 50
+      "device_compromise": -15
     },
     "jury": {
       "dispute_stake": 15,
@@ -91,7 +53,6 @@
       "jury_min_reveals": 5,
       "jury_max_same_country": 3,
       "appeal_max_same_country": 3,
-      "jury_cooldown_days": 7,
       "expert_panel_size": 5,
       "expert_min_votes": 3,
       "jury_majority_bonus": 3,
@@ -130,18 +91,8 @@
       "high_trust_delta": 3,
       "high_trust_min": 800
     },
-    "rate_limits": {
-      "max_registrations_per_day": 50,
-      "max_verifications_given_per_day": 5,
-      "max_verifications_given_per_month": 30,
-      "duplicate_perceptual_threshold": 0.9
-    },
     "prescan": {
       "default": 0.85,
-      "conversational": 0.82,
-      "creative": 0.87,
-      "academic": 0.92,
-      "legal": 0.93,
       "floor": 0.8,
       "ceiling": 0.94,
       "tier_thresholds": {
@@ -256,10 +207,7 @@
       "peer_announce_protocol": "/tip/peer-announce/1.0.0",
       "snapshot_length_prefix_bytes": 4,
       "snapshot_max_frame_bytes": 16777216,
-      "score_cache_ttl_seconds": 21600,
       "revocation_cascade_days": 90,
-      "warrant_canary_max_days": 90,
-      "canary_advisory_window_days": 30,
       "origin_grace_period_hours": 24
     }
   }
