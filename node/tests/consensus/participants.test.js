@@ -34,7 +34,7 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, shake256 } = require(SHARED + "/crypto");
 const { initDAG } = require(path.join(SRC, "dag"));
-const { getGenesisPayload } = require(path.join(SRC, "genesis"));
+const { getGenesisPayload, getGenesisCommittee } = require(path.join(SRC, "genesis"));
 const {
   getActiveCommittee,
   computeNextRotationCommittee,
@@ -43,7 +43,10 @@ const {
 
 beforeAll(async () => { await initCrypto(); });
 
-const FOUNDING_NODE_ID = getGenesisPayload().founding_node.node_id;
+const FOUNDING_NODE_ID = getGenesisPayload().founding_nodes[0].node_id;
+// The full genesis committee (every founding node), sorted. Genesis members are
+// admitted from round 1 and are exempt from the participation threshold.
+const GENESIS_IDS = [...getGenesisCommittee()].sort();
 
 function _setup() {
   return initDAG({ inMemory: true });
@@ -104,8 +107,8 @@ describe("getActiveCommittee — committee_history lookup", () => {
     });
 
     // Round 50 is before rotation 1's effective_round=100, so it falls
-    // back to rotation 0 (genesis). Genesis committee = [founding_node].
-    expect(getActiveCommittee(dag, 50)).toEqual([FOUNDING_NODE_ID]);
+    // back to rotation 0 (the full genesis committee).
+    expect(getActiveCommittee(dag, 50)).toEqual(GENESIS_IDS);
     expect(getActiveCommittee(dag, 100)).toEqual([FOUNDING_NODE_ID, "tip://node/a"].sort());
     expect(getActiveCommittee(dag, 150)).toEqual([FOUNDING_NODE_ID, "tip://node/a"].sort());
     expect(getActiveCommittee(dag, 200)).toEqual(
@@ -150,7 +153,7 @@ describe("getActiveCommittee — committee_history lookup", () => {
     // genesis bootstrap). For this test we just don't call _seedRotation.
 
     const got = getActiveCommittee(dag, 100);
-    expect(got).toEqual([FOUNDING_NODE_ID]);
+    expect(got).toEqual(GENESIS_IDS);
     expect(got).not.toContain("tip://node/a");
     expect(got).not.toContain("tip://node/b");
   });
@@ -341,8 +344,8 @@ describe("rotation-period derivation — deterministic across nodes", () => {
     const a = computeNextRotationCommittee(dagA, 1);
     const b = computeNextRotationCommittee(dagB, 1);
     expect(a.map(m => m.node_id)).toEqual(b.map(m => m.node_id));
-    // Both admit founding + a (above threshold), exclude b (below)
-    expect(a.map(m => m.node_id)).toEqual([FOUNDING_NODE_ID, "tip://node/a"].sort());
+    // Both admit the genesis members (exempt) + a (above threshold), exclude b (below).
+    expect(a.map(m => m.node_id)).toEqual([...GENESIS_IDS, "tip://node/a"].sort());
   });
 });
 
@@ -351,15 +354,15 @@ describe("rotation-period derivation — deterministic across nodes", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe("computeNextRotationCommittee — bootstrap exception (solo finishing rotation)", () => {
   test("solo finishing rotation admits all registered+active nodes regardless of participation", () => {
-    // initDAG seeds rotation 0 with committee=[founding_node] (size=1).
-    // No participation is possible in solo mode because solo anchor walks
-    // only visit the single leader's cert chain. Bootstrap exception fires
-    // when _finishingSize === 1, admitting all registered+active nodes so
-    // the cluster can expand beyond single-node mode.
+    // Bootstrap exception fires when the finishing rotation had a single member:
+    // no participation is possible in solo mode (the solo anchor walk only
+    // visits the leader's own cert chain), so all registered+active nodes are
+    // admitted to let the cluster expand beyond single-node mode.
     const dag = _setup();
     _seedNodes(dag, ["tip://node/new1", "tip://node/new2"]);
-    // rotation 0 committee=[founding_node] is already written by initDAG.
-    // No participation seeded for any of the new nodes.
+    // Pin rotation 0 to a SOLO committee (overwrite the multi-node genesis) so
+    // _finishingSize === 1 and the bootstrap exception fires.
+    _seedRotation(dag, { rotation_number: 0, effective_round: 0, committee: [FOUNDING_NODE_ID] });
 
     const next = computeNextRotationCommittee(dag, 0);
     const ids = next.map(m => m.node_id);
@@ -403,7 +406,7 @@ describe("getNodeCount", () => {
       node_id: "tip://node/c", name: "c", public_key: shake256("tip://node/c"),
       status: "suspended", registered_at: 1767225600000,
     });
-    // a, b, plus genesis founding_node from initDAG = 3
-    expect(getNodeCount(dag)).toBe(3);
+    // a, b (active) + the genesis founding nodes from initDAG; c is suspended.
+    expect(getNodeCount(dag)).toBe(2 + GENESIS_IDS.length);
   });
 });

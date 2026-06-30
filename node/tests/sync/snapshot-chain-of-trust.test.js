@@ -49,7 +49,12 @@ beforeAll(async () => {
   await loadTypes();
 });
 
-const FOUNDING = getGenesisPayload().founding_node;
+const FOUNDING = getGenesisPayload().founding_nodes[0];
+// The full genesis committee, sorted by node_id to match how the bootstrap +
+// _verifyRotationChain canonicalise rotation 0.
+const GENESIS_COMMITTEE = (getGenesisPayload().founding_nodes || [])
+  .map((fn) => ({ node_id: fn.node_id, public_key: fn.public_key }))
+  .sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
 
 // We don't have the founding_node's private key (it's only public-key in
 // genesis), so multi-rotation tests build a chain by anchoring at the
@@ -70,7 +75,7 @@ function _handler() {
   });
 }
 
-function _genesisRotation(committee = [{ node_id: FOUNDING.node_id, public_key: FOUNDING.public_key }]) {
+function _genesisRotation(committee = GENESIS_COMMITTEE) {
   return {
     rotation_number: 0,
     effective_round: 0,
@@ -134,29 +139,31 @@ describe("_verifyRotationChain — genesis rotation rejection paths", () => {
     expect(() => h._verifyRotationChain([rot])).toThrow(/no signers or signatures/);
   });
 
-  test("genesis rotation with committee size != 1 → reject", () => {
+  test("genesis rotation with the wrong committee size → reject", () => {
     const h = _handler();
     const rot = _genesisRotation([
-      { node_id: FOUNDING.node_id, public_key: FOUNDING.public_key },
+      ...GENESIS_COMMITTEE,
       { node_id: "tip://node/extra", public_key: "extra-pubkey" },
     ]);
-    expect(() => h._verifyRotationChain([rot])).toThrow(/exactly \[founding_node\]/);
+    expect(() => h._verifyRotationChain([rot])).toThrow(/does not match LOCAL genesis committee/);
   });
 
-  test("genesis rotation with mismatched node_id → reject", () => {
+  test("genesis rotation with a mismatched node_id → reject", () => {
     const h = _handler();
     const rot = _genesisRotation([
-      { node_id: "tip://node/attacker", public_key: FOUNDING.public_key },
+      { ...GENESIS_COMMITTEE[0], node_id: "tip://node/attacker" },
+      ...GENESIS_COMMITTEE.slice(1),
     ]);
-    expect(() => h._verifyRotationChain([rot])).toThrow(/does not match LOCAL genesis founding_node/);
+    expect(() => h._verifyRotationChain([rot])).toThrow(/does not match LOCAL genesis committee/);
   });
 
-  test("genesis rotation with mismatched pubkey → reject", () => {
+  test("genesis rotation with a mismatched pubkey → reject", () => {
     const h = _handler();
     const rot = _genesisRotation([
-      { node_id: FOUNDING.node_id, public_key: "deadbeef".repeat(8) },
+      { ...GENESIS_COMMITTEE[0], public_key: "deadbeef".repeat(8) },
+      ...GENESIS_COMMITTEE.slice(1),
     ]);
-    expect(() => h._verifyRotationChain([rot])).toThrow(/does not match LOCAL genesis founding_node/);
+    expect(() => h._verifyRotationChain([rot])).toThrow(/does not match LOCAL genesis committee/);
   });
 });
 
@@ -202,8 +209,10 @@ describe("_verifyRotationChain — return value drives chain-anchored ack pubkey
     const result = h._verifyRotationChain([rot0]);
     expect(result).toHaveLength(1);
     expect(result[0].rotation_number).toBe(0);
-    expect(result[0].committee[0].node_id).toBe(FOUNDING.node_id);
-    expect(result[0].committee[0].public_key).toBe(FOUNDING.public_key);
+    expect(result[0].committee).toHaveLength(GENESIS_COMMITTEE.length);
+    const founding = result[0].committee.find((m) => m.node_id === FOUNDING.node_id);
+    expect(founding).toBeTruthy();
+    expect(founding.public_key).toBe(FOUNDING.public_key);
   });
 });
 
@@ -244,6 +253,6 @@ describe("_verifyRotationChain — synthetic-snapshot attack rejected at genesis
     });
 
     const h = _handler();
-    expect(() => h._verifyRotationChain([rot0, rot1])).toThrow(/does not match LOCAL genesis founding_node/);
+    expect(() => h._verifyRotationChain([rot0, rot1])).toThrow(/does not match LOCAL genesis committee/);
   });
 });
