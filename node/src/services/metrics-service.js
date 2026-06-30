@@ -489,14 +489,21 @@ function antiEntropySection(s) {
 }
 
 function merkleRootSection(s) {
-  if (!s.merkleRoot) return "";
-  // Info-style metric: value is always 1; the hex root is the label.
+  if (!s.merkleRoot && !s.stateMerkleRoot) return "";
+  // Info-style metrics: value is always 1; the hex root is the label.
   // Cardinality is bounded — old roots are forgotten when new ones emit.
-  return [
-    `# HELP tip_cert_merkle_root_info Current certificate-DAG Merkle root (hex, short). Label-based info metric.`,
-    `# TYPE tip_cert_merkle_root_info gauge`,
-    line("tip_cert_merkle_root_info", 1, { root: String(s.merkleRoot).slice(0, 16) }),
-  ].join("\n");
+  const out = [];
+  if (s.merkleRoot) {
+    out.push(`# HELP tip_cert_merkle_root_info Current certificate-DAG Merkle root (hex, short). Advisory sync probe; expected to differ across nodes at the frontier/GC edges.`);
+    out.push(`# TYPE tip_cert_merkle_root_info gauge`);
+    out.push(line("tip_cert_merkle_root_info", 1, { root: String(s.merkleRoot).slice(0, 16) }));
+  }
+  if (s.stateMerkleRoot) {
+    out.push(`# HELP tip_state_merkle_root_info Latest committed (2f+1-signed) state_merkle_root (hex, short). Consensus-critical: must match across nodes at the same committed round.`);
+    out.push(`# TYPE tip_state_merkle_root_info gauge`);
+    out.push(line("tip_state_merkle_root_info", 1, { root: String(s.stateMerkleRoot).slice(0, 16) }));
+  }
+  return out.join("\n");
 }
 
 /**
