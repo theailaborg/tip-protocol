@@ -9,10 +9,20 @@
     "url": "https://vp.theailab.org",
     "email": "trust@theailab.org"
   },
-  "founding_node": {
-    "tag": "primary-node",
-    "name": "The AI Lab TIP Node"
-  },
+  "founding_nodes": [
+    {
+      "tag": "primary-node",
+      "name": "The AI Lab TIP Node"
+    },
+    {
+      "tag": "secondary-node",
+      "name": "The AI Lab TIP Node 2"
+    },
+    {
+      "tag": "tertiary-node",
+      "name": "The AI Lab TIP Node 3"
+    }
+  ],
   "founding_members": [
     {
       "tag": "ai-lab",

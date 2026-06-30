@@ -1113,12 +1113,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       return [];
     }
 
-    // Local trust anchor — read genesis founding_node from THIS node's
-    // binary, not the snapshot. This is the cryptographic root that
-    // breaks the chicken-and-egg in fresh-joiner verification.
-    const genesisFounding = getGenesisPayload().founding_node;
-    if (!genesisFounding || !genesisFounding.node_id || !genesisFounding.public_key) {
-      throw new Error("local genesis missing founding_node — can't anchor chain-of-trust");
+    // Local trust anchor: the genesis committee (founding_nodes) read from THIS
+    // node's binary, not the snapshot. This is the cryptographic root that breaks
+    // the chicken-and-egg in fresh-joiner verification. Sorted by node_id to match
+    // how _bootstrapCommitteeRotationZero canonicalises rotation 0.
+    const localGenesis = (Array.isArray(getGenesisPayload().founding_nodes) ? getGenesisPayload().founding_nodes : [])
+      .filter((fn) => fn && fn.node_id && fn.public_key)
+      .map((fn) => ({ node_id: fn.node_id, public_key: fn.public_key }))
+      .sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
+    if (localGenesis.length === 0) {
+      throw new Error("local genesis has no founding_nodes, can't anchor chain-of-trust");
     }
 
     // Sort defensively — sender ships in rotation_number order, but we
@@ -1144,9 +1148,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
 
       if (rot.rotation_number === 0) {
-        // Genesis rotation. Must match LOCAL genesis byte-for-byte on
-        // the security-critical fields (founding_node id + pubkey),
-        // and must have no signers/sigs. prev_rotation must be null.
+        // Genesis rotation. Must match the LOCAL genesis committee byte-for-byte
+        // (every founding node's id + pubkey, same canonical order), and carry no
+        // signers/sigs. prev_rotation must be null.
         if (rot.prev_rotation !== null) {
           throw new Error(`genesis rotation: prev_rotation must be null, got ${rot.prev_rotation}`);
         }
@@ -1154,18 +1158,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           || (rot.signatures || []).length !== 0) {
           throw new Error("genesis rotation: must have no signers or signatures");
         }
-        if (!Array.isArray(rot.committee) || rot.committee.length !== 1) {
-          throw new Error(`genesis rotation: committee must be exactly [founding_node], got ${rot.committee?.length} entries`);
-        }
-        const m = rot.committee[0];
-        if (!m || m.node_id !== genesisFounding.node_id || m.public_key !== genesisFounding.public_key) {
+        const peer = Array.isArray(rot.committee) ? rot.committee : [];
+        const matches = peer.length === localGenesis.length && localGenesis.every((g, idx) =>
+          peer[idx] && peer[idx].node_id === g.node_id && peer[idx].public_key === g.public_key);
+        if (!matches) {
           throw new Error(
-            `genesis rotation does not match LOCAL genesis founding_node — ` +
-            `peer claimed ${m?.node_id?.slice(0, 24)}, local has ${genesisFounding.node_id.slice(0, 24)}`
+            `genesis rotation does not match LOCAL genesis committee: ` +
+            `peer has ${peer.length} member(s), local has ${localGenesis.length}`
           );
         }
-        // Adopt genesis as the trust root.
-        trustedPubkeys[m.node_id] = m.public_key;
+        // Adopt every genesis member as a trust root.
+        for (const g of localGenesis) trustedPubkeys[g.node_id] = g.public_key;
         continue;
       }
 

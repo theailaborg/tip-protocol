@@ -128,7 +128,7 @@ function embedProtocolConstants() {
 // Founding roster (the authored source of truth); seed mints keys for these.
 const GENESIS_MEMBERS = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "genesis-members.json"), "utf8"));
 const FOUNDING_VP_DEF = GENESIS_MEMBERS.founding_vp;
-const FOUNDING_NODE_DEF = GENESIS_MEMBERS.founding_node;
+const FOUNDING_NODES_DEF = GENESIS_MEMBERS.founding_nodes;
 const FOUNDING_VP_TEMPLATE = Object.freeze({
   name: FOUNDING_VP_DEF.name,
   short_name: FOUNDING_VP_DEF.short_name,
@@ -430,7 +430,7 @@ async function mintGenesisBlock(vpKeypair) {
     signature,
     environment: "production",
     founding_vp: updatedPayload.founding_vp,
-    founding_node: updatedPayload.founding_node,
+    founding_nodes: updatedPayload.founding_nodes,
     genesis_ring: updatedPayload.genesis_ring,
     genesis_ring_keys: updatedPayload.genesis_ring_keys,
     genesis_tx_signature: existing.genesis_tx_signature,
@@ -446,47 +446,45 @@ async function mintGenesisBlock(vpKeypair) {
 }
 
 // ─── Direct-mode DAG setup ──────────────────────────────────────────────────
-let _dag = null, _scoring = null, _nodeKp = null;
+let _dag = null, _scoring = null, _nodeKp = null, _foundingNodeKps = [];
 
 function initDirectDAG(vpKeypair) {
   process.env.ZK_SKIP_VERIFY = "true";
 
-  // Reuse the founding-node keypair across re-seeds the same way we cache
-  // the VP and founder member keys. The node's public key is embedded in
-  // genesis.js as `founding_node`, so a fresh keypair would shift node_id
-  // → shift the founding_node blob → shift the genesis hash. Reading the
-  // cached file keeps the genesis hash stable across re-seeds.
-  // The companion .tip.json in genesis-data/backups/ is still written at
-  // the end of seed.js; that's the operator-facing distribution copy.
+  // One keypair per founding node, cached per tag in founding-node-keys.json.
+  // Reuse keeps node_id (and thus genesis_hash) stable across re-seeds; a tag
+  // with no cached key gets a fresh one (e.g. newly-added founding nodes).
   const nodeKeysFile = path.join(DATA_DIR, "founding-node-keys.json");
-  const NODE_TAG = FOUNDING_NODE_DEF.tag;
   const cachedNodes = loadCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES);
-  const cachedNode = cachedNodes?.get(NODE_TAG);
-  if (cachedNode?.public_key && cachedNode?.private_key) {
-    _nodeKp = {
-      algorithm: "ML-DSA-65",
-      publicKey: cachedNode.public_key,
-      privateKey: cachedNode.private_key,
-    };
-    warn(`founding-node-keys.json already exists — reusing keypair for tag "${NODE_TAG}"`);
-  } else {
-    _nodeKp = generateMLDSAKeypair();
-    writeCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES, [{
-      tag: NODE_TAG,
-      name: FOUNDING_NODE_DEF.name,
-      id: generateNodeId(_nodeKp.publicKey),
-      public_key: _nodeKp.publicKey,
-      private_key: _nodeKp.privateKey,
-      created_at: nowMs(),
-      // approving_vp_tag references the matching entry in founding-vp-keys.json
+  _foundingNodeKps = [];
+  const entries = [];
+  for (const def of FOUNDING_NODES_DEF) {
+    const cached = cachedNodes?.get(def.tag);
+    let kp;
+    if (cached?.public_key && cached?.private_key) {
+      kp = { algorithm: "ML-DSA-65", publicKey: cached.public_key, privateKey: cached.private_key };
+      warn(`Reusing cached keypair for founding node tag "${def.tag}"`);
+    } else {
+      kp = generateMLDSAKeypair();
+      ok(`Generated keypair for founding node tag "${def.tag}"`);
+    }
+    _foundingNodeKps.push({ def, kp });
+    entries.push({
+      tag: def.tag, name: def.name, id: generateNodeId(kp.publicKey),
+      public_key: kp.publicKey, private_key: kp.privateKey,
+      created_at: cached?.created_at || nowMs(),
       approving_vp_tag: "primary-vp",
-    }]);
-    ok("Founding node keypair generated and saved to founding-node-keys.json");
+    });
   }
+  writeCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES, entries);
 
-  // founding_node must be in genesis.json before initDAG: the DAG bootstrap
-  // builds committee rotation 0 from it. On a fresh seed it isn't embedded yet.
-  embedFoundingNode(vpKeypair);
+  // The seed machine operates the PRIMARY founding node (first in the roster);
+  // its key goes to .env. The rest are distributed to their operators.
+  _nodeKp = _foundingNodeKps[0].kp;
+
+  // founding_nodes must be in genesis.json before initDAG: the DAG bootstrap
+  // builds committee rotation 0 + the NODE_REGISTERED txs from it.
+  embedFoundingNodes(vpKeypair);
 
   const cfg = loadConfig();
   // In-memory DAG: seed.js only uses the DAG as scratch space to validate
@@ -553,39 +551,40 @@ async function registerFoundingVP(vpKeypair) {
   return { vpRecord, vpKeypair };
 }
 
-// ─── Embed founding_node into genesis.json (must precede initDAG) ─────────────
-// initDAG bootstraps committee rotation 0 from genesis.founding_node, so the
-// node identity + council signature must be written into genesis.json first.
-// council_signature is deterministic, keeping genesis_hash stable across re-seeds.
-function embedFoundingNode(vpKeypair) {
-  const nodeId = generateNodeId(_nodeKp.publicKey);
-  const nodeName = FOUNDING_NODE_DEF.name;
+// ─── Embed founding_nodes into genesis.json (must precede initDAG) ────────────
+// initDAG bootstraps committee rotation 0 + the NODE_REGISTERED txs from
+// genesis.founding_nodes, so every node identity + council signature must be
+// written first. council_signature is deterministic, keeping genesis_hash stable
+// across re-seeds. Sorted by node_id to match dag's canonical rotation-0 order.
+function embedFoundingNodes(vpKeypair) {
   const vpId = require("../node/src/genesis").getFoundingVP().vp_id;
-  // GH #60: algorithm is in the canonical signed bytes — the VP attests the
-  // (pubkey, algorithm) pair. Alphabetical canonical order matching
-  // schemas/_registry.js NODE_REGISTERED.
-  const nodeFields = {
-    algorithm: "ml-dsa-65",
-    approving_vp_id: vpId,
-    name: nodeName,
-    public_key: _nodeKp.publicKey,
-  };
-  const councilSig = signBody(nodeFields, vpKeypair.privateKey, { deterministic: true });
-  const foundingNodeData = {
-    node_id: nodeId,
-    name: nodeName,
-    public_key: _nodeKp.publicKey,
-    council_signature: councilSig,
-    approving_vp_id: vpId,
-  };
-  _patchGenesisJson({ founding_node: foundingNodeData });  // also clears genesis require cache
-  ok("Embedded founding node into genesis.json");
+  const foundingNodes = _foundingNodeKps.map(({ def, kp }) => {
+    // GH #60: algorithm is in the canonical signed bytes (the VP attests the
+    // pubkey + algorithm pair). Alphabetical canonical order matching
+    // schemas/_registry.js NODE_REGISTERED.
+    const nodeFields = {
+      algorithm: "ml-dsa-65",
+      approving_vp_id: vpId,
+      name: def.name,
+      public_key: kp.publicKey,
+    };
+    return {
+      node_id: generateNodeId(kp.publicKey),
+      name: def.name,
+      public_key: kp.publicKey,
+      council_signature: signBody(nodeFields, vpKeypair.privateKey, { deterministic: true }),
+      approving_vp_id: vpId,
+    };
+  }).sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
+  _patchGenesisJson({ founding_nodes: foundingNodes });  // also clears genesis require cache
+  ok(`Embedded ${foundingNodes.length} founding node(s) into genesis.json`);
 }
 
-// ─── Step 4b: Confirm seed node + write operator .env ────────────────────────
-// founding_node was embedded before initDAG, so _writeGenesisBlock already wrote
-// the NODE_REGISTERED tx + node row during the genesis bootstrap (same path as
-// `npm start`). Here we confirm it landed and write the node keys to .env.
+// ─── Step 4b: Confirm seed nodes + write operator .env ───────────────────────
+// founding_nodes were embedded before initDAG, so _writeGenesisBlock already
+// wrote the NODE_REGISTERED tx + node row for each during the genesis bootstrap
+// (same path as `npm start`). Here we confirm they landed and write the PRIMARY
+// node's keys to .env (this machine operates founding_nodes[0]).
 async function registerSeedNode() {
   info("Confirming seed node registration...");
 
@@ -594,11 +593,16 @@ async function registerSeedNode() {
     return null;
   }
 
-  const fn = require("../node/src/genesis").getGenesisPayload().founding_node;
-  if (!fn || !fn.node_id) throw new Error("founding_node not embedded before registerSeedNode — check initDirectDAG order");
-  if (!_dag.getNode(fn.node_id)) throw new Error(`Founding node ${fn.node_id} not in DAG after genesis bootstrap`);
+  const fns = require("../node/src/genesis").getGenesisPayload().founding_nodes;
+  if (!Array.isArray(fns) || fns.length === 0) throw new Error("founding_nodes not embedded before registerSeedNode (check initDirectDAG order)");
+  for (const fn of fns) {
+    if (!_dag.getNode(fn.node_id)) throw new Error(`Founding node ${fn.node_id} not in DAG after genesis bootstrap`);
+  }
 
-  // Write node keys to .env
+  // This machine operates the PRIMARY founding node (its keypair is _nodeKp).
+  const primary = fns.find((n) => n.public_key === _nodeKp.publicKey) || fns[0];
+
+  // Write the primary node's keys to .env
   const envFile = path.resolve(__dirname, "../.env");
   if (fs.existsSync(envFile)) {
     let envSrc = fs.readFileSync(envFile, "utf8");
@@ -614,9 +618,9 @@ async function registerSeedNode() {
     ok("Node keys + log levels written to .env");
   }
 
-  ok(`Seed node registered: ${fn.node_id}`);
-  label("Node ID", fn.node_id);
-  return { nodeId: fn.node_id, name: fn.name, publicKey: fn.public_key };
+  ok(`Seed nodes registered: ${fns.length} (primary ${primary.node_id})`);
+  label("Primary Node ID", primary.node_id);
+  return { nodeId: primary.node_id, name: primary.name, publicKey: primary.public_key };
 }
 
 // ─── Step 5: Create founding identities (Genesis Ring) ───────────────────────
