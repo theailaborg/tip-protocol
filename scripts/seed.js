@@ -735,7 +735,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
     const identity = {
       tag: member.tag,
       name: member.name,
-      role: member.role,
       tip_id: regResult.tip_id,
       tip_id_type: memberType,
       creator_name: member.name,
@@ -750,7 +749,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
     ok(`  ${T.bold}${member.name}${T.reset}`);
     label("    TIP-ID", identity.tip_id);
     label("    Score", `${identity.score} / 1000 (${getTier(identity.score).label})`);
-    label("    Role", member.role);
   }
 
   info(`Genesis Ring: ${identities.length} founding members created`);
@@ -923,7 +921,6 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
       tip_id: i.tip_id,
       tip_id_type: i.tip_id_type || "personal",
       name: i.name,
-      role: i.role,
       region: "US",
       vp_tag: "primary-vp",
       founding: true,
@@ -946,7 +943,6 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
     tip_id: i.tip_id,
     tip_id_type: i.tip_id_type || "personal",
     name: i.name,
-    role: i.role,
     region: "US",
     vp_tag: "primary-vp",
     public_key: i.public_key,

@@ -1,5 +1,5 @@
 {
-  "_comment": "Founding roster — the STABLE, hand-authored identities of the genesis set. The seed script (scripts/seed.js) reads this to know WHO to mint keys for, generates a keypair per entry, and writes the minted public keys / tip_ids / signatures into genesis.json. Edit this file to change the founding set; never hand-edit the minted output in genesis.json.",
+  "_comment": "Founding roster: the STABLE, hand-authored identities of the genesis set. The seed script (scripts/seed.js) reads this to know WHO to mint keys for, generates a keypair per entry, and writes the minted public keys / tip_ids / signatures into genesis.json. Edit this file to change the founding set; never hand-edit the minted output in genesis.json.",
   "founding_vp": {
     "tag": "primary-vp",
     "name": "The AI Lab Intelligence Unobscured, Inc.",
@@ -27,28 +27,24 @@
     {
       "tag": "ai-lab",
       "name": "The AI Lab Intelligence Unobscured, Inc.",
-      "role": "Founding Organization",
       "region": "US",
       "tip_id_type": "organization"
     },
     {
       "tag": "founder",
-      "name": "Dinesh Mendhe — Founder",
-      "role": "Founder & Sole Inventor",
+      "name": "Dinesh Mendhe",
       "region": "US",
       "tip_id_type": "personal"
     },
     {
       "tag": "cofounder-tushar",
-      "name": "Tushar Bhendarkar — Co-Founder",
-      "role": "Co-Founder & Core Engineer",
+      "name": "Tushar Bhendarkar",
       "region": "US",
       "tip_id_type": "personal"
     },
     {
       "tag": "cofounder-vishal",
-      "name": "Vishal — Co-Founder",
-      "role": "Co-Founder & Core Engineer",
+      "name": "Vishal",
       "region": "US",
       "tip_id_type": "personal"
     }
