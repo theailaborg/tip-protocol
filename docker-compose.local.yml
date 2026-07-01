@@ -1,39 +1,45 @@
-# TIP Protocol — Local 4-Node Dev Setup
+# TIP Protocol: Local 3-Node Dev Setup (the genesis founding committee)
 #
 # ── Selecting a database engine ──────────────────────────────────────────────
 # All DB connection vars are read from the project-root .env file.
-# Set these in .env (or export them) to switch engines — no compose edits needed.
+# Set these in .env (or export them) to switch engines; no compose edits needed.
 #
-#   Default (postgres) — no flags needed:
+#   Default (postgres), no flags needed:
 #     docker compose -f docker-compose.local.yml up -d
+#
+# The SAME node1/node2/node3 services connect to whichever engine .env names;
+# there are no per-engine node copies. Point them elsewhere, start that engine's
+# profile so its DB container comes up, then bring up the nodes.
 #
 #   MariaDB:
 #     Set in .env:  DB_DRIVER=mariadb  DB_HOST=mariadb
 #     Then:  docker compose -f docker-compose.local.yml --profile mariadb up -d
+#
+#   SQL Server:
+#     Set in .env:  DB_DRIVER=mssql  DB_HOST=tip-mssql  DB_PORT=1433  DB_USER=sa
+#     Then:  docker compose -f docker-compose.local.yml --profile mssql up -d
+#
+#   Oracle (needs `npm install oracledb`, not bundled, large native binary):
+#     Set in .env:  DB_DRIVER=oracle  DB_HOST=oracle  DB_PORT=1521
+#     Then:  docker compose -f docker-compose.local.yml --profile oracle up -d
 #
 #   SQLite (no DB service):
 #     Set in .env:  DB_DRIVER=sqlite
 #     Then:  docker compose -f docker-compose.local.yml up -d
 #     (Postgres starts but is idle; nodes fall back to SQLite via initDAGAsync)
 #
-#   Oracle: add DB_DRIVER=oracle DB_HOST=<host> DB_PORT=1521 to .env and run a
-#     separate Oracle Free / XE container. Install oracledb manually:
-#     npm install oracledb  (not bundled — large native binary)
-#
-# ── Fixed IPs ────────────────────────────────────────────────────────────────
-#   postgres → 172.30.0.20   (always starts)
-#   mariadb  → 172.30.0.21   (profile: mariadb)
-#   node1    → 172.30.0.10 (API :4000, P2P :4001)  — founding / seed node
-#   node2    → 172.30.0.11 (API :4100, P2P :4101)
-#   node3    → 172.30.0.12 (API :4200, P2P :4201)
-#   node4    → 172.30.0.13 (API :4300, P2P :4301)
-#   node5    → 172.30.0.14 (API :4400, P2P :4401)
-#   prometheus → 172.30.0.30 :9090  (profile: observability)
-#   grafana    → 172.30.0.31 :3030  (profile: observability)
+# ── Node fixed IPs ───────────────────────────────────────────────────────────
+# Only the nodes pin an IP; peers dial these exact addresses (TIP_PUBLIC_IP +
+# the /ip4/.../p2p/ bootstrap multiaddr in each node env file). Every other
+# service (postgres, DBs, prometheus, grafana) is reached by compose service
+# name over DNS, so they take auto-assigned IPs.
+#   node1 -> 172.30.0.10 (API :4000, P2P :4001)  founding / seed node
+#   node2 -> 172.30.0.11 (API :4100, P2P :4101)
+#   node3 -> 172.30.0.12 (API :4200, P2P :4201)
 
 services:
 
-  # ── PostgreSQL (always starts — default DB) ──────────────────────────────────
+  # ── PostgreSQL (always starts, default DB) ──────────────────────────────────
   # To use a different engine, set DB_DRIVER + DB_HOST in .env.
   # Postgres will still start but remain idle while nodes connect elsewhere.
   postgres:
@@ -56,8 +62,7 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.20
+      - tip-local
 
   # ── MariaDB (profile: mariadb) ───────────────────────────────────────────────
   # Activate with --profile mariadb and set DB_DRIVER=mariadb DB_HOST=mariadb in .env
@@ -83,8 +88,7 @@ services:
       retries: 12
       start_period: 20s
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.21
+      - tip-local
 
   # ── SQL Server 2022 (profile: mssql) ────────────────────────────────────────
   # Activate with --profile mssql and set in .env:
@@ -115,11 +119,10 @@ services:
       retries: 18
       start_period: 30s
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.23
+      - tip-local
 
   # ── Oracle Free 23ai (profile: oracle) ──────────────────────────────────────
-  # First start takes 2-3 min — wait for healthy before node1-oracle connects.
+  # First start takes 2-3 min; wait for healthy before the nodes connect.
   # APP_USER (tip) is created in FREEPDB1 with CONNECT + RESOURCE + UNLIMITED TABLESPACE.
   oracle:
     profiles: ["oracle"]
@@ -142,194 +145,9 @@ services:
       retries: 30
       start_period: 180s
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.22
+      - tip-local
 
-  # ── Node 1 — Oracle variant (profile: oracle) ────────────────────────────────
-  # Run with: docker compose --profile oracle up oracle node1-oracle -d
-  # All DB_* vars are overridden here; keys/ports/identity come from .env
-  node1-oracle:
-    profiles: ["oracle"]
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node1-oracle
-    restart: unless-stopped
-    ports:
-      - "4000:4000"
-      - "4001:4001"
-    volumes:
-      - ./data:/app/data
-      - ./node/logs/node1:/app/node/logs
-    env_file: .env
-    environment:
-      PORT: "4000"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4001"
-      TIP_PUBLIC_IP: "172.30.0.10"
-      TIP_ENABLE_MDNS: "false"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   oracle
-      DB_HOST:     oracle
-      DB_PORT:     ${DB_PORT:-1521}
-      DB_NAME:     ${DB_NAME:-tip_node1}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      oracle:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 20s
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.10
-
-  # ── Node 2 — Oracle variant (profile: oracle) ────────────────────────────────
-  node2-oracle:
-    profiles: ["oracle"]
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node2-oracle
-    restart: unless-stopped
-    ports:
-      - "4100:4100"
-      - "4101:4101"
-    volumes:
-      - ./node2-env/data:/app/data
-      - ./node/logs/node2:/app/node/logs
-    env_file: ./node2-env/node-2.env
-    environment:
-      PORT: "4100"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4101"
-      TIP_PUBLIC_IP: "172.30.0.11"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   oracle
-      DB_HOST:     oracle
-      DB_PORT:     ${DB_PORT:-1521}
-      DB_NAME:     ${DB_NAME:-tip_node2}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1-oracle:
-        condition: service_healthy
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.11
-
-  # ── Node 3 — Oracle variant (profile: oracle) ────────────────────────────────
-  node3-oracle:
-    profiles: ["oracle"]
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node3-oracle
-    restart: unless-stopped
-    ports:
-      - "4200:4200"
-      - "4201:4201"
-    volumes:
-      - ./node3-env/data:/app/data
-      - ./node/logs/node3:/app/node/logs
-    env_file: ./node3-env/node-3.env
-    environment:
-      PORT: "4200"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4201"
-      TIP_PUBLIC_IP: "172.30.0.12"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   oracle
-      DB_HOST:     oracle
-      DB_PORT:     ${DB_PORT:-1521}
-      DB_NAME:     ${DB_NAME:-tip_node3}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1-oracle:
-        condition: service_healthy
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.12
-
-  # ── Node 4 — Oracle variant (profile: oracle) ────────────────────────────────
-  node4-oracle:
-    profiles: ["oracle"]
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node4-oracle
-    restart: unless-stopped
-    ports:
-      - "4300:4300"
-      - "4301:4301"
-    volumes:
-      - ./node4-env/data:/app/data
-      - ./node/logs/node4:/app/node/logs
-    env_file: ./node4-env/node-4.env
-    environment:
-      PORT: "4300"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4301"
-      TIP_PUBLIC_IP: "172.30.0.13"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   oracle
-      DB_HOST:     oracle
-      DB_PORT:     ${DB_PORT:-1521}
-      DB_NAME:     ${DB_NAME:-tip_node4}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1-oracle:
-        condition: service_healthy
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.13
-
-# ── Node 5 — Oracle variant (profile: oracle) ────────────────────────────────
-  node5-oracle:
-    profiles: ["oracle"]
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node5-oracle
-    restart: unless-stopped
-    ports:
-      - "4400:4400"
-      - "4401:4401"
-    volumes:
-      - ./node5-env/data:/app/data
-      - ./node/logs/node5:/app/node/logs
-    env_file: ./node5-env/node-5.env
-    environment:
-      PORT: "4400"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4401"
-      TIP_PUBLIC_IP: "172.30.0.14"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   oracle
-      DB_HOST:     oracle
-      DB_PORT:     ${DB_PORT:-1521}
-      DB_NAME:     ${DB_NAME:-tip_node5}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1-oracle:
-        condition: service_healthy
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.14
-
-  # ── Node 1 — founding / seed node ────────────────────────────────────────────
+  # ── Node 1 - founding / seed node ────────────────────────────────────────────
   node1:
     build:
       context: .
@@ -344,33 +162,18 @@ services:
     volumes:
       - ./data:/app/data
       - ./node/logs/node1:/app/node/logs
+      # Read-only key source: node reads its .tip.json via TIP_NODE_CREDENTIALS_FILE.
+      # In prod this is an orchestrator-injected secret, not a bind mount.
+      - ./genesis-data/backups:/app/genesis-data/backups:ro
+    # All config (identity, IP, DB, ports, log/verify) comes from the env_file.
     env_file: .env
-    environment:
-      PORT: "4000"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4001"
-      TIP_PUBLIC_IP: "172.30.0.10"
-      TIP_ENABLE_MDNS: "false"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      # Per-IP rate-limit relaxed for local dev / UAT runs that
-      # intentionally fire many requests from one host. Prod default
-      # (200/min) is enforced via env absence; override here keeps
-      # local UAT scripts (scripts/uat-signature-unification.js) green.
-      TIP_RATE_LIMIT_MAX: "10000"
-      # ── DB — reads from .env; falls back to postgres defaults ─────────────
-      DB_DRIVER:   ${DB_DRIVER:-postgres}
-      DB_HOST:     ${DB_HOST:-postgres}
-      DB_NAME:     ${DB_NAME:-tip_node1}
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
+    # Reach shared-postgres on the host (DB_HOST=host.docker.internal in the env_file).
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${PORT:-4000}/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -390,21 +193,10 @@ services:
     volumes:
       - ./node2-env/data:/app/data
       - ./node/logs/node2:/app/node/logs
+      - ./genesis-data/backups:/app/genesis-data/backups:ro
+    # All config comes from the env_file.
     env_file: ./node2-env/node-2.env
-    environment:
-      PORT: "4100"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4101"
-      TIP_PUBLIC_IP: "172.30.0.11"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   ${DB_DRIVER:-postgres}
-      DB_HOST:     ${DB_HOST:-postgres}
-      DB_NAME:     tip_node2
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       node1:
         condition: service_started
@@ -423,93 +215,16 @@ services:
     volumes:
       - ./node3-env/data:/app/data
       - ./node/logs/node3:/app/node/logs
+      - ./genesis-data/backups:/app/genesis-data/backups:ro
+    # All config comes from the env_file.
     env_file: ./node3-env/node-3.env
-    environment:
-      PORT: "4200"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4201"
-      TIP_PUBLIC_IP: "172.30.0.12"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   ${DB_DRIVER:-postgres}
-      DB_HOST:     ${DB_HOST:-postgres}
-      DB_NAME:     tip_node3
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       node1:
         condition: service_started
     networks:
       tip-local:
         ipv4_address: 172.30.0.12
-
-  # ── Node 4 ───────────────────────────────────────────────────────────────────
-  node4:
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node4
-    restart: unless-stopped
-    ports:
-      - "4300:4300"
-      - "4301:4301"
-    volumes:
-      - ./node4-env/data:/app/data
-      - ./node/logs/node4:/app/node/logs
-    env_file: ./node4-env/node-4.env
-    environment:
-      PORT: "4300"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4301"
-      TIP_PUBLIC_IP: "172.30.0.13"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   ${DB_DRIVER:-postgres}
-      DB_HOST:     ${DB_HOST:-postgres}
-      DB_NAME:     tip_node4
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1:
-        condition: service_started
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.13
-
-  # ── Node 5 ───────────────────────────────────────────────────────────────────
-  node5:
-    image: tip-protocol/node:2.0.0
-    container_name: tip-node5
-    restart: unless-stopped
-    ports:
-      - "4400:4400"
-      - "4401:4401"
-    volumes:
-      - ./node5-env/data:/app/data
-      - ./node/logs/node5:/app/node/logs
-    env_file: ./node5-env/node-5.env
-    environment:
-      PORT: "4400"
-      HOST: "0.0.0.0"
-      TIP_P2P_PORT: "4401"
-      TIP_PUBLIC_IP: "172.30.0.14"
-      TIP_DATA_DIR: /app/data
-      TIP_CONSOLE_LEVEL: info
-      TIP_LOG_LEVEL: info
-      ZK_SKIP_VERIFY: "true"
-      DB_DRIVER:   ${DB_DRIVER:-postgres}
-      DB_HOST:     ${DB_HOST:-postgres}
-      DB_NAME:     tip_node5
-      DB_USER:     ${DB_USER:-tipuser}
-      DB_PASSWORD: ${DB_PASSWORD:-Tip_Password_2025}
-    depends_on:
-      node1:
-        condition: service_started
-    networks:
-      tip-local:
-        ipv4_address: 172.30.0.14
 
   # ── Prometheus (profile: observability) ─────────────────────────────────────
   prometheus:
@@ -528,8 +243,7 @@ services:
       - "--web.console.libraries=/etc/prometheus/console_libraries"
       - "--web.console.templates=/etc/prometheus/consoles"
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.30
+      - tip-local
 
   # ── Grafana (profile: observability) ────────────────────────────────────────
   grafana:
@@ -551,8 +265,7 @@ services:
     depends_on:
       - prometheus
     networks:
-      tip-local:
-        ipv4_address: 172.30.0.31
+      - tip-local
 
 volumes:
   tip-postgres-data:
