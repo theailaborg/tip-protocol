@@ -126,6 +126,11 @@
       "high_trust_delta": 3,
       "high_trust_min": 800
     },
+    "rate_limits": {
+      "max_registrations_per_day": 50,
+      "max_verifications_given_per_day": 5,
+      "max_verifications_given_per_month": 30
+    },
     "prescan": {
       "default": 0.85,
       "conversational": 0.82,
