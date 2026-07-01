@@ -41,6 +41,8 @@
     "lint:node": "cd node && npx eslint src/ --ext .js",
     "seed": "node --experimental-vm-modules scripts/seed.js",
     "seed:fresh": "rm -rf data genesis-data/backups genesis-data/temp-users && rm -f genesis-data/*-keys.json genesis-data/genesis.json genesis-data/seed-output.json genesis-data/*.db genesis-data/*.db-* && node --experimental-vm-modules scripts/seed.js",
+    "seed:local": "node --experimental-vm-modules scripts/seed.js --local-cluster",
+    "seed:fresh:local": "rm -rf data genesis-data/backups genesis-data/temp-users node2-env node3-env && rm -f genesis-data/*-keys.json genesis-data/genesis.json genesis-data/seed-output.json genesis-data/*.db genesis-data/*.db-* && node --experimental-vm-modules scripts/seed.js --local-cluster",
     "seed:python": "cd python && python -m scripts.seed",
     "start": "node node/src/index.js",
     "dev": "node --watch node/src/index.js"
