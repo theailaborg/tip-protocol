@@ -4,7 +4,7 @@
  * (§4 + #34 — chain-of-trust foundation).
  *
  * Covers:
- *  - Genesis bootstrap (rotation 0 written from genesis.founding_node)
+ *  - Genesis bootstrap (rotation 0 written from the genesis committee)
  *  - Bootstrap idempotency (re-opening doesn't duplicate, backfills existing DBs)
  *  - Accessor correctness: save/get/at-round/latest/iterate
  *  - INSERT OR IGNORE semantics on duplicate rotation_number
@@ -69,7 +69,7 @@ function _rotation(rotationNumber, effectiveRound, committee, opts = {}) {
 }
 
 describe("committee_history — genesis bootstrap (rotation 0)", () => {
-  test("MemoryStore: bootstrap writes rotation 0 from genesis.founding_node", () => {
+  test("MemoryStore: bootstrap writes rotation 0 from the genesis committee", () => {
     const dag = initDAG({ inMemory: true });
     const rot0 = dag.getCommitteeRotation(0);
 
@@ -80,29 +80,32 @@ describe("committee_history — genesis bootstrap (rotation 0)", () => {
     expect(rot0.signer_node_ids).toEqual([]);
     expect(rot0.signatures).toEqual([]);
 
-    // Committee carries [{node_id, public_key}] — pubkeys must be present
-    // for the chain-of-trust walker to verify rotation 1 against genesis.
-    expect(rot0.committee).toHaveLength(1);
-    expect(rot0.committee[0]).toHaveProperty("node_id");
-    expect(rot0.committee[0]).toHaveProperty("public_key");
-
-    const founding = getGenesisPayload().founding_node;
-    expect(rot0.committee[0].node_id).toBe(founding.node_id);
-    expect(rot0.committee[0].public_key).toBe(founding.public_key);
+    // Committee = the full founding_nodes set, sorted by node_id, pubkeys inline
+    // so the chain-of-trust walker can verify rotation 1 against genesis.
+    const founding = getGenesisPayload().founding_nodes;
+    expect(rot0.committee).toHaveLength(founding.length);
+    for (const m of rot0.committee) {
+      expect(m).toHaveProperty("node_id");
+      expect(m).toHaveProperty("public_key");
+    }
+    const ids = rot0.committee.map((m) => m.node_id);
+    expect(ids).toEqual([...ids].sort());
+    expect(new Set(ids)).toEqual(new Set(founding.map((f) => f.node_id)));
 
     expect(rot0.committed_at).toBe(GENESIS_TIMESTAMP);
   });
 
-  test("SQLiteStore: bootstrap writes rotation 0 from genesis.founding_node", () => {
+  test("SQLiteStore: bootstrap writes rotation 0 from the genesis committee", () => {
     const dbPath = _tmpDbPath();
     try {
       const dag = initDAG({ dbPath });
       const rot0 = dag.getCommitteeRotation(0);
-      const founding = getGenesisPayload().founding_node;
+      const founding = getGenesisPayload().founding_nodes;
 
       expect(rot0).not.toBeNull();
-      expect(rot0.committee[0].node_id).toBe(founding.node_id);
-      expect(rot0.committee[0].public_key).toBe(founding.public_key);
+      expect(rot0.committee).toHaveLength(founding.length);
+      expect(new Set(rot0.committee.map((m) => m.node_id)))
+        .toEqual(new Set(founding.map((f) => f.node_id)));
       dag.close();
     } finally {
       _cleanup(dbPath);
@@ -193,7 +196,7 @@ describe("committee_history — accessors", () => {
     // Rotation 1: add node-a, node-b at round 100
     // Rotation 2: add node-c at round 500
     // Rotation 3: remove node-a at round 1000
-    const founding = getGenesisPayload().founding_node;
+    const founding = getGenesisPayload().founding_nodes[0];
     const rot1Committee = [
       { node_id: founding.node_id, public_key: founding.public_key },
       { node_id: "node-a", public_key: "pubkey_a" },
@@ -295,7 +298,7 @@ describe("committee_history — accessors", () => {
     const dbPath = _tmpDbPath();
     const dag = mk(dbPath);
     try {
-      const founding = getGenesisPayload().founding_node;
+      const founding = getGenesisPayload().founding_nodes[0];
       const rot1 = _rotation(1, 100, [{ node_id: founding.node_id, public_key: founding.public_key }]);
 
       dag.saveCommitteeRotation(rot1);
@@ -373,7 +376,7 @@ describe("committee_history — store parity", () => {
       const sqlDag = initDAG({ dbPath });
 
       // Apply same sequence of writes to both
-      const founding = getGenesisPayload().founding_node;
+      const founding = getGenesisPayload().founding_nodes[0];
       const rotations = [
         _rotation(1, 100, [
           { node_id: founding.node_id, public_key: founding.public_key },

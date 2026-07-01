@@ -31,7 +31,7 @@
  *   For MVP, signature verification uses public keys FROM THE INCOMING
  *   SNAPSHOT's nodes table. A malicious snapshot could invent nodes +
  *   matching private keys — we catch this later because the genesis
- *   founding_node + genesis_ring_keys MUST be present in the snapshot
+ *   founding_nodes + genesis_ring_keys MUST be present in the snapshot
  *   (joiner verifies against its own genesis). Full "walk committee
  *   from genesis through every commit's ack_signer_ids" chain-of-trust
  *   verification is deferred; see issues.md §14 hardening.
@@ -374,7 +374,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
 
         // Phase D: committee_history rotations (§4 + #34). Every rotation
         // since genesis, in rotation_number order. The joiner walks this
-        // chain forward, anchored at LOCAL genesis founding_node, and
+        // chain forward, anchored at the LOCAL genesis committee, and
         // verifies each transition's sigs against the previously-trusted
         // committee.
         const rotationRoot = createRotationsFullRootBuilder();
@@ -618,8 +618,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       //      txs/commits roots, catches truncation/tampering of the stream)
       //   2. Cryptographic chain-of-trust — walk rotations forward from
       //      genesis, verify each transition's sigs come from the
-      //      previously-trusted committee. Anchored at LOCAL genesis
-      //      founding_node (NOT the peer-provided nodes table) — that's
+      //      previously-trusted committee. Anchored at the LOCAL genesis
+      //      committee (NOT the peer-provided nodes table), that's
       //      what closes the synthetic-snapshot attack.
       const rotationsRoot = createRotationsFullRootBuilder();
       const rotationInstallQueue = _decodeFullHistoryFrames(
@@ -736,7 +736,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         if (seen.has(signer)) continue;          // no double-counting a signer
         if (!committeeSet.has(signer)) continue; // non-committee sig doesn't count toward quorum
         // Pubkey lookup prefers the CHAIN-ANCHORED committee (cryptographically
-        // verified via _verifyRotationChain back to LOCAL genesis founding_node)
+        // verified via _verifyRotationChain back to the LOCAL genesis committee)
         // over the peer-provided nodes table. Empty chain (pre-§4 peer or
         // legacy snapshot) falls through to nodePubKeys for backwards compat —
         // those snapshots predate chain-of-trust and rely on the older trust
@@ -1088,11 +1088,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   /**
    * §4 + #34 — chain-of-trust walk for incoming snapshot rotations.
    *
-   * Anchored at LOCAL genesis founding_node (hardcoded in this node's
-   * binary, NOT from the peer-controlled snapshot). Walks rotations in
+   * Anchored at the LOCAL genesis committee (founding_nodes, hardcoded in this
+   * node's binary, NOT from the peer-controlled snapshot). Walks rotations in
    * rotation_number order:
-   *   - Rotation 0: must match local genesis (founding_node + its pubkey),
-   *     no signers/sigs (genesis IS the trust anchor).
+   *   - Rotation 0: must match the local genesis committee (every founding node
+   *     id + pubkey), no signers/sigs (genesis IS the trust anchor).
    *   - Rotation N (N>=1): must have ≥ 2f+1 sigs from the previously-
    *     trusted committee, signed over `rotation:${payload_hash}:${signer}`.
    *     payload_hash is recomputed from the canonical claim and must match.
@@ -1100,7 +1100,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    * Throws on any failure; the snapshot install is rejected atomically
    * before any state lands. This is the core defense against the
    * synthetic-snapshot attack — a fabricated chain breaks at rotation 1
-   * because the attacker can't produce founding_node's signature.
+   * because the attacker can't produce a genesis member's signature.
    */
   function _verifyRotationChain(rotations) {
     if (!Array.isArray(rotations) || rotations.length === 0) {
@@ -1113,12 +1113,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       return [];
     }
 
-    // Local trust anchor — read genesis founding_node from THIS node's
-    // binary, not the snapshot. This is the cryptographic root that
-    // breaks the chicken-and-egg in fresh-joiner verification.
-    const genesisFounding = getGenesisPayload().founding_node;
-    if (!genesisFounding || !genesisFounding.node_id || !genesisFounding.public_key) {
-      throw new Error("local genesis missing founding_node — can't anchor chain-of-trust");
+    // Local trust anchor: the genesis committee (founding_nodes) read from THIS
+    // node's binary, not the snapshot. This is the cryptographic root that breaks
+    // the chicken-and-egg in fresh-joiner verification. Sorted by node_id to match
+    // how _bootstrapCommitteeRotationZero canonicalises rotation 0.
+    const localGenesis = (Array.isArray(getGenesisPayload().founding_nodes) ? getGenesisPayload().founding_nodes : [])
+      .filter((fn) => fn && fn.node_id && fn.public_key)
+      .map((fn) => ({ node_id: fn.node_id, public_key: fn.public_key }))
+      .sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
+    if (localGenesis.length === 0) {
+      throw new Error("local genesis has no founding_nodes, can't anchor chain-of-trust");
     }
 
     // Sort defensively — sender ships in rotation_number order, but we
@@ -1144,9 +1148,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
 
       if (rot.rotation_number === 0) {
-        // Genesis rotation. Must match LOCAL genesis byte-for-byte on
-        // the security-critical fields (founding_node id + pubkey),
-        // and must have no signers/sigs. prev_rotation must be null.
+        // Genesis rotation. Must match the LOCAL genesis committee byte-for-byte
+        // (every founding node's id + pubkey, same canonical order), and carry no
+        // signers/sigs. prev_rotation must be null.
         if (rot.prev_rotation !== null) {
           throw new Error(`genesis rotation: prev_rotation must be null, got ${rot.prev_rotation}`);
         }
@@ -1154,18 +1158,17 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           || (rot.signatures || []).length !== 0) {
           throw new Error("genesis rotation: must have no signers or signatures");
         }
-        if (!Array.isArray(rot.committee) || rot.committee.length !== 1) {
-          throw new Error(`genesis rotation: committee must be exactly [founding_node], got ${rot.committee?.length} entries`);
-        }
-        const m = rot.committee[0];
-        if (!m || m.node_id !== genesisFounding.node_id || m.public_key !== genesisFounding.public_key) {
+        const peer = Array.isArray(rot.committee) ? rot.committee : [];
+        const matches = peer.length === localGenesis.length && localGenesis.every((g, idx) =>
+          peer[idx] && peer[idx].node_id === g.node_id && peer[idx].public_key === g.public_key);
+        if (!matches) {
           throw new Error(
-            `genesis rotation does not match LOCAL genesis founding_node — ` +
-            `peer claimed ${m?.node_id?.slice(0, 24)}, local has ${genesisFounding.node_id.slice(0, 24)}`
+            `genesis rotation does not match LOCAL genesis committee: ` +
+            `peer has ${peer.length} member(s), local has ${localGenesis.length}`
           );
         }
-        // Adopt genesis as the trust root.
-        trustedPubkeys[m.node_id] = m.public_key;
+        // Adopt every genesis member as a trust root.
+        for (const g of localGenesis) trustedPubkeys[g.node_id] = g.public_key;
         continue;
       }
 

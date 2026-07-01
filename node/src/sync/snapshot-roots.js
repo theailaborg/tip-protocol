@@ -160,7 +160,7 @@ function canonCommit(c) {
  *
  * Determinism contract: committee and signer_node_ids must be sorted
  * by caller before save (commit-handler enforces this for new rotations
- * via canCommitteeRotation; bootstrap rotation 0 sorts founding_node
+ * via canCommitteeRotation; bootstrap rotation 0 sorts founding_nodes
  * trivially as a single-element array). signatures is parallel to
  * signer_node_ids.
  *

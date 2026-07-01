@@ -603,10 +603,9 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * committee member's perspective gets considered over time.
    *
    * Sig collection limitation: this MVP signs only with our own key
-   * (1 sig). Works for genesis bootstrap (rotation 0 → 1, where prev
-   * committee = [founding_node], quorum = 1). Subsequent rotations
-   * (committee size > 1, quorum ≥ 2) need multi-sig coordination —
-   * tracked as a follow-up to this PR. For now, post-bootstrap
+   * (1 sig). Works when the prev committee is a single node (quorum 1).
+   * A multi-node genesis committee (founding_nodes, quorum ≥ 2) needs the
+   * multi-sig rotation coordinator. For now, post-bootstrap
    * rotations propose but fail commit-handler quorum check;
    * federation continues running with the rotation 1 committee.
    */

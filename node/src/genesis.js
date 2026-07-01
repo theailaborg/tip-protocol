@@ -87,7 +87,9 @@ const GENESIS_PAYLOAD = Object.freeze({
   },
   notes: "TIP Protocol Genesis Block. This is the immutable foundation of the Trust Identity Protocol network. Once this block is committed to the DAG, its hash anchors every subsequent transaction.",
   founding_vp: GENESIS_DOC.founding_vp,
-  founding_node: GENESIS_DOC.founding_node,
+  // Every founding node (id + pubkey inline), one unified list. Seeds the genesis
+  // committee (rotation 0) and is the chain-of-trust anchor for joiners.
+  founding_nodes: GENESIS_DOC.founding_nodes,
   genesis_ring: GENESIS_DOC.genesis_ring,
   genesis_ring_keys: GENESIS_DOC.genesis_ring_keys,
   protocol_constants: PROTOCOL_CONSTANTS,
@@ -227,19 +229,15 @@ function getInitialParams() {
  * Late joiners (any node whose id is NOT in this set) must produce for
  * `K = COMMITTEE_ROTATION_HYSTERESIS_ROUNDS` rounds before being admitted.
  *
- * Source of truth: `GENESIS_PAYLOAD.founding_node`. If genesis later grows
- * a `founding_committee: [...]` array (multi-founder chain), surface that
- * here without changing call sites.
+ * Source of truth: `GENESIS_PAYLOAD.founding_nodes` (the unified founding-node
+ * list). Every entry is a genesis member from round 1.
  *
  * @returns {Set<string>} node IDs that are genesis members
  */
 function getGenesisCommittee() {
   const ids = new Set();
-  if (GENESIS_PAYLOAD.founding_node && GENESIS_PAYLOAD.founding_node.node_id) {
-    ids.add(GENESIS_PAYLOAD.founding_node.node_id);
-  }
-  if (Array.isArray(GENESIS_PAYLOAD.founding_committee)) {
-    for (const m of GENESIS_PAYLOAD.founding_committee) {
+  if (Array.isArray(GENESIS_PAYLOAD.founding_nodes)) {
+    for (const m of GENESIS_PAYLOAD.founding_nodes) {
       if (m && m.node_id) ids.add(m.node_id);
     }
   }

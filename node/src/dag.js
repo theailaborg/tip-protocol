@@ -268,7 +268,7 @@ function _canonEntityKey(r) {
 //   - committee: array of { node_id, public_key } records, sorted by node_id.
 //     Carrying pubkeys IN the rotation (rather than relying on the snapshot's
 //     nodes table) closes the chicken-and-egg verification gap: a fresh
-//     joiner anchors trust at the LOCAL genesis founding_node (hardcoded in
+//     joiner anchors trust at the LOCAL genesis founding_nodes (hardcoded in
 //     their binary) and walks forward, adopting each rotation's pubkeys ONLY
 //     after verifying the rotation's sigs against the previously-trusted
 //     committee. Without this, snapshot verification would have to look up
@@ -281,7 +281,7 @@ function _canonEntityKey(r) {
 // signer_node_ids sorted; signatures parallel to signer_node_ids (same
 // indexes, same order). Genesis rotation 0 has prev_rotation=null and
 // no signers/signatures (hardcoded trust anchor — joiner verifies it
-// matches local genesis.founding_node before extending trust).
+// matches local genesis.founding_nodes before extending trust).
 // Canonical projection for the `prescan_reviews` table — participates in
 // state_merkle_root. A prescan-review represents a single instance of the
 // human-reviewing-AI-flag pipeline that gates between prescan HIGH/CRITICAL
@@ -1083,7 +1083,7 @@ class MemoryStore {
 
   // ── Committee history (§4 + #34 — chain-of-trust) ────────────────────────
   // One row per committee rotation. Rotation 0 is bootstrapped at initDAG
-  // from genesis.founding_node (no sigs — hardcoded trust anchor). Every
+  // from genesis.founding_nodes (no sigs, hardcoded trust anchor). Every
   // subsequent rotation requires 2f+1 sigs from the PREVIOUS committee.
   // Snapshot fast-sync ships these rows in their own stream + root; the
   // joiner walks the chain forward verifying each transition.
@@ -3735,8 +3735,8 @@ function _buildDagHandle(store, config) {
   }
 
   // ── Bootstrap: committee_history rotation 0 (§4 + #34) ────────────────────
-  // Hardcoded trust anchor for the chain-of-trust walker. Committee at
-  // genesis is [founding_node] with its pubkey carried inline so a fresh
+  // Hardcoded trust anchor for the chain-of-trust walker. Committee at genesis
+  // is the full founding_nodes set with each pubkey carried inline so a fresh
   // joiner can verify rotation 1's signatures against the local genesis
   // (NOT against the peer-provided nodes table). No signers/signatures
   // on rotation 0 — genesis IS the trust anchor.
@@ -4122,8 +4122,8 @@ async function initDAGAsync(config) {
 
 // ─── Write genesis block and founding VP into a fresh store ──────────────────
 // §4 + #34: bootstrap committee_history rotation 0 from genesis.
-// Hardcoded trust anchor — committee = [founding_node + its pubkey], no
-// signers/signatures (genesis IS the trust anchor). Idempotent: skips
+// Hardcoded trust anchor: committee = the founding_nodes set (id + pubkey each),
+// no signers/signatures (genesis IS the trust anchor). Idempotent: skips
 // if rotation 0 already exists, so existing DBs get backfilled on next
 // boot without writing duplicates.
 //
@@ -4138,18 +4138,23 @@ function _bootstrapCommitteeRotationZero(store) {
   const { shake256, canonicalJson } = require("../../shared/crypto");
 
   const payload = getGenesisPayload();
-  const founding = payload && payload.founding_node;
-  if (!founding || !founding.node_id || !founding.public_key) {
+  // Genesis committee = every founding_nodes entry, sorted by node_id so the
+  // payload_hash is byte-identical on every node.
+  const seen = new Set();
+  const committee = [];
+  for (const m of (payload && Array.isArray(payload.founding_nodes) ? payload.founding_nodes : [])) {
+    if (m && m.node_id && m.public_key && !seen.has(m.node_id)) {
+      seen.add(m.node_id);
+      committee.push({ node_id: m.node_id, public_key: m.public_key });
+    }
+  }
+  committee.sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
+  if (committee.length === 0) {
     throw new Error(
-      "Cannot bootstrap committee rotation 0: genesis.founding_node missing node_id or public_key. " +
-      "Check shared/genesis.js or the genesis payload loaded into PC.init()."
+      "Cannot bootstrap committee rotation 0: genesis.founding_nodes has no member with node_id + public_key. " +
+      "Check the genesis payload / seed output."
     );
   }
-
-  const committee = [{
-    node_id: founding.node_id,
-    public_key: founding.public_key,
-  }];
 
   const payload_hash = shake256(canonicalJson({
     rotation_number: 0,
@@ -4310,9 +4315,13 @@ function _writeGenesisBlock(store, config) {
     log.info(`Founding identity registered: ${member.tip_id}`);
   }
 
-  // Bootstrap founding node from genesis payload (embedded by seed script)
-  const foundingNode = GENESIS_PAYLOAD.founding_node;
-  if (foundingNode && foundingNode.node_id && foundingNode.public_key) {
+  // Bootstrap founding nodes from genesis payload (embedded by seed script).
+  // One NODE_REGISTERED tx + node row each; sorted by node_id so the tx chain
+  // (and thus tx_ids) is byte-identical on every node.
+  const foundingNodes = (Array.isArray(GENESIS_PAYLOAD.founding_nodes) ? GENESIS_PAYLOAD.founding_nodes : [])
+    .filter((fn) => fn && fn.node_id && fn.public_key)
+    .sort((a, b) => (a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0));
+  for (const foundingNode of foundingNodes) {
     const nodeTx = {
       tx_type: TX_TYPES.NODE_REGISTERED,
       timestamp: GENESIS_TIMESTAMP,
@@ -4326,7 +4335,8 @@ function _writeGenesisBlock(store, config) {
       // GH #51 — approving VP signature lives at tx.signature.
       signature: foundingNode.council_signature,
     };
-    store.saveTx({ ...nodeTx, tx_id: computeTxId(nodeTx) });
+    const nodeTxId = computeTxId(nodeTx);
+    store.saveTx({ ...nodeTx, tx_id: nodeTxId });
     store.saveNode({
       node_id: foundingNode.node_id,
       name: foundingNode.name,
@@ -4334,6 +4344,7 @@ function _writeGenesisBlock(store, config) {
       status: "active",
       registered_at: GENESIS_TIMESTAMP,
     });
+    lastTxId = nodeTxId;
     log.info(`Founding node registered: ${foundingNode.node_id}`);
   }
 

@@ -40,11 +40,12 @@ const { TX_TYPES } = require(SHARED + "/constants");
 const { CONSENSUS } = require(SHARED + "/protocol-constants");
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createBullshark } = require(path.join(SRC, "consensus", "bullshark"));
-const { getGenesisPayload } = require(path.join(SRC, "genesis"));
+const { getGenesisPayload, getGenesisCommittee } = require(path.join(SRC, "genesis"));
 
 beforeAll(async () => { await initCrypto(); });
 
-const FOUNDING = getGenesisPayload().founding_node;
+const FOUNDING = getGenesisPayload().founding_nodes[0];
+const GENESIS_IDS = [...getGenesisCommittee()].sort();
 
 // Use the configured interval and threshold for boundary calculation.
 const INTERVAL = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
@@ -205,9 +206,9 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
     const tx = fx.submittedTxs[0];
     expect(tx.tx_type).toBe(TX_TYPES.COMMITTEE_ROTATION);
     expect(tx.data.rotation_number).toBe(1);
-    // committee unchanged (just founding)
+    // committee unchanged (the full genesis committee re-attested)
     const ids = tx.data.new_committee.map(m => m.node_id);
-    expect(ids).toEqual([FOUNDING.node_id]);
+    expect(ids).toEqual(GENESIS_IDS);
   });
 
   test("fires at boundary when participation tally yields a different committee", () => {

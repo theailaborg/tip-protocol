@@ -71,9 +71,6 @@
       "major_falsehood": -300,
       "retraction": -50,
       "device_compromise": -15,
-      "lost_dispute_stake": -15,
-      "lost_jury_stake": -10,
-      "lost_appeal_stake": -25,
       "appeal_restore_percent": 50
     },
     "jury": {
@@ -91,7 +88,6 @@
       "jury_min_reveals": 5,
       "jury_max_same_country": 3,
       "appeal_max_same_country": 3,
-      "jury_cooldown_days": 7,
       "expert_panel_size": 5,
       "expert_min_votes": 3,
       "jury_majority_bonus": 3,
@@ -133,8 +129,7 @@
     "rate_limits": {
       "max_registrations_per_day": 50,
       "max_verifications_given_per_day": 5,
-      "max_verifications_given_per_month": 30,
-      "duplicate_perceptual_threshold": 0.9
+      "max_verifications_given_per_month": 30
     },
     "prescan": {
       "default": 0.85,
@@ -256,10 +251,7 @@
       "peer_announce_protocol": "/tip/peer-announce/1.0.0",
       "snapshot_length_prefix_bytes": 4,
       "snapshot_max_frame_bytes": 16777216,
-      "score_cache_ttl_seconds": 21600,
       "revocation_cascade_days": 90,
-      "warrant_canary_max_days": 90,
-      "canary_advisory_window_days": 30,
       "origin_grace_period_hours": 24
     }
   }
