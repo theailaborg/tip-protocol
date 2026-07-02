@@ -265,8 +265,14 @@ founding identities):
 
 ```bash
 cp .env.example .env && chmod 600 .env    # once, before first seed
-npm run seed:fresh:local
+npm run seed:local
 ```
+
+On a fresh clone this mints everything; on a machine that already has
+`genesis-data/backups/`, it reuses those keys and leaves the genesis
+unchanged. Only run `npm run seed:fresh:local` when you deliberately want
+a brand-new federation: it wipes the backups and mints all-new keys,
+which changes `genesis_hash` and requires a cluster reset.
 
 What this does (`scripts/seed.js --local-cluster`):
 - Mints ML-DSA-65 keypairs for the founding VP, 4 founding identities and
