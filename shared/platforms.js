@@ -8,7 +8,7 @@
  *   "video" / "audio" / "image" / "text"  — fixed; ignores request shape
  *   "MEDIA_DOMINANT"   — media kind wins. Captions are captions. For
  *                        visual-first platforms where text is structurally
- *                        a secondary field (Instagram, TikTok, Pinterest).
+ *                        a secondary field (Instagram, TikTok).
  *   "MIXED"            — text+media may be co-equal:
  *                          text only           → text
  *                          multi-kind          → multi
@@ -49,6 +49,9 @@ const PLATFORM_ALIASES = Object.freeze({
   "bbc.co.uk":         "bbc.com",
   "open.spotify.com":  "spotify.com",
   "on.soundcloud.com": "soundcloud.com",
+  "threads.com":       "threads.net",
+  "blogger.com":       "blogspot.com",
+  "weixin.qq.com":     "wechat.com",
 });
 
 const PLATFORM_CONTENT_TYPE = Object.freeze({
@@ -58,11 +61,11 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "spotify.com":        "audio",
   "podcasts.apple.com": "audio",
   "soundcloud.com":     "audio",
+  "bandcamp.com":       "audio",
 
   // MEDIA_DOMINANT — visual-first, captions are captions
   "instagram.com": "MEDIA_DOMINANT",
   "tiktok.com":    "MEDIA_DOMINANT",
-  "pinterest.com": "MEDIA_DOMINANT",
 
   // MIXED — text and media may be co-equal
   "x.com":           "MIXED",
@@ -70,6 +73,7 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "linkedin.com":    "MIXED",
   "reddit.com":      "MIXED",
   "threads.net":     "MIXED",
+  "bsky.app":        "MIXED",
   "truthsocial.com": "MIXED",
   "weibo.com":       "MIXED",
   "wechat.com":      "MIXED",
@@ -90,6 +94,9 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "blogspot.com":       "TEXT_DOMINANT",
   "tumblr.com":         "TEXT_DOMINANT",
   "ghost.io":           "TEXT_DOMINANT",
+  "dev.to":             "TEXT_DOMINANT",
+  "hashnode.com":       "TEXT_DOMINANT",
+  "hashnode.dev":       "TEXT_DOMINANT",
   "nytimes.com":        "TEXT_DOMINANT",
   "wsj.com":            "TEXT_DOMINANT",
   "reuters.com":        "TEXT_DOMINANT",
