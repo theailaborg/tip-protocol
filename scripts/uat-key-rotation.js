@@ -23,7 +23,7 @@
  *              - Neither of the prior two keys can authenticate.
  *
  * Pre-reqs: `npm run seed:fresh` and a fresh PG schema + node started
- * with `ZK_SKIP_VERIFY=true`.
+ *
  */
 
 "use strict";
@@ -35,6 +35,7 @@ const SHARED = path.resolve(__dirname, "../shared");
 const { initCrypto, generateMLDSAKeypair, shake256, generateTIPID, signBody } = require(SHARED + "/crypto");
 const { nowMs } = require(SHARED + "/time");
 const registerIdentitySchema = require(path.resolve(__dirname, "../node/src/schemas/register-identity"));
+const { generateDedupProof } = require("../shared/zk");
 const keyRotatedSchema = require(path.resolve(__dirname, "../node/src/schemas/key-rotated"));
 const keyRecoverySchema = require(path.resolve(__dirname, "../node/src/schemas/key-recovery"));
 
@@ -105,10 +106,11 @@ async function _registerIdentity(label) {
   const kp = generateMLDSAKeypair();
   const region = "US";
   const tipId = generateTIPID(region, kp.publicKey);
-  const dedupHash = String(BigInt("0x" + shake256(`uat-key:${tipId}:${label}`).slice(0, 32)));
+  const govId = `uat-key:${tipId}:${label}`;
+  const { dedup_hash: dedupHash, proof: zkProof } = await generateDedupProof(govId, "1990-01-01", region);
   const fields = {
     region, public_key: kp.publicKey, dedup_hash: dedupHash,
-    zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+    zk_proof: zkProof,
     verification_tier: "T1", vp_id: VP.vp_id, social_attested: true,
   };
   const payload = registerIdentitySchema.buildSigningPayload(fields);
@@ -121,7 +123,7 @@ async function _registerIdentity(label) {
   for (let i = 0; i < 60; i++) {
     const cr = await _get(`/v1/identity/${encodeURIComponent(r.body.data.tip_id)}`);
     if (cr.status === 200 && cr.body?.data?.tip_id) {
-      return { tip_id: r.body.data.tip_id, kp, tx_id: r.body.data.tx_id, dedup_hash: dedupHash, fields, vpSig };
+      return { tip_id: r.body.data.tip_id, kp, tx_id: r.body.data.tx_id, dedup_hash: dedupHash, gov_id: govId, region, fields, vpSig };
     }
     await _sleep(150);
   }
@@ -233,9 +235,9 @@ async function main() {
   const currentActiveLookup = await _get(`/v1/identity/${encodeURIComponent(user.tip_id)}`);
   const currentActivePubkey = currentActiveLookup.body?.data?.public_key;
   // Fresh zk_proof bound to the SAME dedup_hash the user committed to at
-  // first-time REGISTER_IDENTITY. ZK_SKIP_VERIFY=true keeps the proof
-  // structurally validated but bypasses the heavy verifier so UAT can run
-  // without a trusted-setup artefact on the test box.
+  // first-time REGISTER_IDENTITY: re-prove with the same gov inputs (same
+  // public signal, fresh proof bytes).
+  const { proof: recoverProof } = await generateDedupProof(user.gov_id, "1990-01-01", user.region);
   const recoverBody = {
     tip_id: user.tip_id,
     vp_id: VP.vp_id,
@@ -243,7 +245,7 @@ async function main() {
     recovery_evidence_hash: evidenceHash,
     replaces_pubkey: currentActivePubkey,
     algorithm: "ml-dsa-65",
-    zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+    zk_proof: recoverProof,
   };
   const recoverPayload = keyRecoverySchema.buildSigningPayload(recoverBody);
   const recoverSig = keyRecoverySchema.sign(recoverPayload, VP.private_key);

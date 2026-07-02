@@ -157,9 +157,8 @@ function preScanContent(content, originCode, creatorHistory, contentType = null)
   // TIP_DEV_FORCE_PRESCAN_TIER to one of: "high" | "critical" | "random"
   // (random = 50/50 HIGH/CRITICAL coin flip). Production paths are
   // unaffected — env is read every call so a quick `export` toggles it
-  // without restarting. Same shape as TIP_DEV_BYPASS_VOTE_WINDOWS:
-  // gated on NODE_ENV !== "production" so production deployments
-  // physically can't honour it even if the env leaks in.
+  // without restarting. Gated on NODE_ENV !== "production" so production
+  // deployments physically can't honour it even if the env leaks in.
   const forced = _devForcedPrescanTier(originCode);
   if (forced) {
     return {

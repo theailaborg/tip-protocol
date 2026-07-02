@@ -120,10 +120,9 @@ function loadConfig() {
     preScanEnabled: true,
     preScanDefaultThreshold: 0.85,
 
-    // ── Scheduler intervals (node-local tuning, not protocol constants) ────────
-    scoreRecomputeInterval: parseInt(process.env.TIP_SCORE_RECOMPUTE_MS || 12 * 60 * 60 * 1000, 10),  // 12 hours
-    cleanRecordInterval: parseInt(process.env.TIP_CLEAN_RECORD_MS || 24 * 60 * 60 * 1000, 10),  // 24 hours
-    verdictCheckInterval: parseInt(process.env.TIP_VERDICT_CHECK_MS || 5 * 60 * 1000, 10),        // 5 minutes
+    // ── Scheduler interval (node-local tuning, not a protocol constant) ────────
+    // Verdicts, score effects and clean-record bonuses are event-driven off
+    // consensus commits; peer health is the only timed job left.
     peerHealthInterval: parseInt(process.env.TIP_PEER_HEALTH_MS || 30 * 1000, 10),            // 30 seconds
 
     // ── Media size limits (node-level, client-side enforcement) ────────────────

@@ -39,17 +39,6 @@ const { computeQuorum } = require("../consensus/certificate");
 
 const ORIGIN_CODES = Object.keys(ORIGIN);
 
-// Dev-only escape hatch for the JURY vote-window time gates. Lets a developer
-// drive a live dispute through commit→reveal→verdict without waiting the full
-// 72h+6h windows or re-seeding. NEVER takes effect in production: requires
-// both NODE_ENV != "production" AND the explicit opt-in flag. Bypasses ONLY
-// the wall-clock checks — signature, juror membership, double-vote, and
-// commitment-hash verification are still enforced.
-function _devBypassVoteWindows() {
-  return process.env.NODE_ENV !== "production"
-    && process.env.TIP_DEV_BYPASS_VOTE_WINDOWS === "1";
-}
-
 // Eligible (declared → claimed) transitions for origin_mismatch disputes.
 // First three are penalty paths in score-effects.adjudicationDelta; AG→OH
 // is the CONSERVATIVE_LABEL path in jury.js (no penalty, but content origin
@@ -346,7 +335,7 @@ function canCommitVote(dag, { ctid, juror_tip_id, is_appeal = false }, { now }) 
   }
 
   const commitDeadline = summonsTxs[0].data.commit_deadline;
-  if (now > commitDeadline && !_devBypassVoteWindows()) return fail(403, "Commit window has closed");
+  if (now > commitDeadline) return fail(403, "Commit window has closed");
 
   const existing = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .find(t => t.data?.juror_tip_id === juror_tip_id && (!!t.data?.is_appeal) === is_appeal);
@@ -367,9 +356,8 @@ function canRevealVote(dag, { ctid, juror_tip_id, is_appeal = false, vote, salt 
 
   const commitDeadline = summonsTxs[0].data.commit_deadline;
   const revealDeadline = summonsTxs[0].data.reveal_deadline;
-  const bypass = _devBypassVoteWindows();
-  if (now < commitDeadline && !bypass) return fail(403, "Reveal window has not opened yet");
-  if (now > revealDeadline && !bypass) return fail(403, "Reveal window has closed");
+  if (now < commitDeadline) return fail(403, "Reveal window has not opened yet");
+  if (now > revealDeadline) return fail(403, "Reveal window has closed");
 
   const commitTx = dag.getTxsByTypeAndCtid(TX_TYPES.JURY_VOTE_COMMIT, ctid)
     .find(t => t.data?.juror_tip_id === juror_tip_id && (!!t.data?.is_appeal) === is_appeal);

@@ -15,20 +15,17 @@
 #
 # ── Picking a different database engine ─────────────────────────────────────
 #
-# .env at the repo root sets COMPOSE_PROFILES which Compose reads as if
-# `--profile <value>` were passed. Default is postgres. To switch:
+# Postgres always starts (the prod default); DB_DRIVER in .env is the single
+# knob for what the NODE connects to. Other engines are opt-in via --profile
+# (postgres then starts but idles):
 #
-#   In .env:                                  Effect:
-#   COMPOSE_PROFILES=postgres   (default)     PostgreSQL  + node
-#   COMPOSE_PROFILES=mariadb                  MariaDB     + node
-#   COMPOSE_PROFILES=mssql                    SQL Server  + node
-#   COMPOSE_PROFILES=oracle                   Oracle Free + node
-#   COMPOSE_PROFILES=                         no DB service; node uses SQLite
+#   DB_DRIVER=postgres (default)   docker compose up -d
+#   DB_DRIVER=mariadb              docker compose --profile mariadb up -d
+#   DB_DRIVER=mssql                docker compose --profile mssql up -d
+#   DB_DRIVER=oracle               docker compose --profile oracle up -d
+#   DB_DRIVER=sqlite               docker compose up -d   (node uses the local file)
 #
-# Set the matching DB_DRIVER + DB_HOST in .env too. Override on a single
-# command without editing .env:
-#
-#   docker compose --profile mariadb up -d
+# Set the matching DB_HOST in .env too (postgres / mariadb / mssql / oracle).
 #
 # Genesis state is bootstrapped from genesis.js on first boot; no seed.db
 # is shipped or copied. The runtime _writeGenesisBlock walks the founding
@@ -81,9 +78,9 @@ x-node-common: &node-common
     - ./genesis-data/backups:/app/genesis-data/backups:ro
   # Make `host.docker.internal` resolvable inside the container on every
   # Docker setup (Docker Desktop on macOS/Windows already provides it; Linux
-  # daemons do not without this hint). Used by TIP_DEV_LOCALHOST_FETCH_HOST
-  # in the domain-binding verifier when the user binds a loopback domain.
-  # Harmless in production (the dev-only flag is the actual gate).
+  # daemons do not without this hint). The domain-binding verifier's dev-only
+  # loopback fallback dials it when a bound localhost domain is unreachable
+  # from inside the container. Harmless in production (NODE_ENV is the gate).
   extra_hosts:
     - "host.docker.internal:host-gateway"
   # All node config comes from the env_file: identity, keys, ports, DB,
@@ -101,12 +98,10 @@ x-node-common: &node-common
 
 services:
 
-  # ── SQLite path (node only, no DB service) ───────────────────────────────
-  # Default profile (also matches when no profile is passed). Falls back to
-  # the on-disk SQLite at /app/data/tip.db.
+  # Always starts. With DB_DRIVER=sqlite the node falls back to the on-disk
+  # file at /app/data/tip.db (postgres starts but idles).
   tip-node:
     <<: *node-common
-    profiles: ["", "sqlite", "postgres", "mariadb", "mssql", "oracle"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,11 +116,10 @@ services:
         condition: service_healthy
         required: false
 
-  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  # ── PostgreSQL (always starts, the prod default) ──────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: tip-postgres
-    profiles: ["postgres"]
     restart: unless-stopped
     environment:
       POSTGRES_USER:     ${DB_USER:-tip}

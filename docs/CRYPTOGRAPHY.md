@@ -332,7 +332,6 @@ node scripts/zk-setup.js   # dev only — single contributor
 - Verifies Groth16 proof in ~5ms
 - Returns `true` / `false`
 
-Environment variable `ZK_SKIP_VERIFY=true` bypasses proof verification — for tests only.
 
 ---
 

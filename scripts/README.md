@@ -138,27 +138,16 @@ node scripts/drive-jury.js --ctid <CTID> --watch
 | `--node-url URL` | `http://localhost:4000` | Submission target |
 | `--vote-bias BIAS` | `UPHELD` | `UPHELD` (mostly MISMATCH), `DISMISSED` (mostly MATCH), `RANDOM` |
 | `--confirmed-origin CODE` | dispute's `claimed_origin` | Origin code for MISMATCH votes |
-| `--phase COMMIT\|REVEAL` | auto-detected | Force a phase. Required when `TIP_DEV_BYPASS_VOTE_WINDOWS=1` is set on the node, since auto-detect uses wall-clock deadlines |
+| `--phase COMMIT\|REVEAL` | auto-detected | Force a phase (auto-detect uses wall-clock deadlines) |
 | `--watch` | off | Poll dispute-case until verdict lands |
 | `--watch-timeout SEC` | 30 | Max seconds to watch |
 | `--dry-run` | off | Print the plan, don't submit |
 
-### Working with `TIP_DEV_BYPASS_VOTE_WINDOWS`
+### Fast-forwarding the vote windows
 
-The node accepts an env flag (`TIP_DEV_BYPASS_VOTE_WINDOWS=1`,
-gated on `NODE_ENV != production`) that drops the deadline checks on
-commit/reveal so a developer can drive a full dispute in seconds
-instead of waiting for the configured 72-hour commit window.
-
-When the bypass is on, the node accepts both phases simultaneously,
-but the script's wall-clock auto-detect still picks one. Pass
-`--phase` to force the right one:
-
-```bash
-# typical bypass-on workflow:
-node scripts/drive-jury.js --ctid <CTID> --phase COMMIT
-node scripts/drive-jury.js --ctid <CTID> --phase REVEAL --watch
-```
+The commit/reveal deadlines are on-chain values; there is no bypass flag.
+To drive a dispute quickly in dev, rewind the summons deadlines directly
+in the node's DB (dev DBs only), then run both phases with `--phase`.
 
 ---
 
@@ -177,8 +166,7 @@ docker compose restart tip-node
 
 # 4. file a dispute (via the UI or directly via curl) — note the CTID
 
-# 5. drive both phases
-TIP_DEV_BYPASS_VOTE_WINDOWS=1 docker compose up -d  # if you want speed
+# 5. drive both phases (fast-forward the windows via DB if needed, see above)
 node scripts/drive-jury.js --ctid <CTID> --phase COMMIT
 node scripts/drive-jury.js --ctid <CTID> --phase REVEAL --watch
 

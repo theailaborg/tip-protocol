@@ -78,7 +78,6 @@ function fakeStats(overrides = {}) {
         certs_pruned: 0,
         gc_runs: 2,
         gc_failures: 0,
-        gc_skipped_disabled: 0,
       },
     },
     mempool: { size: 7, capacity: 10000 },

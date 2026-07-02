@@ -35,10 +35,6 @@
 
 "use strict";
 
-// Skip real ZK verification, circuit artifacts aren't present in the test env.
-// Must be set before any service that reads it on the register path.
-process.env.ZK_SKIP_VERIFY = "true";
-
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
@@ -47,6 +43,7 @@ const {
   initCrypto, generateMLDSAKeypair, shake256, tipNormalize, signBody, canonicalJson,
 } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
+const { generateDedupProof } = require(path.join(SHARED, "zk"));
 const { TIP_ID_TYPES, DOMAIN_BINDING_STATUS } = require(path.join(SHARED, "constants"));
 
 const { initDAG } = require(path.join(SRC, "dag"));
@@ -84,18 +81,16 @@ const VP_ID = "tip://vp/v1";
 const NODE_ID = "tip://node/n1";
 const T0 = 1767225600000;
 
-// Mock Groth16 proof, accepted when ZK_SKIP_VERIFY=true.
-const MOCK_ZK_PROOF = {
-  pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]],
-  pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128",
-};
-
 // ── shared helpers ──────────────────────────────────────────────────────────
 
-// A unique 64-digit decimal dedup hash per seed (Poseidon-field-element shape,
-// uniqueness is all the dedup guard needs when ZK verification is skipped).
-function dedupHash(seed) {
-  return (BigInt("0x" + shake256(seed)) % (10n ** 64n)).toString().padStart(64, "0");
+// Real Groth16 dedup proofs, cached per seed. Same seed = same identity.
+const _proofCache = new Map();
+async function makeDedup(seed) {
+  if (!_proofCache.has(seed)) {
+    _proofCache.set(seed, await generateDedupProof(`GOV-${seed}`, "1990-01-01", "US"));
+  }
+  const { dedup_hash, proof } = _proofCache.get(seed);
+  return { dedup_hash, zk_proof: proof };
 }
 
 function makeTipId(seed) {
@@ -327,11 +322,12 @@ const CASES = [
     // and algorithm have no identities column yet (algorithm column deferred to
     // the key-rotation PR); they ride the signed payload but aren't persisted.
     notPersisted: ["dedup_hash", "zk_proof", "social_attested", "algorithm"],
-    setup: (h) => {
+    setup: async (h) => {
       const kp = generateMLDSAKeypair();
+      const { dedup_hash, zk_proof } = await makeDedup("reg-identity");
       const idFields = {
-        public_key: kp.publicKey, dedup_hash: dedupHash("reg-identity"),
-        zk_proof: MOCK_ZK_PROOF, vp_id: VP_ID, region: "US",
+        public_key: kp.publicKey, dedup_hash, zk_proof,
+        vp_id: VP_ID, region: "US",
         verification_tier: "T1", tip_id_type: "personal",
       };
       const vp_signature = registerIdentitySchema.sign(

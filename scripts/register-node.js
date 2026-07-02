@@ -300,7 +300,6 @@ async function main() {
   const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
   const dbPoolMin = process.env.DB_POOL_MIN || "";
   const dbPoolMax = process.env.DB_POOL_MAX || "";
-  const composeProfiles = process.env.COMPOSE_PROFILES || "";
 
   // Operational config carried from the seed node's env (media, classifier,
   // prescan, rate-limit, dev) so a new node matches it. Not consensus-critical.
@@ -314,10 +313,7 @@ async function main() {
   const classifierFb = process.env.TIP_CLASSIFIER_FALLBACK || "";
   const prescanConc = process.env.TIP_PRESCAN_CONCURRENCY || "";
   const rateLimitMax = process.env.TIP_RATE_LIMIT_MAX || "";
-  const devAllowLocal = process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS || "";
-  const devBypassVote = process.env.TIP_DEV_BYPASS_VOTE_WINDOWS || "";
   const devForceTier = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
-  const devLocalFetch = process.env.TIP_DEV_LOCALHOST_FETCH_HOST || "";
   const vpId = process.env.TIP_VP_ID || "";
   const databaseUrl = process.env.DATABASE_URL || "";
   const cryptoPool = process.env.TIP_CRYPTO_POOL_SIZE || "";
@@ -326,9 +322,6 @@ async function main() {
   const prescanWorker = process.env.TIP_PRESCAN_WORKER_COUNT || "";
   const rateLimitWin = process.env.TIP_RATE_LIMIT_WINDOW_MS || "";
   const apiEndpoint = process.env.TIP_API_ENDPOINT || "";
-  const zkSkip = process.env.ZK_SKIP_VERIFY || "";
-  const skipBio = process.env.TIP_SKIP_BIO_CHECK || "";
-  const gcDisabled = process.env.TIP_GC_DISABLED || "";
 
   // Drop-in .env from .env.example + the values we know. Blank carried values
   // (u -> undefined) keep the example default. See node-env-template.js.
@@ -346,7 +339,6 @@ async function main() {
     TIP_PUBLIC_URL: `http://localhost:${apiPort}`,
     TIP_NODE_CREDENTIALS_FILE: tipFileRel,
     DB_DRIVER: u(dbDriver) || "postgres",
-    COMPOSE_PROFILES: u(composeProfiles) || "postgres",
     DB_HOST: u(dbHost) || "postgres",
     DB_PORT: u(dbPort) || "5432",
     DB_NAME: u(dbName) || "tip_protocol",
@@ -363,9 +355,7 @@ async function main() {
     TIP_PRESCAN_CONCURRENCY: u(prescanConc), TIP_PRESCAN_WORKER_COUNT: u(prescanWorker),
     TIP_RATE_LIMIT_MAX: u(rateLimitMax), TIP_RATE_LIMIT_WINDOW_MS: u(rateLimitWin),
     TIP_API_ENDPOINT: u(apiEndpoint),
-    TIP_DEV_ALLOW_LOCALHOST_DOMAINS: u(devAllowLocal), TIP_DEV_BYPASS_VOTE_WINDOWS: u(devBypassVote),
-    TIP_DEV_FORCE_PRESCAN_TIER: u(devForceTier), TIP_DEV_LOCALHOST_FETCH_HOST: u(devLocalFetch),
-    ZK_SKIP_VERIFY: u(zkSkip), TIP_SKIP_BIO_CHECK: u(skipBio), TIP_GC_DISABLED: u(gcDisabled),
+    TIP_DEV_FORCE_PRESCAN_TIER: u(devForceTier),
   }, {
     headerNotes: [
       `${name}`,

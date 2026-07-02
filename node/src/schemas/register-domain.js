@@ -54,13 +54,10 @@ const DOMAIN_REGEX = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0
 // loopback claim.
 const LOCALHOST_REGEX = /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/;
 
-// Single guarded entry-point: NEVER takes effect in production. Both
-// NODE_ENV != "production" AND the explicit opt-in flag are required. Same
-// pattern as TIP_DEV_BYPASS_VOTE_WINDOWS in business-rules.js — keeps the
-// dev surface obvious in code review.
+// Loopback domains are accepted automatically outside production, so the full
+// register/verify flow works in dev with no opt-in flag. NEVER in production.
 function _devAllowLocalhost() {
-  return process.env.NODE_ENV !== "production"
-      && process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS === "1";
+  return process.env.NODE_ENV !== "production";
 }
 
 /**
@@ -68,12 +65,11 @@ function _devAllowLocalhost() {
  * and strips any trailing dot. Throws schemaError(400, ..., "domain_invalid")
  * for malformed input.
  *
- * Dev-mode (TIP_DEV_ALLOW_LOCALHOST_DOMAINS=1 + NODE_ENV != production): also
- * accepts `localhost`, `localhost:PORT`, `127.0.0.1`, `127.0.0.1:PORT` so the
- * full register/verify flow can be exercised against a local well-known
- * server. The canonical-payload bytes carry the input verbatim, so the
- * signature commits to "localhost" — clients running in prod against a
- * dev-mode node would still get a 400 here.
+ * Outside production also accepts `localhost`, `localhost:PORT`, `127.0.0.1`,
+ * `127.0.0.1:PORT` so the register/verify flow can be exercised against a
+ * local well-known server. The canonical-payload bytes carry the input
+ * verbatim, so the signature commits to "localhost"; clients running in prod
+ * against a dev-mode node would still get a 400 here.
  */
 function normalizeDomain(raw) {
   if (typeof raw !== "string" || raw.length === 0) {

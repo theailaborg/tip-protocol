@@ -202,18 +202,14 @@ describe("verify dispatch", () => {
 
 describe("dev-mode localhost", () => {
   const ORIGINAL_ENV = process.env.NODE_ENV;
-  const ORIGINAL_FLAG = process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS;
 
   afterEach(() => {
     if (ORIGINAL_ENV === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = ORIGINAL_ENV;
-    if (ORIGINAL_FLAG === undefined) delete process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS;
-    else process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = ORIGINAL_FLAG;
   });
 
-  test("verifyHttp fetches over HTTP (not HTTPS) when flag set + loopback host", async () => {
+  test("verifyHttp fetches over HTTP (not HTTPS) for loopback outside production", async () => {
     process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
     const fetchJson = jest.fn().mockResolvedValue({
       status: 200, body: { domain: "localhost:4000", tip_id: TIP_ID },
     });
@@ -225,9 +221,32 @@ describe("dev-mode localhost", () => {
     );
   });
 
-  test("verifyHttp still uses HTTPS for non-loopback even with flag set", async () => {
+  test("failed loopback fetch retries via host.docker.internal with the claim's port", async () => {
     process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
+    const err = Object.assign(new Error("connect ECONNREFUSED"), { code: "well_known_unreachable" });
+    const fetchJson = jest.fn()
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce({ status: 200, body: { domain: "localhost:8088", tip_id: TIP_ID } });
+    const r = await verifier.verifyHttp("localhost:8088", TIP_ID, { fetchJson });
+    expect(r.verified).toBe(true);
+    expect(fetchJson).toHaveBeenNthCalledWith(1,
+      "http://localhost:8088/.well-known/tip-protocol.json", expect.anything());
+    expect(fetchJson).toHaveBeenNthCalledWith(2,
+      "http://host.docker.internal:8088/.well-known/tip-protocol.json", expect.anything());
+  });
+
+  test("both loopback attempts failing surfaces the fallback error", async () => {
+    process.env.NODE_ENV = "development";
+    const err = Object.assign(new Error("connect ECONNREFUSED"), { code: "well_known_unreachable" });
+    const fetchJson = jest.fn().mockRejectedValue(err);
+    const r = await verifier.verifyHttp("localhost:8088", TIP_ID, { fetchJson });
+    expect(r.verified).toBe(false);
+    expect(r.error.code).toBe("well_known_unreachable");
+    expect(fetchJson).toHaveBeenCalledTimes(2);
+  });
+
+  test("verifyHttp still uses HTTPS for non-loopback in dev", async () => {
+    process.env.NODE_ENV = "development";
     const fetchJson = jest.fn().mockResolvedValue({
       status: 200, body: { domain: "acmenews.com", tip_id: TIP_ID },
     });
@@ -236,20 +255,18 @@ describe("dev-mode localhost", () => {
     expect(url.startsWith("https://")).toBe(true);
   });
 
-  test("verifyHttp uses HTTPS in production even when flag set", async () => {
+  test("verifyHttp uses HTTPS + no fallback in production", async () => {
     process.env.NODE_ENV = "production";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
-    const fetchJson = jest.fn().mockResolvedValue({
-      status: 200, body: { domain: "localhost", tip_id: TIP_ID },
-    });
-    await verifier.verifyHttp("localhost", TIP_ID, { fetchJson });
-    const url = fetchJson.mock.calls[0][0];
-    expect(url.startsWith("https://")).toBe(true);
+    const err = Object.assign(new Error("connect ECONNREFUSED"), { code: "well_known_unreachable" });
+    const fetchJson = jest.fn().mockRejectedValue(err);
+    const r = await verifier.verifyHttp("localhost", TIP_ID, { fetchJson });
+    expect(r.verified).toBe(false);
+    expect(fetchJson).toHaveBeenCalledTimes(1);           // no docker fallback in prod
+    expect(fetchJson.mock.calls[0][0].startsWith("https://")).toBe(true);
   });
 
   test("verifyDns short-circuits to dns_no_record for loopback (no real resolver call)", async () => {
     process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
     const resolveTxt = jest.fn();
     const r = await verifier.verifyDns("localhost", TIP_ID, { resolveTxt });
     expect(r.verified).toBe(false);
@@ -259,7 +276,6 @@ describe("dev-mode localhost", () => {
 
   test("verifyAuto on loopback in dev mode: DNS short-circuits, HTTP succeeds", async () => {
     process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
     const fetchJson = jest.fn().mockResolvedValue({
       status: 200, body: { domain: "localhost", tip_id: TIP_ID },
     });

@@ -86,8 +86,7 @@ function parseArgs(argv) {
       console.log("  --node-url URL           submission target (default http://localhost:4000)");
       console.log("  --vote-bias BIAS         UPHELD | DISMISSED | RANDOM (default UPHELD)");
       console.log("  --confirmed-origin CODE  origin code for MISMATCH votes (default: dispute.claimed_origin)");
-      console.log("  --phase COMMIT|REVEAL    force phase (override the wall-clock auto-detect — required when");
-      console.log("                           the validator's TIP_DEV_BYPASS_VOTE_WINDOWS is set)");
+      console.log("  --phase COMMIT|REVEAL    force phase (override the wall-clock auto-detect)");
       console.log("  --appeal                 drive Stage-3 appeal experts (uses /appeal/{commit,reveal})");
       console.log("  --watch                  after reveal, poll dispute-case until verdict lands");
       console.log("  --watch-timeout SEC      max seconds to watch (default 30)");

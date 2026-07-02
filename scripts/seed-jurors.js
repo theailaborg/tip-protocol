@@ -6,14 +6,12 @@
  *
  * Prerequisites
  * ─────────────
- *   • Nodes started with docker-compose.local.yml (ZK_SKIP_VERIFY=true must
- *     be set — the registration uses a mock ZK proof).
  *   • genesis-data/founding-vp-keys.json + seed-output.json must exist.
  *   • Key files must be in genesis-data/temp-users/keys/.
  *
  * What it does
  * ────────────
- *   1. Registers each key file as a personal identity (mock ZK proof).
+ *   1. Registers each key file as a personal identity (real Groth16 proof).
  *   2. Enables juror_consent=true via become-juror endpoint.
  *   3. SQL-bumps scores to 750 across all 5 node DBs (above JURY.MIN_SCORE=700).
  *   4. After this script: restart all 5 nodes to reload the mirror.
@@ -37,6 +35,7 @@ const path = require("path");
 const { initCrypto } = require("../shared/crypto");
 const { nowMs }      = require("../shared/time");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
+const { generateDedupProof } = require("../shared/zk");
 const updateProfileSchema    = require("../node/src/schemas/update-profile");
 
 const REPO_ROOT    = path.resolve(__dirname, "..");
@@ -49,22 +48,6 @@ const PG_CONTAINER = "tip-postgres";
 const PG_USER      = "tipuser";
 const PG_PASSWORD  = "Tip_Password_2025";
 
-// ZK_SKIP_VERIFY=true on dev nodes — server accepts any proof object.
-const MOCK_ZK_PROOF = {
-  pi_a: ["1", "2", "1"],
-  pi_b: [["1","2"],["3","4"],["1","1"]],
-  pi_c: ["1", "2", "1"],
-  protocol: "groth16",
-  curve: "bn128",
-};
-// BN128 prime — all mock dedup hashes must be less than this
-const BN128_PRIME = BigInt("21888242871839275222246405745257275088548364400416034343698204186575808495617");
-
-// Generate a unique Poseidon-shaped decimal field element per identity index
-function mockDedupHash(index) {
-  const seed = BigInt(index + 1) * BigInt("1000000000000000000000000000000000000000000000000000000000000001");
-  return (seed % BN128_PRIME).toString();
-}
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
 function httpReq(url, { method = "GET", body = null, timeoutMs = 30000 } = {}) {
@@ -179,12 +162,15 @@ async function main() {
       continue;
     }
 
-    // Build + sign registration payload (unique dedup_hash per identity)
+    // Real Groth16 proof; gov id derives from the pubkey so re-runs are
+    // idempotent (same identity, same dedup_hash).
+    const { dedup_hash, proof: zk_proof } =
+      await generateDedupProof(`GOV-JUROR-${kf.public_key.slice(0, 24)}`, "1990-01-01", region);
     const idFields = {
       region,
       public_key:        kf.public_key,
-      dedup_hash:        mockDedupHash(idx),
-      zk_proof:          MOCK_ZK_PROOF,
+      dedup_hash,
+      zk_proof,
       verification_tier: "T1",
       vp_id:             vpId,
       social_attested:   false,
@@ -221,7 +207,7 @@ async function main() {
   }
 
   if (registered.length === 0) {
-    console.error("\nNo identities confirmed in DAG. Check node health and ZK_SKIP_VERIFY setting.");
+    console.error("\nNo identities confirmed in DAG. Check node health.");
     process.exit(1);
   }
 
