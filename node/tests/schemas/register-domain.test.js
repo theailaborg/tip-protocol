@@ -85,46 +85,37 @@ describe("normalizeDomain", () => {
 });
 
 // ─── Dev-mode localhost gating ──────────────────────────────────────────────
-// Production safety: localhost / 127.0.0.1 are accepted ONLY when BOTH
-// NODE_ENV != "production" AND TIP_DEV_ALLOW_LOCALHOST_DOMAINS=1.
+// Production safety: localhost / 127.0.0.1 are accepted ONLY when
+// NODE_ENV != "production" (automatic in dev, no opt-in flag).
 
 describe("normalizeDomain — dev-mode localhost", () => {
   const ORIGINAL_ENV = process.env.NODE_ENV;
-  const ORIGINAL_FLAG = process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS;
 
   afterEach(() => {
     if (ORIGINAL_ENV === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = ORIGINAL_ENV;
-    if (ORIGINAL_FLAG === undefined) delete process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS;
-    else process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = ORIGINAL_FLAG;
   });
 
-  test("localhost rejected by default (no flag)", () => {
-    delete process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS;
+  test("NODE_ENV != production accepts localhost automatically", () => {
     process.env.NODE_ENV = "development";
-    expect(() => schema.normalizeDomain("localhost"))
-      .toThrow(expect.objectContaining({ status: 400, code: "domain_invalid" }));
-  });
-
-  test("flag set + NODE_ENV != production accepts localhost", () => {
-    process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
     expect(schema.normalizeDomain("localhost")).toBe("localhost");
     expect(schema.normalizeDomain("localhost:4000")).toBe("localhost:4000");
     expect(schema.normalizeDomain("127.0.0.1")).toBe("127.0.0.1");
     expect(schema.normalizeDomain("127.0.0.1:8080")).toBe("127.0.0.1:8080");
   });
 
-  test("flag set in production is IGNORED (defense-in-depth)", () => {
+  test("localhost rejected in production", () => {
     process.env.NODE_ENV = "production";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
     expect(() => schema.normalizeDomain("localhost"))
+      .toThrow(expect.objectContaining({ status: 400, code: "domain_invalid" }));
+    expect(() => schema.normalizeDomain("127.0.0.1:8080"))
       .toThrow(expect.objectContaining({ status: 400, code: "domain_invalid" }));
   });
 
-  test("normal domains still pass when flag is set", () => {
+  test("normal domains pass in both modes", () => {
     process.env.NODE_ENV = "development";
-    process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS = "1";
+    expect(schema.normalizeDomain("acmenews.com")).toBe("acmenews.com");
+    process.env.NODE_ENV = "production";
     expect(schema.normalizeDomain("acmenews.com")).toBe("acmenews.com");
   });
 });

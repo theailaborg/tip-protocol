@@ -57,42 +57,19 @@ const log = getLogger("tip.domain-verifier");
 const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BYTES = 16 * 1024;   // well-known JSON is tiny
 
-// Dev-mode opt-in: same gating as register-domain._devAllowLocalhost. When
-// set, the HTTP fetch upgrades to http:// for localhost / 127.0.0.1 hosts,
-// and verifyDns short-circuits since loopback doesn't have a public DNS
-// record. NEVER takes effect in production.
+// Loopback domains verify automatically outside production: http fetch, DNS
+// short-circuit, no opt-in flag. NEVER takes effect in production.
 function _devAllowLocalhost() {
-  return process.env.NODE_ENV !== "production"
-    && process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS === "1";
+  return process.env.NODE_ENV !== "production";
 }
 function _isLocalHostname(domain) {
   return /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(domain);
 }
 
-// If TIP_DEV_LOCALHOST_FETCH_HOST is set, rewrite the host portion of a
-// loopback `domain` so a containerised node can reach the host's
-// well-known server. Two forms supported:
-//
-//   "host.docker.internal"        — hostname only. The claimed domain's
-//                                   port (if any) is preserved.
-//                                   Example: claim "localhost:4000" →
-//                                   fetch "host.docker.internal:4000".
-//
-//   "host.docker.internal:8088"   — host AND port. The override port
-//                                   replaces the claim's. Useful when the
-//                                   well-known server runs on a port the
-//                                   claim doesn't include (e.g. claim
-//                                   "localhost", real server on :8088).
-//
-// No-op when the env var is unset.
-function _rewriteLocalhostForDocker(domain) {
-  const override = process.env.TIP_DEV_LOCALHOST_FETCH_HOST;
-  if (!override) return domain;
-  const m = /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/.exec(domain);
-  if (!m) return domain;
-  // Override includes a port → use it verbatim. Otherwise keep the
-  // claim's port (or default to no port).
-  return /:\d{1,5}$/.test(override) ? override : override + (m[2] || "");
+// Inside a container `localhost` is the container itself, so a failed loopback
+// fetch retries once via the host gateway. The claimed domain's port is kept.
+function _dockerHostFallback(domain) {
+  return domain.replace(/^(localhost|127\.0\.0\.1)/, "host.docker.internal");
 }
 
 function _evidence({ url = null, body = null, txt = null } = {}) {
@@ -201,18 +178,11 @@ function _fetchJson(urlString, { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, maxBytes 
 async function verifyHttp(domain, tipId, deps = {}) {
   // Dev-mode: loopback domains fetch over plain HTTP because the local
   // well-known server is unlikely to terminate TLS. Production always uses
-  // HTTPS — see _devAllowLocalhost for the gating contract.
-  //
-  // When the node runs inside Docker, `localhost` inside the container
-  // resolves to the container itself, not the host. TIP_DEV_LOCALHOST_FETCH_HOST
-  // (typically `host.docker.internal` on Docker Desktop, or `172.17.0.1` on
-  // Linux) overrides the fetch hostname while preserving the claimed
-  // `domain` for canonical/body comparison — the signed bytes carry
-  // "localhost", and the well-known JSON still echoes "localhost".
+  // HTTPS. The claimed `domain` stays what the signature commits to; only the
+  // fetch target may differ on the docker fallback.
   const devLocal = _devAllowLocalhost() && _isLocalHostname(domain);
   const scheme = devLocal ? "http" : "https";
-  const fetchHost = devLocal ? _rewriteLocalhostForDocker(domain) : domain;
-  const url = `${scheme}://${fetchHost}${DOMAIN_WELL_KNOWN_PATH}`;
+  let url = `${scheme}://${domain}${DOMAIN_WELL_KNOWN_PATH}`;
   const fetcher = deps.fetchJson || _fetchJson;
   const fetchOpts = devLocal
     ? { ...(deps.fetchOpts || {}), allowInsecure: true }
@@ -223,12 +193,18 @@ async function verifyHttp(domain, tipId, deps = {}) {
     const res = await fetcher(url, fetchOpts);
     body = res.body;
   } catch (err) {
-    return _fail(
-      DOMAIN_VERIFICATION_METHODS.HTTP,
-      err.code || "well_known_unreachable",
-      err.message,
-      _evidence({ url }),
-    );
+    if (!devLocal) {
+      return _fail(DOMAIN_VERIFICATION_METHODS.HTTP, err.code || "well_known_unreachable", err.message, _evidence({ url }));
+    }
+    // Containerised node: loopback is the container itself; retry via the host
+    // gateway with the claimed domain's port.
+    url = `${scheme}://${_dockerHostFallback(domain)}${DOMAIN_WELL_KNOWN_PATH}`;
+    try {
+      const res = await fetcher(url, fetchOpts);
+      body = res.body;
+    } catch (err2) {
+      return _fail(DOMAIN_VERIFICATION_METHODS.HTTP, err2.code || "well_known_unreachable", err2.message, _evidence({ url }));
+    }
   }
 
   const evidence = _evidence({ url, body });

@@ -14,7 +14,6 @@
  *     → true / false
  *
  * Environment:
- *   ZK_SKIP_VERIFY=true   Skip groth16.verify() — for tests only
  *
  * Prerequisites (run once):
  *   node scripts/zk-setup.js
@@ -143,9 +142,6 @@ async function generateDedupProof(govId, dob, country) {
  * @returns {Promise<boolean>}
  */
 async function verifyDedupProof(dedupHash, proof) {
-  // Allow tests to skip ZK verification by setting ZK_SKIP_VERIFY=true
-  if (process.env.ZK_SKIP_VERIFY === "true") return true;
-
   const vKey = _loadVKey();
   return snarkjs.groth16.verify(vKey, [dedupHash], proof);
 }

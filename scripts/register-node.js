@@ -23,8 +23,8 @@
  *
  * Output layout:
  *   generated_nodes/<slug>-<short-tip-id>/
- *     ├── <slug>.env             Drop-in env file (use with --env-file=)
- *     ├── <node-id>.tip.json     Keypair backup (mode 0600)
+ *     ├── <slug>.env             Drop-in env file (use with --env-file=); no inline keys
+ *     ├── <node-id>.tip.json     Keypair (mode 0600); node reads it via TIP_NODE_CREDENTIALS_FILE
  *     └── data/                  Per-node data dir (created on first run)
  *
  * Prerequisites:
@@ -51,6 +51,8 @@ const {
   generateNodeId,
   signBody,
 } = require("../shared/crypto");
+
+const { renderEnvFromExample } = require("./node-env-template");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -254,6 +256,9 @@ async function main() {
   const tipFileName = result.node_id.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
   fs.writeFileSync(path.join(outDir, tipFileName), tipJson, { mode: 0o600 });
   ok(`Backup: ${outDir}/${tipFileName}`);
+  // The node reads both keys from this .tip.json via TIP_NODE_CREDENTIALS_FILE,
+  // so the generated .env never inlines the secret.
+  const tipFileRel = path.relative(process.cwd(), path.join(outDir, tipFileName));
 
   // Pull the target node's bootstrap multiaddr so the new node can dial it
   // immediately on startup. Falls back to a placeholder if /health didn't
@@ -285,150 +290,79 @@ async function main() {
   // Collect DB settings from the current environment (loaded by dotenv above).
   // DB_NAME may be overridden per-node via --db-name; all other settings are
   // inherited from the seed node's environment so the new node uses the same DB.
-  const dbDriver   = process.env.DB_DRIVER   || "";
-  const dbHost     = process.env.DB_HOST      || "";
-  const dbPort     = process.env.DB_PORT      || "";
-  const dbName     = dbNameOverride || process.env.DB_NAME || "";
-  const dbUser     = dbUserOverride || process.env.DB_USER || "";
-  const dbPassword = process.env.DB_PASSWORD  || "";
-  const dbSsl      = process.env.DB_SSL       || "";
+  const dbDriver = process.env.DB_DRIVER || "";
+  const dbHost = process.env.DB_HOST || "";
+  const dbPort = process.env.DB_PORT || "";
+  const dbName = dbNameOverride || process.env.DB_NAME || "";
+  const dbUser = dbUserOverride || process.env.DB_USER || "";
+  const dbPassword = process.env.DB_PASSWORD || "";
+  const dbSsl = process.env.DB_SSL || "";
   const dbSslRejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED || "";
   const dbPoolMin = process.env.DB_POOL_MIN || "";
   const dbPoolMax = process.env.DB_POOL_MAX || "";
-  const composeProfiles = process.env.COMPOSE_PROFILES || "";
 
   // Operational config carried from the seed node's env (media, classifier,
   // prescan, rate-limit, dev) so a new node matches it. Not consensus-critical.
-  const mediaBackend    = process.env.TIP_MEDIA_BACKEND    || "";
-  const mediaFsPath     = process.env.TIP_MEDIA_FS_PATH     || "";
+  const mediaBackend = process.env.TIP_MEDIA_BACKEND || "";
+  const mediaFsPath = process.env.TIP_MEDIA_FS_PATH || "";
   const mediaPresignTtl = process.env.TIP_MEDIA_PRESIGN_TTL_SEC || "";
-  const mediaS3Bucket   = process.env.TIP_MEDIA_S3_BUCKET   || "";
-  const mediaS3Region   = process.env.TIP_MEDIA_S3_REGION   || "";
-  const mediaS3Kms      = process.env.TIP_MEDIA_S3_KMS_KEY_ID || "";
-  const classifierUrl   = process.env.TIP_CLASSIFIER_URL   || "";
-  const classifierFb    = process.env.TIP_CLASSIFIER_FALLBACK || "";
-  const prescanConc     = process.env.TIP_PRESCAN_CONCURRENCY || "";
-  const rateLimitMax    = process.env.TIP_RATE_LIMIT_MAX   || "";
-  const devAllowLocal   = process.env.TIP_DEV_ALLOW_LOCALHOST_DOMAINS || "";
-  const devBypassVote   = process.env.TIP_DEV_BYPASS_VOTE_WINDOWS || "";
-  const devForceTier    = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
-  const devLocalFetch   = process.env.TIP_DEV_LOCALHOST_FETCH_HOST || "";
+  const mediaS3Bucket = process.env.TIP_MEDIA_S3_BUCKET || "";
+  const mediaS3Region = process.env.TIP_MEDIA_S3_REGION || "";
+  const mediaS3Kms = process.env.TIP_MEDIA_S3_KMS_KEY_ID || "";
+  const classifierUrl = process.env.TIP_CLASSIFIER_URL || "";
+  const classifierFb = process.env.TIP_CLASSIFIER_FALLBACK || "";
+  const prescanConc = process.env.TIP_PRESCAN_CONCURRENCY || "";
+  const rateLimitMax = process.env.TIP_RATE_LIMIT_MAX || "";
+  const devForceTier = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
+  const vpId = process.env.TIP_VP_ID || "";
+  const databaseUrl = process.env.DATABASE_URL || "";
+  const cryptoPool = process.env.TIP_CRYPTO_POOL_SIZE || "";
+  const classifierKey = process.env.TIP_CLASSIFIER_KEY || "";
+  const classifierScan = process.env.TIP_CLASSIFIER_SCAN_NON_OH || "";
+  const prescanWorker = process.env.TIP_PRESCAN_WORKER_COUNT || "";
+  const rateLimitWin = process.env.TIP_RATE_LIMIT_WINDOW_MS || "";
+  const apiEndpoint = process.env.TIP_API_ENDPOINT || "";
 
-  // .env for the new node — drop-in usable for `node --env-file=<path> node/src/index.js`.
-  // Mirrors .env.example design: same section order, same one-line inline-
-  // comment style, same compact per-engine quick reference. Values are
-  // pre-filled from the seed node's environment so the operator only edits
-  // when switching engines / regions / log levels.
-  const v = (val, fallback) => (val ? String(val) : fallback);
-  const envContent = [
-    `# TIP Protocol — ${name}`,
-    `# Generated by register-node.js on ${nowIso()}`,
-    `# Drop-in usable: node --env-file=${envRelForLaunch} node/src/index.js`,
-    ``,
-    `# ─── Node Identity ──────────────────────────────────────────────────────────`,
-    `NODE_ENV=development                       # development | staging | production`,
-    `TIP_NODE_ID=${result.node_id}`,
-    `TIP_NODE_TYPE=full                         # full | light | vp | archive`,
-    `TIP_REGION=US`,
-    ``,
-    `# ─── Network ────────────────────────────────────────────────────────────────`,
-    `PORT=${apiPort}                                  # REST API port`,
-    `HOST=0.0.0.0                               # bind address`,
-    `TIP_P2P_PORT=${p2pPort}                              # libp2p port for Narwhal/Bullshark consensus`,
-    ``,
-    `# Public IP used for peer dial-back. Required for cloud / multi-host setups.`,
-    `TIP_PUBLIC_IP=${publicIp}`,
-    ``,
-    `# Bootstrap multiaddr from the seed node's GET /health → data.p2p.bootstrap_addr.`,
-    `TIP_BOOTSTRAP_PEERS=${bootstrapAddr}`,
-    ``,
-    `# mDNS auto-discovery — true on a single LAN, false in the cloud.`,
-    `TIP_ENABLE_MDNS=false`,
-    ``,
-    `# ─── Storage ────────────────────────────────────────────────────────────────`,
-    `TIP_DATA_DIR=${dataDirRel}`,
-    `TIP_DB_PATH=${dataDirRel}/tip.db           # SQLite file path (only used if DB_DRIVER=sqlite)`,
-    ``,
-    `# ─── Database ───────────────────────────────────────────────────────────────`,
-    `# Switching engines = change DB_DRIVER + connection vars below. No code edits.`,
-    `#`,
-    `#   sqlite     better-sqlite3   local dev only, no DB server needed`,
-    `#   postgres   pg               production default`,
-    `#   mariadb    mysql2           also accepts: mysql (alias)`,
-    `#   mssql      mssql            also accepts: sqlserver (alias)`,
-    `#   oracle     oracledb         thin-mode, no Oracle Instant Client required`,
-    `DB_DRIVER=${v(dbDriver, "postgres")}`,
-    ``,
-    `# Picks which DB service \`docker compose up -d\` brings up alongside the node.`,
-    `# Empty = no DB service (SQLite only). Override per-run with --profile <name>.`,
-    `COMPOSE_PROFILES=${v(composeProfiles, "postgres")}`,
-    ``,
-    `# Connection. DB_HOST = compose service name in Docker (postgres / mariadb /`,
-    `# mssql / oracle), or \`localhost\` when running natively against host-side DB.`,
-    `# Leave DB_PORT blank for driver default (5432 / 3306 / 1433 / 1521).`,
-    `DB_HOST=${v(dbHost, "postgres")}`,
-    `DB_PORT=${v(dbPort, "5432")}`,
-    `DB_NAME=${v(dbName, "tip_protocol")}`,
-    `DB_USER=${v(dbUser, "tip")}`,
-    `DB_PASSWORD=${v(dbPassword, "secret")}`,
-    ``,
-    `# TLS — required for any cloud / managed DB. Set REJECT_UNAUTHORIZED=false`,
-    `# only in private networks with self-signed certs.`,
-    `DB_SSL=${v(dbSsl, "false")}`,
-    `DB_SSL_REJECT_UNAUTHORIZED=${v(dbSslRejectUnauthorized, "true")}`,
-    ``,
-    `# Connection pool (server-side drivers only).`,
-    `DB_POOL_MIN=${v(dbPoolMin, "2")}`,
-    `DB_POOL_MAX=${v(dbPoolMax, "10")}`,
-    ``,
-    `# ── Per-engine quick reference ──────────────────────────────────────────────`,
-    `# PostgreSQL:  DB_HOST=postgres   DB_PORT=5432   (DB_NAME=tip_protocol default)`,
-    `# MariaDB:     DB_HOST=mariadb    DB_PORT=3306`,
-    `# Oracle:      DB_HOST=oracle     DB_PORT=1521   DB_NAME=FREEPDB1 (service name)`,
-    `# SQL Server:  DB_HOST=mssql      DB_PORT=1433   DB_PASSWORD complexity rules:`,
-    `#              uppercase + lowercase + digit + symbol, min 8. Avoid '#' (comment).`,
-    `#              Cloud MSSQL usually needs DB_SSL=true.`,
-    ``,
-    `# ─── Security — Node Keys ───────────────────────────────────────────────────`,
-    `# ML-DSA-65 keypair, hex-encoded. Generated by register-node.js for this node.`,
-    `TIP_NODE_PRIVATE_KEY=${keypair.privateKey}`,
-    `TIP_NODE_PUBLIC_KEY=${keypair.publicKey}`,
-    ``,
-    `# ─── Logging ────────────────────────────────────────────────────────────────`,
-    `# debug.log always captures EVERYTHING. TIP_LOG_LEVEL gates info.log;`,
-    `# TIP_CONSOLE_LEVEL gates terminal output. Levels: debug > info > warn > error.`,
-    `# Default \`warn\` keeps healthy federations quiet — flip to info/debug to investigate.`,
-    `TIP_LOG_LEVEL=warn`,
-    `TIP_CONSOLE_LEVEL=warn`,
-    `TIP_LOG_DIR=${logDirRel}`,
-    ``,
-    `# ─── Media Storage ──────────────────────────────────────────────────────────`,
-    `TIP_MEDIA_BACKEND=${v(mediaBackend, "fs")}                  # fs | s3`,
-    `TIP_MEDIA_FS_PATH=${v(mediaFsPath, "./data/media")}`,
-    `TIP_MEDIA_PRESIGN_TTL_SEC=${v(mediaPresignTtl, "300")}`,
-    `TIP_MEDIA_S3_BUCKET=${mediaS3Bucket}`,
-    `TIP_MEDIA_S3_REGION=${mediaS3Region}`,
-    `TIP_MEDIA_S3_KMS_KEY_ID=${mediaS3Kms}`,
-    ``,
-    `# ─── Prescan / Classifier ───────────────────────────────────────────────────`,
-    `TIP_CLASSIFIER_URL=${classifierUrl}`,
-    `TIP_CLASSIFIER_FALLBACK=${v(classifierFb, "1")}`,
-    `TIP_PRESCAN_CONCURRENCY=${v(prescanConc, "4")}`,
-    ``,
-    `# ─── API ────────────────────────────────────────────────────────────────────`,
-    `TIP_PUBLIC_URL=http://localhost:${apiPort}`,
-    `TIP_RATE_LIMIT_MAX=${v(rateLimitMax, "200")}                 # per-IP req/min; raise for load tests`,
-    ``,
-    `# ─── Dev toggles (non-production only) ───────────────────────────────────────`,
-    `TIP_DEV_ALLOW_LOCALHOST_DOMAINS=${v(devAllowLocal, "0")}`,
-    `TIP_DEV_BYPASS_VOTE_WINDOWS=${v(devBypassVote, "0")}`,
-    `TIP_DEV_FORCE_PRESCAN_TIER=${devForceTier}`,
-    `TIP_DEV_LOCALHOST_FETCH_HOST=${devLocalFetch}`,
-    ``,
-    `# ─── CORS ───────────────────────────────────────────────────────────────────`,
-    `TIP_CORS_ORIGINS=*                         # comma-separated origins; '*' for dev only`,
-    ``,
-  ].join("\n");
+  // Drop-in .env from .env.example + the values we know. Blank carried values
+  // (u -> undefined) keep the example default. See node-env-template.js.
+  const u = (x) => (x === "" || x === undefined || x === null ? undefined : x);
+  const envContent = renderEnvFromExample({
+    TIP_NODE_ID: result.node_id,
+    PORT: apiPort,
+    TIP_P2P_PORT: p2pPort,
+    TIP_PUBLIC_IP: publicIp,
+    TIP_BOOTSTRAP_PEERS: u(bootstrapAddr),
+    TIP_ENABLE_MDNS: "false",
+    TIP_DATA_DIR: dataDirRel,
+    TIP_DB_PATH: `${dataDirRel}/tip.db`,
+    TIP_LOG_DIR: logDirRel,
+    TIP_PUBLIC_URL: `http://localhost:${apiPort}`,
+    TIP_NODE_CREDENTIALS_FILE: tipFileRel,
+    DB_DRIVER: u(dbDriver) || "postgres",
+    DB_HOST: u(dbHost) || "postgres",
+    DB_PORT: u(dbPort) || "5432",
+    DB_NAME: u(dbName) || "tip_protocol",
+    DB_USER: u(dbUser) || "tip",
+    DB_PASSWORD: u(dbPassword) || "secret",
+    DB_SSL: u(dbSsl), DB_SSL_REJECT_UNAUTHORIZED: u(dbSslRejectUnauthorized),
+    DB_POOL_MIN: u(dbPoolMin), DB_POOL_MAX: u(dbPoolMax),
+    TIP_VP_ID: u(vpId), DATABASE_URL: u(databaseUrl), TIP_CRYPTO_POOL_SIZE: u(cryptoPool),
+    TIP_MEDIA_BACKEND: u(mediaBackend), TIP_MEDIA_FS_PATH: u(mediaFsPath),
+    TIP_MEDIA_PRESIGN_TTL_SEC: u(mediaPresignTtl), TIP_MEDIA_S3_BUCKET: u(mediaS3Bucket),
+    TIP_MEDIA_S3_REGION: u(mediaS3Region), TIP_MEDIA_S3_KMS_KEY_ID: u(mediaS3Kms),
+    TIP_CLASSIFIER_URL: u(classifierUrl), TIP_CLASSIFIER_KEY: u(classifierKey),
+    TIP_CLASSIFIER_FALLBACK: u(classifierFb), TIP_CLASSIFIER_SCAN_NON_OH: u(classifierScan),
+    TIP_PRESCAN_CONCURRENCY: u(prescanConc), TIP_PRESCAN_WORKER_COUNT: u(prescanWorker),
+    TIP_RATE_LIMIT_MAX: u(rateLimitMax), TIP_RATE_LIMIT_WINDOW_MS: u(rateLimitWin),
+    TIP_API_ENDPOINT: u(apiEndpoint),
+    TIP_DEV_FORCE_PRESCAN_TIER: u(devForceTier),
+  }, {
+    headerNotes: [
+      `${name}`,
+      `Generated by register-node.js on ${nowIso()}`,
+      `Drop-in usable: node --env-file=${envRelForLaunch} node/src/index.js`,
+    ],
+  });
   fs.writeFileSync(envPath, envContent, { mode: 0o600 });
   ok(`Env file: ${outDir}/${envFileName}`);
 

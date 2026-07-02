@@ -125,12 +125,16 @@ function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCod
   };
 }
 
-// Skip real ZK verification in tests — circuit artifacts not present in test env
-process.env.ZK_SKIP_VERIFY = "true";
-
-// Mock Groth16 proof for tests (accepted when ZK_SKIP_VERIFY=true)
-const MOCK_ZK_PROOF = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
-const MOCK_DEDUP_HASH = "12345678901234567890123456789012345678901234567890123456789012345";
+const { generateDedupProof } = require(path.join(SHARED, "zk"));
+// Real Groth16 proofs (~150ms each); cached per seed so repeated fixtures reuse.
+const _proofCache = new Map();
+async function makeDedup(seed) {
+  if (!_proofCache.has(seed)) {
+    _proofCache.set(seed, await generateDedupProof(`GOV-${seed}`, "1990-01-01", "US"));
+  }
+  const { dedup_hash, proof } = _proofCache.get(seed);
+  return { dedup_hash, zk_proof: proof };
+}
 
 const {
   TX_TYPES, ORIGIN, ORIGIN_LABELS, HTTP_HEADERS, PROTOCOL,
@@ -589,10 +593,11 @@ describe("Transaction Validator", () => {
     });
   });
 
-  test("5.1 Valid REGISTER_IDENTITY tx passes validation", () => {
+  test("5.1 Valid REGISTER_IDENTITY tx passes validation", async () => {
     const freshKp = generateMLDSAKeypair();
     const tipId = generateTIPID("US", freshKp.publicKey);
     const ts = nowMs();
+    const { dedup_hash, zk_proof } = await makeDedup("tx-valid-us");
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY,
       timestamp: ts,
@@ -603,8 +608,8 @@ describe("Transaction Validator", () => {
         vp_id: VP_ID,
         attested: false,
         verification_tier: "T1",
-        dedup_hash: "55667788990011223344556677889900112233445566778899001122334455667",
-        zk_proof: MOCK_ZK_PROOF,
+        dedup_hash,
+        zk_proof,
       },
       prev: dag.getRecentPrev(),
     };
@@ -762,7 +767,7 @@ describe("REST API", () => {
   test("6.7 POST /v1/identity/register creates a TIP-ID", async () => {
     authorKp = generateMLDSAKeypair();
     const idFields = {
-      region: "DE", public_key: authorKp.publicKey, dedup_hash: MOCK_DEDUP_HASH, zk_proof: MOCK_ZK_PROOF,
+      region: "DE", public_key: authorKp.publicKey, ...(await makeDedup("author-de")),
       verification_tier: "T1", vp_id: testVpId, social_attested: false,
     };
     const vpSig = _signIdentity(idFields, testVpKp.privateKey);
@@ -996,8 +1001,7 @@ describe("Integration: Full Registration Flow", () => {
     const authorKp2 = generateMLDSAKeypair();
     const idFields = {
       region: "SG", public_key: authorKp2.publicKey,
-      dedup_hash: "99887766554433221100998877665544332211009988776655443322110099887",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("author-sg")), verification_tier: "T1",
       vp_id: integrationVpId, social_attested: false,
     };
     const intVpSig = _signIdentity(idFields, integrationKp.privateKey);
@@ -1031,12 +1035,13 @@ describe("Integration: Full Registration Flow", () => {
   });
 
   test("7.2 Duplicate dedup hash is rejected", async () => {
-    const dedup = computeDedupHash("SG123456", "1988-11-22", "SG");
-    dag.addDedupHash(dedup, Math.floor(nowMs() / 1000));
+    // Same seed = same dedup_hash: pre-register it, then the API call must reject.
+    const dup = await makeDedup("dup-sg");
+    dag.addDedupHash(dup.dedup_hash, Math.floor(nowMs() / 1000));
 
     const dupKp = generateMLDSAKeypair();
     const dupFields = {
-      region: "SG", public_key: dupKp.publicKey, dedup_hash: dedup, zk_proof: MOCK_ZK_PROOF,
+      region: "SG", public_key: dupKp.publicKey, ...dup,
       verification_tier: "T1", vp_id: integrationVpId, social_attested: false,
     };
     const dupVpSig = _signIdentity(dupFields, integrationKp.privateKey);
@@ -1105,8 +1110,7 @@ describe("Gossip Broadcast Wiring", () => {
     const kp82 = generateMLDSAKeypair();
     const idFields = {
       region: "US", public_key: kp82.publicKey,
-      dedup_hash: "88881111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("gossip-id")), verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
     const vpSig = _signIdentity(idFields, gFoundingVpKp.privateKey);
@@ -1124,8 +1128,7 @@ describe("Gossip Broadcast Wiring", () => {
     const kp83 = generateMLDSAKeypair();
     const idFields = {
       region: "US", public_key: kp83.publicKey,
-      dedup_hash: "99991111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("gossip-content")), verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
     const vpSig = _signIdentity(idFields, gFoundingVpKp.privateKey);
@@ -1165,8 +1168,7 @@ describe("Gossip Broadcast Wiring", () => {
     const kp84 = generateMLDSAKeypair();
     const idFields = {
       region: "US", public_key: kp84.publicKey,
-      dedup_hash: "77771111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("gossip-revoke")), verification_tier: "T1",
       vp_id: rVpId, social_attested: false,
     };
     const idRes = await request(gossipApp)
@@ -1191,8 +1193,7 @@ describe("Gossip Broadcast Wiring", () => {
     const kp85 = generateMLDSAKeypair();
     const dIdFields = {
       region: "US", public_key: kp85.publicKey,
-      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("gossip-dispute-author")), verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
     const idRes = await request(gossipApp)
@@ -1207,8 +1208,7 @@ describe("Gossip Broadcast Wiring", () => {
     const kp85d = generateMLDSAKeypair();
     const disputerIdFields = {
       region: "US", public_key: kp85d.publicKey,
-      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455557",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("gossip-disputer")), verification_tier: "T1",
       vp_id: gFoundingVpId, social_attested: false,
     };
     const disputerRes = await request(gossipApp)
@@ -1282,8 +1282,7 @@ describe("Semantic Dedup", () => {
     const sdKp = generateMLDSAKeypair();
     const idFields = {
       region: "US", public_key: sdKp.publicKey,
-      dedup_hash: "55551111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("sd-author")), verification_tier: "T1",
       vp_id: sdVpId, social_attested: false,
     };
     const idRes = await request(sdApp)
@@ -1297,8 +1296,7 @@ describe("Semantic Dedup", () => {
     const vKp = generateMLDSAKeypair();
     const vFields = {
       region: "US", public_key: vKp.publicKey,
-      dedup_hash: "66661111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+      ...(await makeDedup("sd-verifier")), verification_tier: "T1",
       vp_id: sdVpId, social_attested: false,
     };
     const vRes = await request(sdApp)
@@ -1366,8 +1364,7 @@ describe("Semantic Dedup", () => {
       const kp = generateMLDSAKeypair();
       const idFields = {
         region: "US", public_key: kp.publicKey,
-        dedup_hash: `77${i}0111122223333444455556666777788889999000011112222333344445555`,
-        zk_proof: MOCK_ZK_PROOF, verification_tier: "T1",
+        ...(await makeDedup(`cap-verifier-${i}`)), verification_tier: "T1",
         vp_id: sdVpId, social_attested: false,
       };
       const idRes = await request(sdApp)
@@ -1818,8 +1815,7 @@ describe("Semantic Dedup", () => {
     const thirdKp = generateMLDSAKeypair();
     const thirdFields = {
       region: "US", public_key: thirdKp.publicKey,
-      dedup_hash: "88001111222233334444555566667777888899990000111122223333444455556",
-      zk_proof: MOCK_ZK_PROOF, verification_tier: "T1", vp_id: sdVpId, social_attested: false
+      ...(await makeDedup("appeal-third")), verification_tier: "T1", vp_id: sdVpId, social_attested: false
     };
     const thirdRes = await request(sdApp)
       .post("/v1/identity/register")

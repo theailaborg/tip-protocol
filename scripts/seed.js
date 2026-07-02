@@ -51,8 +51,6 @@ const {
   initCrypto,
   generateMLDSAKeypair,
   mldsaSign,
-  shake256,
-  shake256Multi,
   generateTIPID,
   generateVPId,
   generateNodeId,
@@ -82,6 +80,9 @@ const { getTier } = PC;
 const { initDAG } = require("../node/src/dag");
 const { initScoring } = require("../node/src/scoring");
 const { loadConfig } = require("../node/src/config");
+const { buildBootstrapAddr } = require("../node/src/network/peer-key");
+const { generateDedupProof } = require("../shared/zk");
+const { renderEnvFromExample } = require("./node-env-template");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
@@ -103,6 +104,9 @@ const head = (t) => { sep(); console.log(`  ${T.bold}${T.gold}${t}${T.reset}`); 
 const args = process.argv.slice(2);
 const nodeUrl = args.find(a => a.startsWith("--node-url="))?.split("=")[1] || "http://localhost:4000";
 const useDirectMode = args.includes("--direct") || !args.includes("--node-url");
+// Local-only: also generate per-node env files for all founding nodes (node2+),
+// wired for the docker-compose.local.yml cluster (fixed IPs/ports/DBs).
+const isLocalCluster = args.includes("--local-cluster");
 
 const DATA_DIR = path.resolve(__dirname, "../genesis-data");
 const GENESIS_FILE = path.join(DATA_DIR, "genesis.json");
@@ -301,7 +305,8 @@ async function embedFoundingVPKey() {
   if (!cachedFounders) info("Generating founding member keypairs...");
   else warn(`founder-keys.json already exists — reusing ${cachedFounders.size} keypair(s) by tag`);
 
-  _foundingKeypairs = FOUNDING_MEMBERS.map(member => {
+  _foundingKeypairs = [];
+  for (const member of FOUNDING_MEMBERS) {
     const cached = cachedFounders?.get(member.tag);
     let keypair;
     if (cached?.private_key && cached?.public_key) {
@@ -311,8 +316,16 @@ async function embedFoundingVPKey() {
       keypair = generateMLDSAKeypair();
     }
     const tipId = generateTIPID(member.region, keypair.publicKey);
-    return { member, keypair, tipId };
-  });
+    // Real Groth16 dedup proof. Proof bytes are randomized per proving run, so
+    // reuse the cached one when present: re-seeds must stay byte-identical or
+    // genesis_ring_keys (and with it GENESIS_HASH) would drift between runs.
+    let dedupHash = cached?.dedup_hash, zkProof = cached?.zk_proof;
+    if (!dedupHash || !zkProof) {
+      ({ dedup_hash: dedupHash, proof: zkProof } =
+        await generateDedupProof(`TIP-SEED-${member.tag}`, "1970-01-01", member.region));
+    }
+    _foundingKeypairs.push({ member, keypair, tipId, dedupHash, zkProof });
+  }
   const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
   ok(`${cachedFounders ? "Loaded" : "Generated"} ${genesisRing.length} founding member keypairs`);
 
@@ -320,14 +333,13 @@ async function embedFoundingVPKey() {
   ok("Wrote genesis_ring (founding TIP-IDs) to genesis.json");
 
   // Embed genesis_ring_keys (public keys + dedup hashes + VP signatures for initDAG)
-  const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId }) => {
-    const dedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
+  const ringKeys = _foundingKeypairs.map(({ member, keypair, tipId, dedupHash, zkProof }) => {
     const tipIdType = member.tip_id_type || "personal";
     // Every founder gets their roster name (not just orgs); signed below.
     const creatorName = member.name;
     const idFields = {
       region: member.region, public_key: keypair.publicKey, dedup_hash: dedupHash,
-      zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+      zk_proof: zkProof,
       verification_tier: "T1", vp_id: vpId, social_attested: true,
       tip_id_type: tipIdType,
       ...(creatorName ? { creator_name: creatorName } : {}),
@@ -449,7 +461,6 @@ async function mintGenesisBlock(vpKeypair) {
 let _dag = null, _scoring = null, _nodeKp = null, _foundingNodeKps = [];
 
 function initDirectDAG(vpKeypair) {
-  process.env.ZK_SKIP_VERIFY = "true";
 
   // One keypair per founding node, cached per tag in founding-node-keys.json.
   // Reuse keeps node_id (and thus genesis_hash) stable across re-seeds; a tag
@@ -486,6 +497,12 @@ function initDirectDAG(vpKeypair) {
   // builds committee rotation 0 + the NODE_REGISTERED txs from it.
   embedFoundingNodes(vpKeypair);
 
+  // Seed injects its own keypair (_nodeKp) below, so clear the env key sources:
+  // a stale TIP_NODE_CREDENTIALS_FILE from a prior run points at a backup this
+  // run hasn't written yet and would make loadConfig throw.
+  delete process.env.TIP_NODE_CREDENTIALS_FILE;
+  delete process.env.TIP_NODE_PRIVATE_KEY;
+  delete process.env.TIP_NODE_PRIVATE_KEY_FILE;
   const cfg = loadConfig();
   // In-memory DAG: seed.js only uses the DAG as scratch space to validate
   // the genesis state shape; the canonical outputs (founder-keys.json,
@@ -580,6 +597,72 @@ function embedFoundingNodes(vpKeypair) {
   ok(`Embedded ${foundingNodes.length} founding node(s) into genesis.json`);
 }
 
+// Filesystem-safe .tip.json name for a node id (matches the backup writer).
+function nodeIdToFileName(id) {
+  return id.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
+}
+
+// One founding node's docker-cluster env: keypair comes from the mounted backup
+// .tip.json; only node1 is the bootstrap target.
+function buildLocalNodeEnv({ fn, slot, ip, apiPort, p2pPort, bootstrapAddr, shared }) {
+  return renderEnvFromExample({
+    TIP_NODE_ID: fn.node_id,
+    PORT: apiPort,
+    TIP_P2P_PORT: p2pPort,
+    TIP_PUBLIC_IP: ip,
+    TIP_BOOTSTRAP_PEERS: bootstrapAddr,
+    TIP_ENABLE_MDNS: "false",
+    TIP_DATA_DIR: "./data",          // container path; host ./node<slot>-env/data mounts to /app/data
+    TIP_DB_PATH: "./data/tip.db",
+    TIP_LOG_DIR: "/app/node/logs",
+    TIP_PUBLIC_URL: `http://localhost:${apiPort}`,
+    TIP_NODE_CREDENTIALS_FILE: `genesis-data/backups/${nodeIdToFileName(fn.node_id)}`,
+    DB_DRIVER: "postgres",
+    DB_HOST: shared.dbHost,
+    DB_PORT: shared.dbPort,
+    DB_NAME: `tip_node${slot}`,
+    DB_USER: shared.dbUser,
+    DB_PASSWORD: shared.dbPassword,
+    TIP_CRYPTO_POOL_SIZE: shared.cryptoPool,
+    TIP_RATE_LIMIT_MAX: shared.rateLimit,
+  }, {
+    headerNotes: [`local cluster node${slot}`, "Generated by seed.js --local-cluster"],
+  });
+}
+
+// Env files for every non-primary founding node, wired for the local compose
+// cluster (node2=.11:4100, node3=.12:4200); shared DB/ops values from node1's .env.
+async function writeLocalClusterEnvs(fns, primary) {
+  // No root .env yet (fresh checkout): fall back to the val() defaults.
+  const rootEnvPath = path.resolve(__dirname, "../.env");
+  const rootEnv = fs.existsSync(rootEnvPath) ? fs.readFileSync(rootEnvPath, "utf8") : "";
+  const val = (k, d) => (rootEnv.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1] ?? d);
+  const shared = {
+    dbHost: val("DB_HOST", "host.docker.internal"),
+    dbPort: val("DB_PORT", "5432"),
+    dbUser: val("DB_USER", "tip"),
+    dbPassword: val("DB_PASSWORD", ""),
+    rateLimit: val("TIP_RATE_LIMIT_MAX", "10000"),
+    cryptoPool: val("TIP_CRYPTO_POOL_SIZE", "2"),
+  };
+  // node2+ bootstrap off node1's deterministic peer id at its fixed IP.
+  const bootstrapAddr = await buildBootstrapAddr(primary.node_id, "172.30.0.10", 4001);
+
+  let slot = 2;   // node1 is slot 1 (its .env is patched separately)
+  for (const fn of fns.filter((n) => n.node_id !== primary.node_id)) {
+    const ip = `172.30.0.${9 + slot}`;             // slot 2 -> .11, slot 3 -> .12
+    const apiPort = 4000 + (slot - 1) * 100;        // slot 2 -> 4100
+    const dir = path.resolve(__dirname, `../node${slot}-env`);
+    fs.mkdirSync(path.join(dir, "data"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `node-${slot}.env`),
+      buildLocalNodeEnv({ fn, slot, ip, apiPort, p2pPort: apiPort + 1, bootstrapAddr, shared }),
+    );
+    ok(`Generated node${slot}-env/node-${slot}.env (${fn.node_id})`);
+    slot++;
+  }
+}
+
 // ─── Step 4b: Confirm seed nodes + write operator .env ───────────────────────
 // founding_nodes were embedded before initDAG, so _writeGenesisBlock already
 // wrote the NODE_REGISTERED tx + node row for each during the genesis bootstrap
@@ -602,21 +685,36 @@ async function registerSeedNode() {
   // This machine operates the PRIMARY founding node (its keypair is _nodeKp).
   const primary = fns.find((n) => n.public_key === _nodeKp.publicKey) || fns[0];
 
-  // Write the primary node's keys to .env
+  // The node reads its keypair from its .tip.json backup via
+  // TIP_NODE_CREDENTIALS_FILE, so the operator .env never inlines the secret.
+  // The backup is written to genesis-data/backups/<node-id>.tip.json below.
+  const credRel = `genesis-data/backups/${nodeIdToFileName(primary.node_id)}`;
+  const credLine = `TIP_NODE_CREDENTIALS_FILE=${credRel}`;
   const envFile = path.resolve(__dirname, "../.env");
   if (fs.existsSync(envFile)) {
     let envSrc = fs.readFileSync(envFile, "utf8");
-    envSrc = envSrc.replace(/TIP_NODE_PRIVATE_KEY=.*/, `TIP_NODE_PRIVATE_KEY=${_nodeKp.privateKey}`);
-    envSrc = envSrc.replace(/TIP_NODE_PUBLIC_KEY=.*/, `TIP_NODE_PUBLIC_KEY=${_nodeKp.publicKey}`);
+    // Idempotent across re-seeds: update an existing pointer, else convert the
+    // inline key line, else append. (A stale pointer left from a prior run would
+    // otherwise reference a backup this run's fresh keys just deleted.)
+    if (/^TIP_NODE_CREDENTIALS_FILE=/m.test(envSrc)) {
+      envSrc = envSrc.replace(/^TIP_NODE_CREDENTIALS_FILE=.*/m, credLine);
+    } else if (/^TIP_NODE_PRIVATE_KEY=/m.test(envSrc)) {
+      envSrc = envSrc.replace(/^TIP_NODE_PRIVATE_KEY=.*/m, credLine);
+    } else {
+      envSrc += `\n${credLine}\n`;
+    }
+    envSrc = envSrc.replace(/^TIP_NODE_PUBLIC_KEY=.*\n?/m, "");
     // Default log level to `warn` so a freshly-seeded founding node doesn't
     // flood the operator's terminal with INFO chatter from every batch /
     // anchor / rotation. Operators can still set debug/info manually.
-    // Only rewrites if the line already exists; appended below if missing.
     envSrc = envSrc.replace(/TIP_LOG_LEVEL=.*/, "TIP_LOG_LEVEL=warn");
     envSrc = envSrc.replace(/TIP_CONSOLE_LEVEL=.*/, "TIP_CONSOLE_LEVEL=warn");
     fs.writeFileSync(envFile, envSrc);
-    ok("Node keys + log levels written to .env");
+    ok(`Node credentials pointer (${credRel}) + log levels written to .env`);
   }
+
+  // Local dev convenience: also generate node2+ env files for the docker cluster.
+  if (isLocalCluster) await writeLocalClusterEnvs(fns, primary);
 
   ok(`Seed nodes registered: ${fns.length} (primary ${primary.node_id})`);
   label("Primary Node ID", primary.node_id);
@@ -629,11 +727,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
 
   const identities = [];
 
-  for (const { member, keypair, tipId } of _foundingKeypairs) {
-
-    // Seed uses mock proof — production would call generateDedupProof() from shared/zk.js
-    const mockDedupHash = shake256Multi("seed", member.name, member.region).replace(/[^0-9]/g, "").slice(0, 20) || "12345678901234567890";
-    const mockZkProof = { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" };
+  for (const { member, keypair, tipId, dedupHash, zkProof } of _foundingKeypairs) {
 
     let regResult;
 
@@ -645,7 +739,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       const memberCreatorName = memberType === "organization" ? member.name : null;
       const idFields = {
         region: member.region, public_key: keypair.publicKey,
-        dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+        dedup_hash: dedupHash, zk_proof: zkProof,
         verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
         tip_id_type: memberType,
         ...(memberCreatorName ? { creator_name: memberCreatorName } : {}),
@@ -668,8 +762,8 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           creator_name: memberCreatorName,
           social_attested: true,
           founding: true,
-          dedup_hash: mockDedupHash,
-          zk_proof: mockZkProof,
+          dedup_hash: dedupHash,
+          zk_proof: zkProof,
           vp_signature: vpSignature,
         },
       };
@@ -689,7 +783,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         registered_at: registeredAt,
         tx_id: tx.tx_id,
       });
-      _dag.addDedupHash(mockDedupHash, Math.floor(registeredAt / 1000));
+      _dag.addDedupHash(dedupHash, Math.floor(registeredAt / 1000));
       _dag.setScore(tipId, 550, 0, registeredAt);
 
       regResult = {
@@ -707,7 +801,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
         const memberCreatorName = memberType === "organization" ? member.name : null;
         const idFields = {
           region: member.region, public_key: keypair.publicKey,
-          dedup_hash: mockDedupHash, zk_proof: mockZkProof,
+          dedup_hash: dedupHash, zk_proof: zkProof,
           verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
           tip_id_type: memberType,
           ...(memberCreatorName ? { creator_name: memberCreatorName } : {}),
@@ -740,6 +834,8 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       creator_name: member.name,
       public_key: keypair.publicKey,
       private_key: keypair.privateKey,  // Stored in seed output — replace with real keys in production
+      dedup_hash: dedupHash,
+      zk_proof: zkProof,
       founding: true,
       score: regResult.score || 550,
       registered_at: _coerceMs(regResult.registered_at),
@@ -947,6 +1043,10 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
     vp_tag: "primary-vp",
     public_key: i.public_key,
     private_key: i.private_key,
+    // Proof bytes are randomized per proving run; cache them so re-seeds reuse
+    // the same bytes and genesis_ring_keys stays byte-identical.
+    dedup_hash: i.dedup_hash,
+    zk_proof: i.zk_proof,
     created_at: i.registered_at || nowMs(),
     ...(i.creator_name ? { creator_name: i.creator_name } : {}),
   })));
@@ -1124,4 +1224,9 @@ async function main() {
   }
 }
 
-main();
+// snarkjs (generateDedupProof) leaves WASM curve workers alive after proving,
+// so node won't auto-exit when main() resolves. Force-exit on success; the
+// failure path already exits(1) inside main().
+if (require.main === module) main().then(() => process.exit(0));
+
+module.exports = { nodeIdToFileName, buildLocalNodeEnv, writeLocalClusterEnvs };

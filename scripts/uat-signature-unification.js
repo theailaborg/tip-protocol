@@ -31,7 +31,7 @@
  *                            — node-emitted, not API-signed
  *
  * Run after `npm run seed:fresh` and a fresh PG schema + node start
- * with ZK_SKIP_VERIFY=true.
+ *
  */
 
 "use strict";
@@ -44,6 +44,7 @@ const SHARED = path.resolve(__dirname, "../shared");
 const { initCrypto, generateMLDSAKeypair, signBody, shake256, generateTIPID, tipNormalize, canonicalJson } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
 const registerIdentitySchema = require(path.resolve(__dirname, "../node/src/schemas/register-identity"));
+const { generateDedupProof } = require("../shared/zk");
 const contentRegisterSchema = require(path.resolve(__dirname, "../node/src/schemas/content-register"));
 
 const API = process.env.TIP_API || "http://localhost:4000";
@@ -155,10 +156,11 @@ async function _registerIdentity(label) {
   const kp = generateMLDSAKeypair();
   const region = "US";
   const tipId = generateTIPID(region, kp.publicKey);
-  const dedupHash = String(BigInt("0x" + shake256(`uat:${tipId}:${label}`).slice(0, 32)));
+  const { dedup_hash: dedupHash, proof: zkProof } =
+    await generateDedupProof(`uat:${tipId}:${label}`, "1990-01-01", region);
   const fields = {
     region, public_key: kp.publicKey, dedup_hash: dedupHash,
-    zk_proof: { pi_a: ["1", "2", "3"], pi_b: [["1", "2"], ["3", "4"], ["5", "6"]], pi_c: ["1", "2", "3"], protocol: "groth16", curve: "bn128" },
+    zk_proof: zkProof,
     verification_tier: "T1", vp_id: VP.vp_id, social_attested: true,
   };
   const payload = registerIdentitySchema.buildSigningPayload(fields);

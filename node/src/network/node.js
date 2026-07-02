@@ -22,7 +22,7 @@
 const { CONSENSUS, NETWORK } = require("../../../shared/protocol-constants");
 const { nowMs } = require("../../../shared/time");
 const { createChannelHealth } = require("./channel-health");
-const { shake256 } = require("../../../shared/crypto");
+const { deriveP2pPrivateKey } = require("./peer-key");
 const { GENESIS_CHAIN_ID, getGenesisHash } = require("../genesis");
 const { handleIncoming, initiate, unauthorizedPeers, canFastReauth } = require("./handshake");
 const { eventLoopMonitor } = require("../lib/event-loop-monitor");
@@ -49,7 +49,6 @@ async function loadLibp2p() {
     import("@libp2p/identify"),
     import("@libp2p/mdns"),
     import("@libp2p/bootstrap"),
-    import("@libp2p/crypto/keys"),
     import("@libp2p/peer-id"),
   ]);
   _lib = {
@@ -61,8 +60,7 @@ async function loadLibp2p() {
     identify: mods[5].identify,
     mdns: mods[6].mdns,
     bootstrapDiscovery: mods[7].bootstrap,
-    generateKeyPairFromSeed: mods[8].generateKeyPairFromSeed,
-    peerIdFromString: mods[9].peerIdFromString,
+    peerIdFromString: mods[8].peerIdFromString,
   };
   return _lib;
 }
@@ -120,7 +118,7 @@ const HEARTBEAT_PROTOCOL = "/tip/heartbeat/1.0.0";
  * @returns {Promise<Object>} Network node interface
  */
 async function createNetworkNode(options = {}) {
-  const { createLibp2p, tcp, noise, yamux, gossipsub, identify, mdns, bootstrapDiscovery, generateKeyPairFromSeed, peerIdFromString } = await loadLibp2p();
+  const { createLibp2p, tcp, noise, yamux, gossipsub, identify, mdns, bootstrapDiscovery, peerIdFromString } = await loadLibp2p();
   const { port = 4001, bootstrapPeers = [], enableMdns = true, nodeId = null, nodePrivateKey = null, getNodeKey = () => null, getLatestRound = () => 0, getMerkleRoot = () => "" } = options;
 
   // State
@@ -143,12 +141,11 @@ async function createNetworkNode(options = {}) {
     healCooldownMs: CONSENSUS.CHANNEL_HEAL_COOLDOWN_MS,
   });
 
-  // Deterministic peer ID from TIP node ID 
-  // Same TIP node ID = same libp2p peer ID across restarts.
+  // Deterministic peer id from the TIP node id (see peer-key.js); the same node
+  // id yields the same libp2p peer id across restarts.
   let privateKey;
   if (nodeId) {
-    const seed = Buffer.from(shake256(nodeId + ":libp2p-peer-key"), "hex").subarray(0, 32);
-    privateKey = await generateKeyPairFromSeed("Ed25519", seed);
+    privateKey = await deriveP2pPrivateKey(nodeId);
     log.info(`Peer ID derived from TIP node ID: ${nodeId}`);
   }
 

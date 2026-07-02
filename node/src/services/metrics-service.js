@@ -290,7 +290,6 @@ function bullsharkSection(s) {
     counter("tip_bullshark_certs_pruned_total", "Certs pruned from SQLite by §2 GC", bm.certs_pruned),
     counter("tip_bullshark_gc_runs_total", "Successful §2 GC runs", bm.gc_runs),
     counter("tip_bullshark_gc_failures_total", "GC attempts that threw (SQLite error, etc.)", bm.gc_failures),
-    counter("tip_bullshark_gc_skipped_disabled_total", "GC ticks skipped because TIP_GC_DISABLED=1", bm.gc_skipped_disabled),
   ].join("\n");
 }
 

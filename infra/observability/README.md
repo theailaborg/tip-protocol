@@ -174,7 +174,7 @@ The deep consensus view. Liveness (commits, rounds, quorum margin), safety (halt
 | Batch-ack delivery (direct / fallback / rebroadcast, /min) | BatchAcks sent on the direct stream vs fallen back to gossipsub vs re-broadcast on duplicate. A rising fallback share is the early signal of a broken direct push. | `tip_narwhal_acks_sent_direct_total, tip_narwhal_acks_sent_fallback_total` |
 | Byzantine defenses & stalls (/min) | Equivocations refused (vote-digest mismatch), round fast-forwards, and own-batch retries while stuck. A retry storm with no fast-forwards is a one-sided stall. | `tip_narwhal_equivocation_refused_total, tip_narwhal_fast_forwards_total` |
 | Event-loop lag (max / p99 / mean) | Per-node event-loop delay. max catches rare spikes; p99/mean catch chronic stalls (sync ML-DSA verify, big merkle rebuilds) that starve consensus. | `tip_process_event_loop_lag_max_ms, tip_node_registry_info` |
-| Bullshark GC (runs / failures / skipped, /min) | DAG garbage collection. Failures > 0 = SQLite errors; skipped > 0 = TIP_GC_DISABLED left on, which leaks the cert table. | `tip_bullshark_gc_runs_total, tip_bullshark_gc_failures_total` |
+| Bullshark GC (runs / failures, /min) | DAG garbage collection. Failures > 0 = SQLite errors. | `tip_bullshark_gc_runs_total, tip_bullshark_gc_failures_total` |
 | Mempool rejections / evictions (/min) | Submits rejected (full / duplicate / malformed) and txs evicted on TTL. A spike in rejections is a load or DOS signature. | `tip_mempool_rejected_total, tip_node_registry_info` |
 
 ### TIP Federation (`tip-federation`)

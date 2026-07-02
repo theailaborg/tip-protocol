@@ -9,9 +9,7 @@
  *      `_metrics.anchors_committed % GC_INTERVAL_COMMITS === 0`, cutoff
  *      computed as `lastCommittedRound - GC_DEPTH`. Runs only when
  *      consensus commits a real anchor.
- *   2. TIP_GC_DISABLED=1 env flag — halts pruning without code change.
- *      Observable via `gc_skipped_disabled` counter.
- *   3. Narwhal `_prunePendingCertsBefore` — drops parked cert waiters
+ *   2. Narwhal `_prunePendingCertsBefore` — drops parked cert waiters
  *      whose round falls below the GC horizon on round advance.
  *
  * Setup uses a 1-node committee (quorum=1) so each vote-round
@@ -128,49 +126,24 @@ describe("bullshark _maybeRunCertGC (commit-path trigger)", () => {
   });
 
   test("GC throttle: fires exactly at every GC_INTERVAL_COMMITS-th commit", () => {
-    // TIP_GC_DISABLED path gives a clean observable counter for throttle
-    // testing without needing GC_DEPTH-sized fixtures. `gc_skipped_disabled`
-    // increments only when the function is entered (i.e. after the throttle
-    // gate has passed), so it's the exact signal.
-    process.env.TIP_GC_DISABLED = "1";
-    try {
-      const { dag, bullshark } = setupBullshark();
-      const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    // `gc_runs` increments once per executed prune, i.e. exactly at every
+    // interval-th commit once the committed round is past GC_DEPTH (jump
+    // there first so the cutoff is positive at each tick).
+    const { dag, bullshark } = setupBullshark();
+    const interval = CONSENSUS.GC_INTERVAL_COMMITS;
+    bullshark.markOrderedUpTo(CONSENSUS.GC_DEPTH);
 
-      driveCommits(bullshark, dag, interval - 1);
-      expect(bullshark.stats().metrics.anchors_committed).toBe(interval - 1);
-      expect(bullshark.stats().metrics.gc_skipped_disabled).toBe(0);
+    driveCommits(bullshark, dag, interval - 1);
+    expect(bullshark.stats().metrics.anchors_committed).toBe(interval - 1);
+    expect(bullshark.stats().metrics.gc_runs).toBe(0);
 
-      driveCommits(bullshark, dag, 1);
-      expect(bullshark.stats().metrics.anchors_committed).toBe(interval);
-      expect(bullshark.stats().metrics.gc_skipped_disabled).toBe(1);
+    driveCommits(bullshark, dag, 1);
+    expect(bullshark.stats().metrics.anchors_committed).toBe(interval);
+    expect(bullshark.stats().metrics.gc_runs).toBe(1);
 
-      driveCommits(bullshark, dag, interval);
-      expect(bullshark.stats().metrics.anchors_committed).toBe(interval * 2);
-      expect(bullshark.stats().metrics.gc_skipped_disabled).toBe(2);
-    } finally {
-      delete process.env.TIP_GC_DISABLED;
-    }
-  });
-
-  test("TIP_GC_DISABLED=1 halts pruning entirely", () => {
-    process.env.TIP_GC_DISABLED = "1";
-    try {
-      const { dag, bullshark } = setupBullshark();
-      // Seed old certs that SHOULD be pruned under normal conditions.
-      for (let r = 1; r <= 10; r++) dag.saveCertificate(makeCert(r));
-      bullshark.markOrderedUpTo(600);
-
-      driveCommits(bullshark, dag, CONSENSUS.GC_INTERVAL_COMMITS, 601);
-      expect(bullshark.stats().metrics.gc_skipped_disabled).toBe(1);
-      expect(bullshark.stats().metrics.certs_pruned).toBe(0);
-      expect(bullshark.stats().metrics.gc_runs).toBe(0);
-
-      // Pre-seeded certs still there
-      expect(dag.certificateCount()).toBeGreaterThan(10);
-    } finally {
-      delete process.env.TIP_GC_DISABLED;
-    }
+    driveCommits(bullshark, dag, interval);
+    expect(bullshark.stats().metrics.anchors_committed).toBe(interval * 2);
+    expect(bullshark.stats().metrics.gc_runs).toBe(2);
   });
 
   test("GC fires real prune when cutoff > 0 and interval hits", () => {

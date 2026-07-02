@@ -1,36 +1,33 @@
-# TIP Protocol — Docker Compose
+# TIP Protocol - Docker Compose
 #
 # Single command brings up the founding node + (optionally) a database,
 # selected via Compose profile. The node container is identical for every
-# DB — selection is purely runtime via DB_DRIVER + connection vars in .env.
+# DB; selection is purely runtime via DB_DRIVER + connection vars in .env.
 #
 # ── Quick start ──────────────────────────────────────────────────────────────
 #
 #   npm run seed                                  # once, before first launch
 #
-#   docker compose up -d                          # PostgreSQL (default — see below)
+#   docker compose up -d                          # PostgreSQL (default, see below)
 #   docker compose logs -f tip-node               # tail logs
 #   docker compose down                           # stop (keep volumes)
 #   docker compose down -v                        # stop + wipe DB volumes
 #
 # ── Picking a different database engine ─────────────────────────────────────
 #
-# .env at the repo root sets COMPOSE_PROFILES which Compose reads as if
-# `--profile <value>` were passed. Default is postgres. To switch:
+# Postgres always starts (the prod default); DB_DRIVER in .env is the single
+# knob for what the NODE connects to. Other engines are opt-in via --profile
+# (postgres then starts but idles):
 #
-#   In .env:                                  Effect:
-#   COMPOSE_PROFILES=postgres   (default)     PostgreSQL  + node
-#   COMPOSE_PROFILES=mariadb                  MariaDB     + node
-#   COMPOSE_PROFILES=mssql                    SQL Server  + node
-#   COMPOSE_PROFILES=oracle                   Oracle Free + node
-#   COMPOSE_PROFILES=                         no DB service; node uses SQLite
+#   DB_DRIVER=postgres (default)   docker compose up -d
+#   DB_DRIVER=mariadb              docker compose --profile mariadb up -d
+#   DB_DRIVER=mssql                docker compose --profile mssql up -d
+#   DB_DRIVER=oracle               docker compose --profile oracle up -d
+#   DB_DRIVER=sqlite               docker compose up -d   (node uses the local file)
 #
-# Set the matching DB_DRIVER + DB_HOST in .env too. Override on a single
-# command without editing .env:
+# Set the matching DB_HOST in .env too (postgres / mariadb / mssql / oracle).
 #
-#   docker compose --profile mariadb up -d
-#
-# Genesis state is bootstrapped from genesis.js on first boot — no seed.db
+# Genesis state is bootstrapped from genesis.js on first boot; no seed.db
 # is shipped or copied. The runtime _writeGenesisBlock walks the founding
 # values embedded in genesis.js and creates the matching DAG state.
 #
@@ -54,7 +51,7 @@
 # Licensed under TIPCL-1.0
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Reusable node config — same image, env, volumes for every DB profile.
+# Reusable node config: same image, env, volumes for every DB profile.
 # Anchored YAML alias keeps the file DRY.
 # ─────────────────────────────────────────────────────────────────────────────
 x-node-common: &node-common
@@ -65,109 +62,46 @@ x-node-common: &node-common
   image: tip-protocol/node:2.0.0
   container_name: tip-node
   restart: unless-stopped
-  # Match the in-process shutdown timeout (65s — classifier text timeout +
+  # Match the in-process shutdown timeout (65s: classifier text timeout +
   # buffer) so SIGTERM grace covers worst-case prescan worker drain. Without
   # this, docker SIGKILLs at 10s and prescan claims become orphaned (queue
   # safety net recovers them, but adds latency).
   stop_grace_period: 70s
   ports:
-    - "${PORT:-4000}:4000"
-    - "${TIP_P2P_PORT:-4001}:4001"
+    - "${PORT:-4000}:${PORT:-4000}"
+    - "${TIP_P2P_PORT:-4001}:${TIP_P2P_PORT:-4001}"
   volumes:
     - ./data:/app/data
-    # Per-node host log dir. Maps to /app/logs in the container so
-    # multi-node runs (./logs/node-1, ./logs/node-2) don't collide.
-    - ./logs/node-1:/app/logs
+    # Host log dir mounted at the container's TIP_LOG_DIR (from .env).
+    - ./logs/node-1:/app/node/logs
+    # Node keypair (.tip.json) read via TIP_NODE_CREDENTIALS_FILE from .env.
+    - ./genesis-data/backups:/app/genesis-data/backups:ro
   # Make `host.docker.internal` resolvable inside the container on every
   # Docker setup (Docker Desktop on macOS/Windows already provides it; Linux
-  # daemons do not without this hint). Used by TIP_DEV_LOCALHOST_FETCH_HOST
-  # in the domain-binding verifier when the user binds a loopback domain.
-  # Harmless in production (the dev-only flag is the actual gate).
+  # daemons do not without this hint). The domain-binding verifier's dev-only
+  # loopback fallback dials it when a bound localhost domain is unreachable
+  # from inside the container. Harmless in production (NODE_ENV is the gate).
   extra_hosts:
     - "host.docker.internal:host-gateway"
-  environment:
-    NODE_ENV:                   ${NODE_ENV:-production}
-    PORT:                       4000
-    HOST:                       0.0.0.0
-    TIP_NODE_ID:                ${TIP_NODE_ID:-}
-    TIP_NODE_TYPE:              ${TIP_NODE_TYPE:-full}
-    TIP_REGION:                 ${TIP_REGION:-US}
-    TIP_NODE_PRIVATE_KEY:       ${TIP_NODE_PRIVATE_KEY}
-    TIP_NODE_PUBLIC_KEY:        ${TIP_NODE_PUBLIC_KEY}
-    TIP_PEERS:                  ${TIP_PEERS:-}
-    TIP_BOOTSTRAP_PEERS:        ${TIP_BOOTSTRAP_PEERS:-}
-    TIP_ENABLE_MDNS:            ${TIP_ENABLE_MDNS:-true}
-    TIP_PUBLIC_IP:              ${TIP_PUBLIC_IP:-}
-    TIP_PUBLIC_URL:             ${TIP_PUBLIC_URL:-}
-    TIP_CORS_ORIGINS:           ${TIP_CORS_ORIGINS:-*}
-    TIP_LOG_LEVEL:              ${TIP_LOG_LEVEL:-warn}
-    TIP_CONSOLE_LEVEL:          ${TIP_CONSOLE_LEVEL:-warn}
-    TIP_LOG_DIR:                /app/logs
-    TIP_P2P_PORT:               4001
-    TIP_DB_PATH:                /app/data/tip.db
-    TIP_DATA_DIR:               /app/data
-    TIP_DEV_BYPASS_VOTE_WINDOWS: ${TIP_DEV_BYPASS_VOTE_WINDOWS:-0}
-    TIP_DEV_ALLOW_LOCALHOST_DOMAINS: ${TIP_DEV_ALLOW_LOCALHOST_DOMAINS:-0}
-    TIP_DEV_LOCALHOST_FETCH_HOST: ${TIP_DEV_LOCALHOST_FETCH_HOST:-}
-    TIP_DEV_FORCE_PRESCAN_TIER: ${TIP_DEV_FORCE_PRESCAN_TIER:-}
-    # AI prescan classifier — base URL of the FastAPI service. When unset
-    # or unreachable, prescan runs in LOCAL FALLBACK mode (heuristic text,
-    # stub media) unless TIP_CLASSIFIER_FALLBACK=0. See .env.example.
-    TIP_CLASSIFIER_URL:          ${TIP_CLASSIFIER_URL:-}
-    TIP_CLASSIFIER_FALLBACK:     ${TIP_CLASSIFIER_FALLBACK:-1}
-    TIP_CLASSIFIER_KEY:          ${TIP_CLASSIFIER_KEY:-}
-    TIP_CLASSIFIER_SCAN_NON_OH:  ${TIP_CLASSIFIER_SCAN_NON_OH:-false}
-    TIP_PRESCAN_CONCURRENCY:     ${TIP_PRESCAN_CONCURRENCY:-1}
-    TIP_PRESCAN_WORKER_COUNT:    ${TIP_PRESCAN_WORKER_COUNT:-1}
-    TIP_PRESCAN_WORKER_DISABLE:  ${TIP_PRESCAN_WORKER_DISABLE:-}
-    # ── Media storage passthrough — see .env.example for descriptions.
-    TIP_MEDIA_BACKEND:           ${TIP_MEDIA_BACKEND:-fs}
-    TIP_MEDIA_FS_PATH:           /app/data/media
-    TIP_MEDIA_S3_BUCKET:         ${TIP_MEDIA_S3_BUCKET:-}
-    TIP_MEDIA_S3_REGION:         ${TIP_MEDIA_S3_REGION:-}
-    TIP_MEDIA_S3_KMS_KEY_ID:     ${TIP_MEDIA_S3_KMS_KEY_ID:-}
-    TIP_MEDIA_PRESIGN_TTL_SEC:   ${TIP_MEDIA_PRESIGN_TTL_SEC:-300}
-    TIP_MEDIA_RETENTION_DISABLE: ${TIP_MEDIA_RETENTION_DISABLE:-}
-    TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS: ${TIP_MEDIA_RETENTION_SWEEP_INTERVAL_MS:-}
-    TIP_API_ENDPOINT:            ${TIP_API_ENDPOINT:-}
-    AWS_ACCESS_KEY_ID:           ${AWS_ACCESS_KEY_ID:-}
-    AWS_SECRET_ACCESS_KEY:       ${AWS_SECRET_ACCESS_KEY:-}
-    # Dev-only ZK skip — when set to "true" the dedup-proof verifier
-    # returns true unconditionally. Production deployments leave this
-    # unset; the var only takes effect when the operator opts in.
-    ZK_SKIP_VERIFY: ${ZK_SKIP_VERIFY:-}
-    # ── DB adapter passthrough — values come from .env. DB_HOST should
-    #    match the service name of whichever DB profile is active.
-    DB_DRIVER:                  ${DB_DRIVER:-sqlite}
-    DB_HOST:                    ${DB_HOST:-}
-    DB_PORT:                    ${DB_PORT:-}
-    DB_NAME:                    ${DB_NAME:-tip_protocol}
-    DB_USER:                    ${DB_USER:-tip}
-    DB_PASSWORD:                ${DB_PASSWORD:-}
-    DB_SSL:                     ${DB_SSL:-false}
-    DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
-    DB_POOL_MIN:                ${DB_POOL_MIN:-2}
-    DB_POOL_MAX:                ${DB_POOL_MAX:-10}
+  # All node config comes from the env_file: identity, keys, ports, DB,
+  # classifier, media, dev flags. WORKDIR is /app, so the relative data/log
+  # paths in .env resolve onto the volume mounts above.
+  env_file: .env
   healthcheck:
-    test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+    test: ["CMD-SHELL", "wget -qO- http://localhost:$${PORT:-4000}/health || exit 1"]
     interval: 30s
     timeout: 10s
     retries: 3
     start_period: 20s
-  labels:
-    com.theailab.service:    "tip-protocol-node"
-    com.theailab.version:    "2.0.0"
   # networks:
   #   - tip-vp-with-mobile-web-app_default  # uncomment for VP-stack integration
 
 services:
 
-  # ── SQLite path — node only, no DB service ───────────────────────────────
-  # Default profile (also matches when no profile is passed). Falls back to
-  # the on-disk SQLite at /app/data/tip.db.
+  # Always starts. With DB_DRIVER=sqlite the node falls back to the on-disk
+  # file at /app/data/tip.db (postgres starts but idles).
   tip-node:
     <<: *node-common
-    profiles: ["", "sqlite", "postgres", "mariadb", "mssql", "oracle"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -182,18 +116,17 @@ services:
         condition: service_healthy
         required: false
 
-  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  # ── PostgreSQL (always starts, the prod default) ──────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: tip-postgres
-    profiles: ["postgres"]
     restart: unless-stopped
     environment:
       POSTGRES_USER:     ${DB_USER:-tip}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
       POSTGRES_DB:       ${DB_NAME:-tip_protocol}
     ports:
-      # Bind to localhost only — don't expose Postgres publicly.
+      # Bind to localhost only; don't expose Postgres publicly.
       - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -227,7 +160,7 @@ services:
       start_period: 20s
 
   # ── SQL Server 2022 ──────────────────────────────────────────────────────
-  # Note: SA password must meet SQL Server complexity rules — uppercase +
+  # Note: SA password must meet SQL Server complexity rules: uppercase +
   # lowercase + digit + symbol, min 8 chars. Avoid '#' in .env (parsed as
   # comment). The default DB_PASSWORD fallback below already meets the rule.
   mssql:
@@ -288,4 +221,4 @@ volumes:
 # Uncomment the two blocks above (this one + the `networks:` line under
 # x-node-common) to integrate with the VP-with-mobile-web-app compose stack
 # (cloudflared tunnel reaches the node via the shared network).
-# Default is standalone — Compose's default bridge network is sufficient.
+# Default is standalone; Compose's default bridge network is sufficient.

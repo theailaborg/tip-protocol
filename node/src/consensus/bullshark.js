@@ -82,7 +82,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     certs_pruned: 0,
     gc_runs: 0,
     gc_failures: 0,
-    gc_skipped_disabled: 0,
     // §4 + #34: rotation proposer fired (regardless of whether the
     // tx eventually commits). Increments each time _maybeProposeCommitteeRotation
     // builds + submits a COMMITTEE_ROTATION tx. Pairs with the dag-level
@@ -817,15 +816,6 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const interval = CONSENSUS.GC_INTERVAL_COMMITS;
     if (!interval || interval <= 0) return;
     if (_metrics.anchors_committed % interval !== 0) return;
-
-    // Throttle gate passed — we're at a GC tick. Check runtime disable
-    // here so `gc_skipped_disabled` counts tick-aligned skips (useful for
-    // ops dashboards: "how many prune cycles did we skip?") rather than
-    // raw commit count.
-    if (process.env.TIP_GC_DISABLED === "1") {
-      _metrics.gc_skipped_disabled++;
-      return;
-    }
 
     const gcDepth = CONSENSUS.GC_DEPTH;
     if (!gcDepth || gcDepth <= 0) return;

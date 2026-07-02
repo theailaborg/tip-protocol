@@ -13,9 +13,7 @@ scrape_configs:
           - "node1:4000"
           - "node2:4100"
           - "node3:4200"
-          - "node4:4300"
-          - "node5:4400"
 
   - job_name: "prometheus"
     static_configs:
-      - targets: [ "localhost:9090" ]
+      - targets: ["localhost:9090"]
