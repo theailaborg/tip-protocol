@@ -17,8 +17,12 @@ function createRouter({ contentService }) {
     res.json(contentService.list(req.query));
   }));
 
+  // ?ref_url — the URL of the page/post the caller is currently viewing.
+  // When present, the response's url_match tells the viewer (browser
+  // extension) whether this CTID is actually registered for that URL,
+  // so a copy-pasted CTID doesn't render as verified somewhere else.
   router.get("/content/:ctid", asyncHandler(async (req, res) => {
-    res.json(await contentService.resolve(req.params.ctid));
+    res.json(await contentService.resolve(req.params.ctid, req.query.ref_url));
   }));
 
   // OG card read — slim, crawler-cacheable projection used by the Open
