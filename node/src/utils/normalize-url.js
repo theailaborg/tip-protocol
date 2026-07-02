@@ -7,6 +7,9 @@ const TRACKING_PARAMS = new Set([
   "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
   "fbclid", "gclid", "igshid", "igsh", "img_index", "hl", "ref", "ref_src",
   "s", "t", "si", "spm",
+  // Share-sheet tokens: Threads appends ?xmt=..., Reddit ?rdt=... /
+  // ?share_id=... — session identifiers, not part of the post address.
+  "xmt", "rdt", "share_id",
 ]);
 
 // Domain aliases: different hostnames that address the same post
