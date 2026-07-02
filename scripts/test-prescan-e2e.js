@@ -26,7 +26,7 @@ const ROOT = path.resolve(__dirname, "..");
 const SHARED = path.join(ROOT, "shared");
 
 // Load identity from the per-identity backup file so tip_id_type is
-// captured correctly (founder-keys.json keeps everything in one entries
+// captured correctly (backups/*.tip.json keep the keypairs; one entries
 // array; the backups dir has one file per identity with full metadata).
 const IDENTITY_FILE = process.env.TIP_IDENTITY_FILE
   || path.join(ROOT, "genesis-data", "backups", "tip-id-US-02debc7b60b07301.tip.json");

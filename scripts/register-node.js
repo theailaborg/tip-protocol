@@ -28,7 +28,7 @@
  *     └── data/                  Per-node data dir (created on first run)
  *
  * Prerequisites:
- *   - genesis-data/founding-vp-keys.json must exist (from seed script)
+ *   - genesis-data/backups/ must hold the VP .tip.json (from seed script)
  *   - Target node must be running and healthy
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
@@ -53,6 +53,7 @@ const {
 } = require("../shared/crypto");
 
 const { renderEnvFromExample } = require("./node-env-template");
+const { loadVpBackup } = require("./genesis-backups");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
 const T = {
@@ -146,22 +147,11 @@ async function main() {
   console.log(`${T.bold}  TIP Protocol — Register New Node${T.reset}`);
   console.log();
 
-  // 1. Load founding VP keys (needed to sign the council_signature)
-  // founding-vp-keys.json uses the multi-entry envelope: { v:1, type, entries:[{tag, public_key, private_key, ...}] }.
-  // Look up the primary VP entry by tag rather than reading flat top-level fields.
-  const vpKeysFile = path.resolve(__dirname, "../genesis-data/founding-vp-keys.json");
-  if (!fs.existsSync(vpKeysFile)) {
-    fail("founding-vp-keys.json not found — run seed script first");
-    process.exit(1);
-  }
-  const vpKeysFile_parsed = JSON.parse(fs.readFileSync(vpKeysFile, "utf8"));
-  const vpEntry = vpKeysFile_parsed?.entries?.find(e => e.tag === "primary-vp");
-  if (!vpEntry?.public_key || !vpEntry?.private_key) {
-    fail("founding-vp-keys.json missing primary-vp entry — re-run seed script");
-    process.exit(1);
-  }
-  // Map the envelope's snake_case fields to the camelCase shape the rest of the
-  // script expects (vpKeys.publicKey / vpKeys.privateKey).
+  // 1. Load the founding VP keypair (signs the council_signature) from its
+  // backup .tip.json, the single on-disk key source.
+  let vpEntry;
+  try { vpEntry = loadVpBackup(); }
+  catch (e) { fail(e.message); process.exit(1); }
   const vpKeys = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
   ok("Founding VP keys loaded");
 

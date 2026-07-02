@@ -83,6 +83,7 @@ const { loadConfig } = require("../node/src/config");
 const { buildBootstrapAddr } = require("../node/src/network/peer-key");
 const { generateDedupProof } = require("../shared/zk");
 const { renderEnvFromExample } = require("./node-env-template");
+const { loadBackups, findBackup } = require("./genesis-backups");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 
 // ─── Terminal colors ──────────────────────────────────────────────────────────
@@ -143,56 +144,13 @@ const FOUNDING_VP_TEMPLATE = Object.freeze({
 });
 const SEED_FILE = path.join(DATA_DIR, "seed-output.json");
 
-// ─── Cached-entries envelope ────────────────────────────────────────────────
-// All dev-only keys files (founding-vp-keys.json, founding-node-keys.json,
-// founder-keys.json) use the same multi-entry envelope so n=1 today and
-// n=N tomorrow share one code path. seed-output.json adopts the same plural
-// arrays + `v` field for forward compat. genesis.json stays on its current
-// shape — see issues.md "Protocol/Shared #16" for the deferred refactor.
-//
-// Envelope shape:
-//   { v: 1, type: "<kind>", created_at, security_notice, entries: [{tag, ...}] }
-//
-// Each entry is keyed by `tag` (stable handle, e.g. "primary-vp", "founder",
-// "cofounder-tushar"). Cross-references between files use the tag (e.g. a
-// founding-node entry's `approving_vp_tag` points at a founding-vp entry).
-const ENVELOPE_VERSION = 1;
-const KEYS_FILE_TYPES = Object.freeze({
-  VPS: "founding-vps",
-  NODES: "founding-nodes",
-  IDENTITIES: "founding-identities",
-});
-
-function loadCachedEntries(filePath, expectedType) {
-  if (!fs.existsSync(filePath)) return null;
-  let parsed;
-  try { parsed = JSON.parse(fs.readFileSync(filePath, "utf8")); }
-  catch (e) {
-    warn(`${path.basename(filePath)} present but unreadable (${e.message}) — regenerating`);
-    return null;
-  }
-  if (parsed.v !== ENVELOPE_VERSION || parsed.type !== expectedType) {
-    warn(`${path.basename(filePath)} has unexpected shape (v=${parsed.v}, type=${parsed.type}) — regenerating`);
-    return null;
-  }
-  if (!Array.isArray(parsed.entries)) {
-    warn(`${path.basename(filePath)} missing entries[] — regenerating`);
-    return null;
-  }
-  return new Map(parsed.entries.map(e => [e.tag, e]));
-}
-
-function writeCachedEntries(filePath, type, entries) {
-  const envelope = {
-    v: ENVELOPE_VERSION,
-    type,
-    created_at: nowMs(),
-    security_notice: "HIGHLY SENSITIVE. Keep offline. Never commit to version control.",
-    entries,
-  };
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2), { mode: 0o600 });
-}
+// ─── Key reuse from backups ─────────────────────────────────────────────────
+// genesis-data/backups/*.tip.json is the single on-disk source of private
+// keys (genesis.json carries the public side). Loaded once at start; seed
+// reuses any entity whose backup exists and mints fresh keys only for the
+// missing ones. seed:fresh deletes the dir first, so everything mints new.
+const _backupDocs = loadBackups();
+function _reuseBackup(lookup) { return findBackup(_backupDocs, lookup); }
 
 // ─── HTTP helper (wraps Node.js http/https) ────────────────────────────────────
 function post(url, body) {
@@ -241,9 +199,9 @@ function get(url) {
 // ─── Founding members definition ─────────────────────────────────────────────
 // `tip_id_type` is signed into the genesis_ring_keys VP signature so the
 // type is cryptographically attested at bootstrap, not just inferred.
-// `tag` is the stable lookup key for founder-keys.json — adding a new
-// member with a fresh tag generates a fresh keypair on next seed; existing
-// tags reuse cached keypairs so tip_ids stay stable across re-seeds.
+// `tag` is the stable lookup key into the backups: adding a member with a
+// fresh tag mints a fresh keypair on next seed; existing tags reuse their
+// backup so tip_ids stay stable across re-seeds.
 const FOUNDING_MEMBERS = GENESIS_MEMBERS.founding_members;
 
 // Keypairs generated in Step 2, used in Step 5
@@ -253,14 +211,12 @@ let _foundingKeypairs = []; // [{ member, keypair, tipId }]
 async function embedFoundingVPKey() {
   head("STEP 1: Founding VP & Member Keypairs → Genesis Payload");
 
-  const vpKeysFile = path.join(DATA_DIR, "founding-vp-keys.json");
   const VP_TAG = FOUNDING_VP_DEF.tag;
 
   let vpKeypair;
-  const cachedVps = loadCachedEntries(vpKeysFile, KEYS_FILE_TYPES.VPS);
-  const cachedVp = cachedVps?.get(VP_TAG);
+  const cachedVp = _reuseBackup({ tag: VP_TAG, type: "vp", name: FOUNDING_VP_DEF.name });
   if (cachedVp?.public_key && cachedVp?.private_key) {
-    warn(`founding-vp-keys.json already exists — reusing keypair for tag "${VP_TAG}"`);
+    warn(`Reusing VP keypair from backups (tag "${VP_TAG}")`);
     vpKeypair = {
       algorithm: "ML-DSA-65",
       publicKey: cachedVp.public_key,
@@ -270,17 +226,7 @@ async function embedFoundingVPKey() {
   } else {
     info("Generating ML-DSA-65 keypair for founding VP...");
     vpKeypair = generateMLDSAKeypair();
-    writeCachedEntries(vpKeysFile, KEYS_FILE_TYPES.VPS, [{
-      tag: VP_TAG,
-      name: FOUNDING_VP_DEF.name,
-      region: "US",
-      id: generateVPId("US", vpKeypair.publicKey),
-      public_key: vpKeypair.publicKey,
-      private_key: vpKeypair.privateKey,
-      created_at: nowMs(),
-    }]);
-    ok("Founding VP keypair generated and saved");
-    warn("SECURITY: founding-vp-keys.json is chmod 600. NEVER commit to git.");
+    ok("Founding VP keypair generated (written to backups at the end of seed)");
   }
 
   // Build founding_vp (static template + minted key/id) and write to genesis.json.
@@ -295,24 +241,17 @@ async function embedFoundingVPKey() {
   });
   ok(`Embedded founding VP: ${vpId}`);
 
-  // Generate (or reuse) founding member keypairs and compute TIP-IDs for
-  // genesis_ring. Cache file (founder-keys.json) uses the multi-entry
-  // envelope (see ENVELOPE_VERSION + KEYS_FILE_TYPES near top of file).
-  // Lookup is by `tag` so adding a member to FOUNDING_MEMBERS later only
-  // generates a fresh key for that one tag; existing tags stay stable.
-  const founderKeysFile = path.join(DATA_DIR, "founder-keys.json");
-  const cachedFounders = loadCachedEntries(founderKeysFile, KEYS_FILE_TYPES.IDENTITIES);
-  if (!cachedFounders) info("Generating founding member keypairs...");
-  else warn(`founder-keys.json already exists — reusing ${cachedFounders.size} keypair(s) by tag`);
-
+  // Generate (or reuse from backups) founding member keypairs and compute
+  // TIP-IDs for genesis_ring. Lookup is by `tag`, so adding a member to
+  // FOUNDING_MEMBERS later only mints a fresh key for that one tag.
   _foundingKeypairs = [];
   for (const member of FOUNDING_MEMBERS) {
-    const cached = cachedFounders?.get(member.tag);
+    const cached = _reuseBackup({ tag: member.tag, type: "identity", name: member.name });
     let keypair;
     if (cached?.private_key && cached?.public_key) {
       keypair = { algorithm: "ML-DSA-65", privateKey: cached.private_key, publicKey: cached.public_key };
     } else {
-      if (cachedFounders) info(`  ↳ no cached key for tag "${member.tag}" — generating fresh`);
+      if (_backupDocs.length) info(`  ↳ no backup for tag "${member.tag}" — generating fresh`);
       keypair = generateMLDSAKeypair();
     }
     const tipId = generateTIPID(member.region, keypair.publicKey);
@@ -327,7 +266,7 @@ async function embedFoundingVPKey() {
     _foundingKeypairs.push({ member, keypair, tipId, dedupHash, zkProof });
   }
   const genesisRing = _foundingKeypairs.map(fk => fk.tipId);
-  ok(`${cachedFounders ? "Loaded" : "Generated"} ${genesisRing.length} founding member keypairs`);
+  ok(`Prepared ${genesisRing.length} founding member keypairs (reused from backups where present)`);
 
   _patchGenesisJson({ genesis_ring: genesisRing });
   ok("Wrote genesis_ring (founding TIP-IDs) to genesis.json");
@@ -462,32 +401,22 @@ let _dag = null, _scoring = null, _nodeKp = null, _foundingNodeKps = [];
 
 function initDirectDAG(vpKeypair) {
 
-  // One keypair per founding node, cached per tag in founding-node-keys.json.
+  // One keypair per founding node, reused from its backup .tip.json by tag.
   // Reuse keeps node_id (and thus genesis_hash) stable across re-seeds; a tag
-  // with no cached key gets a fresh one (e.g. newly-added founding nodes).
-  const nodeKeysFile = path.join(DATA_DIR, "founding-node-keys.json");
-  const cachedNodes = loadCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES);
+  // with no backup gets a fresh keypair (e.g. newly-added founding nodes).
   _foundingNodeKps = [];
-  const entries = [];
   for (const def of FOUNDING_NODES_DEF) {
-    const cached = cachedNodes?.get(def.tag);
+    const cached = _reuseBackup({ tag: def.tag, type: "node", name: def.name });
     let kp;
     if (cached?.public_key && cached?.private_key) {
       kp = { algorithm: "ML-DSA-65", publicKey: cached.public_key, privateKey: cached.private_key };
-      warn(`Reusing cached keypair for founding node tag "${def.tag}"`);
+      warn(`Reusing keypair from backups for founding node tag "${def.tag}"`);
     } else {
       kp = generateMLDSAKeypair();
       ok(`Generated keypair for founding node tag "${def.tag}"`);
     }
     _foundingNodeKps.push({ def, kp });
-    entries.push({
-      tag: def.tag, name: def.name, id: generateNodeId(kp.publicKey),
-      public_key: kp.publicKey, private_key: kp.privateKey,
-      created_at: cached?.created_at || nowMs(),
-      approving_vp_tag: "primary-vp",
-    });
   }
-  writeCachedEntries(nodeKeysFile, KEYS_FILE_TYPES.NODES, entries);
 
   // The seed machine operates the PRIMARY founding node (first in the roster);
   // its key goes to .env. The rest are distributed to their operators.
@@ -505,8 +434,8 @@ function initDirectDAG(vpKeypair) {
   delete process.env.TIP_NODE_PRIVATE_KEY_FILE;
   const cfg = loadConfig();
   // In-memory DAG: seed.js only uses the DAG as scratch space to validate
-  // the genesis state shape; the canonical outputs (founder-keys.json,
-  // founding-vp-keys.json, genesis.json, seed-output.json + genesis.js
+  // the genesis state shape; the canonical outputs (genesis.json,
+  // backups/*.tip.json, seed-output.json + genesis.js
   // patch) are written directly. The runtime `_writeGenesisBlock`
   // (dag.js) re-bootstraps the DB from those embedded values on first
   // `npm start`, so no on-disk seed.db is needed.
@@ -1030,28 +959,6 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
   fs.writeFileSync(SEED_FILE, JSON.stringify(output, null, 2));
   ok(`Seed output written to: ${SEED_FILE}`);
 
-  // Write founder private keys using the multi-entry envelope. VP keys are
-  // intentionally NOT duplicated here — they live in founding-vp-keys.json.
-  // Loaders that need VP keys read that file directly.
-  const keysOutputFile = path.join(DATA_DIR, "founder-keys.json");
-  writeCachedEntries(keysOutputFile, KEYS_FILE_TYPES.IDENTITIES, identities.map(i => ({
-    tag: i.tag,
-    tip_id: i.tip_id,
-    tip_id_type: i.tip_id_type || "personal",
-    name: i.name,
-    region: "US",
-    vp_tag: "primary-vp",
-    public_key: i.public_key,
-    private_key: i.private_key,
-    // Proof bytes are randomized per proving run; cache them so re-seeds reuse
-    // the same bytes and genesis_ring_keys stays byte-identical.
-    dedup_hash: i.dedup_hash,
-    zk_proof: i.zk_proof,
-    created_at: i.registered_at || nowMs(),
-    ...(i.creator_name ? { creator_name: i.creator_name } : {}),
-  })));
-  ok(`Founder keys written to: ${keysOutputFile} (chmod 600)`);
-
   // Write .tip.json backup files (same format as VP app's download)
   const backupDir = path.join(DATA_DIR, "backups");
   if (fs.existsSync(backupDir)) {
@@ -1068,12 +975,17 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
     const tipJson = JSON.stringify({
       v: 1,
       type: "identity",
+      tag: identity.tag,
       name: identity.name,
       tip_id: identity.tip_id,
       tip_id_type: identity.tip_id_type || "personal",
       ...(identity.creator_name ? { creator_name: identity.creator_name } : {}),
       public_key: identity.public_key,
       private_key: identity.private_key,
+      // Proof bytes are randomized per proving run; persisted here so re-seeds
+      // reuse the same bytes and genesis_ring_keys stays byte-identical.
+      dedup_hash: identity.dedup_hash,
+      zk_proof: identity.zk_proof,
       created: identity.registered_at || nowMs(),
     }, null, 2);
     const filePath = path.join(backupDir, toFileName(identity.tip_id));
@@ -1085,6 +997,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
   const vpBackup = JSON.stringify({
     v: 1,
     type: "vp",
+    tag: FOUNDING_VP_DEF.tag,
     name: vpRecord.name,
     vp_id: vpRecord.vp_id,
     public_key: vpKeypair.publicKey,
@@ -1100,6 +1013,7 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
     const nodeBackup = JSON.stringify({
       v: 1,
       type: "node",
+      tag: def.tag,
       name: def.name,
       node_id: nodeId,
       public_key: kp.publicKey,

@@ -75,7 +75,6 @@ const NODE_B = arg("node-b", "http://localhost:4100");
 const PORTS = arg("ports", "4000,4100,4200,4300,4400").split(",").map(s => s.trim());
 const ATTEMPTS = parseInt(arg("attempts", "3"), 10);
 const USERS_FILE = arg("users", path.join(ROOT, "genesis-data/temp-users/temp-users-latest.json"));
-const VP_KEYS_FILE = path.join(ROOT, "genesis-data/founding-vp-keys.json");
 
 const RESET = "\x1b[0m", GREEN = "\x1b[32m", RED = "\x1b[31m", YELLOW = "\x1b[33m", DIM = "\x1b[2m", BOLD = "\x1b[1m";
 const ok = (s) => `${GREEN}${s}${RESET}`;
@@ -129,14 +128,8 @@ function loadUsers() {
 }
 
 function loadFoundingVp() {
-  if (!fs.existsSync(VP_KEYS_FILE)) {
-    console.error(bad(`✗ ${VP_KEYS_FILE} not found — cluster setup required`));
-    process.exit(1);
-  }
-  const data = JSON.parse(fs.readFileSync(VP_KEYS_FILE, "utf8"));
-  const vp = data.entries?.[0];
-  if (!vp) { console.error(bad("✗ no VP entries in founding-vp-keys.json")); process.exit(1); }
-  return vp; // { id, public_key, private_key, ... }
+  try { return loadVpBackup(); }   // { vp_id, public_key, private_key, ... }
+  catch (e) { console.error(bad(`✗ ${e.message}`)); process.exit(1); }
 }
 
 // ── outcome polling ─────────────────────────────────────────────────────────

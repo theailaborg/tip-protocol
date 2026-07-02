@@ -153,14 +153,14 @@ or spinning up a local multi-node setup for development.
 
 ---
 
-#### Production: Run the Federation Founding Node
+#### Production: Run a Federation Founding Node
 
-The genesis founding-node identity is baked into `genesis.js` at seed
-time and never changes for the life of the federation. The AI Lab
-delivers the operator a pre-filled `.env` file (founding-node ML-DSA-65
-keys, port assignments, network defaults) along with the matching
-`<id>.tip.json` key backup. Both files contain secrets and must be
-`chmod 600`.
+The genesis founding-node identities (a 3-node committee) are minted at
+seed time and never change for the life of the federation. Each operator
+receives two files out-of-band (Bitwarden Send / Signal / hardware token):
+
+- `.env`: the node's config; no inline secrets, only a pointer to the key file
+- `tip-node-<id>.tip.json`: the ML-DSA-65 keypair (THE secret, `chmod 600`)
 
 **Step 1.** Clone and install:
 
@@ -170,21 +170,26 @@ cd tip-protocol
 npm install
 ```
 
-**Step 2.** Drop the delivered `.env` at the repo root and back up the keys:
+**Step 2.** Place the delivered files:
 
 ```bash
-# .env file (delivered out-of-band — Bitwarden Send / Signal / hardware token)
-cp /path/to/delivered/founding.env .env
-chmod 600 .env
-
-# Key backup — store off the live server (offline/cold storage)
-cp /path/to/delivered/<id>.tip.json /secure/backups/<id>.tip.json
-chmod 600 /secure/backups/<id>.tip.json
+cp /path/to/delivered/node.env .env && chmod 600 .env
+mkdir -p genesis-data/backups
+cp /path/to/delivered/tip-node-<id>.tip.json genesis-data/backups/
+chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+# keep a second copy OFF the live server (offline/cold storage)
 ```
 
+The node reads its keypair from that file via `TIP_NODE_CREDENTIALS_FILE`
+(already set in the delivered `.env`); docker compose mounts
+`genesis-data/backups/` read-only into the container. Orchestrated
+deployments (K8s/Swarm/ECS) can instead mount the file as a platform
+secret and point `TIP_NODE_CREDENTIALS_FILE` at the mount path, no code
+changes needed.
+
 **Step 3.** Adjust the deployment-specific values in `.env`. Identity
-fields (`TIP_NODE_ID`, `TIP_NODE_PRIVATE_KEY`, `TIP_NODE_PUBLIC_KEY`) and
-ports come pre-filled — leave them as delivered. Update only:
+(`TIP_NODE_ID`, `TIP_NODE_CREDENTIALS_FILE`) and ports come pre-filled,
+leave them as delivered. Update only:
 
 ```ini
 # ── Network — adjust per host ─────────────────────────────────────────────
@@ -255,49 +260,56 @@ cd tip-protocol
 npm install
 ```
 
-**Step 2.** Generate a fresh genesis + founding-node + founding-VP keypair:
+**Step 2.** Generate a fresh genesis (3 founding nodes + founding VP +
+founding identities):
 
 ```bash
-npm run seed:fresh
+cp .env.example .env && chmod 600 .env    # once, before first seed
+npm run seed:local
 ```
 
-What this does (`scripts/seed.js`):
-- Generates a new founding-VP ML-DSA-65 keypair → `genesis-data/founding-vp-keys.json`
-- Generates a new founding-node ML-DSA-65 keypair → `genesis-data/founder-keys.json`
-- Embeds the founding-node identity into `genesis.js`, `protocol-constants.js`, and `python/scripts/seed.py` (so all three implementations share the same chain anchor)
-- Writes the canonical genesis block → `genesis-data/genesis.json`
-- Writes a provenance record → `genesis-data/seed-output.json`
+On a fresh clone this mints everything; on a machine that already has
+`genesis-data/backups/`, it reuses those keys and leaves the genesis
+unchanged. Only run `npm run seed:fresh:local` when you deliberately want
+a brand-new federation: it wipes the backups and mints all-new keys,
+which changes `genesis_hash` and requires a cluster reset.
 
-> **Why we can't reuse the committed `genesis.js`:** the founder private
-> key (`genesis-data/founder-keys.json`) is `.gitignore`d for security
-> and only exists on the machine that ran `seed`. Anyone cloning this
-> repo therefore has the public-side genesis but cannot run the
-> founding node without re-running `seed` to generate matching keys.
-> Each `seed` run produces a new isolated dev federation — that's the
-> intended behavior.
+What this does (`scripts/seed.js --local-cluster`):
+- Mints ML-DSA-65 keypairs for the founding VP, 4 founding identities and
+  3 founding nodes, and writes each as a `.tip.json` in
+  `genesis-data/backups/`: the single on-disk key store (genesis.json
+  carries only the public side)
+- Registers each founding identity with a REAL Groth16 dedup proof
+  (proof bytes persist in the identity's backup so re-seeds stay
+  byte-identical and `genesis_hash` is stable)
+- Patches `.env` with node1's `TIP_NODE_CREDENTIALS_FILE` pointer and
+  generates `node2-env/node-2.env` + `node3-env/node-3.env` wired for the
+  local docker cluster (fixed IPs, per-node DBs, bootstrap multiaddr
+  computed from node1's deterministic peer id)
 
-The plain `npm run seed` command is idempotent — re-running it on an
-existing seed leaves keys in place and only regenerates derived files.
-Use `seed:fresh` (which `rm -rf`s `genesis-data/` and `data/` first)
-when you want a clean slate.
+> The private keys live only in `genesis-data/backups/` on the machine
+> that ran `seed` (`.gitignore`d). Anyone cloning the repo gets the
+> public genesis but must re-seed their own isolated dev federation.
 
-**Step 3.** Start the founding node — follow the **Production** section
-above, but use the keys from your locally-generated
-`genesis-data/founder-keys.json` to populate `.env`. Because the
-founding-node `.env` doesn't get auto-generated, copy the template:
+`npm run seed` (without `:fresh`) reuses every entity whose backup
+`.tip.json` exists and mints fresh keys only for missing ones; with all
+backups present the genesis hash does not change. `seed:local` /
+`seed:fresh:local` additionally (re)generate the node2/node3 env files.
+
+**Step 3.** Start the local 3-node cluster:
 
 ```bash
-cp .env.example .env
-chmod 600 .env
-# Then paste TIP_NODE_ID / TIP_NODE_PRIVATE_KEY / TIP_NODE_PUBLIC_KEY
-# from genesis-data/founder-keys.json into the corresponding fields,
-# leave TIP_BOOTSTRAP_PEERS empty, and pick DB_DRIVER (sqlite is the
-# fastest local option).
-npm start
+docker compose -f docker-compose.local.yml up -d --build
+curl -s localhost:4000/health | jq '.data.consensus.halt.halted'   # false once quorum forms
 ```
 
-Once the founding node logs `joinState=ready` you can register
-additional nodes against it.
+This brings up postgres + node1/node2/node3 (the genesis committee:
+3 nodes, quorum 2). Each node loads its keypair from the mounted
+`genesis-data/backups/*.tip.json`. Native single-node alternative:
+`npm start` (uses `.env` as-is).
+
+Once a node reports `joinState=ready` you can register additional
+nodes against it.
 
 **Step 4.** Generate one or more additional nodes:
 
@@ -322,15 +334,16 @@ The script writes:
 
 ```
 generated_nodes/<slug>-<short-id>/
-├── <slug>.env          ← drop-in env file (ML-DSA-65 keys + ports + bootstrap multiaddr embedded)
-├── <id>.tip.json       ← key backup, chmod 600
+├── <slug>.env          ← drop-in env file (no inline keys; mirrors .env.example)
+├── <id>.tip.json       ← the ML-DSA-65 keypair, chmod 600; the env points at it
 └── data/               ← per-node DB + keystore directory
 ```
 
-The generated `.env` already sets `TIP_DATA_DIR`,
-`TIP_DB_PATH=./generated_nodes/<slug>-<short-id>/data/tip.db`, and
-`TIP_LOG_DIR=./logs/<slug>-<short-id>` so each node's storage stays
-isolated.
+The generated `.env` mirrors `.env.example` exactly (same sections, same
+defaults) with the node's values overlaid: identity, ports, bootstrap
+multiaddr, `TIP_NODE_CREDENTIALS_FILE`, per-node `TIP_DATA_DIR` /
+`TIP_LOG_DIR`, and the DB settings carried from the machine that ran the
+script (postgres by default).
 
 **Start a generated node:**
 
@@ -338,17 +351,13 @@ isolated.
 node --env-file=./generated_nodes/<slug>-<short-id>/<slug>.env node/src/index.js
 ```
 
-By default the generated node uses `DB_DRIVER=sqlite` (no extra setup).
-For Postgres/MariaDB/MSSQL/Oracle, edit the generated `.env` and add
-the `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`
-values for that node's database.
-
 **Issuing bundles to external operators:** deliver the generated
-`<slug>.env` and `<id>.tip.json` files out-of-band (Bitwarden Send,
-Signal, hardware token). The recipient drops `<slug>.env` to `.env`
-in their own clone of the repo, adjusts `TIP_PUBLIC_IP` and database
-credentials, and runs `npm start`. Identity and `TIP_BOOTSTRAP_PEERS`
-must NOT be regenerated — they're tied to the DAG registration.
+`<slug>.env` and `<id>.tip.json` out-of-band (Bitwarden Send, Signal,
+hardware token). The recipient follows the Production steps above:
+`.env` at the repo root, the `.tip.json` in `genesis-data/backups/`,
+adjust `TIP_PUBLIC_IP` + DB credentials, run. Identity and
+`TIP_BOOTSTRAP_PEERS` must NOT be regenerated, they're tied to the DAG
+registration.
 
 #### Dev tooling — temp users and dispute-flow drivers
 
@@ -372,7 +381,8 @@ live in `scripts/README.md`.
 
 | Symptom | Likely cause |
 |---|---|
-| `Node tip://node/... not in registry` at handshake | Identity env vars were edited or regenerated. Restore the delivered values exactly, OR re-run `register-node.js` for that node. |
+| `Node tip://node/... not in registry` at handshake | `TIP_NODE_ID` / credentials file edited or regenerated. Restore the delivered `.tip.json` + `.env` exactly, OR re-run `register-node.js` for that node. |
+| `TIP_NODE_CREDENTIALS_FILE ... unreadable` at boot | The `.tip.json` is missing from `genesis-data/backups/` (or not mounted into the container). Copy it back / check the compose volume. |
 | `Genesis hash mismatch` at handshake | Wrong network / forked federation. The peer's `genesis.js` differs from yours. |
 | `No bootstrap peers configured — discovery via mDNS only` | `TIP_BOOTSTRAP_PEERS` is empty. Founding nodes leave this empty intentionally; everyone else needs the founding node's `bootstrap_addr` here. |
 | `joinState` stuck at `syncing` or `catching_up` | Bootstrap peer unreachable, or it is itself behind — check firewall, DNS, and the upstream peer's `/health`. |
@@ -383,14 +393,13 @@ live in `scripts/README.md`.
 
 #### Environment variable ownership
 
-| In the founding `.env` (production) | In a generated `.env` (development / external operator) |
+| In a founding `.env` (production) | In a generated `.env` (development / external operator) |
 |---|---|
-| `TIP_NODE_ID` (founder identity) | `TIP_NODE_ID` (registered identity, written by script) |
-| `TIP_NODE_PRIVATE_KEY` | `TIP_NODE_PRIVATE_KEY` |
-| `TIP_NODE_PUBLIC_KEY` | `TIP_NODE_PUBLIC_KEY` |
-| `TIP_BOOTSTRAP_PEERS` empty | `TIP_BOOTSTRAP_PEERS=<founding bootstrap_addr>` |
+| `TIP_NODE_ID` (founding identity) | `TIP_NODE_ID` (registered identity, written by script) |
+| `TIP_NODE_CREDENTIALS_FILE=genesis-data/backups/<id>.tip.json` | `TIP_NODE_CREDENTIALS_FILE=generated_nodes/<slug>/<id>.tip.json` |
+| `TIP_BOOTSTRAP_PEERS` empty (node1) or node1's multiaddr | `TIP_BOOTSTRAP_PEERS=<a healthy node's bootstrap_addr>` |
 | `PORT=4000`, `TIP_P2P_PORT=4001` | `PORT=<assigned>`, `TIP_P2P_PORT=<assigned>` |
-| `TIP_DATA_DIR=./data`, `TIP_LOG_DIR=./logs/node-1` | per-node `./generated_nodes/<slug>/data` + `./logs/<slug>` |
+| `TIP_DATA_DIR=./data`, `TIP_LOG_DIR` per node | per-node `./generated_nodes/<slug>/data` + `./logs/<slug>` |
 | Operator-set: `TIP_PUBLIC_IP`, `TIP_PUBLIC_URL`, `TIP_CORS_ORIGINS`, `DB_DRIVER` + DB credentials | Same |
 
 ---
@@ -426,7 +435,7 @@ DB_USER=tip
 DB_PASSWORD=secret
 ```
 
-Docker: `docker compose -f docker-compose.local.yml --profile postgres up -d`
+Docker: `docker compose -f docker-compose.local.yml up -d`   (postgres starts by default, no profile flag)
 
 **MariaDB / MySQL:**
 
