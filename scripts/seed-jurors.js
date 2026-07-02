@@ -6,7 +6,7 @@
  *
  * Prerequisites
  * ─────────────
- *   • genesis-data/founding-vp-keys.json + seed-output.json must exist.
+ *   • genesis-data/backups/ (VP .tip.json) + seed-output.json must exist.
  *   • Key files must be in genesis-data/temp-users/keys/.
  *
  * What it does
@@ -35,12 +35,12 @@ const path = require("path");
 const { initCrypto } = require("../shared/crypto");
 const { nowMs }      = require("../shared/time");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
+const { loadVpBackup } = require("./genesis-backups");
 const { generateDedupProof } = require("../shared/zk");
 const updateProfileSchema    = require("../node/src/schemas/update-profile");
 
 const REPO_ROOT    = path.resolve(__dirname, "..");
 const KEYS_DIR     = path.join(REPO_ROOT, "genesis-data", "temp-users", "keys");
-const VP_KEYS_FILE = path.join(REPO_ROOT, "genesis-data", "founding-vp-keys.json");
 const SEED_OUT     = path.join(REPO_ROOT, "genesis-data", "seed-output.json");
 
 const NODES_DBS  = ["tip_node1", "tip_node2", "tip_node3", "tip_node4", "tip_node5"];
@@ -110,13 +110,9 @@ async function main() {
 
   await initCrypto();
 
-  // ── Load VP keys ──
-  if (!fs.existsSync(VP_KEYS_FILE)) throw new Error("founding-vp-keys.json missing — run seed.js first");
-  if (!fs.existsSync(SEED_OUT))     throw new Error("seed-output.json missing — run seed.js first");
-
-  const vpFile  = JSON.parse(fs.readFileSync(VP_KEYS_FILE, "utf8"));
-  const vpEntry = vpFile?.entries?.find(e => e.tag === "primary-vp");
-  if (!vpEntry) throw new Error("primary-vp entry not found in founding-vp-keys.json");
+  // ── Load VP keys from the backup .tip.json ──
+  if (!fs.existsSync(SEED_OUT)) throw new Error("seed-output.json missing — run seed.js first");
+  const vpEntry = loadVpBackup();
   const vpKp = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
 
   const seedOut = JSON.parse(fs.readFileSync(SEED_OUT, "utf8"));

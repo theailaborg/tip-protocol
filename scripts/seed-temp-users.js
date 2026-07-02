@@ -7,7 +7,7 @@
  * Why this exists separately from scripts/seed.js:
  *   - seed.js bootstraps GENESIS state — keys persist forever, signed into
  *     the genesis block, used as the cryptographic root of the network.
- *     Genesis output goes in genesis-data/founder-keys.json + genesis.json.
+ *     Genesis output goes in genesis-data/backups/ + genesis.json.
  *   - This script seeds DEV-ONLY playthrough identities — they're noise for
  *     local testing, not part of network history. Keys go in
  *     genesis-data/temp-users/ which is gitignored and safe to wipe.
@@ -60,10 +60,10 @@ const crypto = require("crypto");
 const { initCrypto, generateMLDSAKeypair } = require("../shared/crypto");
 const registerIdentitySchema = require("../node/src/schemas/register-identity");
 const { generateDedupProof } = require("../shared/zk");
+const { loadVpBackup } = require("./genesis-backups");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const GENESIS_DIR = path.join(REPO_ROOT, "genesis-data");
-const VP_KEYS_FILE = path.join(GENESIS_DIR, "founding-vp-keys.json");
 const SEED_OUT_FILE = path.join(GENESIS_DIR, "seed-output.json");
 const TEMP_USERS_DIR = path.join(GENESIS_DIR, "temp-users");
 const TEMP_USERS_KEYS_DIR = path.join(TEMP_USERS_DIR, "keys");
@@ -351,23 +351,14 @@ async function main() {
     throw new Error("Refusing to run with NODE_ENV=production. This script writes test-only state. Pass --force-prod to override.");
   }
 
-  if (!fs.existsSync(VP_KEYS_FILE)) {
-    throw new Error(`founding-vp-keys.json not found at ${VP_KEYS_FILE} — run scripts/seed.js first`);
-  }
   if (!fs.existsSync(SEED_OUT_FILE)) {
     throw new Error(`seed-output.json not found at ${SEED_OUT_FILE} — run scripts/seed.js first`);
   }
 
   fs.mkdirSync(TEMP_USERS_DIR, { recursive: true });
 
-  // Read from the v1 multi-entry envelope. founding-vp-keys.json carries
-  // an `entries: [{tag, public_key, private_key, ...}]` array; we look up
-  // the primary VP by tag.
-  const vpFile = JSON.parse(fs.readFileSync(VP_KEYS_FILE, "utf8"));
-  const vpEntry = vpFile?.entries?.find(e => e.tag === "primary-vp");
-  if (!vpEntry?.public_key || !vpEntry?.private_key) {
-    throw new Error(`founding-vp-keys.json missing primary-vp entry — re-run scripts/seed.js`);
-  }
+  // VP keypair comes from its backup .tip.json, the single on-disk key source.
+  const vpEntry = loadVpBackup();
   const vpKp = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
 
   const seedOut = JSON.parse(fs.readFileSync(SEED_OUT_FILE, "utf8"));

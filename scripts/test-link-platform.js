@@ -11,7 +11,7 @@
  *   5. Verify final score is 530 (500 + 30, unchanged after 7th)
  *
  * Prerequisites:
- *   - genesis-data/founding-vp-keys.json must exist (from npm run seed:fresh)
+ *   - genesis-data/backups/ must hold the VP .tip.json (from npm run seed:fresh)
  *   - genesis-data/seed-output.json must exist (from npm run seed:fresh)
  *   - Target node must be running and healthy
  *
@@ -25,6 +25,7 @@
 "use strict";
 
 const fs   = require("fs");
+const { loadVpBackup } = require("./genesis-backups");
 const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
@@ -37,7 +38,6 @@ const { generateDedupProof }       = require("../shared/zk");
 
 const REPO_ROOT   = path.resolve(__dirname, "..");
 const GENESIS_DIR = path.join(REPO_ROOT, "genesis-data");
-const VP_KEYS_FILE  = path.join(GENESIS_DIR, "founding-vp-keys.json");
 const SEED_OUT_FILE = path.join(GENESIS_DIR, "seed-output.json");
 
 // ─── ANSI colors ─────────────────────────────────────────────────────────────
@@ -150,7 +150,6 @@ async function main() {
   // ── Pre-flight ──────────────────────────────────────────────────────────────
   section("Pre-flight");
 
-  if (!fs.existsSync(VP_KEYS_FILE))  throw new Error(`founding-vp-keys.json missing — run: npm run seed:fresh`);
   if (!fs.existsSync(SEED_OUT_FILE)) throw new Error(`seed-output.json missing — run: npm run seed:fresh`);
   pass("Genesis files found");
 
@@ -160,9 +159,7 @@ async function main() {
   if (cs?.halt?.halted) throw new Error(`Node is halted: ${cs.halt.reason}`);
   pass(`Node healthy  round=${cs?.narwhal?.round ?? "?"}`);
 
-  const vpFile  = JSON.parse(fs.readFileSync(VP_KEYS_FILE, "utf8"));
-  const vpEntry = vpFile?.entries?.find((e) => e.tag === "primary-vp");
-  if (!vpEntry?.public_key || !vpEntry?.private_key) throw new Error("founding-vp-keys.json missing primary-vp entry");
+  const vpEntry = loadVpBackup();
   const vpKp = { publicKey: vpEntry.public_key, privateKey: vpEntry.private_key };
 
   const seedOut   = JSON.parse(fs.readFileSync(SEED_OUT_FILE, "utf8"));
