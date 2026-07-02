@@ -102,11 +102,14 @@ function _completePrescanInline(dag, ctid, { flagged = false, tier = "low", prob
   });
 }
 
-function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCode = "OH", title }) {
+function _buildContentRegisterBody({ authorTipId, authorPriv, content, originCode = "OH", title, url }) {
   const contentHashFull = shake256(tipNormalize(content));
   const fields = {
     origin_code: originCode,
-    registered_urls: ["https://example.com/post/"], // required as of the registered_urls gate
+    // Unique per content (URL exclusivity: a URL binds to ONE ctid, so a
+    // shared fixture URL would 409 every registration after the first).
+    // Pass `url` explicitly to exercise the exclusivity gate itself.
+    registered_urls: [url || `https://example.com/post/${contentHashFull.slice(0, 16)}`],
     extras: {},
     authors: [{ key_mode: "attribution", role: "byline", signed: false,
                  tip_id: authorTipId, tip_id_type: "personal" }],
@@ -1325,6 +1328,38 @@ describe("Semantic Dedup", () => {
   });
 
   afterAll(() => { if (sdDag) sdDag.close(); });
+
+  test("9.0 URL exclusivity: same registered_url under a different ctid → 409 url_already_registered", async () => {
+    const sharedUrl = "https://example.com/url-exclusivity/one-and-only";
+    const first = await request(sdApp)
+      .post("/v1/content/register")
+      .send(_buildContentRegisterBody({
+        authorTipId: sdTipId, authorPriv: sdAuthorPriv,
+        content: "URL exclusivity — first claim.", url: sharedUrl,
+      }));
+    expect([200, 201, 202]).toContain(first.status);
+
+    // Different content (→ different ctid), same URL → rejected.
+    const second = await request(sdApp)
+      .post("/v1/content/register")
+      .send(_buildContentRegisterBody({
+        authorTipId: sdTipId, authorPriv: sdAuthorPriv,
+        content: "URL exclusivity — second claim, different content.", url: sharedUrl,
+      }));
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("url_already_registered");
+    expect(second.body.error.message).toContain(first.body.data.ctid);
+
+    // A different URL from the same author still registers fine.
+    const third = await request(sdApp)
+      .post("/v1/content/register")
+      .send(_buildContentRegisterBody({
+        authorTipId: sdTipId, authorPriv: sdAuthorPriv,
+        content: "URL exclusivity — third claim, fresh URL.",
+        url: "https://example.com/url-exclusivity/another",
+      }));
+    expect([200, 201, 202]).toContain(third.status);
+  });
 
   test("9.1 First verify succeeds with correct delta and caps", async () => {
     const fields = { verifier_tip_id: sdVerifierId, ctid: sdCtid, verdict: "ORIGIN_CONFIRMED" };

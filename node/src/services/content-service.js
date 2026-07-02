@@ -107,6 +107,23 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       .some(t => t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data && t.data.ctid === ctid);
   }
 
+  // First pending REGISTER_CONTENT (any signer) that already claims one of
+  // `urls` under a DIFFERENT ctid, or null. Complements the committed-state
+  // URL-exclusivity check in rules.canRegisterContent.
+  function _pendingUrlConflict(urls, ctid) {
+    if (!Array.isArray(urls) || urls.length === 0) return null;
+    if (typeof dag.getMempoolTxs !== "function") return null;
+    const wanted = new Set(urls.filter(u => typeof u === "string" && u));
+    if (wanted.size === 0) return null;
+    for (const t of dag.getMempoolTxs()) {
+      if (t.tx_type !== TX_TYPES.REGISTER_CONTENT || !t.data || t.data.ctid === ctid) continue;
+      const hit = (Array.isArray(t.data.registered_urls) ? t.data.registered_urls : [])
+        .find(u => wanted.has(u));
+      if (hit) return { url: hit, ctid: t.data.ctid };
+    }
+    return null;
+  }
+
   async function register(body) {
     contentRegisterSchema.validateRequest(body, { mediaLimits: config.mediaLimits, dag });
 
@@ -173,12 +190,29 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const registeredAt = nowMs();
     const ctid = generateCTID(origin_code, contentHashShort, signer_tip_id);
 
-    const { valid, error } = rules.canRegisterContent(dag, { signer_tip_id, ctid, origin_code });
+    const { valid, error } = rules.canRegisterContent(dag, {
+      signer_tip_id, ctid, origin_code,
+      registered_urls: canonicalPayload.registered_urls,
+    });
     if (!valid) throw schemaError(error.status, error.message, error.code);
 
     // In-flight dedup (committed dedup is canRegisterContent above).
     if (_isRegistrationPending(ctid, signer_tip_id)) {
       throw schemaError(409, `Content already pending registration (CTID: ${ctid})`, "content_registration_pending");
+    }
+    // In-flight URL exclusivity — canRegisterContent only sees COMMITTED
+    // content, so a second registration claiming the same URL could slip
+    // in while the first sits in the mempool. Best-effort scan across ALL
+    // pending REGISTER_CONTENT txs (any signer); the commit-handler's
+    // canRegisterContent call is the authoritative first-wins gate for
+    // anything that races past this.
+    const pendingUrlHit = _pendingUrlConflict(canonicalPayload.registered_urls, ctid);
+    if (pendingUrlHit) {
+      throw schemaError(
+        409,
+        `URL already pending registration (CTID: ${pendingUrlHit.ctid}): ${pendingUrlHit.url}`,
+        "url_already_registered",
+      );
     }
 
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;

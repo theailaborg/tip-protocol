@@ -176,6 +176,75 @@ describe("canRegisterContent", () => {
     expect(r.valid).toBe(false);
     expect(r.error.status).toBe(409);
   });
+
+  // ── URL exclusivity: a published URL binds to exactly one CTID ──────────
+  function _seedUrlContent(dag) {
+    dag.saveContent({
+      ctid: "tip://content/url-owner", origin_code: "OH", content_hash: shake256("c-url"),
+      author_tip_id: "tip://id/author", status: CONTENT_STATUS.REGISTERED,
+      registered_at: 1775001600000, tx_id: shake256("content:url-owner"),
+      registered_urls: ["https://medium.com/@u/post-1", "https://mirror.example.com/post-1"],
+    });
+  }
+
+  test("url already registered to another ctid → 409 url_already_registered", () => {
+    const dag = _seedDag();
+    _seedUrlContent(dag);
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "OH",
+      registered_urls: ["https://medium.com/@u/post-1"],
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+    expect(r.error.code).toBe("url_already_registered");
+    expect(r.error.message).toContain("tip://content/url-owner");
+  });
+
+  test("overlap on ANY submitted url → 409 (non-primary url too)", () => {
+    const dag = _seedDag();
+    _seedUrlContent(dag);
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/verifier", ctid: "tip://content/new", origin_code: "AA",
+      registered_urls: ["https://fresh.example.com/a", "https://mirror.example.com/post-1"],
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+    expect(r.error.code).toBe("url_already_registered");
+  });
+
+  test("free url → valid; exact-string match only (different path/query is a different url)", () => {
+    const dag = _seedDag();
+    _seedUrlContent(dag);
+    for (const url of ["https://medium.com/@u/post-2", "https://medium.com/@u/post-1?ref=x"]) {
+      const r = rules.canRegisterContent(dag, {
+        signer_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "OH",
+        registered_urls: [url],
+      });
+      expect(r.valid).toBe(true);
+    }
+  });
+
+  test("no registered_urls param → rule skipped (backwards compatible)", () => {
+    const dag = _seedDag();
+    _seedUrlContent(dag);
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/author", ctid: "tip://content/new", origin_code: "OH",
+    });
+    expect(r.valid).toBe(true);
+  });
+
+  test("same url under the SAME ctid does not self-conflict on the url rule", () => {
+    const dag = _seedDag();
+    _seedUrlContent(dag);
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/author", ctid: "tip://content/url-owner", origin_code: "OH",
+      registered_urls: ["https://medium.com/@u/post-1"],
+    });
+    // Rejected by the ctid dedup above the url rule — NOT by url exclusivity.
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBeUndefined();
+    expect(r.error.message).toContain("already registered with this origin code");
+  });
 });
 
 // ─── canVerify ──────────────────────────────────────────────────────────────

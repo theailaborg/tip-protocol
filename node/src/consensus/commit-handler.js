@@ -849,6 +849,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       case TX_TYPES.REGISTER_CONTENT: {
         const r = rules.canRegisterContent(dag, {
           signer_tip_id: d.signer_tip_id, ctid: d.ctid, origin_code: d.origin_code,
+          registered_urls: d.registered_urls,
         });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }

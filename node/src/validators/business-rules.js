@@ -64,8 +64,8 @@ function ok() {
   return { valid: true };
 }
 
-function fail(status, message) {
-  return { valid: false, error: { status, message } };
+function fail(status, message, code) {
+  return { valid: false, error: code ? { status, message, code } : { status, message } };
 }
 
 // ─── Identity / VP ─────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ function canRegisterNode(dag, { node_id }) {
 
 // ─── Content ───────────────────────────────────────────────────────────────
 
-function canRegisterContent(dag, { signer_tip_id, ctid, origin_code }) {
+function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
   }
@@ -109,6 +109,29 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code }) {
   if (dag.isRevoked(signer_tip_id)) return fail(403, "Signer TIP-ID is revoked");
   if (ctid && dag.getContent(ctid)) {
     return fail(409, `Content already registered with this origin code (CTID: ${ctid})`);
+  }
+  // URL exclusivity — a published URL binds to exactly ONE CTID, first
+  // wins. Same dual-call-site enforcement as the ctid dedup above (API
+  // request time in content-service + commit time in commit-handler), so
+  // a duplicate that races past the API check is still dropped at commit.
+  // Exact-string element match via listContent({url}): MemoryStore uses
+  // Array.includes, SQLiteStore matches the JSON-quoted element, and
+  // KnexAdapter delegates to its in-memory mirror — identical semantics
+  // across all three stores, which commit-time enforcement requires.
+  // The registration's URLs are part of the signed payload, so the value
+  // checked here is exactly what the signer attested to.
+  if (Array.isArray(registered_urls) && typeof dag.listContent === "function") {
+    for (const u of registered_urls) {
+      if (typeof u !== "string" || !u) continue;
+      const existing = dag.listContent({ url: u, limit: 1 })[0];
+      if (existing && existing.ctid !== ctid) {
+        return fail(
+          409,
+          `URL already registered to existing content (CTID: ${existing.ctid}): ${u}`,
+          "url_already_registered",
+        );
+      }
+    }
   }
   return ok();
 }
