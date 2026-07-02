@@ -540,7 +540,7 @@ describe("bullshark RP attribution by committee_history at cert.round", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// #73 — `commits` row written ONLY when commit-handler accepts >= 1 tx.
+// #73: `commits` row written ONLY when commit-handler accepts >= 1 tx.
 // Anchor commits that order N txs but have all N rejected at commit-handler
 // (e.g., duplicate rotation_number under a multi-proposer cycle) must NOT
 // inflate the commits table with no-state-change rows. Anchor still ticks

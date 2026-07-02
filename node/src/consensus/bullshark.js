@@ -321,12 +321,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // identical, so the "qualified for next rotation?" check at the
     // boundary returns the same answer everywhere — no §4/#74 divergence.
     //
-    // Attribution rule: each cert's participation goes to the rotation ACTIVE
-    // at cert.round (committee_history lookup), NOT to a rotation derived from
-    // local _consensusIndex. Record-based attribution is deterministic: the
-    // rotation record for any round R commits LEAD rounds before R activates,
-    // and walks are commit-ordered, so every node resolves the same cert to
-    // the same rotation and arrives at bit-identical RP rows.
+    // Attribution: credits go to the rotation ACTIVE at cert.round (record
+    // lookup), never to a rotation derived from local _consensusIndex. Records
+    // commit LEAD rounds before activating and walks are commit-ordered, so
+    // every node maps the same cert to the same rotation (bit-identical RP).
     const { certs: anchoredCerts, missingHashes } = _walkAnchoredCertChain(leaderCert);
 
     // Option A — DAG completeness gate. If any parent certs are missing, park
@@ -406,13 +404,10 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       }
     }
 
-    // Time-based rotation boundary. A rotation is due when this anchor's
-    // BFT timestamp lands in a later epoch bucket than the latest rotation
-    // record's committed_at (see epochIndexOfTime). The condition stays true
-    // at every subsequent anchor until the rotation commits, which is the
-    // natural retry: production never pauses ahead of activation, so anchors
-    // keep flowing and the proposal always has a path to commit (the
-    // 2026-05-03 halt class is structurally gone).
+    // Time-based boundary: rotation due when this anchor's BFT ts lands in a
+    // later epoch bucket than the latest rotation's committed_at. The condition
+    // re-fires at every anchor until the rotation commits (natural retry), and
+    // production never pauses, so the 2026-05-03 halt class cannot form.
     const latestRot = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
     if (latestRot && certTs > 0) {
       const marker = Number(latestRot.committed_at) || CONSENSUS.BFT_TIME_GENESIS_MS;

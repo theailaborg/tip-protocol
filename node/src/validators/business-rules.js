@@ -492,7 +492,7 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
   // round so every node applies it to committee_history ahead of time. A
   // late commit is rejected identically everywhere (commitRound is the
   // anchor's round, consensus state) and the boundary re-proposes with a
-  // fresh activation — a committee can never flip retroactively.
+  // fresh activation; a committee can never flip retroactively.
   if (typeof commitRound === "number" && commitRound > 0 && effective_round <= commitRound) {
     return fail(409, `effective_round ${effective_round} not beyond commit round ${commitRound}`);
   }
