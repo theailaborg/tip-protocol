@@ -153,6 +153,11 @@ function loadConfig() {
     // ── CORS ──────────────────────────────────────────────────────────────────
     corsOrigins: parseCorsOrigins(process.env.TIP_CORS_ORIGINS),
 
+    // ── Observability ─────────────────────────────────────────────────────────
+    // When set, GET /metrics requires `Authorization: Bearer <token>` so the
+    // endpoint can ride the public API port and still be scrape-only.
+    metricsToken: process.env.TIP_METRICS_TOKEN || null,
+
     // ── Logging ───────────────────────────────────────────────────────────────
     logLevel: process.env.TIP_LOG_LEVEL || "info",
   };

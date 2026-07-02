@@ -26,13 +26,14 @@ const request = require("supertest");
 const SRC = path.resolve(__dirname, "../../src");
 const metricsRoutes = require(path.join(SRC, "routes", "metrics"));
 
-function makeApp({ consensus, network, dag } = {}) {
+function makeApp({ consensus, network, dag, metricsToken } = {}) {
   const app = express();
   const config = {
     nodeId: "tip://node/self",
     nodeRegisteredId: "tip://node/self",
     nodeType: "full",
     nodeVersion: "2.0.0",
+    ...(metricsToken ? { metricsToken } : {}),
   };
   const defaultDag = { count: () => 0, certificateCount: () => 0 };
   app.use(metricsRoutes.createRouter({
@@ -334,5 +335,31 @@ describe("GET /metrics — Prometheus exposition format", () => {
     const res = await request(app).get("/metrics");
     expect(res.text).not.toMatch(/^\{"ok":/);
     expect(res.text.startsWith("# HELP")).toBe(true);
+  });
+});
+
+describe("GET /metrics: TIP_METRICS_TOKEN bearer gate", () => {
+  test("open when no token is configured", async () => {
+    const res = await request(makeApp()).get("/metrics");
+    expect(res.status).toBe(200);
+  });
+
+  test("401 without Authorization when a token is set", async () => {
+    const res = await request(makeApp({ metricsToken: "s3cret" })).get("/metrics");
+    expect(res.status).toBe(401);
+    expect(res.text).toBe("unauthorized");
+  });
+
+  test("401 with the wrong bearer token", async () => {
+    const res = await request(makeApp({ metricsToken: "s3cret" }))
+      .get("/metrics").set("Authorization", "Bearer wrong");
+    expect(res.status).toBe(401);
+  });
+
+  test("200 with the correct bearer token", async () => {
+    const res = await request(makeApp({ metricsToken: "s3cret" }))
+      .get("/metrics").set("Authorization", "Bearer s3cret");
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("tip_process_uptime_seconds");
   });
 });

@@ -1,0 +1,5 @@
+# TLS-terminating front door for Grafana. Caddy provisions and renews the
+# Let's Encrypt certificate automatically for {$OBS_DOMAIN}.
+{$OBS_DOMAIN} {
+	reverse_proxy grafana:3000
+}
