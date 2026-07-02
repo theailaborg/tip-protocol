@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS `protocol_params` (`param_key` varchar(128) not null,
 
 CREATE TABLE IF NOT EXISTS `revocations` (`tip_id` varchar(512), `tx_type` varchar(64) not null, `timestamp` bigint not null, `tx_id` varchar(512) not null, primary key (`tip_id`));
 
-CREATE TABLE IF NOT EXISTS `rotation_participation` (`node_id` varchar(512) not null, `rotation_number` integer not null, `count` integer not null default '0', primary key (`node_id`, `rotation_number`));
+CREATE TABLE IF NOT EXISTS `rotation_participation` (`node_id` varchar(512) not null, `rotation_number` integer not null, `bucket` integer not null default '0', `count` integer not null default '0', primary key (`node_id`, `rotation_number`, `bucket`));
 
 CREATE TABLE IF NOT EXISTS `scores` (`tip_id` varchar(512), `score` integer not null default '500', `offense_count` integer not null default '0', `last_updated` bigint not null, primary key (`tip_id`));
 

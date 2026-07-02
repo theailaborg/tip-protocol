@@ -59,20 +59,16 @@ function buildNarwhal({ onProducerPaused = null } = {}) {
     status: "active", registered_at: 1767225600000
   });
 
-  // Seed enough rotations to satisfy producer-pause in case any test
-  // calls start() and produces a round (we mostly stay in non-ready).
-  const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
-  for (let n = 1; n <= 5; n++) {
-    dag.saveCommitteeRotation({
-      rotation_number: n, effective_round: n * epochLength,
-      committee: [
-        { node_id: SELF_ID, public_key: selfKp.publicKey },
-        { node_id: PEER_ID, public_key: peerKp.publicKey },
-      ],
-      prev_rotation: n - 1, signer_node_ids: [], signatures: [],
-      payload_hash: `r-${n}`, committed_at: 1767225600000,
-    });
-  }
+  // Record-based committee: one rotation row covers every test round.
+  dag.saveCommitteeRotation({
+    rotation_number: 1, effective_round: 1,
+    committee: [
+      { node_id: SELF_ID, public_key: selfKp.publicKey },
+      { node_id: PEER_ID, public_key: peerKp.publicKey },
+    ],
+    prev_rotation: 0, signer_node_ids: [], signatures: [],
+    payload_hash: "r-1", committed_at: 1767225600000,
+  });
 
   const mempool = createMempool({ dag });
   const network = {
@@ -92,10 +88,9 @@ function buildNarwhal({ onProducerPaused = null } = {}) {
     getCommittee: (round) => getActiveCommittee(dag, round != null ? round : narwhal.currentRound()),
     onCommit: () => { },
     onCertSaved: () => { },
-    onProducerPaused,
   });
 
-  return { narwhal, dag };
+  return { narwhal, dag, mempool };
 }
 
 describe("narwhal tri-state join FSM", () => {
@@ -254,210 +249,56 @@ describe("narwhal tri-state join FSM", () => {
   // missing producer-pause, narwhal nudges upstream (bullshark) to attempt
   // a rotation proposal. Rate-limited so the 50ms producer-pause retry
   // loop doesn't fire the callback 20x/sec.
-  describe("onProducerPaused callback (Fix D)", () => {
-    function buildNarwhalAtMissingRotationEpoch({ onProducerPaused }) {
-      const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
-      const fx = buildNarwhal({ onProducerPaused });
-      // Force narwhal's _currentRound into an epoch with no rotation row.
-      // buildNarwhal seeds rotations 1-5 (effective_round 1*200..5*200).
-      // Round 6*200 = 1200 → epochOf=6, which has no rotation row. Use
-      // exitSyncMode to jump _currentRound straight there.
-      fx.narwhal.exitSyncMode(epochLength * 6 - 1);
-      return fx;
-    }
-
-    test("fires callback with (currentRound, missingRotation) when producer-pauses", () => {
+  describe("rotation txs ride normal batches (no producer-pause)", () => {
+    test("production continues at any round with only a stale rotation in CH", () => {
       jest.useFakeTimers();
       try {
-        const calls = [];
-        const fx = buildNarwhalAtMissingRotationEpoch({
-          onProducerPaused: (round, missing) => calls.push({ round, missing }),
-        });
-        fx.narwhal.start();
-        // Tick the inter-round scheduler so _beginRound runs.
-        jest.advanceTimersByTime(100);
-        expect(calls.length).toBeGreaterThanOrEqual(1);
-        expect(calls[0].round).toBe(CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2 * 6);
-        expect(calls[0].missing).toBe(6);
-        fx.narwhal.stop();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test("rate-limited: doesn't fire more than once per ~1.5s even though producer-pause loops every 50ms", () => {
-      jest.useFakeTimers();
-      try {
-        const calls = [];
-        const fx = buildNarwhalAtMissingRotationEpoch({
-          onProducerPaused: () => calls.push(nowMs()),
-        });
-        fx.narwhal.start();
-        // First _beginRound + retry loop — should fire callback once.
-        jest.advanceTimersByTime(100);
-        const firstCallCount = calls.length;
-        expect(firstCallCount).toBeGreaterThanOrEqual(1);
-        // Pause loop runs every 50ms, but rate-limit means callback won't
-        // fire again within 1500ms.
-        jest.advanceTimersByTime(1000);
-        expect(calls.length).toBe(firstCallCount);
-        // After 1.5s+, next pause hit fires the callback again.
-        jest.advanceTimersByTime(700);
-        expect(calls.length).toBeGreaterThan(firstCallCount);
-        fx.narwhal.stop();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test("no callback fires when no onProducerPaused option provided (backward compat)", () => {
-      jest.useFakeTimers();
-      try {
-        // Build with no onProducerPaused — should still producer-pause without throwing.
-        const fx = buildNarwhalAtMissingRotationEpoch({ onProducerPaused: null });
-        fx.narwhal.start();
-        jest.advanceTimersByTime(500);
-        // No assertion on callback (none wired). Just verify narwhal didn't crash.
-        expect(fx.narwhal.currentRound()).toBeGreaterThan(0);
-        fx.narwhal.stop();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-  });
-
-  // Producer-pause carve-out: when stuck at a rotation boundary AND the
-  // rotation tx is in mempool, drain only that tx and produce a rotation-
-  // only batch. Breaks the deadlock where rotation tx is submitted to
-  // mempool but narwhal can't drain it because it's producer-paused
-  // waiting for that very rotation row to land in DAG.
-  describe("producer-pause carve-out (rotation-only batch)", () => {
-    test("rotation tx in mempool → drained into rotation-only batch even while producer-paused", () => {
-      jest.useFakeTimers();
-      try {
-        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
         const fx = buildNarwhal();
-        // Force narwhal into producer-pause for rotation 6 (no row exists; buildNarwhal seeds 1-5).
-        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+        fx.narwhal.exitSyncMode(1199);
+        fx.narwhal.start();
+        jest.advanceTimersByTime(100);
+        // Old model paused here (no rotation row "covering" round 1200);
+        // new model produces regardless: committee is the latest record.
+        expect(fx.narwhal.stats().metrics.batches_created).toBeGreaterThanOrEqual(1);
+        fx.narwhal.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
 
-        // Verify peekRotationTx behaviour on a fresh mempool — the
-        // building block the carve-out depends on.
-        const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
-        const mp = createMempool({ dag: fx.dag });
-        const fakeTx = {
+    test("a mempool rotation tx drains into a normal batch", () => {
+      jest.useFakeTimers();
+      try {
+        const fx = buildNarwhal();
+        const rotTx = {
           tx_id: "deadbeef".repeat(8),
           tx_type: "COMMITTEE_ROTATION",
-          data: { rotation_number: 6, effective_round: 1200 },
+          data: { rotation_number: 2, effective_round: 1500 },
           signature: "00".repeat(64),
           timestamp: 1777896000000,
           prev: [],
         };
-        const r = mp.add(fakeTx);
-        expect(r.added).toBe(true);
-        // peek should find it.
-        const peeked = mp.peekRotationTx(6);
-        expect(peeked).not.toBeNull();
-        expect(peeked.tx_id).toBe(fakeTx.tx_id);
-        // peek for a different rotation — null.
-        expect(mp.peekRotationTx(7)).toBeNull();
-        // peek doesn't remove.
-        expect(mp.size()).toBe(1);
-        // explicit remove drops it.
-        mp.remove([fakeTx.tx_id]);
-        expect(mp.peekRotationTx(6)).toBeNull();
-        fx.narwhal.stop();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test("no rotation tx in mempool → still producer-paused (carve-out doesn't activate spuriously)", () => {
-      jest.useFakeTimers();
-      try {
-        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
-        const calls = [];
-        const fx = buildNarwhal({
-          onProducerPaused: (round, missing) => calls.push({ round, missing }),
-        });
-        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
+        expect(fx.mempool.add(rotTx).added).toBe(true);
+        fx.narwhal.exitSyncMode(1299);
         fx.narwhal.start();
-        // Mempool empty → producer-pause path fires, no carve-out.
         jest.advanceTimersByTime(100);
-        expect(calls.length).toBeGreaterThanOrEqual(1);
-        // Round counter should NOT have advanced (no batch produced).
-        expect(fx.narwhal.stats().joinState).toBe("ready");
+        // Drained by the normal mempool.drain path, not a carve-out.
+        expect(fx.mempool.size()).toBe(0);
+        expect(fx.narwhal.stats().metrics.batches_created).toBeGreaterThanOrEqual(1);
         fx.narwhal.stop();
       } finally {
         jest.useRealTimers();
       }
     });
 
-    // Carve-out path must NOT drain the rotation tx from mempool. Without
-    // this, each node carves exactly once at the boundary and producer-
-    // pauses again at R+1 with an empty mempool — anchor-commit at R needs
-    // 2f+1 certs at R+2, but each node only produces one cert at the
-    // boundary epoch then nothing. Federation halts (live observed
-    // 2026-05-04 rotation-13 deadlock: 3 carve-outs at 2600, 1 at 2601, 0
-    // at 2602 — anchor-commit at 2600 impossible). Leaving the tx in
-    // mempool keeps re-carving every round until anchor-commit applies it
-    // through the normal pipeline, at which point commit-handler removes
-    // it via dag.deleteMempoolTxs by tx_id and producer-pause clears.
-    test("carve-out keeps rotation tx in mempool (re-carves until anchor-commit clears it)", () => {
-      jest.useFakeTimers();
-      try {
-        const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
-        const fx = buildNarwhal();
-        // Producer-pause for rotation 6 (buildNarwhal seeds 1-5 only).
-        fx.narwhal.exitSyncMode(epochLength * 6 - 1);
-
-        // Inject a rotation 6 tx into the SAME mempool narwhal uses.
-        const mp = require(path.join(SRC, "consensus", "mempool")).createMempool;
-        // Rebuild access to narwhal's mempool via fx — buildNarwhal threads
-        // its own mempool into the narwhal closure, so we reuse it here
-        // through the dag-level interface (dag.mempool* statements aren't
-        // public; instead we re-derive a mempool over the same dag and
-        // populate it — narwhal.handleIncomingBatch is the regular path
-        // peer batches arrive on, but for this unit we cut to the chase
-        // and add directly to narwhal's underlying mempool via a fresh
-        // facade against the same SQLite store).
-        const sharedMempool = mp({ dag: fx.dag });
-        const rotTx = {
-          tx_id: "ab".repeat(32),
-          tx_type: "COMMITTEE_ROTATION",
-          data: { rotation_number: 6, effective_round: epochLength * 6 },
-          signature: "00".repeat(64),
-          timestamp: 1777896000000,
-          prev: [],
-        };
-        const r = sharedMempool.add(rotTx);
-        expect(r.added).toBe(true);
-        expect(sharedMempool.size()).toBe(1);
-
-        // Drive _beginRound by starting + advancing timers. The carve-out
-        // branch fires for round = epochLength*6 (epochOf=6, missing in CH).
-        // Mempool retention is the contract under test.
-        fx.narwhal.start();
-        jest.advanceTimersByTime(50);
-
-        // KEY ASSERTION: the rotation tx is STILL in mempool after carve-out.
-        // (Pre-fix, mempool.remove drained it here; post-fix, carve-out
-        // builds a batch with the tx but leaves the mempool entry in place
-        // so the next round can re-carve until anchor-commit applies it.)
-        expect(sharedMempool.peekRotationTx(6)).not.toBeNull();
-        expect(sharedMempool.peekRotationTx(6).tx_id).toBe(rotTx.tx_id);
-        expect(sharedMempool.size()).toBe(1);
-
-        fx.narwhal.stop();
-      } finally {
-        jest.useRealTimers();
-      }
+    test("stats no longer expose producerPausedMs (machinery removed)", () => {
+      const fx = buildNarwhal();
+      expect("producerPausedMs" in fx.narwhal.stats()).toBe(false);
+      fx.narwhal.stop();
     });
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Byzantine-fork halt — narwhal-side gates
-// ═══════════════════════════════════════════════════════════════════════════
 describe("narwhal byzantine-fork halt", () => {
   test("default state: byzantineForkHalt() is null and stats expose it", () => {
     const { narwhal } = buildNarwhal();

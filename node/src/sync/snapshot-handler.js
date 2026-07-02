@@ -1025,7 +1025,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           for (const r of rpRows) {
             if (!r || r.node_id == null || r.rotation_number == null) continue;
-            dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.count) || 0);
+            dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.bucket) || 0, Number(r.count) || 0);
             rpN++;
           }
         }

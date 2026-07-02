@@ -13,7 +13,13 @@
  *   - Wrong rotation_number (gap, duplicate) → rejected
  *   - Duplicate rotation_number in same batch → only first lands
  *   - effective_round not monotonic → rejected
+ *   - Future-activation gate: effective_round <= commit round → rejected
  *   - Malformed new_committee → rejected at structural validation
+ *
+ * Time-targeted rotation model: commit-handler passes the anchor round as
+ * opts.commitRound into canCommitteeRotation, which rejects any rotation
+ * whose effective_round is not strictly beyond it. Fixtures therefore
+ * commit at round 100 with effective_round 300 (activation in the future).
  *
  * Test fixture builds a 4-node "test federation" by replacing the
  * bootstrap rotation 0 (genesis founding_node) with a test committee
@@ -40,7 +46,7 @@ const {
 } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES } = require(path.join(SHARED, "constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
-const { GENESIS_TX_ID } = require(path.join(SRC, "genesis"));
+const { GENESIS_TX_ID, GENESIS_TIMESTAMP } = require(path.join(SRC, "genesis"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 
@@ -90,11 +96,13 @@ function _replaceRotation0(dbPath, committee) {
       effective_round: 0,
       committee,
     }));
+    // committed_at is the rotation-boundary marker (BFT-time epoch ms);
+    // rotation 0's marker is the chain's BFT genesis instant.
     raw.prepare(
       `INSERT INTO committee_history (rotation_number, effective_round, committee, prev_rotation,
                                        signer_node_ids, signatures, payload_hash, committed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, 1767225600000);
+    ).run(0, 0, JSON.stringify(committee), null, '[]', '[]', payload_hash, GENESIS_TIMESTAMP);
   } finally {
     raw.close();
   }
@@ -198,7 +206,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
 
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: newCommittee,
           prevCommittee,
           prevKeys,
@@ -211,7 +219,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         const written = dag.getCommitteeRotation(1);
         expect(written).not.toBeNull();
         expect(written.rotation_number).toBe(1);
-        expect(written.effective_round).toBe(100);
+        expect(written.effective_round).toBe(300);
         expect(written.committee).toEqual(newCommittee);
         expect(written.prev_rotation).toBe(0);
         expect(written.signer_node_ids).toHaveLength(4);
@@ -230,7 +238,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         const newCommittee = prevCommittee.slice(0, 3);
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: newCommittee,
           prevCommittee,
           prevKeys,
@@ -253,7 +261,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 2),
           prevCommittee,
           prevKeys,
@@ -281,7 +289,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
 
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 2),
           prevCommittee,
           prevKeys: fakeKeys,
@@ -303,7 +311,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         // Repeat one signer 3x to fake a quorum of "3" — should count as 1
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 2),
           prevCommittee,
           prevKeys,
@@ -329,7 +337,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         // Sigs no longer match the new payload_hash → fail.
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 3),
           prevCommittee,
           prevKeys,
@@ -359,7 +367,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
 
         const txA = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: committeeA,
           prevCommittee,
           prevKeys,
@@ -380,7 +388,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 3),
           prevCommittee,
           prevKeys,
@@ -407,7 +415,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx = _buildRotationTx({
           rotation_number: 2,  // skipping 1!
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 3),
           prevCommittee,
           prevKeys,
@@ -427,7 +435,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         const newCommittee = prevCommittee.slice(0, 3);
         const tx1 = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: newCommittee,
           prevCommittee,
           prevKeys,
@@ -438,15 +446,15 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         // Try to commit a different rotation 1 in a later round
         const tx2 = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 200,
+          effective_round: 400,
           new_committee: prevCommittee.slice(0, 2),
           prevCommittee,
           prevKeys,
         });
-        const r2 = handler.commitOrderedTxs([tx2], 200);
+        const r2 = handler.commitOrderedTxs([tx2], 150);
         expect(r2.committed).toBe(0);
         // Stored rotation 1 unchanged from first
-        expect(dag.getCommitteeRotation(1).effective_round).toBe(100);
+        expect(dag.getCommitteeRotation(1).effective_round).toBe(300);
         dag.close();
       } finally {
         _cleanup(dbPath);
@@ -458,14 +466,14 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx1 = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: prevCommittee.slice(0, 3),
           prevCommittee,
           prevKeys,
         });
         const tx2 = _buildRotationTx({
           rotation_number: 1,  // dup
-          effective_round: 200,
+          effective_round: 400,
           new_committee: prevCommittee.slice(0, 2),
           prevCommittee,
           prevKeys,
@@ -473,7 +481,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         const result = handler.commitOrderedTxs([tx1, tx2], 100);
         expect(result.committed).toBe(1);
         expect(result.dropped).toBe(1);
-        expect(dag.getCommitteeRotation(1).effective_round).toBe(100);  // first wins
+        expect(dag.getCommitteeRotation(1).effective_round).toBe(300);  // first wins
         dag.close();
       } finally {
         _cleanup(dbPath);
@@ -491,7 +499,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
           prevCommittee,
           prevKeys,
         });
-        const r1 = handler.commitOrderedTxs([tx1], 200);
+        const r1 = handler.commitOrderedTxs([tx1], 100);
         expect(r1.committed).toBe(1);
 
         // Now try rotation 2 with effective_round=200 (equal to prev) — must reject
@@ -507,7 +515,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
           prevCommittee: rot1Committee,
           prevKeys: rot1Keys,
         });
-        const r2 = handler.commitOrderedTxs([tx2], 250);
+        const r2 = handler.commitOrderedTxs([tx2], 150);
         expect(r2.committed).toBe(0);
         expect(dag.getCommitteeRotation(2)).toBeNull();
         dag.close();
@@ -523,7 +531,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: [],
           prevCommittee,
           prevKeys,
@@ -541,7 +549,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
       try {
         const tx = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: [{ node_id: "tip://node/x" }],  // no public_key!
           prevCommittee,
           prevKeys,
@@ -563,7 +571,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
         const rot1Committee = prevCommittee.slice(0, 3);
         const tx1 = _buildRotationTx({
           rotation_number: 1,
-          effective_round: 100,
+          effective_round: 300,
           new_committee: rot1Committee,
           prevCommittee,
           prevKeys,
@@ -579,12 +587,12 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
 
         const tx2 = _buildRotationTx({
           rotation_number: 2,
-          effective_round: 250,
+          effective_round: 500,
           new_committee: rot2Committee,
           prevCommittee: rot1Committee,
           prevKeys: rot1Keys,
         });
-        expect(handler.commitOrderedTxs([tx2], 250).committed).toBe(1);
+        expect(handler.commitOrderedTxs([tx2], 350).committed).toBe(1);
 
         // Verify chain
         const chain = [...dag.getRotationsFromGenesis()];
@@ -594,8 +602,8 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
 
         // getCommitteeAtRound should return the right rotation per round
         expect(dag.getCommitteeAtRound(50).rotation_number).toBe(0);
-        expect(dag.getCommitteeAtRound(150).rotation_number).toBe(1);
-        expect(dag.getCommitteeAtRound(300).rotation_number).toBe(2);
+        expect(dag.getCommitteeAtRound(350).rotation_number).toBe(1);
+        expect(dag.getCommitteeAtRound(550).rotation_number).toBe(2);
         dag.close();
       } finally {
         _cleanup(dbPath);

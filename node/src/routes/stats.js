@@ -106,9 +106,11 @@ function createRouter({ dag, config, consensus, network }) {
     // tally for the latest rotation in progress — useful for ops to
     // diff across nodes and verify deterministic agreement.
     const { CONSENSUS } = require("../../../shared/protocol-constants");
-    const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
     const minPct = CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL;
-    const threshold = Math.ceil((intervalCommits * minPct) / 100);
+    const totalBuckets = CONSENSUS.EPOCH_PARTICIPATION_BUCKETS;
+    // Full-day bar; the boundary computation scales it to the best-observed
+    // presence of the finishing epoch (see computeNextRotationCommittee).
+    const threshold = Math.ceil((totalBuckets * minPct) / 100);
 
     const registered = [];
     for (const n of dag.getAllNodes()) {

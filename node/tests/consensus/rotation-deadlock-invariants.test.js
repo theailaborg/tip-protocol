@@ -55,7 +55,7 @@ const SELF_ID = "tip://node/self";
 const PEER_ID = "tip://node/peer";
 const NODE_ID_DRIVER = "tip://node/test-driver";
 
-function buildNarwhal({ onProducerPaused = null, seedRotations = 5 } = {}) {
+function buildNarwhal({ seedRotations = 1 } = {}) {
   const selfKp = generateMLDSAKeypair();
   const peerKp = generateMLDSAKeypair();
 
@@ -69,10 +69,11 @@ function buildNarwhal({ onProducerPaused = null, seedRotations = 5 } = {}) {
     status: "active", registered_at: 1767225600000
   });
 
-  const epochLength = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2;
+  // Record-based committee: rotations at low effective_rounds cover all
+  // test rounds; count is configurable for gap scenarios.
   for (let n = 1; n <= seedRotations; n++) {
     dag.saveCommitteeRotation({
-      rotation_number: n, effective_round: n * epochLength,
+      rotation_number: n, effective_round: n,
       committee: [
         { node_id: SELF_ID, public_key: selfKp.publicKey },
         { node_id: PEER_ID, public_key: peerKp.publicKey },
@@ -100,10 +101,9 @@ function buildNarwhal({ onProducerPaused = null, seedRotations = 5 } = {}) {
     getCommittee: (round) => getActiveCommittee(dag, round != null ? round : narwhal.currentRound()),
     onCommit: () => { },
     onCertSaved: () => { },
-    onProducerPaused,
   });
 
-  return { narwhal, dag, mempool, epochLength };
+  return { narwhal, dag, mempool };
 }
 
 function makeRotationTx(rotation_number, effective_round, signers = []) {
@@ -131,68 +131,26 @@ function makeRotationTx(rotation_number, effective_round, signers = []) {
 
 describe("rotation-deadlock invariants — load-bearing contracts pinned", () => {
   // -----------------------------------------------------------------------
-  // INVARIANT 2: rotation tx survives N consecutive carve-outs across rounds
-  //
-  // Why it matters: each round at the boundary epoch must produce a rotation-
-  // only batch until anchor-commit applies the tx through the normal pipeline.
-  // If the tx ever leaves mempool prematurely (#1 invariant), each node carves
-  // exactly once and producer-pauses again at R+1 with empty mempool — the
-  // 2026-05-04 deadlock fingerprint.
-  test("rotation tx survives 5 consecutive _beginRound carve-outs (mempool not drained)", () => {
+  // INVARIANT 2 (time-targeted model): production never pauses for rotations.
+  // A rotation tx rides a normal batch and drains like any other tx; a
+  // rotation gap (stale committee_history) does not stop round advance. The
+  // old pause/carve-out deadlock classes cannot form without a pause.
+  test("rotation tx drains in a normal batch; rounds advance across a rotation gap", () => {
     jest.useFakeTimers();
     try {
       const fx = buildNarwhal();
-      // Producer-pause for rotation 6 (we seeded 1-5).
-      fx.narwhal.exitSyncMode(fx.epochLength * 6 - 1);
+      fx.narwhal.exitSyncMode(999);
 
-      const rotTx = makeRotationTx(6, fx.epochLength * 6);
+      const rotTx = makeRotationTx(2, 1500);
       expect(fx.mempool.add(rotTx).added).toBe(true);
 
       fx.narwhal.start();
-      // Five carve-out cycles: each _beginRound rebuilds a rotation-only batch.
-      // After each cycle the tx must STILL be present in mempool.
-      for (let i = 0; i < 5; i++) {
-        jest.advanceTimersByTime(50);
-        expect(fx.mempool.size()).toBeGreaterThanOrEqual(1);
-        expect(fx.mempool.peekRotationTx(6)).not.toBeNull();
-        expect(fx.mempool.peekRotationTx(6).tx_id).toBe(rotTx.tx_id);
-      }
-
-      fx.narwhal.stop();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // INVARIANT 2b: a multi-epoch rotation gap heals one rotation at a time.
-  //
-  // If the network ever advances past several epoch boundaries with no
-  // rotation committed (live trigger: the epoch length changed under a run),
-  // the carve-out must target latest+1 (the next missing rotation the proposer
-  // actually submits), NOT epochOf(currentRound) (the far boundary). Pre-fix it
-  // peeked the far rotation, found nothing, and producer-paused forever.
-  test("multi-epoch gap: carve-out targets latest+1, not the far epoch, and never pauses", () => {
-    jest.useFakeTimers();
-    try {
-      let paused = 0;
-      const fx = buildNarwhal({ seedRotations: 5, onProducerPaused: () => { paused += 1; } });
-      // Current round sits in epoch 10, but the latest committed rotation is 5.
-      fx.narwhal.exitSyncMode(fx.epochLength * 10 - 1);
-
-      // Only the NEXT missing rotation (latest+1 = 6) is in mempool; the proposer
-      // never makes the far one (10) directly.
-      const rotTx = makeRotationTx(6, fx.epochLength * 6);
-      expect(fx.mempool.add(rotTx).added).toBe(true);
-
-      fx.narwhal.start();
-      for (let i = 0; i < 5; i++) jest.advanceTimersByTime(50);
-
-      // Fixed: drains rotation 6 every round (re-carve), never producer-pauses,
-      // so the gap walks 6 -> 7 -> ... -> 10 as each commits. Pre-fix peeked
-      // rotation 10, found nothing, and paused permanently.
-      expect(paused).toBe(0);
-      expect(fx.mempool.peekRotationTx(6)).not.toBeNull();
+      jest.advanceTimersByTime(50);
+      // Drained by mempool.drain into the round's batch, not held for carving.
+      expect(fx.mempool.size()).toBe(0);
+      // Production is not gated: the batch formed despite the rotation gap.
+      // (Round ADVANCE needs peer quorum, pinned by the partition suite.)
+      expect(fx.narwhal.stats().metrics.batches_created).toBeGreaterThanOrEqual(1);
 
       fx.narwhal.stop();
     } finally {
@@ -266,7 +224,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
     // validator's "non-genesis must have prev refs" rule passes).
     const new_committee = prevCommittee; // re-attestation (same members)
     const payload_hash = shake256(canonicalJson({
-      rotation_number: 1, effective_round: 100, committee: new_committee,
+      rotation_number: 1, effective_round: 300, committee: new_committee,
     }));
     const buildTx = (timestamp) => {
       const cosignatures = prevCommittee.map(m => ({
@@ -275,7 +233,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
         signature:   mldsaSign(`rotation:${payload_hash}:${m.node_id}`, prevPriv[m.node_id]),
       }));
       const data = {
-        rotation_number: 1, effective_round: 100, new_committee, payload_hash,
+        rotation_number: 1, effective_round: 300, new_committee, payload_hash,
         cosignatures,
       };
       const tx = {
@@ -354,52 +312,17 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
   });
 
   // -----------------------------------------------------------------------
-  // INVARIANT 5: producer-pause check is `!dag.getCommitteeRotation(targetRotation)`
-  //
-  // Why it matters: the carve-out trigger AND the pause exit condition both
-  // depend on this exact predicate. Any rephrasing (e.g., switching to
-  // `dag.getLatestRotation()`, or adding additional conditions) can cause:
-  //   - false negatives → pause skipped, narwhal seals certs under stale
-  //     committee assumption, peer-side cert-validation halts (the original
-  //     2026-05-03 round-202 incident this whole atomic-boundary subsystem
-  //     was built to prevent)
-  //   - false positives → pause triggered when rotation IS in CH, infinite
-  //     producer-pause forever
-  test("producer-pause does not fire when rotation IS in committee_history", () => {
+  // INVARIANT 5 (time-targeted model): there is no producer-pause. Whether or
+  // not a newer rotation exists in committee_history, production continues;
+  // activation is enforced by the record's effective_round, not by pausing.
+  test("production continues regardless of rotation-gap state", () => {
     jest.useFakeTimers();
     try {
-      const fx = buildNarwhal({ seedRotations: 6 }); // rotation 6 IS in CH
-      let paused = 0;
-      fx.narwhal.stop(); // Re-initialize with the pause callback this test needs.
-      const tracked = buildNarwhal({
-        seedRotations: 6,
-        onProducerPaused: () => { paused++; },
-      });
-      tracked.narwhal.exitSyncMode(tracked.epochLength * 6); // Round IS in epoch 6, rotation 6 present.
-      tracked.narwhal.start();
-      jest.advanceTimersByTime(200);
-      // Rotation 6 IS present → no pause should fire.
-      expect(paused).toBe(0);
-      tracked.narwhal.stop();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test("producer-pause DOES fire when rotation is NOT in committee_history", () => {
-    jest.useFakeTimers();
-    try {
-      let paused = 0;
-      const fx = buildNarwhal({
-        seedRotations: 5, // rotation 6 NOT seeded
-        onProducerPaused: (_round, missing) => { paused++; expect(missing).toBe(6); },
-      });
-      fx.narwhal.exitSyncMode(fx.epochLength * 6 - 1); // Round in epoch 6.
+      const fx = buildNarwhal({ seedRotations: 1 });
+      fx.narwhal.exitSyncMode(4999);
       fx.narwhal.start();
       jest.advanceTimersByTime(200);
-      // Rotation 6 NOT present, mempool empty → pause fires repeatedly
-      // (rate-limited to once per ~1.5s).
-      expect(paused).toBeGreaterThanOrEqual(1);
+      expect(fx.narwhal.stats().metrics.batches_created).toBeGreaterThanOrEqual(1);
       fx.narwhal.stop();
     } finally {
       jest.useRealTimers();

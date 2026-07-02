@@ -1,29 +1,23 @@
 /**
  * @file tests/consensus/bullshark-rotation-proposer.test.js
- * @description Tests for #75 boundary-fired rotation proposer.
+ * @description Tests for the time-based epoch-boundary rotation proposer.
  *
- * Under the rotation-period model the proposer fires ONLY at rotation
- * boundaries — every COMMITTEE_ROTATION_INTERVAL_COMMITS anchor commits.
- * This eliminates the per-round multi-proposer flap that was #74's
- * symptom. The boundary's anchor leader is the deterministic single
- * proposer; other nodes don't fire (#74 fixed at the source).
+ * Rotation model (time-targeted, round-executed):
+ *   - Boundary trigger: in the anchor-commit path, rotation latest+1 is
+ *     proposed when epochIndexOfTime(anchorCertTs) >
+ *     epochIndexOfTime(latestRotation.committed_at), where
+ *     epochIndexOfTime(T) = floor((T - BFT_TIME_GENESIS_MS) / EPOCH_DURATION_MS).
+ *   - effective_round = max(voteRound + ROTATION_ACTIVATION_LEAD_ROUNDS,
+ *     latest.effective_round + 2).
+ *   - Participation is tallied per (node, rotation, presence bucket);
+ *     admission needs >= ceil(maxBuckets * PCT / 100) DISTINCT buckets.
+ *   - Cert participation is attributed to the rotation active at cert.round
+ *     (committee_history lookup), not to local replay state.
  *
- * Test pattern:
- *   - Pre-set `last_consensus_index` so the next anchor commit lands AT
- *     the boundary (consensus_index % INTERVAL_COMMITS == 0).
- *   - Drive ONE anchor commit. Boundary handler runs, computes next
- *     committee from rotation_participation tally, leader submits the
- *     COMMITTEE_ROTATION tx via the stub submitTx.
- *   - Assert tx shape and contents.
- *
- * Covers:
- *   - Proposer does NOT fire at non-boundary anchor commits
- *   - Proposer fires at boundary anchor commits
- *   - Only the boundary anchor's leader fires (single proposer)
- *   - Computes next committee from rotation_participation tally
- *   - Doesn't fire when committee unchanged
- *   - Tx shape (rotation_number, effective_round, committee, signers)
- *   - submitTx throwing is caught (anchor commit unaffected)
+ * Test pattern: pin the latest rotation's committed_at to an epoch-aligned
+ * marker, then commit ONE anchor whose cert timestamp is either inside the
+ * marker's epoch (no proposal) or one EPOCH_DURATION_MS later (proposal).
+ * Anchor timestamps respect the BFT-time strict-monotonicity gate.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -35,7 +29,7 @@ const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
-const { initCrypto, generateMLDSAKeypair, shake256 } = require(SHARED + "/crypto");
+const { initCrypto, generateMLDSAKeypair, shake256, canonicalJson } = require(SHARED + "/crypto");
 const { TX_TYPES } = require(SHARED + "/constants");
 const { CONSENSUS } = require(SHARED + "/protocol-constants");
 const { initDAG } = require(path.join(SRC, "dag"));
@@ -47,77 +41,71 @@ beforeAll(async () => { await initCrypto(); });
 const FOUNDING = getGenesisPayload().founding_nodes[0];
 const GENESIS_IDS = [...getGenesisCommittee()].sort();
 
-// Use the configured interval and threshold for boundary calculation.
-const INTERVAL = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+const GEN = CONSENSUS.BFT_TIME_GENESIS_MS;
+const EPOCH = CONSENSUS.EPOCH_DURATION_MS;
+const LEAD = CONSENSUS.ROTATION_ACTIVATION_LEAD_ROUNDS;
+const BUCKETS = CONSENSUS.EPOCH_PARTICIPATION_BUCKETS;
 const PCT = CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL;
-const THRESHOLD = Math.ceil((INTERVAL * PCT) / 100);
+// Admission bar when the best-observed node covers all buckets.
+const THRESHOLD = Math.max(1, Math.ceil((BUCKETS * PCT) / 100));
 
-// Round-based submission window: voteRound within `leadRounds` of next
-// boundary round (= next multiple of EPOCH_LENGTH_ROUNDS).
-//   leadRounds = max(20, LEAD_ANCHORS * 3) — see bullshark.js
-// IN_WINDOW_VOTE_ROUND lands inside the window for boundary 1 (round
-// EPOCH_LENGTH_ROUNDS). Round must be even (vote round). Use 2 rounds
-// before the boundary so we're comfortably inside the window for any
-// reasonable leadRounds.
-const IN_WINDOW_VOTE_ROUND = CONSENSUS.EPOCH_LENGTH_ROUNDS - 2;
-const IN_WINDOW_PROPOSE_ROUND = IN_WINDOW_VOTE_ROUND - 1;
+// Epoch-aligned marker for the latest rotation's committed_at. Certs default
+// to timestamps inside this epoch; boundary tests pass a next-epoch ts.
+const MARKER = GEN + 1000 * EPOCH;
+const SAME_EPOCH_TS = (round) => MARKER + round * 20;
+const NEXT_EPOCH_TS = (round) => MARKER + EPOCH + round * 20;
 
-const POST_GENESIS_BASE = 1775001600000;
-
-function _buildCert({ round, author, hash }) {
-  const ts = POST_GENESIS_BASE + round * 2000;
+function _buildCert({ round, author, hash, ts }) {
+  const t = ts ?? SAME_EPOCH_TS(round);
   return {
     hash: hash || shake256(`cert-${round}-${author}`),
     round,
     author_node_id: author,
-    timestamp: ts,
+    timestamp: t,
     signature: "00",
     batch: { txs: [], hash: shake256(`batch-${round}-${author}`) },
     parent_hashes: [],
     acknowledgments: [
-      { acker_node_id: author, signature: "00", signed_at: ts },
+      { acker_node_id: author, signature: "00", signed_at: t },
     ],
   };
 }
 
 /**
- * Set up a bullshark instance with consensus_index pre-loaded so the
- * NEXT successful anchor commit lands at a boundary (or just before, if
- * `boundary` is false). Uses the genesis founding_node as the leader.
+ * Fresh in-memory DAG + bullshark. Registers every genesis founding node and
+ * pins rotation 0's committed_at to MARKER so tests control epoch crossing
+ * purely via anchor cert timestamps.
  */
-function _setup({ withProposer = true, atBoundary = true } = {}) {
+function _setup({ withProposer = true, nodeIds, submitTx } = {}) {
   const dag = initDAG({ inMemory: true });
 
-  if (!dag.getNode(FOUNDING.node_id)) {
-    dag.saveNode({
-      node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-      status: "active", registered_at: 1767225600000,
-    });
+  for (const f of getGenesisPayload().founding_nodes) {
+    if (!dag.getNode(f.node_id)) {
+      dag.saveNode({
+        node_id: f.node_id, name: "founding", public_key: f.public_key,
+        status: "active", registered_at: GEN,
+      });
+    }
   }
 
-  // Under #75 atomic boundary, submission fires during the ROUND-based
-  // window: voteRound within `leadRounds` of the next boundary round
-  // (multiple of EPOCH_LENGTH_ROUNDS). The trigger is voteRound (passed
-  // by the caller via _driveAnchorCommit), NOT consensus_index. So this
-  // helper no longer pre-loads cs_idx — the test controls window membership
-  // by choosing IN_WINDOW_VOTE_ROUND vs an out-of-window value.
-  // The atBoundary flag is kept for documentation: tests that want to
-  // trigger submission pass atBoundary=true and use IN_WINDOW_VOTE_ROUND.
+  const rot0 = dag.getCommitteeRotation(0);
+  dag.saveCommitteeRotation({ ...rot0, committed_at: MARKER });
 
   const submittedTxs = [];
   const proposer = withProposer ? {
     nodeId: FOUNDING.node_id,
     nodePrivateKey: generateMLDSAKeypair().privateKey,
     nodePublicKey: FOUNDING.public_key,
-    submitTx: (tx) => {
+    submitTx: submitTx || ((tx) => {
       submittedTxs.push(tx);
       return { tx_id: tx.tx_id };
-    },
+    }),
   } : null;
 
+  const committee = [...(nodeIds || [FOUNDING.node_id])].sort();
   const bullshark = createBullshark({
     dag,
-    getNodeIds: () => [FOUNDING.node_id],
+    getNodeIds: () => committee,
     onOrderedTxs: () => {},
     proposer,
   });
@@ -127,9 +115,10 @@ function _setup({ withProposer = true, atBoundary = true } = {}) {
 
 /**
  * Drive an anchor commit: seed propose+vote certs, call onRoundComplete.
+ * anchorTs sets the propose (anchor) cert timestamp, the boundary input.
  */
-function _driveAnchorCommit(dag, bullshark, { proposeRound, voteRound, leader, voteAuthors }) {
-  const proposeCert = _buildCert({ round: proposeRound, author: leader });
+function _driveAnchorCommit(dag, bullshark, { proposeRound, voteRound, leader, voteAuthors, anchorTs }) {
+  const proposeCert = _buildCert({ round: proposeRound, author: leader, ts: anchorTs });
   dag.saveCertificate(proposeCert);
 
   const voteCerts = voteAuthors.map(author => _buildCert({
@@ -158,217 +147,260 @@ function _seedAnchorCerts(dag, { proposeRound, voteRound, leader, voteAuthors })
   }
 }
 
-/**
- * Pre-populate rotation_participation for a rotation. Useful for
- * driving the boundary computation deterministically.
- */
-function _seedParticipation(dag, rotationNumber, byNode) {
-  for (const [node_id, count] of Object.entries(byNode)) {
-    for (let i = 0; i < count; i++) {
-      dag.incrementRotationParticipation(node_id, rotationNumber);
+// One increment per distinct presence bucket 0..n-1 for each node.
+function _seedBuckets(dag, rotationNumber, byNode) {
+  for (const [node_id, n] of Object.entries(byNode)) {
+    for (let b = 0; b < n; b++) {
+      dag.incrementRotationParticipation(node_id, rotationNumber, b);
     }
   }
 }
 
-describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
-  test("does NOT fire at non-boundary anchor commits", () => {
-    const fx = _setup({ atBoundary: false });
-    // voteRound=2 is far from the next boundary round (EPOCH_LENGTH_ROUNDS),
-    // so the round-based submission window check fails and no rotation tx
-    // is submitted.
+describe("bullshark rotation proposer (time-based epoch boundary)", () => {
+  test("does NOT fire when the anchor timestamp stays in the latest rotation's epoch", () => {
+    const fx = _setup();
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: 1, voteRound: 2, leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: SAME_EPOCH_TS(3),
     });
 
     expect(fx.submittedTxs).toHaveLength(0);
+    // Anchor itself still commits; only the proposal is skipped.
+    expect(fx.bullshark.lastCommittedRound()).toBe(4);
   });
 
-  test("re-attestation: fires at boundary even when committee is unchanged (#75)", () => {
-    // Under #75 atomic boundary, every epoch must have a corresponding
-    // rotation row in committee_history (so producer-pause's
-    // getCommitteeRotation(epochOf(round)) check succeeds for every
-    // round). So we always submit a rotation tx at the boundary, even
-    // if the new committee equals the previous one — this is a
-    // re-attestation rotation (matches Sui/Aptos epoch-attestation).
-    const fx = _setup({ atBoundary: true });
-    // No participation seeded → next committee is just genesis (founding),
-    // identical to rotation 0. Pre-#75 we'd skip; under #75 we still
-    // submit a re-attestation rotation.
+  test("fires when the anchor crosses an epoch boundary; re-attestation when membership unchanged", () => {
+    // No participation seeded beyond the anchor's own walk. Genesis members
+    // get the admission free pass, so next committee == rotation 0 committee.
+    // Re-attestation still submits (matches Sui/Aptos epoch attestation).
+    const fx = _setup();
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     });
 
     expect(fx.submittedTxs).toHaveLength(1);
     const tx = fx.submittedTxs[0];
     expect(tx.tx_type).toBe(TX_TYPES.COMMITTEE_ROTATION);
     expect(tx.data.rotation_number).toBe(1);
-    // committee unchanged (the full genesis committee re-attested)
+    expect(tx.data.effective_round).toBe(4 + LEAD);
     const ids = tx.data.new_committee.map(m => m.node_id);
     expect(ids).toEqual(GENESIS_IDS);
   });
 
-  test("fires at boundary when participation tally yields a different committee", () => {
-    const fx = _setup({ atBoundary: true });
-    // Register a new node and seed participation above threshold for
-    // rotation 0. At the boundary, computeNextRotationCommittee will
-    // include this peer → committee grows → rotation tx fires.
+  test("halt spanning several boundaries yields ONE catch-up rotation, not one per missed epoch", () => {
+    // Live drill 2026-07-02: 390s outage across ~1.6 dev boundaries resumed
+    // with exactly rotation N+1. Contiguity is a snapshot chain-of-trust
+    // requirement, so a rotation per missed epoch would be a protocol bug.
+    const fx = _setup();
+    const resumeTs = MARKER + 5 * EPOCH + 60_000;
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: resumeTs,
+    });
+    expect(fx.submittedTxs).toHaveLength(1);
+    expect(fx.submittedTxs[0].data.rotation_number).toBe(1);
+
+    // Once the catch-up rotation is committed, a later anchor in the SAME
+    // bucket does not fire again.
+    const rot0 = fx.dag.getCommitteeRotation(0);
+    fx.dag.saveCommitteeRotation({
+      ...rot0, rotation_number: 1, prev_rotation: 0,
+      effective_round: 4 + LEAD, committed_at: resumeTs + 2_000,
+    });
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 5, voteRound: 6, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: resumeTs + 30_000,
+    });
+    expect(fx.submittedTxs).toHaveLength(1);
+  });
+
+  test("after a mid-bucket catch-up rotation the next boundary is the calendar line, not commit+EPOCH", () => {
+    // Live drill: catch-up committed at grid+106.5s; the next rotation fired
+    // 137.2s later at grid+3.7s. Boundaries re-anchor to the genesis grid.
+    const fx = _setup();
+    const catchUpCommit = MARKER + 5 * EPOCH + 100_000;  // 100s into the bucket
+    const rot0 = fx.dag.getCommitteeRotation(0);
+    fx.dag.saveCommitteeRotation({
+      ...rot0, rotation_number: 1, prev_rotation: 0,
+      effective_round: 500, committed_at: catchUpCommit,
+    });
+
+    // 50s after the catch-up commit: same bucket, no proposal.
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 501, voteRound: 502, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: catchUpCommit + 50_000,
+    });
+    expect(fx.submittedTxs).toHaveLength(0);
+
+    // The next grid line arrives EPOCH - 100s after the commit; crossing it
+    // fires even though a full EPOCH has not elapsed since the commit.
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 503, voteRound: 504, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: MARKER + 6 * EPOCH + 1_000,
+    });
+    expect(fx.submittedTxs).toHaveLength(1);
+    expect(fx.submittedTxs[0].data.rotation_number).toBe(2);
+  });
+
+  test("an uncommitted proposal is re-proposed at a later anchor with a FRESH activation window", () => {
+    // The crossing condition stays true until a rotation record lands, so a
+    // proposal that never commits (wedged aggregation) is retried with
+    // effective_round rebased on the retry round; a stale window is never
+    // reused after the future-activation gate rejects it.
+    const fx = _setup();
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
+    });
+    expect(fx.submittedTxs).toHaveLength(1);
+    expect(fx.submittedTxs[0].data.effective_round).toBe(4 + LEAD);
+
+    // Nothing landed in CH; a much later anchor re-fires with a new window.
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 299, voteRound: 300, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(299),
+    });
+    expect(fx.submittedTxs).toHaveLength(2);
+    expect(fx.submittedTxs[1].data.rotation_number).toBe(1);
+    expect(fx.submittedTxs[1].data.effective_round).toBe(300 + LEAD);
+  });
+
+  test("admits a peer meeting the distinct-bucket threshold, excludes one below it", () => {
+    const fx = _setup();
     fx.dag.saveNode({
       node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: 1767225600000,
+      status: "active", registered_at: GEN,
     });
-    _seedParticipation(fx.dag, 0, {
-      [FOUNDING.node_id]: INTERVAL,
-      "tip://node/peer": THRESHOLD,
+    fx.dag.saveNode({
+      node_id: "tip://node/below", name: "below", public_key: "below-pubkey",
+      status: "active", registered_at: GEN,
+    });
+    _seedBuckets(fx.dag, 0, {
+      [FOUNDING.node_id]: BUCKETS,          // maxBuckets, sets the bar
+      "tip://node/peer": THRESHOLD,          // exactly at the bar
+      "tip://node/below": THRESHOLD - 1,     // one distinct bucket short
     });
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     });
 
     expect(fx.submittedTxs).toHaveLength(1);
     const tx = fx.submittedTxs[0];
     expect(tx.tx_type).toBe(TX_TYPES.COMMITTEE_ROTATION);
-    expect(tx.data.rotation_number).toBe(1);  // rotation 0 → 1
-    expect(tx.data.effective_round).toBe(CONSENSUS.EPOCH_LENGTH_ROUNDS);
+    expect(tx.data.rotation_number).toBe(1);
+    expect(tx.data.effective_round).toBe(4 + LEAD);
 
     const ids = tx.data.new_committee.map(m => m.node_id);
     expect(ids).toEqual([...ids].sort());
     expect(ids).toContain(FOUNDING.node_id);
     expect(ids).toContain("tip://node/peer");
+    expect(ids).not.toContain("tip://node/below");
     expect(tx.data.cosignatures).toHaveLength(1);
     expect(tx.data.cosignatures[0].signer_kind).toBe("node");
     expect(tx.data.cosignatures[0].signer_ref).toBe(FOUNDING.node_id);
     expect(typeof tx.data.cosignatures[0].signature).toBe("string");
   });
 
-  test("does NOT fire when proposer config is omitted (test/legacy mode)", () => {
-    const fx = _setup({ atBoundary: true, withProposer: false });
+  test("effective_round is floored at latest.effective_round + 2", () => {
+    const fx = _setup();
+    // Latest rotation activates far in the future: the floor arm wins over
+    // voteRound + LEAD.
+    const rot0 = fx.dag.getCommitteeRotation(0);
+    fx.dag.saveCommitteeRotation({
+      rotation_number: 1, effective_round: 5000, committee: rot0.committee,
+      prev_rotation: 0, signer_node_ids: [], signatures: [],
+      payload_hash: shake256("test-rot1-far-future"), committed_at: MARKER,
+    });
+
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
+    });
+
+    expect(fx.submittedTxs).toHaveLength(1);
+    const tx = fx.submittedTxs[0];
+    expect(tx.data.rotation_number).toBe(2);
+    expect(tx.data.effective_round).toBe(5002);
+  });
+
+  test("does NOT fire when proposer config is omitted (test/legacy mode)", () => {
+    const fx = _setup({ withProposer: false });
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     });
     expect(fx.submittedTxs).toHaveLength(0);
+    expect(fx.bullshark.lastCommittedRound()).toBe(4);
   });
 
   test("only the boundary anchor's leader fires; non-leaders skip", () => {
-    // Set up a 2-node committee where the boundary anchor's leader is
-    // NOT us. The boundary handler should skip submission on non-leaders.
-    const dag = initDAG({ inMemory: true });
-    if (!dag.getNode(FOUNDING.node_id)) {
-      dag.saveNode({
-        node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: 1767225600000,
-      });
-    }
-    dag.saveNode({
-      node_id: "tip://node/0-aaa", name: "a", public_key: "kA",
-      status: "active", registered_at: 1767225600000,
+    const other = "tip://node/0-aaa";
+    const fx = _setup({ nodeIds: [other, FOUNDING.node_id] });
+    fx.dag.saveNode({
+      node_id: other, name: "a", public_key: "kA",
+      status: "active", registered_at: GEN,
     });
 
-    const submittedTxs = [];
-    const proposer = {
-      nodeId: FOUNDING.node_id,  // we're founding, NOT the boundary leader
-      nodePrivateKey: generateMLDSAKeypair().privateKey,
-      nodePublicKey: FOUNDING.public_key,
-      submitTx: (tx) => { submittedTxs.push(tx); return { tx_id: tx.tx_id }; },
-    };
-    const bullshark = createBullshark({
-      dag,
-      getNodeIds: () => ["tip://node/0-aaa", FOUNDING.node_id].sort(),
-      onOrderedTxs: () => {},
-      proposer,
+    // Precondition: wave 0's leader is the OTHER node, not us.
+    expect(fx.bullshark.getLeader(1)).toBe(other);
+
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 1, voteRound: 2, leader: other,
+      voteAuthors: [other, FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(1),
     });
 
-    // Drive boundary commit with leader = 0-aaa (not founding).
-    _driveAnchorCommit(dag, bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: "tip://node/0-aaa",
-      voteAuthors: ["tip://node/0-aaa", FOUNDING.node_id],
-    });
-
-    // We're founding, leader is 0-aaa → leader gate skips us.
-    expect(submittedTxs).toHaveLength(0);
+    // Boundary crossed and anchor committed, but the leader gate skips us.
+    expect(fx.bullshark.lastCommittedRound()).toBe(2);
+    expect(fx.submittedTxs).toHaveLength(0);
   });
 
-  test("submitTx throws synchronously → bullshark catches, anchor commit unaffected", () => {
-    const dag = initDAG({ inMemory: true });
-    if (!dag.getNode(FOUNDING.node_id)) {
-      dag.saveNode({
-        node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: 1767225600000,
-      });
-    }
-    dag.saveNode({
-      node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: 1767225600000,
-    });
-    // Seed participation so the boundary triggers a rotation submit.
-    for (let i = 0; i < THRESHOLD; i++) {
-      dag.incrementRotationParticipation("tip://node/peer", 0);
-    }
-
+  test("submitTx throws synchronously; bullshark catches, anchor commit unaffected", () => {
     let submitCalls = 0;
-    const proposer = {
-      nodeId: FOUNDING.node_id,
-      nodePrivateKey: generateMLDSAKeypair().privateKey,
-      nodePublicKey: FOUNDING.public_key,
+    const fx = _setup({
       submitTx: () => {
         submitCalls++;
         throw new Error("consensus not wired");
       },
-    };
-    const bullshark = createBullshark({
-      dag,
-      getNodeIds: () => [FOUNDING.node_id],
-      onOrderedTxs: () => {},
-      proposer,
     });
 
-    expect(() => _driveAnchorCommit(dag, bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+    expect(() => _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     })).not.toThrow();
 
     expect(submitCalls).toBe(1);
-    expect(bullshark.lastCommittedRound()).toBe(IN_WINDOW_VOTE_ROUND);
-    expect(bullshark.stats().metrics.committee_rotation_proposals).toBe(1);
+    expect(fx.bullshark.lastCommittedRound()).toBe(4);
+    expect(fx.bullshark.stats().metrics.committee_rotation_proposals).toBe(1);
   });
 
   test("payload_hash matches canonical claim shake256(rotation_number, effective_round, new_committee)", () => {
-    const fx = _setup({ atBoundary: true });
-    fx.dag.saveNode({
-      node_id: "tip://node/peer", name: "peer", public_key: "peer-pubkey",
-      status: "active", registered_at: 1767225600000,
-    });
-    _seedParticipation(fx.dag, 0, {
-      [FOUNDING.node_id]: INTERVAL,
-      "tip://node/peer": THRESHOLD,
-    });
-
+    const fx = _setup();
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     });
 
     expect(fx.submittedTxs).toHaveLength(1);
     const tx = fx.submittedTxs[0];
 
-    const { canonicalJson, shake256: hash } = require(SHARED + "/crypto");
-    const expectedHash = hash(canonicalJson({
+    const expectedHash = shake256(canonicalJson({
       rotation_number: tx.data.rotation_number,
       effective_round: tx.data.effective_round,
       committee: tx.data.new_committee,
@@ -377,28 +409,26 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
   });
 
   test("filters nodes with no public_key from new_committee", () => {
-    const fx = _setup({ atBoundary: true });
-    // Register one node WITH pubkey, one WITHOUT. Both above participation
-    // threshold. The no-pubkey one must be filtered out.
+    const fx = _setup();
+    // Both above the bucket threshold; the no-pubkey one must be filtered.
     fx.dag.saveNode({
       node_id: "tip://node/no-key", name: "no-key", public_key: "",
-      status: "active", registered_at: 1767225600000,
+      status: "active", registered_at: GEN,
     });
     fx.dag.saveNode({
       node_id: "tip://node/with-key", name: "with-key", public_key: "real-pubkey",
-      status: "active", registered_at: 1767225600000,
+      status: "active", registered_at: GEN,
     });
-    _seedParticipation(fx.dag, 0, {
-      [FOUNDING.node_id]: INTERVAL,
+    _seedBuckets(fx.dag, 0, {
+      [FOUNDING.node_id]: BUCKETS,
       "tip://node/no-key": THRESHOLD,
       "tip://node/with-key": THRESHOLD,
     });
 
     _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound: IN_WINDOW_PROPOSE_ROUND,
-      voteRound: IN_WINDOW_VOTE_ROUND,
-      leader: FOUNDING.node_id,
+      proposeRound: 3, voteRound: 4, leader: FOUNDING.node_id,
       voteAuthors: [FOUNDING.node_id],
+      anchorTs: NEXT_EPOCH_TS(3),
     });
 
     expect(fx.submittedTxs).toHaveLength(1);
@@ -409,122 +439,121 @@ describe("bullshark — rotation proposer (#75 boundary-fired)", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Fix A — rotation-participation attribution uses epochOf(cert.round),
-// NOT floor(local _consensusIndex / INTERVAL_COMMITS). Without Fix A, a node
-// whose cs_idx lags during catch-up would credit OLD rotations with certs
-// from NEW rotations — producing divergent RP across nodes and ultimately
-// divergent committee derivations. The walk increment must be a function
-// of the cert (deterministic across nodes) not local replay state.
-// ═══════════════════════════════════════════════════════════════════════════
-describe("bullshark — RP attribution by cert.round (Fix A)", () => {
-  test("cert at round R credits rotation epochOf(R), regardless of local cs_idx", () => {
-    const fx = _setup({ atBoundary: false });
-    const epochLen = CONSENSUS.EPOCH_LENGTH_ROUNDS;
-    // Drive an anchor commit deep inside rotation 2 (rounds [2*epochLen,
-    // 3*epochLen)). The propose+vote certs both have round in rotation 2.
-    // Bullshark's walk increments rotation_participation for them — must
-    // attribute to rotation 2 (= epochOf(round)), regardless of what
-    // floor(_consensusIndex/INTERVAL) happens to be at this moment.
-    const proposeRound = 2 * epochLen + 5;     // mid rotation 2
-    const voteRound = proposeRound + 1;
-    expect(Math.floor(proposeRound / epochLen)).toBe(2);
-    expect(Math.floor(voteRound / epochLen)).toBe(2);
+describe("bullshark tryRotationProposal (producer-pause retry path)", () => {
+  test("proposes only latest+1; stale and gapped rotations are no-ops", () => {
+    const fx = _setup();
 
-    _driveAnchorCommit(fx.dag, fx.bullshark, {
-      proposeRound, voteRound, leader: FOUNDING.node_id,
-      voteAuthors: [FOUNDING.node_id],
-    });
+    fx.bullshark.tryRotationProposal(50, 0);   // already landed
+    expect(fx.submittedTxs).toHaveLength(0);
 
-    // Rotation 2 received increments — that's the correct attribution by
-    // cert.round. Rotation 0 (where local cs_idx happens to be — first
-    // anchor commit, _consensusIndex jumps from 0 → 1, epochOf-by-cs_idx
-    // would say rotation 0) must NOT have these increments.
-    const rot2 = fx.dag.getRotationParticipation(2);
-    const rot0 = fx.dag.getRotationParticipation(0);
+    fx.bullshark.tryRotationProposal(50, 2);   // gap: latest is 0, only 1 allowed
+    expect(fx.submittedTxs).toHaveLength(0);
 
-    const rot2Founding = rot2.find(r => r.node_id === FOUNDING.node_id);
-    expect(rot2Founding).toBeTruthy();
-    expect(rot2Founding.count).toBeGreaterThan(0);
-
-    // Rotation 0 should have NO row for the founding node — Fix A's
-    // attribution sent the credits to rotation 2.
-    expect(rot0.find(r => r.node_id === FOUNDING.node_id)).toBeUndefined();
-  });
-
-  test("walks spanning a rotation boundary attribute each cert to its own rotation", () => {
-    // Build a 3-cert chain crossing the rotation 2 → 3 boundary so the
-    // walk visits certs from both rotations in a single anchor commit.
-    // With Fix A, each cert credits its OWN epochOf(cert.round). Without
-    // Fix A, all three would be credited to whichever rotation local
-    // _consensusIndex maps to at walk time.
-    //
-    // Layout (epochLen=200, boundary at round 600):
-    //   ancestor  round 599  rotation 2  ← in walk via parent_hashes
-    //   mid       round 600  rotation 3  ← in walk via parent_hashes
-    //   leader    round 601  rotation 3  ← anchor cert (proposeRound)
-    //   vote      round 602  rotation 3  ← voteRound (even, required)
-    const fx = _setup({ atBoundary: false });
-    const epochLen = CONSENSUS.EPOCH_LENGTH_ROUNDS;
-    const boundaryRound = 3 * epochLen;
-    const proposeRound = boundaryRound + 1;     // odd, leader cert here
-    const voteRound = boundaryRound + 2;        // even — bullshark gate
-
-    const ancestor = _buildCert({
-      round: boundaryRound - 1, author: FOUNDING.node_id,
-      hash: shake256(`fixA-anc-${boundaryRound - 1}`),
-    });
-    fx.dag.saveCertificate(ancestor);
-
-    const mid = _buildCert({
-      round: boundaryRound, author: FOUNDING.node_id,
-      hash: shake256(`fixA-mid-${boundaryRound}`),
-    });
-    mid.parent_hashes = [ancestor.hash];
-    fx.dag.saveCertificate(mid);
-
-    const leader = _buildCert({ round: proposeRound, author: FOUNDING.node_id });
-    leader.parent_hashes = [mid.hash];
-    fx.dag.saveCertificate(leader);
-
-    const vote = _buildCert({
-      round: voteRound, author: FOUNDING.node_id,
-      hash: shake256(`fixA-vc-${voteRound}`),
-    });
-    vote.parent_hashes = [leader.hash];
-    fx.dag.saveCertificate(vote);
-
-    fx.bullshark.onRoundComplete([vote], voteRound);
-
-    const rot2 = fx.dag.getRotationParticipation(2).find(r => r.node_id === FOUNDING.node_id);
-    const rot3 = fx.dag.getRotationParticipation(3).find(r => r.node_id === FOUNDING.node_id);
-
-    // ancestor (rotation 2) credited to rotation 2; mid + leader (rotation 3)
-    // credited to rotation 3. Per-cert epoch attribution holds.
-    expect(rot2).toBeTruthy();
-    expect(rot2.count).toBeGreaterThan(0);
-    expect(rot3).toBeTruthy();
-    expect(rot3.count).toBeGreaterThan(0);
+    fx.bullshark.tryRotationProposal(50, 1);   // latest+1: fires, leader gate bypassed
+    expect(fx.submittedTxs).toHaveLength(1);
+    const tx = fx.submittedTxs[0];
+    expect(tx.tx_type).toBe(TX_TYPES.COMMITTEE_ROTATION);
+    expect(tx.data.rotation_number).toBe(1);
+    expect(tx.data.effective_round).toBe(50 + LEAD);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// #73 — `commits` row written ONLY when commit-handler accepts ≥1 tx.
+// RP attribution: each walked cert credits the rotation ACTIVE at cert.round,
+// resolved from committee_history (getCommitteeAtRound), never from local
+// replay state. Record-based attribution keeps RP rows bit-identical across
+// nodes regardless of each node's catch-up position.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("bullshark RP attribution by committee_history at cert.round", () => {
+  function _saveRotation1(dag, effective_round) {
+    const rot0 = dag.getCommitteeRotation(0);
+    dag.saveCommitteeRotation({
+      rotation_number: 1, effective_round, committee: rot0.committee,
+      prev_rotation: 0, signer_node_ids: [], signatures: [],
+      payload_hash: shake256(`test-rot1-${effective_round}`), committed_at: MARKER,
+    });
+  }
+
+  test("cert at round R credits the rotation whose effective_round covers R", () => {
+    const fx = _setup({ withProposer: false });
+    _saveRotation1(fx.dag, 100);
+
+    // Anchor deep inside rotation 1's activation span.
+    _driveAnchorCommit(fx.dag, fx.bullshark, {
+      proposeRound: 105, voteRound: 106, leader: FOUNDING.node_id,
+      voteAuthors: [FOUNDING.node_id],
+    });
+
+    const rot1 = fx.dag.getRotationParticipation(1).find(r => r.node_id === FOUNDING.node_id);
+    expect(rot1).toBeTruthy();
+    expect(rot1.count).toBeGreaterThan(0);
+    expect(rot1.buckets).toBeGreaterThan(0);
+
+    // Nothing leaked into rotation 0: attribution follows cert.round, not
+    // whatever rotation local consensus replay happens to be in.
+    const rot0 = fx.dag.getRotationParticipation(0);
+    expect(rot0.find(r => r.node_id === FOUNDING.node_id)).toBeUndefined();
+  });
+
+  test("walks spanning an activation boundary attribute each cert to its own rotation", () => {
+    // Chain crossing rotation 1's effective_round=600:
+    //   ancestor round 599  rotation 0
+    //   mid      round 600  rotation 1
+    //   leader   round 601  rotation 1  (anchor cert)
+    //   vote     round 602  (drives the commit, not part of the walk)
+    const fx = _setup({ withProposer: false });
+    _saveRotation1(fx.dag, 600);
+
+    const ancestor = _buildCert({
+      round: 599, author: FOUNDING.node_id, hash: shake256("attr-anc-599"),
+    });
+    fx.dag.saveCertificate(ancestor);
+
+    const mid = _buildCert({
+      round: 600, author: FOUNDING.node_id, hash: shake256("attr-mid-600"),
+    });
+    mid.parent_hashes = [ancestor.hash];
+    fx.dag.saveCertificate(mid);
+
+    const leader = _buildCert({ round: 601, author: FOUNDING.node_id });
+    leader.parent_hashes = [mid.hash];
+    fx.dag.saveCertificate(leader);
+
+    const vote = _buildCert({
+      round: 602, author: FOUNDING.node_id, hash: shake256("attr-vc-602"),
+    });
+    vote.parent_hashes = [leader.hash];
+    fx.dag.saveCertificate(vote);
+
+    fx.bullshark.onRoundComplete([vote], 602);
+
+    const rot0 = fx.dag.getRotationParticipation(0).find(r => r.node_id === FOUNDING.node_id);
+    const rot1 = fx.dag.getRotationParticipation(1).find(r => r.node_id === FOUNDING.node_id);
+
+    // ancestor: author + self-ack = 2 credits to rotation 0.
+    expect(rot0).toBeTruthy();
+    expect(rot0.count).toBe(2);
+    // mid + leader: 2 certs x (author + self-ack) = 4 credits to rotation 1.
+    expect(rot1).toBeTruthy();
+    expect(rot1.count).toBe(4);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #73 — `commits` row written ONLY when commit-handler accepts >= 1 tx.
 // Anchor commits that order N txs but have all N rejected at commit-handler
 // (e.g., duplicate rotation_number under a multi-proposer cycle) must NOT
 // inflate the commits table with no-state-change rows. Anchor still ticks
-// _consensusIndex (consensus-success counter) — only the commits-row write
-// is gated. We drive a tx through onRoundComplete with an onOrderedTxs that
-// reports all-dropped and assert no commit row is saved; with at-least-one-
-// committed we assert the row IS saved.
+// _consensusIndex (consensus-success counter), only the commits-row write
+// is gated.
 // ═══════════════════════════════════════════════════════════════════════════
-describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
+describe("bullshark commit row gating on accepted-tx count (#73)", () => {
   function _setupWithApplier({ applyResult }) {
     const dag = initDAG({ inMemory: true });
     if (!dag.getNode(FOUNDING.node_id)) {
       dag.saveNode({
         node_id: FOUNDING.node_id, name: "founding", public_key: FOUNDING.public_key,
-        status: "active", registered_at: 1767225600000,
+        status: "active", registered_at: GEN,
       });
     }
     const savedCommits = [];
@@ -542,12 +571,12 @@ describe("bullshark — commit row gating on accepted-tx count (#73)", () => {
   }
 
   function _driveOneTx(dag, bullshark) {
-    // Drive an anchor commit that has 1 tx in the leader's batch. Round
-    // chosen far from any boundary so no rotation-submission noise.
+    // One tx in the leader's batch. No proposer wired, so the epoch-boundary
+    // path can't add rotation noise regardless of timestamps.
     const proposeRound = 51;
     const voteRound = 52;
     const proposeCert = _buildCert({ round: proposeRound, author: FOUNDING.node_id });
-    proposeCert.batch.txs = [{ tx_id: "fake-tx-1", tx_type: "REGISTER_IDENTITY", data: {}, prev: [], timestamp: 1775001600000 }];
+    proposeCert.batch.txs = [{ tx_id: "fake-tx-1", tx_type: "REGISTER_IDENTITY", data: {}, prev: [], timestamp: SAME_EPOCH_TS(proposeRound) }];
     dag.saveCertificate(proposeCert);
 
     const voteCert = _buildCert({

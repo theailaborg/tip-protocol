@@ -290,7 +290,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // produce a verdict batch for the same dispute, only the first
       // ordered ADJUDICATION_RESULT/APPEAL_RESULT lands per ctid; later
       // duplicates and their score-update effects are dropped silently).
-      const business = _validateBusinessRules(tx, validated, certTimestamp);
+      const business = _validateBusinessRules(tx, validated, certTimestamp, round);
       if (!business.valid) {
         log.debug(`Round ${round}: dropped ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
         _persistRejection(tx, _mapBusinessRuleReason(business.error), business.error, { round });
@@ -380,7 +380,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * round that have already passed all checks above). Returns `{valid: true}`
    * for accepted txs, `{valid: false, error: "..."}` for rejected ones.
    */
-  function _validateBusinessRules(tx, validated, certTimestamp) {
+  function _validateBusinessRules(tx, validated, certTimestamp, round = 0) {
     const d = tx.data || {};
 
     // Phase A — first-wins dedup against committed history + same-batch siblings.
@@ -395,7 +395,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     // rules can opt in without changing the signature.
     void certTimestamp;
     const txMs = tx.timestamp;
-    return _statefulCheck(tx, txMs);
+    return _statefulCheck(tx, txMs, round);
   }
 
   /**
@@ -827,7 +827,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
    * between submit and commit (e.g. content disputed or author revoked
    * mid-flight). Closes the silent-divergence gap multi-node #14.
    */
-  function _statefulCheck(tx, now) {
+  function _statefulCheck(tx, now, commitRound = 0) {
     const d = tx.data || {};
     switch (tx.tx_type) {
 
@@ -950,7 +950,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // cryptographic (≥2f+1 sigs from previous committee) — through the
         // shared business-rules predicate. Same call shape as the bullshark
         // proposer (see step 6) so accept/reject decisions are identical.
-        const r = rules.canCommitteeRotation(dag, d, { shake256, canonicalJson, mldsaVerify });
+        const r = rules.canCommitteeRotation(dag, d, { shake256, canonicalJson, mldsaVerify, commitRound });
         return r.valid ? { valid: true } : { valid: false, error: r.error.message };
       }
 

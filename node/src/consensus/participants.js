@@ -24,7 +24,7 @@
  *     bit-identical values across all nodes (because every node sees the
  *     same anchor cert at consensus_index N — same leader, same acks)
  *   - genesis_committee is fixed at genesis, identical on every node
- *   - threshold = ceil(INTERVAL_COMMITS * MIN_PARTICIPATION_PCT/100) is
+ *   - threshold = ceil(maxBuckets * MIN_PARTICIPATION_PCT/100) is
  *     the same number on every node
  *   - Therefore: same input → same output, no flap, no divergence.
  *
@@ -98,20 +98,27 @@ function getActiveCommittee(dag, round, _K) {
  * the threshold OR in genesis_committee qualify, subject to current
  * registered+active status.
  *
- *   threshold = ceil(INTERVAL_COMMITS * MIN_PARTICIPATION_PCT / 100)
+ *   threshold = ceil(maxBuckets * MIN_PARTICIPATION_PCT / 100)
+ *
+ * where maxBuckets is the highest DISTINCT-presence-bucket count in the
+ * finishing rotation's tally: the best-observed wall-clock presence for that
+ * period. On a full day that is all 24 buckets (bar = 17 hours of presence);
+ * on an outage-shortened day the bar drops for everyone equally, so a
+ * network-wide halt never strips honest members through no fault of theirs.
+ * Deterministic: every node reads the same bit-identical tally rows.
  *
  * @param {Object} dag                DAG facade
  * @param {number} finishingRotation  The rotation_number that just finished
  * @returns {Array<{node_id, public_key}>}  Sorted committee for the next rotation
  */
 function computeNextRotationCommittee(dag, finishingRotation) {
-  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
   const pct = CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL;
-  const threshold = Math.ceil((intervalCommits * pct) / 100);
 
   const tallies = (typeof dag.getRotationParticipation === "function")
     ? dag.getRotationParticipation(finishingRotation)
     : [];
+  const maxBuckets = tallies.reduce((m, t) => Math.max(m, t.buckets || 0), 0);
+  const threshold = Math.max(1, Math.ceil((maxBuckets * pct) / 100));
 
   const registered = _registeredActiveSet(dag);
   const genesis = getGenesisCommittee();
@@ -144,8 +151,8 @@ function computeNextRotationCommittee(dag, finishingRotation) {
     for (const id of registered) next.add(id);
   } else {
     // Normal multi-node mode: late joiners admitted by participation threshold.
-    for (const { node_id, count } of tallies) {
-      if (count >= threshold && registered.has(node_id)) {
+    for (const { node_id, buckets } of tallies) {
+      if ((buckets || 0) >= threshold && registered.has(node_id)) {
         next.add(node_id);
       }
     }
@@ -182,29 +189,27 @@ function getNodeCount(dag) {
 }
 
 /**
- * #75 atomic boundary — map a round number to its rotation_number.
+ * Time-based epoch boundary index of a BFT timestamp:
  *
- *   epochOf(R) = floor(R / EPOCH_LENGTH_ROUNDS)
+ *   epochIndexOfTime(T) = floor((T - BFT_TIME_GENESIS_MS) / EPOCH_DURATION_MS)
  *
- * Every node computes the same answer from `R` and the genesis-fixed
- * EPOCH_LENGTH_ROUNDS — no local-state ambiguity. Used by:
- *   - narwhal producer-pause (don't seal a cert until rotation for
- *     epochOf(round) is in local committee_history)
- *   - narwhal validator-park (park incoming certs whose epoch's rotation
- *     hasn't been applied locally yet)
- *   - bullshark proposer (effective_round = rotation_number * EPOCH_LENGTH_ROUNDS)
+ * A rotation is due when a committed anchor's timestamp lands in a later
+ * index than the latest rotation record's committed_at. Deterministic:
+ * anchor timestamps are BFT-median values every node commits identically.
  *
- * @param {number} round
- * @returns {number} rotation_number that should be in effect at this round
+ * @param {number} tsMs  BFT timestamp (epoch ms)
+ * @returns {number} boundary index (0 for anything at/before genesis time)
  */
-function epochOf(round) {
-  if (typeof round !== "number" || !Number.isFinite(round) || round < 0) return 0;
-  return Math.floor(round / CONSENSUS.EPOCH_LENGTH_ROUNDS);
+function epochIndexOfTime(tsMs) {
+  const genesis = CONSENSUS.BFT_TIME_GENESIS_MS;
+  const duration = CONSENSUS.EPOCH_DURATION_MS;
+  if (typeof tsMs !== "number" || !Number.isFinite(tsMs) || tsMs <= genesis) return 0;
+  return Math.floor((tsMs - genesis) / duration);
 }
 
 module.exports = {
   getActiveCommittee,
   computeNextRotationCommittee,
   getNodeCount,
-  epochOf,
+  epochIndexOfTime,
 };

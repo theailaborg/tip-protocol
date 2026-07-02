@@ -240,7 +240,9 @@
       "certificate_max_bytes": 1048576,
       "gc_depth": 500,
       "bft_time_genesis_ms": 1773532800000,
-      "committee_rotation_interval_commits": 100,
+      "epoch_duration_ms": 240000,
+      "rotation_activation_lead_rounds": 50,
+      "epoch_participation_buckets": 24,
       "committee_rotation_participation_pct_of_interval": 70
     },
     "network": {

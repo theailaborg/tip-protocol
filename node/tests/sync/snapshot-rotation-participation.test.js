@@ -55,14 +55,14 @@ function makeHandlers({ sourceDag, destDag }) {
 }
 
 function _seedRP(dag, rows) {
-  for (const { node_id, rotation_number, count } of rows) {
-    dag.setRotationParticipation(node_id, rotation_number, count);
+  for (const { node_id, rotation_number, bucket = 0, count } of rows) {
+    dag.setRotationParticipation(node_id, rotation_number, bucket, count);
   }
 }
 
 function _readRP(dag, rotation) {
   return dag.getRotationParticipation(rotation)
-    .map(r => ({ node_id: r.node_id, count: r.count }))
+    .map(r => ({ node_id: r.node_id, count: r.count, buckets: r.buckets }))
     .sort((a, b) => a.node_id.localeCompare(b.node_id));
 }
 
@@ -111,7 +111,7 @@ describe("#75 Phase F — rotation_participation snapshot sync", () => {
     ]);
 
     const after = _readRP(destDag, 5);
-    expect(after).toEqual([{ node_id: "tip://node/A", count: 200 }]);
+    expect(after).toEqual([{ node_id: "tip://node/A", count: 200, buckets: 1 }]);
   });
 
   test("rotations OUTSIDE the snapshot are not touched on dest", async () => {
@@ -136,11 +136,11 @@ describe("#75 Phase F — rotation_participation snapshot sync", () => {
       destHandler.requestSnapshotFromPeer("test-server", {}),
     ]);
 
-    expect(_readRP(destDag, 3)).toEqual([{ node_id: "tip://node/A", count: 80 }]);
+    expect(_readRP(destDag, 3)).toEqual([{ node_id: "tip://node/A", count: 80, buckets: 1 }]);
     // Forward-state rotation 7 is preserved verbatim.
     expect(_readRP(destDag, 7)).toEqual([
-      { node_id: "tip://node/A", count: 555 },
-      { node_id: "tip://node/Z", count: 777 },
+      { node_id: "tip://node/A", count: 555, buckets: 1 },
+      { node_id: "tip://node/Z", count: 777, buckets: 1 },
     ]);
   });
 
@@ -152,8 +152,8 @@ describe("#75 Phase F — rotation_participation snapshot sync", () => {
     const dag = initDAG({ dbPath: ":memory:" });
     const beforeRoot = computeStateMerkleRoot(dag);
 
-    dag.setRotationParticipation("tip://node/A", 0, 100);
-    dag.setRotationParticipation("tip://node/B", 0, 200);
+    dag.setRotationParticipation("tip://node/A", 0, 0, 100);
+    dag.setRotationParticipation("tip://node/B", 0, 0, 200);
 
     const afterRoot = computeStateMerkleRoot(dag);
     expect(afterRoot).toBe(beforeRoot);

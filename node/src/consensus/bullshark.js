@@ -31,7 +31,7 @@ const { computeStateMerkleRoot, computeTxsMerkleRoot } = require("./state-root")
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { shake256, canonicalJson, mldsaSign } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { computeNextRotationCommittee, epochOf } = require("./participants");
+const { computeNextRotationCommittee, epochIndexOfTime } = require("./participants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.bullshark");
@@ -121,6 +121,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   // BFT_TIME_GENESIS_MS — every node parses the genesis ISO string into
   // the same integer ms anchor.
   let _lastAnchorTimestamp = 0;
+  let _lastPrunedRotation = 0;
   try {
     const latestCommit = dag.getLatestCommit ? dag.getLatestCommit() : null;
     if (latestCommit && latestCommit.cert_timestamp) {
@@ -320,15 +321,12 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // identical, so the "qualified for next rotation?" check at the
     // boundary returns the same answer everywhere — no §4/#74 divergence.
     //
-    // Attribution rule: each cert's participation goes to `epochOf(cert.round)`,
-    // NOT to the rotation derived from local _consensusIndex. cs_idx-based
-    // attribution diverges across nodes when one is offline and replays
-    // anchor commits late (its cs_idx lags, so it credits old rotations
-    // with certs from new ones). Round-based attribution is deterministic:
-    // the same cert always lands in the same rotation regardless of when
-    // any node walked it. After fix A, every node that processes the same
-    // cert set arrives at bit-identical RP rows.
-    const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
+    // Attribution rule: each cert's participation goes to the rotation ACTIVE
+    // at cert.round (committee_history lookup), NOT to a rotation derived from
+    // local _consensusIndex. Record-based attribution is deterministic: the
+    // rotation record for any round R commits LEAD rounds before R activates,
+    // and walks are commit-ordered, so every node resolves the same cert to
+    // the same rotation and arrives at bit-identical RP rows.
     const { certs: anchoredCerts, missingHashes } = _walkAnchoredCertChain(leaderCert);
 
     // Option A — DAG completeness gate. If any parent certs are missing, park
@@ -385,14 +383,17 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
     if (dag.incrementRotationParticipation) {
       try {
+        // Presence bucket = which time slice of the epoch this anchor commit
+        // landed in, from the anchor's BFT timestamp (deterministic everywhere).
+        const rpBucket = _participationBucket(certTs);
         for (const cert of anchoredCerts) {
-          const certRotation = epochOf(cert.round);
+          const certRotation = _rotationNumberAt(cert.round);
           if (cert.author_node_id) {
-            dag.incrementRotationParticipation(cert.author_node_id, certRotation);
+            dag.incrementRotationParticipation(cert.author_node_id, certRotation, rpBucket);
           }
           for (const ack of (cert.acknowledgments || [])) {
             if (ack && ack.acker_node_id) {
-              dag.incrementRotationParticipation(ack.acker_node_id, certRotation);
+              dag.incrementRotationParticipation(ack.acker_node_id, certRotation, rpBucket);
             }
           }
         }
@@ -405,63 +406,34 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       }
     }
 
-    // #75 atomic boundary — submission window (ROUND-based).
-    //
-    // Submit the rotation tx during the LEAD rounds leading up to the
-    // boundary ROUND, NOT at the boundary itself. Submitting AT the
-    // boundary is too late — producers pause at the boundary round
-    // when rotation N+1 isn't in CH; if we submitted late, no anchors
-    // fire, the tx never lands, permanent halt.
-    //
-    // The window MUST be round-based (not cs_idx-based) because the
-    // round/cs_idx ratio drifts above 2 in non-ideal conditions (some
-    // waves don't anchor → ratio > 2). A cs_idx-based window fires too
-    // late in the boundary ROUND timeline: by the time cs_idx reaches
-    // the LEAD point, the boundary round has already passed → producers
-    // pause → no anchors → cs_idx stuck → never reaches submission
-    // window → permanent halt (live-observed 2026-05-03 round 600).
-    //
-    // Window: voteRound within `leadRounds` of next boundary round
-    // (= next multiple of EPOCH_LENGTH_ROUNDS). At each anchor in this
-    // window, the anchor's leader submits if rotation N+1 not yet in
-    // CH. Multiple consecutive anchors give natural fallback if any
-    // one leader is offline. Validator dedupes duplicate txs.
-    const leadAnchors = CONSENSUS.COMMITTEE_ROTATION_SUBMIT_LEAD_ANCHORS;
-    const epochLengthRounds = CONSENSUS.EPOCH_LENGTH_ROUNDS;
-    // Convert LEAD from anchors to rounds with safety margin: each wave
-    // is ~2 rounds, so LEAD anchors ≈ 2×LEAD rounds. Add 50% margin
-    // for ratio drift (some waves don't anchor → ratio > 2). Floor at
-    // 20 rounds.
-    const leadRounds = Math.max(20, leadAnchors * 3);
-    const currentEpoch = epochOf(voteRound);
-    const nextBoundaryRound = (currentEpoch + 1) * epochLengthRounds;
-    const roundsToBoundary = nextBoundaryRound - voteRound;
-    const inSubmissionWindow = voteRound > 0
-      && roundsToBoundary > 0
-      && roundsToBoundary <= leadRounds;
-
-    if (inSubmissionWindow) {
-      const nextRotation = currentEpoch + 1;
-      const alreadyInCH = (typeof dag.getCommitteeRotation === "function")
-        ? !!dag.getCommitteeRotation(nextRotation)
-        : false;
-      if (!alreadyInCH) {
-        _processRotationBoundary(_consensusIndex, voteRound, leader, nextRotation - 1);
+    // Time-based rotation boundary. A rotation is due when this anchor's
+    // BFT timestamp lands in a later epoch bucket than the latest rotation
+    // record's committed_at (see epochIndexOfTime). The condition stays true
+    // at every subsequent anchor until the rotation commits, which is the
+    // natural retry: production never pauses ahead of activation, so anchors
+    // keep flowing and the proposal always has a path to commit (the
+    // 2026-05-03 halt class is structurally gone).
+    const latestRot = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    if (latestRot && certTs > 0) {
+      const marker = Number(latestRot.committed_at) || CONSENSUS.BFT_TIME_GENESIS_MS;
+      if (epochIndexOfTime(certTs) > epochIndexOfTime(marker)) {
+        const nextRotation = latestRot.rotation_number + 1;
+        const alreadyInCH = (typeof dag.getCommitteeRotation === "function")
+          ? !!dag.getCommitteeRotation(nextRotation)
+          : false;
+        if (!alreadyInCH) {
+          _processRotationBoundary(_consensusIndex, voteRound, leader, latestRot.rotation_number);
+        }
       }
-    }
-
-    // Boundary itself (cs_idx % INTERVAL == 0) is no longer a submission
-    // trigger — by this point all healthy nodes have rotation N in CH
-    // from the submission window above. We only do post-boundary cleanup:
-    // prune old rotation_participation rows.
-    if (_consensusIndex > 0 && _consensusIndex % intervalCommits === 0
-      && dag.pruneRotationParticipationBefore) {
-      const finishingRotation = (_consensusIndex / intervalCommits) - 1;
-      if (finishingRotation >= 3) {
+      // Post-rotation cleanup: prune old rotation_participation rows once per
+      // observed rotation advance.
+      if (latestRot.rotation_number >= 3 && latestRot.rotation_number > _lastPrunedRotation
+        && dag.pruneRotationParticipationBefore) {
+        _lastPrunedRotation = latestRot.rotation_number;
         try {
-          dag.pruneRotationParticipationBefore(finishingRotation - 2);
+          dag.pruneRotationParticipationBefore(latestRot.rotation_number - 2);
         } catch (err) {
-          log.warn(`Rotation boundary cleanup: prune participation failed: ${err.message}`);
+          log.warn(`Rotation cleanup: prune participation failed: ${err.message}`);
         }
       }
     }
@@ -637,12 +609,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       return;
     }
 
-    // #75 atomic boundary — under the producer-pause invariant, every
-    // epoch must have a corresponding rotation row in committee_history
-    // with rotation_number = epochOf(round). Otherwise producers pause
-    // forever waiting for a rotation that will never come.
-    //
-    // So we submit a rotation tx at every epoch boundary, even if the
+    // We submit a rotation tx at every epoch boundary, even if the
     // committee is unchanged (re-attestation pattern, matches Sui/Aptos).
     // The chain-of-trust walker treats consecutive identical-committee
     // rotations as a no-op transition and verifies fine. Storage cost is
@@ -653,12 +620,15 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       && newNodeIds.every((id, i) => id === currentNodeIds[i]);
 
     const rotation_number = latest.rotation_number + 1;
-    // #75 atomic boundary — effective_round is deterministic from rotation_number.
-    // Every node maps round R → rotation_number via epochOf(R) = floor(R/EPOCH_LENGTH_ROUNDS),
-    // and rotation N takes effect AT R = N * EPOCH_LENGTH_ROUNDS. This makes
-    // producer-pause and validator-park work: both sides agree on which
-    // committee applies to a given round, regardless of local commit progress.
-    const effective_round = rotation_number * CONSENSUS.EPOCH_LENGTH_ROUNDS;
+    // Activation is LEAD rounds after the boundary anchor, so the record is
+    // on-chain and applied to every node's committee_history before any cert
+    // at effective_round exists. Commit-handler rejects a rotation whose
+    // effective_round is not in the future, so a late commit re-proposes with
+    // a fresh activation instead of flipping a committee retroactively.
+    const effective_round = Math.max(
+      boundaryRound + CONSENSUS.ROTATION_ACTIVATION_LEAD_ROUNDS,
+      (latest.effective_round || 0) + 2,
+    );
     const payload_hash = shake256(canonicalJson({
       rotation_number, effective_round, committee: newCommittee,
     }));
@@ -728,7 +698,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
 
   /**
    * #75 — Rotation boundary handler. Fires on every anchor commit where
-   * `_consensusIndex % COMMITTEE_ROTATION_INTERVAL_COMMITS == 0`. The
+   * a time-boundary crossing (see the detection block in the commit path). The
    * boundary is deterministic (consensus_index is bit-identical across
    * all nodes), so every node enters this function at the same logical
    * point — even if their wall-clocks differ by milliseconds.
@@ -738,7 +708,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    *      rotation's participation tally. Rule:
    *        admit(id) := registered ∧ (
    *                       id ∈ genesis_committee
-   *                       OR  count(id) ≥ ceil(INTERVAL_COMMITS *
+   *                       OR  presence buckets ≥ ceil(maxBuckets *
    *                                           MIN_PARTICIPATION_PCT/100)
    *                     )
    *      Where count comes from the bit-identical rotation_participation
@@ -758,7 +728,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * boundary detection + tally read; submission still goes through the
    * existing per-round proposer until step 5 cuts it over.
    *
-   * @param {number} boundaryIdx  consensus_index AT the boundary (multiple of INTERVAL_COMMITS)
+   * @param {number} boundaryIdx  consensus_index at the detection anchor
    * @param {number} voteRound    bullshark round when this anchor committed (for logging)
    */
   /**
@@ -775,6 +745,22 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
    * Pruning of old participation rows is now done by the caller at the
    * actual boundary (cs_idx % INTERVAL == 0), separately from submission.
    */
+  // Epoch time slice (0..BUCKETS-1) of a BFT timestamp; presence in distinct
+  // slices is the committee-admission signal.
+  function _participationBucket(ts) {
+    const dur = CONSENSUS.EPOCH_DURATION_MS;
+    const buckets = CONSENSUS.EPOCH_PARTICIPATION_BUCKETS;
+    if (!Number.isFinite(ts) || ts <= 0 || !dur || !buckets) return 0;
+    const off = ((ts - CONSENSUS.BFT_TIME_GENESIS_MS) % dur + dur) % dur;
+    return Math.min(buckets - 1, Math.floor(off / (dur / buckets)));
+  }
+
+  // Rotation active at a round, resolved from committee_history (record-based).
+  function _rotationNumberAt(round) {
+    const rot = (typeof dag.getCommitteeAtRound === "function") ? dag.getCommitteeAtRound(round) : null;
+    return rot ? rot.rotation_number : 0;
+  }
+
   function _processRotationBoundary(boundaryIdx, voteRound, leader, finishingRotation) {
     if (finishingRotation == null || finishingRotation < 0) return;
 
@@ -1016,8 +1002,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     const latest = dag.getLatestRotation();
     const latestNum = latest ? latest.rotation_number : 0;
     if (missingRotation <= latestNum) return; // rotation already landed
-    const targetRotation = epochOf(currentRound);
-    if (targetRotation !== missingRotation) return; // round/epoch drifted
+    if (missingRotation !== latestNum + 1) return; // only ever propose latest+1
     try {
       // Drop expired in-flight first so a wedged proposal is rebuilt fresh this
       // retry instead of re-broadcast stale; runs on every paused node so it self-heals.

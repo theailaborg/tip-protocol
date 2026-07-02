@@ -256,7 +256,6 @@ function narwhalSection(s) {
     gauge("tip_narwhal_active_participants", "Active committee size (DAG-derived)", n.activeParticipants),
     gauge("tip_narwhal_registered_nodes", "Total registered nodes (includes inactive)", n.registeredNodes),
     gauge("tip_narwhal_mempool_size", "Pending txs in mempool", n.mempoolSize),
-    gauge("tip_consensus_producer_paused_ms", "Milliseconds this node has been producer-paused at a rotation boundary (no rotation tx to carve); 0 when producing. Sustained > 0 means a stuck boundary; pull-repair runs but production stays gated, never bypassed.", n.producerPausedMs),
     // #93: byzantine-fork halt visibility. The forked node emits halted=1; the
     // round it diverged at is fork_round. A halted node stops participating and
     // auto-retries snapshot recovery until it heals (or an operator steps in).
@@ -351,23 +350,23 @@ function committeeSection(s, dag) {
   const proposals = (s.bullshark?.metrics?.committee_rotation_proposals) || 0;
   const chainWalkFailures = (s.snapshotHandler?.metrics?.chain_walk_failures) || 0;
 
-  // Committee admission progress: per-member participation credits accrued for
-  // the in-progress rotation window vs the required threshold, plus whether each
-  // member is in the active committee now. Lets operators watch a late joiner
-  // climb from registered-but-pending to admitted.
+  // Committee admission progress: per-member presence buckets accrued for the
+  // in-progress rotation window vs the full-day bar, plus whether each member
+  // is in the active committee now. Lets operators watch a late joiner climb
+  // from registered-but-pending to admitted.
   const participationLines = [];
   try {
     const required = Math.ceil(
-      (CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS *
+      (CONSENSUS.EPOCH_PARTICIPATION_BUCKETS *
         CONSENSUS.COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL) / 100);
     participationLines.push(gauge("tip_committee_participation_required",
-      "Participation credits a registered node must accrue in a rotation window to be admitted to the committee (ceil(interval*pct/100)); genesis members are exempt", required));
-    // The window currently accruing is epochOf(round) = floor(round/EPOCH_LEN);
-    // its tally decides admission at that epoch's boundary. Fall back to the
+      "Presence buckets a registered node must show in a rotation window to be admitted to the committee (full-day bar, ceil(buckets*pct/100); the boundary scales it to best-observed presence); genesis members are exempt", required));
+    // The window currently accruing is the latest rotation in committee_history;
+    // its tally decides admission at the next time boundary. Fall back to the
     // just-finished window right after a boundary, before the new one ticks.
     const round = Number(s.bullshark?.lastCommittedRound || 0);
-    const epochLen = CONSENSUS.EPOCH_LENGTH_ROUNDS || 200;
-    const accruing = Math.floor(round / epochLen);
+    const latestRotation = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
+    const accruing = latestRotation ? latestRotation.rotation_number : 0;
     const getPart = typeof dag.getRotationParticipation === "function"
       ? (r) => dag.getRotationParticipation(r) || [] : () => [];
     let tallies = getPart(accruing);
@@ -380,13 +379,13 @@ function committeeSection(s, dag) {
       if (Array.isArray(list)) for (const m of list) members.add(typeof m === "string" ? m : (m && (m.node_id || m.id)));
     } catch { /* ignore */ }
     if (tallies.length > 0) {
-      participationLines.push("# HELP tip_committee_participation_credits Participation credits a member has accrued for the in-progress rotation window (label member identifies the node). Compare against tip_committee_participation_required.");
+      participationLines.push("# HELP tip_committee_participation_credits Presence buckets a member has accrued for the in-progress rotation window (label member identifies the node). Compare against tip_committee_participation_required.");
       participationLines.push("# TYPE tip_committee_participation_credits gauge");
       participationLines.push("# HELP tip_committee_member 1 if the member is in the active committee at the current round, else 0 (registered but not yet admitted).");
       participationLines.push("# TYPE tip_committee_member gauge");
       for (const t of tallies) {
         const member = String(t.node_id || "");
-        participationLines.push(line("tip_committee_participation_credits", t.count, { member }));
+        participationLines.push(line("tip_committee_participation_credits", t.buckets || 0, { member }));
         participationLines.push(line("tip_committee_member", members.has(t.node_id) ? 1 : 0, { member }));
       }
     }

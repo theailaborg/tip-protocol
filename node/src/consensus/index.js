@@ -294,22 +294,6 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         bullshark.onCertSaved(cert.hash);
       }
     },
-    // Producer-pause notifier — breaks the deadlock where rotation tx
-    // never lands because no rounds advance because rotation tx is
-    // missing. Bullshark.tryRotationProposal re-checks DAG and forces
-    // a proposal attempt (multi-aggregator + commit-handler dedup
-    // ensure exactly one tx commits).
-    onProducerPaused: (round, missingRotation) => {
-      if (bullshark && typeof bullshark.tryRotationProposal === "function") {
-        bullshark.tryRotationProposal(round, missingRotation);
-      }
-      // Pull-repair: paused with no rotation tx of our own (aggregation never
-      // reached quorum), so fetch the assembled tx from a peer. Fire-and-forget.
-      const coord = bullshark && bullshark.rotationCoordinator && bullshark.rotationCoordinator();
-      if (coord && typeof coord.requestTxRepair === "function") {
-        Promise.resolve(coord.requestTxRepair()).catch(() => {});
-      }
-    },
     // Ack-filter — defense layer that denies attestation to peers whose
     // state has diverged from ours. Implemented in AE; threaded here via
     // the deferred ref above. peerJoinState is the sibling getter narwhal

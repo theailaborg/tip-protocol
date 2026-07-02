@@ -86,6 +86,13 @@ async function drain() {
   // ─── committee_history ───────────────────────────────────────────────────────
 
   describe("committee_history", () => {
+    beforeEach(async () => {
+      await a.knex("committee_history").where("rotation_number", ">", 0).delete();
+      a.mirror._committeeHistory = new Map(
+        [...(a.mirror._committeeHistory || new Map())].filter(([k]) => Number(k) === 0)
+      );
+    });
+
     test("saveCommitteeRotation persists row to DB", async () => {
       const r1 = rot(1, 100, [{ node_id: "n1", public_key: "pk1" }], {
         prev_rotation: 0, signers: ["n0"], sigs: ["sig-1"],
@@ -136,6 +143,8 @@ async function drain() {
     });
 
     test("round-trip: fresh adapter hydrates committee_history from DB", async () => {
+      a.saveCommitteeRotation(rot(1, 100, [{ node_id: "n1", public_key: "pk1" }], { prev_rotation: 0 }));
+      a.saveCommitteeRotation(rot(2, 200, [{ node_id: "n2", public_key: "pk2" }], { prev_rotation: 1 }));
       const r3 = rot(3, 300, [
         { node_id: "n3a", public_key: "pk3a" },
         { node_id: "n3b", public_key: "pk3b" },
@@ -186,34 +195,41 @@ async function drain() {
       // Drain between calls: Oracle's INSERT→catch→UPDATE is non-atomic, so
       // concurrent increments for the same key race. In production, increments
       // happen once per round (sequential). Test mirrors that by serializing.
-      a.incrementRotationParticipation("nodeA", 1);
+      a.incrementRotationParticipation("nodeA", 1, 0);
       await drain();
-      a.incrementRotationParticipation("nodeA", 1);
-      a.incrementRotationParticipation("nodeB", 1);
+      a.incrementRotationParticipation("nodeA", 1, 0);
+      a.incrementRotationParticipation("nodeA", 1, 7);
+      a.incrementRotationParticipation("nodeB", 1, 0);
       await drain();
 
       const rows = await a.knex("rotation_participation").where("rotation_number", 1).select("*");
-      const by = Object.fromEntries(rows.map(r => [r.node_id, Number(r.count)]));
-      expect(by["nodeA"]).toBe(2);
-      expect(by["nodeB"]).toBe(1);
+      const by = {};
+      for (const r of rows) by[`${r.node_id}|${r.bucket}`] = Number(r.count);
+      expect(by["nodeA|0"]).toBe(2);
+      expect(by["nodeA|7"]).toBe(1);
+      expect(by["nodeB|0"]).toBe(1);
+      // Aggregate read: distinct buckets are the admission signal.
+      const agg = a.getRotationParticipation(1).find(t => t.node_id === "nodeA");
+      expect(agg.count).toBe(3);
+      expect(agg.buckets).toBe(2);
     });
 
     test("setRotationParticipation persists exact count (merge/upsert)", async () => {
-      a.setRotationParticipation("nodeX", 2, 50);
+      a.setRotationParticipation("nodeX", 2, 0, 50);
       await drain();  // serialize: first write must land before second upserts over it
-      a.setRotationParticipation("nodeX", 2, 99);
+      a.setRotationParticipation("nodeX", 2, 0, 99);
       await drain();
 
       const rows = await a.knex("rotation_participation")
-        .where({ node_id: "nodeX", rotation_number: 2 }).select("*");
+        .where({ node_id: "nodeX", rotation_number: 2, bucket: 0 }).select("*");
       expect(rows).toHaveLength(1);
       expect(Number(rows[0].count)).toBe(99);
     });
 
     test("pruneRotationParticipationBefore removes rows with rotation_number < n", async () => {
-      a.setRotationParticipation("nodeA", 1, 10);
-      a.setRotationParticipation("nodeA", 2, 20);
-      a.setRotationParticipation("nodeA", 3, 30);
+      a.setRotationParticipation("nodeA", 1, 0, 10);
+      a.setRotationParticipation("nodeA", 2, 0, 20);
+      a.setRotationParticipation("nodeA", 3, 0, 30);
       await drain();
 
       a.pruneRotationParticipationBefore(3);
@@ -227,9 +243,9 @@ async function drain() {
     });
 
     test("deleteRotationParticipationByRotation removes only that rotation", async () => {
-      a.setRotationParticipation("nodeA", 4, 10);
-      a.setRotationParticipation("nodeB", 4, 20);
-      a.setRotationParticipation("nodeA", 5, 30);
+      a.setRotationParticipation("nodeA", 4, 0, 10);
+      a.setRotationParticipation("nodeB", 4, 0, 20);
+      a.setRotationParticipation("nodeA", 5, 0, 30);
       await drain();
 
       a.deleteRotationParticipationByRotation(4);
@@ -242,9 +258,9 @@ async function drain() {
     });
 
     test("iterateRotationParticipationForSnapshot yields all mirror rows", () => {
-      a.setRotationParticipation("nodeA", 6, 100);
-      a.setRotationParticipation("nodeB", 6, 200);
-      a.setRotationParticipation("nodeA", 7, 300);
+      a.setRotationParticipation("nodeA", 6, 0, 100);
+      a.setRotationParticipation("nodeB", 6, 0, 200);
+      a.setRotationParticipation("nodeA", 7, 0, 300);
 
       const rows = [...a.iterateRotationParticipationForSnapshot()];
       const keys = rows.map(r => `${r.node_id}|${r.rotation_number}`).sort();
@@ -254,8 +270,8 @@ async function drain() {
     });
 
     test("round-trip: fresh adapter hydrates rotation_participation from DB", async () => {
-      a.setRotationParticipation("nodeA", 8, 150);
-      a.setRotationParticipation("nodeB", 8, 250);
+      a.setRotationParticipation("nodeA", 8, 0, 150);
+      a.setRotationParticipation("nodeB", 8, 0, 250);
       await drain();
 
       const b = makeAdapter();

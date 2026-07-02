@@ -423,7 +423,6 @@ const CONSENSUS = {
   get ROTATION_REPAIR_MAX_RESPONSE_BYTES() { return LC.ROTATION_REPAIR_MAX_RESPONSE_BYTES; },
   // Producer-pause liveness bound: a stuck boundary past this is logged loudly
   // and surfaced as a metric. Observability only; never bypasses the pause.
-  get PRODUCER_PAUSE_ESCALATE_MS() { return LC.PRODUCER_PAUSE_ESCALATE_MS; },
   // Transport auto-heal: after this many consecutive outbound send failures to a
   // peer, force-close + re-dial (rebuild the half-dead connection). Cooldown
   // bounds re-dial churn. Per-node operational tunables.
@@ -438,40 +437,31 @@ const CONSENSUS = {
   // value would then fork the chain. Keep it consumer-free while it lives here.
   get MAX_ROUND_DURATION_MS() { return LC.MAX_ROUND_DURATION_MS; },
   get BFT_TIME_GENESIS_MS() { return _c().bft_time_genesis_ms ?? 0; },
-  // §4 + #34 + #75: rotation-period committee model. See genesis.js consensus block.
-  get COMMITTEE_ROTATION_INTERVAL_COMMITS() { return _c().committee_rotation_interval_commits ?? 100; },
-  // Committee admission threshold for next rotation. The qualifying check is
-  // `participation_count >= ceil(INTERVAL_COMMITS * pct / 100)`, where the
-  // count is RAW anchor-walk credits (not a fraction of total participation).
-  // So with INTERVAL=100 and pct=70 the threshold is `>= 70 credits` — easy
-  // to clear since one anchor walk yields several credits per active node.
-  // Genesis JSON key kept as committee_rotation_min_participation_pct for
-  // backward compat with existing chain configs.
+  // Time-based rotation epochs. The boundary index of a BFT timestamp is
+  // k(T) = floor((T - BFT_TIME_GENESIS_MS) / EPOCH_DURATION_MS); a rotation is
+  // due when a committed anchor's timestamp lands in a later boundary index
+  // than the latest rotation's committed_at. Wall-clock epochs hold regardless
+  // of round cadence (dev 4 min, prod 24h).
+  get EPOCH_DURATION_MS() { return _c().epoch_duration_ms ?? 240000; },
+  // Rounds between a rotation tx's commit and its activation. The record is
+  // on-chain LEAD rounds before effective_round, so every node applies it to
+  // committee_history ahead of activation; commit-handler rejects a rotation
+  // whose effective_round is not in the future, so a late commit can never
+  // flip a committee retroactively.
+  get ROTATION_ACTIVATION_LEAD_ROUNDS() { return _c().rotation_activation_lead_rounds ?? 200; },
+  // Presence buckets per epoch for committee admission: an epoch is split into
+  // N equal time slices (prod 24h/24 = hourly; dev 4min/24 = 10s) and a node
+  // qualifies by participating in >= pct of DISTINCT slices. Time-presence,
+  // not raw counts, so burst participation can't game admission.
+  get EPOCH_PARTICIPATION_BUCKETS() { return _c().epoch_participation_buckets ?? 24; },
+  // Committee admission threshold for the next rotation. The qualifying check
+  // is `participation_count >= ceil(anchors_in_period * pct / 100)`, where
+  // anchors_in_period is the consensus_index delta of the finishing rotation
+  // (counted, not predicted, so it holds at any round cadence).
   get COMMITTEE_ROTATION_PARTICIPATION_PCT_OF_INTERVAL() {
     return _c().committee_rotation_participation_pct_of_interval
       ?? _c().committee_rotation_min_participation_pct
       ?? 70;
-  },
-  // #75 atomic boundary — rotation N's effective_round is deterministically
-  // N * EPOCH_LENGTH_ROUNDS, where each Bullshark wave is 2 rounds (propose +
-  // vote). Every node maps round → rotation_number identically via
-  // epochOf(round) = floor(round / EPOCH_LENGTH_ROUNDS). Producer-pause and
-  // validator-park use this to ensure both sides of cert validation agree on
-  // which committee applies to a given round.
-  get EPOCH_LENGTH_ROUNDS() { return this.COMMITTEE_ROTATION_INTERVAL_COMMITS * 2; },
-  // Submit the rotation tx LEAD anchors BEFORE its boundary so it has time
-  // to be anchored + commit-handler-applied by the time effective_round
-  // arrives. Without lead-time, all nodes pause production at the boundary
-  // (no rotation in CH yet) → no certs produced → rotation tx never anchored
-  // → permanent halt.
-  //
-  // Auto-scaling default: 1% of INTERVAL_COMMITS with a floor of 10 anchors.
-  //   Testnet (INTERVAL=100):    max(10, 1)   = 10  (~20 sec)
-  //   Production (INTERVAL=43200): max(10, 432) = 432 (~14 min, Sui-style)
-  // Operators can override via genesis param for unusually-slow networks.
-  get COMMITTEE_ROTATION_SUBMIT_LEAD_ANCHORS() {
-    return _c().committee_rotation_submit_lead_anchors
-      ?? Math.max(10, Math.floor(this.COMMITTEE_ROTATION_INTERVAL_COMMITS / 100));
   },
 };
 

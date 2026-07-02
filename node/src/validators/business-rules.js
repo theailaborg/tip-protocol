@@ -457,7 +457,7 @@ function canBindDomain(dag, { tip_id, domain }) {
 // canRevealVote's pattern of injected shake256). All checks are deterministic
 // over DAG state — same accept/reject decision on every node.
 function canCommitteeRotation(dag, { rotation_number, effective_round, new_committee, payload_hash, cosignatures }, opts = {}) {
-  const { shake256, canonicalJson, mldsaVerify } = opts;
+  const { shake256, canonicalJson, mldsaVerify, commitRound } = opts;
 
   // Structural — invariants the wire schema doesn't enforce.
   if (typeof rotation_number !== "number" || !Number.isInteger(rotation_number) || rotation_number < 1) {
@@ -487,6 +487,14 @@ function canCommitteeRotation(dag, { rotation_number, effective_round, new_commi
   }
   if (latest && effective_round <= latest.effective_round) {
     return fail(409, `effective_round ${effective_round} not > prev rotation's ${latest.effective_round}`);
+  }
+  // Future-activation gate: a rotation must commit BEFORE its activation
+  // round so every node applies it to committee_history ahead of time. A
+  // late commit is rejected identically everywhere (commitRound is the
+  // anchor's round, consensus state) and the boundary re-proposes with a
+  // fresh activation — a committee can never flip retroactively.
+  if (typeof commitRound === "number" && commitRound > 0 && effective_round <= commitRound) {
+    return fail(409, `effective_round ${effective_round} not beyond commit round ${commitRound}`);
   }
 
   // Cryptographic — ≥ 2f+1 sigs from PREVIOUS committee endorsing the

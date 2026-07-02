@@ -85,25 +85,20 @@ function build4NodeNarwhal({ currentRound = 1000 } = {}) {
       status: "active", registered_at: 1767225600000,
     });
   }
-  // #75 atomic boundary: seed rotations with effective_round = N * EPOCH_LENGTH_ROUNDS
-  // so producer-pause's `getCommitteeRotation(epochOf(round))` check passes for
-  // every round up to the test's currentRound.
-  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
-  const epochLength = intervalCommits * 2;
-  const maxEpoch = Math.floor(currentRound / epochLength);
   const fourCommittee = peers.map(([id, kp]) => ({ node_id: id, public_key: kp.publicKey }));
-  for (let n = 1; n <= maxEpoch; n++) {
-    dag.saveCommitteeRotation({
-      rotation_number: n,
-      effective_round: n * epochLength,
-      committee: fourCommittee,
-      prev_rotation: n - 1,
-      signer_node_ids: [],
-      signatures: [],
-      payload_hash: `test-partition-rotation-${n}`,
-      committed_at: 1767225600000,
-    });
-  }
+  // Committee lookup is record-based: one rotation row whose effective_round
+  // is below the test's currentRound puts fourCommittee in effect throughout.
+  const fourCommittee_row = {
+    rotation_number: 1,
+    effective_round: 1,
+    committee: fourCommittee,
+    prev_rotation: 0,
+    signer_node_ids: [],
+    signatures: [],
+    payload_hash: "test-partition-rotation-1",
+    committed_at: 1767225600000,
+  };
+  dag.saveCommitteeRotation(fourCommittee_row);
 
   const mempool = createMempool({ dag });
   const published = [];

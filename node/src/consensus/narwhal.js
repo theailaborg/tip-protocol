@@ -41,7 +41,6 @@ const {
   serializeCertificate, deserializeCertificate,
 } = require("./certificate-codec");
 const { encode, decode, bytesToHex, hexToBytes } = require("../network/proto");
-const { epochOf } = require("./participants");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.narwhal");
@@ -65,19 +64,15 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, onProducerPaused, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
-  const _onProducerPaused = typeof onProducerPaused === "function" ? onProducerPaused : null;
   // Rate-limit the producer-pause notify. _beginRound retries every 50ms
   // while paused; the upstream consumer (bullshark rotation proposer)
   // doesn't need that frequency. 1.5s matches the rotation-coord
   // re-broadcast cadence so each cycle gets one fresh proposal attempt.
-  let _lastProducerPausedAt = 0;
   // #75 producer-pause liveness bound: when the boundary pause started (null =
   // not paused) + last escalation log, so a stuck boundary is observable.
-  let _pausedSince = null;
-  let _lastPauseEscalateAt = 0;
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
@@ -267,94 +262,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   function _beginRound() {
     if (!_canProduce()) return;
 
-    // #75 atomic boundary — producer-pause. Don't seal a cert at round R
-    // until we have the rotation that R's epoch needs in our local
-    // committee_history. Without this gate, a node whose commit-handler
-    // hasn't yet applied the latest rotation tx would produce certs under
-    // stale committee assumptions, causing peer-validation halts (the
-    // 2026-05-03 round-202 halt). The rotation tx is being applied to
-    // committee_history right now (or imminently); reschedule shortly.
-    //
-    // If the rotation isn't being produced (deadlock: no anchor commits
-    // → bullshark never retries proposeRotation), the rate-limited
-    // onProducerPaused callback nudges bullshark to attempt a proposal.
-    // Three layers prevent over-firing: rate-limit here, DAG re-check on
-    // bullshark's side, and rotation-coordinator's per-rotation inflight
-    // dedup. Without the nudge the federation sits halted indefinitely.
-    const targetRotation = epochOf(_currentRound);
-    let _carveOutRotationTx = null;
-    if (targetRotation > 0 && typeof dag.getCommitteeRotation === "function"
-      && !dag.getCommitteeRotation(targetRotation)) {
-      // Carve-out: if the missing rotation's tx is sitting in our local
-      // mempool, drain ONLY that tx and produce a rotation-only batch.
-      // Cert validation by peers at this boundary still uses the previous
-      // committee (rotation N takes effect FOR FUTURE rounds; the cert at
-      // round R = N×epoch_length is signed/ack'd by N-1's committee).
-      // Acking peers don't need to leave producer-pause — only ONE node
-      // needs to drain the rotation tx for the cert to form. Without this
-      // carve-out the federation deadlocks when the rotation tx lands in
-      // mempool but no node can drain it (everyone paused).
-      // Drain the NEXT missing rotation (latest+1), capped at the epoch we need:
-      // the proposer always submits latest+1, so targeting epochOf(currentRound)
-      // directly deadlocks across a multi-epoch gap (the two never meet).
-      const _latestRot = typeof dag.getLatestRotation === "function" ? dag.getLatestRotation() : null;
-      const _carveRotation = Math.min((_latestRot ? _latestRot.rotation_number : 0) + 1, targetRotation);
-      _carveOutRotationTx = typeof mempool.peekRotationTx === "function"
-        ? mempool.peekRotationTx(_carveRotation) : null;
-      if (!_carveOutRotationTx) {
-        if (_pausedSince == null) _pausedSince = nowMs();
-        const pausedMs = nowMs() - _pausedSince;
-        log.debug(`Round ${_currentRound}: pausing production: rotation ${targetRotation} not in committee_history (next to apply: ${_carveRotation})`);
-        // Liveness bound: a brief pause is normal; a sustained one is a stuck
-        // boundary. Surface it loudly. Production stays gated, never bypassed.
-        if (pausedMs > CONSENSUS.PRODUCER_PAUSE_ESCALATE_MS && nowMs() - _lastPauseEscalateAt > CONSENSUS.PRODUCER_PAUSE_ESCALATE_MS) {
-          _lastPauseEscalateAt = nowMs();
-          log.warn(`Producer-pause stuck ${Math.round(pausedMs / 1000)}s at rotation ${targetRotation} boundary (round ${_currentRound}); recovery running, production stays gated`);
-        }
-        if (_onProducerPaused) {
-          const now = nowMs();
-          if (now - _lastProducerPausedAt > 1500) {
-            _lastProducerPausedAt = now;
-            try { _onProducerPaused(_currentRound, targetRotation); }
-            catch (err) { log.warn(`onProducerPaused threw: ${err.message}`); }
-          }
-        }
-        // Brief reschedule. The onProducerPaused callback nudges
-        // bullshark to attempt a rotation proposal; once that lands a
-        // tx in mempool, the carve-out above will fire on the next
-        // _beginRound and unblock the federation.
-        _scheduleNextRound(50);
-        return;
-      }
-      log.notice(`Round ${_currentRound}: producer-pause carve-out: producing rotation-only batch for rotation ${_carveRotation}`);
-    }
-
-    _pausedSince = null;   // producing (carve-out or normal): clear the pause clock
     _resetRoundState();
 
-    // Phase 1: Create batch from mempool and broadcast.
-    // Carve-out path: only the rotation tx; normal path: drain everything.
-    //
-    // Carve-out does NOT drain the rotation tx from mempool. The rotation
-    // tx must keep re-carving on every round until bullshark anchor-commit
-    // applies it to committee_history through the normal pipeline (commit-
-    // handler → transactions/committee_history/commits/mempool delete in
-    // one transaction). Without this, each node carves exactly once and
-    // then producer-pauses again with an empty mempool — federation halts
-    // because anchor-commit at round R needs 2f+1 certs at R+2, but every
-    // node has only one cert at the boundary epoch then nothing.
-    // Live observed 2026-05-04 rotation-13 deadlock: 3 carve-outs at 2600,
-    // 1 at 2601, 0 at 2602 → anchor-commit at 2600 impossible.
-    // commit-handler dedups duplicate rotation txs ("rotation_number N
-    // already exists") so re-carving across rounds is safe; the eventual
-    // anchor commit removes the tx via deleteMempoolTxs and subsequent
-    // rounds skip the carve branch entirely (rotation in CH).
-    let txs;
-    if (_carveOutRotationTx) {
-      txs = [_carveOutRotationTx];
-    } else {
-      txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
-    }
+    // Phase 1: Create batch from mempool and broadcast. Rotation txs ride
+    // normal batches: production never pauses ahead of a rotation's
+    // activation (time-targeted, round-executed model), so the old
+    // pause/carve-out deadlocks cannot form.
+    const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
 
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);
@@ -618,43 +532,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // newer arrivals at the next round. Don't duplicate the requeue
     // here.
     if (batch.round > _currentRound) {
-      // Atomic-boundary fast-forward gate. A ready producer must NOT
-      // advance _currentRound across a rotation boundary whose CH row
-      // hasn't landed locally — otherwise the cluster ends up with
-      // quorum-orphaned rounds (some nodes FF'd past the boundary while
-      // others are still producing carve-outs at it), and no later anchor
-      // can walk back to apply the rotation tx → permanent halt.
-      //
-      // Live evidence (2026-05-06): cluster halted at round 20003 with
-      // certs scattered: round 20000=4, 20001=1 (only 1 author who hadn't
-      // FF'd yet), 20002=2, 20003=0 — anchor at 20002 needs 3 vote certs
-      // to commit, never gets them, rotation tx in 20000 carve-outs never
-      // ordered, CH stays empty for rotation 100, federation stuck.
-      //
-      // Catching_up/syncing nodes are exempt: they don't produce certs
-      // (_canProduce gates on joinState===ready), so _currentRound is
-      // observation-only — let them track the cluster head freely; the
-      // missing rotation row arrives via natural Bullshark commits as
-      // cert-sync fills the DAG behind them.
-      if (_joinState === "ready") {
-        const fromEpoch = epochOf(_currentRound);
-        const toEpoch = epochOf(batch.round);
-        if (
-          toEpoch > fromEpoch
-          && typeof dag.getCommitteeRotation === "function"
-          && !dag.getCommitteeRotation(toEpoch)
-        ) {
-          _metrics.fast_forwards_refused_boundary = (_metrics.fast_forwards_refused_boundary || 0) + 1;
-          log.warn(
-            `Refusing fast-forward to round ${batch.round} from ${batch.author_node_id}: ` +
-            `rotation ${toEpoch} not in local committee_history. ` +
-            `Peer is past the boundary, so they have rotation ${toEpoch} (or are misbehaving); ` +
-            `staying at ${_currentRound} and continuing carve-out so all ready producers stay locked at the boundary ` +
-            `until the rotation tx commits via natural anchor walk.`
-          );
-          return;
-        }
-      }
       _metrics.fast_forwards++;
       log.info(`Round ${_currentRound}: peer ${batch.author_node_id} is at round ${batch.round} — fast-forwarding`);
       _currentRound = batch.round;
@@ -1556,7 +1433,6 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       registeredNodes: getNodeCount(),
       mempoolSize: mempool.size(),
       lastRoundAdvanceAt: _lastRoundAdvanceAt,
-      producerPausedMs: _pausedSince ? nowMs() - _pausedSince : 0,
       syncEnteredAt: _syncEnteredAt,
       catchingUpEnteredAt: _catchingUpEnteredAt,
       catchUpTarget: _catchUpTarget,
