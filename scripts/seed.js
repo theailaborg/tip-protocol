@@ -491,10 +491,9 @@ function initDirectDAG(vpKeypair) {
   // builds committee rotation 0 + the NODE_REGISTERED txs from it.
   embedFoundingNodes(vpKeypair);
 
-  // Seed generates and injects its own keypair (_nodeKp) below, so it must not
-  // resolve the node key from the env. Clear the key sources first: a .env left
-  // pointing at TIP_NODE_CREDENTIALS_FILE would make loadConfig throw here, since
-  // that backup isn't written until later in this same run.
+  // Seed injects its own keypair (_nodeKp) below, so clear the env key sources:
+  // a stale TIP_NODE_CREDENTIALS_FILE from a prior run points at a backup this
+  // run hasn't written yet and would make loadConfig throw.
   delete process.env.TIP_NODE_CREDENTIALS_FILE;
   delete process.env.TIP_NODE_PRIVATE_KEY;
   delete process.env.TIP_NODE_PRIVATE_KEY_FILE;
@@ -597,9 +596,8 @@ function nodeIdToFileName(id) {
   return id.replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+/g, "-") + ".tip.json";
 }
 
-// One founding node's docker-cluster env file, from the shared node-env
-// template. All nodes read their keypair from the mounted backup .tip.json;
-// only node1 is the bootstrap target.
+// One founding node's docker-cluster env: keypair comes from the mounted backup
+// .tip.json; only node1 is the bootstrap target.
 function buildLocalNodeEnv({ fn, slot, ip, apiPort, p2pPort, bootstrapAddr, shared }) {
   return renderEnvFromExample({
     TIP_NODE_ID: fn.node_id,
@@ -628,11 +626,12 @@ function buildLocalNodeEnv({ fn, slot, ip, apiPort, p2pPort, bootstrapAddr, shar
   });
 }
 
-// Generate env files for every non-primary founding node, wired for the
-// docker-compose.local.yml cluster: node1=172.30.0.10:4000, node2=.11:4100, etc.
-// Shared DB / operational values are inherited from node1's .env so all match.
+// Env files for every non-primary founding node, wired for the local compose
+// cluster (node2=.11:4100, node3=.12:4200); shared DB/ops values from node1's .env.
 async function writeLocalClusterEnvs(fns, primary) {
-  const rootEnv = fs.readFileSync(path.resolve(__dirname, "../.env"), "utf8");
+  // No root .env yet (fresh checkout): fall back to the val() defaults.
+  const rootEnvPath = path.resolve(__dirname, "../.env");
+  const rootEnv = fs.existsSync(rootEnvPath) ? fs.readFileSync(rootEnvPath, "utf8") : "";
   const val = (k, d) => (rootEnv.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1] ?? d);
   const shared = {
     dbHost: val("DB_HOST", "host.docker.internal"),

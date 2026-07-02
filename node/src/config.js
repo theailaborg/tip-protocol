@@ -16,9 +16,12 @@ const path = require("path");
 const { MEDIA_LIMITS } = require("../../shared/constants");
 const { CONTENT_LIMITS } = require("../../shared/protocol-constants");
 
-// Read a secret from `${name}_FILE` (a mounted Docker/K8s secret) when set,
-// else from the `${name}` env value. File wins so prod can keep the key off the
-// process environment. Trailing whitespace/newline from file mounts is trimmed.
+// Fail closed: dev-gated paths check NODE_ENV !== "production", so an unset
+// NODE_ENV must behave as production, never as an open dev gate.
+if (!process.env.NODE_ENV) process.env.NODE_ENV = "production";
+
+// Read `${name}_FILE` (a mounted Docker/K8s secret, trimmed) when set, else the
+// `${name}` env value. File wins so prod can keep the key off the environment.
 function secretFromEnvOrFile(name) {
   const file = process.env[`${name}_FILE`];
   if (file) {
@@ -28,12 +31,9 @@ function secretFromEnvOrFile(name) {
   return process.env[name] || null;
 }
 
-// Resolve the node keypair. Priority:
-//   1. TIP_NODE_CREDENTIALS_FILE — a .tip.json ({ private_key, public_key }), the
-//      mode-0600 artifact seed.js / register-node.js already write. Both keys, one
-//      file, so the .env never inlines the secret.
-//   2. TIP_NODE_PRIVATE_KEY[_FILE] / TIP_NODE_PUBLIC_KEY[_FILE] — raw value or a
-//      mounted Docker/K8s secret file.
+// Resolve the node keypair: TIP_NODE_CREDENTIALS_FILE (a .tip.json with both
+// keys, written by seed.js/register-node.js) wins over the per-key env vars,
+// so the .env never has to inline the secret.
 function loadNodeKeypair() {
   const credFile = process.env.TIP_NODE_CREDENTIALS_FILE;
   if (credFile) {

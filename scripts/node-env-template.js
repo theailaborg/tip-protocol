@@ -27,7 +27,8 @@ function renderEnvFromExample(overrides, opts = {}) {
   const applied = new Set();
   for (const [key, val] of Object.entries(overrides)) {
     if (val === undefined || val === null) continue;
-    const re = new RegExp(`^[#\\s]*${key}=.*$`, "m");
+    // [ \t#] not \s: \s matches newlines and would absorb a preceding blank line.
+    const re = new RegExp(`^[ \\t#]*${key}=.*$`, "m");
     if (re.test(text)) {
       text = text.replace(re, () => `${key}=${val}`);   // fn form: no $-substitution in val
       applied.add(key);

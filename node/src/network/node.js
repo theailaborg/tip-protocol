@@ -49,7 +49,6 @@ async function loadLibp2p() {
     import("@libp2p/identify"),
     import("@libp2p/mdns"),
     import("@libp2p/bootstrap"),
-    import("@libp2p/crypto/keys"),
     import("@libp2p/peer-id"),
   ]);
   _lib = {
@@ -61,8 +60,7 @@ async function loadLibp2p() {
     identify: mods[5].identify,
     mdns: mods[6].mdns,
     bootstrapDiscovery: mods[7].bootstrap,
-    generateKeyPairFromSeed: mods[8].generateKeyPairFromSeed,
-    peerIdFromString: mods[9].peerIdFromString,
+    peerIdFromString: mods[8].peerIdFromString,
   };
   return _lib;
 }
