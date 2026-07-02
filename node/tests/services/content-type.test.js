@@ -237,7 +237,6 @@ const PLATFORM_EXPECTATIONS = [
   { url: "https://instagram.com/p/abc",        shape: { text: "x", media: [IMG, VID] },              expected: "multi" },   // carousel mixed
   { url: "https://tiktok.com/@user/video/1",   shape: { text: "caption",             media: [VID] }, expected: "video" },
   { url: "https://tiktok.com/@user/photo/2",   shape: { text: "caption",             media: [IMG] }, expected: "image" },   // photo carousel
-  { url: "https://pinterest.com/pin/123",      shape: { text: "x".repeat(500),       media: [IMG] }, expected: "image" },
 
   // ── MIXED (X / FB / LinkedIn / Reddit / Threads / Mastodon / …) ──
   // text only → text

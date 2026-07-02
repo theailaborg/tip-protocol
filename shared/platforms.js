@@ -8,7 +8,7 @@
  *   "video" / "audio" / "image" / "text"  — fixed; ignores request shape
  *   "MEDIA_DOMINANT"   — media kind wins. Captions are captions. For
  *                        visual-first platforms where text is structurally
- *                        a secondary field (Instagram, TikTok, Pinterest).
+ *                        a secondary field (Instagram, TikTok).
  *   "MIXED"            — text+media may be co-equal:
  *                          text only           → text
  *                          multi-kind          → multi
@@ -65,7 +65,6 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   // MEDIA_DOMINANT — visual-first, captions are captions
   "instagram.com": "MEDIA_DOMINANT",
   "tiktok.com":    "MEDIA_DOMINANT",
-  "pinterest.com": "MEDIA_DOMINANT",
 
   // MIXED — text and media may be co-equal
   "x.com":           "MIXED",
