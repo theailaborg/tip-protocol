@@ -61,6 +61,7 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "spotify.com":        "audio",
   "podcasts.apple.com": "audio",
   "soundcloud.com":     "audio",
+  "bandcamp.com":       "audio",
 
   // MEDIA_DOMINANT — visual-first, captions are captions
   "instagram.com": "MEDIA_DOMINANT",

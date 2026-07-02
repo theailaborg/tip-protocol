@@ -229,6 +229,7 @@ const PLATFORM_EXPECTATIONS = [
   { url: "https://podcasts.apple.com/show/x",      shape: { text: "show notes", media: [AUD] }, expected: "audio" },
   { url: "https://soundcloud.com/u/track-name",    shape: { text: "", media: [AUD] }, expected: "audio" },
   { url: "https://on.soundcloud.com/abc",          shape: { text: "", media: [AUD] }, expected: "audio" },  // alias
+  { url: "https://artist.bandcamp.com/track/song", shape: { text: "", media: [AUD] }, expected: "audio" },  // artist subdomain
 
   // ── MEDIA_DOMINANT — visual-first; long caption stays media ──
   { url: "https://instagram.com/p/abc",        shape: { text: "tiny",                media: [IMG] }, expected: "image" },
