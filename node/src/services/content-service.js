@@ -16,6 +16,7 @@ const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const { withTxId, buildPrescanDescriptor } = require("./helpers");
 const contentType = require("./content-type");
+const { normalizeUrl } = require("../utils/normalize-url");
 // Imported via the module reference (not destructured) so tests can
 // jest.spyOn(helpers, "preScanContent") to drive specific tier scenarios.
 const helpers = require("./helpers");
@@ -296,9 +297,20 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  async function resolve(ctid) {
+  async function resolve(ctid, refUrl) {
     const rec = dag.getContent(ctid);
     if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
+
+    // Confirms the badge is being shown on the exact post/page it was
+    // registered for, not just copy-pasted elsewhere. null = caller didn't
+    // supply a URL to check (e.g. OG card / similar-content projections).
+    let urlMatch = null;
+    if (refUrl) {
+      const normalizedRef = normalizeUrl(refUrl);
+      const registeredUrls = Array.isArray(rec.registered_urls) ? rec.registered_urls : [];
+      urlMatch = normalizedRef !== null &&
+        registeredUrls.some((u) => normalizeUrl(u) === normalizedRef);
+    }
 
     // Public storage facts per media item (existence + size + the
     // server-detected mime). Metadata only — the bytes themselves stay
@@ -396,6 +408,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       prescan_note: PRESCAN_NOTES[rec.prescan_tier] || null,
       consensus: { available: false, status: "not_requested" },
       similar,
+      url_match: urlMatch,
     };
   }
 
