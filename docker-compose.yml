@@ -77,6 +77,8 @@ x-node-common: &node-common
     - ./data:/app/data
     # Host log dir mounted at the container's TIP_LOG_DIR (from .env).
     - ./logs/node-1:/app/node/logs
+    # Node keypair (.tip.json) read via TIP_NODE_CREDENTIALS_FILE from .env.
+    - ./genesis-data/backups:/app/genesis-data/backups:ro
   # Make `host.docker.internal` resolvable inside the container on every
   # Docker setup (Docker Desktop on macOS/Windows already provides it; Linux
   # daemons do not without this hint). Used by TIP_DEV_LOCALHOST_FETCH_HOST
