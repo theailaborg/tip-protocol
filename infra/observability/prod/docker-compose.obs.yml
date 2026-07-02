@@ -1,0 +1,74 @@
+# TIP Protocol: production observability stack (one monitoring host)
+#
+# Runs on a single instance and scrapes every federation node over HTTPS/HTTP
+# using the TIP_METRICS_TOKEN bearer gate, so nodes can live on separate EC2
+# instances with only their public API port open.
+#
+# Exposure model:
+#   prometheus -> never published; reachable only inside this compose network
+#   grafana    -> 127.0.0.1 only; caddy is the sole public entry (TLS + login)
+#   caddy      -> :80/:443 public; proxies to grafana
+#
+# Setup (see README.md in this directory for the full runbook):
+#   1. cp prometheus.yml.example prometheus.yml   # fill node targets + token
+#   2. cp .env.example .env                        # domain + grafana admin password
+#   3. docker compose -f docker-compose.obs.yml up -d
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: tip-obs-prometheus
+    restart: unless-stopped
+    # No ports: nothing outside this compose network can reach Prometheus.
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - obs-prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    networks: [obs]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: tip-obs-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"      # host-local only; caddy fronts it
+    environment:
+      GF_SERVER_ROOT_URL: https://${OBS_DOMAIN}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tip-home.json
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - obs-grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    networks: [obs]
+
+  caddy:
+    image: caddy:2
+    container_name: tip-obs-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"                    # ACME http-01 challenge + redirect
+      - "443:443"
+    environment:
+      OBS_DOMAIN: ${OBS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - obs-caddy-data:/data
+    networks: [obs]
+
+volumes:
+  obs-prometheus-data:
+  obs-grafana-data:
+  obs-caddy-data:
+
+networks:
+  obs:
+    driver: bridge

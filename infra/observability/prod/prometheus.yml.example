@@ -1,0 +1,36 @@
+# TIP Protocol: production Prometheus scrape config.
+# cp prometheus.yml.example prometheus.yml, then fill in your node addresses
+# and the shared metrics token. prometheus.yml is gitignored (holds the token);
+# keep it chmod 600 on the monitoring host.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Every federation node's /metrics, over the public API port. The bearer
+  # token must equal each node's TIP_METRICS_TOKEN.
+  - job_name: "tip-nodes"
+    honor_labels: true
+    scheme: http                      # https if your nodes sit behind TLS
+    authorization:
+      type: Bearer
+      credentials: "REPLACE_WITH_TIP_METRICS_TOKEN"
+    static_configs:
+      - targets:
+          - "node1.example.org:4000"  # or the EC2 private IP when peered in-VPC
+          - "node2.example.org:4000"
+          - "node3.example.org:4000"
+
+  # Optional: host-level metrics (CPU/disk/mem) if node_exporter runs on each
+  # instance. Open :9100 ONLY to this monitoring host's security group.
+  # - job_name: "hosts"
+  #   static_configs:
+  #     - targets:
+  #         - "node1.example.org:9100"
+  #         - "node2.example.org:9100"
+  #         - "node3.example.org:9100"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: [ "localhost:9090" ]

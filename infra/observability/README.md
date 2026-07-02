@@ -1,5 +1,7 @@
 # TIP Federation observability stack (local dev)
 
+> Production (multi-EC2, TLS, login-gated): see [`prod/README.md`](prod/README.md).
+
 Local Prometheus + Grafana for the TIP dev federation. Scrapes each
 node's `/metrics` endpoint and provisions six dashboards out of the box
 (`tip-home` is the landing page). See the
