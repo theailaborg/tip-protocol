@@ -93,6 +93,33 @@ describe("fetchProfileHtml error mapping", () => {
     });
   }
 
+  // Request-level failures: no response ever arrives; the req object itself
+  // fires 'timeout' or 'error'. These rewrites (previously 504/502) must map
+  // to the same client-readable 4xx as the status-code branch.
+  function mockReqEvent(event, arg) {
+    jest.spyOn(https, "request").mockImplementation(() => {
+      const handlers = {};
+      const req = {
+        on(name, fn) { handlers[name] = fn; return req; },
+        end() { process.nextTick(() => handlers[event] && handlers[event](arg)); },
+        destroy() {},
+      };
+      return req;
+    });
+  }
+
+  test("timeout -> 4xx profile_fetch_timeout, not 504", async () => {
+    mockReqEvent("timeout");
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_timeout" });
+  });
+
+  test("socket error -> 4xx profile_fetch_failed, not 502", async () => {
+    mockReqEvent("error", new Error("ECONNRESET"));
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_failed" });
+  });
+
   test("403 (bot-blocked) -> 4xx profile_fetch_blocked, not 502", async () => {
     mockStatus(403);
     await expect(fetchProfileHtml("https://medium.com/@x"))
