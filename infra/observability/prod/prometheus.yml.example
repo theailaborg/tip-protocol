@@ -10,7 +10,8 @@ global:
 scrape_configs:
   # Every federation node's /metrics, over the public API port. The bearer
   # token must equal each node's TIP_METRICS_TOKEN.
-  - job_name: "tip-nodes"
+  # Job name MUST stay "tip-federation": all provisioned dashboards filter on it.
+  - job_name: "tip-federation"
     honor_labels: true
     # Use the nodes' DIRECT IPs (Elastic IPs / private IPs), scheme http.
     # Cloudflare-proxied hostnames do NOT work here: CF neither proxies
@@ -21,9 +22,9 @@ scrape_configs:
       credentials: "REPLACE_WITH_TIP_METRICS_TOKEN"
     static_configs:
       - targets:
-          - "node1.example.org:4000"  # or the EC2 private IP when peered in-VPC
-          - "node2.example.org:4000"
-          - "node3.example.org:4000"
+          - "172.31.x.x:4000"   # node1 PRIVATE IP (same-VPC scrape: no public transit, no flapping)
+          - "172.31.x.x:4000"   # node2
+          - "172.31.x.x:4000"   # node3
 
   # Optional: host-level metrics (CPU/disk/mem) if node_exporter runs on each
   # instance. Open :9100 ONLY to this monitoring host's security group.
