@@ -283,6 +283,59 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
     expect(content.content_hash).toBe(shake256("content1"));
   });
 
+  test("REGISTER_CONTENT: second tx claiming the same registered_url in batch is dropped (URL exclusivity)", () => {
+    const fx = _setup();
+    const sharedUrl = "https://example.com/url-exclusivity/in-batch";
+    const data1 = {
+      ctid: "tip://c/OH-aaaaaaaaaaaaaa-1111", origin_code: "OH",
+      content_hash: shake256("url-batch-content-1"), signer_tip_id: AUTHOR_TIP,
+      registered_urls: [sharedUrl],
+    };
+    const data2 = {
+      ctid: "tip://c/OH-bbbbbbbbbbbbbb-2222", origin_code: "OH",
+      content_hash: shake256("url-batch-content-2"), signer_tip_id: AUTHOR_TIP,
+      registered_urls: ["https://example.com/url-exclusivity/other", sharedUrl],
+    };
+
+    const tx1 = _makeRegisterContentTx(fx.dag, fx.authorKp, data1, 1777507200000);
+    const tx2 = _makeRegisterContentTx(fx.dag, fx.authorKp, data2, 1777507201000);
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
+
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    expect(fx.dag.getTxRejection(tx2.tx_id)).not.toBeNull();
+    expect(fx.dag.getTxRejection(tx2.tx_id).reason_detail).toMatch(/claimed in this batch/i);
+    // The URL is bound to the FIRST ctid only.
+    expect(fx.dag.getContent(data1.ctid)).not.toBeNull();
+    expect(fx.dag.getContent(data2.ctid)).toBeNull();
+    expect(fx.dag.listContent({ url: sharedUrl, limit: 2 }).map(c => c.ctid)).toEqual([data1.ctid]);
+  });
+
+  test("REGISTER_CONTENT: distinct registered_urls in the same batch both commit", () => {
+    const fx = _setup();
+    const data1 = {
+      ctid: "tip://c/OH-cccccccccccccc-3333", origin_code: "OH",
+      content_hash: shake256("url-batch-content-3"), signer_tip_id: AUTHOR_TIP,
+      registered_urls: ["https://example.com/url-exclusivity/free-1"],
+    };
+    const data2 = {
+      ctid: "tip://c/OH-dddddddddddddd-4444", origin_code: "OH",
+      content_hash: shake256("url-batch-content-4"), signer_tip_id: AUTHOR_TIP,
+      registered_urls: ["https://example.com/url-exclusivity/free-2"],
+    };
+
+    const tx1 = _makeRegisterContentTx(fx.dag, fx.authorKp, data1, 1777507200000);
+    const tx2 = _makeRegisterContentTx(fx.dag, fx.authorKp, data2, 1777507201000);
+
+    const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
+
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
+    expect(fx.dag.getContent(data1.ctid)).not.toBeNull();
+    expect(fx.dag.getContent(data2.ctid)).not.toBeNull();
+  });
+
   // ── INTEREST_REGISTERED ───────────────────────────────────────────────────
 
   test("INTEREST_REGISTERED: second tx with same slug in batch is dropped", () => {
