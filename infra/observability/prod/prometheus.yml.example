@@ -12,7 +12,10 @@ scrape_configs:
   # token must equal each node's TIP_METRICS_TOKEN.
   - job_name: "tip-nodes"
     honor_labels: true
-    scheme: http                      # https if your nodes sit behind TLS
+    # Use the nodes' DIRECT IPs (Elastic IPs / private IPs), scheme http.
+    # Cloudflare-proxied hostnames do NOT work here: CF neither proxies
+    # port 4000 nor forwards non-HTTP(S)-standard ports.
+    scheme: http
     authorization:
       type: Bearer
       credentials: "REPLACE_WITH_TIP_METRICS_TOKEN"
