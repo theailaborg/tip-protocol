@@ -64,18 +64,7 @@ const {
 
 const { TX_TYPES, PROTOCOL } = require("../shared/constants");
 const PC = require("../shared/protocol-constants");
-const {
-  GENESIS_TX_ID,
-  GENESIS_TIMESTAMP,
-  GENESIS_CHAIN_ID,
-  buildGenesisBlock,
-  computeGenesisHash,
-  GENESIS_PAYLOAD,
-  getGenesisPayload,
-} = require("../node/src/genesis");
-// Init protocol constants before any module that uses backward-compat
-// accessors (initDAG → scoring → ...) is required.
-PC.init(getGenesisPayload().protocol_constants);
+const G = () => require("../node/src/genesis");
 const { getTier } = PC;
 const { initDAG } = require("../node/src/dag");
 const { initScoring } = require("../node/src/scoring");
@@ -235,7 +224,7 @@ async function embedFoundingVPKey() {
     founding_vp: {
       vp_id: vpId,
       ...FOUNDING_VP_TEMPLATE,
-      registered_at: GENESIS_TIMESTAMP,
+      registered_at: G().GENESIS_TIMESTAMP,
       public_key: vpKeypair.publicKey,
     },
   });
@@ -354,9 +343,9 @@ async function mintGenesisBlock(vpKeypair) {
   info("Computing genesis hash...");
   const genesisHash = updatedGenesis.computeGenesisHash(updatedPayload);
   label("Genesis hash", genesisHash.slice(0, 32) + "...");
-  label("Chain ID", GENESIS_CHAIN_ID);
+  label("Chain ID", G().GENESIS_CHAIN_ID);
   label("Protocol version", PROTOCOL.version);
-  label("Timestamp", GENESIS_TIMESTAMP);
+  label("Timestamp", G().GENESIS_TIMESTAMP);
   label("Issuer", PROTOCOL.issuer);
 
   info("Signing genesis block with founding VP key...");
@@ -366,11 +355,11 @@ async function mintGenesisBlock(vpKeypair) {
   ok("Signature computed");
 
   // Merge the seal over the EXISTING genesis.json so minted fields not present
-  // in GENESIS_PAYLOAD (the bootstrap-tx signatures) are preserved rather than
+  // in G().GENESIS_PAYLOAD (the bootstrap-tx signatures) are preserved rather than
   // wiped by a full overwrite.
   const existing = fs.existsSync(GENESIS_FILE) ? JSON.parse(fs.readFileSync(GENESIS_FILE, "utf8")) : {};
   // Explicit field order (definition+seal, members, config last). tx signatures
-  // aren't in GENESIS_PAYLOAD, so carry them over from the existing file.
+  // aren't in G().GENESIS_PAYLOAD, so carry them over from the existing file.
   const genesisBlock = {
     version: updatedPayload.version,
     protocol: updatedPayload.protocol,
@@ -458,7 +447,7 @@ function _withTxId(txBody) {
 async function registerFoundingVP(vpKeypair) {
   head("STEP 3: Register The AI Lab Verification Provider");
 
-  // Re-read genesis (top-level getFoundingVP import has stale GENESIS_PAYLOAD)
+  // Re-read genesis (top-level getFoundingVP import has stale G().GENESIS_PAYLOAD)
   const freshGenesis = require("../node/src/genesis");
   const foundingVP = freshGenesis.getFoundingVP();
 
@@ -808,8 +797,8 @@ async function verifyDAGState(genesisBlock, vpRecord, vpKeypair, identities) {
   // Chain ID
   checks.push({
     name: "Chain ID",
-    pass: genesisBlock.chain_id === GENESIS_CHAIN_ID || genesisBlock.protocol?.chain_id === GENESIS_CHAIN_ID,
-    detail: GENESIS_CHAIN_ID,
+    pass: genesisBlock.chain_id === G().GENESIS_CHAIN_ID || genesisBlock.protocol?.chain_id === G().GENESIS_CHAIN_ID,
+    detail: G().GENESIS_CHAIN_ID,
   });
 
   // Founding VP
@@ -922,8 +911,8 @@ async function writeSeedOutput(genesisBlock, vpRecord, vpKeypair, identities, se
     environment: process.env.NODE_ENV || "development",
     genesis: {
       hash: genesisBlock.genesis_hash,
-      chain_id: GENESIS_CHAIN_ID,
-      timestamp: GENESIS_TIMESTAMP,
+      chain_id: G().GENESIS_CHAIN_ID,
+      timestamp: G().GENESIS_TIMESTAMP,
       signer_pk: genesisBlock.signer_public_key,
     },
     founding_vps: [{
@@ -1049,6 +1038,10 @@ async function main() {
     // genesis-config.json take effect on re-seed.
     embedProtocolConstants();
 
+    // First and only PC init of this run: post-Step-0, so the singleton
+    // holds the constants THIS run authored, not the previous chain's.
+    PC.init(G().getGenesisPayload().protocol_constants);
+
     // Step 1: Generate founding VP keypair and embed in genesis source files
     const vpKeypair = await embedFoundingVPKey();
 
@@ -1065,7 +1058,7 @@ async function main() {
     const seedNode = await registerSeedNode();
 
     // Step 2c: Re-embed bootstrap tx signatures now that founding_node is set.
-    // embedFoundingVPKey() signed over GENESIS_PAYLOAD before founding_node was
+    // embedFoundingVPKey() signed over G().GENESIS_PAYLOAD before founding_node was
     // embedded, so GENESIS_TX_SIGNATURE / GENESIS_VP_TX_SIGNATURE would be stale
     // at node startup. Re-sign over the complete payload here.
     {
