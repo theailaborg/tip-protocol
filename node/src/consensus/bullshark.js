@@ -383,16 +383,24 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       try {
         // Presence bucket = which time slice of the epoch this anchor commit
         // landed in, from the anchor's BFT timestamp (deterministic everywhere).
+        // Each node is credited ONCE per anchor (authors + ack signers deduped)
+        // so the tally reads as anchors-participated-in: a pure time-presence
+        // measure that equally-online nodes score identically on, regardless
+        // of how many certs/acks each contributed.
         const rpBucket = _participationBucket(certTs);
+        const seenByRotation = new Map();
         for (const cert of anchoredCerts) {
           const certRotation = _rotationNumberAt(cert.round);
-          if (cert.author_node_id) {
-            dag.incrementRotationParticipation(cert.author_node_id, certRotation, rpBucket);
-          }
+          let seen = seenByRotation.get(certRotation);
+          if (!seen) { seen = new Set(); seenByRotation.set(certRotation, seen); }
+          if (cert.author_node_id) seen.add(cert.author_node_id);
           for (const ack of (cert.acknowledgments || [])) {
-            if (ack && ack.acker_node_id) {
-              dag.incrementRotationParticipation(ack.acker_node_id, certRotation, rpBucket);
-            }
+            if (ack && ack.acker_node_id) seen.add(ack.acker_node_id);
+          }
+        }
+        for (const [certRotation, seen] of seenByRotation) {
+          for (const node_id of seen) {
+            dag.incrementRotationParticipation(node_id, certRotation, rpBucket);
           }
         }
       } catch (err) {

@@ -27,7 +27,7 @@ const fs = require("fs");
 const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
 const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
-const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
+const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
 
@@ -1339,17 +1339,28 @@ class MemoryStore {
     const current = this._rotationParticipation.get(key) || 0;
     this._rotationParticipation.set(key, current + 1);
   }
-  // Per-node aggregate over the rotation: total credits + DISTINCT presence
-  // buckets (the admission signal).
+  // Per-node aggregate over the rotation: total anchor-appearances + presence
+  // buckets (the admission signal). A bucket ticks only when the node appeared
+  // in >= EPOCH_BUCKET_PRESENCE_PCT of the bucket's best-observed count, so a
+  // per-slice drive-by (~1-2% of anchors) never marks the slice while any
+  // genuinely-online node (~100%) always does.
   getRotationParticipation(rotationNumber) {
-    const agg = new Map();
+    const pct = CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT;
+    const rows = [];
+    const bucketMax = new Map();
     for (const [key, count] of this._rotationParticipation) {
-      const [node_id, rot] = [key.slice(0, key.indexOf("|")), key.split("|")[1]];
-      if (Number(rot) !== rotationNumber) continue;
-      const cur = agg.get(node_id) || { node_id, count: 0, buckets: 0 };
-      cur.count += count;
-      cur.buckets += 1;
-      agg.set(node_id, cur);
+      const parts = key.split("|");
+      if (Number(parts[1]) !== rotationNumber) continue;
+      const bucket = Number(parts[2]);
+      rows.push({ node_id: parts[0], bucket, count });
+      if (count > (bucketMax.get(bucket) || 0)) bucketMax.set(bucket, count);
+    }
+    const agg = new Map();
+    for (const r of rows) {
+      const cur = agg.get(r.node_id) || { node_id: r.node_id, count: 0, buckets: 0 };
+      cur.count += r.count;
+      if (r.count >= Math.max(1, Math.ceil((bucketMax.get(r.bucket) * pct) / 100))) cur.buckets += 1;
+      agg.set(r.node_id, cur);
     }
     return [...agg.values()];
   }
@@ -2431,8 +2442,15 @@ class SQLiteStore {
          ON CONFLICT(node_id, rotation_number, bucket) DO UPDATE SET count = count + 1`
       ),
       getRotationParticipation: this.db.prepare(
-        `SELECT node_id, SUM(count) AS count, COUNT(DISTINCT bucket) AS buckets
-         FROM rotation_participation WHERE rotation_number = ? GROUP BY node_id`
+        `SELECT rp.node_id, SUM(rp.count) AS count,
+                COUNT(DISTINCT CASE
+                  WHEN rp.count >= MAX(1, CAST((bm.max_count * ? + 99) / 100 AS INTEGER))
+                  THEN rp.bucket END) AS buckets
+         FROM rotation_participation rp
+         JOIN (SELECT bucket, MAX(count) AS max_count
+               FROM rotation_participation WHERE rotation_number = ?
+               GROUP BY bucket) bm ON bm.bucket = rp.bucket
+         WHERE rp.rotation_number = ? GROUP BY rp.node_id`
       ),
       pruneRotationParticipationBefore: this.db.prepare(
         "DELETE FROM rotation_participation WHERE rotation_number < ?"
@@ -3309,7 +3327,8 @@ class SQLiteStore {
     this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber, bucket);
   }
   getRotationParticipation(rotationNumber) {
-    return this._stmts.getRotationParticipation.all(rotationNumber);
+    return this._stmts.getRotationParticipation.all(
+      CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT, rotationNumber, rotationNumber);
   }
   pruneRotationParticipationBefore(rotationNumber) {
     return this._stmts.pruneRotationParticipationBefore.run(rotationNumber).changes;

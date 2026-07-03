@@ -147,11 +147,12 @@ function _seedAnchorCerts(dag, { proposeRound, voteRound, leader, voteAuthors })
   }
 }
 
-// One increment per distinct presence bucket 0..n-1 for each node.
+// Ten appearances per distinct presence bucket 0..n-1 for each node: enough
+// that the anchor walk's own +1 cannot shift a bucket's relative presence bar.
 function _seedBuckets(dag, rotationNumber, byNode) {
   for (const [node_id, n] of Object.entries(byNode)) {
     for (let b = 0; b < n; b++) {
-      dag.incrementRotationParticipation(node_id, rotationNumber, b);
+      for (let i = 0; i < 10; i++) dag.incrementRotationParticipation(node_id, rotationNumber, b);
     }
   }
 }
@@ -530,12 +531,12 @@ describe("bullshark RP attribution by committee_history at cert.round", () => {
     const rot0 = fx.dag.getRotationParticipation(0).find(r => r.node_id === FOUNDING.node_id);
     const rot1 = fx.dag.getRotationParticipation(1).find(r => r.node_id === FOUNDING.node_id);
 
-    // ancestor: author + self-ack = 2 credits to rotation 0.
+    // Per-anchor dedup: the node appears once per (anchor, rotation)
+    // regardless of how many certs/acks it contributed to the walk.
     expect(rot0).toBeTruthy();
-    expect(rot0.count).toBe(2);
-    // mid + leader: 2 certs x (author + self-ack) = 4 credits to rotation 1.
+    expect(rot0.count).toBe(1);
     expect(rot1).toBeTruthy();
-    expect(rot1.count).toBe(4);
+    expect(rot1.count).toBe(1);
   });
 });
 

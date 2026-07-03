@@ -344,10 +344,10 @@ const CONTENT_GRACE = {
 //                           referenced. Catches abandoned drafts.
 const _mr = () => get().media_retention;
 const MEDIA_RETENTION = {
-  get BASE_RETENTION_MS()    { return _mr().base_retention_ms; },
+  get BASE_RETENTION_MS() { return _mr().base_retention_ms; },
   get POST_ADJUDICATION_MS() { return _mr().post_adjudication_ms; },
-  get POST_APPEAL_MS()       { return _mr().post_appeal_ms; },
-  get ORPHAN_UPLOAD_MS()     { return _mr().orphan_upload_ms; },
+  get POST_APPEAL_MS() { return _mr().post_appeal_ms; },
+  get ORPHAN_UPLOAD_MS() { return _mr().orphan_upload_ms; },
 };
 
 const _c = () => get().consensus;
@@ -454,6 +454,12 @@ const CONSENSUS = {
   // qualifies by participating in >= pct of DISTINCT slices. Time-presence,
   // not raw counts, so burst participation can't game admission.
   get EPOCH_PARTICIPATION_BUCKETS() { return _c().epoch_participation_buckets ?? 24; },
+  // A slice counts as presence only when the node appeared in at least this
+  // pct of the slice's anchors (relative to the best-observed node in that
+  // same slice). Tallies count each node ONCE per anchor, so the measure is
+  // fraction-of-time-online and role-independent; a per-hour drive-by scores
+  // ~1-2% and can never buy a presence day.
+  get EPOCH_BUCKET_PRESENCE_PCT() { return _c().epoch_bucket_presence_pct ?? 70; },
   // Committee admission threshold for the next rotation. The qualifying check
   // is `participation_count >= ceil(anchors_in_period * pct / 100)`, where
   // anchors_in_period is the consensus_index delta of the finishing rotation
