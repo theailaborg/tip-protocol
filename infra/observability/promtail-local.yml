@@ -27,7 +27,7 @@ scrape_configs:
       # (one stream PER FILE explodes cardinality and breaks volume queries).
       - regex:
           source: filename
-          expression: "/(?P<level>access|debug|error|info)\\.log$"
+          expression: '/(?P<level>access|debug|error|info)\.log'
       - labels:
           level:
       - labeldrop:
