@@ -440,7 +440,7 @@ describe("bullshark rotation proposer (time-based epoch boundary)", () => {
   });
 });
 
-describe("bullshark tryRotationProposal (producer-pause retry path)", () => {
+describe("bullshark tryRotationProposal (forced-proposal recovery hook)", () => {
   test("proposes only latest+1; stale and gapped rotations are no-ops", () => {
     const fx = _setup();
 

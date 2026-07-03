@@ -45,7 +45,7 @@ beforeAll(async () => {
 const SELF_ID = "tip://node/self";
 const PEER_ID = "tip://node/peer";
 
-function buildNarwhal({ onProducerPaused = null } = {}) {
+function buildNarwhal() {
   const selfKp = generateMLDSAKeypair();
   const peerKp = generateMLDSAKeypair();
 
@@ -245,10 +245,6 @@ describe("narwhal tri-state join FSM", () => {
     }
   });
 
-  // Fix D — producer-pause callback. When _beginRound hits the rotation-
-  // missing producer-pause, narwhal nudges upstream (bullshark) to attempt
-  // a rotation proposal. Rate-limited so the 50ms producer-pause retry
-  // loop doesn't fire the callback 20x/sec.
   describe("rotation txs ride normal batches (no producer-pause)", () => {
     test("production continues at any round with only a stale rotation in CH", () => {
       jest.useFakeTimers();

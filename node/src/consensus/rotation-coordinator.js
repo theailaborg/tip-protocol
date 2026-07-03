@@ -555,8 +555,8 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
   }
 
   function _rebroadcastTick() {
-    // Age out inflights on our own timer too: a node that carved out never
-    // re-enters the producer-pause nudge, the only other prune trigger.
+    // Age out inflights on our own timer: with production never pausing,
+    // this tick is the reliable prune trigger for wedged proposals.
     pruneExpired();
     const now = nowMs();
     let anyAlive = false;
@@ -652,10 +652,9 @@ function createRotationCoordinator({ dag, network, proto, identity, submitTx, me
   // into our inflight (F1) until we cross quorum and build the tx ourselves.
   let _repairInFlight = false;
   async function requestTxRepair() {
-    if (_repairInFlight) return false;   // the pause nudge fires every ~1.5s; don't stack dial storms
+    if (_repairInFlight) return false;   // callers may retry frequently; don't stack dial storms
     if (!network || typeof network.openStream !== "function" || !network.ROTATION_REPAIR_PROTOCOL) return false;
-    // Fetch latest+1, NOT epochOf(round): rotations apply in order and that is
-    // the tx peers hold. Mirrors the carve-out's min(latest+1, targetRotation).
+    // Fetch latest+1: rotations apply in order and that is the tx peers hold.
     const latest = (typeof dag.getLatestRotation === "function") ? dag.getLatestRotation() : null;
     const rotation_number = (latest ? latest.rotation_number : 0) + 1;
     const existing = _inFlight.get(rotation_number);

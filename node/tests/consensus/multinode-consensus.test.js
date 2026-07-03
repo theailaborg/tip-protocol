@@ -185,9 +185,6 @@ function makeNode(nodeId, kp, registered, committeeIds, net) {
     getCommittee,
     onCommit: (certificates, round) => bullshark.onRoundComplete(certificates, round),
     onCertSaved: (cert) => { if (typeof bullshark.onCertSaved === "function") bullshark.onCertSaved(cert.hash); },
-    onProducerPaused: (round, missingRotation) => {
-      if (typeof bullshark.tryRotationProposal === "function") bullshark.tryRotationProposal(round, missingRotation);
-    },
     isPeerDivergent: () => false,
     peerJoinState: () => "ready",
     divergentPeers: () => [],

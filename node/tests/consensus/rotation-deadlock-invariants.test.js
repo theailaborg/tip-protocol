@@ -17,7 +17,7 @@
  *   3. commit-handler drops duplicate COMMITTEE_ROTATION as silent
  *      dropped++ (does NOT throw)
  *   4. mempool retains rotation tx with no TTL/age expiry
- *   5. producer-pause condition is exactly !dag.getCommitteeRotation(targetRotation)
+ *   5. production continues regardless of rotation-gap state (no pause)
  *   6. _verifyRotationChain is invoked from the snapshot install path
  *      BEFORE state lands (chain-of-trust gate)
  *
@@ -286,7 +286,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
   // Why it matters: the carve-out re-fires each round only because the tx
   // sits in mempool waiting to be picked up. If a future PR adds eviction
   // (e.g., "drop txs older than 30 s" or "evict when mempool > 1000 entries"),
-  // a long-stuck rotation could disappear and producer-pause forever.
+  // a long-stuck rotation tx could disappear before it ever commits.
   // This test pins the current contract: tx persists across simulated time.
   test("rotation tx persists in mempool across simulated wall-clock without TTL eviction", () => {
     jest.useFakeTimers();

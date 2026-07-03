@@ -697,11 +697,11 @@ describe("#68 rotation coordinator", () => {
   });
 
   // rotation-liveness: pruneExpired now also runs on the coordinator's OWN
-  // timer (via _rebroadcastTick), not only through the producer-pause nudge.
+  // timer (via _rebroadcastTick), with no external nudge required.
   // A node that reached quorum and carved out never re-enters the nudge path,
   // so without this its submitted inflight (and the futile push re-broadcast
   // under a one-directional partition) would live forever.
-  test("rebroadcast tick ages out a long-submitted inflight without the producer-pause nudge", () => {
+  test("rebroadcast tick ages out a long-submitted inflight on its own timer", () => {
     const a = generateMLDSAKeypair();
     const b = generateMLDSAKeypair();
     const ids = [
@@ -734,7 +734,7 @@ describe("#68 rotation coordinator", () => {
 
     // Backdate past deadlineMs*2 (deadlineMs=5000, so 10000), then fire the timer
     // tick directly, NOT pruneExpired(): the only path a carved-out node has,
-    // since it never triggers the producer-pause nudge.
+    // with no external prune trigger.
     coord._state().get(2).submittedAt = nowMs() - 11_000;
     coord._rebroadcastTick();
 
