@@ -1,0 +1,20 @@
+# Log-shipping agent: run ONE per node EC2, next to the tip-node container.
+#   1. cp promtail.env.example promtail.env    # loki url + credentials + node label
+#   2. docker compose -f docker-compose.promtail.yml up -d
+# Ships the node's file logs (TIP_LOG_DIR) and container stdout to the
+# monitoring host's Loki through the basic-auth Caddy endpoint.
+services:
+  promtail:
+    image: grafana/promtail:3.3.0
+    container_name: tip-promtail
+    restart: unless-stopped
+    env_file: promtail.env
+    volumes:
+      - ./promtail.yml:/etc/promtail/config.yml:ro
+      - ../../../node/logs:/tip-logs:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/positions
+    command: ["-config.file=/etc/promtail/config.yml", "-config.expand-env=true"]
+volumes:
+  promtail-positions:

@@ -221,3 +221,4 @@ node6-env/
 # Prod observability: local copies hold the metrics token + admin password
 infra/observability/prod/prometheus.yml
 infra/observability/prod/.env
+infra/observability/agent/promtail.env

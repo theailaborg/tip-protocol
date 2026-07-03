@@ -1,0 +1,34 @@
+# Local promtail: tails every node's file logs from the repo's node/logs dir
+# and labels each stream with the node name parsed from the path.
+server:
+  disable: true
+
+positions:
+  filename: /positions/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: tip-node-files
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: tip-node
+          __path__: /tip-logs/node*/**/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: "/tip-logs/(?P<node>node[0-9]+)/"
+      - labels:
+          node:
+      # The node writes one file per level (info/error/debug/access.log):
+      # surface that as a low-cardinality `level` label, then drop `filename`
+      # (one stream PER FILE explodes cardinality and breaks volume queries).
+      - regex:
+          source: filename
+          expression: "/(?P<level>access|debug|error|info)\\.log$"
+      - labels:
+          level:
+      - labeldrop:
+          - filename

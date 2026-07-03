@@ -3,3 +3,12 @@
 {$OBS_DOMAIN} {
 	reverse_proxy grafana:3000
 }
+
+# Log ingestion endpoint for per-node promtail agents. Basic auth generated
+# with: docker run --rm caddy:2 caddy hash-password --plaintext '<password>'
+{$LOGS_DOMAIN} {
+	basic_auth {
+		promtail {$LOKI_BASIC_AUTH_HASH}
+	}
+	reverse_proxy loki:3100
+}

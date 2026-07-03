@@ -1,87 +1,133 @@
-# Production Observability
+# Production Observability , Deploy Runbook
 
-One monitoring host runs Prometheus + Grafana + Caddy and scrapes every
-federation node over the node's public API port, authenticated with a shared
-bearer token. Nodes can live on separate EC2 instances (or any provider);
-nothing node-side is exposed beyond the API port they already serve.
+One monitoring host runs the full stack; every node EC2 runs one small log
+agent. Metrics are scraped FROM the nodes (pull), logs are shipped TO the
+monitoring host (push). Grafana is the single pane for both, behind one login.
 
 ```
-node1 EC2 ── :4000/metrics ─┐  Bearer TIP_METRICS_TOKEN
-node2 EC2 ── :4000/metrics ─┼──> Prometheus (private) ──> Grafana (login) <── Caddy :443 (TLS)
-node3 EC2 ── :4000/metrics ─┘
+                       METRICS (pull)                      LOGS (push)
+node1 EC2  ── :4000/metrics (Bearer token) ──┐   ┌── promtail ── files+stdout
+node2 EC2  ── :4000/metrics ─────────────────┤   ├── promtail
+node3 EC2  ── :4000/metrics ─────────────────┤   ├── promtail
+                                             ▼   ▼
+                monitoring EC2:   Prometheus   Loki     (both private)
+                                        \       /
+                                         Grafana  ◄── Caddy :443 (TLS + login)
+                                                       Caddy logs.<domain> :443 (basic auth, ingestion only)
 ```
 
-## Public vs private
+## Exposure model
 
 | Surface | Exposure |
 |---|---|
-| Caddy :443 (Grafana login page) | public, TLS, the only entry point |
-| Grafana | 127.0.0.1 on the host; sign-up off, anonymous off |
-| Prometheus | compose-network only; no published port |
-| Node `/metrics` | rides the public API port but returns 401 without the bearer token |
+| `https://<OBS_DOMAIN>` (Grafana login) | public, TLS , the only human entry point |
+| `https://<LOGS_DOMAIN>` (Loki push) | public, TLS, basic-auth , agents only |
+| Prometheus, Loki | no published ports; compose network only |
+| Node `/metrics` | rides the public API port; 401 without the bearer token |
+| Node logs | never exposed; agents push outbound only |
 
-Per-node internals (peers, mempool, resource pressure, sync state) stay behind
-the Grafana login. If a public network-status view is wanted later, use
-Grafana's per-dashboard "public dashboard" toggle for a single overview board;
-everything else stays gated.
+Per-node internals (peers, mempool, sync state, log content) stay behind the
+Grafana login. If a public network-status view is wanted later, use Grafana's
+per-dashboard "public dashboard" toggle for one overview board; everything
+else stays gated.
 
-## Node-side setup (each EC2 node, once)
+## Prerequisites
 
-1. Generate one shared token on any machine and add it to every node's `.env`:
+- A small EC2 for monitoring (t3.small is plenty). Security group: inbound
+  80 + 443 from anywhere, 22 from your IP. Nothing else.
+- Two DNS A records to that instance: `grafana.yourdomain.org` (OBS_DOMAIN)
+  and `logs.yourdomain.org` (LOGS_DOMAIN).
+- One shared metrics token: `openssl rand -hex 32`
+- One log-shipping password, hashed for Caddy:
+  `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`
 
-   ```bash
-   openssl rand -hex 32       # -> TIP_METRICS_TOKEN=<value>
-   ```
-
-2. Restart the node. Verify the gate:
-
-   ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' http://localhost:4000/metrics                                   # 401
-   curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://localhost:4000/metrics # 200
-   ```
-
-No extra security-group rules: `/metrics` shares the API port that is already
-open. Optional host metrics: run `prom/node-exporter` on each instance and
-open :9100 ONLY to the monitoring host's security group.
-
-## Monitoring host setup (once)
-
-1. Instance: any small EC2 box (t3.small is plenty). Security group: inbound
-   80 + 443 from anywhere, 22 from your IP. Point a DNS A record
-   (e.g. `grafana.yourdomain.org`) at it.
-2. Clone the repo (the stack reuses `infra/observability/grafana/` dashboards
-   and provisioning) and configure:
-
-   ```bash
-   cd infra/observability/prod
-   cp prometheus.yml.example prometheus.yml   # node addresses + the token; chmod 600
-   cp .env.example .env                        # OBS_DOMAIN + GRAFANA_ADMIN_PASSWORD
-   docker compose -f docker-compose.obs.yml up -d
-   ```
-
-3. Open `https://<OBS_DOMAIN>`, log in as `admin`, create Viewer accounts for
-   other operators. All TIP dashboards (home, federation, consensus health,
-   networking, rotation, snapshot) are provisioned automatically.
-
-## Verify end to end
+## Step 1 , monitoring host (once)
 
 ```bash
-# on the monitoring host: every node target should be "up"
-docker exec tip-obs-prometheus wget -qO- 'http://localhost:9090/api/v1/targets' \
-  | grep -o '"health":"[a-z]*"'
+git clone <repo> && cd tip-protocol/infra/observability/prod
+
+cp prometheus.yml.example prometheus.yml   # fill node addresses + the metrics token
+cp .env.example .env                        # OBS_DOMAIN, LOGS_DOMAIN,
+                                            # GRAFANA_ADMIN_PASSWORD, LOKI_BASIC_AUTH_HASH
+chmod 600 prometheus.yml .env
+
+docker compose -f docker-compose.obs.yml up -d
 ```
 
-Scrape failures show as `up == 0` per target on the federation dashboard;
-a node whose token does not match logs 401s in its own access log.
+Caddy provisions both TLS certificates automatically. Open
+`https://<OBS_DOMAIN>`, log in as `admin`, create Viewer accounts for other
+operators. All TIP dashboards are provisioned; the Loki datasource appears
+under Explore.
 
-## Operational notes
+## Step 2 , each node EC2 (once per node)
 
-- `prometheus.yml` and `.env` hold secrets and are gitignored; keep them
-  chmod 600 on the host.
-- Retention is 30d (`--storage.tsdb.retention.time`); size the volume ~1-2 GB
-  per node per month at the default 15s interval.
-- Rotating the metrics token: update every node's `.env` + restart, then
-  update `prometheus.yml` and `docker compose restart prometheus` (brief
-  scrape gap only, no data loss).
-- Scraping over private links (VPC peering / same VPC) works the same; just
-  use private IPs in `prometheus.yml`.
+Metrics , add the shared token to the node's `.env` and restart it:
+
+```bash
+TIP_METRICS_TOKEN=<token>
+# verify:
+curl -s -o /dev/null -w '%{http_code}\n' localhost:4000/metrics                                    # 401
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer <token>" localhost:4000/metrics # 200
+```
+
+Logs , run the agent next to the node container:
+
+```bash
+cd tip-protocol/infra/observability/agent
+cp promtail.env.example promtail.env   # LOKI_URL=logs.yourdomain.org
+                                       # LOKI_PASSWORD=<plaintext of the caddy hash>
+                                       # NODE_LABEL=node1   (unique per host)
+docker compose -f docker-compose.promtail.yml up -d
+```
+
+The agent tails the node's `TIP_LOG_DIR` files and the container's stdout,
+labeling every line with `{job="tip-node", node="<NODE_LABEL>"}`.
+
+No extra security-group rules on nodes: `/metrics` shares the already-open
+API port, and promtail pushes outbound over 443.
+
+## Step 3 , verify end to end
+
+```bash
+# metrics: every node target "up"
+docker exec tip-obs-prometheus wget -qO- 'http://localhost:9090/api/v1/targets' \
+  | grep -o '"health":"[a-z]*"'
+
+# logs: every node label present
+docker exec tip-obs-loki wget -qO- 'http://localhost:3100/loki/api/v1/label/node/values'
+```
+
+In Grafana: the federation dashboard shows all nodes; Explore → Loki →
+`{job="tip-node"} |= "ERROR"` shows error lines from the whole federation,
+`{node="node2"}` isolates one host. Metric spike → same-minute logs is the
+core workflow.
+
+## Operations
+
+- **Retention**: metrics 30d (`--storage.tsdb.retention.time`), logs 14d
+  (`loki-config.yml` `retention_period`). Size ~1-2 GB/node/month metrics,
+  ~0.5-2 GB/node/month logs at default levels.
+- **Rotate the metrics token**: update every node `.env` + restart, then
+  `prometheus.yml` + `docker compose restart prometheus`.
+- **Rotate the log password**: new Caddy hash in `.env`,
+  `docker compose up -d caddy`, then update each node's `promtail.env`.
+- **Upgrade the stack**: `docker compose -f docker-compose.obs.yml pull && docker compose -f docker-compose.obs.yml up -d`
+  (volumes persist data across upgrades).
+- **Log volume too chatty?** Raise the node's `TIP_LOG_LEVEL` /
+  `TIP_CONSOLE_LEVEL` (warn is the intended prod default); promtail ships
+  whatever the node writes.
+- All secrets (`prometheus.yml`, `.env`, `promtail.env`) are gitignored;
+  keep them chmod 600.
+
+## Try it locally first
+
+The local dev stack (`infra/observability/docker-compose.yml`) runs the same
+Loki + promtail against your local cluster's `node/logs/`:
+
+```bash
+cd infra/observability && docker compose up -d
+# Grafana http://localhost:3030 → Explore → Loki → {job="tip-node"}
+```
+
+Same datasource, same labels, same queries as prod , what you see locally is
+what you get on AWS.
