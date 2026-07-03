@@ -1,0 +1,38 @@
+server:
+  disable: true
+
+positions:
+  filename: /positions/positions.yaml
+
+clients:
+  - url: https://${LOKI_URL}/loki/api/v1/push
+    basic_auth:
+      username: promtail
+      password: ${LOKI_PASSWORD}
+
+scrape_configs:
+  # The node's structured file logs (info.log / error.log under TIP_LOG_DIR).
+  - job_name: tip-node-files
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: tip-node
+          node: ${NODE_LABEL}
+          __path__: /tip-logs/**/*.log
+
+  # Container stdout/stderr of the tip-node container (crash output, docker-level).
+  - job_name: tip-node-docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+        filters:
+          - name: name
+            values: ["tip-node*"]
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        regex: /(.*)
+        target_label: container
+      - target_label: job
+        replacement: tip-node-docker
+      - target_label: node
+        replacement: ${NODE_LABEL}

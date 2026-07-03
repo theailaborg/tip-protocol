@@ -74,6 +74,26 @@ docker exec tip-obs-prometheus wget -qO- 'http://localhost:9090/api/v1/targets' 
 Scrape failures show as `up == 0` per target on the federation dashboard;
 a node whose token does not match logs 401s in its own access log.
 
+## Logs (Loki)
+
+Metrics tell you THAT something broke; logs tell you WHY. The stack ships
+logs to the same Grafana login via Loki:
+
+- Monitoring host: Loki runs unpublished next to Prometheus; Caddy exposes
+  `https://<LOGS_DOMAIN>` with basic auth for ingestion. Set `LOGS_DOMAIN`
+  (a second DNS A record to the same host) and `LOKI_BASIC_AUTH_HASH`
+  (`docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`)
+  in `.env`, then `docker compose -f docker-compose.obs.yml up -d`.
+- Each node EC2: run the promtail agent from `../agent/`
+  (`cp promtail.env.example promtail.env` with the logs domain, the plaintext
+  password, and a `NODE_LABEL` like node1; then
+  `docker compose -f docker-compose.promtail.yml up -d`). It ships the node's
+  `TIP_LOG_DIR` files and the container stdout, labeled `{job="tip-node",
+  node="node1"}`.
+- View: Grafana -> Explore -> Loki datasource; e.g.
+  `{job="tip-node"} |= "ERROR"` across all nodes, or `{node="node2"}` for one
+  host. Retention 14d (loki-config.yml `retention_period`).
+
 ## Operational notes
 
 - `prometheus.yml` and `.env` hold secrets and are gitignored; keep them
