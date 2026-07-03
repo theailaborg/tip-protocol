@@ -164,11 +164,13 @@ function canonCommit(c) {
  * trivially as a single-element array). signatures is parallel to
  * signer_node_ids.
  *
- * `committed_at` is DELIBERATELY EXCLUDED — it's wall-clock informational
- * and would diverge across nodes that wrote the row at slightly different
- * local times. Excluding it keeps the rotations_full_root deterministic
- * across nodes. Chain-of-trust walker reads everything it needs from
- * the canonical fields here; committed_at is informational only.
+ * `committed_at` IS included: under time-based rotation epochs it is the
+ * boundary marker (bullshark compares anchor BFT time against the latest
+ * rotation's committed_at), and it is deterministic across nodes — it is
+ * written from the committing anchor's BFT-median timestamp, not local
+ * wall-clock. A joiner that installs a fabricated marker proposes a
+ * spurious rotation at its first anchor (live incident: prod node3,
+ * 2026-07-03, rotation 2 fired mid-epoch off a 56000ms fallback marker).
  */
 function canonRotation(r) {
   return {
@@ -179,6 +181,7 @@ function canonRotation(r) {
     signer_node_ids: r.signer_node_ids || [],
     signatures: r.signatures || [],
     payload_hash: r.payload_hash || null,
+    committed_at: r.committed_at == null ? null : r.committed_at,
   };
 }
 
