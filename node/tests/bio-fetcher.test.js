@@ -74,3 +74,75 @@ describe("containsTipId", () => {
     expect(containsTipId(html, "tip://id/US-aabbccdd11223344")).toBe(false);
   });
 });
+
+describe("fetchProfileHtml error mapping", () => {
+  // A profile site blocking our scraper (Medium 403s repeated fetches) must NOT
+  // surface as a 502: a 5xx makes Cloudflare serve its own gateway page WITHOUT
+  // the node's CORS header, so the browser can't even read the error. Map these
+  // to a client-readable 4xx with a clear code/message instead.
+  const https = require("https");
+  const { fetchProfileHtml } = bioFetcher;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  function mockStatus(statusCode) {
+    jest.spyOn(https, "request").mockImplementation((options, cb) => {
+      const res = { statusCode, destroy() {}, on() { return res; } };
+      process.nextTick(() => cb(res));
+      return { on() { return this; }, end() {}, destroy() {} };
+    });
+  }
+
+  // Request-level failures: no response ever arrives; the req object itself
+  // fires 'timeout' or 'error'. These rewrites (previously 504/502) must map
+  // to the same client-readable 4xx as the status-code branch.
+  function mockReqEvent(event, arg) {
+    jest.spyOn(https, "request").mockImplementation(() => {
+      const handlers = {};
+      const req = {
+        on(name, fn) { handlers[name] = fn; return req; },
+        end() { process.nextTick(() => handlers[event] && handlers[event](arg)); },
+        destroy() {},
+      };
+      return req;
+    });
+  }
+
+  test("timeout -> 4xx profile_fetch_timeout, not 504", async () => {
+    mockReqEvent("timeout");
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_timeout" });
+  });
+
+  test("socket error -> 4xx profile_fetch_failed, not 502", async () => {
+    mockReqEvent("error", new Error("ECONNRESET"));
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_failed" });
+  });
+
+  test("403 (bot-blocked) -> 4xx profile_fetch_blocked, not 502", async () => {
+    mockStatus(403);
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_blocked" });
+  });
+
+  test("429 (rate-limited) -> 4xx profile_fetch_blocked, not 502", async () => {
+    mockStatus(429);
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_blocked" });
+  });
+
+  test("404 (not found) -> readable 4xx, not 502", async () => {
+    mockStatus(404);
+    await expect(fetchProfileHtml("https://medium.com/@x"))
+      .rejects.toMatchObject({ status: 422, code: "profile_fetch_failed" });
+  });
+
+  test("no bio-fetch failure maps to a 5xx (would drop CORS at the gateway)", async () => {
+    for (const sc of [403, 429, 404, 500, 503]) {
+      mockStatus(sc);
+      const err = await fetchProfileHtml("https://medium.com/@x").catch((e) => e);
+      expect(err.status).toBeLessThan(500);
+    }
+  });
+});
