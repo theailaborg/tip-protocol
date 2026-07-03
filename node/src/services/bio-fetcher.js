@@ -68,7 +68,16 @@ function fetchProfileHtml(profileUrl) {
     const req = https.request(options, (res) => {
       if (res.statusCode >= 400) {
         res.destroy();
-        return reject({ status: 502, error: `Profile URL returned HTTP ${res.statusCode}`, code: "profile_fetch_failed" });
+        // Do NOT surface upstream failures as a 5xx. Cloudflare replaces an
+        // origin 5xx with its own gateway page that carries NO CORS header, so
+        // the browser can't even read the error (it shows a CORS wall + 502).
+        // A blocked/failed profile fetch is a client-actionable verification
+        // problem, so return a readable 4xx with a clear code/message. Medium in
+        // particular 403s repeated scrapes (rate-limit), which is retryable.
+        const blocked = res.statusCode === 403 || res.statusCode === 429;
+        return reject(blocked
+          ? { status: 422, error: "The platform blocked our automated verification (it may rate-limit repeated checks). Please wait a few minutes and try again.", code: "profile_fetch_blocked" }
+          : { status: 422, error: `Profile URL returned HTTP ${res.statusCode}. Make sure the profile is public and the URL is correct.`, code: "profile_fetch_failed" });
       }
       const chunks = [];
       let totalBytes = 0;
@@ -76,20 +85,20 @@ function fetchProfileHtml(profileUrl) {
         totalBytes += chunk.length;
         if (totalBytes > MAX_RESPONSE_BYTES) {
           res.destroy();
-          return reject({ status: 502, error: "Profile response too large", code: "profile_too_large" });
+          return reject({ status: 422, error: "Profile response too large", code: "profile_too_large" });
         }
         chunks.push(chunk);
       });
       res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      res.on("error", (err) => reject({ status: 502, error: `Profile fetch error: ${err.message}`, code: "profile_fetch_failed" }));
+      res.on("error", (err) => reject({ status: 422, error: `Profile fetch error: ${err.message}`, code: "profile_fetch_failed" }));
     });
 
     req.on("timeout", () => {
       req.destroy();
-      reject({ status: 504, error: "Profile URL fetch timed out", code: "profile_fetch_timeout" });
+      reject({ status: 422, error: "Verifying your profile timed out. Please try again.", code: "profile_fetch_timeout" });
     });
     req.on("error", (err) => {
-      reject({ status: 502, error: `Profile fetch error: ${err.message}`, code: "profile_fetch_failed" });
+      reject({ status: 422, error: `Could not reach the profile URL: ${err.message}`, code: "profile_fetch_failed" });
     });
     req.end();
   });
