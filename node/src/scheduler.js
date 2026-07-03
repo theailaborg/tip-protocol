@@ -88,8 +88,8 @@ function createScheduler(network, config) {
   // Peer health ping (node config)
   register("peer-health", config.peerHealthInterval, () => {
     const pc = network ? network.peerCount() : 0;
-    if (pc === 0 && config.peers.length > 0) {
-      log.warn(`No active peers (${config.peers.length} configured). DAG sync paused.`);
+    if (pc === 0 && config.bootstrapPeers.length > 0) {
+      log.warn("No active peers (bootstrap configured). DAG sync paused.");
     }
   });
 
