@@ -79,29 +79,23 @@ function buildNarwhal({ currentRound = 100 } = {}) {
     status: "active", registered_at: 1767225600000,
   });
 
-  // #75 atomic boundary: under the rotation-period model, every epoch must
-  // have its own rotation with effective_round = N * EPOCH_LENGTH_ROUNDS.
-  // The producer-pause check requires `dag.getCommitteeRotation(epochOf(round))`
-  // to exist. Seed rotations covering the test's currentRound range.
-  const intervalCommits = CONSENSUS.COMMITTEE_ROTATION_INTERVAL_COMMITS;
-  const epochLength = intervalCommits * 2;
-  const maxEpoch = Math.floor(currentRound / epochLength);
   const committee2 = [
     { node_id: SELF_ID, public_key: selfKp.publicKey },
     { node_id: PEER_ID, public_key: peerKp.publicKey },
   ];
-  for (let n = 1; n <= maxEpoch; n++) {
-    dag.saveCommitteeRotation({
-      rotation_number: n,
-      effective_round: n * epochLength,
-      committee: committee2,
-      prev_rotation: n - 1,
-      signer_node_ids: [],
-      signatures: [],
-      payload_hash: `test-rotation-${n}`,
-      committed_at: 1767225600000,
-    });
-  }
+  // Committee lookup is record-based: one rotation row whose effective_round
+  // is below the test's currentRound puts committee2 in effect throughout.
+  const committee2_row = {
+    rotation_number: 1,
+    effective_round: 1,
+    committee: committee2,
+    prev_rotation: 0,
+    signer_node_ids: [],
+    signatures: [],
+    payload_hash: "test-disconnect-rotation-1",
+    committed_at: 1767225600000,
+  };
+  dag.saveCommitteeRotation(committee2_row);
 
   const mempool = createMempool({ dag });
 

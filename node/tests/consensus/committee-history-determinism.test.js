@@ -152,24 +152,27 @@ function _setupNode() {
 // Build a shared batch of competing rotation-1 txs using the SAME
 // prevCommittee + prevKeys so two independent nodes can apply the same
 // canonical inputs and compare their resulting state.
+// effective_round 300 clears the future-activation gate: rotations commit
+// LEAD rounds ahead of activation, so effective_round must exceed the
+// anchor round the batch commits at (100 in these tests).
 function _buildCompetingBatch(prevCommittee, prevKeys) {
   const newCommittee = prevCommittee;   // re-attestation (membership unchanged)
   const ids = prevCommittee.map(m => m.node_id);
   // Three competing aggregators, each with a different signer subset
   // that still passes quorum (ceil(2*4/3) = 3):
-  //   A: signers {0,1,2}     — exact quorum
-  //   B: signers {0,1,3}     — exact quorum, different mix
-  //   C: signers {0,1,2,3}   — full
+  //   A: signers {0,1,2}     exact quorum
+  //   B: signers {0,1,3}     exact quorum, different mix
+  //   C: signers {0,1,2,3}   full
   const txA = _buildRotationTx({
-    rotation_number: 1, effective_round: 100, new_committee: newCommittee,
+    rotation_number: 1, effective_round: 300, new_committee: newCommittee,
     signerNodeIds: [ids[0], ids[1], ids[2]], prevKeys,
   });
   const txB = _buildRotationTx({
-    rotation_number: 1, effective_round: 100, new_committee: newCommittee,
+    rotation_number: 1, effective_round: 300, new_committee: newCommittee,
     signerNodeIds: [ids[0], ids[1], ids[3]], prevKeys,
   });
   const txC = _buildRotationTx({
-    rotation_number: 1, effective_round: 100, new_committee: newCommittee,
+    rotation_number: 1, effective_round: 300, new_committee: newCommittee,
     signerNodeIds: [ids[0], ids[1], ids[2], ids[3]], prevKeys,
   });
   return [txA, txB, txC];

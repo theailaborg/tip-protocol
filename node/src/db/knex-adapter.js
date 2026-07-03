@@ -553,7 +553,7 @@ class KnexAdapter {
     const rpRows = await this.knex("rotation_participation").select("*");
     if (!this.mirror._rotationParticipation) this.mirror._rotationParticipation = new Map();
     for (const row of rpRows) {
-      this.mirror._rotationParticipation.set(`${row.node_id}|${row.rotation_number}`, row.count);
+      this.mirror._rotationParticipation.set(`${row.node_id}|${row.rotation_number}|${row.bucket ?? 0}`, row.count);
     }
 
     // Prescan reviews. tip_ctid → ctid translation on hydrate (same
@@ -1543,12 +1543,12 @@ class KnexAdapter {
 
   // ── Rotation participation ─────────────────────────────────────────────────
 
-  incrementRotationParticipation(nodeId, rotationNumber) {
-    this.mirror.incrementRotationParticipation(nodeId, rotationNumber);
-    const count = (this.mirror._rotationParticipation.get(`${nodeId}|${rotationNumber}`) || 0);
+  incrementRotationParticipation(nodeId, rotationNumber, bucket = 0) {
+    this.mirror.incrementRotationParticipation(nodeId, rotationNumber, bucket);
+    const count = (this.mirror._rotationParticipation.get(`${nodeId}|${rotationNumber}|${bucket}`) || 0);
     this._ff(() => this._dbInsert("rotation_participation",
-      ["node_id", "rotation_number"],
-      { node_id: nodeId, rotation_number: rotationNumber, count },
+      ["node_id", "rotation_number", "bucket"],
+      { node_id: nodeId, rotation_number: rotationNumber, bucket, count },
       "merge"
     ));
   }
@@ -1561,11 +1561,11 @@ class KnexAdapter {
     return removed;
   }
 
-  setRotationParticipation(nodeId, rotationNumber, count) {
-    this.mirror.setRotationParticipation(nodeId, rotationNumber, count);
+  setRotationParticipation(nodeId, rotationNumber, bucket, count) {
+    this.mirror.setRotationParticipation(nodeId, rotationNumber, bucket, count);
     this._ff(() => this._dbInsert("rotation_participation",
-      ["node_id", "rotation_number"],
-      { node_id: nodeId, rotation_number: rotationNumber, count },
+      ["node_id", "rotation_number", "bucket"],
+      { node_id: nodeId, rotation_number: rotationNumber, bucket: bucket ?? 0, count },
       "merge"
     ));
   }

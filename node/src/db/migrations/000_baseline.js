@@ -385,8 +385,10 @@ exports.up = async (knex) => {
   await knex.schema.createTable("rotation_participation", t => {
     _id(t, "node_id").notNullable();
     t.integer("rotation_number").notNullable();
+    // Presence bucket: which time slice of the epoch this credit landed in.
+    t.integer("bucket").notNullable().defaultTo(0);
     t.integer("count").notNullable().defaultTo(0);
-    t.primary(["node_id", "rotation_number"]);
+    t.primary(["node_id", "rotation_number", "bucket"]);
     // Lone rotation_number lookups (getParticipation / cleanup DELETEs) can't
     // use the (node_id, rotation_number) PK — wrong leftmost column. NOT
     // redundant with the PK, so safe on Oracle (unlike idx_entity_keys_time).

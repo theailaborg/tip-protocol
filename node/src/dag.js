@@ -27,7 +27,7 @@ const fs = require("fs");
 const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
 const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
-const { SCORE, CONTENT_GRACE, REVIEWER } = require("../../shared/protocol-constants");
+const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
 
@@ -163,6 +163,7 @@ function _canonRotationParticipation(r) {
   return {
     node_id: r.node_id,
     rotation_number: r.rotation_number,
+    bucket: r.bucket ?? 0,
     count: r.count,
   };
 }
@@ -1333,27 +1334,40 @@ class MemoryStore {
   // anchor commit by bullshark.js (one increment for the leader, one per
   // ack-signer). Read at rotation boundary to compute next rotation's
   // committee. See table comment in CREATE TABLE for full semantics.
-  incrementRotationParticipation(nodeId, rotationNumber) {
-    const key = `${nodeId}|${rotationNumber}`;
+  incrementRotationParticipation(nodeId, rotationNumber, bucket = 0) {
+    const key = `${nodeId}|${rotationNumber}|${bucket}`;
     const current = this._rotationParticipation.get(key) || 0;
     this._rotationParticipation.set(key, current + 1);
   }
+  // Per-node aggregate over the rotation: total anchor-appearances + presence
+  // buckets (the admission signal). A bucket ticks only when the node appeared
+  // in >= EPOCH_BUCKET_PRESENCE_PCT of the bucket's best-observed count, so a
+  // per-slice drive-by (~1-2% of anchors) never marks the slice while any
+  // genuinely-online node (~100%) always does.
   getRotationParticipation(rotationNumber) {
-    const out = [];
-    const suffix = `|${rotationNumber}`;
+    const pct = CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT;
+    const rows = [];
+    const bucketMax = new Map();
     for (const [key, count] of this._rotationParticipation) {
-      if (key.endsWith(suffix)) {
-        const node_id = key.slice(0, -suffix.length);
-        out.push({ node_id, count });
-      }
+      const parts = key.split("|");
+      if (Number(parts[1]) !== rotationNumber) continue;
+      const bucket = Number(parts[2]);
+      rows.push({ node_id: parts[0], bucket, count });
+      if (count > (bucketMax.get(bucket) || 0)) bucketMax.set(bucket, count);
     }
-    return out;
+    const agg = new Map();
+    for (const r of rows) {
+      const cur = agg.get(r.node_id) || { node_id: r.node_id, count: 0, buckets: 0 };
+      cur.count += r.count;
+      if (r.count >= Math.max(1, Math.ceil((bucketMax.get(r.bucket) * pct) / 100))) cur.buckets += 1;
+      agg.set(r.node_id, cur);
+    }
+    return [...agg.values()];
   }
   pruneRotationParticipationBefore(rotationNumber) {
     let removed = 0;
     for (const key of this._rotationParticipation.keys()) {
-      const idx = key.lastIndexOf("|");
-      const r = Number(key.slice(idx + 1));
+      const r = Number(key.split("|")[1]);
       if (r < rotationNumber) {
         this._rotationParticipation.delete(key);
         removed++;
@@ -1365,8 +1379,8 @@ class MemoryStore {
   // overwrite the local count with the snapshot's authoritative value.
   // Re-running with the same args is a no-op; calling with a different count
   // replaces. Required because snapshot ships RP rows directly (not deltas).
-  setRotationParticipation(nodeId, rotationNumber, count) {
-    const key = `${nodeId}|${rotationNumber}`;
+  setRotationParticipation(nodeId, rotationNumber, bucket, count) {
+    const key = `${nodeId}|${rotationNumber}|${bucket ?? 0}`;
     this._rotationParticipation.set(key, count);
   }
   // Wipe all rows for a single rotation. Used by snapshot install BEFORE
@@ -1376,9 +1390,8 @@ class MemoryStore {
   // would leak past install and produce wrong tallies on the joiner.
   deleteRotationParticipationByRotation(rotationNumber) {
     let removed = 0;
-    const suffix = `|${rotationNumber}`;
     for (const key of [...this._rotationParticipation.keys()]) {
-      if (key.endsWith(suffix)) {
+      if (Number(key.split("|")[1]) === rotationNumber) {
         this._rotationParticipation.delete(key);
         removed++;
       }
@@ -1483,16 +1496,16 @@ class MemoryStore {
   *iterateRotationParticipationForSnapshot() {
     const rpRows = [];
     for (const [key, count] of this._rotationParticipation) {
-      const idx = key.lastIndexOf("|");
-      rpRows.push({
-        node_id: key.slice(0, idx),
-        rotation_number: Number(key.slice(idx + 1)),
-        count,
-      });
+      const parts = key.split("|");
+      const bucket = Number(parts[parts.length - 1]);
+      const rotation_number = Number(parts[parts.length - 2]);
+      const node_id = parts.slice(0, -2).join("|");
+      rpRows.push({ node_id, rotation_number, bucket, count });
     }
     rpRows.sort((a, b) => {
       if (a.rotation_number !== b.rotation_number) return a.rotation_number - b.rotation_number;
-      return cmpBin(a.node_id, b.node_id);
+      const c = cmpBin(a.node_id, b.node_id);
+      return c !== 0 ? c : a.bucket - b.bucket;
     });
     for (const r of rpRows) {
       yield _canonRotationParticipation(r);
@@ -2424,21 +2437,29 @@ class SQLiteStore {
       // increments the counter atomically — first sighting in a rotation
       // creates the row at count=1, subsequent sightings just bump count.
       incrementRotationParticipation: this.db.prepare(
-        `INSERT INTO rotation_participation (node_id, rotation_number, count)
-         VALUES (?, ?, 1)
-         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = count + 1`
+        `INSERT INTO rotation_participation (node_id, rotation_number, bucket, count)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(node_id, rotation_number, bucket) DO UPDATE SET count = count + 1`
       ),
       getRotationParticipation: this.db.prepare(
-        "SELECT node_id, count FROM rotation_participation WHERE rotation_number = ?"
+        `SELECT rp.node_id, SUM(rp.count) AS count,
+                COUNT(DISTINCT CASE
+                  WHEN rp.count >= MAX(1, CAST((bm.max_count * ? + 99) / 100 AS INTEGER))
+                  THEN rp.bucket END) AS buckets
+         FROM rotation_participation rp
+         JOIN (SELECT bucket, MAX(count) AS max_count
+               FROM rotation_participation WHERE rotation_number = ?
+               GROUP BY bucket) bm ON bm.bucket = rp.bucket
+         WHERE rp.rotation_number = ? GROUP BY rp.node_id`
       ),
       pruneRotationParticipationBefore: this.db.prepare(
         "DELETE FROM rotation_participation WHERE rotation_number < ?"
       ),
       // Absolute-set for snapshot install (REPLACE not increment).
       setRotationParticipation: this.db.prepare(
-        `INSERT INTO rotation_participation (node_id, rotation_number, count)
-         VALUES (?, ?, ?)
-         ON CONFLICT(node_id, rotation_number) DO UPDATE SET count = excluded.count`
+        `INSERT INTO rotation_participation (node_id, rotation_number, bucket, count)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(node_id, rotation_number, bucket) DO UPDATE SET count = excluded.count`
       ),
       // Wipe one rotation's rows — snapshot install pre-pass so absent rows
       // in the snapshot become absent locally too (see MemoryStore comment).
@@ -2447,7 +2468,7 @@ class SQLiteStore {
       ),
       // Streaming iterator for snapshot/state-root (PK-ordered).
       iterateRotationParticipation: this.db.prepare(
-        "SELECT node_id, rotation_number, count FROM rotation_participation ORDER BY rotation_number, node_id"
+        "SELECT node_id, rotation_number, bucket, count FROM rotation_participation ORDER BY rotation_number, node_id, bucket"
       ),
 
       // #44: consensus_meta singleton kv accessors. INSERT OR REPLACE
@@ -3302,17 +3323,18 @@ class SQLiteStore {
   }
 
   // #75 rotation_participation — see MemoryStore version for the contract.
-  incrementRotationParticipation(nodeId, rotationNumber) {
-    this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber);
+  incrementRotationParticipation(nodeId, rotationNumber, bucket = 0) {
+    this._stmts.incrementRotationParticipation.run(nodeId, rotationNumber, bucket);
   }
   getRotationParticipation(rotationNumber) {
-    return this._stmts.getRotationParticipation.all(rotationNumber);
+    return this._stmts.getRotationParticipation.all(
+      CONSENSUS.EPOCH_BUCKET_PRESENCE_PCT, rotationNumber, rotationNumber);
   }
   pruneRotationParticipationBefore(rotationNumber) {
     return this._stmts.pruneRotationParticipationBefore.run(rotationNumber).changes;
   }
-  setRotationParticipation(nodeId, rotationNumber, count) {
-    this._stmts.setRotationParticipation.run(nodeId, rotationNumber, count);
+  setRotationParticipation(nodeId, rotationNumber, bucket, count) {
+    this._stmts.setRotationParticipation.run(nodeId, rotationNumber, bucket ?? 0, count);
   }
   deleteRotationParticipationByRotation(rotationNumber) {
     return this._stmts.deleteRotationParticipationByRotation.run(rotationNumber).changes;
@@ -3991,10 +4013,10 @@ function _buildDagHandle(store, config) {
     getReviewsNeedingAutoRecuse: (nowMs) => store.getReviewsNeedingAutoRecuse(nowMs),
 
     // #75 rotation participation tally
-    incrementRotationParticipation: (nodeId, rotationNumber) => store.incrementRotationParticipation(nodeId, rotationNumber),
+    incrementRotationParticipation: (nodeId, rotationNumber, bucket) => store.incrementRotationParticipation(nodeId, rotationNumber, bucket),
     getRotationParticipation: (rotationNumber) => store.getRotationParticipation(rotationNumber),
     pruneRotationParticipationBefore: (rotationNumber) => store.pruneRotationParticipationBefore(rotationNumber),
-    setRotationParticipation: (nodeId, rotationNumber, count) => store.setRotationParticipation(nodeId, rotationNumber, count),
+    setRotationParticipation: (nodeId, rotationNumber, bucket, count) => store.setRotationParticipation(nodeId, rotationNumber, bucket, count),
     deleteRotationParticipationByRotation: (rotationNumber) => store.deleteRotationParticipationByRotation(rotationNumber),
     iterateRotationParticipationForSnapshot: () => store.iterateRotationParticipationForSnapshot(),
 

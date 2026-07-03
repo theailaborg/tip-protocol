@@ -55,6 +55,7 @@ const {
 const { nowMs } = require(path.join(SHARED, "time"));
 const { DISPUTE_REASON } = require(path.join(SHARED, "constants"));
 const contentRegisterSchema = require(path.join(ROOT, "node/src/schemas/content-register"));
+const { loadVpBackup } = require(path.join(__dirname, "genesis-backups"));
 const keyRotatedSchema = require(path.join(ROOT, "node/src/schemas/key-rotated"));
 const updateProfileSchema = require(path.join(ROOT, "node/src/schemas/update-profile"));
 
@@ -157,7 +158,7 @@ async function registerFreshContent(author, { waitPrescan }) {
     attribution_mode: "self",
     authors: [{ tip_id: author.tip_id, tip_id_type: author.tip_id_type || "personal", contribution_role: "creator" }],
     extras: {},
-    registered_urls: [],
+    registered_urls: [`https://example.org/dev/inbatch/${nowMs()}`],
   };
   const { tipNormalize } = require(path.join(SHARED, "crypto"));
   const contentHash = shake256(tipNormalize(text));
