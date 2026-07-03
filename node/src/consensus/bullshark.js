@@ -591,10 +591,8 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
     // at the same consensus_index), so exactly one rotation tx is
     // proposed under healthy conditions.
     //
-    // forceLeader=true bypasses the gate. Used by tryRotationProposal,
-    // invoked from narwhal's producer-pause callback when the federation
-    // is stuck (no anchor commits firing → leader-gated proposer can't
-    // run). Multi-proposer race is safe: rotation-coordinator's multi-
+    // forceLeader=true bypasses the gate (tryRotationProposal recovery
+    // path). Multi-proposer race is safe: rotation-coordinator's multi-
     // aggregator submits when ANY node hits quorum, and commit-handler
     // dedupes on rotation_number.
     if (!forceLeader && proposer.nodeId !== leader) return;
@@ -988,14 +986,12 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
   }
 
   /**
-   * Force a rotation-proposal attempt for the rotation currently blocking
-   * narwhal's producer-pause. Called from narwhal.onProducerPaused when
-   * the federation is deadlocked: no anchor commits fire (round can't
-   * advance without rotation), so onRoundComplete never runs and the
-   * leader-gated proposer never gets a chance to propose. Bypasses the
-   * leader gate so every online prev-committee member tries; rotation-
-   * coordinator's multi-aggregator + commit-handler's rotation_number
-   * dedup ensure exactly one tx commits.
+   * Force a rotation-proposal attempt, bypassing the leader gate so any
+   * online prev-committee member can try. Recovery/test hook: the healthy
+   * path is the boundary re-firing at every anchor; this exists for
+   * operator tooling and deadlock drills. rotation-coordinator's multi-
+   * aggregator + commit-handler's rotation_number dedup ensure exactly
+   * one tx commits.
    *
    * Defensive re-check: if the rotation has just landed in the DAG
    * (callback firing race with commit-handler), no-op.

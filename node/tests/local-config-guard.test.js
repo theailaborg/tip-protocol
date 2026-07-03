@@ -28,7 +28,10 @@ const AGREED_CONSENSUS_KEYS = [
   "certificate_max_bytes",
   "gc_depth",
   "bft_time_genesis_ms",
-  "committee_rotation_interval_commits",
+  "epoch_duration_ms",
+  "rotation_activation_lead_rounds",
+  "epoch_participation_buckets",
+  "epoch_bucket_presence_pct",
   "committee_rotation_participation_pct_of_interval",
 ];
 
