@@ -67,6 +67,41 @@ function _readRP(dag, rotation) {
 }
 
 describe("#75 Phase F — rotation_participation snapshot sync", () => {
+  test("rotation committed_at ships byte-identically; pre-genesis markers are clamped (spurious-rotation regression)", async () => {
+    // Live incident 2026-07-03: install fabricated committed_at =
+    // effective_round*1000 (epoch bucket 0), so the joiner proposed a
+    // rotation at its first anchor commit, mid-epoch. committed_at is not
+    // part of payload_hash or chain-of-trust, so rotation 0 (which needs no
+    // sigs) exercises both wire-through and the clamp.
+    const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
+
+    // Case 1: sane marker ships byte-identically.
+    const goodTs = CONSENSUS.BFT_TIME_GENESIS_MS + 7 * 86400000;
+    const fx1 = buildCommittedDag({ committeeSize: 1 });
+    fx1.sourceDag.saveCommitteeRotation({ ...fx1.sourceDag.getCommitteeRotation(0), committed_at: goodTs });
+    const dest1 = initDAG({ dbPath: ":memory:" });
+    const h1 = makeHandlers({ sourceDag: fx1.sourceDag, destDag: dest1 });
+    await Promise.all([
+      h1.sourceHandler._handleIncomingSnapshot(h1.server, "test-client"),
+      h1.destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    expect(dest1.getCommitteeRotation(0).committed_at).toBe(goodTs);
+
+    // Case 2: pre-genesis (poisoned) marker is clamped to >= BFT genesis so
+    // the joiner can never see an ancient epoch bucket and fire a rotation.
+    const fx2 = buildCommittedDag({ committeeSize: 1 });
+    fx2.sourceDag.saveCommitteeRotation({ ...fx2.sourceDag.getCommitteeRotation(0), committed_at: 56000 });
+    const dest2 = initDAG({ dbPath: ":memory:" });
+    const h2 = makeHandlers({ sourceDag: fx2.sourceDag, destDag: dest2 });
+    await Promise.all([
+      h2.sourceHandler._handleIncomingSnapshot(h2.server, "test-client"),
+      h2.destHandler.requestSnapshotFromPeer("test-server", {}),
+    ]);
+    const clamped = dest2.getCommitteeRotation(0).committed_at;
+    expect(clamped).toBeGreaterThanOrEqual(CONSENSUS.BFT_TIME_GENESIS_MS);
+    expect(clamped).not.toBe(56000);
+  });
+
   test("source RP rows are installed byte-identically on dest", async () => {
     const fx = buildCommittedDag({ committeeSize: 1 });
     _seedRP(fx.sourceDag, [

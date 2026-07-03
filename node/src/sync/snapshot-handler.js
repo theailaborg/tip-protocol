@@ -975,17 +975,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // peers" during a resync) — wipe survived, install never finished.
         let rotationN = 0;
         const rotations = queues.rotations || [];
+        // committed_at is the time-epoch boundary marker. Trust the shipped
+        // value only when it is sane (>= BFT genesis); otherwise fall back to
+        // the snapshot header's BFT timestamp — a marker in the CURRENT epoch
+        // bucket can only suppress a boundary fire until the next real one,
+        // never fabricate an ancient bucket that triggers a spurious rotation.
+        const _markerFloor = CONSENSUS.BFT_TIME_GENESIS_MS;
+        const _headerTs = Math.max(Number(header.committedAt) || 0, _markerFloor);
         for (const r of rotations) {
+          const shipped = Number(r.committed_at);
           dag.saveCommitteeRotation({
             ...r,
-            // canonRotation strips committed_at — restore a deterministic
-            // value here so the row passes its NOT NULL constraint. We use
-            // the rotation's effective_round-derived label (informational
-            // only — not in the canonical hash, not in chain-of-trust).
-            // Informational only — not in canonical hash, not in chain-of-trust.
-            // Derive a deterministic ms from effective_round so every node
-            // re-creates the same value during snapshot install.
-            committed_at: r.committed_at || (r.effective_round * 1000),
+            committed_at: (Number.isFinite(shipped) && shipped >= _markerFloor) ? shipped : _headerTs,
           });
           rotationN++;
         }
