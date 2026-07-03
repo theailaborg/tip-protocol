@@ -40,6 +40,8 @@ else stays gated.
 - One shared metrics token: `openssl rand -hex 32`
 - One log-shipping password, hashed for Caddy:
   `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`
+  When pasting the hash into `.env`, escape every `$` as `$$` (compose treats
+  bare `$` as variable interpolation and silently blanks the hash).
 
 ## Step 1 , monitoring host (once)
 
@@ -49,7 +51,11 @@ git clone <repo> && cd tip-protocol/infra/observability/prod
 cp prometheus.yml.example prometheus.yml   # fill node addresses + the metrics token
 cp .env.example .env                        # OBS_DOMAIN, LOGS_DOMAIN,
                                             # GRAFANA_ADMIN_PASSWORD, LOKI_BASIC_AUTH_HASH
-chmod 600 prometheus.yml .env
+# .env is read by compose (root); prometheus.yml is read INSIDE the container
+# by user nobody (uid 65534) , chmod 600 under ubuntu makes Prometheus
+# crash-loop with "permission denied".
+chmod 600 .env
+sudo chown 65534:65534 prometheus.yml && sudo chmod 400 prometheus.yml
 
 docker compose -f docker-compose.obs.yml up -d
 ```

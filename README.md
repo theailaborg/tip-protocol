@@ -160,7 +160,8 @@ seed time and never change for the life of the federation. Each operator
 receives two files out-of-band (Bitwarden Send / Signal / hardware token):
 
 - `.env`: the node's config; no inline secrets, only a pointer to the key file
-- `tip-node-<id>.tip.json`: the ML-DSA-65 keypair (THE secret, `chmod 600`)
+- `tip-node-<id>.tip.json`: the ML-DSA-65 keypair (THE secret; see step 2
+  for ownership , the container reads it as uid 1001, not your login user)
 
 **Step 1.** Clone and install:
 
@@ -176,9 +177,17 @@ npm install
 cp /path/to/delivered/node.env .env && chmod 600 .env
 mkdir -p genesis-data/backups
 cp /path/to/delivered/tip-node-<id>.tip.json genesis-data/backups/
-chmod 600 genesis-data/backups/tip-node-<id>.tip.json
+# The container runs as tipnode (uid 1001) and the backups dir is mounted
+# read-only: a key file chmod 600 under YOUR user makes the node crash-loop
+# with EACCES. Hand the file to the container's uid:
+sudo chown 1001 genesis-data/backups/tip-node-<id>.tip.json
+sudo chmod 400 genesis-data/backups/tip-node-<id>.tip.json
 # keep a second copy OFF the live server (offline/cold storage)
 ```
+
+Security group / firewall for a node instance: inbound TCP `4000` (public
+API; also what Prometheus scrapes) and TCP `4001` from the other nodes'
+security group (libp2p). Nothing else inbound.
 
 The node reads its keypair from that file via `TIP_NODE_CREDENTIALS_FILE`
 (already set in the delivered `.env`); docker compose mounts
