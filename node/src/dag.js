@@ -2795,12 +2795,19 @@ class SQLiteStore {
     if (url) {
       // registered_urls is a JSON-encoded string[]; each entry is wrapped in
       // double quotes, so matching `"<url>"` as a substring is an EXACT
-      // element match (the quotes delimit it). JSON-escape the url, then
-      // LIKE-escape %/_/\ so user input can't inject wildcards.
+      // element match (the quotes delimit it). instr() — NOT LIKE — because
+      // SQLite LIKE is ASCII-case-INSENSITIVE by default, while MemoryStore
+      // (and the KnexAdapter mirror) match with Array.includes, which is
+      // byte-exact. This filter feeds the consensus-time URL-exclusivity
+      // rule (canRegisterContent), so all stores MUST agree byte-for-byte
+      // or replicas on different backends commit different state and the
+      // federation halts on state divergence. instr() is a byte-wise exact
+      // substring search with no wildcard characters, so no escaping is
+      // needed beyond JSON-encoding the url with the same encoder that
+      // wrote the column.
       const jsonInner = JSON.stringify(url).slice(1, -1);
-      const likeEsc = jsonInner.replace(/[\\%_]/g, "\\$&");
-      where.push("registered_urls LIKE ? ESCAPE '\\'");
-      params.push('%"' + likeEsc + '"%');
+      where.push("instr(registered_urls, ?) > 0");
+      params.push('"' + jsonInner + '"');
     }
     if (cursor) {
       where.push("(registered_at < ? OR (registered_at = ? AND tip_ctid < ?))");

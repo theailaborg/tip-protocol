@@ -579,6 +579,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data?.ctid === d.ctid
         );
         if (inBatch) return { valid: false, error: `REGISTER_CONTENT already in this batch for ${d.ctid}` };
+        // In-batch URL exclusivity. The committed-history half lives in
+        // rules.canRegisterContent (via _statefulCheck); two same-round
+        // registrations claiming the same registered_url both see clean
+        // committed state there, so drop the second here in canonical
+        // order — otherwise one URL commits bound to two CTIDs.
+        const urls = Array.isArray(d.registered_urls)
+          ? d.registered_urls.filter(u => typeof u === "string" && u)
+          : [];
+        if (urls.length > 0) {
+          const urlHit = validated.find(t =>
+            t.tx_type === TX_TYPES.REGISTER_CONTENT
+            && Array.isArray(t.data?.registered_urls)
+            && t.data.registered_urls.some(u => urls.includes(u)));
+          if (urlHit) {
+            return { valid: false, error: `registered_url already claimed in this batch (CTID: ${urlHit.data.ctid})` };
+          }
+        }
         return { valid: true };
       }
 

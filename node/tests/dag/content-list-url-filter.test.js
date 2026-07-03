@@ -76,3 +76,47 @@ describe("listContent url filter (advisory duplicate-URL lookup)", () => {
     expect(dag.listContent({ url: U }).length).toBe(2);
   });
 });
+
+// ── Cross-store parity (consensus-critical) ─────────────────────────────────
+// listContent({url}) feeds the URL-exclusivity rule in canRegisterContent,
+// which runs at COMMIT time on every replica. MemoryStore (and the
+// KnexAdapter mirror) match with byte-exact Array.includes; the SQLite
+// branch must return byte-identical results or replicas on different
+// backends commit different state and the federation halts on divergence.
+// Regression for the LIKE → instr() fix: SQLite LIKE is ASCII-case-
+// INSENSITIVE by default, so `https://Example.com/A` wrongly matched a
+// query for `https://example.com/a` on SQLite but not on MemoryStore.
+describe("listContent url filter — MemoryStore ↔ SQLiteStore parity", () => {
+  const os = require("os");
+  const fs = require("fs");
+
+  const STORED = [
+    "https://Example.com/Post/A",
+    "https://x.com/100%_real?a=_b\\c",
+  ];
+  const QUERIES = [
+    ["exact match",                    "https://Example.com/Post/A",   1],
+    ["ASCII case variant must MISS",   "https://example.com/post/a",   0],
+    ["wildcard-ish specials, exact",   "https://x.com/100%_real?a=_b\\c", 1],
+    ["substring must MISS",            "ample.com/Post/A",             0],
+    ["different url must MISS",        "https://other.example/none",   0],
+  ];
+
+  test("both stores return byte-identical results for every query", () => {
+    const dbFile = path.join(os.tmpdir(), `url-filter-parity-${process.pid}-${_n}.db`);
+    const mem = initDAG({ dbPath: ":memory:" });
+    const sq  = initDAG({ dbPath: dbFile });
+    try {
+      _seed(mem, STORED, 5000);
+      _seed(sq,  STORED, 5000);
+      for (const [name, q, want] of QUERIES) {
+        const m = mem.listContent({ url: q }).length;
+        const s = sq.listContent({ url: q }).length;
+        expect({ query: name, memory: m, sqlite: s }).toEqual({ query: name, memory: want, sqlite: want });
+      }
+    } finally {
+      sq.close();
+      for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbFile + suffix, { force: true });
+    }
+  });
+});
