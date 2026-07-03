@@ -337,11 +337,9 @@ function createMempool(dag, options = {}) {
 
   /**
    * Find (without removing) a pending COMMITTEE_ROTATION tx whose
-   * payload targets `rotation_number`. Used by narwhal's producer-pause
-   * carve-out: when stuck at a rotation boundary, drain only that tx
-   * and produce a rotation-only batch so the rotation can land via
-   * normal cert flow even though general production is paused.
-   * Returns null if not found.
+   * payload targets `rotation_number`. Used by rotation-coordinator's
+   * tx repair to serve the assembled tx to peers whose aggregation
+   * never reached quorum. Returns null if not found.
    */
   function peekRotationTx(rotation_number) {
     for (const entry of _pending.values()) {

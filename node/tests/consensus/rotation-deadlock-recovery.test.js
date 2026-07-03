@@ -12,7 +12,7 @@
  *   1. coordinator.proposeRotation rebuilds a fresh aggregation (new deadline,
  *      proposer-only sigs) once the in-flight is past its deadline, instead of
  *      re-broadcasting the stale one.
- *   2. bullshark.tryRotationProposal (the producer-pause retry that fires on
+ *   2. bullshark.tryRotationProposal (the forced-proposal recovery hook on
  *      every stuck node) drives coordinator.pruneExpired before re-proposing.
  *
  * Layer note: the guard is at the coordinator/wiring layer, NOT a multi-node
@@ -106,7 +106,7 @@ describe("rotation-coordinator self-recovery", () => {
       // The aggregation window closes without quorum (sigs lost mid-flight).
       jest.setSystemTime(firstDeadline + 1);
 
-      // The producer-pause retry re-enters proposeRotation.
+      // The forced retry re-enters proposeRotation.
       coord.proposeRotation(args);
       const second = coord._state().get(args.rotation_number);
 
@@ -162,8 +162,8 @@ describe("rotation-coordinator self-recovery", () => {
       },
     });
 
-    // currentRound at epoch 1's boundary so epochOf(round) === missingRotation === 1 > latest 0.
-    bullshark.tryRotationProposal(CONSENSUS.EPOCH_LENGTH_ROUNDS, 1);
+    // Any live round works: tryRotationProposal only requires missingRotation === latest+1.
+    bullshark.tryRotationProposal(200, 1);
     expect(pruneCalls).toBe(1);
   });
 
@@ -225,7 +225,7 @@ describe("rotation-coordinator self-recovery", () => {
       // Fixed: submittedAt rolled back, so the entry is not wedged as "submitted".
       expect(coord._state().get(args.rotation_number).submittedAt).toBeNull();
 
-      // The next producer-pause retry re-submits, and this time it succeeds.
+      // The next forced retry re-submits, and this time it succeeds.
       coord.proposeRotation(args);
       expect(calls).toBe(2);
       expect(coord._state().get(args.rotation_number).submittedAt).not.toBeNull();

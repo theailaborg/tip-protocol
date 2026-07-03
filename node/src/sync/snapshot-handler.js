@@ -318,16 +318,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // sync. Under the rotation-period model, runtime committee comes
     // from committee_history (also shipped by snapshot), so the cert
     // window doesn't need to span a full K-round proven check anymore.
-    // We ship ~1 rotation period of recent rounds (INTERVAL_COMMITS
-    // anchors × 2 rounds/anchor at our wave cadence) plus VOTES_RETENTION
-    // for late-batch tolerance. For testnet INTERVAL_COMMITS=100 that's
-    // 200 rounds + ~5 horizon — generous for active-round catch-up.
     // Ship every cert within GC_DEPTH so the receiver can BFS any anchor
     // in the window without hitting missing-hash deferred-commit loops.
-    // The prior 205-round window (INTERVAL_COMMITS×2 + VOTES_RETENTION) was
-    // narrower than GC_DEPTH (500), leaving rounds [R-500, R-205] absent
-    // from the snapshot — post-install BFS walked into that gap and triggered
-    // the same deferred-commit/forced-partial-commit divergence we fixed elsewhere.
+    // A prior narrower window (205 rounds < GC_DEPTH 500) left rounds
+    // [R-500, R-205] absent from the snapshot; post-install BFS walked into
+    // that gap and triggered deferred-commit/forced-partial-commit divergence.
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     _activeServes++;

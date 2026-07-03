@@ -67,12 +67,6 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
 function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
-  // Rate-limit the producer-pause notify. _beginRound retries every 50ms
-  // while paused; the upstream consumer (bullshark rotation proposer)
-  // doesn't need that frequency. 1.5s matches the rotation-coord
-  // re-broadcast cadence so each cycle gets one fresh proposal attempt.
-  // #75 producer-pause liveness bound: when the boundary pause started (null =
-  // not paused) + last escalation log, so a stuck boundary is observable.
   let _currentRound;
   try { _currentRound = dag.getLatestRound() + 1; } catch { _currentRound = 1; }
   let _running = false;
