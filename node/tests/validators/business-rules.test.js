@@ -224,6 +224,47 @@ describe("canRegisterContent", () => {
     }
   });
 
+  test("retraction releases the url: retracted owner does not block a new ctid", () => {
+    const dag = _seedDag();
+    dag.saveContent({
+      ctid: "tip://content/gone", origin_code: "OH", content_hash: shake256("c-gone"),
+      author_tip_id: "tip://id/author", status: CONTENT_STATUS.RETRACTED,
+      registered_at: 1775001600000, tx_id: shake256("content:gone"),
+      registered_urls: ["https://medium.com/@u/retracted-post"],
+    });
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/verifier", ctid: "tip://content/rebound", origin_code: "OH",
+      registered_urls: ["https://medium.com/@u/retracted-post"],
+    });
+    expect(r.valid).toBe(true);
+  });
+
+  test("retract-then-rebind: the LIVE claimant blocks a third ctid, not the retracted row", () => {
+    const dag = _seedDag();
+    // Retracted original registered FIRST (earlier registered_at, first match
+    // in insertion order): the rule must scan past it to the live rebind.
+    dag.saveContent({
+      ctid: "tip://content/original", origin_code: "OH", content_hash: shake256("c-orig"),
+      author_tip_id: "tip://id/author", status: CONTENT_STATUS.RETRACTED,
+      registered_at: 1775001600000, tx_id: shake256("content:orig"),
+      registered_urls: ["https://medium.com/@u/rebound-post"],
+    });
+    dag.saveContent({
+      ctid: "tip://content/rebound", origin_code: "OH", content_hash: shake256("c-rebound"),
+      author_tip_id: "tip://id/verifier", status: CONTENT_STATUS.REGISTERED,
+      registered_at: 1775005200000, tx_id: shake256("content:rebound"),
+      registered_urls: ["https://medium.com/@u/rebound-post"],
+    });
+    const r = rules.canRegisterContent(dag, {
+      signer_tip_id: "tip://id/author", ctid: "tip://content/third", origin_code: "OH",
+      registered_urls: ["https://medium.com/@u/rebound-post"],
+    });
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(409);
+    expect(r.error.code).toBe("url_already_registered");
+    expect(r.error.message).toContain("tip://content/rebound");
+  });
+
   test("no registered_urls param → rule skipped (backwards compatible)", () => {
     const dag = _seedDag();
     _seedUrlContent(dag);

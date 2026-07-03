@@ -187,9 +187,31 @@ function validateRequest(body, deps) {
   if (!Array.isArray(body.registered_urls) || body.registered_urls.length === 0) {
     throw schemaError(400, "registered_urls is required (at least one published URL)", "registered_urls_required");
   }
+  if (body.registered_urls.length > 16) {
+    throw schemaError(400, "registered_urls: at most 16 entries", "registered_urls_invalid");
+  }
+  // Canonical-form gate: the URL binds exclusively to one CTID, so near-
+  // duplicate shapes (case variants, default ports, fragments, whitespace)
+  // must be rejected, not normalized: the value is inside the signed payload
+  // and cannot be mutated server-side. Clients canonicalize BEFORE signing
+  // (u = new URL(raw).href). Query params stay: they are often the content
+  // identifier (e.g. watch?v=).
   for (const u of body.registered_urls) {
-    if (typeof u !== "string" || !/^https?:\/\/.+/i.test(u)) {
+    if (typeof u !== "string" || u.length > 2048) {
+      throw schemaError(400, "registered_urls entries must be strings of at most 2048 chars", "registered_urls_invalid");
+    }
+    let parsed;
+    try { parsed = new URL(u); } catch {
+      throw schemaError(400, `registered_urls entry is not a valid URL: ${u}`, "registered_urls_invalid");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw schemaError(400, "registered_urls entries must be http(s) URLs", "registered_urls_invalid");
+    }
+    if (parsed.hash !== "") {
+      throw schemaError(400, `registered_urls entries must not carry a #fragment: ${u}`, "registered_urls_invalid");
+    }
+    if (u !== parsed.href) {
+      throw schemaError(400, `registered_urls entry is not canonical (expected ${parsed.href}): ${u}`, "registered_urls_invalid");
     }
   }
 

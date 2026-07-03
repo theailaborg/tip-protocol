@@ -123,11 +123,17 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
   if (Array.isArray(registered_urls) && typeof dag.listContent === "function") {
     for (const u of registered_urls) {
       if (typeof u !== "string" || !u) continue;
-      const existing = dag.listContent({ url: u, limit: 1 })[0];
-      if (existing && existing.ctid !== ctid) {
+      // Retraction releases the URL: only a LIVE claimant blocks. Scan all
+      // matches (a URL accumulates one row per retract-and-rebind cycle, so
+      // the live one is not necessarily first); at most one live claimant
+      // can exist at a time, so under the limit the "any live" predicate is
+      // order-independent and store-identical.
+      const claimants = dag.listContent({ url: u, limit: 100 });
+      const live = claimants.find(c => c.ctid !== ctid && c.status !== CONTENT_STATUS.RETRACTED);
+      if (live) {
         return fail(
           409,
-          `URL already registered to existing content (CTID: ${existing.ctid}): ${u}`,
+          `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
         );
       }

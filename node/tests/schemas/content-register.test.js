@@ -793,3 +793,51 @@ describe("perceptual fingerprint — verifyTx (commit is a signed field; no blob
     expect(r.code).toBe("signature_invalid");
   });
 });
+
+describe("registered_urls canonical-form gate", () => {
+  const { validateRequest } = schema;
+  function _body(urls) {
+    return {
+      creator_tip_id: "tip://id/creator",
+      signer_tip_id: "tip://id/creator",
+      origin_code: "OH",
+      content: "canonical gate test",
+      authors: [{ tip_id: "tip://id/creator", tip_id_type: "personal", contribution_role: "creator" }],
+      registered_urls: urls,
+      signature: "00".repeat(64),
+    };
+  }
+  function _err(urls) {
+    try { validateRequest(_body(urls), { mediaLimits: {} }); return null; }
+    catch (e) { return e; }
+  }
+
+  test("canonical http(s) URLs pass the gate, query params allowed", () => {
+    // Downstream checks (DAG signer lookup) may throw; the gate itself must not.
+    for (const good of ["https://example.com/post/1", "https://www.youtube.com/watch?v=abc123"]) {
+      expect(_err([good])?.code).not.toBe("registered_urls_invalid");
+    }
+  });
+
+  test("non-canonical shapes are rejected, not normalized", () => {
+    for (const bad of [
+      "https://EXAMPLE.com/post",          // upper-case host
+      "https://example.com:443/post",      // default port
+      "https://example.com/post#section",  // fragment
+      "https://example .com/post",         // whitespace
+      "ftp://example.com/file",            // scheme
+      "not a url",
+    ]) {
+      const e = _err([bad]);
+      expect(e).not.toBeNull();
+      expect(e.code).toBe("registered_urls_invalid");
+    }
+  });
+
+  test("caps: more than 16 urls or a 2049-char url rejected", () => {
+    const many = Array.from({ length: 17 }, (_, i) => `https://example.com/p/${i}`);
+    expect(_err(many)?.code).toBe("registered_urls_invalid");
+    const long = "https://example.com/" + "a".repeat(2049);
+    expect(_err([long])?.code).toBe("registered_urls_invalid");
+  });
+});
