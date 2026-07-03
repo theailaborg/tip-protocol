@@ -19,6 +19,17 @@ scrape_configs:
           job: tip-node
           node: ${NODE_LABEL}
           __path__: /tip-logs/**/*.log
+    pipeline_stages:
+      # The node writes one file per level (info/error/debug/access.log):
+      # surface that as a low-cardinality `level` label, then drop `filename`
+      # (one stream PER FILE explodes cardinality and breaks volume queries).
+      - regex:
+          source: filename
+          expression: "/(?P<level>access|debug|error|info)\\.log$"
+      - labels:
+          level:
+      - labeldrop:
+          - filename
 
   # Container stdout/stderr of the tip-node container (crash output, docker-level).
   - job_name: tip-node-docker

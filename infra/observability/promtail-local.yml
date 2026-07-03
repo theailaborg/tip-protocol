@@ -22,3 +22,13 @@ scrape_configs:
           expression: "/tip-logs/(?P<node>node[0-9]+)/"
       - labels:
           node:
+      # The node writes one file per level (info/error/debug/access.log):
+      # surface that as a low-cardinality `level` label, then drop `filename`
+      # (one stream PER FILE explodes cardinality and breaks volume queries).
+      - regex:
+          source: filename
+          expression: "/(?P<level>access|debug|error|info)\\.log$"
+      - labels:
+          level:
+      - labeldrop:
+          - filename
