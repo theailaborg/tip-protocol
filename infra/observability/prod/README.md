@@ -111,7 +111,13 @@ API port, and promtail pushes outbound over 443.
 ## Step 3 , verify end to end
 
 ```bash
-# metrics: every node target "up"
+# metrics: every node target "up" AND filed under the job the dashboards
+# query , zero results here means the job got renamed and every panel
+# will show "No data" despite healthy scrapes:
+docker exec tip-obs-prometheus wget -qO- \
+  'http://localhost:9090/api/v1/query?query=up{job="tip-federation"}' \
+  | grep -c instance
+
 docker exec tip-obs-prometheus wget -qO- 'http://localhost:9090/api/v1/targets' \
   | grep -o '"health":"[a-z]*"'
 
