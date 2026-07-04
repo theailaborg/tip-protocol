@@ -99,6 +99,15 @@ function createMempool(dag, options = {}) {
       return { added: false, reason: "mempool_full" };
     }
 
+    // Over-budget tx can never ride a valid cert; admitting it would
+    // head-of-line block drain forever (drain always takes the first tx).
+    const txBytes = Buffer.byteLength(JSON.stringify(tx));
+    if (txBytes > _batchByteBudget()) {
+      _counters.rejected_total++;
+      log.warn(`Rejecting oversized tx ${tx.tx_id} (${txBytes} bytes > batch budget)`);
+      return { added: false, reason: "tx_too_large" };
+    }
+
     _pending.set(tx.tx_id, { tx, receivedAt: nowMs() });
     _counters.received_total++;
 
@@ -121,15 +130,26 @@ function createMempool(dag, options = {}) {
    * @param {number} limit  Max txs to drain
    * @returns {Array<Object>}  The drained txs
    */
+  // 85% of the cert cap: headroom for 2f+1 acks + parent refs + framing
+  // (~3.4KB/ack covers committees to ~60). A full-count batch of large
+  // post-quantum-signed txs can otherwise exceed CERTIFICATE_MAX_BYTES and
+  // peers reject the cert, stalling consensus (live halt, 2026-07-04).
+  const _batchByteBudget = () => Math.floor(CONSENSUS.CERTIFICATE_MAX_BYTES * 0.85);
+
   function drain(limit = CONSENSUS.MAX_TXS_PER_CERTIFICATE) {
     _evictStale();
 
+    const byteBudget = _batchByteBudget();
     const drained = [];
     const drainedIds = [];
+    let bytes = 0;
     for (const [txId, entry] of _pending) {
       if (drained.length >= limit) break;
+      const sz = entry.tx?._wireBytes || Buffer.byteLength(JSON.stringify(entry.tx));
+      if (drained.length > 0 && bytes + sz > byteBudget) break;
       drained.push(entry.tx);
       drainedIds.push(txId);
+      bytes += sz;
     }
 
     // Remove from memory
