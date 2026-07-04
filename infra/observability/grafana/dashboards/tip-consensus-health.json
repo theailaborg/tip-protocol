@@ -2106,6 +2106,69 @@
         "w": 12,
         "h": 11
       }
+    },
+    {
+      "id": 43,
+      "type": "stat",
+      "title": "Disk free (worst node)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Lowest free-disk percentage across the federation. The 2026-07-04 divergence incident began as silent disk-full write loss , below 20% free, clean up or grow the volume BEFORE postgres starts dropping writes.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * min(tip_disk_free_bytes / tip_disk_total_bytes)",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              },
+              {
+                "color": "green",
+                "value": 20
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 100
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 6,
+        "h": 4
+      }
     }
   ],
   "links": [

@@ -1817,12 +1817,11 @@ class MemoryStore {
     return { ...next };
   }
   markPrescanJobDone(jobId, { completedAt }) {
-    const row = this._prescanJobs.get(jobId);
-    if (!row) return false;
-    row.status = "done";
-    row.completed_at = completedAt;
-    row.last_error = null;
-    return true;
+    void completedAt;
+    // Delete on success: the job row carries raw content text (retention
+    // hazard) and the table grows unboundedly , the verdict tx is the
+    // durable record. Failed rows stay for diagnosis.
+    return this._prescanJobs.delete(jobId);
   }
   markPrescanJobFailed(jobId, { lastError, completedAt }) {
     const row = this._prescanJobs.get(jobId);
@@ -2650,9 +2649,7 @@ class SQLiteStore {
           RETURNING *`
       ),
       markPrescanJobDone: this.db.prepare(
-        `UPDATE prescan_jobs
-            SET status='done', completed_at=?, last_error=NULL
-          WHERE job_id=?`
+        `DELETE FROM prescan_jobs WHERE job_id=?`
       ),
       markPrescanJobFailed: this.db.prepare(
         `UPDATE prescan_jobs
@@ -3773,7 +3770,8 @@ class SQLiteStore {
     return this._hydratePrescanJob(this._stmts.claimPrescanJob.get(now, workerId, now - claimTimeoutMs));
   }
   markPrescanJobDone(jobId, { completedAt }) {
-    return this._stmts.markPrescanJobDone.run(completedAt, jobId).changes > 0;
+    void completedAt;
+    return this._stmts.markPrescanJobDone.run(jobId).changes > 0;
   }
   markPrescanJobFailed(jobId, { lastError, completedAt }) {
     return this._stmts.markPrescanJobFailed.run(completedAt, lastError || null, jobId).changes > 0;

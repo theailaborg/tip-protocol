@@ -595,7 +595,15 @@ class KnexAdapter {
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
-      .catch(err => this.log.warn(`KnexAdapter write failed: ${err.message}`));
+      .catch(err => {
+        if (_isDuplicateKeyError(err)) return;   // idempotent re-write, benign
+        // A lost persistence write means this node rebuilds DIVERGENT state
+        // at its next restart (live incident 2026-07-04: disk-full dropped
+        // rows silently, node forked after restart). Fail-stop: crash loudly
+        // now; restart + anti-entropy resync self-heal from peers.
+        this.log.error(`KnexAdapter write failed , persistence lost, fail-stop: ${err.message}`);
+        process.exit(78);
+      });
   }
 
   // Active connection for writes: the running transaction (during a
@@ -965,9 +973,7 @@ class KnexAdapter {
   markPrescanJobDone(jobId, opts) {
     const changed = this.mirror.markPrescanJobDone(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs")
-        .where("job_id", jobId)
-        .update({ status: "done", completed_at: opts.completedAt, last_error: null }));
+      this._ff(() => this.knex("prescan_jobs").where("job_id", jobId).del());
     }
     return changed;
   }
