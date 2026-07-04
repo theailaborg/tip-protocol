@@ -302,6 +302,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // libp2p flushes incrementally (no full-state materialisation on the
     // sender). The two #49 full-history roots are stream-computed while
     // emitting rows and shipped in SnapshotEnd — single pass over each table.
+    let _servedBytes = 0;
     let stateRowsSent = 0;
     let txRowsSent = 0;
     let commitRowsSent = 0;
@@ -327,7 +328,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certToRound = peerCommittedRound;
     _activeServes++;
     try {
-      await stream.sink((async function* () {
+      const _countBytes = async function* (gen) {
+        for await (const buf of gen) { _servedBytes += buf.length; yield buf; }
+      };
+      await stream.sink(_countBytes((async function* () {
         // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
         // firing during a large serve; without it the row flood starves the loop.
         let _yielded = 0;
@@ -436,7 +440,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rpRowCount: rpRowsSent,
         });
         yield _frame(endBuf);
-      })());
+      })()));
     } catch (err) {
       log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
       return;
@@ -444,9 +448,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _activeServes--;
     }
 
-    log.info(
+    _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
+    _metrics.last_serve_bytes = _servedBytes;
+    _metrics.last_serve_rows = stateRowsSent + txRowsSent + commitRowsSent
+      + rotationRowsSent + certRowsSent + rpRowsSent;
+    log.notice(
       `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
-      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
+      `(${(_servedBytes / (1024 * 1024)).toFixed(1)} MB, state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
       `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}] ` +
       `rp=${rpRowsSent})`
     );

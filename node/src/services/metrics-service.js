@@ -403,6 +403,9 @@ function committeeSection(s, dag) {
     // let operators watch a running install live.
     counter("tip_snapshot_installs_completed_total", "Snapshot installs that completed successfully", (s.snapshotHandler?.metrics?.installs_completed) || 0),
     gauge("tip_snapshot_last_install_bytes", "Download size in bytes of the most recently completed snapshot install", (s.snapshotHandler?.metrics?.last_install_bytes) || 0),
+    counter("tip_snapshot_serves_completed_total", "Snapshots this node finished serving to joiners", (s.snapshotHandler?.metrics?.serves_completed) || 0),
+    gauge("tip_snapshot_last_serve_bytes", "Wire size in bytes of the most recent snapshot this node served , what a fresh joiner downloads", (s.snapshotHandler?.metrics?.last_serve_bytes) || 0),
+    gauge("tip_snapshot_last_serve_rows", "Row count of the most recent snapshot this node served", (s.snapshotHandler?.metrics?.last_serve_rows) || 0),
     gauge("tip_snapshot_last_install_rows", "Row count of the most recently completed snapshot install", (s.snapshotHandler?.metrics?.last_install_rows) || 0),
     gauge("tip_snapshot_install_in_progress", "1 while a snapshot is currently installing; 0 when idle", s.snapshotHandler?.install ? 1 : 0),
     gauge("tip_snapshot_install_progress_rows", "Rows installed so far in the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.installed) || 0),

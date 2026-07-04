@@ -381,6 +381,190 @@
         "w": 12,
         "h": 11
       }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 2008,
+      "panels": [],
+      "title": "Joiner download size & memory growth  (streaming-snapshot / RAM-fix evidence)",
+      "type": "row"
+    },
+    {
+      "id": 2009,
+      "type": "timeseries",
+      "title": "Snapshot size a joiner downloads",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Wire bytes of the most recent snapshot each node served (tip_snapshot_last_serve_bytes). Updates on every join/resync; the growth curve is the case for the streaming-snapshot fix.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (tip_snapshot_last_serve_bytes)",
+          "legendFormat": "{{instance}} served"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (tip_snapshot_last_install_bytes)",
+          "legendFormat": "{{instance}} installed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 29
+      }
+    },
+    {
+      "id": 2010,
+      "type": "timeseries",
+      "title": "Chain rows (next snapshot's row count)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Rows a fresh joiner must receive: txs + certs per node. Grows monotonically until snapshot streaming/pruning lands.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (tip_dag_tx_count)",
+          "legendFormat": "{{instance}} txs"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (tip_dag_cert_count)",
+          "legendFormat": "{{instance}} certs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 29
+      }
+    },
+    {
+      "id": 2011,
+      "type": "timeseries",
+      "title": "Process memory growth",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "RSS and JS heap per node over time. Linear growth with chain length = the in-memory mirror cost , evidence for the bounded-memory fix.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (tip_process_memory_rss_bytes)",
+          "legendFormat": "{{instance}} rss"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (instance) (tip_process_memory_heap_used_bytes)",
+          "legendFormat": "{{instance}} heap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 29
+      }
     }
   ],
   "links": [
