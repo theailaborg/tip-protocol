@@ -302,6 +302,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // libp2p flushes incrementally (no full-state materialisation on the
     // sender). The two #49 full-history roots are stream-computed while
     // emitting rows and shipped in SnapshotEnd — single pass over each table.
+    let _servedBytes = 0;
     let stateRowsSent = 0;
     let txRowsSent = 0;
     let commitRowsSent = 0;
@@ -327,7 +328,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certToRound = peerCommittedRound;
     _activeServes++;
     try {
-      await stream.sink((async function* () {
+      const _countBytes = async function* (gen) {
+        for await (const buf of gen) { _servedBytes += buf.length; yield buf; }
+      };
+      await stream.sink(_countBytes((async function* () {
         // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
         // firing during a large serve; without it the row flood starves the loop.
         let _yielded = 0;
@@ -436,7 +440,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rpRowCount: rpRowsSent,
         });
         yield _frame(endBuf);
-      })());
+      })()));
     } catch (err) {
       log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
       return;
@@ -444,9 +448,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _activeServes--;
     }
 
-    log.info(
+    _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
+    _metrics.last_serve_bytes = _servedBytes;
+    _metrics.last_serve_rows = stateRowsSent + txRowsSent + commitRowsSent
+      + rotationRowsSent + certRowsSent + rpRowsSent;
+    log.notice(
       `Snapshot: sent round ${latest.round} → ${remotePeer} ` +
-      `(state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
+      `(${(_servedBytes / (1024 * 1024)).toFixed(1)} MB, state=${stateRowsSent} txs=${txRowsSent} commits=${commitRowsSent} ` +
       `rotations=${rotationRowsSent} certs=${certRowsSent}@[${certFromRound},${certToRound}] ` +
       `rp=${rpRowsSent})`
     );
@@ -887,9 +895,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       + (queues.commits?.length || 0) + (queues.rotations?.length || 0)
       + (queues.certs?.length || 0) + (queues.rp?.length || 0);
     const _snapMB = (_snapBytes / (1024 * 1024)).toFixed(1);
-    log.info(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
+    log.notice(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
     _installProgress = { phase: "installing", installed: 0, total: _snapTotalRows, bytes: _snapBytes };
-    let _stateLogAt = queues.stateRows.length > 0 ? Math.ceil(queues.stateRows.length / 10) : Infinity;
+    let _installedN = 0;
+    let _nextLogAt = _snapTotalRows > 0 ? Math.ceil(_snapTotalRows / 10) : Infinity;
+    const _tickProgress = (phase) => {
+      _installedN++;
+      if (_installedN >= _nextLogAt) {
+        const pct = Math.floor((_installedN / _snapTotalRows) * 100);
+        log.notice(`Snapshot install: ${pct}% (${_installedN}/${_snapTotalRows} rows, ${phase})`);
+        _installProgress = { phase, installed: _installedN, total: _snapTotalRows, bytes: _snapBytes };
+        _nextLogAt += Math.ceil(_snapTotalRows / 10);
+      }
+    };
     _snapServing = true;
     try {
       const _installResult = dag.runInTransaction(() => {
@@ -905,12 +923,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const { table, row } of queues.stateRows) {
           _installOneRow(table, row);
           stateN++;
-          if (stateN >= _stateLogAt) {
-            const pct = _snapTotalRows > 0 ? Math.floor((stateN / _snapTotalRows) * 100) : 0;
-            log.info(`Snapshot install: ${pct}% (${stateN}/${_snapTotalRows} rows)`);
-            _installProgress = { phase: "state", installed: stateN, total: _snapTotalRows, bytes: _snapBytes };
-            _stateLogAt += Math.ceil(queues.stateRows.length / 10);
-          }
+          _tickProgress("state");
         }
 
         // GH #32 — dedup gate: snapshot install bypasses
@@ -956,12 +969,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           dag.addTx(tx);
           txN++;
+          _tickProgress("txs");
         }
 
         let commitN = 0;
         for (const c of queues.commits) {
           dag.saveCommit(c);
           commitN++;
+          _tickProgress("commits");
         }
 
         // Install committee_history rotations. Already verified up the
@@ -1000,6 +1015,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const certs = queues.certs || [];
         for (const c of certs) {
           dag.saveCertificate(c);
+          _tickProgress("certs");
           certN++;
         }
 
@@ -1070,7 +1086,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rotation_txs_skipped: rotationSkipped,
         };
       });
-      log.info(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
+      log.notice(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
       _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
       _metrics.last_install_rows = _snapTotalRows;
       _metrics.last_install_bytes = _snapBytes;

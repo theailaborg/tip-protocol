@@ -180,22 +180,22 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Nodes online",
+      "title": "Nodes online (%)",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Nodes whose /metrics responded to the last scrape.\n\nNormal: 5.\nAct if: <4 (below quorum), a node's thread is blocked or it crashed.",
+      "description": "Share of scrape targets up. 100% green; any node down = orange (investigate); below/at bare quorum = red. Cluster-size agnostic , the old absolute thresholds (green=5) were authored for the 5-node local cluster and showed prod's healthy 3/3 as red.",
       "targets": [
         {
           "refId": "A",
-          "expr": "count(up{job=\"tip-federation\"} == 1) or vector(0)",
+          "expr": "100 * count(up{job=\"tip-federation\"} == 1) / count(up{job=\"tip-federation\"})",
           "legendFormat": ""
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percent",
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -206,17 +206,18 @@
               },
               {
                 "color": "orange",
-                "value": 4
+                "value": 66.6
               },
               {
                 "color": "green",
-                "value": 5
+                "value": 99.9
               }
             ]
           },
           "color": {
             "mode": "thresholds"
-          }
+          },
+          "max": 100
         }
       },
       "options": {
