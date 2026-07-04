@@ -11,7 +11,8 @@ services:
     env_file: promtail.env
     volumes:
       - ./promtail.yml:/etc/promtail/config.yml:ro
-      - ../../../node/logs:/tip-logs:ro
+      # node compose mounts ./logs/node-1:/app/node/logs; tail the HOST side
+      - ../../../logs/node-1:/tip-logs:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - promtail-positions:/positions

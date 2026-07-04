@@ -887,9 +887,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       + (queues.commits?.length || 0) + (queues.rotations?.length || 0)
       + (queues.certs?.length || 0) + (queues.rp?.length || 0);
     const _snapMB = (_snapBytes / (1024 * 1024)).toFixed(1);
-    log.info(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
+    log.notice(`Snapshot install: starting (${_snapTotalRows} rows, ${_snapMB} MB)`);
     _installProgress = { phase: "installing", installed: 0, total: _snapTotalRows, bytes: _snapBytes };
-    let _stateLogAt = queues.stateRows.length > 0 ? Math.ceil(queues.stateRows.length / 10) : Infinity;
+    let _installedN = 0;
+    let _nextLogAt = _snapTotalRows > 0 ? Math.ceil(_snapTotalRows / 10) : Infinity;
+    const _tickProgress = (phase) => {
+      _installedN++;
+      if (_installedN >= _nextLogAt) {
+        const pct = Math.floor((_installedN / _snapTotalRows) * 100);
+        log.notice(`Snapshot install: ${pct}% (${_installedN}/${_snapTotalRows} rows, ${phase})`);
+        _installProgress = { phase, installed: _installedN, total: _snapTotalRows, bytes: _snapBytes };
+        _nextLogAt += Math.ceil(_snapTotalRows / 10);
+      }
+    };
     _snapServing = true;
     try {
       const _installResult = dag.runInTransaction(() => {
@@ -905,12 +915,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         for (const { table, row } of queues.stateRows) {
           _installOneRow(table, row);
           stateN++;
-          if (stateN >= _stateLogAt) {
-            const pct = _snapTotalRows > 0 ? Math.floor((stateN / _snapTotalRows) * 100) : 0;
-            log.info(`Snapshot install: ${pct}% (${stateN}/${_snapTotalRows} rows)`);
-            _installProgress = { phase: "state", installed: stateN, total: _snapTotalRows, bytes: _snapBytes };
-            _stateLogAt += Math.ceil(queues.stateRows.length / 10);
-          }
+          _tickProgress("state");
         }
 
         // GH #32 — dedup gate: snapshot install bypasses
@@ -956,12 +961,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           }
           dag.addTx(tx);
           txN++;
+          _tickProgress("txs");
         }
 
         let commitN = 0;
         for (const c of queues.commits) {
           dag.saveCommit(c);
           commitN++;
+          _tickProgress("commits");
         }
 
         // Install committee_history rotations. Already verified up the
@@ -1000,6 +1007,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const certs = queues.certs || [];
         for (const c of certs) {
           dag.saveCertificate(c);
+          _tickProgress("certs");
           certN++;
         }
 
@@ -1070,7 +1078,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           rotation_txs_skipped: rotationSkipped,
         };
       });
-      log.info(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
+      log.notice(`Snapshot install: complete (${_snapTotalRows} rows, ${_snapMB} MB)`);
       _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
       _metrics.last_install_rows = _snapTotalRows;
       _metrics.last_install_bytes = _snapBytes;
