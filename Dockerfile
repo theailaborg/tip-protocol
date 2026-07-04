@@ -15,7 +15,7 @@
 # Licensed under TIPCL-1.0
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /build
 
@@ -33,7 +33,7 @@ COPY node/vendor/ ./node/vendor/
 RUN npm install --omit=dev
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 
 # Metadata
 LABEL org.opencontainers.image.title="TIP Protocol Node"

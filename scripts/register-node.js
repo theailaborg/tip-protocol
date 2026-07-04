@@ -304,6 +304,7 @@ async function main() {
   const prescanConc = process.env.TIP_PRESCAN_CONCURRENCY || "";
   const rateLimitMax = process.env.TIP_RATE_LIMIT_MAX || "";
   const devForceTier = process.env.TIP_DEV_FORCE_PRESCAN_TIER || "";
+  const disableNativeMldsa = process.env.TIP_DISABLE_NATIVE_MLDSA || "";
   const vpId = process.env.TIP_VP_ID || "";
   const databaseUrl = process.env.DATABASE_URL || "";
   const cryptoPool = process.env.TIP_CRYPTO_POOL_SIZE || "";
@@ -346,6 +347,7 @@ async function main() {
     TIP_RATE_LIMIT_MAX: u(rateLimitMax), TIP_RATE_LIMIT_WINDOW_MS: u(rateLimitWin),
     TIP_API_ENDPOINT: u(apiEndpoint),
     TIP_DEV_FORCE_PRESCAN_TIER: u(devForceTier),
+    TIP_DISABLE_NATIVE_MLDSA: u(disableNativeMldsa),
   }, {
     headerNotes: [
       `${name}`,
