@@ -773,8 +773,14 @@ const SIGNATURE_SCOPE_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_SCO
 // Cap for the per-node locally-verified tx cache (consensus/index.js).
 const LOCALLY_VERIFIED_TX_CACHE_CAP = 20000;
 
+// Native ML-DSA verify fast-path (shared/crypto.js).
+const NATIVE_MLDSA_KEY_CACHE_CAP = 2000;
+const MLDSA65_PUBKEY_BYTES = 1952;
+
 module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
+  NATIVE_MLDSA_KEY_CACHE_CAP,
+  MLDSA65_PUBKEY_BYTES,
   ORIGIN,
   ORIGIN_LABELS,
   VOTE,

@@ -85,6 +85,46 @@ async function initCrypto() {
   ]);
   _mlDsa = ml_dsa65;
   _slhDsa = slh_dsa_shake_128s;
+  _initNativeMlDsa();
+}
+
+// Native ML-DSA-65 verify via OpenSSL >= 3.5 (Node 24+): same FIPS 204 bytes
+// as noble, ~5x faster. Noble remains the signer and the fallback runtime.
+let _nativeSpkiTemplate = null;      // DER template; raw pubkey is the tail
+let _nativeInitAttempted = false;
+const _nativeKeyCache = new Map();   // pubkeyHex -> KeyObject
+const { NATIVE_MLDSA_KEY_CACHE_CAP, MLDSA65_PUBKEY_BYTES } = require("./constants");
+
+function _initNativeMlDsa() {
+  if (_nativeInitAttempted) return;
+  _nativeInitAttempted = true;
+  if (process.env.TIP_DISABLE_NATIVE_MLDSA === "1") return;
+  try {
+    const { publicKey } = crypto.generateKeyPairSync("ml-dsa-65");
+    _nativeSpkiTemplate = publicKey.export({ format: "der", type: "spki" });
+  } catch {
+    _nativeSpkiTemplate = null;
+  }
+}
+
+function _nativeKeyFor(publicKeyHex) {
+  let key = _nativeKeyCache.get(publicKeyHex);
+  if (key) return key;
+  const raw = Buffer.from(publicKeyHex, "hex");
+  if (raw.length !== MLDSA65_PUBKEY_BYTES) return null;
+  const der = Buffer.from(_nativeSpkiTemplate);
+  raw.copy(der, der.length - raw.length);
+  key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+  if (_nativeKeyCache.size >= NATIVE_MLDSA_KEY_CACHE_CAP) {
+    _nativeKeyCache.delete(_nativeKeyCache.keys().next().value);
+  }
+  _nativeKeyCache.set(publicKeyHex, key);
+  return key;
+}
+
+function hasNativeMlDsa() {
+  _initNativeMlDsa();
+  return _nativeSpkiTemplate !== null;
 }
 
 function _requirePQ() {
@@ -152,6 +192,17 @@ function mldsaSign(data, privateKeyHex, { deterministic = false } = {}) {
  * @returns {boolean}
  */
 function mldsaVerify(data, signatureHex, publicKeyHex) {
+  if (_nativeSpkiTemplate) {
+    try {
+      const key = _nativeKeyFor(publicKeyHex);
+      if (key) {
+        const msg = typeof data === "string" ? Buffer.from(data) : Buffer.from(data);
+        return crypto.verify(null, msg, key, Buffer.from(signatureHex, "hex"));
+      }
+    } catch {
+      return false;
+    }
+  }
   try {
     const mlDsa = _requirePQ();
     const publicKey = new Uint8Array(Buffer.from(publicKeyHex, "hex"));
@@ -602,6 +653,7 @@ function verifyCanonicalPayload(payload, signature, publicKey) {
 }
 
 module.exports = {
+  hasNativeMlDsa,
   initCrypto,
   shake256,
   shake256Multi,
