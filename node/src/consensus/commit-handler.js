@@ -203,7 +203,7 @@ function _actorTipId(tx) {
   }
 }
 
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId }) {
+function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -276,8 +276,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         continue;
       }
 
-      // Verify signature
-      if (!_verifyTxSignature(tx)) {
+      // Consume-once skip: this node already verified these exact bytes at
+      // its API (tx_id is content-addressed); gossip/trigger txs never match.
+      const _preVerified = typeof isLocallyVerified === "function" && isLocallyVerified(tx.tx_id);
+      if (!_preVerified && !_verifyTxSignature(tx)) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature failed`);
         _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, "signature failed", { round });
         dropped++;

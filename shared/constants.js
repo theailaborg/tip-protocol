@@ -770,7 +770,11 @@ const SIGNATURE_SCOPE = Object.freeze({
 });
 const SIGNATURE_SCOPE_VALUES = Object.freeze(new Set(Object.values(SIGNATURE_SCOPE)));
 
+// Cap for the per-node locally-verified tx cache (consensus/index.js).
+const LOCALLY_VERIFIED_TX_CACHE_CAP = 20000;
+
 module.exports = {
+  LOCALLY_VERIFIED_TX_CACHE_CAP,
   ORIGIN,
   ORIGIN_LABELS,
   VOTE,

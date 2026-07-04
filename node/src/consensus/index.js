@@ -38,6 +38,7 @@ const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createPrescanCompletionTrigger } = require("./prescan-completion-trigger");
 const { createTxSubmitter } = require("../services/helpers");
 const { nowMs } = require("../../../shared/time");
+const { LOCALLY_VERIFIED_TX_CACHE_CAP } = require("../../../shared/constants");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { encode, decode } = require("../network/proto");
@@ -162,10 +163,25 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     getCommittee,
   });
 
+  // Locally-verified tx cache: addTx-only (schema verified the signature at
+  // the API; tx_id is content-addressed), consumed once at commit. Gossip,
+  // trigger, and rotation txs never enter it and always fully verify.
+  const _locallyVerified = new Map();
+  function _markLocallyVerified(txId) {
+    if (_locallyVerified.size >= LOCALLY_VERIFIED_TX_CACHE_CAP) {
+      _locallyVerified.delete(_locallyVerified.keys().next().value);
+    }
+    _locallyVerified.set(txId, true);
+  }
+  function _consumeLocallyVerified(txId) {
+    return _locallyVerified.delete(txId);
+  }
+
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({
     dag, scoring, config,
     verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger,
+    isLocallyVerified: _consumeLocallyVerified,
   });
 
   // ── Create sync handler (Merkle tree + catch-up protocol) ──────────────────
@@ -511,7 +527,11 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
      * @param {Object} tx  Validated tx (must have tx_id)
      * @returns {{ added: boolean, reason?: string }}
      */
-    addTx: (tx) => mempool.add(tx),
+    addTx: (tx) => {
+      const r = mempool.add(tx);
+      if (r && r.added && tx.tx_id) _markLocallyVerified(tx.tx_id);
+      return r;
+    },
 
     /**
      * Start consensus rounds (Narwhal + Bullshark) and sync protocol.
