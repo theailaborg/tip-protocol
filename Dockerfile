@@ -51,29 +51,29 @@ RUN addgroup -g 1001 -S tipnode && \
 
 WORKDIR /app
 
-# Copy built node_modules from build stage
-COPY --from=build /build/node_modules ./node_modules
+# COPY --chown, never a post-hoc `chown -R`: a recursive chown rewrites every
+# file into a duplicate layer , it doubled the image (266MB content -> 919MB)
+# and its extraction is what kept failing on small-disk hosts.
+COPY --from=build --chown=tipnode:tipnode /build/node_modules ./node_modules
 
-# Copy application source
-COPY node/src/         ./node/src/
-COPY node/package.json ./node/package.json
-COPY shared/           ./shared/
-COPY circuits/         ./circuits/
+COPY --chown=tipnode:tipnode node/src/         ./node/src/
+COPY --chown=tipnode:tipnode node/package.json ./node/package.json
+COPY --chown=tipnode:tipnode shared/           ./shared/
+COPY --chown=tipnode:tipnode circuits/         ./circuits/
 # Copy browser extension zip if present (glob trick: bracket makes COPY no-op if missing)
-COPY browser-extensio[n]/*.zip ./browser-extension/
-COPY package.json      ./package.json
+COPY --chown=tipnode:tipnode browser-extensio[n]/*.zip ./browser-extension/
+COPY --chown=tipnode:tipnode package.json      ./package.json
 
 # Genesis state the node reads at boot. genesis.json is the minted, self-contained
 # block (carries protocol_constants). genesis-config.json is a seed-time input and
 # is intentionally NOT shipped: the runtime reads everything from genesis.json.
-COPY genesis-data/genesis.json ./genesis-data/genesis.json
+COPY --chown=tipnode:tipnode genesis-data/genesis.json ./genesis-data/genesis.json
 
 # Copy license/notice if they exist
-COPY NOTICE.tx[t]      ./
-COPY LICENSE.tx[t]     ./
+COPY --chown=tipnode:tipnode NOTICE.tx[t]      ./
+COPY --chown=tipnode:tipnode LICENSE.tx[t]     ./
 
-# Create data directory with correct ownership
-RUN mkdir -p /app/data && chown -R tipnode:tipnode /app
+RUN mkdir -p /app/data && chown tipnode:tipnode /app /app/data
 
 # Switch to non-root user
 USER tipnode
