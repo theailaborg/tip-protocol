@@ -88,6 +88,33 @@ describe("mempool — baseline FIFO drain order (addFront's substrate)", () => {
 // 2. addFront happy path
 // ═══════════════════════════════════════════════════════════════════════════
 
+describe("mempool.drain — byte budget (oversize-batch halt guard)", () => {
+  const { CONSENSUS } = require(path.join(__dirname, "../../../shared/protocol-constants"));
+
+  test("drain stops at the byte budget before the tx-count cap", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag);
+    // Six txs sized so ~4 fit the 85% budget, whatever the cert cap is.
+    const big = "x".repeat(Math.floor(CONSENSUS.CERTIFICATE_MAX_BYTES * 0.85 / 4));
+    for (const id of ["A", "B", "C", "D", "E", "F"]) mempool.add(makeTx(id, { blob: big }));
+
+    const batch = mempool.drain(500);   // count cap far above the byte cap
+    const bytes = batch.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(t)), 0);
+    expect(bytes).toBeLessThanOrEqual(CONSENSUS.CERTIFICATE_MAX_BYTES);
+    expect(batch.length).toBeLessThan(6);   // budget cut it short
+    expect(mempool.size()).toBeGreaterThan(0);
+  });
+
+  test("an over-budget tx is rejected at add (would head-of-line block drain)", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    const mempool = createMempool(dag);
+    const r = mempool.add(makeTx("solo", { blob: "y".repeat(CONSENSUS.CERTIFICATE_MAX_BYTES) }));   // over budget by construction
+    expect(r.added).toBe(false);
+    expect(r.reason).toBe("tx_too_large");
+    expect(mempool.size()).toBe(0);
+  });
+});
+
 describe("mempool.addFront — happy path", () => {
   test("prepends a single tx so it drains FIRST, ahead of pre-existing entries", () => {
     const dag = initDAG({ dbPath: ":memory:" });
