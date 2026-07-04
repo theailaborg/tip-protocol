@@ -43,7 +43,7 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
-const { TX_TYPES, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
+const { TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
@@ -1374,12 +1374,29 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
  * single-message request path).
  */
 async function _readOneMessage(stream, typeName) {
+  // Read to EOF, not first-chunk: the requester half-closes after writing,
+  // so end-of-source is deterministic. First-chunk-only worked by luck on
+  // Node 22 single-chunk delivery; Node 24 stream internals can deliver an
+  // empty/partial first chunk (live incident: every snapshot request read
+  // as empty, joiners looped on download deadlines forever).
   const chunks = [];
-  for await (const chunk of stream.source) {
-    chunks.push(chunk.subarray ? chunk.subarray() : chunk);
-    break;
+  let total = 0;
+  const timer = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error("request read deadline")), SNAPSHOT_REQUEST.MAX_MS).unref?.());
+  const read = (async () => {
+    for await (const chunk of stream.source) {
+      const buf = chunk.subarray ? chunk.subarray() : chunk;
+      total += buf.length;
+      if (total > SNAPSHOT_REQUEST.MAX_BYTES) throw new Error("request too large");
+      chunks.push(buf);
+    }
+  })();
+  try { await Promise.race([read, timer]); }
+  catch (err) {
+    if (chunks.length === 0) return null;
+    throw err;
   }
-  if (chunks.length === 0) return null;
+  if (total === 0) return null;
   return decode(typeName, Buffer.concat(chunks));
 }
 
