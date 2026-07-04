@@ -32,6 +32,8 @@
 
 "use strict";
 
+const { nowMs } = require("../../../shared/time");
+
 const { ORIGIN } = require("../../../shared/constants");
 const { preScanContent } = require("./helpers");
 
@@ -145,15 +147,37 @@ function createFallbackClassifierClient({ primary, local, log }) {
   const logger = log || console;
   const localClient = local || createLocalClassifierClient();
 
+  // Circuit breaker: after BREAK_AFTER consecutive network failures, skip the
+  // primary entirely for COOLDOWN_MS , a dead classifier must not cost every
+  // job a fetch round-trip (2026-07-04: per-job fetch failures against a dead
+  // endpoint kept a node's CPU pegged for 40min draining its queue).
+  const { CLASSIFIER_BREAK_AFTER: BREAK_AFTER, CLASSIFIER_COOLDOWN_MS: COOLDOWN_MS } =
+    require("../../../shared/constants");
+  let _consecutiveFailures = 0;
+  let _openUntil = 0;
+
   async function prescan(args) {
+    if (_openUntil > nowMs()) return localClient.prescan(args);
     try {
-      return await primary.prescan(args);
+      const result = await primary.prescan(args);
+      if (_consecutiveFailures >= BREAK_AFTER) logger.warn?.("classifier reachable again , circuit closed");
+      _consecutiveFailures = 0;
+      return result;
     } catch (err) {
       if (!_isNetworkError(err)) throw err;
-      logger.warn?.(
-        `classifier unreachable (${err.message || err}); serving LOCAL FALLBACK verdict ` +
-        "(heuristic text, stub media). Set TIP_CLASSIFIER_FALLBACK=0 to disable fallback.",
-      );
+      _consecutiveFailures++;
+      if (_consecutiveFailures === BREAK_AFTER) {
+        _openUntil = nowMs() + COOLDOWN_MS;
+        logger.warn?.(
+          `classifier unreachable ${BREAK_AFTER}x (${err.message || err}) , circuit OPEN, ` +
+          `serving LOCAL FALLBACK verdicts without fetch attempts for ${COOLDOWN_MS / 1000}s`,
+        );
+      } else if (_consecutiveFailures < BREAK_AFTER) {
+        logger.warn?.(
+          `classifier unreachable (${err.message || err}); serving LOCAL FALLBACK verdict ` +
+          "(heuristic text, stub media). Set TIP_CLASSIFIER_FALLBACK=0 to disable fallback.",
+        );
+      }
       return localClient.prescan(args);
     }
   }

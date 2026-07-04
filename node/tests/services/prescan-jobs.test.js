@@ -128,16 +128,14 @@ describe("claim", () => {
 
 // ── markDone ───────────────────────────────────────────────────────────────
 describe("markDone", () => {
-  test("flips status to done + clears last_error", () => {
+  test("deletes the row , raw content must not be retained after success", () => {
     const clock = makeClock();
     const { jobs } = setup(clock);
     const { job_id } = jobs.enqueue({ ctid: CTID_A, payload: { x: 1 } });
     jobs.claim("worker-1");
     expect(jobs.markDone(job_id)).toBe(true);
-    const after = jobs.get(job_id);
-    expect(after.status).toBe("done");
-    expect(after.completed_at).toBe(clock.now());
-    expect(after.last_error).toBeNull();
+    expect(jobs.get(job_id)).toBeNull();   // gone: no retention, no growth
+    expect(jobs.markDone(job_id)).toBe(false);   // idempotent second call
   });
 
   test("returns false on unknown job_id", () => {

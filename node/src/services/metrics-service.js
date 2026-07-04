@@ -55,6 +55,17 @@ function processSection(config) {
   };
   return [
     gauge("tip_process_uptime_seconds", "Seconds since this node process started", Math.floor(process.uptime()), idLabels),
+    ...(() => {
+      // Disk visibility (2026-07-04 incident: silent disk-full caused state
+      // divergence). statfs on the data dir's filesystem.
+      try {
+        const st = require("fs").statfsSync(process.env.TIP_DATA_DIR || "/");
+        return [
+          gauge("tip_disk_free_bytes", "Free bytes on the data filesystem", st.bavail * st.bsize),
+          gauge("tip_disk_total_bytes", "Total bytes on the data filesystem", st.blocks * st.bsize),
+        ];
+      } catch { return []; }
+    })(),
     gauge("tip_process_memory_rss_bytes", "Resident Set Size of the node process", mem.rss),
     gauge("tip_process_memory_heap_used_bytes", "Node heap bytes currently allocated", mem.heapUsed),
     gauge("tip_process_memory_heap_total_bytes", "Node heap capacity", mem.heapTotal),

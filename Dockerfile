@@ -30,7 +30,8 @@ COPY node/package*.json ./node/
 # as file:vendor/...tgz, so the tarball must be in the context before install.
 # npm extracts it into node_modules (a real dir), so only the build stage needs it.
 COPY node/vendor/ ./node/vendor/
-RUN npm install --omit=dev
+RUN npm install --omit=dev && \
+    rm -rf node_modules/wasmcurves/test node_modules/wasmcurves/benchmarks
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM node:24-alpine AS runtime
