@@ -403,7 +403,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       // regardless of whether anyone has committed in the meantime.
       // Cost: one iterateCanonicalState walk per /sync-status request,
       // sub-millisecond at small federation sizes.
-      state_merkle_root: computeStateMerkleRoot(dag),
+      state_merkle_root: dag.stateRoot(),
       txs_merkle_root: (() => {
         const latest = dag.getLatestCommit && dag.getLatestCommit();
         return latest?.txs_merkle_root || "";
