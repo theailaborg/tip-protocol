@@ -237,7 +237,7 @@
     "consensus": {
       "votes_retention_rounds": 5,
       "max_txs_per_certificate": 500,
-      "certificate_max_bytes": 1048576,
+      "certificate_max_bytes": 2097152,
       "gc_depth": 500,
       "bft_time_genesis_ms": 1783036800000,
       "epoch_duration_ms": 86400000,
