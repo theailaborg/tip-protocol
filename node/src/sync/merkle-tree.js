@@ -21,6 +21,7 @@
 "use strict";
 
 const { shake256 } = require("../../../shared/crypto");
+const merkle = require("../../../shared/merkle");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.merkle");
@@ -143,25 +144,9 @@ function createMerkleTree(options = {}) {
    */
   function getProof(hash) {
     if (_dirty) _rebuild();
-    let idx = _leaves.indexOf(hash);
+    const idx = _leaves.indexOf(hash);
     if (idx === -1) return null;
-
-    const proof = [];
-    for (let level = 0; level < _levels.length - 1; level++) {
-      const levelHashes = _levels[level];
-      const siblingIdx = idx % 2 === 0 ? idx + 1 : idx - 1;
-
-      if (siblingIdx < levelHashes.length) {
-        proof.push({
-          hash: levelHashes[siblingIdx],
-          position: idx % 2 === 0 ? "right" : "left",
-        });
-      }
-
-      idx = Math.floor(idx / 2);
-    }
-
-    return proof;
+    return merkle.getProof(_levels, idx);
   }
 
   /**
@@ -172,17 +157,7 @@ function createMerkleTree(options = {}) {
    * @returns {boolean}
    */
   function verifyProof(leafHash, proof, expectedRoot) {
-    let currentHash = shake256(`leaf:${leafHash}`);
-
-    for (const step of proof) {
-      if (step.position === "left") {
-        currentHash = shake256(step.hash + currentHash);
-      } else {
-        currentHash = shake256(currentHash + step.hash);
-      }
-    }
-
-    return currentHash === expectedRoot;
+    return merkle.verifyProof(leafHash, proof, expectedRoot);
   }
 
   /**
@@ -207,26 +182,8 @@ function createMerkleTree(options = {}) {
       return;
     }
 
-    // Level 0: hash each leaf
-    let currentLevel = _leaves.map(h => shake256(`leaf:${h}`));
-    _levels.push([...currentLevel]);
-
-    // Build up the tree
-    while (currentLevel.length > 1) {
-      const nextLevel = [];
-      for (let i = 0; i < currentLevel.length; i += 2) {
-        if (i + 1 < currentLevel.length) {
-          nextLevel.push(shake256(currentLevel[i] + currentLevel[i + 1]));
-        } else {
-          // Odd number of nodes — promote the last one
-          nextLevel.push(currentLevel[i]);
-        }
-      }
-      currentLevel = nextLevel;
-      _levels.push([...currentLevel]);
-    }
-
-    _root = currentLevel[0];
+    _levels = merkle.buildLevels(_leaves.map(merkle.leafHash));
+    _root = _levels[_levels.length - 1][0];
     _dirty = false;
   }
 
