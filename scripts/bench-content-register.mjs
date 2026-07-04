@@ -24,6 +24,7 @@ const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { initCrypto, shake256, tipNormalize, mldsaSign, mldsaVerify, generateMLDSAKeypair } =
   require(path.join(ROOT, "shared/crypto"));
+const { nowMs } = require(path.join(ROOT, "shared/time"));
 const schema = require(path.join(ROOT, "node/src/schemas/content-register"));
 
 function arg(name, dflt) {
@@ -36,7 +37,7 @@ const NODES = arg("nodes",
   "https://node1.theailab.org,https://node2.theailab.org,https://node3.theailab.org").split(",");
 const USERS_FILE = arg("users", path.join(ROOT, "genesis-data/temp-users/temp-users-latest.json"));
 const COMMIT_SAMPLE = Number(arg("commit-sample", "5"));   // poll every Nth tx
-const RUN_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+const RUN_ID = `${nowMs().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
 function pct(sorted, p) {
   if (!sorted.length) return null;
@@ -99,6 +100,17 @@ async function main() {
   if (!users.length) throw new Error("no users with private keys in " + USERS_FILE);
   console.log(`rate=${RATE}/s duration=${DURATION}s nodes=${NODES.length} users=${users.length} run=${RUN_ID}\n`);
 
+  // Pre-sign the whole corpus so the timed window measures the CLUSTER,
+  // not this machine's ~16ms/signature.
+  const corpusSize = Math.ceil(RATE * DURATION * 1.05);
+  console.log(`pre-signing ${corpusSize} payloads...`);
+  const corpus = [];
+  for (let i = 0; i < corpusSize; i++) {
+    corpus.push(buildTx(users[i % users.length], i));
+    if (i % 500 === 499) console.log(`  ${i + 1}/${corpusSize}`);
+  }
+  console.log("corpus ready; firing.\n");
+
   const submitLat = [];
   const commitLat = [];
   const statuses = {};
@@ -108,12 +120,11 @@ async function main() {
   const intervalMs = 1000 / RATE;
   const endAt = performance.now() + DURATION * 1000;
 
-  while (performance.now() < endAt) {
+  while (performance.now() < endAt && seq < corpus.length) {
     const tickStart = performance.now();
     const mySeq = seq++;
-    const user = users[mySeq % users.length];
     const node = NODES[mySeq % NODES.length];
-    const body = buildTx(user, mySeq);
+    const body = corpus[mySeq];
 
     (async () => {
       const t0 = performance.now();

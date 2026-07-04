@@ -502,7 +502,7 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
       // replaying the DAG (§14 Byzantine-robust state sync).
       try {
         if (acceptedCount > 0 && dag.saveCommit) {
-          const stateRoot = computeStateMerkleRoot(dag);
+          const stateRoot = dag.stateRoot();
           const txsRoot = computeTxsMerkleRoot(orderedTxs);
           const acks = leaderCert.acknowledgments || [];
           const ackSignerIds = acks.map(a => a.acker_node_id);

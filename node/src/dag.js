@@ -25,6 +25,9 @@
 const path = require("path");
 const fs = require("fs");
 const { computeTxId, verifyTxId, canonicalJson } = require("../../shared/crypto");
+const { shake256 } = require("../../shared/crypto");
+const { createSMT } = require("../../shared/smt");
+const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
 const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
@@ -393,16 +396,53 @@ function cmpBin(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
 // ══════════════════════════════════════════════════════════════════════════════
 // IN-MEMORY STORE
 // ══════════════════════════════════════════════════════════════════════════════
+// ─── Incremental state tree (#88) ────────────────────────────────────────────
+// Canonical maps are instrumented: every set/delete re-syncs the SMT leaf by
+// READING BACK the row through the same map + canonicalizer that
+// iterateCanonicalState uses , a write can never drift from the root, and
+// future write sites are covered by construction. Composite structures
+// (dedup triple-map, protocol_params arrays) sync explicitly at method end.
+const SMT_READ = {
+  identities: (st, pk) => { const r = st._identities.get(pk); return r ? _canonIdentity(r) : null; },
+  content: (st, pk) => { const r = st._content.get(pk); return r ? _canonContent(r) : null; },
+  scores: (st, pk) => { const v = st._scores.get(pk); return v ? _canonScore(pk, v) : null; },
+  dedup_registry: (st, pk) => st._dedup.has(pk)
+    ? _canonDedup(pk, st._dedupCreated ? st._dedupCreated.get(pk) : null, st._dedupTipId ? st._dedupTipId.get(pk) : null)
+    : null,
+  revocations: (st, pk) => { const r = st._revocations.get(pk); return r ? _canonRevocation(r) : null; },
+  domain_bindings: (st, pk) => { const r = st._domainBindings.get(pk); return r ? _canonDomainBinding(r) : null; },
+  platform_links: (st, pk) => { const r = st._platformLinks.get(pk); return r ? _canonPlatformLink(r) : null; },
+  verification_providers: (st, pk) => { const r = st._vps.get(pk); return r ? _canonVP(r) : null; },
+  nodes: (st, pk) => { const r = st._nodes.get(pk); return r ? _canonNode(r) : null; },
+  entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
+  prescan_reviews: (st, pk) => { const r = st._prescanReviews.get(pk); return r ? _canonPrescanReview(r) : null; },
+  interests_registry: (st, pk) => { const r = st._interestsRegistry.get(pk); return r ? _canonInterest(r) : null; },
+  protocol_params: (st, pk) => {
+    const sep = pk.lastIndexOf("\x00");
+    const arr = st._protocolParams.get(pk.slice(0, sep));
+    const h = Number(pk.slice(sep + 1));
+    const r = arr && arr.find(x => x.effective_from_height === h);
+    return r ? _canonProtocolParam(r) : null;
+  },
+};
+
+class SmtMap extends Map {
+  constructor(owner, table) { super(); this._owner = owner; this._table = table; }
+  set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
+  delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
+}
+
 class MemoryStore {
   constructor() {
+    this._smt = createSMT();   // #88 , must exist before any canonical map
     this._txs = new Map();  // tx_id -> tx
-    this._identities = new Map();  // tip_id -> record (no public_key — see entity_keys)
-    this._content = new Map();  // ctid -> record
-    this._scores = new Map();  // tip_id -> { score, offense_count, last_updated }
-    this._dedup = new Set();  // dedup_hash strings (Poseidon field elements)
-    this._revocations = new Map();  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
-    this._vps = new Map();  // vp_id -> record (no public_key — see entity_keys)
-    this._nodes = new Map();  // node_id -> record (no public_key — see entity_keys)
+    this._identities = new SmtMap(this, "identities");  // tip_id -> record (no public_key — see entity_keys)
+    this._content = new SmtMap(this, "content");  // ctid -> record
+    this._scores = new SmtMap(this, "scores");  // tip_id -> { score, offense_count, last_updated }
+    this._dedup = new Set();  // dedup_hash strings (Poseidon field elements); SMT sync is explicit in addDedupHash
+    this._revocations = new SmtMap(this, "revocations");  // tip_id -> { tip_id, tx_type, timestamp, tx_id }
+    this._vps = new SmtMap(this, "verification_providers");  // vp_id -> record (no public_key — see entity_keys)
+    this._nodes = new SmtMap(this, "nodes");  // node_id -> record (no public_key — see entity_keys)
     // GH #60 — single source of truth for public_key + algorithm of every
     // identity/node/VP across all time. Append-only with valid_from_ts /
     // valid_to_ts ranges (DID / X.509 / JWKS pattern). KEY_ROTATED /
@@ -413,11 +453,11 @@ class MemoryStore {
     //
     // Key: `${entity_type}:${entity_id}:${valid_from_ts}` so we can
     // efficiently iterate per-entity history. Sorted by valid_from_ts.
-    this._entityKeys = new Map();
+    this._entityKeys = new SmtMap(this, "entity_keys");
     this._certs = new Map();  // cert hash -> certificate
     this._commits = new Map();  // round -> commit checkpoint record (§15)
     this._committeeHistory = new Map();  // rotation_number -> rotation record (§4 + #34)
-    this._interestsRegistry = new Map(); // slug -> {slug, label, category, registered_at, registered_by_vp_id, tx_id}
+    this._interestsRegistry = new SmtMap(this, "interests_registry"); // slug -> {slug, label, category, registered_at, registered_by_vp_id, tx_id}
     // #39 — governable protocol parameters, temporal/append-only. Keyed by
     // param_key -> array of rows sorted ASC by effective_from_height. The
     // active value at a height is the last row with effective_from_height <=
@@ -425,12 +465,12 @@ class MemoryStore {
     // per (param_key, effective_from_height)).
     this._protocolParams = new Map();
     this._rotationParticipation = new Map();  // `${node_id}|${rotation_number}` -> count (#75)
-    this._prescanReviews = new Map();  // review_id -> review record (human reviewing AI prescan flag)
+    this._prescanReviews = new SmtMap(this, "prescan_reviews");  // review_id -> review record (human reviewing AI prescan flag)
     this._mempool = new Map();  // tx_id -> tx
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
-    this._domainBindings = new Map();  // domain -> binding record (canonical, in state_merkle_root)
+    this._domainBindings = new SmtMap(this, "domain_bindings");  // domain -> binding record (canonical, in state_merkle_root)
     // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
     // state_merkle_root). Source of truth + derived candidate indexes.
     this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
@@ -441,7 +481,7 @@ class MemoryStore {
     this._audioClipSeq = 0;                     // surrogate clip_id allocator (§8.1)
     this._audioLandmarks = [];                  // audio inverted-index rows { profile, hash, clip_id, t }
     this._domainPending = new Map();  // domain -> pending claim record (local-only, NOT canonical)
-    this._platformLinks = new Map(); // key: `${tip_id}::${platform}`
+    this._platformLinks = new SmtMap(this, "platform_links"); // key: `${tip_id}::${platform}` (== row.id)
   }
 
   // ── Transactions ─────────────────────────────────────────────────────────
@@ -695,6 +735,7 @@ class MemoryStore {
     this._dedupCreated.set(hash, createdAt);
     if (!this._dedupTipId) this._dedupTipId = new Map();
     if (tipId) this._dedupTipId.set(hash, tipId);
+    this._smtSync("dedup_registry", hash);
   }
   hasDedupHash(hash) { return this._dedup.has(hash); }
   dedupCount() { return this._dedup.size; }
@@ -955,6 +996,7 @@ class MemoryStore {
     this._prescanReviews.clear();
     this._interestsRegistry.clear();
     this._protocolParams.clear();
+    this._smt.clear();
   }
 
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
@@ -1181,6 +1223,7 @@ class MemoryStore {
     if (arr.some(r => r.effective_from_height === effective_from_height)) return;
     arr.push({ param_key, value, effective_from_height, update_tx_id });
     arr.sort((a, b) => a.effective_from_height - b.effective_from_height);
+    this._smtSync("protocol_params", `${param_key}\x00${effective_from_height}`);
   }
   // Active value of a key as of `height` (default: latest). Returns the parsed
   // JS value of the row with the greatest effective_from_height <= height, or
@@ -1413,6 +1456,27 @@ class MemoryStore {
   // suspended nodes, etc. are part of consensus state — two nodes that have
   // applied the same tx sequence must agree on the full set, including
   // terminal states. Filtering is a view concern, not a state concern.
+  // ── #88 incremental state tree ────────────────────────────────────────────
+  _smtSync(table, pk) {
+    const row = SMT_READ[table](this, pk);
+    const key = stateLeafKey(table, String(pk));
+    if (row == null) this._smt.remove(key);
+    else this._smt.set(key, shake256(canonicalJson(row)));
+  }
+
+  stateRoot() {
+    return this._smt.root();
+  }
+
+  // Full rebuild from the canonical walk , boot-safety / test cross-check.
+  rebuildStateTree() {
+    this._smt.clear();
+    for (const { table, row } of this.iterateCanonicalState()) {
+      this._smt.set(stateLeafKey(table, String(STATE_PK[table](row))), shake256(canonicalJson(row)));
+    }
+    return this._smt.root();
+  }
+
   *iterateCanonicalState() {
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
@@ -3411,6 +3475,14 @@ class SQLiteStore {
   // uses prepared-statement cursors (better-sqlite3 iterate()) so rows flow
   // one at a time without loading the whole table. `ORDER BY <pk>` uses the
   // primary-key index, so sorting is free (no temp table / external sort).
+  stateRoot() {
+    const smt = createSMT();
+    for (const { table, row } of this.iterateCanonicalState()) {
+      smt.set(stateLeafKey(table, String(STATE_PK[table](row))), shake256(canonicalJson(row)));
+    }
+    return smt.root();
+  }
+  rebuildStateTree() { return this.stateRoot(); }
   *iterateCanonicalState() {
     const db = this.db;
     for (const r of db.prepare("SELECT * FROM identities ORDER BY tip_id").iterate()) {
@@ -3882,6 +3954,8 @@ function _buildDagHandle(store, config) {
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: () => store.iterateCanonicalState(),
     clearCanonicalState: () => store.clearCanonicalState(),
+    stateRoot: () => store.stateRoot(),
+    rebuildStateTree: () => store.rebuildStateTree(),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),

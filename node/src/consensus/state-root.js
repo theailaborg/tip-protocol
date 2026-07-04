@@ -33,8 +33,9 @@
 const crypto = require("crypto");
 const { shake256, canonicalJson } = require("../../../shared/crypto");
 const merkle = require("../../../shared/merkle");
+const { createSMT, EMPTY_SMT_ROOT } = require("../../../shared/smt");
 
-const EMPTY_STATE_ROOT = shake256("tip:state-root:empty");
+const EMPTY_STATE_ROOT = EMPTY_SMT_ROOT();
 const EMPTY_TXS_ROOT = shake256("tip:txs-root:empty");
 
 /**
@@ -66,61 +67,81 @@ const EMPTY_TXS_ROOT = shake256("tip:txs-root:empty");
  *     rowCount()                       -- total rows fed so far
  *   }
  */
+// Per-table primary key extraction from the CANONICAL row , protocol spec,
+// shared by the incremental tree (dag.js) and the streaming verifier below.
+const STATE_PK = {
+  identities: r => r.tip_id,
+  content: r => r.ctid,
+  scores: r => r.tip_id,
+  dedup_registry: r => r.dedup_hash,
+  revocations: r => r.tip_id,
+  domain_bindings: r => r.domain,
+  platform_links: r => r.id,
+  verification_providers: r => r.vp_id,
+  nodes: r => r.node_id,
+  entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
+  prescan_reviews: r => r.review_id,
+  interests_registry: r => r.slug,
+  protocol_params: r => `${r.param_key}\x00${r.effective_from_height}`,
+};
+
+function stateLeafKey(table, pk) {
+  return shake256(table + "\x00" + pk);
+}
+
+/**
+ * Streaming state-root builder over canonical rows , SMT-backed (#88).
+ * Insertion order no longer matters (tree is a pure function of the row
+ * set), but callers keep streaming exactly as before.
+ */
 function createStateRootBuilder() {
-  const perTable = new Map();
-  const order = [];
+  const smt = createSMT();
   let total = 0;
   let finalized = false;
 
-  function _hasherFor(table) {
-    let h = perTable.get(table);
-    if (!h) {
-      h = crypto.createHash("shake256", { outputLength: 32 });
-      perTable.set(table, h);
-      order.push(table);
-    }
-    return h;
-  }
-
-  function addRow(table, canonicalRowJson) {
+  function _add(table, pk, canonicalRowJson) {
     if (finalized) throw new Error("StateRootBuilder: finalize() already called");
-    if (typeof table !== "string" || !table) throw new Error("addRow: table is required");
-    const h = _hasherFor(table);
-    h.update(canonicalRowJson, "utf8");
-    h.update("\n", "utf8");
+    smt.set(stateLeafKey(table, String(pk)), shake256(canonicalRowJson));
     total++;
   }
 
+  function _pkOf(table) {
+    const pkOf = STATE_PK[table];
+    if (typeof table !== "string" || !pkOf) throw new Error(`StateRootBuilder: unknown canonical table "${table}"`);
+    return pkOf;
+  }
+
+  // Object path (dag walk): pk from the object , no round-trip through JSON.
   function addRowObject(table, rowObject) {
-    addRow(table, canonicalJson(rowObject));
+    _add(table, _pkOf(table)(rowObject), canonicalJson(rowObject));
+  }
+
+  // Wire path (snapshot rows arrive as canonical strings). The snapshot
+  // handler JSON.parses the same string for its own bookkeeping, so
+  // parseability of real canonical rows is an existing wire invariant.
+  function addRow(table, canonicalRowJson) {
+    let row;
+    try { row = JSON.parse(canonicalRowJson); }
+    catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
+    _add(table, _pkOf(table)(row), canonicalRowJson);
   }
 
   function finalize() {
     if (finalized) throw new Error("StateRootBuilder: finalize() already called");
     finalized = true;
-    if (order.length === 0) return EMPTY_STATE_ROOT;
-    const outer = crypto.createHash("shake256", { outputLength: 32 });
-    outer.update("tip:state-root:v1", "utf8");
-    outer.update("\x00", "utf8");
-    for (const table of order) {
-      outer.update(table, "utf8");
-      outer.update(":", "utf8");
-      outer.update(perTable.get(table).digest("hex"), "utf8");
-      outer.update("\x00", "utf8");
-    }
-    return outer.digest("hex");
+    return smt.root();
   }
 
   return { addRow, addRowObject, finalize, rowCount: () => total };
 }
 
 /**
- * Compute state_merkle_root by streaming the DAG's canonical state through
- * the builder. Memory stays bounded at one row — scales to networks with
- * millions of rows, matches Cosmos IAVL / Ethereum MPT streaming readers.
- *
- * @param {Object} dag  DAG facade exposing iterateCanonicalState()
- * @returns {string}    64-char hex SHAKE-256 digest
+ * Reference state root: stream the DAG's canonical rows through the
+ * SMT-backed builder. Equivalent to dag.stateRoot() (which is O(1)); kept
+ * as the independent cross-check the determinism tests assert against, and
+ * used by snapshot verification.
+ * @param {Object} dag  exposes iterateCanonicalState()
+ * @returns {string}
  */
 function computeStateMerkleRoot(dag) {
   const b = createStateRootBuilder();
@@ -130,19 +151,6 @@ function computeStateMerkleRoot(dag) {
   return b.finalize();
 }
 
-/**
- * Compute txs_merkle_root as a binary SHAKE-256 Merkle tree over the
- * ordered tx_ids committed at this round. Leaf = `SHAKE-256("L" || tx_id)`;
- * internal = `SHAKE-256("N" || left || right)`. Odd levels duplicate the
- * last node (bitcoin-style) so every level's width is even.
- *
- * Domain-separated leaf/internal hashes (RFC 6962 style) prevent
- * second-preimage attacks where a 64-byte leaf could be mistaken for the
- * concatenation of two 32-byte internals.
- *
- * @param {Array<Object>} orderedTxs  Array of {tx_id, ...} in commit order
- * @returns {string}                  64-char hex SHAKE-256 digest
- */
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
   return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
@@ -150,6 +158,8 @@ function computeTxsMerkleRoot(orderedTxs) {
 
 module.exports = {
   computeStateMerkleRoot,
+  STATE_PK,
+  stateLeafKey,
   computeTxsMerkleRoot,
   createStateRootBuilder,
   EMPTY_STATE_ROOT,
