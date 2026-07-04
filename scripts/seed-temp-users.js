@@ -418,14 +418,9 @@ async function main() {
     console.log(`✓ ${result.tip_id}  → score ${score}`);
   }
 
-  console.log(`▸ Waiting for consensus to commit + propagate to ${reachableUrls.length} reachable node(s)...`);
-  for (const u of users) {
-    process.stdout.write(`  ${u.tip_id} `);
-    const ok = await confirmOnReachableNodes(u.tip_id, reachableUrls);
-    if (!ok) throw new Error(`identity ${u.tip_id} did not appear on reachable nodes within 90s`);
-    console.log("✓");
-  }
-
+  // Persist keys FIRST: private keys exist only in memory here and are the
+  // only copy. Writing before the propagation check means a slow/failed
+  // confirm (e.g. cross-node HTTPS timeout) can never lose them.
   const outFile = path.join(TEMP_USERS_DIR, `temp-users-${nowIso().replace(/[:.]/g, "-")}.json`);
   const payload = {
     created_at: nowIso(),
@@ -439,6 +434,14 @@ async function main() {
   fs.writeFileSync(OUT_LATEST, JSON.stringify(payload, null, 2));
   console.log(`▸ Wrote ${outFile} (${users.length} keypairs)`);
   console.log(`▸ Wrote ${OUT_LATEST} (latest pointer)`);
+
+  console.log(`▸ Waiting for consensus to commit + propagate to ${reachableUrls.length} reachable node(s)...`);
+  for (const u of users) {
+    process.stdout.write(`  ${u.tip_id} `);
+    const ok = await confirmOnReachableNodes(u.tip_id, reachableUrls);
+    if (!ok) { console.log(`(not seen within 90s; keys already saved, continuing)`); continue; }
+    console.log("✓");
+  }
 
   // Per-user .tip.json backups — same format as genesis-data/backups/
   // (the VP app's identity-export format). Kept in temp-users/keys/ rather
