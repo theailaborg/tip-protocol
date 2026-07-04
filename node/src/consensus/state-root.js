@@ -32,6 +32,7 @@
 
 const crypto = require("crypto");
 const { shake256, canonicalJson } = require("../../../shared/crypto");
+const merkle = require("../../../shared/merkle");
 
 const EMPTY_STATE_ROOT = shake256("tip:state-root:empty");
 const EMPTY_TXS_ROOT = shake256("tip:txs-root:empty");
@@ -144,18 +145,7 @@ function computeStateMerkleRoot(dag) {
  */
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
-
-  let level = orderedTxs.map(t => shake256("L" + t.tx_id));
-  while (level.length > 1) {
-    const next = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const left = level[i];
-      const right = i + 1 < level.length ? level[i + 1] : left;
-      next.push(shake256("N" + left + right));
-    }
-    level = next;
-  }
-  return level[0];
+  return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
 }
 
 module.exports = {
