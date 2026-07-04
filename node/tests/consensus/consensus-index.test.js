@@ -58,7 +58,8 @@ function registerNode(dag) {
 // BFT-Time monotonic floor for synthetic certs. Each call advances by 1ms
 // so anchors land in strictly-increasing order, satisfying bullshark's
 // monotonicity gate without coupling to wall-clock.
-const BFT_T0 = 1773532801000; // 1ms past genesis floor
+const { CONSENSUS: _C } = require(path.join(SHARED, "protocol-constants"));
+const BFT_T0 = _C.BFT_TIME_GENESIS_MS + 1000; // just past the genesis floor, whatever genesis says
 function _certTsForRound(round) {
   return BFT_T0 + round; // 1ms per round — strictly increasing
 }

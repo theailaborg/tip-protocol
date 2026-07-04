@@ -41,7 +41,7 @@ const { createBullshark } = require(path.join(SRC, "consensus", "bullshark"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const participants = require(path.join(SRC, "consensus", "participants"));
 
-const T0 = 1773532801000; // 1ms past the genesis BFT-time floor
+const T0 = require("../../../shared/protocol-constants").CONSENSUS.BFT_TIME_GENESIS_MS + 1000; // just past the genesis floor
 const getNodeKey = (dag, nodeId) => (dag.getNode(nodeId)?.public_key || null);
 
 // Flush the real microtask + setImmediate queue (fake timers leave these real).

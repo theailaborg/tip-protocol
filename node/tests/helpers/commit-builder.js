@@ -103,7 +103,7 @@ function buildCommittedDag({
   // a `signed_at` integer epoch ms — a deterministic per-ack offset (1ms
   // apart) anchored 1ms past BFT_TIME_GENESIS_MS. Cert.timestamp = median
   // of these values, also deterministic and comfortably above the floor.
-  const _bftT0 = 1773532801000;
+  const _bftT0 = require(path.join(SHARED, "protocol-constants")).CONSENSUS.BFT_TIME_GENESIS_MS + 1000;
   let ackSignerIds = [];
   let ackSignatures = [];
   let ackSignedAts = [];
