@@ -51,7 +51,7 @@ function registerNode(dag) {
 
 // BFT-Time monotonic floor for synthetic certs (1ms per round, strictly
 // increasing, anchored 1ms past the genesis floor).
-const BFT_T0 = 1773532801000;
+const BFT_T0 = require(path.join(SHARED, "protocol-constants")).CONSENSUS.BFT_TIME_GENESIS_MS + 1000;
 
 function makeCert(round, parentHashes = []) {
   const hash = shake256(`cert:${round}:${NODE_ID}`);
