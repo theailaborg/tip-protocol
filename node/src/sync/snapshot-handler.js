@@ -43,7 +43,7 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
-const { TX_TYPES, SNAPSHOT_DOWNLOAD } = require("../../../shared/constants");
+const { TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
 const { createStateRootBuilder } = require("../consensus/state-root");
@@ -1379,17 +1379,15 @@ async function _readOneMessage(stream, typeName) {
   // Node 22 single-chunk delivery; Node 24 stream internals can deliver an
   // empty/partial first chunk (live incident: every snapshot request read
   // as empty, joiners looped on download deadlines forever).
-  const MAX_REQUEST_BYTES = 64 * 1024;
-  const DEADLINE_MS = 5000;
   const chunks = [];
   let total = 0;
   const timer = new Promise((_, rej) =>
-    setTimeout(() => rej(new Error("request read deadline")), DEADLINE_MS).unref?.());
+    setTimeout(() => rej(new Error("request read deadline")), SNAPSHOT_REQUEST.MAX_MS).unref?.());
   const read = (async () => {
     for await (const chunk of stream.source) {
       const buf = chunk.subarray ? chunk.subarray() : chunk;
       total += buf.length;
-      if (total > MAX_REQUEST_BYTES) throw new Error("request too large");
+      if (total > SNAPSHOT_REQUEST.MAX_BYTES) throw new Error("request too large");
       chunks.push(buf);
     }
   })();

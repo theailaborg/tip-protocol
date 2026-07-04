@@ -77,6 +77,14 @@ const SNAPSHOT_DOWNLOAD = Object.freeze({
   MAX_MS: 180_000,                // 180 s overall deadline for the whole download
 });
 
+// Server-side bound on reading one SnapshotRequest (node-local DoS guard,
+// like SNAPSHOT_DOWNLOAD on the receiving side , divergent values cannot
+// fork the chain). Requests are ~100 bytes; 64KB is generous headroom.
+const SNAPSHOT_REQUEST = Object.freeze({
+  MAX_BYTES: 64 * 1024,
+  MAX_MS: 5000,
+});
+
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
 // Vocabulary enum for the 4-tier categorical model. Threshold values that
 // decide which probability falls into which tier live in genesis under
@@ -795,6 +803,7 @@ module.exports = {
   CONTENT_STATUS,
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
+  SNAPSHOT_REQUEST,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,
