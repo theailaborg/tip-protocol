@@ -47,26 +47,7 @@ const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
 // (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
-const SCHEMA_FOR_TX_TYPE = Object.freeze({
-  [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
-  [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
-  [TX_TYPES.BIND_DOMAIN]: bindDomainSchema,
-  [TX_TYPES.UPDATE_PROFILE]: updateProfileSchema,
-  [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: prescanReviewTriggeredSchema,
-  [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
-  [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
-  [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
-  [TX_TYPES.PRESCAN_COMPLETED]: prescanCompletedSchema,
-  // GH #60 — key rotation + VP-attested recovery. Both append a new
-  // entity_keys row + close the prior one atomically.
-  [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
-  [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
-  // Interest taxonomy registry — VP-attested.
-  [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
-  // Social account linking/unlinking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
-  [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
-  [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
-});
+const { SCHEMA_FOR_TX_TYPE } = require("../schemas/_schema-map");
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
 // orphaned by the linter, and so future tx_types that promote out of

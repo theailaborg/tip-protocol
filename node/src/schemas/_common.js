@@ -178,38 +178,43 @@ function resolveSignatureContract(tx, schema) {
   return entry;
 }
 
-function resolveSignerRecord(tx, schema, dag) {
+/**
+ * The signing ENTITY of a tx , (entityType, entityId) , resolved from the
+ * same contract the signature dispatcher verifies against. Single source
+ * of truth for "who signs this": signature verification resolves the key
+ * through it, and the owner-chain (tx.prev slot 0) derives ownership from
+ * it, so the two can never disagree.
+ */
+function resolveSignerEntity(tx, schema) {
   const contract = resolveSignatureContract(tx, schema);
   if (!contract) return null;
   const kind = contract.SIGNED_BY;
   if (!SIGNED_BY_KIND_VALUES.has(kind)) return null;
 
-  // GH #60: pick the entity_type discriminator + entity_id field. We
-  // resolve the signer's key via dag.getKeyValidAt(entity_type,
+  if (kind === SIGNED_BY_KIND.NODE) {
+    const entityId = tx?.data?.node_id;
+    return entityId ? { entityType: "node", entityId } : null;
+  }
+  if (kind === SIGNED_BY_KIND.VP) {
+    // Contract may declare a non-default VP_ID_FIELD (REVOKE_* uses
+    // "issuing_vp_id"; VP_REGISTERED / NODE_REGISTERED use
+    // "approving_vp_id"). Default "vp_id".
+    const entityId = tx?.data?.[contract.VP_ID_FIELD || "vp_id"];
+    return entityId ? { entityType: "vp", entityId } : null;
+  }
+  // SIGNED_BY_KIND.SUBJECT — field declared via SUBJECT_TIP_ID_FIELD.
+  const entityId = tx?.data?.[contract.SUBJECT_TIP_ID_FIELD || "tip_id"];
+  return entityId ? { entityType: "identity", entityId } : null;
+}
+
+function resolveSignerRecord(tx, schema, dag) {
+  // GH #60: resolve the signer's key via dag.getKeyValidAt(entity_type,
   // entity_id, tx.timestamp) so historical signatures verify against
   // the key that was active at sign time (NOT today's active key
-  // post-rotation). Pre-rotation identities have exactly one row in
-  // entity_keys so the result is identical to the active-key lookup.
-  let entityType;
-  let entityId;
-  if (kind === SIGNED_BY_KIND.NODE) {
-    entityType = "node";
-    entityId = tx?.data?.node_id;
-  } else if (kind === SIGNED_BY_KIND.VP) {
-    // VP-signed. Contract may declare a non-default VP_ID_FIELD
-    // (REVOKE_* uses "issuing_vp_id"; VP_REGISTERED / NODE_REGISTERED
-    // use "approving_vp_id"). Default "vp_id" covers REGISTER_IDENTITY
-    // and any future VP-attestation tx that follows the canonical name.
-    entityType = "vp";
-    entityId = tx?.data?.[contract.VP_ID_FIELD || "vp_id"];
-  } else {
-    // SIGNED_BY_KIND.SUBJECT — the entity whose action this tx represents.
-    // Contract declares WHICH field on tx.data carries the subject's
-    // tip_id via `SUBJECT_TIP_ID_FIELD` (defaults to "tip_id").
-    entityType = "identity";
-    entityId = tx?.data?.[contract.SUBJECT_TIP_ID_FIELD || "tip_id"];
-  }
-  if (!entityId) return null;
+  // post-rotation).
+  const entity = resolveSignerEntity(tx, schema);
+  if (!entity) return null;
+  const { entityType, entityId } = entity;
 
   // Time-anchored lookup. Use tx.timestamp so a tx signed before a
   // rotation verifies against the OLD key (which is the row whose
@@ -467,6 +472,7 @@ module.exports = {
   canonicalTx,
   // GH #51 — unified-storage signature helpers (constants in shared/constants.js)
   resolveSignatureContract,
+  resolveSignerEntity,
   resolveSignerRecord,
   resolveSignerPubKey,
   bodyMessageHex,
