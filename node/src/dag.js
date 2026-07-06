@@ -96,6 +96,16 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
+// prescan_probability is a float4 (32-bit) DB column but a float64 in live
+// memory: hydration reads the lossy-rounded float32 (0.1 -> 0.10000000149),
+// live commit holds the exact float64 (0.1). Hashing the raw float forks the
+// state root between restarted and live nodes (live incident 2026-07-06).
+// Quantize to integer basis-points (4 dp): float32 error (~1e-7) can never
+// cross a 1e-4 boundary, so both representations collapse to one value.
+function _quantizeProb(p) {
+  return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
+}
+
 function _canonContent(r) {
   // Intentionally excluded: `dispute_count`, `verification_count`. Both are
   // dead columns today (always 0 — never written) and would trap a future
@@ -118,7 +128,7 @@ function _canonContent(r) {
     cna_version: r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
-    prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
+    prescan_probability: _quantizeProb(r.prescan_probability),
     prescan_tier: r.prescan_tier || "low",
     prescan_status: r.prescan_status || "completed",
     prescan_completed_at: typeof r.prescan_completed_at === "number" ? r.prescan_completed_at : null,
