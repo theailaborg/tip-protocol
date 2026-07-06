@@ -74,7 +74,7 @@ const CLASSIFIER_CLIENT = Object.freeze({
 // (deferred, see snapshot-handler).
 const SNAPSHOT_DOWNLOAD = Object.freeze({
   MAX_BYTES: 512 * 1024 * 1024,   // 512 MB hard ceiling on a single snapshot download
-  MAX_MS: 180_000,                // 180 s overall deadline for the whole download
+  MAX_MS: 600_000,                // 600 s: snapshots have grown to 400MB+; raise until streaming install (#132) shrinks them
 });
 
 // Server-side bound on reading one SnapshotRequest (node-local DoS guard,
