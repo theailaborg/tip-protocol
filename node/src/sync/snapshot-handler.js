@@ -441,6 +441,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         });
         yield _frame(endBuf);
       })()));
+      // Half-close our write direction so the client's read loop sees a clean
+      // EOF and stops waiting. Without it the client blocks until its download
+      // deadline (~180s) and treats a complete serve as a timeout.
+      if (typeof stream.closeWrite === "function") {
+        await stream.closeWrite();
+      }
     } catch (err) {
       log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
       return;
@@ -496,18 +502,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
-      // Length-prefixed like every other snapshot frame, and the write side
-      // stays OPEN until the response is fully read: Node 24's stream stack
-      // could abort an unflushed write when the source ended immediately
-      // (live incident: requests arrived as zero bytes, joiners could never
-      // sync). With framing the server needs no EOF; with the held-open
-      // write there is no FIN to race the flush.
-      let _releaseWriteSide;
-      const _writeHold = new Promise(res => { _releaseWriteSide = res; });
-      const _sinkDone = stream.sink((async function* () {
-        yield _frame(reqBuf);
-        await _writeHold;
-      })()).catch(() => {});
+      // Bidirectional request-response: write the framed request, then
+      // closeWrite() , flush-then-half-close the WRITE direction only, in
+      // guaranteed order , while the READ side stays open for the response.
+      //   - sink([x]) alone lets the implicit whole-stream close race the
+      //     data flush on Node 24 -> server reads 0 bytes.
+      //   - holding the write open never flushes (sink only flushes when its
+      //     source ends) -> also 0 bytes.
+      // closeWrite is the correct primitive for exactly this pattern.
+      await stream.sink([_frame(reqBuf)]);
+      if (typeof stream.closeWrite === "function") {
+        await stream.closeWrite();
+      }
 
       // Read every frame off the stream into a single buffer, then split into
       // length-prefixed messages. #94: the read is BOUNDED by a total-byte cap
@@ -516,15 +522,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // breach aborts the stream and throws, failing this fetch so we retry
       // another peer. (Scale fix for legitimately-large state is a streaming
       // length-prefix parser, deferred, same trigger as issues.md Consensus #32.)
-      let body;
-      try {
-        body = await _readBoundedStream(
-          stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
-        );
-      } finally {
-        _releaseWriteSide();
-        await _sinkDone;
-      }
+      const body = await _readBoundedStream(
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
+      );
 
       const frames = _parseLengthPrefixedFrames(body);
       if (frames.length === 0) throw new Error("empty response from peer");
