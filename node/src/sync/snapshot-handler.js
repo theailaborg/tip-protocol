@@ -496,8 +496,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
-      try { await stream.sink([reqBuf]); }
-      catch (err) { throw new Error(`failed to send request: ${err.message}`); }
+      // Length-prefixed like every other snapshot frame, and the write side
+      // stays OPEN until the response is fully read: Node 24's stream stack
+      // could abort an unflushed write when the source ended immediately
+      // (live incident: requests arrived as zero bytes, joiners could never
+      // sync). With framing the server needs no EOF; with the held-open
+      // write there is no FIN to race the flush.
+      let _releaseWriteSide;
+      const _writeHold = new Promise(res => { _releaseWriteSide = res; });
+      const _sinkDone = stream.sink((async function* () {
+        yield _frame(reqBuf);
+        await _writeHold;
+      })()).catch(() => {});
 
       // Read every frame off the stream into a single buffer, then split into
       // length-prefixed messages. #94: the read is BOUNDED by a total-byte cap
@@ -506,9 +516,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // breach aborts the stream and throws, failing this fetch so we retry
       // another peer. (Scale fix for legitimately-large state is a streaming
       // length-prefix parser, deferred, same trigger as issues.md Consensus #32.)
-      const body = await _readBoundedStream(
-        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
-      );
+      let body;
+      try {
+        body = await _readBoundedStream(
+          stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
+        );
+      } finally {
+        _releaseWriteSide();
+        await _sinkDone;
+      }
 
       const frames = _parseLengthPrefixedFrames(body);
       if (frames.length === 0) throw new Error("empty response from peer");
@@ -1374,31 +1390,54 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
  * single-message request path).
  */
 async function _readOneMessage(stream, typeName) {
-  // Read to EOF, not first-chunk: the requester half-closes after writing,
-  // so end-of-source is deterministic. First-chunk-only worked by luck on
-  // Node 22 single-chunk delivery; Node 24 stream internals can deliver an
-  // empty/partial first chunk (live incident: every snapshot request read
-  // as empty, joiners looped on download deadlines forever).
+  // Framed read: the request arrives as [4-byte BE length][body] , read
+  // exactly that many bytes, no EOF dependency (the sender may hold its
+  // write side open). Legacy fallback: pre-framing nodes send raw protobuf
+  // and half-close; a raw SnapshotRequest never starts with 0x00, a 4-byte
+  // prefix for any sane request always does.
+  const widthBytes = 4;
   const chunks = [];
   let total = 0;
-  const timer = new Promise((_, rej) =>
-    setTimeout(() => rej(new Error("request read deadline")), SNAPSHOT_REQUEST.MAX_MS).unref?.());
+  let deadline;
+  const timer = new Promise((_, rej) => {
+    deadline = setTimeout(() => rej(new Error("request read deadline")), SNAPSHOT_REQUEST.MAX_MS);
+    deadline.unref?.();
+  });
+
+  function _assembled() { return Buffer.concat(chunks, total); }
+  function _tryExtract() {
+    if (total < 1) return null;
+    const buf = _assembled();
+    if (buf[0] !== 0) return { legacy: true, body: null };   // legacy raw , need EOF
+    if (total < widthBytes) return null;
+    const len = buf.readUIntBE(0, widthBytes);
+    if (len > SNAPSHOT_REQUEST.MAX_BYTES) throw new Error("request too large");
+    if (total >= widthBytes + len) return { legacy: false, body: buf.subarray(widthBytes, widthBytes + len) };
+    return null;
+  }
+
   const read = (async () => {
     for await (const chunk of stream.source) {
       const buf = chunk.subarray ? chunk.subarray() : chunk;
       total += buf.length;
-      if (total > SNAPSHOT_REQUEST.MAX_BYTES) throw new Error("request too large");
+      if (total > SNAPSHOT_REQUEST.MAX_BYTES + widthBytes) throw new Error("request too large");
       chunks.push(buf);
+      const got = _tryExtract();
+      if (got && !got.legacy) return got.body;
     }
+    // EOF: legacy raw message is simply everything received.
+    return total > 0 ? _assembled() : null;
   })();
-  try { await Promise.race([read, timer]); }
-  catch (err) {
-    if (chunks.length === 0) return null;
-    throw err;
+
+  try {
+    const body = await Promise.race([read, timer]);
+    if (!body || body.length === 0) return null;
+    return decode(typeName, body);
+  } finally {
+    clearTimeout(deadline);
   }
-  if (total === 0) return null;
-  return decode(typeName, Buffer.concat(chunks));
 }
+
 
 /**
  * Build an all-zero SnapshotHeader for the error-response path.
