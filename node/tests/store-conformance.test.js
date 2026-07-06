@@ -341,7 +341,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect([older.job_id, newer.job_id]).toContain(stuck.job_id);
 
     expect(dag.markPrescanJobDone(older.job_id, { completedAt: T0 + 30000 })).toBe(true);
-    expect(dag.getPrescanJob(older.job_id)).toEqual(expect.objectContaining({ status: "done", completed_at: T0 + 30000 }));
+    expect(dag.getPrescanJob(older.job_id)).toBeNull();   // success deletes the row (retention fix)
 
     expect(dag.releasePrescanJobForRetry(newer.job_id, { lastError: "boom" })).toBe(true);
     expect(dag.getPrescanJob(newer.job_id)).toEqual(expect.objectContaining({ status: "queued", retries: 1, last_error: "boom", claimed_by: null }));

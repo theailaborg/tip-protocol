@@ -587,10 +587,20 @@ function verifyTxId(tx) {
  * the same hash regardless of key insertion order.
  */
 function canonicalJson(obj) {
-  if (obj === null || obj === undefined) return String(obj);
+  // Contract: output is ALWAYS valid JSON, reproducible in any language.
+  // undefined has no JSON representation , object keys holding it are
+  // OMITTED (same field-set semantics as the #85 signing strip rule);
+  // anywhere else (array slot, bare value) it is a caller bug: THROW, never
+  // silently coerce. null is data and is preserved everywhere.
+  if (obj === undefined) {
+    throw new Error("canonicalJson: undefined is only permitted as an omitted object value");
+  }
+  if (obj === null) return "null";
   if (typeof obj !== "object") return JSON.stringify(obj);
-  if (Array.isArray(obj)) return "[" + obj.map(canonicalJson).join(",") + "]";
-  return "{" + Object.keys(obj).sort().map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+  if (Array.isArray(obj)) return "[" + obj.map(v => canonicalJson(v)).join(",") + "]";
+  return "{" + Object.keys(obj).sort()
+    .filter(k => obj[k] !== undefined)
+    .map(k => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
 }
 
 /**

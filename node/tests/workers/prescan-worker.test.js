@@ -142,7 +142,7 @@ describe("tick — happy path", () => {
     expect(tx.data.overall_degraded).toBe(false);
     expect(tx.data.failed).toBe(false);
     expect(tx.data.content_type).toBe("text");
-    expect(jobs.get(jobs.getByCtid(CTID).job_id).status).toBe("done");
+    expect(jobs.getByCtid(CTID)).toBeNull();   // success deletes the row (retention fix)
   });
 
   test("CRITICAL probability → tier + flagged set", async () => {
@@ -421,7 +421,7 @@ describe("tick — degraded signal handling", () => {
     expect(tx.data.probability).toBeCloseTo(0.2113, 6);
     expect(tx.data.tier).toBe("low");
     expect(tx.data.overall_degraded).toBe(true);
-    expect(jobs.getByCtid(CTID).status).toBe("done");
+    expect(jobs.getByCtid(CTID)).toBeNull();   // success deletes the row (retention fix)
   });
 });
 
@@ -498,7 +498,7 @@ describe("tick — dev-forced tier short-circuits classifier", () => {
     expect(submitter.txs[0].data.flagged).toBe(true);
     expect(submitter.txs[0].data.classifier_providers_used).toBe("dev_forced_tier");
     expect(submitter.txs[0].data.failed).toBe(false);
-    expect(jobs.getByCtid(CTID).status).toBe("done");
+    expect(jobs.getByCtid(CTID)).toBeNull();   // success deletes the row (retention fix)
   });
 
   test("TIP_DEV_FORCE_PRESCAN_TIER=high on AG (non-eligible) → falls through to normal classifier path", async () => {
