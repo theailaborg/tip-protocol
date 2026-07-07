@@ -1138,7 +1138,25 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         ? String(narwhal.joinState() || "ready")
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
-      if (selfJoinState !== "ready" || peerJoinState !== "ready") {
+      // Self non-ready (syncing / catching_up) is INVISIBLE to consensus: it
+      // produces no batches and no acks, so a same-round root mismatch here is a
+      // catch-up artifact (the mirror is partial during snapshot install / cert-
+      // tail replay, or the bullshark committed-round counter merely lags a busy
+      // cluster while the actual state is identical), never a byzantine fault.
+      // Self-halting on it only bounces the joiner into an endless resync
+      // treadmill (and falsely lights up the divergence metric), and it
+      // short-circuits the markCaughtUp promotion so the node can never reach
+      // ready. Grace indefinitely until self is `ready`; the byz-fork check below
+      // still fires the moment self promotes and a genuine mismatch remains — a
+      // non-ready node cannot harm consensus, so deferring the check is safe.
+      if (selfJoinState !== "ready") {
+        _log.debug(
+          `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
+          `with peer ${peerLabel} — catch-up artifact, gracing (self invisible to consensus)`
+        );
+        return "equal";
+      }
+      if (peerJoinState !== "ready") {
         const persistent = _persistentDivergence(peerNode, peerJoinState);
         if (!persistent) {
           // Within grace — diagnostic only, don't flag. Logged at debug
