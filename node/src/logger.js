@@ -27,7 +27,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { nowMs, nowIso } = require("../../shared/time");
+const { nowMs, nowIso, fromIso } = require("../../shared/time");
 
 // `notice` is a bypass tier: always printed to the console regardless of
 // TIP_CONSOLE_LEVEL. Use for rare, operator-relevant events that should be
@@ -58,11 +58,11 @@ function _pruneOldLogs(todayIso) {
   let dirs;
   try { dirs = fs.readdirSync(LOG_DIR, { withFileTypes: true }); }
   catch { return; }
-  const todayMs = Date.parse(todayIso + "T00:00:00Z");
+  const todayMs = fromIso(todayIso + "T00:00:00Z");
   const DAY = 86400000;
   for (const d of dirs) {
     if (!d.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(d.name)) continue;
-    const ageDays = (todayMs - Date.parse(d.name + "T00:00:00Z")) / DAY;
+    const ageDays = (todayMs - fromIso(d.name + "T00:00:00Z")) / DAY;
     const dirPath = path.join(LOG_DIR, d.name);
     if (ageDays >= _retentionDays) {
       try { fs.rmSync(dirPath, { recursive: true, force: true }); } catch { /* best-effort */ }

@@ -15,10 +15,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { nowMs, toIso } = require(path.resolve(__dirname, "../../shared/time"));
 
 function dayString(daysAgo) {
-  const d = new Date(Date.now() - daysAgo * 86400000);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  // shared/time helpers only (timestamp-discipline forbids raw Date APIs).
+  return toIso(nowMs() - daysAgo * 86400000).slice(0, 10); // YYYY-MM-DD (UTC)
 }
 
 function seedDir(root, name) {
