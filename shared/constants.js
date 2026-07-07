@@ -85,6 +85,33 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_MS: 5000,
 });
 
+// #132 streaming snapshot: every response frame carries a 1-byte kind tag as
+// its first body byte so the receiver routes each frame as it streams (no
+// pre-count, no positional slicing). The byte doubles as a format
+// discriminator , an old-format frame (raw protobuf) starts with a protobuf
+// field tag (0x08 for SnapshotHeader.round), never one of these values, so a
+// version-mixed pair fails cleanly and retries instead of mis-parsing.
+// Divergent values cannot fork the chain (a mismatch just fails the sync).
+const SNAPSHOT_FRAME_KIND = Object.freeze({
+  HEADER: 0x01,
+  STATE: 0x02,
+  TX: 0x03,
+  COMMIT: 0x04,
+  ROTATION: 0x05,
+  CERT: 0x06,
+  RP: 0x07,
+  PHASE_END: 0x08,
+  END: 0x09,
+});
+
+// Persisted install-marker key in consensus_meta (#132). Set to
+// `in_progress:<round>` before clearCanonicalState begins a streaming install,
+// cleared on successful go-live. A node that boots and finds it still
+// in_progress knows its canonical state is a partially-installed snapshot
+// (crash mid-stream), so it wipes and re-enters syncing instead of coming up
+// `ready` on unverified partial state (which would fork the chain).
+const SNAPSHOT_INSTALL_MARKER_KEY = "snapshot_install_state";
+
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
 // Vocabulary enum for the 4-tier categorical model. Threshold values that
 // decide which probability falls into which tier live in genesis under
@@ -804,6 +831,8 @@ module.exports = {
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
+  SNAPSHOT_FRAME_KIND,
+  SNAPSHOT_INSTALL_MARKER_KEY,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

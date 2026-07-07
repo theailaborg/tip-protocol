@@ -575,6 +575,26 @@ message SnapshotEnd {
                                     // counter state that flickers between commits)
 }
 
+/**
+ * #132 streaming install: a phase-boundary trailer emitted right after the
+ * last row of each phase (state, txs, commits, rotations, certs). Lets a
+ * streaming receiver verify that phase's integrity root the moment the phase
+ * ends — before the next phase installs — instead of buffering the whole
+ * response and verifying everything at the end (the buffer-then-verify path
+ * that OOMs on large state). `count` cross-checks the rows seen in the phase;
+ * `root` is that phase's stream-computed integrity root (same digest both
+ * sides derive row-by-row). For the state phase the authoritative check is
+ * against SnapshotHeader.state_merkle_root (the ack-signed root); this trailer
+ * root is a redundant wire-integrity check. Frames carry a 1-byte kind tag
+ * (SNAPSHOT_FRAME_KIND) as their first body byte so the receiver distinguishes
+ * a trailer from a row without positional bookkeeping.
+ */
+message SnapshotPhaseEnd {
+  uint32 kind = 1;                  // which phase ended (SNAPSHOT_FRAME_KIND row kind)
+  uint64 count = 2;                 // rows emitted in that phase
+  bytes root = 3;                   // phase integrity root (empty for phases without one, e.g. rp)
+}
+
 // ─── Heartbeat Protocol (#47 active peer-liveness probe) ─────────────────────
 //
 // Protocol: /tip/heartbeat/1.0.0
