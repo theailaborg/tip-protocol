@@ -543,6 +543,13 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     async start({ awaitPeers = false } = {}) {
       await syncHandler.registerProtocol();
       await snapshotHandler.registerProtocol();
+      // #132: a snapshot install crash-interrupted mid-stream leaves partial
+      // canonical state under an `in_progress` marker. Wipe it and force
+      // syncing so we resync from a peer before producing — never come up
+      // `ready` on unverified partial state.
+      const interruptedInstall = typeof snapshotHandler.recoverInterruptedInstall === "function"
+        ? await snapshotHandler.recoverInterruptedInstall()
+        : false;
       await antiEntropy.start();
       const coord = bullshark.rotationCoordinator?.();
       if (coord && typeof coord.registerProtocol === "function") await coord.registerProtocol();
@@ -550,7 +557,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await _registerAckRequestHandler();
       await heartbeat.registerHandler();
       heartbeat.start();
-      if (awaitPeers) narwhal.enterSyncMode();
+      if (awaitPeers || interruptedInstall) narwhal.enterSyncMode();
       narwhal.start();
       summary.start();
       log.notice(`Consensus started${awaitPeers ? " — awaiting peer sync" : ""}`);

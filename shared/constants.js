@@ -104,6 +104,14 @@ const SNAPSHOT_FRAME_KIND = Object.freeze({
   END: 0x09,
 });
 
+// Rows per DB transaction while streaming a snapshot install (#132). The
+// receiver installs in-place in batches of this size, awaiting each batch's
+// flush before reading more frames , this bounds the pending-write queue (and
+// thus peak memory) instead of buffering the whole response. Larger = fewer
+// transactions but more rows held in flight; 2000 keeps a batch well under a
+// megabyte of thunks while amortizing transaction overhead.
+const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
+
 // Persisted install-marker key in consensus_meta (#132). Set to
 // `in_progress:<round>` before clearCanonicalState begins a streaming install,
 // cleared on successful go-live. A node that boots and finds it still
@@ -833,6 +841,7 @@ module.exports = {
   SNAPSHOT_REQUEST,
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
+  SNAPSHOT_INSTALL_BATCH_ROWS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

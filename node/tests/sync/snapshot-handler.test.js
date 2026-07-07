@@ -35,6 +35,18 @@ const { loadTypes } = require(path.join(SRC, "network", "proto"));
 
 const { createStreamPair } = require("../helpers/stream-pair");
 const { buildCommittedDag } = require("../helpers/commit-builder");
+const { SNAPSHOT_FRAME_KIND } = require(path.join(SHARED, "constants"));
+
+// #132 streaming wire format: each frame is [4-byte BE length][1-byte kind]
+// [protobuf], so the kind byte sits at index 4. Row frames are interleaved
+// with per-phase SnapshotPhaseEnd trailers now, so a MITM that wants to
+// corrupt a specific row must locate it by kind rather than by position.
+function findLastFrameOfKind(frames, kind) {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    if (frames[i].length > 6 && frames[i][4] === kind) return i;
+  }
+  return -1;
+}
 
 beforeAll(async () => {
   await initCrypto();
@@ -416,9 +428,9 @@ describe("§14 snapshot framing & reliability", () => {
     const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
 
     // MITM: drop exactly one state-row frame (the first row after the
-    // header). The server's SnapshotEnd.rowCount still reflects the
-    // original count, so the client's received-row tally falls short
-    // by 1 → "row count mismatch" throws.
+    // header). The state phase trailer's count still reflects the original,
+    // so the client's per-phase tally falls short by 1 → the STATE
+    // SnapshotPhaseEnd count check rejects before install completes.
     const originalServerSink = server.sink;
     server.sink = async (src) => {
       await originalServerSink((async function* () {
@@ -427,7 +439,7 @@ describe("§14 snapshot framing & reliability", () => {
         for await (const frame of src) {
           if (!headerSent) { headerSent = true; yield frame; continue; }
           if (!oneRowDropped) { oneRowDropped = true; continue; }  // drop this one
-          yield frame;  // pass remaining rows + SnapshotEnd unchanged
+          yield frame;  // pass remaining rows + trailers + SnapshotEnd unchanged
         }
       })());
     };
@@ -435,7 +447,7 @@ describe("§14 snapshot framing & reliability", () => {
     await expect(Promise.all([
       sourceHandler._handleIncomingSnapshot(server, "test-client"),
       destHandler.requestSnapshotFromPeer("test-server", {}),
-    ])).rejects.toThrow(/row count mismatch/i);
+    ])).rejects.toThrow(/count mismatch/i);
 
     expect(destDag.getCommit(2)).toBeNull();
   });
@@ -570,20 +582,18 @@ describe("§14/#49 snapshot full-history shipping", () => {
 
     const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
 
-    // MITM: flip a byte in the LAST frame before the SnapshotEnd. With
-    // seedTxs=2 + genesis bootstrap, that frame is a SnapshotTxRow or
-    // SnapshotCommitRow — either way the corresponding full-root no
-    // longer matches the sender's value in SnapshotEnd.
+    // MITM: corrupt a content byte in the last SnapshotTxRow frame so the
+    // client's rebuilt txs_full_root no longer matches the sender's trailer.
     const originalServerSink = server.sink;
     server.sink = async (src) => {
       await originalServerSink((async function* () {
         const buf = [];
         for await (const frame of src) buf.push(frame);
-        // Tamper with the second-to-last frame (SnapshotEnd is the last).
-        if (buf.length >= 2) {
-          const target = Buffer.from(buf[buf.length - 2]);
+        const i = findLastFrameOfKind(buf, SNAPSHOT_FRAME_KIND.TX);
+        if (i >= 0) {
+          const target = Buffer.from(buf[i]);
           target[target.length - 2] ^= 0xff;
-          buf[buf.length - 2] = target;
+          buf[i] = target;
         }
         for (const f of buf) yield f;
       })());
@@ -618,19 +628,18 @@ describe("§14/#49 snapshot full-history shipping", () => {
 
     const { server, sourceHandler, destHandler } = makeHandlers({ sourceDag: fx.sourceDag, destDag });
 
-    // Find and tamper with the SnapshotCommitRow frame (it's between the
-    // tx rows and SnapshotEnd). We MITM by buffering everything and
-    // flipping a byte in the second-to-last frame; that's the one
-    // SnapshotCommitRow we seeded.
+    // Corrupt a content byte in the seeded SnapshotCommitRow frame so the
+    // client's rebuilt commits_full_root no longer matches the sender's trailer.
     const originalServerSink = server.sink;
     server.sink = async (src) => {
       await originalServerSink((async function* () {
         const buf = [];
         for await (const frame of src) buf.push(frame);
-        if (buf.length >= 2) {
-          const target = Buffer.from(buf[buf.length - 2]);
+        const i = findLastFrameOfKind(buf, SNAPSHOT_FRAME_KIND.COMMIT);
+        if (i >= 0) {
+          const target = Buffer.from(buf[i]);
           target[target.length - 2] ^= 0xff;
-          buf[buf.length - 2] = target;
+          buf[i] = target;
         }
         for (const f of buf) yield f;
       })());
