@@ -229,4 +229,6 @@ function access(line) {
   } catch { /* never crash on a log write */ }
 }
 
-module.exports = { log, getLogger, access };
+// _pruneOldLogs + retention values exported for testing: file logging is
+// suppressed under Jest, so the prune path can't be exercised via writes.
+module.exports = { log, getLogger, access, _pruneOldLogs, _retentionDays, _debugRetentionDays };
