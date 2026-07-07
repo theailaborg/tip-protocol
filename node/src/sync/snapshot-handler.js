@@ -614,185 +614,172 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const enqueue = (w) => { batch.push(w); };
       const maybeFlush = async () => { if (batch.length >= SNAPSHOT_INSTALL_BATCH_ROWS) await flushBatch(); };
 
-      // Bounds (replacing _readBoundedStream): a byte cap trips on a flood, an
-      // overall deadline on a hang / slow-trickle. Either aborts the stream so
-      // the fetch fails fast and retries another peer.
-      let timedOut = false;
-      const deadline = setTimeout(() => {
-        timedOut = true;
-        _abortStream(stream, new Error("snapshot download deadline exceeded"));
-      }, SNAPSHOT_DOWNLOAD.MAX_MS);
-      deadline.unref?.();
-      const onBytes = (_add, total) => {
+      // Bounds: a byte cap trips on a flood, an overall deadline on a hang /
+      // slow-trickle. _boundedFrameStream aborts the stream and throws on
+      // either breach so the fetch fails fast and retries another peer.
+      const onProgress = (total) => {
         totalBytes = total;
         if (_installProgress) _installProgress.bytes = total;
-        if (total > SNAPSHOT_DOWNLOAD.MAX_BYTES) {
-          _abortStream(stream, new Error("snapshot too large"));
-          throw new Error(`snapshot download exceeds ${SNAPSHOT_DOWNLOAD.MAX_BYTES}-byte cap (received >${total})`);
-        }
       };
 
-      try {
-        for await (const bodyFrame of streamFrames(stream.source, onBytes)) {
-          const kind = bodyFrame[0];
-          const proto = bodyFrame.subarray(1);
-          if (!header && kind !== K.HEADER) {
-            throw new Error(`snapshot stream did not start with a header frame (kind=${kind})`);
-          }
-          switch (kind) {
-            case K.HEADER: {
-              header = decode("SnapshotHeader", proto);
-              if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
-              // Begin install: persist the crash marker BEFORE wiping so a
-              // mid-stream crash is always recoverable (restart sees the marker
-              // → re-enters syncing → resyncs), then clear canonical state.
-              _installProgress = { phase: "syncing", installed: 0, total: 0, bytes: totalBytes };
-              dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
-              await dag.flush();
-              _snapServing = true;
-              dag.clearCanonicalState();
-              await dag.flush();
-              installBegun = true;
-              break;
-            }
-            case K.STATE: {
-              const row = decode("SnapshotStateRow", proto);
-              const table = row.table;
-              if (!table || !row.canonicalJson) throw new Error("malformed SnapshotStateRow");
-              const canonical = bytesToUtf8(row.canonicalJson);
-              stateRoot.addRow(table, canonical);
-              let parsed;
-              try { parsed = JSON.parse(canonical); }
-              catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
-              // GH #60: collect the CURRENTLY-ACTIVE node key (valid_to_ts null)
-              // so the ack-quorum check can resolve each signer to a pubkey.
-              if (table === "entity_keys"
-                && parsed.entity_type === "node"
-                && parsed.valid_to_ts == null
-                && parsed.public_key) {
-                nodePubKeys.set(parsed.entity_id, parsed.public_key);
-              }
-              enqueue(() => _installOneRow(table, parsed));
-              seen.state++;
-              await maybeFlush();
-              break;
-            }
-            case K.TX: {
-              const tx = _decodeFullRow(proto, "SnapshotTxRow", txsRoot, "tx");
-              enqueue(() => { if (_installTxRow(tx)) txInstalled++; });
-              seen.tx++;
-              await maybeFlush();
-              break;
-            }
-            case K.COMMIT: {
-              const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
-              enqueue(() => dag.saveCommit(c));
-              seen.commit++;
-              await maybeFlush();
-              break;
-            }
-            case K.ROTATION: {
-              // Collected, not installed yet: chain-of-trust needs the whole
-              // chain, and rotations install at the phase boundary AFTER the tx
-              // dedup gate has read pre-snapshot committee_history.
-              rotationRows.push(_decodeFullRow(proto, "SnapshotCommitteeRotationRow", rotationsRoot, "rotation"));
-              seen.rotation++;
-              break;
-            }
-            case K.CERT: {
-              const c = _decodeFullRow(proto, "SnapshotCertRow", certsRoot, "cert");
-              enqueue(() => dag.saveCertificate(c));
-              seen.cert++;
-              await maybeFlush();
-              break;
-            }
-            case K.RP: {
-              const row = decode("SnapshotStateRow", proto);
-              if (row.table !== "rotation_participation") {
-                throw new Error(`rp phase: expected table=rotation_participation, got "${row.table}"`);
-              }
-              try { rpRows.push(JSON.parse(bytesToUtf8(row.canonicalJson))); }
-              catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
-              seen.rp++;
-              break;
-            }
-            case K.PHASE_END: {
-              // Drain the phase's in-place installs before verifying its boundary.
-              await flushBatch();
-              const pe = decode("SnapshotPhaseEnd", proto);
-              const peRoot = bytesToHex(pe.root);   // null when the trailer carries no root
-              if (_installProgress) _installProgress.installed = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
-              switch (pe.kind) {
-                case K.STATE: {
-                  if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
-                  derivedState = stateRoot.finalize();
-                  const expected = bytesToHex(header.stateMerkleRoot);
-                  if (derivedState !== expected) {
-                    throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
-                  }
-                  if (peRoot && peRoot !== expected) {
-                    throw new Error("state phase trailer root disagrees with ack-signed header state_merkle_root");
-                  }
-                  break;
-                }
-                case K.TX: {
-                  if (Number(pe.count) !== seen.tx) throw new Error(`tx phase count mismatch: trailer=${pe.count} seen=${seen.tx}`);
-                  derivedTxs = txsRoot.finalize();
-                  if (derivedTxs !== peRoot) throw new Error(`txs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
-                  break;
-                }
-                case K.COMMIT: {
-                  if (Number(pe.count) !== seen.commit) throw new Error(`commit phase count mismatch: trailer=${pe.count} seen=${seen.commit}`);
-                  derivedCommits = commitsRoot.finalize();
-                  if (derivedCommits !== peRoot) throw new Error(`commits_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
-                  break;
-                }
-                case K.ROTATION: {
-                  if (Number(pe.count) !== seen.rotation) throw new Error(`rotation phase count mismatch: trailer=${pe.count} seen=${seen.rotation}`);
-                  derivedRotations = rotationsRoot.finalize();
-                  if (derivedRotations !== peRoot) throw new Error(`rotations_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedRotations.slice(0, 16)}...`);
-                  // Chain-of-trust: walk forward from LOCAL genesis, adopting each
-                  // rotation's pubkeys only after verifying its sigs against the
-                  // previously-trusted committee. Anchors the ack-quorum below.
-                  try { verifiedRotations = _verifyRotationChain(rotationRows); }
-                  catch (err) { _metrics.chain_walk_failures++; throw err; }
-                  chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
-                  // Install now (post chain-of-trust, before certs/rp).
-                  dag.runInTransaction(() => { _installRotationRows(rotationRows, header); });
-                  await dag.flush();
-                  break;
-                }
-                case K.CERT: {
-                  if (Number(pe.count) !== seen.cert) throw new Error(`cert phase count mismatch: trailer=${pe.count} seen=${seen.cert}`);
-                  derivedCerts = certsRoot.finalize();
-                  if (derivedCerts !== peRoot) throw new Error(`certs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCerts.slice(0, 16)}...`);
-                  break;
-                }
-                case K.RP: {
-                  if (Number(pe.count) !== seen.rp) throw new Error(`rp phase count mismatch: trailer=${pe.count} seen=${seen.rp}`);
-                  dag.runInTransaction(() => { _installRpRows(rpRows); });
-                  await dag.flush();
-                  break;
-                }
-                default:
-                  throw new Error(`unexpected snapshot phase-end kind ${pe.kind}`);
-              }
-              phaseVerified.add(pe.kind);
-              break;
-            }
-            case K.END: {
-              end = decode("SnapshotEnd", proto);
-              break;
-            }
-            default:
-              throw new Error(`unknown snapshot frame kind ${kind}`);
-          }
+      for await (const bodyFrame of _boundedFrameStream(
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS, onProgress,
+      )) {
+        const kind = bodyFrame[0];
+        const proto = bodyFrame.subarray(1);
+        if (!header && kind !== K.HEADER) {
+          throw new Error(`snapshot stream did not start with a header frame (kind=${kind})`);
         }
-      } finally {
-        clearTimeout(deadline);
+        switch (kind) {
+          case K.HEADER: {
+            header = decode("SnapshotHeader", proto);
+            if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
+            // Begin install: persist the crash marker BEFORE wiping so a
+            // mid-stream crash is always recoverable (restart sees the marker
+            // → re-enters syncing → resyncs), then clear canonical state.
+            _installProgress = { phase: "syncing", installed: 0, total: 0, bytes: totalBytes };
+            dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
+            await dag.flush();
+            _snapServing = true;
+            dag.clearCanonicalState();
+            await dag.flush();
+            installBegun = true;
+            break;
+          }
+          case K.STATE: {
+            const row = decode("SnapshotStateRow", proto);
+            const table = row.table;
+            if (!table || !row.canonicalJson) throw new Error("malformed SnapshotStateRow");
+            const canonical = bytesToUtf8(row.canonicalJson);
+            stateRoot.addRow(table, canonical);
+            let parsed;
+            try { parsed = JSON.parse(canonical); }
+            catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
+            // GH #60: collect the CURRENTLY-ACTIVE node key (valid_to_ts null)
+            // so the ack-quorum check can resolve each signer to a pubkey.
+            if (table === "entity_keys"
+              && parsed.entity_type === "node"
+              && parsed.valid_to_ts == null
+              && parsed.public_key) {
+              nodePubKeys.set(parsed.entity_id, parsed.public_key);
+            }
+            enqueue(() => _installOneRow(table, parsed));
+            seen.state++;
+            await maybeFlush();
+            break;
+          }
+          case K.TX: {
+            const tx = _decodeFullRow(proto, "SnapshotTxRow", txsRoot, "tx");
+            enqueue(() => { if (_installTxRow(tx)) txInstalled++; });
+            seen.tx++;
+            await maybeFlush();
+            break;
+          }
+          case K.COMMIT: {
+            const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
+            enqueue(() => dag.saveCommit(c));
+            seen.commit++;
+            await maybeFlush();
+            break;
+          }
+          case K.ROTATION: {
+            // Collected, not installed yet: chain-of-trust needs the whole
+            // chain, and rotations install at the phase boundary AFTER the tx
+            // dedup gate has read pre-snapshot committee_history.
+            rotationRows.push(_decodeFullRow(proto, "SnapshotCommitteeRotationRow", rotationsRoot, "rotation"));
+            seen.rotation++;
+            break;
+          }
+          case K.CERT: {
+            const c = _decodeFullRow(proto, "SnapshotCertRow", certsRoot, "cert");
+            enqueue(() => dag.saveCertificate(c));
+            seen.cert++;
+            await maybeFlush();
+            break;
+          }
+          case K.RP: {
+            const row = decode("SnapshotStateRow", proto);
+            if (row.table !== "rotation_participation") {
+              throw new Error(`rp phase: expected table=rotation_participation, got "${row.table}"`);
+            }
+            try { rpRows.push(JSON.parse(bytesToUtf8(row.canonicalJson))); }
+            catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
+            seen.rp++;
+            break;
+          }
+          case K.PHASE_END: {
+            // Drain the phase's in-place installs before verifying its boundary.
+            await flushBatch();
+            const pe = decode("SnapshotPhaseEnd", proto);
+            const peRoot = bytesToHex(pe.root);   // null when the trailer carries no root
+            if (_installProgress) _installProgress.installed = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+            switch (pe.kind) {
+              case K.STATE: {
+                if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
+                derivedState = stateRoot.finalize();
+                const expected = bytesToHex(header.stateMerkleRoot);
+                if (derivedState !== expected) {
+                  throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
+                }
+                if (peRoot && peRoot !== expected) {
+                  throw new Error("state phase trailer root disagrees with ack-signed header state_merkle_root");
+                }
+                break;
+              }
+              case K.TX: {
+                if (Number(pe.count) !== seen.tx) throw new Error(`tx phase count mismatch: trailer=${pe.count} seen=${seen.tx}`);
+                derivedTxs = txsRoot.finalize();
+                if (derivedTxs !== peRoot) throw new Error(`txs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
+                break;
+              }
+              case K.COMMIT: {
+                if (Number(pe.count) !== seen.commit) throw new Error(`commit phase count mismatch: trailer=${pe.count} seen=${seen.commit}`);
+                derivedCommits = commitsRoot.finalize();
+                if (derivedCommits !== peRoot) throw new Error(`commits_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
+                break;
+              }
+              case K.ROTATION: {
+                if (Number(pe.count) !== seen.rotation) throw new Error(`rotation phase count mismatch: trailer=${pe.count} seen=${seen.rotation}`);
+                derivedRotations = rotationsRoot.finalize();
+                if (derivedRotations !== peRoot) throw new Error(`rotations_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedRotations.slice(0, 16)}...`);
+                // Chain-of-trust: walk forward from LOCAL genesis, adopting each
+                // rotation's pubkeys only after verifying its sigs against the
+                // previously-trusted committee. Anchors the ack-quorum below.
+                try { verifiedRotations = _verifyRotationChain(rotationRows); }
+                catch (err) { _metrics.chain_walk_failures++; throw err; }
+                chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
+                // Install now (post chain-of-trust, before certs/rp).
+                dag.runInTransaction(() => { _installRotationRows(rotationRows, header); });
+                await dag.flush();
+                break;
+              }
+              case K.CERT: {
+                if (Number(pe.count) !== seen.cert) throw new Error(`cert phase count mismatch: trailer=${pe.count} seen=${seen.cert}`);
+                derivedCerts = certsRoot.finalize();
+                if (derivedCerts !== peRoot) throw new Error(`certs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCerts.slice(0, 16)}...`);
+                break;
+              }
+              case K.RP: {
+                if (Number(pe.count) !== seen.rp) throw new Error(`rp phase count mismatch: trailer=${pe.count} seen=${seen.rp}`);
+                dag.runInTransaction(() => { _installRpRows(rpRows); });
+                await dag.flush();
+                break;
+              }
+              default:
+                throw new Error(`unexpected snapshot phase-end kind ${pe.kind}`);
+            }
+            phaseVerified.add(pe.kind);
+            break;
+          }
+          case K.END: {
+            end = decode("SnapshotEnd", proto);
+            break;
+          }
+          default:
+            throw new Error(`unknown snapshot frame kind ${kind}`);
+        }
       }
 
-      if (timedOut) throw new Error(`snapshot download timed out after ${SNAPSHOT_DOWNLOAD.MAX_MS}ms`);
       if (!header) throw new Error("empty response from peer");
       if (!end) throw new Error("response missing SnapshotEnd terminator");
       await flushBatch();
@@ -1564,34 +1551,35 @@ function _abortStream(stream, err) {
   } catch { /* ignore */ }
 }
 
-// #94: read a snapshot body off a stream into one Buffer, bounded by a total-
-// byte cap AND an overall deadline. A flood trips the byte cap; a hang or a
+// #94 + #132: yield each length-prefixed frame off a stream, bounded by a
+// total-byte cap AND an overall deadline. A flood trips the byte cap; a hang or
 // slow-trickle trips the deadline. Either aborts the stream and throws, so the
 // fetch fails fast and retries another peer instead of OOM-ing the joiner or
-// hanging it in `syncing` forever (holding the install-once guard).
-async function _readBoundedStream(stream, maxBytes, maxMs) {
-  const chunks = [];
-  let total = 0;
+// hanging it in `syncing` forever. maxBytes/maxMs are parameters so the guard
+// is unit-testable; onProgress(total) reports running bytes for the install
+// progress meter. This is the streaming replacement for the old
+// read-whole-body-into-one-Buffer path (which OOM'd on large snapshots).
+async function* _boundedFrameStream(stream, maxBytes, maxMs, onProgress) {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     _abortStream(stream, new Error("snapshot download deadline exceeded"));
   }, maxMs);
+  timer.unref?.();
   try {
-    for await (const chunk of stream.source) {
-      const buf = chunk.subarray ? chunk.subarray() : chunk;
-      total += buf.length;
+    for await (const frame of streamFrames(stream.source, (_add, total) => {
+      if (onProgress) onProgress(total);
       if (total > maxBytes) {
         _abortStream(stream, new Error("snapshot too large"));
         throw new Error(`snapshot download exceeds ${maxBytes}-byte cap (received >${total})`);
       }
-      chunks.push(buf);
+    })) {
+      yield frame;
     }
   } finally {
     clearTimeout(timer);
   }
   if (timedOut) throw new Error(`snapshot download timed out after ${maxMs}ms`);
-  return Buffer.concat(chunks);
 }
 
-module.exports = { createSnapshotHandler, _readBoundedStream };
+module.exports = { createSnapshotHandler, _boundedFrameStream };
