@@ -288,6 +288,133 @@ describe("canRegisterContent", () => {
   });
 });
 
+// ── GitHub repo ownership gate (spec 2026-07-06-github-repo-badge) ──────────
+describe("canRegisterContent — github repo ownership gate", () => {
+  function _linkGithub(dag, { tipId = "tip://id/author", handle = "octocat", status = "active" } = {}) {
+    dag.savePlatformLink({
+      id: `${tipId}::github`, tip_id: tipId, platform: "github",
+      handle, profile_url: `https://github.com/${handle}`, status,
+      linked_at: 1775001600000, verified_at: 1775001600000,
+      unlinked_at: null, unlink_tx_id: null,
+      node_id: "tip://node/test", tx_id: shake256("link:github"),
+    });
+  }
+  const _params = (urls) => ({
+    signer_tip_id: "tip://id/author", ctid: "tip://content/gh", origin_code: "OH",
+    registered_urls: urls,
+  });
+
+  test("active link with matching handle → ok", () => {
+    const dag = _seedDag(); _linkGithub(dag);
+    expect(rules.canRegisterContent(dag, _params(["https://github.com/octocat/hello-world"])).valid).toBe(true);
+  });
+
+  test("handle match is case-insensitive", () => {
+    const dag = _seedDag(); _linkGithub(dag, { handle: "OctoCat" });
+    expect(rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo"])).valid).toBe(true);
+  });
+
+  test("no github link → 403 github_repo_not_owned", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("inactive (unlinked) github link → 403", () => {
+    const dag = _seedDag(); _linkGithub(dag, { status: "unlinked" });
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("owner mismatch (e.g. org-owned repo) → 403", () => {
+    const dag = _seedDag(); _linkGithub(dag, { handle: "octocat" });
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/some-org/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.status).toBe(403);
+    expect(r.error.code).toBe("github_repo_not_owned");
+    expect(r.error.message).toContain("some-org");
+  });
+
+  test("www.github.com is gated too", () => {
+    const dag = _seedDag();
+    const r = rules.canRegisterContent(dag, _params(["https://www.github.com/octocat/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("gist.github.com and github.io are NOT gated", () => {
+    const dag = _seedDag(); // no github link at all
+    expect(rules.canRegisterContent(dag, _params(["https://gist.github.com/anyone/abc123"])).valid).toBe(true);
+    expect(rules.canRegisterContent(dag, _params(["https://octocat.github.io/page"])).valid).toBe(true);
+  });
+
+  test("mixed urls: github mismatch rejects even when other urls are fine", () => {
+    const dag = _seedDag(); _linkGithub(dag, { handle: "octocat" });
+    const r = rules.canRegisterContent(dag, _params([
+      "https://medium.com/@u/fresh-post", "https://github.com/not-octocat/repo",
+    ]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("bare owner URL github.com/<handle> passes when handle matches", () => {
+    const dag = _seedDag(); _linkGithub(dag);
+    expect(rules.canRegisterContent(dag, _params(["https://github.com/octocat"])).valid).toBe(true);
+  });
+
+  test("github.com root URL (no owner segment) → 403", () => {
+    const dag = _seedDag(); _linkGithub(dag);
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("trailing-dot host github.com. is gated (FQDN spoof)", () => {
+    const dag = _seedDag(); // no github link
+    const r = rules.canRegisterContent(dag, _params(["https://github.com./octocat/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("link row with null handle fails closed → 403", () => {
+    const dag = _seedDag(); _linkGithub(dag, { handle: null });
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+
+  test("deep path uses first segment as owner (blob view)", () => {
+    const dag = _seedDag(); _linkGithub(dag);
+    expect(rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo/blob/main/README.md"])).valid).toBe(true);
+  });
+
+  test("m.github.com and mobile.github.com are gated (client matchers collapse them)", () => {
+    const dag = _seedDag(); // no github link
+    for (const host of ["m.github.com", "mobile.github.com"]) {
+      const r = rules.canRegisterContent(dag, _params([`https://${host}/octocat/repo`]));
+      expect(r.valid).toBe(false);
+      expect(r.error.code).toBe("github_repo_not_owned");
+    }
+  });
+
+  test("re-linked github account (unlink then active relink) passes", () => {
+    const dag = _seedDag();
+    _linkGithub(dag, { status: "unlinked" });
+    _linkGithub(dag, { handle: "octocat", status: "active" }); // same id → replaces with active row
+    expect(rules.canRegisterContent(dag, _params(["https://github.com/octocat/repo"])).valid).toBe(true);
+  });
+
+  test("reserved-path owner segment (topics) is naturally blocked", () => {
+    const dag = _seedDag(); _linkGithub(dag, { handle: "octocat" });
+    const r = rules.canRegisterContent(dag, _params(["https://github.com/topics/javascript"]));
+    expect(r.valid).toBe(false);
+    expect(r.error.code).toBe("github_repo_not_owned");
+  });
+});
+
 // ─── canVerify ──────────────────────────────────────────────────────────────
 
 describe("canVerify", () => {

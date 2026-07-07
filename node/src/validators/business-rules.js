@@ -89,6 +89,31 @@ function canRegisterNode(dag, { node_id }) {
 
 // ─── Content ───────────────────────────────────────────────────────────────
 
+// GitHub repo-URL ownership (Phase 1 — personal repos). The first path
+// segment of a github.com URL is the repo owner; the signer must hold an
+// ACTIVE github platform link whose handle matches it case-insensitively.
+// platform_links is canonical state, so the rule is deterministic at both
+// call sites (API request time + consensus commit time). Org-owned repos
+// have no matching user handle and are rejected here by design (Phase 2).
+// Superset rule: this set must cover EVERY host spelling clients collapse
+// to the same repo identity — the extension's matcher strips m./mobile.
+// prefixes, so those spellings must be gated here too.
+const GITHUB_GATED_HOSTS = new Set([
+  "github.com", "www.github.com", "m.github.com", "mobile.github.com",
+]);
+
+function _githubRepoOwner(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return null; }
+  // Strip a single trailing dot: "github.com." is the same FQDN to browsers
+  // but would otherwise miss the Set lookup and escape the gate. WHATWG URL
+  // hostnames are already lowercased, so no toLowerCase() needed.
+  const host = u.hostname.replace(/\.$/, "");
+  if (!GITHUB_GATED_HOSTS.has(host)) return null;
+  const seg = u.pathname.split("/").filter(Boolean);
+  return seg.length > 0 ? seg[0] : "";
+}
+
 function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_urls }) {
   if (!ORIGIN_CODES.includes(origin_code)) {
     return fail(400, `Invalid origin_code. Must be one of: ${ORIGIN_CODES.join(", ")}`);
@@ -124,6 +149,28 @@ function canRegisterContent(dag, { signer_tip_id, ctid, origin_code, registered_
           409,
           `URL already registered to existing content (CTID: ${live.ctid}): ${u}`,
           "url_already_registered",
+        );
+      }
+    }
+  }
+  // GitHub repo ownership gate — see _githubRepoOwner above. Runs after URL
+  // exclusivity so a duplicate-URL 409 still wins over the ownership check.
+  if (Array.isArray(registered_urls) && typeof dag.getPlatformLinksByTipId === "function") {
+    let ghHandle;
+    for (const u of registered_urls) {
+      if (typeof u !== "string" || !u) continue;
+      const owner = _githubRepoOwner(u);
+      if (owner === null) continue; // not a gated github.com URL
+      if (ghHandle === undefined) {
+        const links = dag.getPlatformLinksByTipId(signer_tip_id) || [];
+        const gh = links.find(l => l.platform === "github" && l.status === "active");
+        ghHandle = (gh && typeof gh.handle === "string") ? gh.handle.toLowerCase() : null;
+      }
+      if (!owner || ghHandle === null || ghHandle !== owner.toLowerCase()) {
+        return fail(
+          403,
+          `GitHub repo owner "${owner}" does not match the signer's linked GitHub account`,
+          "github_repo_not_owned",
         );
       }
     }
