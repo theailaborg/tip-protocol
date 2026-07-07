@@ -16,6 +16,8 @@
  *   3. business-rule revalidation — identity_already_registered
  *      (specific code mapped from the rule's error message)
  *   4. business-rule revalidation — content_already_registered
+ *   4b. business-rule revalidation — github repo ownership gate →
+ *      generic REVALIDATION_FAILED
  *   5. business-rule revalidation — first-wins dedup (verdict races
  *      etc.) → generic REVALIDATION_FAILED with specific detail
  *   6. atomic transaction rollback (disk error during commit phase
@@ -282,6 +284,48 @@ describe("commit-handler — business-rule revalidation: content_already_registe
     const row = fx.dag.getTxRejection(tx.tx_id);
     expect(row.reason).toBe(TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED);
     expect(row.reason_detail).toContain("Content already registered");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4b. Business-rule: GitHub repo ownership gate (gossip-bypass) → REVALIDATION_FAILED
+//     No new rejection-reason code — a commit-time drop of this rule maps to
+//     the generic REVALIDATION_FAILED with the full rule message in
+//     reason_detail (see _mapBusinessRuleReason / _statefulCheck's
+//     REGISTER_CONTENT branch in commit-handler.js). This proves a tx that bypasses the API
+//     (submitted straight to the gossip layer) is still dropped at commit.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("commit-handler — business-rule revalidation: github_repo_not_owned (gossip bypass)", () => {
+  test("REGISTER_CONTENT with unowned github repo URL is dropped at commit with rejection recorded", () => {
+    const fx = _setup();
+    // No github platform link is seeded for the author → the gate must reject.
+    const ctid = "tip://c/OH-90ab12cd34ef56-7890";
+    const data = {
+      ctid,
+      origin_code: "OH",
+      content_hash: shake256("gh-owner-mismatch"),
+      signer_tip_id: fx.authorTipId,
+      registered_urls: ["https://github.com/not-the-author/some-repo"],
+    };
+    const authorSig = _signRegisterContent(fx.authorKp, data);
+    // GH #51: signer's signature lives at tx.signature.
+    const tx = {
+      tx_type: TX_TYPES.REGISTER_CONTENT,
+      timestamp: 1777507200000,
+      prev: fx.dag.getRecentPrev(),
+      data,
+      signature: authorSig,
+    };
+    tx.tx_id = computeTxId(tx);
+
+    fx.handler.commitOrderedTxs([tx], 99);
+    const row = fx.dag.getTxRejection(tx.tx_id);
+    expect(row).toBeTruthy();
+    expect(row.reason).toBe(TX_REJECTION_REASON.REVALIDATION_FAILED);
+    expect(row.reason_detail).toContain("does not match the signer's linked GitHub account");
+    expect(row.rejected_at_round).toBe(99);
+    expect(fx.dag.getContent(tx.data.ctid)).toBeNull();
   });
 });
 

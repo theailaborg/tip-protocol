@@ -95,6 +95,7 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "tumblr.com":         "TEXT_DOMINANT",
   "ghost.io":           "TEXT_DOMINANT",
   "dev.to":             "TEXT_DOMINANT",
+  "github.com":         "TEXT_DOMINANT", // repo READMEs (spec 2026-07-06 github-repo-badge)
   "hashnode.com":       "TEXT_DOMINANT",
   "hashnode.dev":       "TEXT_DOMINANT",
   "nytimes.com":        "TEXT_DOMINANT",
