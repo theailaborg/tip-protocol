@@ -62,6 +62,10 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "podcasts.apple.com": "audio",
   "soundcloud.com":     "audio",
   "bandcamp.com":       "audio",
+  // Hacker News hosts no media at all (link submissions + Ask/Show HN
+  // text posts), so the strategy is fixed "text". Exact host on purpose:
+  // ycombinator.com proper is the unrelated corporate site.
+  "news.ycombinator.com": "text",
 
   // MEDIA_DOMINANT — visual-first, captions are captions
   "instagram.com": "MEDIA_DOMINANT",
@@ -88,6 +92,10 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   // TEXT_DOMINANT — text is the work even with hero image / inline media
   "medium.com":         "TEXT_DOMINANT",
   "substack.com":       "TEXT_DOMINANT",
+  // beehiiv newsletters: root key covers www.beehiiv.com (www-strip) and
+  // every <publication>.beehiiv.com via the subdomain walk in
+  // content-type.js resolvePlatformStrategy — same mechanism as substack.
+  "beehiiv.com":        "TEXT_DOMINANT",
   "scribd.com":         "TEXT_DOMINANT",
   "slideshare.net":     "TEXT_DOMINANT",
   "wordpress.com":      "TEXT_DOMINANT",
