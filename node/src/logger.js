@@ -42,8 +42,36 @@ const LOG_DIR = process.env.TIP_LOG_DIR || path.resolve(__dirname, "../logs");
 
 const _fileMaxLevel = LEVELS[process.env.TIP_LOG_LEVEL || "info"] ?? LEVELS.info;
 const _consoleMaxLevel = LEVELS[process.env.TIP_CONSOLE_LEVEL || process.env.TIP_LOG_LEVEL || "info"] ?? LEVELS.info;
+// On-disk retention. Loki is the authoritative 14-day archive (centralized,
+// searchable). These local files are ONLY a short buffer: promtail's read
+// source + a tolerance window if the Loki pipeline is down + fast local grep.
+// They must NOT duplicate Loki's 14 days on the node's disk. debug.log is the
+// firehose (every level) so it's shortest.
+const _retentionDays = Math.max(1, Number(process.env.TIP_LOG_RETENTION_DAYS || 3));
+const _debugRetentionDays = Math.max(1, Number(process.env.TIP_DEBUG_LOG_RETENTION_DAYS || 1));
 let _streams = {};
 let _currentDate = "";
+
+// Prune date-dirs older than retention. Runs once per date rollover (cheap).
+// debug.log is deleted first (shorter retention); a whole day-dir is removed
+// once every file in it is past the general retention window.
+function _pruneOldLogs(todayIso) {
+  let dirs;
+  try { dirs = fs.readdirSync(LOG_DIR, { withFileTypes: true }); }
+  catch { return; }
+  const todayMs = Date.parse(todayIso + "T00:00:00Z");
+  const DAY = 86400000;
+  for (const d of dirs) {
+    if (!d.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(d.name)) continue;
+    const ageDays = (todayMs - Date.parse(d.name + "T00:00:00Z")) / DAY;
+    const dirPath = path.join(LOG_DIR, d.name);
+    if (ageDays >= _retentionDays) {
+      try { fs.rmSync(dirPath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    } else if (ageDays >= _debugRetentionDays) {
+      try { fs.rmSync(path.join(dirPath, "debug.log"), { force: true }); } catch { /* best-effort */ }
+    }
+  }
+}
 
 // rateWarn dedup state: key → lastLoggedAtMs
 const _rateLimited = new Map();
@@ -62,6 +90,7 @@ function _getStreams() {
     _currentDate = today;
     const dir = path.join(LOG_DIR, today);
     fs.mkdirSync(dir, { recursive: true });
+    _pruneOldLogs(today);
 
     _streams = {
       error: fs.createWriteStream(path.join(dir, "error.log"), { flags: "a" }),

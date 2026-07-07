@@ -144,6 +144,10 @@ core workflow.
 - **Log volume too chatty?** Raise the node's `TIP_LOG_LEVEL` /
   `TIP_CONSOLE_LEVEL` (warn is the intended prod default); promtail ships
   whatever the node writes.
+- **Log/disk hygiene** (bounded by construction):
+  - Container stdout logs are rotated by the compose `logging:` blocks (json-file, 50 MB x 3 = 150 MB max per container).
+  - Node app-log files (`info/error/access.log` 3 d, `debug.log` 1 d) self-prune on date rollover; Loki holds the authoritative 14-day archive. Tune via `TIP_LOG_RETENTION_DAYS` / `TIP_DEBUG_LOG_RETENTION_DAYS`.
+  - Docker build cache is reclaimed weekly by a cron on every host (`0 4 * * 0 docker builder prune -af && docker image prune -f`). Reinstall with `sudo crontab -e` if a host is rebuilt.
 - All secrets (`prometheus.yml`, `.env`, `promtail.env`) are gitignored;
   keep them chmod 600.
 
