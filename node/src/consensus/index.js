@@ -25,6 +25,7 @@ const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createCryptoPool } = require("../lib/crypto-pool");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
+const { getGenesisPayload } = require("../genesis");
 const { computeHaltStatus } = require("./halt-status");
 const { computeStateMerkleRoot } = require("./state-root");
 const { getActiveCommittee, getNodeCount } = require("./participants");
@@ -54,9 +55,27 @@ const log = getLogger("tip.consensus");
  * @param {string} nodeId  Node ID to look up
  * @returns {string|null}  Public key or null if not found
  */
+let _foundingKeyMap = null;
+function _foundingKey(nodeId) {
+  if (!_foundingKeyMap) {
+    _foundingKeyMap = new Map();
+    for (const f of (getGenesisPayload().founding_nodes || [])) {
+      if (f && f.node_id && f.public_key) _foundingKeyMap.set(f.node_id, f.public_key);
+    }
+  }
+  return _foundingKeyMap.get(nodeId) || null;
+}
+
 function getNodeKey(dag, nodeId) {
   const n = dag.getNode(nodeId);
-  return n?.public_key || null;
+  if (n?.public_key) return n.public_key;
+  // Genesis founding nodes are the immutable trust anchor: authorize them even
+  // when the local registry is empty/incomplete. Without this, a node that
+  // wiped canonical state for a #132 streaming snapshot install
+  // (clearCanonicalState empties the nodes table) deadlocks , empty registry
+  // means it can't authorize the founding peer it must fetch the snapshot from,
+  // and that snapshot is what would refill the registry.
+  return _foundingKey(nodeId);
 }
 
 /**
