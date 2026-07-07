@@ -2161,13 +2161,14 @@
           ],
           "fields": "",
           "values": false
-        }
+        },
+        "orientation": "vertical"
       },
       "gridPos": {
         "x": 12,
         "y": 5,
         "w": 6,
-        "h": 4
+        "h": 8
       }
     },
     {
