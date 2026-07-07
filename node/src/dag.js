@@ -1487,14 +1487,21 @@ class MemoryStore {
     return this._smt.root();
   }
 
-  *iterateCanonicalState() {
+  // #132: `contentRaw` ships the RAW content row (not the hash projection).
+  // _canonContent quantizes prescan_probability (float determinism, #195) and
+  // drops derived counters — fine for hashing, WRONG as the snapshot transfer
+  // form: the receiver would store the quantized value and re-quantize it,
+  // forking the state root. The snapshot serve sets contentRaw:true; the
+  // receiver re-derives the root via computeStateMerkleRoot after install, so
+  // hashing still canonicalizes and determinism is preserved.
+  *iterateCanonicalState({ contentRaw = false } = {}) {
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
       yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
       .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
-      yield { table: "content", row: _canonContent(r) };
+      yield { table: "content", row: contentRaw ? r : _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -3960,7 +3967,7 @@ function _buildDagHandle(store, config) {
     // ── Canonical derived state (§14 snapshot-sync) ──────────────────────
     // Streaming iterator over all derived-state tables in deterministic
     // order. Consumed by consensus/state-root.js to hash row-by-row.
-    iterateCanonicalState: () => store.iterateCanonicalState(),
+    iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),

@@ -49,7 +49,7 @@ const {
 } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
-const { createStateRootBuilder } = require("../consensus/state-root");
+const { computeStateMerkleRoot } = require("../consensus/state-root");
 const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
@@ -385,10 +385,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         yield _frameKind(K.HEADER, headerBuf);
 
         // Phase A: derived state (existing — covered by state_merkle_root).
-        // The phase trailer carries the header's state_merkle_root (the
-        // ack-signed root) so the receiver can cross-check; its authoritative
-        // check is receiver-computed root == header.state_merkle_root.
-        for (const { table, row } of dag.iterateCanonicalState()) {
+        // contentRaw:true ships the RAW content row (#132) — the canonical hash
+        // projection quantizes prescan_probability and drops derived counters,
+        // which corrupts a stored-and-rehashed value. The receiver re-derives
+        // the root via computeStateMerkleRoot after install, so hashing still
+        // canonicalizes and the ack-signed state_merkle_root still verifies.
+        for (const { table, row } of dag.iterateCanonicalState({ contentRaw: true })) {
           const rowBuf = encode("SnapshotStateRow", {
             table,
             canonicalJson: Buffer.from(canonicalJson(row), "utf8"),
@@ -584,7 +586,6 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // `syncing` (invisible to consensus) and a persisted crash marker guards
       // the partial state until END verification passes and markSnapshotInstalled
       // promotes it. Nothing unverified is ever visible or durable-as-trusted.
-      const stateRoot = createStateRootBuilder();
       const txsRoot = createTxsFullRootBuilder();
       const commitsRoot = createCommitsFullRootBuilder();
       const rotationsRoot = createRotationsFullRootBuilder();
@@ -651,7 +652,6 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             const table = row.table;
             if (!table || !row.canonicalJson) throw new Error("malformed SnapshotStateRow");
             const canonical = bytesToUtf8(row.canonicalJson);
-            stateRoot.addRow(table, canonical);
             let parsed;
             try { parsed = JSON.parse(canonical); }
             catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
@@ -716,7 +716,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             switch (pe.kind) {
               case K.STATE: {
                 if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
-                derivedState = stateRoot.finalize();
+                // Re-derive from the just-installed mirror (canonicalizes: the raw
+                // content rows on the wire become their _canonContent hash form
+                // here), so the ack-signed state_merkle_root verifies while the
+                // stored rows keep their true storable values (#132).
+                derivedState = computeStateMerkleRoot(dag);
                 const expected = bytesToHex(header.stateMerkleRoot);
                 if (derivedState !== expected) {
                   throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);

@@ -1037,7 +1037,7 @@ class KnexAdapter {
 
   // ── Canonical state iterator (§14 snapshot-sync) ──────────────────────────
 
-  *iterateCanonicalState() { yield* this.mirror.iterateCanonicalState(); }
+  *iterateCanonicalState(opts) { yield* this.mirror.iterateCanonicalState(opts); }
   stateRoot() { return this.mirror.stateRoot(); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
