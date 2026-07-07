@@ -83,6 +83,7 @@ const STATE_PK = {
   prescan_reviews: r => r.review_id,
   interests_registry: r => r.slug,
   protocol_params: r => `${r.param_key}\x00${r.effective_from_height}`,
+  owner_heads: r => r.entity_key,
 };
 
 function stateLeafKey(table, pk) {

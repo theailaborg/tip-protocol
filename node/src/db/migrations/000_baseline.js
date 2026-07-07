@@ -139,6 +139,14 @@ exports.up = async (knex) => {
     t.bigInteger("last_updated").notNullable();
   });
 
+  // Owner-chain heads: last committed tx per signing entity. Canonical
+  // state (participates in state_merkle_root); updated deterministically
+  // in commit order by commit-handler.
+  await knex.schema.createTable("owner_heads", t => {
+    t.text("entity_key").primary();   // `${entity_type}:${entity_id}`
+    t.text("tx_id").notNullable();
+  });
+
   await knex.schema.createTable("dedup_registry", t => {
     t.string("dedup_hash", 512).primary();
     t.bigInteger("created_at").notNullable();

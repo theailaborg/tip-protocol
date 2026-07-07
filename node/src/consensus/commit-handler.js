@@ -48,6 +48,7 @@ const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 // dispatcher. tx types without a schema fall through to the registry
 // (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
 const { SCHEMA_FOR_TX_TYPE } = require("../schemas/_schema-map");
+const { ownerOf, ownerKey } = require("./tx-owner");
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
 // orphaned by the linter, and so future tx_types that promote out of
@@ -292,6 +293,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
           for (const tx of validated) {
             dag.addTx(tx);
             _applyDerivedState(tx, certTimestamp, round);
+            // Owner-chain head advances in commit order , canonical state,
+            // same rule on every node.
+            const owner = ownerOf(tx);
+            if (owner) dag.setOwnerHead(ownerKey(owner), tx.tx_id);
             committed++;
           }
           // Remove committed txs from mempool in the same transaction

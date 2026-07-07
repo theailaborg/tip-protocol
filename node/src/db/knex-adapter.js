@@ -1039,6 +1039,11 @@ class KnexAdapter {
 
   *iterateCanonicalState() { yield* this.mirror.iterateCanonicalState(); }
   stateRoot() { return this.mirror.stateRoot(); }
+  setOwnerHead(entityKey, txId) {
+    this.mirror.setOwnerHead(entityKey, txId);
+    this._ff(() => this._dbInsert("owner_heads", "entity_key", { entity_key: entityKey, tx_id: txId }, "merge"));
+  }
+  getOwnerHead(entityKey) { return this.mirror.getOwnerHead(entityKey); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
   clearCanonicalState() {

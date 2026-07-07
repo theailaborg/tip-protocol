@@ -69,6 +69,10 @@ async function _runSqliteMigrations(dbPath) {
 // Every column of each table IS included. This is only safe because every
 // field is populated from tx data (tx.timestamp, tx.tx_id, tx.data.*) —
 // never from nowMs() / unixepoch() / other local-clock sources.
+function _canonOwnerHead(r) {
+  return { entity_key: r.entity_key, tx_id: r.tx_id };
+}
+
 // See setScore() and addDedupHash() for the determinism contract.
 function _canonIdentity(r) {
   // GH #60: public_key, algorithm, root_public_key removed.
@@ -417,6 +421,10 @@ const SMT_READ = {
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
   prescan_reviews: (st, pk) => { const r = st._prescanReviews.get(pk); return r ? _canonPrescanReview(r) : null; },
   interests_registry: (st, pk) => { const r = st._interestsRegistry.get(pk); return r ? _canonInterest(r) : null; },
+  owner_heads: (st, pk) => {
+    const tx_id = st._ownerHeads.get(pk);
+    return tx_id ? _canonOwnerHead({ entity_key: pk, tx_id }) : null;
+  },
   protocol_params: (st, pk) => {
     const sep = pk.lastIndexOf("\x00");
     const arr = st._protocolParams.get(pk.slice(0, sep));
@@ -470,7 +478,8 @@ class MemoryStore {
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
-    this._domainBindings = new SmtMap(this, "domain_bindings");  // domain -> binding record (canonical, in state_merkle_root)
+    this._domainBindings = new SmtMap(this, "domain_bindings");  // domain
+    this._ownerHeads = new SmtMap(this, "owner_heads");  // entity_key -> tx_id (owner-chain heads, canonical) -> binding record (canonical, in state_merkle_root)
     // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
     // state_merkle_root). Source of truth + derived candidate indexes.
     this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
@@ -996,6 +1005,7 @@ class MemoryStore {
     this._prescanReviews.clear();
     this._interestsRegistry.clear();
     this._protocolParams.clear();
+    this._ownerHeads.clear();
     this._smt.clear();
   }
 
@@ -1456,6 +1466,14 @@ class MemoryStore {
   // suspended nodes, etc. are part of consensus state — two nodes that have
   // applied the same tx sequence must agree on the full set, including
   // terminal states. Filtering is a view concern, not a state concern.
+  // ── Owner-chain heads (canonical) ─────────────────────────────────────────
+  setOwnerHead(entityKey, txId) {
+    this._ownerHeads.set(entityKey, txId);
+  }
+  getOwnerHead(entityKey) {
+    return this._ownerHeads.get(entityKey) || null;
+  }
+
   // ── #88 incremental state tree ────────────────────────────────────────────
   _smtSync(table, pk) {
     const row = SMT_READ[table](this, pk);
@@ -1506,6 +1524,10 @@ class MemoryStore {
     for (const r of [...this._platformLinks.values()]
       .sort((a, b) => cmpBin(a.id, b.id))) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
+    for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
+      .sort((a, b) => cmpBin(a[0], b[0]))) {
+      yield { table: "owner_heads", row: _canonOwnerHead({ entity_key, tx_id }) };
     }
     for (const r of [...this._vps.values()]
       .sort((a, b) => cmpBin(a.vp_id, b.vp_id))) {
@@ -2198,6 +2220,8 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getDomainBinding: this.db.prepare("SELECT * FROM domain_bindings WHERE domain=?"),
+      setOwnerHead: this.db.prepare("INSERT OR REPLACE INTO owner_heads (entity_key, tx_id) VALUES (?,?)"),
+      getOwnerHead: this.db.prepare("SELECT tx_id FROM owner_heads WHERE entity_key=?"),
       getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
       getAllDomainBindings: this.db.prepare("SELECT * FROM domain_bindings"),
 
@@ -3472,6 +3496,14 @@ class SQLiteStore {
   // uses prepared-statement cursors (better-sqlite3 iterate()) so rows flow
   // one at a time without loading the whole table. `ORDER BY <pk>` uses the
   // primary-key index, so sorting is free (no temp table / external sort).
+  setOwnerHead(entityKey, txId) {
+    this._stmts.setOwnerHead.run(entityKey, txId);
+  }
+  getOwnerHead(entityKey) {
+    const r = this._stmts.getOwnerHead.get(entityKey);
+    return r ? r.tx_id : null;
+  }
+
   stateRoot() {
     const smt = createSMT();
     for (const { table, row } of this.iterateCanonicalState()) {
@@ -3511,6 +3543,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
+    for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
+      yield { table: "owner_heads", row: _canonOwnerHead(r) };
+    }
     for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
@@ -3544,6 +3579,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM content").run();
       this.db.prepare("DELETE FROM scores").run();
       this.db.prepare("DELETE FROM dedup_registry").run();
+      this.db.prepare("DELETE FROM owner_heads").run();
       this.db.prepare("DELETE FROM revocations").run();
       this.db.prepare("DELETE FROM verification_providers").run();
       this.db.prepare("DELETE FROM nodes").run();
@@ -3908,6 +3944,44 @@ function _buildDagHandle(store, config) {
     getTxsBySubject: (tipId) => store.getTxsBySubject(tipId),
     getRecentPrev: () => [..._prev],
 
+    /**
+     * Owner-chain prev assignment (spec: docs + tx-owner.js).
+     *   prev[0] , owner's chain head; falls back to the entity's own
+     *             registration tx (chain-open anchors to the registrar's
+     *             chain via that tx), then GENESIS_TX_ID.
+     *   prev[1] , advisory subject anchor (subject identity's head when it
+     *             differs from the owner), else GENESIS_TX_ID.
+     */
+    prevFor: (txType, data) => {
+      // Lazy requires: tx-owner pulls the schema map; loading it at module
+      // scope would cycle through consensus at dag load time.
+      const { ownerOf, ownerKey } = require("./consensus/tx-owner");
+      const { subjectTipId } = require("./tx-attribution");
+      const { GENESIS_TX_ID } = require("./genesis");
+
+      const _registrationAnchor = (owner) => {
+        if (!owner) return null;
+        if (owner.entityType === "identity") return store.getIdentity(owner.entityId)?.tx_id || null;
+        if (owner.entityType === "vp") return store.getVP(owner.entityId)?.tx_id || null;
+        if (owner.entityType === "node") return store.getNode(owner.entityId)?.tx_id || null;
+        return null;   // rotation chain opens at genesis
+      };
+
+      const owner = ownerOf({ tx_type: txType, data });
+      const slot0 = (owner && store.getOwnerHead(ownerKey(owner)))
+        || _registrationAnchor(owner)
+        || GENESIS_TX_ID;
+
+      let slot1 = GENESIS_TX_ID;
+      const subject = subjectTipId({ tx_type: txType, data });
+      if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
+        slot1 = store.getOwnerHead(`identity:${subject}`)
+          || store.getIdentity(subject)?.tx_id
+          || GENESIS_TX_ID;
+      }
+      return [slot0, slot1];
+    },
+
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
     // snapshot history. Receiver installs each row via addTx; addTx's
@@ -3954,6 +4028,8 @@ function _buildDagHandle(store, config) {
     clearCanonicalState: () => store.clearCanonicalState(),
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
+    setOwnerHead: (entityKey, txId) => store.setOwnerHead(entityKey, txId),
+    getOwnerHead: (entityKey) => store.getOwnerHead(entityKey),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
@@ -4158,6 +4234,12 @@ function _buildDagHandle(store, config) {
     flush: () => store.flush(),
     close: () => store.close(),
   };
+
+
+  // Owner-chain prev source for tx sealing (services/helpers withTxId /
+  // nodeSignedAuto). Last-initialized dag wins , one dag per process in
+  // every real deployment.
+  require("./services/helpers").initTxPrev(dag);
 
   return dag;
 }

@@ -19,10 +19,25 @@ const {
 } = require("../../../shared/constants");
 const { log } = require("../logger");
 
+// Owner-chain prev source. Injected by initDAG (_buildDagHandle) so every
+// tx sealed here carries canonical prev , services' getRecentPrev()
+// placeholders are overwritten at sealing time.
+let _prevDag = null;
+function initTxPrev(dag) { _prevDag = dag; }
+
+function _finalizePrev(txBody) {
+  if (_prevDag && txBody.tx_type && txBody.data) {
+    txBody.prev = _prevDag.prevFor(txBody.tx_type, txBody.data);
+  }
+  return txBody;
+}
+
 /**
- * Assign content-addressed tx_id (no node signature).
+ * Assign content-addressed tx_id (no node signature). Finalizes owner-chain
+ * prev first , prev participates in tx_id, so it must be last-write.
  */
 function withTxId(txBody) {
+  _finalizePrev(txBody);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -32,6 +47,7 @@ function withTxId(txBody) {
  */
 function nodeSignedAuto(txBody, config) {
   txBody.data.node_id = config.nodeRegisteredId || config.nodeId;
+  _finalizePrev(txBody);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, config.nodePrivateKey);
 }
@@ -360,6 +376,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
 }
 
 module.exports = {
+  initTxPrev,
   withTxId,
   nodeSignedAuto,
   createTxSubmitter,

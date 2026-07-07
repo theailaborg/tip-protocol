@@ -1296,6 +1296,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // it through so the sink's row matches the source byte-for-byte.
         dag.addDedupHash(row.dedup_hash, row.created_at, row.tip_id || null);
         break;
+      case "owner_heads":
+        dag.setOwnerHead(row.entity_key, row.tx_id);
+        break;
       case "revocations":
         dag.addRevocation(row.tip_id, row.tx_type, row.timestamp, row.tx_id);
         break;
