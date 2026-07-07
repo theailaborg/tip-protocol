@@ -2110,17 +2110,17 @@
     {
       "id": 43,
       "type": "stat",
-      "title": "Disk free (worst node)",
+      "title": "Disk free , worst node (named)",
       "datasource": {
         "type": "prometheus",
         "uid": "prom-tip"
       },
-      "description": "Lowest free-disk percentage across the federation. The 2026-07-04 divergence incident began as silent disk-full write loss , below 20% free, clean up or grow the volume BEFORE postgres starts dropping writes.",
+      "description": "The single node with the least free disk, BY NAME. bottomk(1) keeps the node label (min() dropped it, leaving the old panel unable to say which node).",
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * min(tip_disk_free_bytes / tip_disk_total_bytes)",
-          "legendFormat": ""
+          "expr": "bottomk(1, 100 * tip_disk_free_bytes / tip_disk_total_bytes) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
         }
       ],
       "fieldConfig": {
@@ -2154,7 +2154,7 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -2168,6 +2168,76 @@
         "y": 5,
         "w": 6,
         "h": 4
+      }
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "Disk used % per node",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "description": "Root-filesystem usage per node. Rising toward 100% = clean build caches / grow the EBS volume before postgres write-fails and the node fail-stops.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - tip_disk_free_bytes / tip_disk_total_bytes) * on(node) group_left(name) (group by (node, name) (tip_node_registry_info))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 8
       }
     }
   ],
