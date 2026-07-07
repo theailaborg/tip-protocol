@@ -96,4 +96,41 @@ async function readAllFrames(stream) {
   return parseLengthPrefixedFrames(Buffer.concat(chunks));
 }
 
-module.exports = { frame, parseLengthPrefixedFrames, readAllFrames };
+/**
+ * Streaming length-prefix parser (#132). Yields each complete frame as its
+ * bytes arrive off `source`, holding only the partial remainder , never the
+ * whole stream. A frame split across network chunks is reassembled; the
+ * per-frame `SNAPSHOT_MAX_FRAME_BYTES` cap still guards against a hostile
+ * length prefix. `onBytes(n)` (optional) fires per chunk for a total-byte cap.
+ *
+ * @param {AsyncIterable<Buffer|Uint8Array>} source  libp2p stream.source
+ * @param {(added:number, total:number)=>void} [onBytes]
+ * @returns {AsyncGenerator<Buffer>}
+ */
+async function* streamFrames(source, onBytes) {
+  const widthBytes = NETWORK.SNAPSHOT_LENGTH_PREFIX_BYTES;
+  const maxFrameBytes = NETWORK.SNAPSHOT_MAX_FRAME_BYTES;
+  let buf = Buffer.alloc(0);
+  let total = 0;
+  for await (const chunk of source) {
+    const c = chunk.subarray ? chunk.subarray() : chunk;
+    total += c.length;
+    if (onBytes) onBytes(c.length, total);
+    buf = buf.length === 0 ? Buffer.from(c) : Buffer.concat([buf, c]);
+    // Emit every complete frame currently buffered, then keep the remainder.
+    while (buf.length >= widthBytes) {
+      const len = buf.readUIntBE(0, widthBytes);
+      if (len > maxFrameBytes) {
+        throw new Error(`frame exceeds max size: ${len} > ${maxFrameBytes}`);
+      }
+      if (buf.length < widthBytes + len) break;   // frame body not fully arrived
+      yield buf.subarray(widthBytes, widthBytes + len);
+      buf = buf.subarray(widthBytes + len);
+    }
+  }
+  if (buf.length > 0) {
+    throw new Error(`stream ended mid-frame: ${buf.length} trailing bytes`);
+  }
+}
+
+module.exports = { frame, parseLengthPrefixedFrames, readAllFrames, streamFrames };
