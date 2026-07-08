@@ -151,6 +151,28 @@ function computeStateMerkleRoot(dag) {
   return b.finalize();
 }
 
+/**
+ * Diagnostic: per-table sub-root + row count over the canonical state.
+ * Lets snapshot-install mismatches pinpoint WHICH table diverged (and how
+ * many rows) instead of only seeing the aggregate root differ. Same leaf
+ * function as the aggregate root, grouped by table.
+ * @param {Object} dag  exposes iterateCanonicalState()
+ * @returns {Array<{table:string,count:number,root:string}>}
+ */
+function computeStateMerkleRootPerTable(dag) {
+  const byTable = new Map();
+  for (const { table, row } of dag.iterateCanonicalState()) {
+    let e = byTable.get(table);
+    if (!e) { e = { smt: createSMT(), count: 0 }; byTable.set(table, e); }
+    const pk = STATE_PK[table] ? STATE_PK[table](row) : JSON.stringify(row);
+    e.smt.set(stateLeafKey(table, String(pk)), shake256(canonicalJson(row)));
+    e.count++;
+  }
+  const out = [];
+  for (const [table, e] of byTable) out.push({ table, count: e.count, root: e.smt.root().slice(0, 16) });
+  return out;
+}
+
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
   return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
@@ -158,6 +180,7 @@ function computeTxsMerkleRoot(orderedTxs) {
 
 module.exports = {
   computeStateMerkleRoot,
+  computeStateMerkleRootPerTable,
   STATE_PK,
   stateLeafKey,
   computeTxsMerkleRoot,

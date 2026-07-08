@@ -49,7 +49,7 @@ const {
 } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
-const { computeStateMerkleRoot } = require("../consensus/state-root");
+const { computeStateMerkleRoot, computeStateMerkleRootPerTable } = require("../consensus/state-root");
 const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
@@ -405,11 +405,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         yield _frameKind(K.HEADER, headerBuf);
 
         // Phase A: derived state (existing — covered by state_merkle_root).
-        // contentRaw:true ships the RAW content row (#132) — the canonical hash
-        // projection quantizes prescan_probability and drops derived counters,
-        // which corrupts a stored-and-rehashed value. The receiver re-derives
-        // the root via computeStateMerkleRoot after install, so hashing still
-        // canonicalizes and the ack-signed state_merkle_root still verifies.
+        // contentRaw rows (#132) ship the RAW content row; the receiver
+        // re-derives the root via computeStateMerkleRoot after install so the
+        // ack-signed state_merkle_root verifies.
         for (const { table, row } of dag.iterateCanonicalState({ contentRaw: true })) {
           const rowBuf = encode("SnapshotStateRow", {
             table,
@@ -759,6 +757,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
                 derivedState = computeStateMerkleRoot(dag);
                 const expected = bytesToHex(header.stateMerkleRoot);
                 if (derivedState !== expected) {
+                  const perTable = computeStateMerkleRootPerTable(dag)
+                    .map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
+                  log.error(`Snapshot: state-root mismatch per-table (installed) — ${perTable}`);
                   throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
                 }
                 if (peRoot && peRoot !== expected) {
