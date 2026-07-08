@@ -624,7 +624,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       };
 
       for await (const bodyFrame of _boundedFrameStream(
-        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS, onProgress,
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.STALL_MS, onProgress,
       )) {
         const kind = bodyFrame[0];
         const proto = bodyFrame.subarray(1);
@@ -1564,35 +1564,44 @@ function _abortStream(stream, err) {
   } catch { /* ignore */ }
 }
 
-// #94 + #132: yield each length-prefixed frame off a stream, bounded by a
-// total-byte cap AND an overall deadline. A flood trips the byte cap; a hang or
-// slow-trickle trips the deadline. Either aborts the stream and throws, so the
-// fetch fails fast and retries another peer instead of OOM-ing the joiner or
-// hanging it in `syncing` forever. maxBytes/maxMs are parameters so the guard
-// is unit-testable; onProgress(total) reports running bytes for the install
-// progress meter. This is the streaming replacement for the old
-// read-whole-body-into-one-Buffer path (which OOM'd on large snapshots).
-async function* _boundedFrameStream(stream, maxBytes, maxMs, onProgress) {
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    _abortStream(stream, new Error("snapshot download deadline exceeded"));
-  }, maxMs);
-  timer.unref?.();
+// #94 + #132: yield each length-prefixed frame off a stream, bounded by a STALL
+// timeout (not an absolute deadline) plus a generous byte flood-guard. The stall
+// timer is re-armed on every byte received AND every frame handed to the
+// installer, so a large-but-steadily-progressing snapshot never trips it , only
+// a genuine hang (silent peer, dead link, or a wedged install) does. This makes
+// the guard scale to any snapshot size without a magic total-time number.
+// maxBytes/stallMs are parameters so the guard is unit-testable; onProgress(total)
+// reports running bytes for the install progress meter. Streaming replacement
+// for the old read-whole-body-into-one-Buffer path (which OOM'd on large snapshots).
+async function* _boundedFrameStream(stream, maxBytes, stallMs, onProgress) {
+  let stalled = false;
+  let timer = null;
+  const arm = () => {
+    if (stalled) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      _abortStream(stream, new Error("snapshot download stalled"));
+    }, stallMs);
+    timer.unref?.();
+  };
+  arm(); // a peer that never sends a single byte must still trip
   try {
     for await (const frame of streamFrames(stream.source, (_add, total) => {
+      arm(); // progress: bytes arrived from the peer
       if (onProgress) onProgress(total);
       if (total > maxBytes) {
         _abortStream(stream, new Error("snapshot too large"));
         throw new Error(`snapshot download exceeds ${maxBytes}-byte cap (received >${total})`);
       }
     })) {
+      arm(); // progress: installer pulled the next frame (finished the previous)
       yield frame;
     }
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
-  if (timedOut) throw new Error(`snapshot download timed out after ${maxMs}ms`);
+  if (stalled) throw new Error(`snapshot download stalled — no progress for ${stallMs}ms`);
 }
 
 module.exports = { createSnapshotHandler, _boundedFrameStream };

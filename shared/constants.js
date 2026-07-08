@@ -73,15 +73,16 @@ const CLASSIFIER_CLIENT = Object.freeze({
 // install-once guard). Long-term scale fix is a streaming length-prefix parser
 // (deferred, see snapshot-handler).
 const SNAPSHOT_DOWNLOAD = Object.freeze({
-  // Sized for the whole-chain snapshot (full tx/cert history + state), which on
-  // a mature federation is the DB size inflated by canonical-JSON framing:
-  // hundreds of MB and tens of minutes over a constrained WAN link. The
-  // streaming install-in-place bounds PEAK MEMORY independently of these caps
-  // (it never holds the whole response), so they only guard against a genuine
-  // flood/hang, not normal large snapshots. Phase 2 chunked+resumable sync is
-  // the real scale answer once a single window can't cover the state.
-  MAX_BYTES: 4 * 1024 * 1024 * 1024,  // 4 GB hard ceiling on a single snapshot download
-  MAX_MS: 900_000,                     // 15 min overall deadline for the whole download+install
+  // A snapshot is the whole-chain state (full tx/cert history + state), whose
+  // size and transfer time grow with the federation , unknowable in advance.
+  // So we do NOT cap total bytes/time (any fixed number is wrong at some scale).
+  // Instead: a STALL timeout. The timer resets on every byte received AND every
+  // frame installed, so a large-but-flowing download never trips it; only a
+  // genuine hang (silent peer / dead connection) does. Memory stays bounded by
+  // the streaming install-in-place, not by a byte cap. MAX_BYTES remains only as
+  // a generous last-resort flood guard against an unbounded/hostile stream.
+  MAX_BYTES: 16 * 1024 * 1024 * 1024,  // 16 GB last-resort flood guard (not a normal-operation cap)
+  STALL_MS: 60_000,                     // abort only after 60s with zero download/install progress
 });
 
 // Server-side bound on reading one SnapshotRequest (node-local DoS guard,
