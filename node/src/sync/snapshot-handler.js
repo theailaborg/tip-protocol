@@ -43,10 +43,13 @@
 "use strict";
 
 const { mldsaVerify, canonicalJson, shake256 } = require("../../../shared/crypto");
-const { TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST } = require("../../../shared/constants");
+const {
+  TX_TYPES, SNAPSHOT_DOWNLOAD, SNAPSHOT_REQUEST,
+  SNAPSHOT_FRAME_KIND, SNAPSHOT_INSTALL_MARKER_KEY, SNAPSHOT_INSTALL_BATCH_ROWS,
+} = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
-const { createStateRootBuilder } = require("../consensus/state-root");
+const { computeStateMerkleRoot, computeStateMerkleRootPerTable } = require("../consensus/state-root");
 const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
@@ -60,10 +63,21 @@ const {
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { getGenesisPayload } = require("../genesis");
 const { encode, decode, bytesToHex, hexToBytes, bytesToUtf8 } = require("../network/proto");
-const { frame: _frame, parseLengthPrefixedFrames: _parseLengthPrefixedFrames } = require("../network/framing");
+const { frame: _frame, streamFrames } = require("../network/framing");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.snapshot");
+
+const K = SNAPSHOT_FRAME_KIND;
+
+// Prefix a frame body with its 1-byte SNAPSHOT_FRAME_KIND tag (#132). The tag
+// lets a streaming receiver route each frame the moment it arrives, with no
+// pre-count and no positional slicing. It also doubles as a format
+// discriminator: an old-format frame is raw protobuf whose first byte is a
+// field tag (never a kind value), so a version-mixed pair fails cleanly.
+function _frameKind(kind, body) {
+  return _frame(Buffer.concat([Buffer.from([kind]), body]));
+}
 
 // Genesis-defined protocol id for the state-snapshot protocol.
 // Safe at module load: PC.init() runs before any application module
@@ -125,6 +139,34 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     _installProgress = null;
   }
 
+  // #132 boot recovery. A streaming install writes canonical state in-place
+  // across many batches (no single covering transaction — the state is far
+  // larger than one txn can hold), guarded by the persisted install marker.
+  // If a crash interrupts it, the node reboots with PARTIAL canonical state
+  // and the marker still `in_progress`. Coming up `ready` on that partial
+  // state would fork the chain. So: wipe it and signal the caller to force
+  // syncing. The marker is LEFT SET (not cleared) — only a fully-verified
+  // install clears it at finalize — so a second crash during recovery still
+  // resyncs rather than trusting the wipe. Returns true if it recovered.
+  async function recoverInterruptedInstall() {
+    let marker = null;
+    try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
+    catch { return false; }
+    if (!marker || !String(marker).startsWith("in_progress")) return false;
+    log.warn(
+      `Snapshot: interrupted install detected (marker=${marker}) — wiping partial canonical ` +
+      `state; node stays in syncing and resyncs from a peer before producing anything`
+    );
+    try {
+      dag.clearCanonicalState();
+      if (typeof dag.flush === "function") await dag.flush();
+    } catch (err) {
+      log.error(`Snapshot: interrupted-install wipe failed: ${err.message} — node may need a manual reset`);
+    }
+    resetInstallState();
+    return true;
+  }
+
   // ── #49 full-history frame helpers ───────────────────────────────────────
   // Shared by sender (tx + commit phases) and receiver (tx + commit phases).
   // The state phase has a different shape (each row carries `table`) and
@@ -135,31 +177,35 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
    * and return the wire-framed encoded body. Used inside the streaming
    * generator for SnapshotTxRow and SnapshotCommitRow.
    */
-  function _frameFullHistoryRow(frameType, canonical, rootBuilder) {
+  function _frameFullHistoryRow(kind, frameType, canonical, rootBuilder) {
     rootBuilder.addRow(canonical);
-    return _frame(encode(frameType, {
+    return _frameKind(kind, encode(frameType, {
       canonicalJson: Buffer.from(canonical, "utf8"),
     }));
   }
 
+  // Emit a phase-boundary trailer (#132) so the receiver verifies each phase's
+  // integrity root the moment the phase ends, before the next phase installs.
+  function _framePhaseEnd(kind, count, rootHex) {
+    return _frameKind(K.PHASE_END, encode("SnapshotPhaseEnd", {
+      kind,
+      count,
+      root: rootHex ? hexToBytes(rootHex) : Buffer.alloc(0),
+    }));
+  }
+
   /**
-   * Receiver helper: decode each frame, verify the canonical bytes are
-   * present, hash into the full-root builder, JSON-parse for the install
-   * queue. Throws with a clear label if any frame is malformed.
+   * Receiver helper (#132 streaming): decode one full-history frame body,
+   * verify the canonical bytes are present, hash into the full-root builder,
+   * and JSON-parse the row. Throws with a clear label if malformed.
    */
-  function _decodeFullHistoryFrames(frames, frameType, rootBuilder, label) {
-    const queue = [];
-    for (const frame of frames) {
-      const row = decode(frameType, frame);
-      if (!row.canonicalJson) throw new Error(`malformed ${frameType}`);
-      const canonical = bytesToUtf8(row.canonicalJson);
-      rootBuilder.addRow(canonical);
-      let parsed;
-      try { parsed = JSON.parse(canonical); }
-      catch (err) { throw new Error(`${label} canonical_json parse failed: ${err.message}`); }
-      queue.push(parsed);
-    }
-    return queue;
+  function _decodeFullRow(frameBody, frameType, rootBuilder, label) {
+    const row = decode(frameType, frameBody);
+    if (!row.canonicalJson) throw new Error(`malformed ${frameType}`);
+    const canonical = bytesToUtf8(row.canonicalJson);
+    rootBuilder.addRow(canonical);
+    try { return JSON.parse(canonical); }
+    catch (err) { throw new Error(`${label} canonical_json parse failed: ${err.message}`); }
   }
 
   // ── Server: handle incoming snapshot request ────────────────────────────
@@ -188,12 +234,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   async function _handleIncomingSnapshot(stream, remotePeer) {
-    // Read one SnapshotRequest from the stream.
-    const request = await _readOneMessage(stream, "SnapshotRequest");
-    if (!request) {
-      log.warn(`Snapshot: empty request from ${remotePeer}`);
-      return;
-    }
+    // Read one SnapshotRequest from the stream. A 0-byte body is proto3's empty
+    // message = all defaults (minRound 0): a joiner asking for "your latest" on
+    // an idle network encodes to zero bytes, so treat a falsy read as an empty
+    // request object rather than rejecting it. (Rejecting it stalled fresh
+    // joiners whose min_round-0 request serialized to nothing.)
+    const request = (await _readOneMessage(stream, "SnapshotRequest")) || {};
 
     const minRound = Number(request.minRound || 0);
 
@@ -205,14 +251,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // if they themselves installed a snapshot in a prior recovery cycle.
     if (_snapServing) {
       const errHeader = encode("SnapshotHeader", _emptyHeader("snapshot install in progress — try another peer"));
-      await stream.sink([_frame(errHeader)]);
+      await stream.sink([_frameKind(K.HEADER, errHeader)]);
       log.info(`Snapshot: declined ${remotePeer} — local snapshot install in progress`);
       return;
     }
 
     if (_activeServes >= MAX_CONCURRENT_SERVES) {
       const errHeader = encode("SnapshotHeader", _emptyHeader("serve capacity reached, try another peer"));
-      await stream.sink([_frame(errHeader)]);
+      await stream.sink([_frameKind(K.HEADER, errHeader)]);
       log.info(`Snapshot: declined ${remotePeer}: ${_activeServes} serve(s) already active`);
       return;
     }
@@ -226,7 +272,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const errHeader = encode("SnapshotHeader", _emptyHeader(
         `no commit at or after round ${minRound} (latest=${latest?.round || 0})`
       ));
-      await stream.sink([_frame(errHeader)]);
+      await stream.sink([_frameKind(K.HEADER, errHeader)]);
       log.info(`Snapshot: declined ${remotePeer} — latest=${latest?.round || 0}, requested=${minRound}`);
       return;
     }
@@ -273,8 +319,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
+    // Total rows across all phases, for the joiner's install % (advisory /
+    // display-only, never hashed or signed). state + txs + certs dominate; the
+    // tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
+    // Counted from the in-memory mirror before the header goes out.
+    let _snapTotalRows = 0;
+    for (const _r of dag.iterateCanonicalState({ contentRaw: true })) _snapTotalRows++;
+    if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
+    if (typeof dag.certificateCount === "function") _snapTotalRows += dag.certificateCount();
+
     const headerBuf = encode("SnapshotHeader", {
       round: latest.round,
+      totalRows: _snapTotalRows,
       anchorCertHash: hexToBytes(latest.anchor_cert_hash),
       leaderNodeId: latest.leader_node_id,
       committee: latest.committee || [],
@@ -327,49 +383,75 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     _activeServes++;
+    // Serve-side STALL guard, symmetric with the client's _boundedFrameStream:
+    // stream.sink() blocks on backpressure while the joiner reads. If the joiner
+    // abandons the stream (crash/restart/its own stall), sink() would wait
+    // FOREVER holding this node's single serve slot — every later request then
+    // declines "serve capacity reached". Re-arm on each emitted frame; if no
+    // frame flows for STALL_MS, abort the stream so sink() throws → the finally
+    // releases the slot. (Live: node3 restarts during rejoin left node1/node2's
+    // slot pinned on a dead stream with 0 bytes served.)
+    let _serveStalled = false;
+    let _serveStallTimer = null;
+    const _armServeStall = () => {
+      if (_serveStalled) return;
+      if (_serveStallTimer) clearTimeout(_serveStallTimer);
+      _serveStallTimer = setTimeout(() => {
+        _serveStalled = true;
+        _abortStream(stream, new Error("snapshot serve stalled — joiner stopped reading"));
+      }, SNAPSHOT_DOWNLOAD.STALL_MS);
+      _serveStallTimer.unref?.();
+    };
+    _armServeStall();
     try {
       const _countBytes = async function* (gen) {
-        for await (const buf of gen) { _servedBytes += buf.length; yield buf; }
+        for await (const buf of gen) { _servedBytes += buf.length; _armServeStall(); yield buf; }
       };
       await stream.sink(_countBytes((async function* () {
         // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
         // firing during a large serve; without it the row flood starves the loop.
         let _yielded = 0;
         const _breathe = async () => { if ((++_yielded & 255) === 0) await new Promise((r) => setImmediate(r)); };
-        yield _frame(headerBuf);
+        yield _frameKind(K.HEADER, headerBuf);
 
         // Phase A: derived state (existing — covered by state_merkle_root).
-        for (const { table, row } of dag.iterateCanonicalState()) {
+        // contentRaw rows (#132) ship the RAW content row; the receiver
+        // re-derives the root via computeStateMerkleRoot after install so the
+        // ack-signed state_merkle_root verifies.
+        for (const { table, row } of dag.iterateCanonicalState({ contentRaw: true })) {
           const rowBuf = encode("SnapshotStateRow", {
             table,
             canonicalJson: Buffer.from(canonicalJson(row), "utf8"),
           });
-          yield _frame(rowBuf);
+          yield _frameKind(K.STATE, rowBuf);
           stateRowsSent++;
           await _breathe();
         }
+        yield _framePhaseEnd(K.STATE, stateRowsSent, latest.state_merkle_root);
 
         // Phase B: full transactions table (#49). Source has every tx ever
         // (no GC). canonicalJson(canonTx(tx)) is the byte form both sides
         // hash and store in SnapshotTxRow.canonical_json.
         const txRoot = createTxsFullRootBuilder();
         for (const tx of dag.iterateAllTransactions()) {
-          yield _frameFullHistoryRow("SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
+          yield _frameFullHistoryRow(K.TX, "SnapshotTxRow", canonicalJson(canonTx(tx)), txRoot);
           txRowsSent++;
           await _breathe();
         }
         txsFullRoot = txRoot.finalize();
+        yield _framePhaseEnd(K.TX, txRowsSent, txsFullRoot);
 
         // Phase C: commits history except latest (#49). Latest already
         // rides in SnapshotHeader — including it twice would double-count
         // in the receiver's commits table and break the install.
         const commitRoot = createCommitsFullRootBuilder();
         for (const c of dag.iterateAllCommitsExcept(latest.round)) {
-          yield _frameFullHistoryRow("SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
+          yield _frameFullHistoryRow(K.COMMIT, "SnapshotCommitRow", canonicalJson(canonCommit(c)), commitRoot);
           commitRowsSent++;
           await _breathe();
         }
         commitsFullRoot = commitRoot.finalize();
+        yield _framePhaseEnd(K.COMMIT, commitRowsSent, commitsFullRoot);
 
         // Phase D: committee_history rotations (§4 + #34). Every rotation
         // since genesis, in rotation_number order. The joiner walks this
@@ -379,12 +461,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const rotationRoot = createRotationsFullRootBuilder();
         if (typeof dag.getRotationsFromGenesis === "function") {
           for (const r of dag.getRotationsFromGenesis()) {
-            yield _frameFullHistoryRow("SnapshotCommitteeRotationRow",
+            yield _frameFullHistoryRow(K.ROTATION, "SnapshotCommitteeRotationRow",
               canonicalJson(canonRotation(r)), rotationRoot);
             rotationRowsSent++;
           }
         }
         rotationsFullRoot = rotationRoot.finalize();
+        yield _framePhaseEnd(K.ROTATION, rotationRowsSent, rotationsFullRoot);
 
         // Phase E: recent certificates (§69). Bounded range
         // [peer_committed - K - horizon, peer_committed] so the joiner's
@@ -397,13 +480,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         const certRoot = createCertsFullRootBuilder();
         if (typeof dag.iterateCertsByRoundRange === "function") {
           for (const cert of dag.iterateCertsByRoundRange(certFromRound, certToRound)) {
-            yield _frameFullHistoryRow("SnapshotCertRow",
+            yield _frameFullHistoryRow(K.CERT, "SnapshotCertRow",
               canonicalJson(canonCert(cert)), certRoot);
             certRowsSent++;
             await _breathe();
           }
         }
         certsFullRoot = certRoot.finalize();
+        yield _framePhaseEnd(K.CERT, certRowsSent, certsFullRoot);
 
         // Phase F: rotation_participation (#75). Streamed as SnapshotStateRow
         // with `table="rotation_participation"` so the existing wire format
@@ -415,17 +499,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // recovery. Source's RP for the rotations it still has (after
         // bullshark's pruneRotationParticipationBefore at boundary) is
         // shipped wholesale; joiner wipes its local rows for those
-        // rotations first, then installs.
+        // rotations first, then installs. RP has no integrity root (empty
+        // trailer root); its rows aren't in any merkle.
         if (typeof dag.iterateRotationParticipationForSnapshot === "function") {
           for (const r of dag.iterateRotationParticipationForSnapshot()) {
             const rowBuf = encode("SnapshotStateRow", {
               table: "rotation_participation",
               canonicalJson: Buffer.from(canonicalJson(r), "utf8"),
             });
-            yield _frame(rowBuf);
+            yield _frameKind(K.RP, rowBuf);
             rpRowsSent++;
           }
         }
+        yield _framePhaseEnd(K.RP, rpRowsSent, null);
 
         const endBuf = encode("SnapshotEnd", {
           rowCount: stateRowsSent,
@@ -439,7 +525,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           certsFullRoot: hexToBytes(certsFullRoot),
           rpRowCount: rpRowsSent,
         });
-        yield _frame(endBuf);
+        yield _frameKind(K.END, endBuf);
       })()));
       // Half-close our write direction so the client's read loop sees a clean
       // EOF and stops waiting. Without it the client blocks until its download
@@ -448,9 +534,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         await stream.closeWrite();
       }
     } catch (err) {
-      log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
+      log.warn(`Snapshot: stream write ${_serveStalled ? "stalled" : "failed"} to ${remotePeer}: ${err.message}`);
       return;
     } finally {
+      if (_serveStallTimer) clearTimeout(_serveStallTimer);
       _activeServes--;
     }
 
@@ -497,6 +584,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // openStream is inside the try so any connection failure clears
     // _snapInstallInProgress via the catch below instead of leaking it.
     let stream;
+    let installBegun = false;   // set once the crash marker + wipe have run
     try {
       stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
       // Write the request (one frame, length-prefixed for symmetry with the
@@ -515,212 +603,262 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         await stream.closeWrite();
       }
 
-      // Read every frame off the stream into a single buffer, then split into
-      // length-prefixed messages. #94: the read is BOUNDED by a total-byte cap
-      // and an overall deadline so a hostile/buggy peer can't OOM the joiner
-      // (flood) or hang it in `syncing` forever (silence / slow-trickle); a
-      // breach aborts the stream and throws, failing this fetch so we retry
-      // another peer. (Scale fix for legitimately-large state is a streaming
-      // length-prefix parser, deferred, same trigger as issues.md Consensus #32.)
-      const body = await _readBoundedStream(
-        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.MAX_MS,
-      );
-
-      const frames = _parseLengthPrefixedFrames(body);
-      if (frames.length === 0) throw new Error("empty response from peer");
-
-      // First frame is always SnapshotHeader.
-      const header = decode("SnapshotHeader", frames[0]);
-      if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
-
-      // Last frame is SnapshotEnd; middle frames are state rows then tx
-      // rows then commit rows in that order. SnapshotEnd carries per-
-      // stream counts AND the #49 stream-tampering integrity roots
-      // (txs_full_root, commits_full_root) computed by the sender.
-      if (frames.length < 2) throw new Error("response missing SnapshotEnd terminator");
-      const endFrame = frames[frames.length - 1];
-      const rowFrames = frames.slice(1, -1);
-
-      const end = decode("SnapshotEnd", endFrame);
-      const stateRowCount = Number(end.rowCount || 0);
-      const txRowCount = Number(end.txRowCount || 0);
-      const commitRowCount = Number(end.commitRowCount || 0);
-      const rotationRowCount = Number(end.rotationRowCount || 0);
-      const certRowCount = Number(end.certRowCount || 0);
-      const rpRowCount = Number(end.rpRowCount || 0);
-      const expectedTotal = stateRowCount + txRowCount + commitRowCount
-        + rotationRowCount + certRowCount + rpRowCount;
-      if (expectedTotal !== rowFrames.length) {
-        throw new Error(
-          `row count mismatch: end says state=${stateRowCount} txs=${txRowCount} ` +
-          `commits=${commitRowCount} rotations=${rotationRowCount} certs=${certRowCount} ` +
-          `rp=${rpRowCount} (total=${expectedTotal}), got ${rowFrames.length} frames`
-        );
-      }
-
-      const stateFrames = rowFrames.slice(0, stateRowCount);
-      const txFrames = rowFrames.slice(stateRowCount, stateRowCount + txRowCount);
-      const commitFrames = rowFrames.slice(stateRowCount + txRowCount,
-        stateRowCount + txRowCount + commitRowCount);
-      const rotationFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount,
-        stateRowCount + txRowCount + commitRowCount + rotationRowCount);
-      const certFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount,
-        stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
-      const rpFrames = rowFrames.slice(stateRowCount + txRowCount + commitRowCount + rotationRowCount + certRowCount);
-
-      // ── Phase A: derived state ───────────────────────────────────────
-      // Different shape from B/C (carries a `table` field) so doesn't use
-      // the shared helper. Collects node public keys for ack verification.
-      const stateRoot = createStateRootBuilder();
-      const nodePubKeys = new Map();           // node_id → public_key (hex)
-      const stateInstallQueue = [];            // { table, row } for the install
-      for (const frame of stateFrames) {
-        const row = decode("SnapshotStateRow", frame);
-        const table = row.table;
-        const canonicalBytes = row.canonicalJson;
-        if (!table || !canonicalBytes) throw new Error("malformed SnapshotStateRow");
-        const canonical = bytesToUtf8(canonicalBytes);
-        stateRoot.addRow(table, canonical);
-
-        let parsed;
-        try { parsed = JSON.parse(canonical); }
-        catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
-
-        // GH #60: node pubkeys live in entity_keys (single source of
-        // truth, DID-style). Collect the CURRENTLY-ACTIVE node key
-        // (valid_to_ts == null = no later rotation has superseded it)
-        // so the ack-quorum check below can resolve each signer to a
-        // pubkey. Pre-#60 snapshots had public_key on the nodes row;
-        // post-#60 it's an entity_keys row with entity_type='node'.
-        if (table === "entity_keys"
-          && parsed.entity_type === "node"
-          && parsed.valid_to_ts == null
-          && parsed.public_key) {
-          nodePubKeys.set(parsed.entity_id, parsed.public_key);
-        }
-        stateInstallQueue.push({ table, row: parsed });
-      }
-
-      // ── Phase B / C: full tx + commit history (#49) ──────────────────
+      // Stream the response frame-by-frame, installing each row in-place as it
+      // arrives (#132). Bounded memory: only the current frame + one install
+      // batch are held, never the whole ~400MB response (the buffer-then-verify
+      // path OOM'd large joiners). Per-phase integrity roots verify at each
+      // SnapshotPhaseEnd; ack-quorum + chain-of-trust gate go-live at END.
+      //
+      // FORK TRAP: state installs BEFORE its ack attestation is verified (acks
+      // ride the header; the chain-of-trust that anchors them arrives in the
+      // rotation phase, LATER on the wire). Safe ONLY because the node stays in
+      // `syncing` (invisible to consensus) and a persisted crash marker guards
+      // the partial state until END verification passes and markSnapshotInstalled
+      // promotes it. Nothing unverified is ever visible or durable-as-trusted.
       const txsRoot = createTxsFullRootBuilder();
-      const txInstallQueue = _decodeFullHistoryFrames(txFrames, "SnapshotTxRow", txsRoot, "tx");
-
       const commitsRoot = createCommitsFullRootBuilder();
-      const commitInstallQueue = _decodeFullHistoryFrames(commitFrames, "SnapshotCommitRow", commitsRoot, "commit");
-
-      // ── Root matches ──────────────────────────────────────────────────
-      // state_merkle_root is consensus state — signed by 2f+1 acks below.
-      // txs_full_root / commits_full_root are wire-format integrity
-      // checks shipped in SnapshotEnd; mismatch means the stream was
-      // tampered with or truncated mid-row.
-      const derivedState = stateRoot.finalize();
-      const expectedState = bytesToHex(header.stateMerkleRoot);
-      if (derivedState !== expectedState) {
-        throw new Error(`state_merkle_root mismatch: expected ${expectedState?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
-      }
-
-      const derivedTxs = txsRoot.finalize();
-      const expectedTxs = bytesToHex(end.txsFullRoot);
-      if (derivedTxs !== expectedTxs) {
-        throw new Error(`txs_full_root mismatch: expected ${expectedTxs?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
-      }
-
-      const derivedCommits = commitsRoot.finalize();
-      const expectedCommits = bytesToHex(end.commitsFullRoot);
-      if (derivedCommits !== expectedCommits) {
-        throw new Error(`commits_full_root mismatch: expected ${expectedCommits?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
-      }
-
-      // ── Phase D: committee_history rotations (§4 + #34) ─────────────
-      // Two-step verification:
-      //   1. Wire integrity — rotations_full_root match (same shape as
-      //      txs/commits roots, catches truncation/tampering of the stream)
-      //   2. Cryptographic chain-of-trust — walk rotations forward from
-      //      genesis, verify each transition's sigs come from the
-      //      previously-trusted committee. Anchored at the LOCAL genesis
-      //      committee (NOT the peer-provided nodes table), that's
-      //      what closes the synthetic-snapshot attack.
       const rotationsRoot = createRotationsFullRootBuilder();
-      const rotationInstallQueue = _decodeFullHistoryFrames(
-        rotationFrames, "SnapshotCommitteeRotationRow", rotationsRoot, "rotation"
-      );
-      const derivedRotations = rotationsRoot.finalize();
-      const expectedRotations = bytesToHex(end.rotationsFullRoot);
-      if (derivedRotations !== expectedRotations) {
-        throw new Error(
-          `rotations_full_root mismatch: expected ${expectedRotations?.slice(0, 16) || "<empty>"}..., ` +
-          `derived ${derivedRotations.slice(0, 16)}...`
-        );
-      }
-
-      // Chain-of-trust walk. Anchor at LOCAL genesis (hardcoded in this
-      // node's binary, NOT from the peer's snapshot). Then walk forward,
-      // adopting each rotation's pubkeys ONLY after verifying its sigs
-      // against the previously-trusted committee. Any broken link rejects
-      // the entire snapshot. See validators/business-rules.canCommitteeRotation
-      // for the predicate this mirrors at commit-time.
-      //
-      // Returns the verified-and-ordered rotation list so the ack-quorum
-      // check below can look up signer pubkeys from the chain-anchored
-      // committee (NOT the peer-provided nodes table) — closes the last
-      // chicken-and-egg corner of fresh-joiner verification.
-      let verifiedRotations;
-      try {
-        verifiedRotations = _verifyRotationChain(rotationInstallQueue);
-      } catch (err) {
-        // §4 + #34: count failures so /metrics surfaces "this joiner
-        // rejected N snapshots due to chain-of-trust break" — sustained
-        // increments across multiple peers indicates either a malicious
-        // peer or a config drift between this node and the rest.
-        _metrics.chain_walk_failures++;
-        throw err;
-      }
-      const chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
-
-      // ── Phase E: recent certificates (§69) ──────────────────────────
-      // Wire-integrity check via certs_full_root. The certs themselves
-      // don't need cryptographic chain-of-trust verification at this
-      // layer — each cert's hash is content-addressable (covers round +
-      // author + batch.hash + acks + timestamp), and consensus already
-      // accepted them at production time via the normal Narwhal cert-
-      // validation path. We're shipping pre-verified history; the
-      // joiner just needs the bits to populate its K-window.
-      //
-      // Certs are install-ordered (round, author) and persisted via
-      // the standard `dag.saveCertificate` path — same as receiving via
-      // gossip, but bulk-loaded inside the snapshot's atomic txn.
       const certsRoot = createCertsFullRootBuilder();
-      const certInstallQueue = _decodeFullHistoryFrames(
-        certFrames, "SnapshotCertRow", certsRoot, "cert"
-      );
-      const derivedCerts = certsRoot.finalize();
-      const expectedCerts = bytesToHex(end.certsFullRoot);
-      if (derivedCerts !== expectedCerts) {
-        throw new Error(
-          `certs_full_root mismatch: expected ${expectedCerts?.slice(0, 16) || "<empty>"}..., ` +
-          `derived ${derivedCerts.slice(0, 16)}...`
-        );
+      const nodePubKeys = new Map();            // node_id → public_key (hex)
+      const rotationRows = [];                  // few + tiny; chain-of-trust needs all
+      const rpRows = [];                        // few; installed at RP boundary
+      const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
+      const phaseVerified = new Set();          // which phase trailers arrived
+      let header = null, end = null;
+      let verifiedRotations = [];
+      let chainPubkeysAtRound = new Map();
+      let derivedState = "", derivedTxs = "", derivedCommits = "", derivedRotations = "", derivedCerts = "";
+      let totalBytes = 0;
+      let txInstalled = 0;   // seen.tx counts frames; this counts non-skipped installs (dedup gate)
+
+      // Batched in-place install with backpressure: buffer install thunks, flush
+      // each batch as ONE transaction, and await the flush before reading more
+      // frames so the pending-write queue (and peak memory) stays bounded.
+      let batch = [];
+      const flushBatch = async () => {
+        if (batch.length === 0) return;
+        const thunks = batch; batch = [];
+        dag.runInTransaction(() => { for (const w of thunks) w(); });
+        await dag.flush();
+      };
+      const enqueue = (w) => { batch.push(w); };
+      const maybeFlush = async () => { if (batch.length >= SNAPSHOT_INSTALL_BATCH_ROWS) await flushBatch(); };
+
+      // Bounds: a byte cap trips on a flood, an overall deadline on a hang /
+      // slow-trickle. _boundedFrameStream aborts the stream and throws on
+      // either breach so the fetch fails fast and retries another peer.
+      // Live progress: a periodic log line (visible in `docker logs`) plus a
+      // gauge (tip_snapshot_install_in_progress_bytes / _rows) so an operator
+      // can watch a large install advance instead of guessing whether it hung.
+      let loggedMB = 0;
+      let snapTotalRows = 0;   // from header.total_rows, set on the HEADER frame below
+      const onProgress = (total) => {
+        totalBytes = total;
+        if (_installProgress) _installProgress.bytes = total;
+        _metrics.install_in_progress_bytes = total;
+        const rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+        _metrics.install_in_progress_rows = rows;
+        const pct = snapTotalRows > 0 ? Math.min(100, Math.floor((rows / snapTotalRows) * 100)) : 0;
+        _metrics.install_in_progress_percent = pct;
+        if (_installProgress) _installProgress.percent = pct;
+        const mb = Math.floor(total / (25 * 1024 * 1024)) * 25;
+        if (mb > loggedMB) {
+          loggedMB = mb;
+          log.notice(`Snapshot install progress: ${pct}% (${rows}/${snapTotalRows || "?"} rows, ${mb} MB streamed), peer=${peerId.slice(0, 12)}`);
+        }
+      };
+
+      for await (const bodyFrame of _boundedFrameStream(
+        stream, SNAPSHOT_DOWNLOAD.MAX_BYTES, SNAPSHOT_DOWNLOAD.STALL_MS, onProgress,
+      )) {
+        const kind = bodyFrame[0];
+        const proto = bodyFrame.subarray(1);
+        if (!header && kind !== K.HEADER) {
+          throw new Error(`snapshot stream did not start with a header frame (kind=${kind})`);
+        }
+        switch (kind) {
+          case K.HEADER: {
+            header = decode("SnapshotHeader", proto);
+            if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
+            snapTotalRows = Number(header.totalRows) || 0;
+            // Begin install: persist the crash marker BEFORE wiping so a
+            // mid-stream crash is always recoverable (restart sees the marker
+            // → re-enters syncing → resyncs), then clear canonical state.
+            _installProgress = { phase: "syncing", installed: 0, total: snapTotalRows, bytes: totalBytes, percent: 0 };
+            dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
+            await dag.flush();
+            _snapServing = true;
+            dag.clearCanonicalState();
+            await dag.flush();
+            // From here the install is inserts-only into freshly-cleared tables,
+            // so route DB writes through per-table batchInsert (Postgres only;
+            // no-op where unsupported). endBulkInstall() runs in the finally.
+            if (typeof dag.beginBulkInstall === "function") dag.beginBulkInstall();
+            installBegun = true;
+            break;
+          }
+          case K.STATE: {
+            const row = decode("SnapshotStateRow", proto);
+            const table = row.table;
+            if (!table || !row.canonicalJson) throw new Error("malformed SnapshotStateRow");
+            const canonical = bytesToUtf8(row.canonicalJson);
+            let parsed;
+            try { parsed = JSON.parse(canonical); }
+            catch (err) { throw new Error(`row canonical_json parse failed: ${err.message}`); }
+            // GH #60: collect the CURRENTLY-ACTIVE node key (valid_to_ts null)
+            // so the ack-quorum check can resolve each signer to a pubkey.
+            if (table === "entity_keys"
+              && parsed.entity_type === "node"
+              && parsed.valid_to_ts == null
+              && parsed.public_key) {
+              nodePubKeys.set(parsed.entity_id, parsed.public_key);
+            }
+            enqueue(() => _installOneRow(table, parsed));
+            seen.state++;
+            await maybeFlush();
+            break;
+          }
+          case K.TX: {
+            const tx = _decodeFullRow(proto, "SnapshotTxRow", txsRoot, "tx");
+            enqueue(() => { if (_installTxRow(tx)) txInstalled++; });
+            seen.tx++;
+            await maybeFlush();
+            break;
+          }
+          case K.COMMIT: {
+            const c = _decodeFullRow(proto, "SnapshotCommitRow", commitsRoot, "commit");
+            enqueue(() => dag.saveCommit(c));
+            seen.commit++;
+            await maybeFlush();
+            break;
+          }
+          case K.ROTATION: {
+            // Collected, not installed yet: chain-of-trust needs the whole
+            // chain, and rotations install at the phase boundary AFTER the tx
+            // dedup gate has read pre-snapshot committee_history.
+            rotationRows.push(_decodeFullRow(proto, "SnapshotCommitteeRotationRow", rotationsRoot, "rotation"));
+            seen.rotation++;
+            break;
+          }
+          case K.CERT: {
+            const c = _decodeFullRow(proto, "SnapshotCertRow", certsRoot, "cert");
+            enqueue(() => dag.saveCertificate(c));
+            seen.cert++;
+            await maybeFlush();
+            break;
+          }
+          case K.RP: {
+            const row = decode("SnapshotStateRow", proto);
+            if (row.table !== "rotation_participation") {
+              throw new Error(`rp phase: expected table=rotation_participation, got "${row.table}"`);
+            }
+            try { rpRows.push(JSON.parse(bytesToUtf8(row.canonicalJson))); }
+            catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
+            seen.rp++;
+            break;
+          }
+          case K.PHASE_END: {
+            // Drain the phase's in-place installs before verifying its boundary.
+            await flushBatch();
+            const pe = decode("SnapshotPhaseEnd", proto);
+            const peRoot = bytesToHex(pe.root);   // null when the trailer carries no root
+            if (_installProgress) _installProgress.installed = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+            switch (pe.kind) {
+              case K.STATE: {
+                if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
+                // Re-derive from the just-installed mirror (canonicalizes: the raw
+                // content rows on the wire become their _canonContent hash form
+                // here), so the ack-signed state_merkle_root verifies while the
+                // stored rows keep their true storable values (#132).
+                derivedState = computeStateMerkleRoot(dag);
+                const expected = bytesToHex(header.stateMerkleRoot);
+                if (derivedState !== expected) {
+                  const perTable = computeStateMerkleRootPerTable(dag)
+                    .map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
+                  log.error(`Snapshot: state-root mismatch per-table (installed) — ${perTable}`);
+                  throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
+                }
+                if (peRoot && peRoot !== expected) {
+                  throw new Error("state phase trailer root disagrees with ack-signed header state_merkle_root");
+                }
+                break;
+              }
+              case K.TX: {
+                if (Number(pe.count) !== seen.tx) throw new Error(`tx phase count mismatch: trailer=${pe.count} seen=${seen.tx}`);
+                derivedTxs = txsRoot.finalize();
+                if (derivedTxs !== peRoot) throw new Error(`txs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedTxs.slice(0, 16)}...`);
+                break;
+              }
+              case K.COMMIT: {
+                if (Number(pe.count) !== seen.commit) throw new Error(`commit phase count mismatch: trailer=${pe.count} seen=${seen.commit}`);
+                derivedCommits = commitsRoot.finalize();
+                if (derivedCommits !== peRoot) throw new Error(`commits_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCommits.slice(0, 16)}...`);
+                break;
+              }
+              case K.ROTATION: {
+                if (Number(pe.count) !== seen.rotation) throw new Error(`rotation phase count mismatch: trailer=${pe.count} seen=${seen.rotation}`);
+                derivedRotations = rotationsRoot.finalize();
+                if (derivedRotations !== peRoot) throw new Error(`rotations_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedRotations.slice(0, 16)}...`);
+                // Chain-of-trust: walk forward from LOCAL genesis, adopting each
+                // rotation's pubkeys only after verifying its sigs against the
+                // previously-trusted committee. Anchors the ack-quorum below.
+                try { verifiedRotations = _verifyRotationChain(rotationRows); }
+                catch (err) { _metrics.chain_walk_failures++; throw err; }
+                chainPubkeysAtRound = _buildPubkeyLookup(verifiedRotations, Number(header.round));
+                // Install now (post chain-of-trust, before certs/rp).
+                dag.runInTransaction(() => { _installRotationRows(rotationRows, header); });
+                await dag.flush();
+                break;
+              }
+              case K.CERT: {
+                if (Number(pe.count) !== seen.cert) throw new Error(`cert phase count mismatch: trailer=${pe.count} seen=${seen.cert}`);
+                derivedCerts = certsRoot.finalize();
+                if (derivedCerts !== peRoot) throw new Error(`certs_full_root mismatch: expected ${peRoot?.slice(0, 16) || "<empty>"}..., derived ${derivedCerts.slice(0, 16)}...`);
+                break;
+              }
+              case K.RP: {
+                if (Number(pe.count) !== seen.rp) throw new Error(`rp phase count mismatch: trailer=${pe.count} seen=${seen.rp}`);
+                dag.runInTransaction(() => { _installRpRows(rpRows); });
+                await dag.flush();
+                break;
+              }
+              default:
+                throw new Error(`unexpected snapshot phase-end kind ${pe.kind}`);
+            }
+            phaseVerified.add(pe.kind);
+            break;
+          }
+          case K.END: {
+            end = decode("SnapshotEnd", proto);
+            break;
+          }
+          default:
+            throw new Error(`unknown snapshot frame kind ${kind}`);
+        }
       }
 
-      // ── Phase F: rotation_participation (#75) ─────────────────────────
-      // RP rows ship as SnapshotStateRow with table="rotation_participation"
-      // but DELIBERATELY OUTSIDE state_merkle_root — RP is real-time counter
-      // state that flickers between commits, so including it in the merkle
-      // root would cause spurious divergence between honest peers. Source's
-      // pre-snapshot anchor walks have populated whatever rotations haven't
-      // been pruned (last 3 rotations under bullshark's pruning policy),
-      // and the joiner inherits those counts wholesale.
-      const rpInstallQueue = [];
-      for (const frame of rpFrames) {
-        const row = decode("SnapshotStateRow", frame);
-        if (row.table !== "rotation_participation") {
-          throw new Error(`Phase F: expected table=rotation_participation, got "${row.table}"`);
-        }
-        const canonical = bytesToUtf8(row.canonicalJson);
-        let parsed;
-        try { parsed = JSON.parse(canonical); }
-        catch (err) { throw new Error(`rp row canonical_json parse failed: ${err.message}`); }
-        rpInstallQueue.push(parsed);
+      if (!header) throw new Error("empty response from peer");
+      if (!end) throw new Error("response missing SnapshotEnd terminator");
+      await flushBatch();
+
+      // Every phase must have delivered its trailer — a peer that omitted one
+      // (to skip that phase's integrity root) is rejected. The serve always
+      // emits all six, even for empty phases.
+      for (const k of [K.STATE, K.TX, K.COMMIT, K.ROTATION, K.CERT, K.RP]) {
+        if (!phaseVerified.has(k)) throw new Error(`snapshot missing phase-end trailer for kind ${k}`);
+      }
+      // Terminator counts cross-check the per-phase counters.
+      if (Number(end.rowCount || 0) !== seen.state
+        || Number(end.txRowCount || 0) !== seen.tx
+        || Number(end.commitRowCount || 0) !== seen.commit
+        || Number(end.rotationRowCount || 0) !== seen.rotation
+        || Number(end.certRowCount || 0) !== seen.cert
+        || Number(end.rpRowCount || 0) !== seen.rp) {
+        throw new Error(
+          `SnapshotEnd count mismatch: end=[state=${end.rowCount} tx=${end.txRowCount} commit=${end.commitRowCount} ` +
+          `rotation=${end.rotationRowCount} cert=${end.certRowCount} rp=${end.rpRowCount}] ` +
+          `seen=[state=${seen.state} tx=${seen.tx} commit=${seen.commit} rotation=${seen.rotation} cert=${seen.cert} rp=${seen.rp}]`
+        );
       }
 
       // ── Signature quorum ──────────────────────────────────────────────
@@ -749,10 +887,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
 
       let validAcks = 0;
-      const seen = new Set();
+      const seenSigners = new Set();
       for (let i = 0; i < signerIds.length; i++) {
         const signer = signerIds[i];
-        if (seen.has(signer)) continue;          // no double-counting a signer
+        if (seenSigners.has(signer)) continue;   // no double-counting a signer
         if (!committeeSet.has(signer)) continue; // non-committee sig doesn't count toward quorum
         // Pubkey lookup prefers the CHAIN-ANCHORED committee (cryptographically
         // verified via _verifyRotationChain back to the LOCAL genesis committee)
@@ -767,7 +905,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // covers the timestamp).
         const payload = `ack:${anchorBatchHashHex}:${signer}:${signedAts[i]}`;
         if (mldsaVerify(payload, signatures[i], pubKey)) {
-          seen.add(signer);
+          seenSigners.add(signer);
           validAcks++;
         }
       }
@@ -810,20 +948,34 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
       }
 
-      // ── Install atomically ────────────────────────────────────────────
-      const installed = _installSnapshot(header, {
-        stateRows: stateInstallQueue,
-        txs: txInstallQueue,
-        commits: commitInstallQueue,
-        rotations: rotationInstallQueue,
-        certs: certInstallQueue,
-        rp: rpInstallQueue,
-      }, body.length);
+      // ── Finalize: header commit row + clear marker → go-live ──────────
+      // Every other row installed in-place as it streamed. The header's commit
+      // row is written LAST, only now that ack-quorum + chain-of-trust + every
+      // phase root have verified. Clearing the crash marker (durably, AFTER the
+      // header commit is durable) is the instant the partial install becomes a
+      // trusted checkpoint — before this, a crash would wipe and resync.
+      dag.runInTransaction(() => { _installHeaderCommitRow(header); });
+      await dag.flush();
+      dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+      await dag.flush();
+      _snapServing = false;
+
+      const installed = {
+        state: seen.state, txs: txInstalled, commits: seen.commit,
+        rotations: seen.rotation, certs: seen.cert, rp: seen.rp,
+      };
+      _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
+      _metrics.last_install_rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+      _metrics.last_install_bytes = totalBytes;
+      _metrics.install_in_progress_bytes = 0;
+      _metrics.install_in_progress_rows = 0;
+      _installProgress = null;
 
       log.notice(
         `Snapshot: installed round=${header.round} consensus_index=${Number(header.consensusIndex || 0)} ` +
         `rows=${installed.state}/state ${installed.txs}/txs ${installed.commits}/commits ` +
         `${installed.rotations}/rotations ${installed.certs}/certs ${installed.rp}/rp ` +
+        `(${(totalBytes / (1024 * 1024)).toFixed(1)} MB streamed) ` +
         `acks=${validAcks}/${committee.length} peer=${peerId.slice(0, 12)}`
       );
 
@@ -878,12 +1030,130 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         certs_full_root: derivedCerts,
       };
     } catch (err) {
+      // A streaming install that got past the header wiped local canonical
+      // state, so an abort here leaves it partial. Leave the crash marker SET
+      // (a restart re-enters syncing and resyncs) and wipe the partial rows for
+      // cleanliness. The node was never promoted out of `syncing`, so nothing
+      // unverified was ever visible to consensus. A fresh joiner loses only
+      // genesis; a resyncing node self-heals from another peer.
+      if (installBegun) {
+        try { dag.clearCanonicalState(); await dag.flush(); } catch { /* ignore */ }
+      }
       _snapInstallInProgress = false;
       _snapServing = false;
+      _installProgress = null;
+      _metrics.install_in_progress_bytes = 0;
+      _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
+      // Always leave bulk mode: on success buffers are already flushed; on
+      // error the mirror + DB were wiped and any un-flushed buffered rows are
+      // discarded with it (the next resync re-clears from a clean bulk-off
+      // state before re-installing).
+      if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
+  }
+
+  // ── Per-phase install helpers ────────────────────────────────────────────
+  // Shared by the atomic _installSnapshot (buffer path) and the streaming
+  // install-in-place path (#132). Each writes via the DAG's public
+  // save*/addTx methods, so it respects any active runInTransaction buffer
+  // (batched flush) exactly as a direct call would — the streaming path calls
+  // them inside per-batch transactions, _installSnapshot inside one big one.
+
+  // GH #32 dedup gate + addTx. Skips a COMMITTEE_ROTATION tx whose
+  // rotation_number already exists in committee_history with the SAME
+  // payload_hash (same logical rotation — keep the canonical physical row so
+  // computeTxsMerkleRoot's ordered set doesn't gain a duplicate). A divergent
+  // payload_hash is logged and installed anyway (upstream chain-of-trust is
+  // the authoritative gate; this layer is defense-in-depth). committee_history
+  // is read pre-snapshot here because rotations install AFTER the tx phase.
+  // Returns true if installed, false if skipped.
+  function _installTxRow(tx) {
+    if (tx.tx_type === TX_TYPES.COMMITTEE_ROTATION) {
+      const rn = tx.data?.rotation_number;
+      const existing = (rn != null) ? dag.getCommitteeRotation(rn) : null;
+      if (existing && existing.payload_hash === tx.data?.payload_hash) return false;
+      if (existing && existing.payload_hash !== tx.data?.payload_hash) {
+        log.warn(
+          `Snapshot install: rotation ${rn} payload_hash mismatch ` +
+          `local=${existing.payload_hash?.slice(0, 12)} ` +
+          `snapshot=${tx.data?.payload_hash?.slice(0, 12)} ` +
+          `(upstream chain-of-trust verifier should have caught this)`,
+        );
+      }
+    }
+    dag.addTx(tx);
+    return true;
+  }
+
+  // Install committee_history rotations (already chain-of-trust verified up
+  // the call chain). saveCommitteeRotation is INSERT OR REPLACE by
+  // rotation_number, so it overwrites any prior local divergent row without a
+  // destructive pre-clear. committed_at is the time-epoch boundary marker:
+  // trust the shipped value only when sane (>= BFT genesis), else fall back to
+  // the header's BFT ts — a marker in the current bucket can only suppress a
+  // boundary fire until the next real one, never fabricate an ancient bucket.
+  function _installRotationRows(rotations, header) {
+    const markerFloor = CONSENSUS.BFT_TIME_GENESIS_MS;
+    const headerTs = Math.max(Number(header.committedAt) || 0, markerFloor);
+    let n = 0;
+    for (const r of rotations || []) {
+      const shipped = Number(r.committed_at);
+      dag.saveCommitteeRotation({
+        ...r,
+        committed_at: (Number.isFinite(shipped) && shipped >= markerFloor) ? shipped : headerTs,
+      });
+      n++;
+    }
+    return n;
+  }
+
+  // #75 RP install. Wipe the joiner's rows for every rotation_number the
+  // snapshot ships FIRST (so keys absent in the snapshot become absent
+  // locally, no stale leak), then write the snapshot's rows.
+  function _installRpRows(rpRows) {
+    const rows = rpRows || [];
+    if (rows.length === 0
+      || typeof dag.deleteRotationParticipationByRotation !== "function"
+      || typeof dag.setRotationParticipation !== "function") return 0;
+    const rotationsInSnapshot = new Set();
+    for (const r of rows) { if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number); }
+    for (const rotation of rotationsInSnapshot) dag.deleteRotationParticipationByRotation(rotation);
+    let n = 0;
+    for (const r of rows) {
+      if (!r || r.node_id == null || r.rotation_number == null) continue;
+      dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.bucket) || 0, Number(r.count) || 0);
+      n++;
+    }
+    return n;
+  }
+
+  // Header's commit row — the freshly-attested checkpoint whose
+  // state_merkle_root the ack quorum signed. #50: persist anchor_batch_hash so
+  // the joiner stays serve-capable after the anchor cert is GC'd. BFT-Time
+  // int64 fields coerce protobuf Long → Number.
+  function _installHeaderCommitRow(header) {
+    const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
+    const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
+      ? bytesToHex(header.anchorBatchHash) : null;
+    dag.saveCommit({
+      round: Number(header.round),
+      anchor_cert_hash: bytesToHex(header.anchorCertHash),
+      anchor_batch_hash: headerAnchorBatchHash,
+      leader_node_id: header.leaderNodeId,
+      committee: header.committee || [],
+      support_count: Number(header.supportCount || 0),
+      consensus_index: Number(header.consensusIndex || 0),
+      committed_at: header.committedAt,
+      state_merkle_root: bytesToHex(header.stateMerkleRoot),
+      txs_merkle_root: bytesToHex(header.txsMerkleRoot),
+      ack_signer_ids: header.ackSignerIds || [],
+      ack_signatures: (header.ackSignatures || []).map(bytesToHex),
+      ack_signed_ats: (header.ackSignedAts || []).map(_toInt),
+      cert_timestamp: _toInt(header.certTimestamp),
+    });
   }
 
   function _installSnapshot(header, queues, snapBytes) {
@@ -942,50 +1212,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           _tickProgress("state");
         }
 
-        // GH #32 — dedup gate: snapshot install bypasses
-        // commit-handler._statefulCheck (rules.canCommitteeRotation
-        // enforces rotation_number uniqueness for normal commits).
-        // Without this guard, a snapshot containing a peer's
-        // rotation-N tx whose tx_id differs from ours (pre-#31-Phase-1
-        // rotation tx_ids could diverge across honest nodes) lands as
-        // a second physical row for the same rotation_number — same
-        // committee_history outcome but two rows in `transactions`,
-        // which then bloats `computeTxsMerkleRoot`'s ordered set.
-        //
-        // Skip the install only when committee_history (still holding
-        // this node's pre-snapshot state at this point in the install
-        // sequence — clearCommitteeHistory runs further below) already
-        // records this rotation_number with the EXACT same
-        // payload_hash. Same payload = same logical rotation; the
-        // existing physical tx is the canonical one to keep.
-        //
-        // Divergent payload_hash should never get here (chain-of-trust
-        // upstream verifier in `_verifySnapshotRotations` rejects); if
-        // it does, log warn and let the addTx proceed — the upstream
-        // verifier is the source of truth, this layer is
-        // defense-in-depth not the authoritative gate.
+        // txs — dedup gate reads pre-snapshot committee_history (rotations
+        // install below), skipping a same-payload rotation duplicate.
         let txN = 0;
         let rotationSkipped = 0;
         for (const tx of queues.txs) {
-          if (tx.tx_type === TX_TYPES.COMMITTEE_ROTATION) {
-            const rn = tx.data?.rotation_number;
-            const existing = (rn != null) ? dag.getCommitteeRotation(rn) : null;
-            if (existing && existing.payload_hash === tx.data?.payload_hash) {
-              rotationSkipped++;
-              continue;
-            }
-            if (existing && existing.payload_hash !== tx.data?.payload_hash) {
-              log.warn(
-                `Snapshot install: rotation ${rn} payload_hash mismatch ` +
-                `local=${existing.payload_hash?.slice(0, 12)} ` +
-                `snapshot=${tx.data?.payload_hash?.slice(0, 12)} ` +
-                `(upstream chain-of-trust verifier should have caught this)`,
-              );
-            }
-          }
-          dag.addTx(tx);
-          txN++;
-          _tickProgress("txs");
+          if (_installTxRow(tx)) { txN++; _tickProgress("txs"); }
+          else { rotationSkipped++; }
         }
 
         let commitN = 0;
@@ -995,106 +1228,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           _tickProgress("commits");
         }
 
-        // Install committee_history rotations. Already verified up the
-        // call chain (rotations_full_root match + chain-of-trust walk).
-        // saveCommitteeRotation uses INSERT OR REPLACE / merge, so a
-        // snapshot's authoritative row overwrites any prior local
-        // divergent row by (rotation_number) PK — no destructive pre-clear
-        // needed. The previous pre-clear pattern (Knex DELETE outside the
-        // install transaction) could leave committee_history permanently
-        // empty if the install aborted mid-flight (e.g. "no authorized
-        // peers" during a resync) — wipe survived, install never finished.
-        let rotationN = 0;
-        const rotations = queues.rotations || [];
-        // committed_at is the time-epoch boundary marker. Trust the shipped
-        // value only when it is sane (>= BFT genesis); otherwise fall back to
-        // the snapshot header's BFT timestamp — a marker in the CURRENT epoch
-        // bucket can only suppress a boundary fire until the next real one,
-        // never fabricate an ancient bucket that triggers a spurious rotation.
-        const _markerFloor = CONSENSUS.BFT_TIME_GENESIS_MS;
-        const _headerTs = Math.max(Number(header.committedAt) || 0, _markerFloor);
-        for (const r of rotations) {
-          const shipped = Number(r.committed_at);
-          dag.saveCommitteeRotation({
-            ...r,
-            committed_at: (Number.isFinite(shipped) && shipped >= _markerFloor) ? shipped : _headerTs,
-          });
-          rotationN++;
-        }
+        const rotationN = _installRotationRows(queues.rotations, header);
 
-        // §69: install recent certs. Already verified upstream via
-        // certs_full_root match. saveCertificate is INSERT OR IGNORE on
-        // (hash) so a cert that arrives twice (e.g., rebroadcast post-
-        // install) is a no-op. Order doesn't matter for storage but
-        // sender ships in (round, author) order, which we preserve.
+        // §69: recent certs. saveCertificate is INSERT OR IGNORE on (hash) so
+        // a re-arriving cert is a no-op. Sender ships in (round, author) order.
         let certN = 0;
-        const certs = queues.certs || [];
-        for (const c of certs) {
+        for (const c of (queues.certs || [])) {
           dag.saveCertificate(c);
           _tickProgress("certs");
           certN++;
         }
 
-        // #75 RP install — Phase F. For every rotation_number that the snapshot
-        // ships, wipe the joiner's local rows for that rotation FIRST so any
-        // (node_id, rotation) keys absent in the snapshot become absent locally
-        // too (otherwise stale rows leak). Then write the snapshot's rows.
-        let rpN = 0;
-        const rpRows = queues.rp || [];
-        if (rpRows.length > 0
-          && typeof dag.deleteRotationParticipationByRotation === "function"
-          && typeof dag.setRotationParticipation === "function") {
-          const rotationsInSnapshot = new Set();
-          for (const r of rpRows) {
-            if (r && r.rotation_number != null) rotationsInSnapshot.add(r.rotation_number);
-          }
-          for (const rotation of rotationsInSnapshot) {
-            dag.deleteRotationParticipationByRotation(rotation);
-          }
-          for (const r of rpRows) {
-            if (!r || r.node_id == null || r.rotation_number == null) continue;
-            dag.setRotationParticipation(r.node_id, r.rotation_number, Number(r.bucket) || 0, Number(r.count) || 0);
-            rpN++;
-          }
-        }
+        const rpN = _installRpRows(queues.rp);
 
-        // Header's commit row — the round whose state_merkle_root we just
-        // verified against 2f+1 acks. Convert header bytes-fields back to
-        // the hex/string shape dag.saveCommit expects.
-        // BFT-Time fields — coerce protobuf int64 (Long) → plain Number for
-        // each ack's signed_at and the cert.timestamp. Already validated
-        // upstream via the ack signature quorum check (we wouldn't be here
-        // otherwise).
-        const _toInt = (v) => (typeof v === "object" && v !== null) ? Number(v.toString()) : Number(v || 0);
-        const headerAckSignedAts = (header.ackSignedAts || []).map(_toInt);
-        const headerCertTimestamp = _toInt(header.certTimestamp);
-
-        // #50: persist the header's anchor_batch_hash on the joiner so the
-        // latest commit row stays self-contained for any future snapshot
-        // serve. Without this, once the underlying anchor cert is GC'd the
-        // serve-time fallback at `_buildHeader` returns null and snapshot
-        // serving from this node fails. Phase C commits already carry the
-        // field via canonCommit; this closes the gap for the header row.
-        const headerAnchorBatchHash = header.anchorBatchHash && header.anchorBatchHash.length
-          ? bytesToHex(header.anchorBatchHash)
-          : null;
-
-        dag.saveCommit({
-          round: Number(header.round),
-          anchor_cert_hash: bytesToHex(header.anchorCertHash),
-          anchor_batch_hash: headerAnchorBatchHash,
-          leader_node_id: header.leaderNodeId,
-          committee: header.committee || [],
-          support_count: Number(header.supportCount || 0),
-          consensus_index: Number(header.consensusIndex || 0),
-          committed_at: header.committedAt,
-          state_merkle_root: bytesToHex(header.stateMerkleRoot),
-          txs_merkle_root: bytesToHex(header.txsMerkleRoot),
-          ack_signer_ids: header.ackSignerIds || [],
-          ack_signatures: (header.ackSignatures || []).map(bytesToHex),
-          ack_signed_ats: headerAckSignedAts,
-          cert_timestamp: headerCertTimestamp,
-        });
+        _installHeaderCommitRow(header);
 
         return {
           state: stateN, txs: txN, commits: commitN,
@@ -1371,6 +1518,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     registerProtocol,
     requestSnapshotFromPeer,
     resetInstallState,
+    recoverInterruptedInstall,
+    /** True while a snapshot download+install is actively running on this node.
+     *  Lets anti-entropy avoid interrupting an in-flight install (which would
+     *  leave partial state and fail the state-root verify). */
+    isInstalling: () => _snapInstallInProgress,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),
@@ -1469,34 +1621,44 @@ function _abortStream(stream, err) {
   } catch { /* ignore */ }
 }
 
-// #94: read a snapshot body off a stream into one Buffer, bounded by a total-
-// byte cap AND an overall deadline. A flood trips the byte cap; a hang or a
-// slow-trickle trips the deadline. Either aborts the stream and throws, so the
-// fetch fails fast and retries another peer instead of OOM-ing the joiner or
-// hanging it in `syncing` forever (holding the install-once guard).
-async function _readBoundedStream(stream, maxBytes, maxMs) {
-  const chunks = [];
-  let total = 0;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    _abortStream(stream, new Error("snapshot download deadline exceeded"));
-  }, maxMs);
+// #94 + #132: yield each length-prefixed frame off a stream, bounded by a STALL
+// timeout (not an absolute deadline) plus a generous byte flood-guard. The stall
+// timer is re-armed on every byte received AND every frame handed to the
+// installer, so a large-but-steadily-progressing snapshot never trips it , only
+// a genuine hang (silent peer, dead link, or a wedged install) does. This makes
+// the guard scale to any snapshot size without a magic total-time number.
+// maxBytes/stallMs are parameters so the guard is unit-testable; onProgress(total)
+// reports running bytes for the install progress meter. Streaming replacement
+// for the old read-whole-body-into-one-Buffer path (which OOM'd on large snapshots).
+async function* _boundedFrameStream(stream, maxBytes, stallMs, onProgress) {
+  let stalled = false;
+  let timer = null;
+  const arm = () => {
+    if (stalled) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      _abortStream(stream, new Error("snapshot download stalled"));
+    }, stallMs);
+    timer.unref?.();
+  };
+  arm(); // a peer that never sends a single byte must still trip
   try {
-    for await (const chunk of stream.source) {
-      const buf = chunk.subarray ? chunk.subarray() : chunk;
-      total += buf.length;
+    for await (const frame of streamFrames(stream.source, (_add, total) => {
+      arm(); // progress: bytes arrived from the peer
+      if (onProgress) onProgress(total);
       if (total > maxBytes) {
         _abortStream(stream, new Error("snapshot too large"));
         throw new Error(`snapshot download exceeds ${maxBytes}-byte cap (received >${total})`);
       }
-      chunks.push(buf);
+    })) {
+      arm(); // progress: installer pulled the next frame (finished the previous)
+      yield frame;
     }
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
-  if (timedOut) throw new Error(`snapshot download timed out after ${maxMs}ms`);
-  return Buffer.concat(chunks);
+  if (stalled) throw new Error(`snapshot download stalled — no progress for ${stallMs}ms`);
 }
 
-module.exports = { createSnapshotHandler, _readBoundedStream };
+module.exports = { createSnapshotHandler, _boundedFrameStream };

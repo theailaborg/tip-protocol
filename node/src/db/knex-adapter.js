@@ -23,6 +23,7 @@ const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
+const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -577,6 +578,17 @@ class KnexAdapter {
         suggested_origin: row.suggested_origin || null,
       });
     }
+
+    // Rebuild the incremental state SMT from the canonical walk. Hydration
+    // populates dedup_registry via `_dedup.add()` (a Set, not an SmtMap) and
+    // never calls its manual `_smtSync`, so those leaves would be absent from
+    // the incremental tree — dag.stateRoot() (the committed root) would then
+    // drift from computeStateMerkleRoot (a fresh joiner's snapshot verify).
+    // All nodes drift identically so consensus never notices, but a rejoining
+    // node can never reproduce the drifted root. Rebuilding here makes the
+    // committed root equal the canonical state, closing this and any future
+    // hydration sync gap. O(state), once per boot.
+    this.mirror.rebuildStateTree();
   }
 
   // ── Fire-and-forget ────────────────────────────────────────────────────────
@@ -590,6 +602,11 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
+    // Snapshot bulk install: run the write NOW so _dbInsert can buffer its row
+    // for a multi-row batchInsert (see beginBulkInstall). The install loop is
+    // inserts-only into freshly-cleared tables, so running synchronously here
+    // carries no ordering hazard vs the normal _ffChain.
+    if (this._bulkInstall) { fn(); return; }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
@@ -617,6 +634,18 @@ class KnexAdapter {
   // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
   // a second UPDATE so our value still wins.
   async _dbInsert(table, pkCols, row, onConflict) {
+    // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
+    // per-table chunked INSERT in _flushBulkBuffers — ~100x fewer round-trips than
+    // the per-row path (the difference between finishing inside the download
+    // deadline and timing out on a large, WAN-served snapshot). Conflict handling
+    // is preserved there because non-state tables (transactions/certs/commits)
+    // aren't cleared and collide with genesis-seeded rows.
+    if (this._bulkInstall) {
+      let buf = this._bulkInstall.get(table);
+      if (!buf) { buf = { pkCols, onConflict, rows: [] }; this._bulkInstall.set(table, buf); }
+      buf.rows.push(row);
+      return;
+    }
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this._k(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -1037,7 +1066,7 @@ class KnexAdapter {
 
   // ── Canonical state iterator (§14 snapshot-sync) ──────────────────────────
 
-  *iterateCanonicalState() { yield* this.mirror.iterateCanonicalState(); }
+  *iterateCanonicalState(opts) { yield* this.mirror.iterateCanonicalState(opts); }
   stateRoot() { return this.mirror.stateRoot(); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
@@ -1254,6 +1283,7 @@ class KnexAdapter {
   // the full cert window post-_hydrate.
   *iterateCertsByRoundRange(from, to) { yield* this.mirror.iterateCertsByRoundRange(from, to); }
   certificateCount() { return this.mirror.certificateCount(); }
+  transactionCount() { return this.mirror.transactionCount(); }
   getAllCertificateHashes() { return this.mirror.getAllCertificateHashes(); }
 
   pruneCertificatesBefore(cutoffRound) {
@@ -1603,7 +1633,44 @@ class KnexAdapter {
     if (this._ffChain) {
       try { await this._ffChain; } catch { /* per-write errors already logged */ }
     }
+    if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
   }
+
+  // Snapshot bulk install: batchInsert each table's buffered rows (chunked so
+  // no single INSERT blows the driver's bind-parameter cap), then clear. A
+  // failed chunk fail-stops like any other lost persistence write: a partial
+  // snapshot rehydrates a divergent mirror on restart. The whole install stays
+  // gated by the crash marker, so a throw here leaves the node in `syncing`.
+  async _flushBulkBuffers() {
+    for (const [table, buf] of this._bulkInstall) {
+      const { pkCols, onConflict, rows } = buf;
+      if (rows.length === 0) continue;
+      // NOT every bulk-installed table is freshly cleared: clearCanonicalState
+      // wipes the derived-state tables, but transactions/certs/commits are not,
+      // and a fresh joiner's genesis seed already wrote the genesis rows — so the
+      // full-history tx stream collides on tx_id. Insert with ON CONFLICT DO
+      // NOTHING (per-row skip, keeps the non-conflicting rows) to stay idempotent
+      // like the per-row path, instead of a plain batchInsert that fail-stops on
+      // the first genesis duplicate.
+      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+      const conflictTarget = pks.length === 1 ? pks[0] : pks;
+      try {
+        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          const chunk = rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+          const q = this._k(table).insert(chunk).onConflict(conflictTarget);
+          await (onConflict === "merge" ? q.merge() : q.ignore())
+            .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
+        }
+      } catch (err) {
+        this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
+        process.exit(78);
+      }
+      rows.length = 0;
+    }
+  }
+
+  beginBulkInstall() { this._bulkInstall = new Map(); }
+  endBulkInstall() { this._bulkInstall = null; }
 
   close() {
     try { this.knex.destroy(); } catch { /* ignore */ }

@@ -371,7 +371,9 @@ describe("snapshot-roots canonical projections", () => {
     let wire = null;
     let parsed = null;
     for (let i = 1; i < sentFrames.length - 1; i++) {
-      const body = sentFrames[i].subarray(4);    // strip 4-byte length prefix
+      // Strip the 4-byte length prefix + the 1-byte #132 kind tag; non-TX
+      // frames (state rows, phase trailers) fail the decode and are skipped.
+      const body = sentFrames[i].subarray(5);
       try {
         const row = decode("SnapshotTxRow", body);
         if (!row.canonicalJson || !row.canonicalJson.length) continue;

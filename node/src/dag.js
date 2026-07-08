@@ -440,6 +440,15 @@ class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
   delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
+  // Map.clear() would drop the entries but leave every leaf stale in the
+  // incremental SMT (the row is gone yet its leaf survives → state-root drift).
+  // Re-sync each removed key so its leaf is pruned. Used by the snapshot
+  // install reset (clearCanonicalState).
+  clear() {
+    const keys = [...super.keys()];
+    super.clear();
+    for (const k of keys) this._owner._smtSync(this._table, k);
+  }
 }
 
 class MemoryStore {
@@ -1055,6 +1064,7 @@ class MemoryStore {
     for (const c of sorted) yield c;
   }
   certificateCount() { return this._certs.size; }
+  transactionCount() { return this._txs.size; }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
   // of rows deleted. Callers must ensure the cutoff leaves enough history
   // for still-active consensus (parent refs, waiter, fast-forward).
@@ -1487,14 +1497,21 @@ class MemoryStore {
     return this._smt.root();
   }
 
-  *iterateCanonicalState() {
+  // #132: `contentRaw` ships the RAW content row (not the hash projection).
+  // _canonContent quantizes prescan_probability (float determinism, #195) and
+  // drops derived counters — fine for hashing, WRONG as the snapshot transfer
+  // form: the receiver would store the quantized value and re-quantize it,
+  // forking the state root. The snapshot serve sets contentRaw:true; the
+  // receiver re-derives the root via computeStateMerkleRoot after install, so
+  // hashing still canonicalizes and determinism is preserved.
+  *iterateCanonicalState({ contentRaw = false } = {}) {
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
       yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
       .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
-      yield { table: "content", row: _canonContent(r) };
+      yield { table: "content", row: contentRaw ? r : _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -3210,6 +3227,9 @@ class SQLiteStore {
   certificateCount() {
     return this._stmts.countCerts.get().n;
   }
+  transactionCount() {
+    return this.db.prepare("SELECT COUNT(*) AS n FROM transactions").get().n;
+  }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns rows
   // deleted. SQLite DELETE also removes the INSERT OR IGNORE dedup key so
   // the same cert hash would be accepted again if it re-arrived — by
@@ -3960,7 +3980,7 @@ function _buildDagHandle(store, config) {
     // ── Canonical derived state (§14 snapshot-sync) ──────────────────────
     // Streaming iterator over all derived-state tables in deterministic
     // order. Consumed by consensus/state-root.js to hash row-by-row.
-    iterateCanonicalState: () => store.iterateCanonicalState(),
+    iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
@@ -4024,6 +4044,7 @@ function _buildDagHandle(store, config) {
     getEarliestCertRound: () => store.getEarliestCertRound(),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
+    transactionCount: () => store.transactionCount(),
     pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),
     incrementalVacuum: (maxPages) => store.incrementalVacuum(maxPages),
 
@@ -4168,6 +4189,14 @@ function _buildDagHandle(store, config) {
     flush: () => store.flush(),
     close: () => store.close(),
   };
+
+  // Snapshot bulk install (#132): only the knex/Postgres store batches inserts.
+  // Exposed conditionally so the snapshot handler can feature-detect it and the
+  // SQLite path keeps its single-transaction install unchanged.
+  if (typeof store.beginBulkInstall === "function") {
+    dag.beginBulkInstall = () => store.beginBulkInstall();
+    dag.endBulkInstall = () => store.endBulkInstall();
+  }
 
   return dag;
 }
