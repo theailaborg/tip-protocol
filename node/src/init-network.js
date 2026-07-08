@@ -20,15 +20,20 @@
 const { createNetworkNode } = require("./network/node");
 const { initConsensus } = require("./consensus");
 const { loadTypes } = require("./network/proto");
+const { foundingNodeKey } = require("./genesis");
 const { log } = require("./logger");
 
 /**
- * Look up a node's public key from the DAG registry.
- * Used by handshake to verify peer identity.
+ * Look up a node's public key for the handshake: registry first, then the
+ * genesis founding-node trust anchor. The founding fallback is what lets a node
+ * with an EMPTY registry (fresh boot, or post-clearCanonicalState snapshot
+ * install) authorize the founding peer it must handshake to fetch the snapshot
+ * that refills the registry , without it the handshake deadlocks. Mirrors the
+ * consensus-side getNodeKey; both now defer to genesis.foundingNodeKey.
  */
 function getNodeKey(dag, nodeId) {
   const node = dag.getNode(nodeId);
-  return node?.public_key || null;
+  return node?.public_key || foundingNodeKey(nodeId);
 }
 
 /**
