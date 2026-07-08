@@ -844,7 +844,11 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const acks = allAcks.filter(a => committeeSet.has(a.acker_node_id));
     const quorum = _getQuorum();
 
-    if (acks.length < quorum) return;
+    // quorum < 1 means no committee is known yet (e.g. a node forced to `ready`
+    // by the stuck-sync escape before its snapshot state installed). Sealing a
+    // cert then feeds an empty ack/timestamp set into computeMedianTimestamp and
+    // crashes. No committee -> never produce.
+    if (quorum < 1 || acks.length < quorum) return;
 
     // §1 Own-cert equivocation defense (no new storage — reuses the
     // existing certs table). If a cert authored by us at this round
