@@ -1606,7 +1606,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // snapshot pull below can proceed (which will re-enter syncing via
       // enterSyncMode in _runSnapshotFallback). catching_up is always a live
       // install (markSnapshotInstalled was already called), so we keep the guard.
-      if (currentState === "syncing" && !_snapshotResyncInFlight) {
+      // Also treat an ACTIVELY-DOWNLOADING install as in-flight: the AE-level
+      // _snapshotResyncInFlight flag can be clear while snapshot-handler is
+      // mid-stream (started from another path / a prior tick). Interrupting it
+      // with exitSyncMode + a fresh pull leaves partial state and fails the
+      // state-root verify (expected≠derived). Never interrupt a live install.
+      const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function"
+        && snapshotHandler.isInstalling();
+      if (currentState === "syncing" && !_snapshotResyncInFlight && !installing) {
         _log.warn(
           `anti-entropy: triggerSnapshotResync: stuck in syncing (no install in flight) — ` +
           `calling exitSyncMode(${fromRound}) to escape before fresh snapshot pull`
@@ -1615,6 +1622,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           narwhal.exitSyncMode(fromRound);
         }
         // Fall through to execute the snapshot pull below
+      } else if (installing) {
+        _log.info(`anti-entropy: triggerSnapshotResync skipped — snapshot install already streaming (round=${fromRound})`);
+        return "already_syncing";
       } else {
         _log.warn(`anti-entropy: triggerSnapshotResync skipped — already in ${currentState} (round=${fromRound}, missing=${missingCount})`);
         return "already_syncing";

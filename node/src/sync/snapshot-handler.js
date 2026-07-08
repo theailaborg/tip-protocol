@@ -1502,6 +1502,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     requestSnapshotFromPeer,
     resetInstallState,
     recoverInterruptedInstall,
+    /** True while a snapshot download+install is actively running on this node.
+     *  Lets anti-entropy avoid interrupting an in-flight install (which would
+     *  leave partial state and fail the state-root verify). */
+    isInstalling: () => _snapInstallInProgress,
     SNAPSHOT_PROTOCOL,
     /** Cumulative counters for /metrics. */
     stats: () => ({ metrics: { ..._metrics }, install: _installProgress }),
