@@ -36,6 +36,7 @@ const { createNarwhal } = require(path.join(SRC, "consensus", "narwhal"));
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
 const { getActiveCommittee } = require(path.join(SRC, "consensus", "participants"));
 const { CONSENSUS } = require(path.join(SHARED, "protocol-constants"));
+const { SNAPSHOT_INSTALL_MARKER_KEY } = require(path.join(SHARED, "constants"));
 
 beforeAll(async () => {
   await initCrypto();
@@ -102,6 +103,37 @@ describe("narwhal tri-state join FSM", () => {
     expect(s.syncEnteredAt).toBe(0);
     expect(s.catchingUpEnteredAt).toBe(0);
     expect(s.catchUpTarget).toBe(0);
+  });
+
+  test("D2: refuses ready while a snapshot install is pending (marker set); promotes once cleared", () => {
+    const { narwhal, dag } = buildNarwhal();
+    narwhal.enterSyncMode();
+    expect(narwhal.joinState()).toBe("syncing");
+
+    // Install pending → exitSyncMode must NOT fake-ready (this is the bug node3 hit).
+    dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "in_progress:100");
+    narwhal.exitSyncMode(120);
+    expect(narwhal.joinState()).toBe("syncing");
+
+    // Install verified + marker cleared → exitSyncMode promotes normally.
+    dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+    narwhal.exitSyncMode(120);
+    expect(narwhal.joinState()).toBe("ready");
+  });
+
+  test("D2: the legitimate catching_up→ready (markCaughtUp) is also gated by the marker", () => {
+    const { narwhal, dag } = buildNarwhal();
+    narwhal.enterSyncMode();
+    narwhal.markSnapshotInstalled(100, 150);
+    expect(narwhal.joinState()).toBe("catching_up");
+
+    dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "in_progress:100");
+    narwhal.markCaughtUp(150);
+    expect(narwhal.joinState()).toBe("catching_up");
+
+    dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+    narwhal.markCaughtUp(150);
+    expect(narwhal.joinState()).toBe("ready");
   });
 
   test("enterSyncMode → syncing; stamps syncEnteredAt; clears any catching_up state", () => {
