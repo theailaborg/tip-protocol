@@ -418,7 +418,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
 
     try {
-      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound });
+      // Pass our node_id so the SnapshotRequest is never all-default: minRound 0
+      // + empty requesterNodeId encodes to ZERO bytes in proto3, which the serve
+      // reads as an empty/malformed request and rejects. (The idle-network fix
+      // made minRound 0 the norm, exposing this.)
+      const requesterNodeId = getSelfNodeId ? (getSelfNodeId() || "") : "";
+      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId });
       // null means the handler skipped (already installed or in-progress guard fired).
       // Treat as failure so the caller can try the next peer rather than falsely
       // reporting success and setting the recovery cooldown clock.

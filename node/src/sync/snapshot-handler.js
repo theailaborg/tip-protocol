@@ -234,12 +234,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   async function _handleIncomingSnapshot(stream, remotePeer) {
-    // Read one SnapshotRequest from the stream.
-    const request = await _readOneMessage(stream, "SnapshotRequest");
-    if (!request) {
-      log.warn(`Snapshot: empty request from ${remotePeer}`);
-      return;
-    }
+    // Read one SnapshotRequest from the stream. A 0-byte body is proto3's empty
+    // message = all defaults (minRound 0): a joiner asking for "your latest" on
+    // an idle network encodes to zero bytes, so treat a falsy read as an empty
+    // request object rather than rejecting it. (Rejecting it stalled fresh
+    // joiners whose min_round-0 request serialized to nothing.)
+    const request = (await _readOneMessage(stream, "SnapshotRequest")) || {};
 
     const minRound = Number(request.minRound || 0);
 
