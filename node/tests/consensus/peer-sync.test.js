@@ -272,6 +272,10 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
       syncHandler, snapshotHandler,
       commitHandler, dag: destDag, narwhal, bullshark,
       nodeId: "OUR_NODE",
+      // committed_round far ahead → shouldSyncFromPeer runs the sync; same root
+      // as ours post-sync → the readiness gate confirms matching state and
+      // promotes. (Divergent state is covered by the test below.)
+      queryPeerStatus: async () => ({ committed_round: 45520, state_merkle_root: destDag.getLatestCommit?.()?.state_merkle_root || "" }),
     });
 
     // Two cert-sync calls: first hit snapshotRequired, second ran from
@@ -382,6 +386,10 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
         snapshotHandler: destHandler,
         commitHandler, dag: destDag, narwhal, bullshark,
         nodeId: "OUR_NODE",
+        // committed_round far ahead → sync runs; both nodes are at genesis
+        // (empty source + empty dest) → same root → the readiness gate confirms
+        // a match and promotes (fresh-cluster bootstrap case).
+        queryPeerStatus: async () => ({ committed_round: 500, state_merkle_root: destDag.getLatestCommit?.()?.state_merkle_root || "" }),
       }),
     ]);
 
@@ -394,6 +402,31 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     // Narwhal still completes sync-mode cycle cleanly.
     expect(narwhal.events[0]).toBe("enter");
     expect(narwhal.events.some(e => Array.isArray(e) && e[0] === "exit")).toBe(true);
+  });
+
+  test("cert-synced the round counter but STATE diverges from peer → stays syncing, does NOT go ready", async () => {
+    // node3's live prod scenario: a fresh/empty node cert-syncs recent certs so
+    // its round counter reaches the frontier, but it never installed the snapshot
+    // it needs, so its committed state is still genesis. The readiness gate must
+    // see the divergent state root and keep it syncing (anti-entropy then triggers
+    // a snapshot resync) — a node without matching state must never be ready.
+    const destDag = initDAG({ dbPath: ":memory:" });
+    const syncHandler = stubSyncHandler();            // cert-sync succeeds
+    const narwhal = stubNarwhal();
+    const bullshark = { markOrderedUpTo: jest.fn() };
+    const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
+    const snapshotHandler = { requestSnapshotFromPeer: async () => null };  // no snapshot installed
+
+    await onPeerAuthorized("peer-established", "TIP_NODE_A", {
+      syncHandler, snapshotHandler, commitHandler, dag: destDag, narwhal, bullshark,
+      nodeId: "OUR_NODE",
+      // Established peer far ahead with a REAL state root our genesis can't match.
+      queryPeerStatus: async () => ({ committed_round: 999999, state_merkle_root: "peer-real-state-root-abc123def456" }),
+    });
+
+    expect(narwhal.events[0]).toBe("enter");
+    expect(narwhal.events.some(e => Array.isArray(e) && e[0] === "exit")).toBe(false);
+    expect(narwhal.joinState()).toBe("syncing");
   });
 });
 

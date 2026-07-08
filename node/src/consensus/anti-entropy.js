@@ -1075,9 +1075,26 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // ready so the next AE tick can pull the gap or escalate to snapshot.
       const _joinStBehind = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
       if (_joinStBehind === "syncing" && !_snapshotResyncInFlight) {
+        // CRITICAL: only escape to `ready` when our STATE already matches the
+        // peer , i.e. we're genuinely caught up and just need narwhal unstuck to
+        // gap-pull recent certs. If the state roots DIVERGE, escaping would go
+        // live with WRONG/EMPTY state. A fresh joiner that cert-synced the round
+        // counter to the frontier but never installed a snapshot hits exactly
+        // this (round gap looks tiny, but dag is genesis). A node with unmatched
+        // state must NEVER be ready , trigger a snapshot resync and stay syncing.
+        const selfRoot = (selfState && selfState.state_merkle_root) || "";
+        const peerRoot = (peerStatus && peerStatus.state_merkle_root) || "";
+        if (selfRoot && peerRoot && selfRoot !== peerRoot) {
+          _log.warn(
+            `anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} AND state diverges ` +
+            `(self=${selfRoot.slice(0, 12)} peer=${peerRoot.slice(0, 12)}) — snapshot resync, NOT exitSyncMode ` +
+            `(a node without matching state must not go ready)`
+          );
+          return await triggerSnapshotResync(selfCommitted, 0);
+        }
         _log.warn(
           `anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} but joinState=syncing ` +
-          `(no byz halt, no resync in flight) — calling exitSyncMode(${selfCommitted}) to escape stuck-syncing`
+          `(no byz halt, no resync in flight, state matches) — calling exitSyncMode(${selfCommitted}) to escape stuck-syncing`
         );
         if (narwhal && typeof narwhal.exitSyncMode === "function") {
           narwhal.exitSyncMode(selfCommitted);

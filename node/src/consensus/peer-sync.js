@@ -286,12 +286,38 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
     // that never went through snapshot install (already ready, or failed
     // sync entirely) keep their existing state — no transition fires.
     //
-    // Fallback: if narwhal exposes the FSM accessor and we're still in
-    // syncing here (cert-only path with no snapshot install), promote
-    // directly to ready since this codepath used to call exitSyncMode.
+    // Fallback: if narwhal is still in syncing here (cert-only path, no snapshot
+    // install), promote to ready ONLY when our committed STATE actually matches
+    // the peer's. Cert-sync advances the round COUNTER but a node that needed a
+    // snapshot it never installed has genesis/empty state while its counter sits
+    // at the frontier , promoting it would go live with wrong/empty state. Gate
+    // on the state root; if it diverges (or we can't confirm it), stay syncing
+    // and let anti-entropy trigger a snapshot resync. A node without matching
+    // state must NEVER be ready.
     if (typeof narwhal.joinState === "function" && narwhal.joinState() === "syncing") {
-      const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
-      narwhal.exitSyncMode(targetRound);
+      const selfRoot = (() => { try { return dag.getLatestCommit?.()?.state_merkle_root || ""; } catch { return ""; } })();
+      let peerRoot = null;   // null = could not confirm the peer's root
+      if (typeof deps.queryPeerStatus === "function") {
+        try {
+          const st = await deps.queryPeerStatus(peerId);
+          if (st) peerRoot = st.state_merkle_root || st.stateMerkleRoot || "";
+        } catch { /* leave null → don't promote */ }
+      }
+      // Promote only when we CONFIRMED the peer's root and our committed state
+      // matches it. Both-genesis counts as a match (fresh cluster bootstrap); a
+      // genesis/empty joiner vs an established peer does NOT (its counter caught
+      // up via cert-sync but it never installed the state). Can't confirm → stay
+      // syncing and let anti-entropy trigger a snapshot resync.
+      if (peerRoot !== null && selfRoot === peerRoot) {
+        const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
+        narwhal.exitSyncMode(targetRound);
+      } else {
+        log.warn(
+          `Sync: cert-synced from ${peerId.slice(0, 12)} but state ${peerRoot === null ? "unconfirmed" : "diverges"} ` +
+          `(self=${(selfRoot || "∅").slice(0, 12)} peer=${(peerRoot == null ? "?" : (peerRoot || "∅")).slice(0, 12)}) — ` +
+          `staying in syncing, snapshot resync will run (a node without matching state must not go ready)`
+        );
+      }
     }
   } catch (err) {
     log.warn(`Sync from peer ${peerId.slice(0, 12)} failed: ${err.message}`);
