@@ -1455,13 +1455,21 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
-    // Re-handshake backstop: while ready, periodically retry the handshake with any
-    // connected-but-unauthorized peer (a peer that was stale when it rejected us, or
-    // dropped transiently). Ready-gated + throttled so it never adds to mid-sync churn.
+    // Re-handshake backstop: periodically retry the handshake with any
+    // connected-but-unauthorized peer (a peer that was stale when it rejected us,
+    // or dropped transiently). Runs when READY (steady-state churn guard) OR when
+    // ISOLATED (zero authorized peers) , the latter breaks a bootstrap deadlock: a
+    // freshly-wiped/genesis node is `syncing`, connected-but-unauthorized to its
+    // peers, and can ONLY escape by re-handshaking them. Ready-gating alone would
+    // trap it forever (never ready -> never re-handshake -> never authorized ->
+    // never syncs -> never ready). A syncing node that already has peers stays
+    // ready-gated, so this never adds mid-sync churn. Throttled either way.
     if (!_running) return;
     if (network && typeof network.reHandshakeUnauthorized === "function") {
       const joinSt = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
-      if (joinSt === "ready" && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
+      const authedCount = typeof network.authorizedPeerCount === "function" ? network.authorizedPeerCount() : 1;
+      const isolated = authedCount === 0;
+      if ((joinSt === "ready" || isolated) && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
         _lastReHandshakeAt = nowMs();
         network.reHandshakeUnauthorized();
       }
