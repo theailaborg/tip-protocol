@@ -373,9 +373,29 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     _activeServes++;
+    // Serve-side STALL guard, symmetric with the client's _boundedFrameStream:
+    // stream.sink() blocks on backpressure while the joiner reads. If the joiner
+    // abandons the stream (crash/restart/its own stall), sink() would wait
+    // FOREVER holding this node's single serve slot — every later request then
+    // declines "serve capacity reached". Re-arm on each emitted frame; if no
+    // frame flows for STALL_MS, abort the stream so sink() throws → the finally
+    // releases the slot. (Live: node3 restarts during rejoin left node1/node2's
+    // slot pinned on a dead stream with 0 bytes served.)
+    let _serveStalled = false;
+    let _serveStallTimer = null;
+    const _armServeStall = () => {
+      if (_serveStalled) return;
+      if (_serveStallTimer) clearTimeout(_serveStallTimer);
+      _serveStallTimer = setTimeout(() => {
+        _serveStalled = true;
+        _abortStream(stream, new Error("snapshot serve stalled — joiner stopped reading"));
+      }, SNAPSHOT_DOWNLOAD.STALL_MS);
+      _serveStallTimer.unref?.();
+    };
+    _armServeStall();
     try {
       const _countBytes = async function* (gen) {
-        for await (const buf of gen) { _servedBytes += buf.length; yield buf; }
+        for await (const buf of gen) { _servedBytes += buf.length; _armServeStall(); yield buf; }
       };
       await stream.sink(_countBytes((async function* () {
         // Yield to the event loop every ~256 framed rows so heartbeats / IO keep
@@ -506,9 +526,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         await stream.closeWrite();
       }
     } catch (err) {
-      log.warn(`Snapshot: stream write failed to ${remotePeer}: ${err.message}`);
+      log.warn(`Snapshot: stream write ${_serveStalled ? "stalled" : "failed"} to ${remotePeer}: ${err.message}`);
       return;
     } finally {
+      if (_serveStallTimer) clearTimeout(_serveStallTimer);
       _activeServes--;
     }
 
