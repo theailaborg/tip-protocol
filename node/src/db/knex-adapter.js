@@ -634,15 +634,16 @@ class KnexAdapter {
   // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
   // a second UPDATE so our value still wins.
   async _dbInsert(table, pkCols, row, onConflict) {
-    // Snapshot bulk install: collect the row for a per-table batchInsert.
-    // Tables are freshly cleared, so there are no conflicts to merge/ignore —
-    // a plain multi-row INSERT is correct and ~100x fewer round-trips than the
-    // per-row path (the difference between finishing inside the download
-    // deadline and timing out on a large, WAN-served snapshot).
+    // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
+    // per-table chunked INSERT in _flushBulkBuffers — ~100x fewer round-trips than
+    // the per-row path (the difference between finishing inside the download
+    // deadline and timing out on a large, WAN-served snapshot). Conflict handling
+    // is preserved there because non-state tables (transactions/certs/commits)
+    // aren't cleared and collide with genesis-seeded rows.
     if (this._bulkInstall) {
-      let rows = this._bulkInstall.get(table);
-      if (!rows) { rows = []; this._bulkInstall.set(table, rows); }
-      rows.push(row);
+      let buf = this._bulkInstall.get(table);
+      if (!buf) { buf = { pkCols, onConflict, rows: [] }; this._bulkInstall.set(table, buf); }
+      buf.rows.push(row);
       return;
     }
     if (!this._noOnConflict) {
@@ -1640,10 +1641,25 @@ class KnexAdapter {
   // snapshot rehydrates a divergent mirror on restart. The whole install stays
   // gated by the crash marker, so a throw here leaves the node in `syncing`.
   async _flushBulkBuffers() {
-    for (const [table, rows] of this._bulkInstall) {
+    for (const [table, buf] of this._bulkInstall) {
+      const { pkCols, onConflict, rows } = buf;
       if (rows.length === 0) continue;
+      // NOT every bulk-installed table is freshly cleared: clearCanonicalState
+      // wipes the derived-state tables, but transactions/certs/commits are not,
+      // and a fresh joiner's genesis seed already wrote the genesis rows — so the
+      // full-history tx stream collides on tx_id. Insert with ON CONFLICT DO
+      // NOTHING (per-row skip, keeps the non-conflicting rows) to stay idempotent
+      // like the per-row path, instead of a plain batchInsert that fail-stops on
+      // the first genesis duplicate.
+      const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
+      const conflictTarget = pks.length === 1 ? pks[0] : pks;
       try {
-        await this.knex.batchInsert(table, rows, SNAPSHOT_BULK_CHUNK_ROWS);
+        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          const chunk = rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+          const q = this._k(table).insert(chunk).onConflict(conflictTarget);
+          await (onConflict === "merge" ? q.merge() : q.ignore())
+            .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
+        }
       } catch (err) {
         this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
         process.exit(78);

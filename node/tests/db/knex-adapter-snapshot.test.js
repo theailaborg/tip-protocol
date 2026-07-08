@@ -365,5 +365,32 @@ async function drain() {
         await b.knex.destroy();
       }
     });
+
+    it("bulk install is idempotent — genesis-seeded duplicate tx_ids skip, not fail-stop", async () => {
+      const b = makeAdapter();
+      await b.migrate();
+      try {
+        await b.knex("transactions").delete();
+        // A fresh joiner seeds genesis (writes genesis txs) BEFORE the snapshot's
+        // full-history tx stream replays those same tx_ids. transactions is not
+        // cleared by clearCanonicalState, so the bulk insert collides.
+        b.saveTx({ tx_id: "genesis-dup", tx_type: "CONTENT_REGISTER", data: {}, timestamp: 1778025600000, prev: [], signature: "g" });
+        await b.flush();
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(1);
+
+        b.beginBulkInstall();
+        b.saveTx({ tx_id: "genesis-dup", tx_type: "CONTENT_REGISTER", data: {}, timestamp: 1778025600000, prev: [], signature: "g" }); // dup
+        b.saveTx({ tx_id: "fresh-a", tx_type: "CONTENT_REGISTER", data: { a: 1 }, timestamp: 1778025600001, prev: [], signature: "sa" });
+        b.saveTx({ tx_id: "fresh-b", tx_type: "CONTENT_REGISTER", data: { b: 2 }, timestamp: 1778025600002, prev: [], signature: "sb" });
+        await b.flush();   // must NOT fail-stop on the genesis duplicate
+        b.endBulkInstall();
+
+        // Duplicate skipped, both fresh rows inserted — 3 total, no crash.
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(3);
+        await b.knex("transactions").delete();
+      } finally {
+        await b.knex.destroy();
+      }
+    });
   });
 });
