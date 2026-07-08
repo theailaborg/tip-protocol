@@ -816,6 +816,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Certificate creation ─────────────────────────────────────────────────
 
   function _tryCreateCertificate() {
+    // Production must stay suppressed whenever we can't produce (syncing /
+    // byzantine-halt). _beginRound guards this on entry, but retry timers and
+    // reconcile paths call _tryCreateCertificate directly , without this guard a
+    // node that briefly flipped to ready, set _myBatch, then reverted to syncing
+    // keeps trying to seal a cert with no committee acks and crashes in
+    // computeMedianTimestamp. Robust suppression across ALL entry points.
+    if (!_canProduce()) return;
     if (_myCertificateCreated || !_myBatch) return;
 
     // Filter to committee-member acks only. Non-committee peers (late-
