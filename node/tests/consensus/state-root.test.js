@@ -26,7 +26,7 @@ const SRC = path.resolve(__dirname, "../../src");
 const { initCrypto } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const {
-  computeStateMerkleRoot, computeTxsMerkleRoot, createStateRootBuilder,
+  computeStateMerkleRoot, computeTxsMerkleRoot, createStateRootBuilder, verifyStateRootConsistency,
   EMPTY_STATE_ROOT, EMPTY_TXS_ROOT,
 } = require(path.join(SRC, "consensus", "state-root"));
 
@@ -60,6 +60,34 @@ describe("state_merkle_root", () => {
     const before = computeStateMerkleRoot(dag);
     dag.addRevocation("tip:dev:us:abc", "REVOKE_VOLUNTARY", 1769904000000, "tx-revoke");
     expect(computeStateMerkleRoot(dag)).not.toBe(before);
+  });
+
+  test("verifyStateRootConsistency: consistent on a healthy DAG, detects a stale incremental SMT + names the table", () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    dag.saveNode({ node_id: "N1", name: "n1", public_key: "abc", status: "active", registered_at: 1767225600000 });
+
+    // Healthy: the committed incremental root equals the reference walk.
+    const ok = verifyStateRootConsistency(dag);
+    expect(ok.consistent).toBe(true);
+    expect(ok.perTable).toBeNull();
+    expect(ok.incremental).toBe(ok.reference);
+
+    // Now simulate the drift class (dedup bug shape): a canonical mutation lands
+    // in the state (reference walk sees it) but the incremental SMT never synced
+    // its leaf, so stateRoot() is stale. verifyStateRootConsistency must catch it
+    // and computeStateMerkleRootPerTable must pinpoint the diverging table.
+    const staleRoot = dag.stateRoot();
+    dag.saveNode({ node_id: "N2", name: "n2", public_key: "def", status: "active", registered_at: 1767225600001 });
+    const drifted = {
+      stateRoot: () => staleRoot,                                  // incremental never advanced
+      iterateCanonicalState: (o) => dag.iterateCanonicalState(o),  // canonical walk did
+    };
+    const bad = verifyStateRootConsistency(drifted);
+    expect(bad.consistent).toBe(false);
+    expect(bad.incremental).toBe(staleRoot);
+    expect(bad.reference).not.toBe(staleRoot);
+    expect(bad.perTable).not.toBeNull();
+    expect(bad.perTable.some(t => t.table === "nodes")).toBe(true);
   });
 
   test("createStateRootBuilder and computeStateMerkleRoot agree on the same DAG", () => {

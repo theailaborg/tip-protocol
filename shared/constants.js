@@ -129,6 +129,13 @@ const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
 // for the widest rows.
 const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 
+// D1 runtime integrity invariant: how often each node recomputes the reference
+// state-root walk and compares it to the committed incremental SMT, halting on
+// divergence. Local self-check cadence only (never hashed, never signed, cannot
+// fork the chain), so it lives here, not in genesis/protocol-constants. The
+// reference walk is O(state), so this is throttled rather than per-commit.
+const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
+
 // Persisted install-marker key in consensus_meta (#132). Set to
 // `in_progress:<round>` before clearCanonicalState begins a streaming install,
 // cleared on successful go-live. A node that boots and finds it still
@@ -860,6 +867,7 @@ module.exports = {
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
   SNAPSHOT_BULK_CHUNK_ROWS,
+  STATE_ROOT_INTEGRITY_CHECK_MS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

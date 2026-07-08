@@ -27,7 +27,7 @@ const { createCryptoPool } = require("../lib/crypto-pool");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { foundingNodeKey } = require("../genesis");
 const { computeHaltStatus } = require("./halt-status");
-const { computeStateMerkleRoot } = require("./state-root");
+const { verifyStateRootConsistency } = require("./state-root");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
@@ -39,7 +39,7 @@ const { createPrescanReviewTrigger } = require("./prescan-review-trigger");
 const { createPrescanCompletionTrigger } = require("./prescan-completion-trigger");
 const { createTxSubmitter } = require("../services/helpers");
 const { nowMs } = require("../../../shared/time");
-const { LOCALLY_VERIFIED_TX_CACHE_CAP } = require("../../../shared/constants");
+const { LOCALLY_VERIFIED_TX_CACHE_CAP, STATE_ROOT_INTEGRITY_CHECK_MS } = require("../../../shared/constants");
 const jury = require("../jury");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { encode, decode } = require("../network/proto");
@@ -125,6 +125,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // `committee[day % N]` for clean-record).
   const narwhalRef = { current: null };
   let _triggerFallbackTimer = null;
+  let _stateRootIntegrityTimer = null;
   const getCommittee = (round) => {
     const r = round != null ? round : (narwhalRef.current ? narwhalRef.current.currentRound() : 1);
     return getActiveCommittee(dag, r);
@@ -578,6 +579,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     stop() {
       heartbeat.stop();
       clearInterval(_triggerFallbackTimer);
+      clearInterval(_stateRootIntegrityTimer);
       antiEntropy.stop();
       summary.stop();
       narwhal.stop();
@@ -671,6 +673,41 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       now: nowMs(), round,
     });
   }, 3000);
+
+  // D1 runtime integrity invariant: the committed state_merkle_root is the O(1)
+  // incremental SMT (dag.stateRoot()). A deterministic bug that desyncs it from
+  // the canonical state makes EVERY node agree on the same WRONG root (consensus
+  // checks agreement, not correctness) — invisible until a fresh joiner does an
+  // independent recompute (that is how the dedup drift was found). This periodic
+  // guard IS that independent recompute: on divergence it halts loudly instead
+  // of continuing to sign a root that no longer attests to state. Skipped while
+  // syncing (state is mid-install and legitimately partial) and while already
+  // halted. Throttled because the reference walk is O(state).
+  _stateRootIntegrityTimer = setInterval(() => {
+    const nw = narwhalRef.current;
+    if (!nw) return;
+    try {
+      if (typeof nw.byzantineForkHalt === "function" && nw.byzantineForkHalt()) return;
+      const joinState = typeof nw.joinState === "function" ? String(nw.joinState() || "ready") : "ready";
+      if (joinState === "syncing") return;
+      const { consistent, incremental, reference, perTable } = verifyStateRootConsistency(dag);
+      if (consistent) return;
+      const tables = (perTable || []).map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
+      log.error(
+        `INTEGRITY HALT: committed incremental state root ${String(incremental).slice(0, 16)} != ` +
+        `independent reference walk ${String(reference).slice(0, 16)} — this node's committed root no ` +
+        `longer attests to its state; refusing to keep signing it. Diverging tables: ${tables}`
+      );
+      if (typeof nw.haltDueToByzantineFork === "function") {
+        nw.haltDueToByzantineFork({
+          reason: "state_root_integrity: incremental SMT diverged from canonical reference walk",
+          atRound: typeof nw.currentRound === "function" ? nw.currentRound() : 0,
+        });
+      }
+    } catch (err) {
+      log.warn(`state-root integrity check errored: ${err.message}`);
+    }
+  }, STATE_ROOT_INTEGRITY_CHECK_MS);
 
   return consensus;
 }

@@ -173,6 +173,25 @@ function computeStateMerkleRootPerTable(dag) {
   return out;
 }
 
+/**
+ * D1 runtime integrity invariant: the committed state_merkle_root is the O(1)
+ * incremental SMT (dag.stateRoot()); this recomputes the independent reference
+ * walk and compares. A DETERMINISTIC bug that desyncs the incremental tree from
+ * the canonical state makes every node agree on the same WRONG root (consensus
+ * checks agreement, not correctness) — the ONLY thing that catches it is this
+ * independent recompute. On divergence the caller must HALT: a node whose root
+ * doesn't attest to its state must not keep signing it. perTable is populated
+ * only on mismatch (it names the diverging table). O(state) — call it throttled.
+ * @param {Object} dag  exposes stateRoot() + iterateCanonicalState()
+ * @returns {{consistent:boolean, incremental:string, reference:string, perTable:(Array|null)}}
+ */
+function verifyStateRootConsistency(dag) {
+  const incremental = dag.stateRoot();
+  const reference = computeStateMerkleRoot(dag);
+  const consistent = incremental === reference;
+  return { consistent, incremental, reference, perTable: consistent ? null : computeStateMerkleRootPerTable(dag) };
+}
+
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
   return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
@@ -181,6 +200,7 @@ function computeTxsMerkleRoot(orderedTxs) {
 module.exports = {
   computeStateMerkleRoot,
   computeStateMerkleRootPerTable,
+  verifyStateRootConsistency,
   STATE_PK,
   stateLeafKey,
   computeTxsMerkleRoot,
