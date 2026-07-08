@@ -396,8 +396,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "snapshot_required_no_handler";
     }
 
-    const minRound = Number(syncResult.earliestAvailableRound || 0);
-    _log.info(`anti-entropy: cert sync says snapshot_required (peer earliest=${minRound}); falling back to snapshot fast-sync`);
+    // Request the peer's LATEST snapshot (min_round 0), NOT the cert-sync
+    // earliestAvailableRound. Those are different rounds: earliestAvailableRound
+    // is the oldest CERT the peer still has (post-GC), but the snapshot is built
+    // from the peer's latest COMMIT row. On a long-idle federation the committed-
+    // round counter races ahead on empty rounds while the last state-changing
+    // commit stays put, so latest_commit << earliestAvailableRound and the serve
+    // rejects "no commit at or after round N". The latest commit's state is
+    // current regardless (empty rounds don't change state); ahead-peer selection
+    // + the receiver's peer_committed_round check keep min_round 0 safe.
+    const earliestAvailable = Number(syncResult.earliestAvailableRound || 0);
+    const minRound = 0;
+    _log.info(`anti-entropy: cert sync says snapshot_required (peer cert horizon=${earliestAvailable}); falling back to snapshot fast-sync (requesting peer's latest)`);
 
     if (narwhal && typeof narwhal.enterSyncMode === "function") {
       narwhal.enterSyncMode();

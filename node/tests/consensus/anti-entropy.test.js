@@ -1137,7 +1137,15 @@ describe("checkAndReconcile catching_up → ready promotion", () => {
 });
 
 describe("#46 anti-entropy snapshot fallback", () => {
-  test("snapshot_required → invokes requestSnapshotFromPeer with earliestAvailableRound", async () => {
+  test("snapshot_required → requests the peer's LATEST snapshot (minRound 0), not the cert horizon", async () => {
+    // earliestAvailableRound is the peer's oldest surviving CERT (post-GC), a
+    // different round from the snapshot's latest COMMIT. On a long-idle
+    // federation the committed-round counter races ahead on empty rounds while
+    // the last state-changing commit stays put, so latest_commit can be far
+    // below earliestAvailableRound and the serve rejects "no commit at or after
+    // round N". Requesting minRound 0 gets the peer's latest (state-current)
+    // commit; ahead-peer selection + the receiver's peer_committed_round check
+    // keep it safe.
     const sync = fakeSyncHandler({
       syncImpl: async () => ({ imported: 0, fromRound: 6, toRound: 6, peerLatestRound: 5000, snapshotRequired: true, earliestAvailableRound: 4500 }),
     });
@@ -1155,7 +1163,7 @@ describe("#46 anti-entropy snapshot fallback", () => {
     expect(result).toBe("snapshot_installed");
     expect(snap._calls).toHaveLength(1);
     expect(snap._calls[0].peerId).toBe("peer-id");
-    expect(snap._calls[0].opts.minRound).toBe(4500);
+    expect(snap._calls[0].opts.minRound).toBe(0);
   });
 
   test("snapshot install enters sync mode BEFORE install; promotion to ready is owned by snapshot-handler / catch-up flow, not AE", async () => {
