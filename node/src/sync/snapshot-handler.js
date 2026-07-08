@@ -618,9 +618,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // Bounds: a byte cap trips on a flood, an overall deadline on a hang /
       // slow-trickle. _boundedFrameStream aborts the stream and throws on
       // either breach so the fetch fails fast and retries another peer.
+      // Live progress: a periodic log line (visible in `docker logs`) plus a
+      // gauge (tip_snapshot_install_in_progress_bytes / _rows) so an operator
+      // can watch a large install advance instead of guessing whether it hung.
+      let loggedMB = 0;
       const onProgress = (total) => {
         totalBytes = total;
         if (_installProgress) _installProgress.bytes = total;
+        _metrics.install_in_progress_bytes = total;
+        _metrics.install_in_progress_rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+        const mb = Math.floor(total / (25 * 1024 * 1024)) * 25;
+        if (mb > loggedMB) {
+          loggedMB = mb;
+          log.notice(`Snapshot install progress: ${mb} MB streamed, ${_metrics.install_in_progress_rows} rows installed, peer=${peerId.slice(0, 12)}`);
+        }
       };
 
       for await (const bodyFrame of _boundedFrameStream(
@@ -918,6 +929,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _metrics.installs_completed = (_metrics.installs_completed || 0) + 1;
       _metrics.last_install_rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
       _metrics.last_install_bytes = totalBytes;
+      _metrics.install_in_progress_bytes = 0;
+      _metrics.install_in_progress_rows = 0;
       _installProgress = null;
 
       log.notice(
@@ -991,6 +1004,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _snapInstallInProgress = false;
       _snapServing = false;
       _installProgress = null;
+      _metrics.install_in_progress_bytes = 0;
+      _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
       // Always leave bulk mode: on success buffers are already flushed; on

@@ -418,6 +418,8 @@ function committeeSection(s, dag) {
     gauge("tip_snapshot_last_serve_bytes", "Wire size in bytes of the most recent snapshot this node served , what a fresh joiner downloads", (s.snapshotHandler?.metrics?.last_serve_bytes) || 0),
     gauge("tip_snapshot_last_serve_rows", "Row count of the most recent snapshot this node served", (s.snapshotHandler?.metrics?.last_serve_rows) || 0),
     gauge("tip_snapshot_last_install_rows", "Row count of the most recently completed snapshot install", (s.snapshotHandler?.metrics?.last_install_rows) || 0),
+    gauge("tip_snapshot_install_in_progress_bytes", "Bytes streamed so far by an IN-FLIGHT snapshot install (0 when idle) , watch this climb to see a large rejoin progressing", (s.snapshotHandler?.metrics?.install_in_progress_bytes) || 0),
+    gauge("tip_snapshot_install_in_progress_rows", "Rows installed so far by an IN-FLIGHT snapshot install (0 when idle)", (s.snapshotHandler?.metrics?.install_in_progress_rows) || 0),
     gauge("tip_snapshot_install_in_progress", "1 while a snapshot is currently installing; 0 when idle", s.snapshotHandler?.install ? 1 : 0),
     gauge("tip_snapshot_install_progress_rows", "Rows installed so far in the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.installed) || 0),
     gauge("tip_snapshot_install_total_rows", "Total rows to install in the in-progress snapshot; 0 when idle", (s.snapshotHandler?.install?.total) || 0),
