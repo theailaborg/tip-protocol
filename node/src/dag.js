@@ -440,6 +440,15 @@ class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
   delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
+  // Map.clear() would drop the entries but leave every leaf stale in the
+  // incremental SMT (the row is gone yet its leaf survives → state-root drift).
+  // Re-sync each removed key so its leaf is pruned. Used by the snapshot
+  // install reset (clearCanonicalState).
+  clear() {
+    const keys = [...super.keys()];
+    super.clear();
+    for (const k of keys) this._owner._smtSync(this._table, k);
+  }
 }
 
 class MemoryStore {

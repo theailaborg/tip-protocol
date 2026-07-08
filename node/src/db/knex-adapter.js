@@ -578,6 +578,17 @@ class KnexAdapter {
         suggested_origin: row.suggested_origin || null,
       });
     }
+
+    // Rebuild the incremental state SMT from the canonical walk. Hydration
+    // populates dedup_registry via `_dedup.add()` (a Set, not an SmtMap) and
+    // never calls its manual `_smtSync`, so those leaves would be absent from
+    // the incremental tree — dag.stateRoot() (the committed root) would then
+    // drift from computeStateMerkleRoot (a fresh joiner's snapshot verify).
+    // All nodes drift identically so consensus never notices, but a rejoining
+    // node can never reproduce the drifted root. Rebuilding here makes the
+    // committed root equal the canonical state, closing this and any future
+    // hydration sync gap. O(state), once per boot.
+    this.mirror.rebuildStateTree();
   }
 
   // ── Fire-and-forget ────────────────────────────────────────────────────────
