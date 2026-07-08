@@ -509,6 +509,12 @@
           "format": "table",
           "instant": true,
           "expr": "max by (node) (label_replace(max by (member) (tip_committee_member), \"node\", \"$1\", \"member\", \"(.+)\"))"
+        },
+        {
+          "refId": "InstallPct",
+          "expr": "max by (node) (tip_snapshot_install_percent)",
+          "format": "table",
+          "instant": true
         }
       ],
       "transformations": [
@@ -582,11 +588,12 @@
               "status": 2,
               "Value #Online": 3,
               "Value #SyncState": 4,
-              "Value #SyncSecs": 5,
-              "peers": 9,
-              "Value #CatchSecs": 6,
-              "Value #InCommittee": 7,
-              "Value #Credits": 8
+              "Value #InstallPct": 5,
+              "Value #SyncSecs": 6,
+              "Value #CatchSecs": 7,
+              "Value #InCommittee": 8,
+              "Value #Credits": 9,
+              "peers": 10
             },
             "renameByName": {
               "node": "Node",
@@ -598,7 +605,8 @@
               "peers": "Connected to",
               "Value #CatchSecs": "Catch-up duration",
               "Value #Credits": "Contribution (credits)",
-              "Value #InCommittee": "In committee"
+              "Value #InCommittee": "In committee",
+              "Value #InstallPct": "Install %"
             }
           }
         }
@@ -985,6 +993,50 @@
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Install %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "idle",
+                        "color": "text"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "idle"
               }
             ]
           }

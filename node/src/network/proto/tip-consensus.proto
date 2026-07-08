@@ -450,6 +450,12 @@ message SnapshotHeader {
   // triggers, audit) reads this field directly. Frozen on the cert hash
   // so tampering is detectable via cert verification.
   int64 cert_timestamp = 17;
+
+  // Total rows the serve will stream across all phases (state + txs + commits +
+  // rotations + certs + rp), counted before the header is sent. Lets the joiner
+  // show a real install percentage (installed / total_rows) instead of only a
+  // running byte counter. Advisory/display-only — not hashed, not signed.
+  uint64 total_rows = 18;
 }
 
 /**

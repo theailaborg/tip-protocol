@@ -1064,6 +1064,7 @@ class MemoryStore {
     for (const c of sorted) yield c;
   }
   certificateCount() { return this._certs.size; }
+  transactionCount() { return this._txs.size; }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
   // of rows deleted. Callers must ensure the cutoff leaves enough history
   // for still-active consensus (parent refs, waiter, fast-forward).
@@ -3226,6 +3227,9 @@ class SQLiteStore {
   certificateCount() {
     return this._stmts.countCerts.get().n;
   }
+  transactionCount() {
+    return this.db.prepare("SELECT COUNT(*) AS n FROM transactions").get().n;
+  }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns rows
   // deleted. SQLite DELETE also removes the INSERT OR IGNORE dedup key so
   // the same cert hash would be accepted again if it re-arrived — by
@@ -4040,6 +4044,7 @@ function _buildDagHandle(store, config) {
     getEarliestCertRound: () => store.getEarliestCertRound(),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
+    transactionCount: () => store.transactionCount(),
     pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),
     incrementalVacuum: (maxPages) => store.incrementalVacuum(maxPages),
 

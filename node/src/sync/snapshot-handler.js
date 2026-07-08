@@ -319,8 +319,18 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
+    // Total rows across all phases, for the joiner's install % (advisory /
+    // display-only, never hashed or signed). state + txs + certs dominate; the
+    // tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
+    // Counted from the in-memory mirror before the header goes out.
+    let _snapTotalRows = 0;
+    for (const _r of dag.iterateCanonicalState({ contentRaw: true })) _snapTotalRows++;
+    if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
+    if (typeof dag.certificateCount === "function") _snapTotalRows += dag.certificateCount();
+
     const headerBuf = encode("SnapshotHeader", {
       round: latest.round,
+      totalRows: _snapTotalRows,
       anchorCertHash: hexToBytes(latest.anchor_cert_hash),
       leaderNodeId: latest.leader_node_id,
       committee: latest.committee || [],
@@ -641,15 +651,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // gauge (tip_snapshot_install_in_progress_bytes / _rows) so an operator
       // can watch a large install advance instead of guessing whether it hung.
       let loggedMB = 0;
+      let snapTotalRows = 0;   // from header.total_rows, set on the HEADER frame below
       const onProgress = (total) => {
         totalBytes = total;
         if (_installProgress) _installProgress.bytes = total;
         _metrics.install_in_progress_bytes = total;
-        _metrics.install_in_progress_rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+        const rows = seen.state + seen.tx + seen.commit + seen.rotation + seen.cert + seen.rp;
+        _metrics.install_in_progress_rows = rows;
+        const pct = snapTotalRows > 0 ? Math.min(100, Math.floor((rows / snapTotalRows) * 100)) : 0;
+        _metrics.install_in_progress_percent = pct;
+        if (_installProgress) _installProgress.percent = pct;
         const mb = Math.floor(total / (25 * 1024 * 1024)) * 25;
         if (mb > loggedMB) {
           loggedMB = mb;
-          log.notice(`Snapshot install progress: ${mb} MB streamed, ${_metrics.install_in_progress_rows} rows installed, peer=${peerId.slice(0, 12)}`);
+          log.notice(`Snapshot install progress: ${pct}% (${rows}/${snapTotalRows || "?"} rows, ${mb} MB streamed), peer=${peerId.slice(0, 12)}`);
         }
       };
 
@@ -665,10 +680,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           case K.HEADER: {
             header = decode("SnapshotHeader", proto);
             if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
+            snapTotalRows = Number(header.totalRows) || 0;
             // Begin install: persist the crash marker BEFORE wiping so a
             // mid-stream crash is always recoverable (restart sees the marker
             // → re-enters syncing → resyncs), then clear canonical state.
-            _installProgress = { phase: "syncing", installed: 0, total: 0, bytes: totalBytes };
+            _installProgress = { phase: "syncing", installed: 0, total: snapTotalRows, bytes: totalBytes, percent: 0 };
             dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
             await dag.flush();
             _snapServing = true;

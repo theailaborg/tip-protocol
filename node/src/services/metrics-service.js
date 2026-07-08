@@ -423,6 +423,7 @@ function committeeSection(s, dag) {
     gauge("tip_snapshot_install_in_progress", "1 while a snapshot is currently installing; 0 when idle", s.snapshotHandler?.install ? 1 : 0),
     gauge("tip_snapshot_install_progress_rows", "Rows installed so far in the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.installed) || 0),
     gauge("tip_snapshot_install_total_rows", "Total rows to install in the in-progress snapshot; 0 when idle", (s.snapshotHandler?.install?.total) || 0),
+    gauge("tip_snapshot_install_percent", "In-flight snapshot install progress as a percentage (installed/total rows); 0 when idle", (s.snapshotHandler?.install?.percent) || 0),
     gauge("tip_snapshot_install_bytes", "Download size in bytes of the in-progress snapshot install; 0 when idle", (s.snapshotHandler?.install?.bytes) || 0),
     ...participationLines,
   ].join("\n");
