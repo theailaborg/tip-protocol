@@ -23,6 +23,7 @@ const { MemoryStore } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
+const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -590,6 +591,11 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
+    // Snapshot bulk install: run the write NOW so _dbInsert can buffer its row
+    // for a multi-row batchInsert (see beginBulkInstall). The install loop is
+    // inserts-only into freshly-cleared tables, so running synchronously here
+    // carries no ordering hazard vs the normal _ffChain.
+    if (this._bulkInstall) { fn(); return; }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
@@ -617,6 +623,17 @@ class KnexAdapter {
   // in between the 0-row UPDATE and our INSERT, the duplicate-key catch fires
   // a second UPDATE so our value still wins.
   async _dbInsert(table, pkCols, row, onConflict) {
+    // Snapshot bulk install: collect the row for a per-table batchInsert.
+    // Tables are freshly cleared, so there are no conflicts to merge/ignore —
+    // a plain multi-row INSERT is correct and ~100x fewer round-trips than the
+    // per-row path (the difference between finishing inside the download
+    // deadline and timing out on a large, WAN-served snapshot).
+    if (this._bulkInstall) {
+      let rows = this._bulkInstall.get(table);
+      if (!rows) { rows = []; this._bulkInstall.set(table, rows); }
+      rows.push(row);
+      return;
+    }
     if (!this._noOnConflict) {
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const q = this._k(table).insert(row).onConflict(pks.length === 1 ? pks[0] : pks);
@@ -1603,7 +1620,29 @@ class KnexAdapter {
     if (this._ffChain) {
       try { await this._ffChain; } catch { /* per-write errors already logged */ }
     }
+    if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
   }
+
+  // Snapshot bulk install: batchInsert each table's buffered rows (chunked so
+  // no single INSERT blows the driver's bind-parameter cap), then clear. A
+  // failed chunk fail-stops like any other lost persistence write: a partial
+  // snapshot rehydrates a divergent mirror on restart. The whole install stays
+  // gated by the crash marker, so a throw here leaves the node in `syncing`.
+  async _flushBulkBuffers() {
+    for (const [table, rows] of this._bulkInstall) {
+      if (rows.length === 0) continue;
+      try {
+        await this.knex.batchInsert(table, rows, SNAPSHOT_BULK_CHUNK_ROWS);
+      } catch (err) {
+        this.log.error(`KnexAdapter bulk install failed on ${table} , persistence lost, fail-stop: ${err.message}`);
+        process.exit(78);
+      }
+      rows.length = 0;
+    }
+  }
+
+  beginBulkInstall() { this._bulkInstall = new Map(); }
+  endBulkInstall() { this._bulkInstall = null; }
 
   close() {
     try { this.knex.destroy(); } catch { /* ignore */ }

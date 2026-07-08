@@ -112,6 +112,15 @@ const SNAPSHOT_FRAME_KIND = Object.freeze({
 // megabyte of thunks while amortizing transaction overhead.
 const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
 
+// Rows per multi-row INSERT when a snapshot install flushes its per-table
+// buffer via batchInsert (#132). The install streams into freshly-cleared
+// tables (no conflicts), so a plain bulk INSERT replaces the per-row path:
+// ~100x fewer round-trips, which is what lets a large, WAN-served snapshot
+// (tens of thousands of tx rows) finish inside the download deadline instead
+// of timing out. Kept well under Postgres's ~65535 bind-parameter cap even
+// for the widest rows.
+const SNAPSHOT_BULK_CHUNK_ROWS = 500;
+
 // Persisted install-marker key in consensus_meta (#132). Set to
 // `in_progress:<round>` before clearCanonicalState begins a streaming install,
 // cleared on successful go-live. A node that boots and finds it still
@@ -842,6 +851,7 @@ module.exports = {
   SNAPSHOT_FRAME_KIND,
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
+  SNAPSHOT_BULK_CHUNK_ROWS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

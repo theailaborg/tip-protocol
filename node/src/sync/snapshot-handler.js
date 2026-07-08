@@ -644,6 +644,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             _snapServing = true;
             dag.clearCanonicalState();
             await dag.flush();
+            // From here the install is inserts-only into freshly-cleared tables,
+            // so route DB writes through per-table batchInsert (Postgres only;
+            // no-op where unsupported). endBulkInstall() runs in the finally.
+            if (typeof dag.beginBulkInstall === "function") dag.beginBulkInstall();
             installBegun = true;
             break;
           }
@@ -989,6 +993,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _installProgress = null;
       throw err;
     } finally {
+      // Always leave bulk mode: on success buffers are already flushed; on
+      // error the mirror + DB were wiped and any un-flushed buffered rows are
+      // discarded with it (the next resync re-clears from a clean bulk-off
+      // state before re-installing).
+      if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
   }

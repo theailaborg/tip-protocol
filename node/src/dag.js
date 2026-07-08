@@ -4176,6 +4176,14 @@ function _buildDagHandle(store, config) {
     close: () => store.close(),
   };
 
+  // Snapshot bulk install (#132): only the knex/Postgres store batches inserts.
+  // Exposed conditionally so the snapshot handler can feature-detect it and the
+  // SQLite path keeps its single-transaction install unchanged.
+  if (typeof store.beginBulkInstall === "function") {
+    dag.beginBulkInstall = () => store.beginBulkInstall();
+    dag.endBulkInstall = () => store.endBulkInstall();
+  }
+
   return dag;
 }
 
