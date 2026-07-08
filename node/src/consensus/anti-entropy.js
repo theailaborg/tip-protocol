@@ -480,14 +480,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       if (typeof snapshotHandler.resetInstallState === "function") {
         snapshotHandler.resetInstallState();
       }
-      // Failure floor: snapshot didn't land. Fall back to ready at our
-      // pre-install round so the node isn't pinned in syncing waiting on
-      // a transition that won't come. The next AE tick / next peer-auth
-      // retries from a different peer.
-      if (narwhal && typeof narwhal.exitSyncMode === "function") {
-        const safeRound = Number(selfState.round || 0);
-        narwhal.exitSyncMode(safeRound);
-      }
+      // Snapshot didn't land. Do NOT force ready: a node in the snapshot-resync
+      // path needs that snapshot (diverged/empty state), so going ready would
+      // publish wrong/empty state. Stay in syncing; the next AE tick retries the
+      // snapshot (from another peer once serve capacity frees up). A node that is
+      // stuck-syncing but genuinely HAS matching state is unstuck separately by
+      // the state-gated escape below. A node without matching state must not be
+      // ready.
+      _log.warn(
+        `anti-entropy: snapshot fallback did not land from ${peerId.slice(0, 12)} — staying in syncing, ` +
+        `will retry (not forcing ready without state)`
+      );
       // Bug 3: cancel any deferred anchor timer that was running before this
       // install attempt. On success, onSnapshotInstalled calls cancelPendingCommit.
       // On failure, nothing cancels it — the stale timer can fire later and trigger
@@ -996,13 +999,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           atRound: Number(selfState.round || 0),
         });
       }
-      // Return narwhal to ready so the deadlock-escape or next recovery tick can
-      // retry. Without this, if the node is in syncing (e.g. watchdog reverted it),
-      // triggerSnapshotResync is permanently blocked and the node stays stuck.
-      if (narwhal && typeof narwhal.exitSyncMode === "function") {
-        const safeRound = Number(selfState.round || 0);
-        narwhal.exitSyncMode(safeRound);
-      }
+      // Do NOT force ready here: the auto-recovery snapshot failed and we are
+      // still diverged, so going ready would publish wrong/empty state. Stay in
+      // syncing; the next AE tick re-triggers the resync (triggerSnapshotResync
+      // runs from _runOnce regardless of join state). A node without matching
+      // state must not be ready.
+      _log.warn(
+        `anti-entropy: auto-recovery snapshot still diverged — staying in syncing, will retry ` +
+        `(not forcing ready without state)`
+      );
     } finally {
       _snapshotResyncInFlight = false;
     }
