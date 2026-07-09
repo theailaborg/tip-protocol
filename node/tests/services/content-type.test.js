@@ -268,10 +268,16 @@ const PLATFORM_EXPECTATIONS = [
   // mixed media kinds → multi
   { url: "https://x.com/u/status/7",            shape: { text: "", media: [IMG, VID] }, expected: "multi" },
 
+  // ── FIXED text — Hacker News hosts no media (link submissions + Ask/Show HN) ──
+  { url: "https://news.ycombinator.com/item?id=12345678", shape: { text: "Show HN: my project", media: [] }, expected: "text" },
+  { url: "https://news.ycombinator.com/item?id=87654321", shape: { text: "Ask HN: how do you…", media: [] }, expected: "text" },
+
   // ── TEXT_DOMINANT (article / blog / news) — text wins even with hero image ──
   { url: "https://medium.com/@u/post",                shape: { text: "essay", media: [IMG] }, expected: "text" },
   { url: "https://anyone.substack.com/p/post",        shape: { text: "essay", media: [IMG] }, expected: "text" },   // subdomain
   { url: "https://substack.com/inbox/post-1",         shape: { text: "essay", media: [IMG] }, expected: "text" },
+  { url: "https://mypub.beehiiv.com/p/post",          shape: { text: "essay", media: [IMG] }, expected: "text" },   // subdomain
+  { url: "https://www.beehiiv.com/p/post-1",          shape: { text: "essay", media: [] },    expected: "text" },   // www
   { url: "https://nytimes.com/2026/05/30/article",    shape: { text: "article", media: [IMG] }, expected: "text" },
   { url: "https://www.nytimes.com/article",           shape: { text: "article", media: [] },    expected: "text" },  // www
   { url: "https://wsj.com/articles/x",                shape: { text: "article", media: [] },    expected: "text" },
@@ -332,6 +338,7 @@ describe("resolvePlatformStrategy", () => {
     expect(resolvePlatformStrategy("https://medium.com/@x/post")).toBe("TEXT_DOMINANT");
     expect(resolvePlatformStrategy("https://instagram.com/p/abc")).toBe("MEDIA_DOMINANT");
     expect(resolvePlatformStrategy("https://x.com/user/status/1")).toBe("MIXED");
+    expect(resolvePlatformStrategy("https://news.ycombinator.com/item?id=1")).toBe("text");
   });
 
   test("alias resolves to canonical strategy", () => {
@@ -343,6 +350,7 @@ describe("resolvePlatformStrategy", () => {
 
   test("subdomain falls back to parent (substack, blog hosts)", () => {
     expect(resolvePlatformStrategy("https://anyone.substack.com/p/x")).toBe("TEXT_DOMINANT");
+    expect(resolvePlatformStrategy("https://mypub.beehiiv.com/p/x")).toBe("TEXT_DOMINANT");
     expect(resolvePlatformStrategy("https://my.wordpress.com/2026/05")).toBe("TEXT_DOMINANT");
     expect(resolvePlatformStrategy("https://foo.bar.blogspot.com/post")).toBe("TEXT_DOMINANT");
   });

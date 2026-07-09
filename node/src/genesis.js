@@ -245,6 +245,30 @@ function getGenesisCommittee() {
 }
 
 /**
+ * Public key of a genesis founding node, or null. The founding-node list is the
+ * immutable trust anchor, so this authorizes a founding peer even when the local
+ * registry is empty/incomplete , a fresh boot, or a node that ran
+ * clearCanonicalState for a #132 snapshot install (which empties the nodes
+ * table). Without it the handshake that must run to FETCH the snapshot that
+ * would refill the registry can never succeed: empty registry -> reject founding
+ * peer -> never sync -> registry stays empty. The single source of truth for
+ * both the consensus auth path and the network handshake path (they used to keep
+ * separate copies; only the consensus one had this fallback).
+ */
+let _foundingKeyMap = null;
+function foundingNodeKey(nodeId) {
+  if (!_foundingKeyMap) {
+    _foundingKeyMap = new Map();
+    if (Array.isArray(GENESIS_PAYLOAD.founding_nodes)) {
+      for (const f of GENESIS_PAYLOAD.founding_nodes) {
+        if (f && f.node_id && f.public_key) _foundingKeyMap.set(f.node_id, f.public_key);
+      }
+    }
+  }
+  return _foundingKeyMap.get(nodeId) || null;
+}
+
+/**
  * Genesis-anchored founding identities — the TIP-IDs minted by the seed
  * script and embedded in `GENESIS_PAYLOAD.genesis_ring`. These identities
  * are materialised by `initDAG` at boot; any later `REGISTER_IDENTITY` tx
@@ -327,6 +351,7 @@ module.exports = {
   getFoundingVP,
   getInitialParams,
   getGenesisCommittee,
+  foundingNodeKey,
   getGenesisRing,
   computeGenesisHash,
   verifyGenesisSignature,

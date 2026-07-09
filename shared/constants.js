@@ -73,8 +73,16 @@ const CLASSIFIER_CLIENT = Object.freeze({
 // install-once guard). Long-term scale fix is a streaming length-prefix parser
 // (deferred, see snapshot-handler).
 const SNAPSHOT_DOWNLOAD = Object.freeze({
-  MAX_BYTES: 512 * 1024 * 1024,   // 512 MB hard ceiling on a single snapshot download
-  MAX_MS: 180_000,                // 180 s overall deadline for the whole download
+  // A snapshot is the whole-chain state (full tx/cert history + state), whose
+  // size and transfer time grow with the federation , unknowable in advance.
+  // So we do NOT cap total bytes/time (any fixed number is wrong at some scale).
+  // Instead: a STALL timeout. The timer resets on every byte received AND every
+  // frame installed, so a large-but-flowing download never trips it; only a
+  // genuine hang (silent peer / dead connection) does. Memory stays bounded by
+  // the streaming install-in-place, not by a byte cap. MAX_BYTES remains only as
+  // a generous last-resort flood guard against an unbounded/hostile stream.
+  MAX_BYTES: 16 * 1024 * 1024 * 1024,  // 16 GB last-resort flood guard (not a normal-operation cap)
+  STALL_MS: 60_000,                     // abort only after 60s with zero download/install progress
 });
 
 // Server-side bound on reading one SnapshotRequest (node-local DoS guard,
@@ -84,6 +92,57 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_BYTES: 64 * 1024,
   MAX_MS: 5000,
 });
+
+// #132 streaming snapshot: every response frame carries a 1-byte kind tag as
+// its first body byte so the receiver routes each frame as it streams (no
+// pre-count, no positional slicing). The byte doubles as a format
+// discriminator , an old-format frame (raw protobuf) starts with a protobuf
+// field tag (0x08 for SnapshotHeader.round), never one of these values, so a
+// version-mixed pair fails cleanly and retries instead of mis-parsing.
+// Divergent values cannot fork the chain (a mismatch just fails the sync).
+const SNAPSHOT_FRAME_KIND = Object.freeze({
+  HEADER: 0x01,
+  STATE: 0x02,
+  TX: 0x03,
+  COMMIT: 0x04,
+  ROTATION: 0x05,
+  CERT: 0x06,
+  RP: 0x07,
+  PHASE_END: 0x08,
+  END: 0x09,
+});
+
+// Rows per DB transaction while streaming a snapshot install (#132). The
+// receiver installs in-place in batches of this size, awaiting each batch's
+// flush before reading more frames , this bounds the pending-write queue (and
+// thus peak memory) instead of buffering the whole response. Larger = fewer
+// transactions but more rows held in flight; 2000 keeps a batch well under a
+// megabyte of thunks while amortizing transaction overhead.
+const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
+
+// Rows per multi-row INSERT when a snapshot install flushes its per-table
+// buffer via batchInsert (#132). The install streams into freshly-cleared
+// tables (no conflicts), so a plain bulk INSERT replaces the per-row path:
+// ~100x fewer round-trips, which is what lets a large, WAN-served snapshot
+// (tens of thousands of tx rows) finish inside the download deadline instead
+// of timing out. Kept well under Postgres's ~65535 bind-parameter cap even
+// for the widest rows.
+const SNAPSHOT_BULK_CHUNK_ROWS = 500;
+
+// D1 runtime integrity invariant: how often each node recomputes the reference
+// state-root walk and compares it to the committed incremental SMT, halting on
+// divergence. Local self-check cadence only (never hashed, never signed, cannot
+// fork the chain), so it lives here, not in genesis/protocol-constants. The
+// reference walk is O(state), so this is throttled rather than per-commit.
+const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
+
+// Persisted install-marker key in consensus_meta (#132). Set to
+// `in_progress:<round>` before clearCanonicalState begins a streaming install,
+// cleared on successful go-live. A node that boots and finds it still
+// in_progress knows its canonical state is a partially-installed snapshot
+// (crash mid-stream), so it wipes and re-enters syncing instead of coming up
+// `ready` on unverified partial state (which would fork the chain).
+const SNAPSHOT_INSTALL_MARKER_KEY = "snapshot_install_state";
 
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
 // Vocabulary enum for the 4-tier categorical model. Threshold values that
@@ -813,6 +872,11 @@ module.exports = {
   CLASSIFIER_CLIENT,
   SNAPSHOT_DOWNLOAD,
   SNAPSHOT_REQUEST,
+  SNAPSHOT_FRAME_KIND,
+  SNAPSHOT_INSTALL_MARKER_KEY,
+  SNAPSHOT_INSTALL_BATCH_ROWS,
+  SNAPSHOT_BULK_CHUNK_ROWS,
+  STATE_ROOT_INTEGRITY_CHECK_MS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
   PRESCAN_NOTES,

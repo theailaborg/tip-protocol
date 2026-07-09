@@ -396,8 +396,18 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "snapshot_required_no_handler";
     }
 
-    const minRound = Number(syncResult.earliestAvailableRound || 0);
-    _log.info(`anti-entropy: cert sync says snapshot_required (peer earliest=${minRound}); falling back to snapshot fast-sync`);
+    // Request the peer's LATEST snapshot (min_round 0), NOT the cert-sync
+    // earliestAvailableRound. Those are different rounds: earliestAvailableRound
+    // is the oldest CERT the peer still has (post-GC), but the snapshot is built
+    // from the peer's latest COMMIT row. On a long-idle federation the committed-
+    // round counter races ahead on empty rounds while the last state-changing
+    // commit stays put, so latest_commit << earliestAvailableRound and the serve
+    // rejects "no commit at or after round N". The latest commit's state is
+    // current regardless (empty rounds don't change state); ahead-peer selection
+    // + the receiver's peer_committed_round check keep min_round 0 safe.
+    const earliestAvailable = Number(syncResult.earliestAvailableRound || 0);
+    const minRound = 0;
+    _log.info(`anti-entropy: cert sync says snapshot_required (peer cert horizon=${earliestAvailable}); falling back to snapshot fast-sync (requesting peer's latest)`);
 
     if (narwhal && typeof narwhal.enterSyncMode === "function") {
       narwhal.enterSyncMode();
@@ -408,7 +418,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
 
     try {
-      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound });
+      // Pass our node_id so the SnapshotRequest is never all-default: minRound 0
+      // + empty requesterNodeId encodes to ZERO bytes in proto3, which the serve
+      // reads as an empty/malformed request and rejects. (The idle-network fix
+      // made minRound 0 the norm, exposing this.)
+      const requesterNodeId = getSelfNodeId ? (getSelfNodeId() || "") : "";
+      const installed = await snapshotHandler.requestSnapshotFromPeer(peerId, { minRound, requesterNodeId });
       // null means the handler skipped (already installed or in-progress guard fired).
       // Treat as failure so the caller can try the next peer rather than falsely
       // reporting success and setting the recovery cooldown clock.
@@ -465,14 +480,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       if (typeof snapshotHandler.resetInstallState === "function") {
         snapshotHandler.resetInstallState();
       }
-      // Failure floor: snapshot didn't land. Fall back to ready at our
-      // pre-install round so the node isn't pinned in syncing waiting on
-      // a transition that won't come. The next AE tick / next peer-auth
-      // retries from a different peer.
-      if (narwhal && typeof narwhal.exitSyncMode === "function") {
-        const safeRound = Number(selfState.round || 0);
-        narwhal.exitSyncMode(safeRound);
-      }
+      // Snapshot didn't land. Do NOT force ready: a node in the snapshot-resync
+      // path needs that snapshot (diverged/empty state), so going ready would
+      // publish wrong/empty state. Stay in syncing; the next AE tick retries the
+      // snapshot (from another peer once serve capacity frees up). A node that is
+      // stuck-syncing but genuinely HAS matching state is unstuck separately by
+      // the state-gated escape below. A node without matching state must not be
+      // ready.
+      _log.warn(
+        `anti-entropy: snapshot fallback did not land from ${peerId.slice(0, 12)} — staying in syncing, ` +
+        `will retry (not forcing ready without state)`
+      );
       // Bug 3: cancel any deferred anchor timer that was running before this
       // install attempt. On success, onSnapshotInstalled calls cancelPendingCommit.
       // On failure, nothing cancels it — the stale timer can fire later and trigger
@@ -981,13 +999,15 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           atRound: Number(selfState.round || 0),
         });
       }
-      // Return narwhal to ready so the deadlock-escape or next recovery tick can
-      // retry. Without this, if the node is in syncing (e.g. watchdog reverted it),
-      // triggerSnapshotResync is permanently blocked and the node stays stuck.
-      if (narwhal && typeof narwhal.exitSyncMode === "function") {
-        const safeRound = Number(selfState.round || 0);
-        narwhal.exitSyncMode(safeRound);
-      }
+      // Do NOT force ready here: the auto-recovery snapshot failed and we are
+      // still diverged, so going ready would publish wrong/empty state. Stay in
+      // syncing; the next AE tick re-triggers the resync (triggerSnapshotResync
+      // runs from _runOnce regardless of join state). A node without matching
+      // state must not be ready.
+      _log.warn(
+        `anti-entropy: auto-recovery snapshot still diverged — staying in syncing, will retry ` +
+        `(not forcing ready without state)`
+      );
     } finally {
       _snapshotResyncInFlight = false;
     }
@@ -1060,9 +1080,26 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // ready so the next AE tick can pull the gap or escalate to snapshot.
       const _joinStBehind = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
       if (_joinStBehind === "syncing" && !_snapshotResyncInFlight) {
+        // CRITICAL: only escape to `ready` when our STATE already matches the
+        // peer , i.e. we're genuinely caught up and just need narwhal unstuck to
+        // gap-pull recent certs. If the state roots DIVERGE, escaping would go
+        // live with WRONG/EMPTY state. A fresh joiner that cert-synced the round
+        // counter to the frontier but never installed a snapshot hits exactly
+        // this (round gap looks tiny, but dag is genesis). A node with unmatched
+        // state must NEVER be ready , trigger a snapshot resync and stay syncing.
+        const selfRoot = (selfState && selfState.state_merkle_root) || "";
+        const peerRoot = (peerStatus && peerStatus.state_merkle_root) || "";
+        if (selfRoot && peerRoot && selfRoot !== peerRoot) {
+          _log.warn(
+            `anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} AND state diverges ` +
+            `(self=${selfRoot.slice(0, 12)} peer=${peerRoot.slice(0, 12)}) — snapshot resync, NOT exitSyncMode ` +
+            `(a node without matching state must not go ready)`
+          );
+          return await triggerSnapshotResync(selfCommitted, 0);
+        }
         _log.warn(
           `anti-entropy: behind peer ${peerStatus.node_id || peerId.slice(0, 12)} but joinState=syncing ` +
-          `(no byz halt, no resync in flight) — calling exitSyncMode(${selfCommitted}) to escape stuck-syncing`
+          `(no byz halt, no resync in flight, state matches) — calling exitSyncMode(${selfCommitted}) to escape stuck-syncing`
         );
         if (narwhal && typeof narwhal.exitSyncMode === "function") {
           narwhal.exitSyncMode(selfCommitted);
@@ -1138,7 +1175,25 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         ? String(narwhal.joinState() || "ready")
         : "ready";
       const peerJoinState = String(peerStatus.join_state || "ready");
-      if (selfJoinState !== "ready" || peerJoinState !== "ready") {
+      // Self non-ready (syncing / catching_up) is INVISIBLE to consensus: it
+      // produces no batches and no acks, so a same-round root mismatch here is a
+      // catch-up artifact (the mirror is partial during snapshot install / cert-
+      // tail replay, or the bullshark committed-round counter merely lags a busy
+      // cluster while the actual state is identical), never a byzantine fault.
+      // Self-halting on it only bounces the joiner into an endless resync
+      // treadmill (and falsely lights up the divergence metric), and it
+      // short-circuits the markCaughtUp promotion so the node can never reach
+      // ready. Grace indefinitely until self is `ready`; the byz-fork check below
+      // still fires the moment self promotes and a genuine mismatch remains — a
+      // non-ready node cannot harm consensus, so deferring the check is safe.
+      if (selfJoinState !== "ready") {
+        _log.debug(
+          `anti-entropy: round=${selfCommitted} state-mismatch while self ${selfJoinState} ` +
+          `with peer ${peerLabel} — catch-up artifact, gracing (self invisible to consensus)`
+        );
+        return "equal";
+      }
+      if (peerJoinState !== "ready") {
         const persistent = _persistentDivergence(peerNode, peerJoinState);
         if (!persistent) {
           // Within grace — diagnostic only, don't flag. Logged at debug
@@ -1427,13 +1482,21 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       }
     }
 
-    // Re-handshake backstop: while ready, periodically retry the handshake with any
-    // connected-but-unauthorized peer (a peer that was stale when it rejected us, or
-    // dropped transiently). Ready-gated + throttled so it never adds to mid-sync churn.
+    // Re-handshake backstop: periodically retry the handshake with any
+    // connected-but-unauthorized peer (a peer that was stale when it rejected us,
+    // or dropped transiently). Runs when READY (steady-state churn guard) OR when
+    // ISOLATED (zero authorized peers) , the latter breaks a bootstrap deadlock: a
+    // freshly-wiped/genesis node is `syncing`, connected-but-unauthorized to its
+    // peers, and can ONLY escape by re-handshaking them. Ready-gating alone would
+    // trap it forever (never ready -> never re-handshake -> never authorized ->
+    // never syncs -> never ready). A syncing node that already has peers stays
+    // ready-gated, so this never adds mid-sync churn. Throttled either way.
     if (!_running) return;
     if (network && typeof network.reHandshakeUnauthorized === "function") {
       const joinSt = narwhal && typeof narwhal.joinState === "function" ? narwhal.joinState() : "ready";
-      if (joinSt === "ready" && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
+      const authedCount = typeof network.authorizedPeerCount === "function" ? network.authorizedPeerCount() : 1;
+      const isolated = authedCount === 0;
+      if ((joinSt === "ready" || isolated) && nowMs() - _lastReHandshakeAt >= CONSENSUS.HANDSHAKE_REHANDSHAKE_INTERVAL_MS) {
         _lastReHandshakeAt = nowMs();
         network.reHandshakeUnauthorized();
       }
@@ -1543,7 +1606,14 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       // snapshot pull below can proceed (which will re-enter syncing via
       // enterSyncMode in _runSnapshotFallback). catching_up is always a live
       // install (markSnapshotInstalled was already called), so we keep the guard.
-      if (currentState === "syncing" && !_snapshotResyncInFlight) {
+      // Also treat an ACTIVELY-DOWNLOADING install as in-flight: the AE-level
+      // _snapshotResyncInFlight flag can be clear while snapshot-handler is
+      // mid-stream (started from another path / a prior tick). Interrupting it
+      // with exitSyncMode + a fresh pull leaves partial state and fails the
+      // state-root verify (expected≠derived). Never interrupt a live install.
+      const installing = snapshotHandler && typeof snapshotHandler.isInstalling === "function"
+        && snapshotHandler.isInstalling();
+      if (currentState === "syncing" && !_snapshotResyncInFlight && !installing) {
         _log.warn(
           `anti-entropy: triggerSnapshotResync: stuck in syncing (no install in flight) — ` +
           `calling exitSyncMode(${fromRound}) to escape before fresh snapshot pull`
@@ -1552,6 +1622,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           narwhal.exitSyncMode(fromRound);
         }
         // Fall through to execute the snapshot pull below
+      } else if (installing) {
+        _log.info(`anti-entropy: triggerSnapshotResync skipped — snapshot install already streaming (round=${fromRound})`);
+        return "already_syncing";
       } else {
         _log.warn(`anti-entropy: triggerSnapshotResync skipped — already in ${currentState} (round=${fromRound}, missing=${missingCount})`);
         return "already_syncing";

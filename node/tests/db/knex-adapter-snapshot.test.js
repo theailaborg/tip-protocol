@@ -31,14 +31,15 @@
 
 const path = require("path");
 const SHARED = path.resolve(__dirname, "../../../shared");
-const SRC    = path.resolve(__dirname, "../../src");
+const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, shake256, canonicalJson } = require(path.join(SHARED, "crypto"));
-const { KnexAdapter }   = require(path.join(SRC, "db", "knex-adapter"));
+const { KnexAdapter } = require(path.join(SRC, "db", "knex-adapter"));
 const { loadTypes, encode, decode, bytesToUtf8 } = require(path.join(SRC, "network", "proto"));
 const { canonRotation, createRotationsFullRootBuilder } = require(path.join(SRC, "sync", "snapshot-roots"));
+const { computeStateMerkleRoot } = require(path.join(SRC, "consensus", "state-root"));
 
-const driver    = process.env.DB_DRIVER || "";
+const driver = process.env.DB_DRIVER || "";
 const shouldRun = !!driver && driver !== "sqlite";
 
 beforeAll(async () => {
@@ -48,10 +49,10 @@ beforeAll(async () => {
 
 function makeAdapter() {
   return new KnexAdapter(driver, {
-    dbHost:     process.env.DB_HOST,
-    dbPort:     process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
-    dbName:     process.env.DB_NAME,
-    dbUser:     process.env.DB_USER,
+    dbHost: process.env.DB_HOST,
+    dbPort: process.env.DB_PORT ? Number(process.env.DB_PORT) : undefined,
+    dbName: process.env.DB_NAME,
+    dbUser: process.env.DB_USER,
     dbPassword: process.env.DB_PASSWORD,
   });
 }
@@ -61,12 +62,12 @@ function rot(n, effectiveRound, committee, opts = {}) {
   return {
     rotation_number: n,
     effective_round: effectiveRound,
-    committee:       c,
-    prev_rotation:   opts.prev_rotation === undefined ? n - 1 : opts.prev_rotation,
+    committee: c,
+    prev_rotation: opts.prev_rotation === undefined ? n - 1 : opts.prev_rotation,
     signer_node_ids: opts.signers || [],
-    signatures:      opts.sigs    || [],
-    payload_hash:    opts.hash    || shake256(canonicalJson({ rotation_number: n, effective_round: effectiveRound, committee: c })),
-    committed_at:    opts.at      || 1778025600000,
+    signatures: opts.sigs || [],
+    payload_hash: opts.hash || shake256(canonicalJson({ rotation_number: n, effective_round: effectiveRound, committee: c })),
+    committed_at: opts.at || 1778025600000,
   };
 }
 
@@ -91,8 +92,42 @@ async function drain() {
   });
 
   afterAll(async () => {
-    await cleanDB(a).catch(() => {});
+    await cleanDB(a).catch(() => { });
     await a.knex.destroy();
+  });
+
+  // Regression: hydration populates dedup_registry via a plain Set (`_dedup.add`)
+  // and never fires its manual `_smtSync`, so the incremental SMT dropped those
+  // leaves — dag.stateRoot() (the committed root) drifted from the canonical
+  // reference computeStateMerkleRoot, and a rejoining node could never reproduce
+  // the drifted root. _hydrate() now rebuilds the SMT from the canonical walk.
+  describe("state-root hydration parity", () => {
+    const seedHash = shake256("dedup-hydration-parity-seed");
+    const seedTip = "tip://id/dedup-parity";
+
+    afterAll(async () => {
+      await a.knex("dedup_registry").where("dedup_hash", seedHash).delete().catch(() => { });
+    });
+
+    test("hydrated stateRoot() equals canonical reference (dedup leaves not dropped)", async () => {
+      a.addDedupHash(seedHash, 1778025600000, seedTip);
+      await drain();
+
+      const b = makeAdapter();
+      await b.migrate();
+      try {
+        // Guard against a vacuous pass: the dedup leaf must actually be present.
+        const hasDedup = [...b.iterateCanonicalState()].some(
+          r => r.table === "dedup_registry" && r.row.dedup_hash === seedHash
+        );
+        expect(hasDedup).toBe(true);
+
+        // The committed root (incremental SMT) must equal the reference walk.
+        expect(b.stateRoot()).toBe(computeStateMerkleRoot(b));
+      } finally {
+        await b.knex.destroy();
+      }
+    });
   });
 
   // ── Phase D: SnapshotCommitteeRotationRow encode→decode round-trip ──────────
@@ -108,7 +143,7 @@ async function drain() {
       ], {
         prev_rotation: 1,
         signers: ["n1"],
-        sigs:    ["sig-2a"],
+        sigs: ["sig-2a"],
       }),
       rot(3, 300, [
         { node_id: "n1", public_key: "pk1" },
@@ -117,8 +152,8 @@ async function drain() {
       ], {
         prev_rotation: 2,
         signers: ["n1", "n2"],
-        sigs:    ["sig-3a", "sig-3b"],
-        at:      1778029200000,
+        sigs: ["sig-3a", "sig-3b"],
+        at: 1778029200000,
       }),
     ];
 
@@ -179,9 +214,9 @@ async function drain() {
         const chain = [...b.getRotationsFromGenesis()];
 
         for (let i = 0; i < chain.length; i++) {
-          const r       = chain[i];
-          const orig    = rotations[i];
-          const canon   = canonicalJson(canonRotation(r));
+          const r = chain[i];
+          const orig = rotations[i];
+          const canon = canonicalJson(canonRotation(r));
 
           const encoded = encode("SnapshotCommitteeRotationRow", {
             canonicalJson: Buffer.from(canon, "utf8"),
@@ -226,8 +261,8 @@ async function drain() {
         // Receiver: decode each frame, recompute root
         const receiverRoot = createRotationsFullRootBuilder();
         for (const frame of encodedFrames) {
-          const decoded  = decode("SnapshotCommitteeRotationRow", frame);
-          const canon    = bytesToUtf8(decoded.canonicalJson);
+          const decoded = decode("SnapshotCommitteeRotationRow", frame);
+          const canon = bytesToUtf8(decoded.canonicalJson);
           receiverRoot.addRow(canon);
         }
         const receiverDigest = receiverRoot.finalize();
@@ -266,7 +301,7 @@ async function drain() {
           expect(() => JSON.parse(canon)).not.toThrow();
 
           const encoded = encode("SnapshotStateRow", {
-            table:         "rotation_participation",
+            table: "rotation_participation",
             canonicalJson: Buffer.from(canon, "utf8"),
           });
           expect(Buffer.isBuffer(encoded)).toBe(true);
@@ -287,6 +322,72 @@ async function drain() {
         );
         expect(by["nodeA"]).toBe(42);
         expect(by["nodeB"]).toBe(99);
+      } finally {
+        await b.knex.destroy();
+      }
+    });
+  });
+
+  // ── Bulk install (#132): batchInsert path used by the snapshot receiver ──────
+  describe("bulk install — batchInsert path", () => {
+    it("buffers rows in bulk mode, batchInserts them on flush, restores per-row path on end", async () => {
+      const b = makeAdapter();
+      await b.migrate();
+      try {
+        await b.knex("transactions").delete();
+        const N = 1500; // > SNAPSHOT_BULK_CHUNK_ROWS (500) to exercise chunking
+
+        b.beginBulkInstall();
+        for (let i = 0; i < N; i++) {
+          b.saveTx({
+            tx_id: `bulk-tx-${i}`, tx_type: "CONTENT_REGISTER",
+            data: { i }, timestamp: 1778025600000 + i, prev: [], signature: `sig-${i}`,
+          });
+        }
+        // Rows are buffered, not yet written to the DB (mirror is updated live).
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(0);
+        expect(b.getTx("bulk-tx-0")).toBeTruthy();
+
+        await b.flush();   // batchInsert per table, chunked
+        b.endBulkInstall();
+
+        // All rows landed in the DB, in whole, and the mirror still has them.
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(N);
+        expect(b.getTx(`bulk-tx-${N - 1}`)).toBeTruthy();
+
+        // endBulkInstall() restored the normal per-row path.
+        b.saveTx({ tx_id: "post-bulk", tx_type: "CONTENT_REGISTER", data: {}, timestamp: 1778025601500, prev: [], signature: "s" });
+        await b.flush();
+        expect(await b.knex("transactions").where("tx_id", "post-bulk").first()).toBeTruthy();
+
+        await b.knex("transactions").delete();
+      } finally {
+        await b.knex.destroy();
+      }
+    });
+
+    it("bulk install is idempotent — genesis-seeded duplicate tx_ids skip, not fail-stop", async () => {
+      const b = makeAdapter();
+      await b.migrate();
+      try {
+        await b.knex("transactions").delete();
+        // A fresh joiner seeds genesis (writes genesis txs) BEFORE the snapshot's
+        // full-history tx stream replays those same tx_ids. transactions is not
+        // cleared by clearCanonicalState, so the bulk insert collides.
+        b.saveTx({ tx_id: "genesis-dup", tx_type: "CONTENT_REGISTER", data: {}, timestamp: 1778025600000, prev: [], signature: "g" });
+        await b.flush();
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(1);
+
+        b.beginBulkInstall();
+        b.saveTx({ tx_id: "genesis-dup", tx_type: "CONTENT_REGISTER", data: {}, timestamp: 1778025600000, prev: [], signature: "g" }); // dup
+        b.saveTx({ tx_id: "fresh-a", tx_type: "CONTENT_REGISTER", data: { a: 1 }, timestamp: 1778025600001, prev: [], signature: "sa" });
+        b.saveTx({ tx_id: "fresh-b", tx_type: "CONTENT_REGISTER", data: { b: 2 }, timestamp: 1778025600002, prev: [], signature: "sb" });
+        await b.flush();   // must NOT fail-stop on the genesis duplicate
+        b.endBulkInstall();
+
+        // Duplicate skipped, both fresh rows inserted — 3 total, no crash.
+        expect(Number((await b.knex("transactions").count("* as c").first()).c)).toBe(3);
+        await b.knex("transactions").delete();
       } finally {
         await b.knex.destroy();
       }

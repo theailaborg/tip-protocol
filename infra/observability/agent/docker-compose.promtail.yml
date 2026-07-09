@@ -8,6 +8,11 @@ services:
     image: grafana/promtail:3.3.0
     container_name: tip-promtail
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     env_file: promtail.env
     volumes:
       - ./promtail.yml:/etc/promtail/config.yml:ro

@@ -1057,11 +1057,17 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
      * doesn't re-commit txs that were already applied.
      */
     markOrderedUpTo(round) {
-      for (let r = 1; r <= round; r++) {
-        try {
-          const certs = dag.getCertificatesByRound(r);
-          for (const cert of certs) _orderedCertHashes.add(cert.hash);
-        } catch { /* ignore */ }
+      // Iterate the ACTUAL certs in range (O(cert count)), NOT every round
+      // 1..round (O(round)). A fresh joiner jumps its counter to a huge round
+      // (~600k) while holding only a handful of certs; the old per-round loop was
+      // a 600k-iteration synchronous scan that pinned the event loop at 100% and
+      // starved the snapshot install from ever running. Incremental start from
+      // the last marked round keeps repeat calls cheap too.
+      const startRound = Math.max(1, _lastCommittedRound + 1);
+      if (round >= startRound && typeof dag.iterateCertsByRoundRange === "function") {
+        for (const cert of dag.iterateCertsByRoundRange(startRound, round)) {
+          _orderedCertHashes.add(cert.hash);
+        }
       }
       if (round > _lastCommittedRound) _lastCommittedRound = round;
       log.info(`Bullshark: marked certificates as ordered up to round ${round}`);

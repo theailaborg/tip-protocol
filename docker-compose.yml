@@ -62,6 +62,11 @@ x-node-common: &node-common
   image: tip-protocol/node:2.0.0
   container_name: tip-node
   restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
   # Match the in-process shutdown timeout (65s: classifier text timeout +
   # buffer) so SIGTERM grace covers worst-case prescan worker drain. Without
   # this, docker SIGKILLs at 10s and prescan claims become orphaned (queue
@@ -121,6 +126,11 @@ services:
     image: postgres:16-alpine
     container_name: tip-postgres
     restart: unless-stopped
+    logging:
+        driver: json-file
+        options:
+            max-size: "50m"
+            max-file: "3"
     environment:
       POSTGRES_USER:     ${DB_USER:-tip}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}

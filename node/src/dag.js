@@ -100,6 +100,16 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
+// prescan_probability is a float4 (32-bit) DB column but a float64 in live
+// memory: hydration reads the lossy-rounded float32 (0.1 -> 0.10000000149),
+// live commit holds the exact float64 (0.1). Hashing the raw float forks the
+// state root between restarted and live nodes (live incident 2026-07-06).
+// Quantize to integer basis-points (4 dp): float32 error (~1e-7) can never
+// cross a 1e-4 boundary, so both representations collapse to one value.
+function _quantizeProb(p) {
+  return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
+}
+
 function _canonContent(r) {
   // Intentionally excluded: `dispute_count`, `verification_count`. Both are
   // dead columns today (always 0 — never written) and would trap a future
@@ -122,7 +132,7 @@ function _canonContent(r) {
     cna_version: r.cna_version,
     status: r.status,
     prescan_flagged: r.prescan_flagged ? 1 : 0,
-    prescan_probability: typeof r.prescan_probability === "number" ? r.prescan_probability : 0,
+    prescan_probability: _quantizeProb(r.prescan_probability),
     prescan_tier: r.prescan_tier || "low",
     prescan_status: r.prescan_status || "completed",
     prescan_completed_at: typeof r.prescan_completed_at === "number" ? r.prescan_completed_at : null,
@@ -438,6 +448,15 @@ class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
   delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
+  // Map.clear() would drop the entries but leave every leaf stale in the
+  // incremental SMT (the row is gone yet its leaf survives → state-root drift).
+  // Re-sync each removed key so its leaf is pruned. Used by the snapshot
+  // install reset (clearCanonicalState).
+  clear() {
+    const keys = [...super.keys()];
+    super.clear();
+    for (const k of keys) this._owner._smtSync(this._table, k);
+  }
 }
 
 class MemoryStore {
@@ -1055,6 +1074,7 @@ class MemoryStore {
     for (const c of sorted) yield c;
   }
   certificateCount() { return this._certs.size; }
+  transactionCount() { return this._txs.size; }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns number
   // of rows deleted. Callers must ensure the cutoff leaves enough history
   // for still-active consensus (parent refs, waiter, fast-forward).
@@ -1495,14 +1515,21 @@ class MemoryStore {
     return this._smt.root();
   }
 
-  *iterateCanonicalState() {
+  // #132: `contentRaw` ships the RAW content row (not the hash projection).
+  // _canonContent quantizes prescan_probability (float determinism, #195) and
+  // drops derived counters — fine for hashing, WRONG as the snapshot transfer
+  // form: the receiver would store the quantized value and re-quantize it,
+  // forking the state root. The snapshot serve sets contentRaw:true; the
+  // receiver re-derives the root via computeStateMerkleRoot after install, so
+  // hashing still canonicalizes and determinism is preserved.
+  *iterateCanonicalState({ contentRaw = false } = {}) {
     for (const r of [...this._identities.values()]
       .sort((a, b) => cmpBin(a.tip_id, b.tip_id))) {
       yield { table: "identities", row: _canonIdentity(r) };
     }
     for (const r of [...this._content.values()]
       .sort((a, b) => cmpBin(a.ctid, b.ctid))) {
-      yield { table: "content", row: _canonContent(r) };
+      yield { table: "content", row: contentRaw ? r : _canonContent(r) };
     }
     for (const [tip_id, v] of [...this._scores.entries()]
       .sort((a, b) => cmpBin(a[0], b[0]))) {
@@ -3224,6 +3251,9 @@ class SQLiteStore {
   certificateCount() {
     return this._stmts.countCerts.get().n;
   }
+  transactionCount() {
+    return this.db.prepare("SELECT COUNT(*) AS n FROM transactions").get().n;
+  }
   // Cert GC (§2): drop every cert with round < cutoffRound. Returns rows
   // deleted. SQLite DELETE also removes the INSERT OR IGNORE dedup key so
   // the same cert hash would be accepted again if it re-arrived — by
@@ -4038,7 +4068,7 @@ function _buildDagHandle(store, config) {
     // ── Canonical derived state (§14 snapshot-sync) ──────────────────────
     // Streaming iterator over all derived-state tables in deterministic
     // order. Consumed by consensus/state-root.js to hash row-by-row.
-    iterateCanonicalState: () => store.iterateCanonicalState(),
+    iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
@@ -4104,6 +4134,7 @@ function _buildDagHandle(store, config) {
     getEarliestCertRound: () => store.getEarliestCertRound(),
     getCertificatesFromRound: (fromRound) => store.getCertificatesFromRound(fromRound),
     certificateCount: () => store.certificateCount(),
+    transactionCount: () => store.transactionCount(),
     pruneCertificatesBefore: (cutoff) => store.pruneCertificatesBefore(cutoff),
     incrementalVacuum: (maxPages) => store.incrementalVacuum(maxPages),
 
@@ -4249,11 +4280,18 @@ function _buildDagHandle(store, config) {
     close: () => store.close(),
   };
 
-
   // Owner-chain prev source for tx sealing (services/helpers withTxId /
   // nodeSignedAuto). Last-initialized dag wins , one dag per process in
   // every real deployment.
   require("./services/helpers").initTxPrev(dag);
+
+  // Snapshot bulk install (#132): only the knex/Postgres store batches inserts.
+  // Exposed conditionally so the snapshot handler can feature-detect it and the
+  // SQLite path keeps its single-transaction install unchanged.
+  if (typeof store.beginBulkInstall === "function") {
+    dag.beginBulkInstall = () => store.beginBulkInstall();
+    dag.endBulkInstall = () => store.endBulkInstall();
+  }
 
   return dag;
 }

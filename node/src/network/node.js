@@ -581,6 +581,7 @@ async function createNetworkNode(options = {}) {
     sendAckDirect,
     sendAckRequest,
     reHandshakeUnauthorized,
+    authorizedPeerCount: () => _authorizedPeers.size,
     ROTATION_COORD_PROTOCOL,
     ROTATION_REPAIR_PROTOCOL,
     CONSENSUS_ACK_PROTOCOL,

@@ -152,6 +152,47 @@ function computeStateMerkleRoot(dag) {
   return b.finalize();
 }
 
+/**
+ * Diagnostic: per-table sub-root + row count over the canonical state.
+ * Lets snapshot-install mismatches pinpoint WHICH table diverged (and how
+ * many rows) instead of only seeing the aggregate root differ. Same leaf
+ * function as the aggregate root, grouped by table.
+ * @param {Object} dag  exposes iterateCanonicalState()
+ * @returns {Array<{table:string,count:number,root:string}>}
+ */
+function computeStateMerkleRootPerTable(dag) {
+  const byTable = new Map();
+  for (const { table, row } of dag.iterateCanonicalState()) {
+    let e = byTable.get(table);
+    if (!e) { e = { smt: createSMT(), count: 0 }; byTable.set(table, e); }
+    const pk = STATE_PK[table] ? STATE_PK[table](row) : JSON.stringify(row);
+    e.smt.set(stateLeafKey(table, String(pk)), shake256(canonicalJson(row)));
+    e.count++;
+  }
+  const out = [];
+  for (const [table, e] of byTable) out.push({ table, count: e.count, root: e.smt.root().slice(0, 16) });
+  return out;
+}
+
+/**
+ * D1 runtime integrity invariant: the committed state_merkle_root is the O(1)
+ * incremental SMT (dag.stateRoot()); this recomputes the independent reference
+ * walk and compares. A DETERMINISTIC bug that desyncs the incremental tree from
+ * the canonical state makes every node agree on the same WRONG root (consensus
+ * checks agreement, not correctness) — the ONLY thing that catches it is this
+ * independent recompute. On divergence the caller must HALT: a node whose root
+ * doesn't attest to its state must not keep signing it. perTable is populated
+ * only on mismatch (it names the diverging table). O(state) — call it throttled.
+ * @param {Object} dag  exposes stateRoot() + iterateCanonicalState()
+ * @returns {{consistent:boolean, incremental:string, reference:string, perTable:(Array|null)}}
+ */
+function verifyStateRootConsistency(dag) {
+  const incremental = dag.stateRoot();
+  const reference = computeStateMerkleRoot(dag);
+  const consistent = incremental === reference;
+  return { consistent, incremental, reference, perTable: consistent ? null : computeStateMerkleRootPerTable(dag) };
+}
+
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
   return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
@@ -159,6 +200,8 @@ function computeTxsMerkleRoot(orderedTxs) {
 
 module.exports = {
   computeStateMerkleRoot,
+  computeStateMerkleRootPerTable,
+  verifyStateRootConsistency,
   STATE_PK,
   stateLeafKey,
   computeTxsMerkleRoot,
