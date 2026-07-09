@@ -283,9 +283,12 @@ async function drain() {
     });
 
     test("encode→decode round-trip preserves node_id, rotation_number, count", async () => {
-      a.setRotationParticipation("nodeA", 10, 42);
-      a.setRotationParticipation("nodeB", 10, 99);
-      a.setRotationParticipation("nodeA", 11, 7);
+      // 4-arg signature since 6696c58: (nodeId, rotationNumber, bucket, count).
+      // The old 3-arg form shifted count into bucket and left count undefined
+      // → NOT NULL violation on every server driver.
+      a.setRotationParticipation("nodeA", 10, 0, 42);
+      a.setRotationParticipation("nodeB", 10, 0, 99);
+      a.setRotationParticipation("nodeA", 11, 0, 7);
       await drain();
 
       const b = makeAdapter();
