@@ -106,7 +106,7 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   //              consensus moment — not a synthetic round-derived value.
   //              Fallback to GENESIS_TIMESTAMP for the very first rotation
   //              when no commits exist yet.
-  //   prev:      owner-chain (#199) — the rotation:committee chain head
+  //   prev:      owner-chain (#199) , the rotation:committee chain head
   //              (previous rotation tx), GENESIS_TX_ID for rotation 1.
   //              Deterministic across nodes: prevFor reads only committed
   //              state, and every node shares the genesis (hash-checked at

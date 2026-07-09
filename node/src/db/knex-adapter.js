@@ -579,15 +579,9 @@ class KnexAdapter {
       });
     }
 
-    // Rebuild the incremental state SMT from the canonical walk. Hydration
-    // populates dedup_registry via `_dedup.add()` (a Set, not an SmtMap) and
-    // never calls its manual `_smtSync`, so those leaves would be absent from
-    // the incremental tree — dag.stateRoot() (the committed root) would then
-    // drift from computeStateMerkleRoot (a fresh joiner's snapshot verify).
-    // All nodes drift identically so consensus never notices, but a rejoining
-    // node can never reproduce the drifted root. Rebuilding here makes the
-    // committed root equal the canonical state, closing this and any future
-    // hydration sync gap. O(state), once per boot.
+    // Rebuild the incremental SMT from the canonical walk: hydration fills
+    // dedup_registry via a plain Set (no _smtSync), silently drifting the
+    // committed root from the reference (prod incident 2026-07-08). O(state), once per boot.
     this.mirror.rebuildStateTree();
   }
 
@@ -602,10 +596,8 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    // Snapshot bulk install: run the write NOW so _dbInsert can buffer its row
-    // for a multi-row batchInsert (see beginBulkInstall). The install loop is
-    // inserts-only into freshly-cleared tables, so running synchronously here
-    // carries no ordering hazard vs the normal _ffChain.
+    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert.
+    // Inserts-only into cleared tables, so no ordering hazard vs the _ffChain.
     if (this._bulkInstall) { fn(); return; }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
@@ -635,7 +627,7 @@ class KnexAdapter {
   // a second UPDATE so our value still wins.
   async _dbInsert(table, pkCols, row, onConflict) {
     // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
-    // per-table chunked INSERT in _flushBulkBuffers — ~100x fewer round-trips than
+    // per-table chunked INSERT in _flushBulkBuffers , ~100x fewer round-trips than
     // the per-row path (the difference between finishing inside the download
     // deadline and timing out on a large, WAN-served snapshot). Conflict handling
     // is preserved there because non-state tables (transactions/certs/commits)
@@ -1073,7 +1065,7 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("owner_heads", "entity_key", { entity_key: entityKey, tx_id: txId }, "merge"));
   }
   getOwnerHead(entityKey) { return this.mirror.getOwnerHead(entityKey); }
-  // Owner-chain prev assignment + validation — delegate to the SAME shared
+  // Owner-chain prev assignment + validation , delegate to the SAME shared
   // helpers the initDAG facade uses, over this adapter's mirror, so prev is
   // assigned and validated identically on every store.
   prevFor(txType, data) { return _computePrevFor(this.mirror, txType, data); }
@@ -1646,22 +1638,16 @@ class KnexAdapter {
     if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
   }
 
-  // Snapshot bulk install: batchInsert each table's buffered rows (chunked so
-  // no single INSERT blows the driver's bind-parameter cap), then clear. A
-  // failed chunk fail-stops like any other lost persistence write: a partial
-  // snapshot rehydrates a divergent mirror on restart. The whole install stays
-  // gated by the crash marker, so a throw here leaves the node in `syncing`.
+  // batchInsert each table's buffer (chunked under the bind-parameter cap). A
+  // failed chunk fail-stops: a partial snapshot rehydrates a divergent mirror on
+  // restart, and the crash marker keeps the node in syncing either way.
   async _flushBulkBuffers() {
     for (const [table, buf] of this._bulkInstall) {
       const { pkCols, onConflict, rows } = buf;
       if (rows.length === 0) continue;
-      // NOT every bulk-installed table is freshly cleared: clearCanonicalState
-      // wipes the derived-state tables, but transactions/certs/commits are not,
-      // and a fresh joiner's genesis seed already wrote the genesis rows — so the
-      // full-history tx stream collides on tx_id. Insert with ON CONFLICT DO
-      // NOTHING (per-row skip, keeps the non-conflicting rows) to stay idempotent
-      // like the per-row path, instead of a plain batchInsert that fail-stops on
-      // the first genesis duplicate.
+      // transactions/certs/commits are not cleared before install and the joiner's
+      // genesis seed already wrote the genesis rows, so the full-history stream
+      // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const conflictTarget = pks.length === 1 ? pks[0] : pks;
       try {

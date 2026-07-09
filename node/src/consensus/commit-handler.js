@@ -199,10 +199,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   // duplicates excluded to match the metric's intent.
   const _metrics = { committee_rotation_failures: 0 };
 
-  // Owner-chain stale-head retry state (per-node, in-memory). Keyed by the tx's
-  // CONTENT signature — stable across prev rebuilds — so the bound survives the
-  // tx_id changing each retry. Not consensus state; a best-effort local liveness
-  // path (deterministic tx_id keeps nodes convergent regardless).
+  // Stale-head retry state (per-node, in-memory). Keyed by content signature,
+  // which is stable across prev rebuilds while tx_id changes each retry.
   const _staleRetry = new Map();
   function _staleKey(tx) {
     return (tx.data && tx.data.signature) || tx.signature || tx.tx_id;
@@ -212,16 +210,13 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     const n = (_staleRetry.get(key) || 0) + 1;
     if (n > OWNER_HEAD_STALE_MAX_RETRIES) {
       _staleRetry.delete(key);
-      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted (${tx.tx_type}) — dropping`);
+      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted (${tx.tx_type}) , dropping`);
       return;
     }
     _staleRetry.set(key, n);
-    // Rebuild prev against the now-current head, recompute the content-addressed
-    // tx_id. Body-scope (client) signatures never covered prev, so they re-verify
-    // as-is. Envelope (node) signatures DO cover prev (canonicalTx), so a rebuilt
-    // tx signed by THIS node must be re-signed — without this, all but the first
-    // of a same-owner node batch (jury summons, verdict batches) would be lost.
-    // Foreign envelope txs drop here; their owning node re-signs its own copy.
+    // Body-scope signatures never covered prev, so the rebuilt tx re-verifies as-is.
+    // Envelope signatures cover prev (canonicalTx): re-sign our own, or all but the
+    // first of a same-owner node batch (jury summons) would be lost; foreign ones drop.
     let rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
     rebuilt.tx_id = computeTxId(rebuilt);
     if (rebuilt.tx_id === tx.tx_id) return;   // head didn't actually change; nothing to gain
@@ -229,7 +224,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       const owner = ownerOf(tx);
       const selfOwned = owner && owner.entityType === "node" && owner.entityId === droppingNodeId;
       if (!selfOwned || !(config && config.nodePrivateKey)) {
-        log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) — dropping (foreign-signed)`);
+        log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) , dropping (foreign-signed)`);
         return;
       }
       const { tx_id, signature, ...body } = rebuilt;
@@ -332,11 +327,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         dag.runInTransaction(() => {
           for (const tx of validated) {
             const owner = ownerOf(tx);
-            // Owner-chain STRICT prev[0]: must equal the owner's committed head,
-            // which advances in commit order below (same single-source rule the
-            // node used to ASSIGN prev). A mismatch means a concurrent same-owner
-            // tx committed first → OWNER_HEAD_STALE: skip it (do NOT apply, do NOT
-            // advance the head); it's rebuilt + requeued after the transaction.
+            // Strict prev[0]: must equal the owner's committed head (same single-source
+            // rule prevFor used to assign it). A mismatch means a concurrent same-owner
+            // tx won the race: skip without applying, rebuild + requeue after the txn.
             if (owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
               staleTxs.push(tx);
               continue;
@@ -362,17 +355,14 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         committed = 0;
         dropped += validated.length;
-        // The whole batch rolled back — every validated tx (stale ones included)
+        // The whole batch rolled back , every validated tx (stale ones included)
         // is already recorded above; the stale retry path below must not run.
         staleTxs.length = 0;
       }
     }
 
-    // Owner-chain stale-head retry (outside the txn): rebuild prev against the
-    // now-current head → fresh tx_id, re-verify (the content signature is
-    // unchanged by prev), and requeue to the local mempool, bounded. Best-effort
-    // local liveness (mempool is not consensus state; deterministic tx_id keeps
-    // nodes convergent). Invisible to clients — prev is node-assigned.
+    // Stale-head retry (outside the txn): rebuild prev against the new head and
+    // requeue locally, bounded. Client-invisible, since prev is node-assigned.
     for (const tx of staleTxs) {
       const cur = (dag.expectedOwnerHead(ownerOf(tx)) || "").slice(0, 12);
       _persistRejection(tx, TX_REJECTION_REASON.OWNER_HEAD_STALE,

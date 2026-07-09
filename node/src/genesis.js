@@ -245,15 +245,10 @@ function getGenesisCommittee() {
 }
 
 /**
- * Public key of a genesis founding node, or null. The founding-node list is the
- * immutable trust anchor, so this authorizes a founding peer even when the local
- * registry is empty/incomplete , a fresh boot, or a node that ran
- * clearCanonicalState for a #132 snapshot install (which empties the nodes
- * table). Without it the handshake that must run to FETCH the snapshot that
- * would refill the registry can never succeed: empty registry -> reject founding
- * peer -> never sync -> registry stays empty. The single source of truth for
- * both the consensus auth path and the network handshake path (they used to keep
- * separate copies; only the consensus one had this fallback).
+ * Public key of a genesis founding node, or null. Authorizes a founding peer
+ * even with an empty registry (fresh boot / post-install wipe), else the
+ * handshake that fetches the registry-refilling snapshot deadlocks. Single
+ * source for both the consensus auth path and the network handshake.
  */
 let _foundingKeyMap = null;
 function foundingNodeKey(nodeId) {

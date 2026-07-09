@@ -42,10 +42,8 @@ const LOG_DIR = process.env.TIP_LOG_DIR || path.resolve(__dirname, "../logs");
 
 const _fileMaxLevel = LEVELS[process.env.TIP_LOG_LEVEL || "info"] ?? LEVELS.info;
 const _consoleMaxLevel = LEVELS[process.env.TIP_CONSOLE_LEVEL || process.env.TIP_LOG_LEVEL || "info"] ?? LEVELS.info;
-// On-disk retention, aligned with Loki's 14-day archive (sized for the 20 GB
-// min-spec disk, not the undersized 8 GB boxes). Local files back up Loki for
-// offline grep + pipeline-downtime tolerance; keeping the same window is fine
-// on spec hardware. Both tunable if a deployment wants a shorter local buffer.
+// On-disk retention aligned with Loki's 14-day archive, sized for the 20 GB
+// min-spec disk; local files back up Loki for offline grep.
 const _retentionDays = Math.max(1, Number(process.env.TIP_LOG_RETENTION_DAYS || 14));
 const _debugRetentionDays = Math.max(1, Number(process.env.TIP_DEBUG_LOG_RETENTION_DAYS || 14));
 let _streams = {};

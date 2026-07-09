@@ -179,11 +179,9 @@ function resolveSignatureContract(tx, schema) {
 }
 
 /**
- * The signing ENTITY of a tx , (entityType, entityId) , resolved from the
- * same contract the signature dispatcher verifies against. Single source
- * of truth for "who signs this": signature verification resolves the key
- * through it, and the owner-chain (tx.prev slot 0) derives ownership from
- * it, so the two can never disagree.
+ * The signing entity of a tx, resolved from the same contract the dispatcher
+ * verifies against, so signature verification and owner-chain ownership
+ * (tx.prev slot 0) can never disagree.
  */
 function resolveSignerEntity(tx, schema) {
   const contract = resolveSignatureContract(tx, schema);
@@ -202,16 +200,14 @@ function resolveSignerEntity(tx, schema) {
     const entityId = tx?.data?.[contract.VP_ID_FIELD || "vp_id"];
     return entityId ? { entityType: "vp", entityId } : null;
   }
-  // SIGNED_BY_KIND.SUBJECT — field declared via SUBJECT_TIP_ID_FIELD.
+  // SIGNED_BY_KIND.SUBJECT , field declared via SUBJECT_TIP_ID_FIELD.
   const entityId = tx?.data?.[contract.SUBJECT_TIP_ID_FIELD || "tip_id"];
   return entityId ? { entityType: "identity", entityId } : null;
 }
 
 function resolveSignerRecord(tx, schema, dag) {
-  // GH #60: resolve the signer's key via dag.getKeyValidAt(entity_type,
-  // entity_id, tx.timestamp) so historical signatures verify against
-  // the key that was active at sign time (NOT today's active key
-  // post-rotation).
+  // GH #60: getKeyValidAt(entity, tx.timestamp) so historical signatures verify
+  // against the key active at sign time, not today's post-rotation key.
   const entity = resolveSignerEntity(tx, schema);
   if (!entity) return null;
   const { entityType, entityId } = entity;

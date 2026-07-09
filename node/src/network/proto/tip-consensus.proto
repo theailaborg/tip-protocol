@@ -454,7 +454,7 @@ message SnapshotHeader {
   // Total rows the serve will stream across all phases (state + txs + commits +
   // rotations + certs + rp), counted before the header is sent. Lets the joiner
   // show a real install percentage (installed / total_rows) instead of only a
-  // running byte counter. Advisory/display-only — not hashed, not signed.
+  // running byte counter. Advisory/display-only , not hashed, not signed.
   uint64 total_rows = 18;
 }
 
@@ -585,7 +585,7 @@ message SnapshotEnd {
  * #132 streaming install: a phase-boundary trailer emitted right after the
  * last row of each phase (state, txs, commits, rotations, certs). Lets a
  * streaming receiver verify that phase's integrity root the moment the phase
- * ends — before the next phase installs — instead of buffering the whole
+ * ends , before the next phase installs , instead of buffering the whole
  * response and verifying everything at the end (the buffer-then-verify path
  * that OOMs on large state). `count` cross-checks the rows seen in the phase;
  * `root` is that phase's stream-computed integrity root (same digest both

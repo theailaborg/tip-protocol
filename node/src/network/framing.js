@@ -97,12 +97,9 @@ async function readAllFrames(stream) {
 }
 
 /**
- * Streaming length-prefix parser (#132). Yields each complete frame as its
- * bytes arrive off `source`, holding only the partial remainder , never the
- * whole stream. A frame split across network chunks is reassembled; the
- * per-frame `SNAPSHOT_MAX_FRAME_BYTES` cap still guards against a hostile
- * length prefix. `onBytes(n)` (optional) fires per chunk for a total-byte cap.
- *
+ * Streaming length-prefix parser (#132): yields each complete frame as bytes
+ * arrive, holding only the partial remainder; SNAPSHOT_MAX_FRAME_BYTES guards
+ * against a hostile length prefix.
  * @param {AsyncIterable<Buffer|Uint8Array>} source  libp2p stream.source
  * @param {(added:number, total:number)=>void} [onBytes]
  * @returns {AsyncGenerator<Buffer>}

@@ -100,12 +100,9 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
-// prescan_probability is a float4 (32-bit) DB column but a float64 in live
-// memory: hydration reads the lossy-rounded float32 (0.1 -> 0.10000000149),
-// live commit holds the exact float64 (0.1). Hashing the raw float forks the
-// state root between restarted and live nodes (live incident 2026-07-06).
-// Quantize to integer basis-points (4 dp): float32 error (~1e-7) can never
-// cross a 1e-4 boundary, so both representations collapse to one value.
+// prescan_probability is float4 in the DB but float64 live; hashing the raw float
+// forked the state root between restarted and live nodes (incident 2026-07-06).
+// Basis-point quantization collapses both representations to one value.
 function _quantizeProb(p) {
   return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
 }
@@ -448,10 +445,8 @@ class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
   delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
-  // Map.clear() would drop the entries but leave every leaf stale in the
-  // incremental SMT (the row is gone yet its leaf survives → state-root drift).
-  // Re-sync each removed key so its leaf is pruned. Used by the snapshot
-  // install reset (clearCanonicalState).
+  // Map.clear() alone leaves every removed row's leaf stale in the incremental
+  // SMT (state-root drift); re-sync each key so its leaf is pruned.
   clear() {
     const keys = [...super.keys()];
     super.clear();
@@ -1517,7 +1512,7 @@ class MemoryStore {
 
   // #132: `contentRaw` ships the RAW content row (not the hash projection).
   // _canonContent quantizes prescan_probability (float determinism, #195) and
-  // drops derived counters — fine for hashing, WRONG as the snapshot transfer
+  // drops derived counters , fine for hashing, WRONG as the snapshot transfer
   // form: the receiver would store the quantized value and re-quantize it,
   // forking the state root. The snapshot serve sets contentRaw:true; the
   // receiver re-derives the root via computeStateMerkleRoot after install, so
@@ -3890,12 +3885,9 @@ class SQLiteStore {
 // DAG FACADE  —  single interface over either store
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Owner-chain slot0: the tx_id that a tx from `owner` MUST reference in prev[0].
-// SINGLE SOURCE OF TRUTH for both prev ASSIGNMENT (prevFor, submit time) and
-// prev VALIDATION (commit-handler, commit time). If these two computed it
-// differently the chain would fork on every concurrent tx — so they share this.
-// = the owner's current committed head, else the entity's registration anchor
-// (chain-open points at the registrar's tx), else genesis.
+// Owner-chain slot0: committed head, else registration anchor (chain-open points
+// at the registrar's tx), else genesis. Single source for both prev ASSIGNMENT
+// (prevFor) and commit-time VALIDATION, so the two can never disagree and fork.
 function _computeExpectedOwnerHead(store, owner) {
   const { ownerKey } = require("./consensus/tx-owner");
   const { GENESIS_TX_ID } = require("./genesis");
@@ -4012,12 +4004,8 @@ function _buildDagHandle(store, config) {
     getRecentPrev: () => [..._prev],
 
     /**
-     * Owner-chain prev assignment (spec: docs + tx-owner.js).
-     *   prev[0] , owner's chain head; falls back to the entity's own
-     *             registration tx (chain-open anchors to the registrar's
-     *             chain via that tx), then GENESIS_TX_ID.
-     *   prev[1] , advisory subject anchor (subject identity's head when it
-     *             differs from the owner), else GENESIS_TX_ID.
+     * Owner-chain prev: prev[0] = owner's head, else registration anchor, else
+     * genesis; prev[1] = advisory subject anchor (else genesis).
      */
     prevFor: (txType, data) => _computePrevFor(store, txType, data),
 
