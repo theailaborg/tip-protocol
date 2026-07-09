@@ -33,6 +33,7 @@ const {
   initCrypto, generateMLDSAKeypair, shake256, canonicalJson, signBody,
 } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createDisputeService } = require(path.join(SRC, "services", "dispute-service"));
@@ -67,7 +68,7 @@ function _setup() {
       public_key: kp ? kp.publicKey : "00",
       root_public_key: kp ? kp.publicKey : "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
     });
     dag.setScore(tipId, 750, 0, 1767225600000);
   }
@@ -78,7 +79,7 @@ function _setup() {
     dag.saveIdentity({
       tip_id: t, region: "US", public_key: "00", root_public_key: "00",
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: 1767225600000, tx_id: shake256(`id:${t}`),
+      registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: t }),
     });
     dag.setScore(t, 750, 0, 1767225600000);
   }
@@ -247,7 +248,7 @@ describe("persistEvidence — happy path & idempotency", () => {
       tip_id: otherTipId, region: "US",
       public_key: otherKp.publicKey, root_public_key: otherKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: 1767225600000, tx_id: shake256(`id:${otherTipId}`),
+      registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: otherTipId }),
     });
 
     const payload = _validPayload();

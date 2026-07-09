@@ -62,6 +62,7 @@ const { createDisputeDetailsService } = require(path.join(SRC, "services", "disp
 const bioFetcher = require(path.join(SRC, "services", "bio-fetcher"));
 
 const registerIdentitySchema = require(path.join(SRC, "schemas", "register-identity"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
 const registerDomainSchema = require(path.join(SRC, "schemas", "register-domain"));
 const bindDomainSchema = require(path.join(SRC, "schemas", "bind-domain"));
@@ -117,7 +118,7 @@ function seedIdentity(dag, tipId, kp, { score = 750, type = TIP_ID_TYPES.PERSONA
     vp_id: VP_ID, verification_tier: "T1", tip_id_type: type,
     founding: false, status: "active",
     reviewer_consent: false, juror_consent: false, expert_consent: false,
-    registered_at: T0, tx_id: shake256(`id:${tipId}`),
+    registered_at: T0, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }, T0),
     creator_name: creatorName,
   });
   dag.setScore(tipId, score, 0, T0);

@@ -30,6 +30,7 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { createProfileService } = require(path.join(SRC, "services", "profile-service"));
 const updateProfileSchema = require(path.join(SRC, "schemas", "update-profile"));
 const { TX_TYPES } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -50,7 +51,7 @@ function _setup() {
     public_key: subjectKp.publicKey, root_public_key: subjectKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: 1767225600000, tx_id: shake256("subject"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: SUBJECT }),
   });
 
   const submitted = [];
