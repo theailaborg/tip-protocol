@@ -1,9 +1,8 @@
 /**
  * @file tests/consensus/commit-handler-owner-chain.test.js
  * @description Stage 3 (#199): commit-time owner-chain prev[0] validation +
- * OWNER_HEAD_STALE rejection + node-side rebuild/requeue. The enforcement is
- * gated on config.enforceOwnerChainPrev (the owner-chain "bundled reset" turns
- * it on); head-tracking runs regardless.
+ * OWNER_HEAD_STALE rejection + node-side rebuild/requeue. Enforcement is
+ * unconditional: prev[0] must equal the owner's committed head on every chain.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -31,7 +30,7 @@ const VP_ID = "tip://vp/v1";
 const AUTHOR_TIP = "tip://id/US-owner-chain-01";
 const OWNER = ownerKey({ entityType: "identity", entityId: AUTHOR_TIP });
 
-function _setup({ enforce = true } = {}) {
+function _setup() {
   const dag = initDAG({ dbPath: ":memory:" });
   const nodeKp = generateMLDSAKeypair();
   const vpKp = generateMLDSAKeypair();
@@ -40,7 +39,7 @@ function _setup({ enforce = true } = {}) {
   dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
   dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
   dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
-  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey, enforceOwnerChainPrev: enforce };
+  const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
   const scoring = initScoring(dag, config);
   const handler = createCommitHandler({ dag, scoring, config });
   return { dag, authorKp, handler };
@@ -100,12 +99,4 @@ describe("commit-handler — owner-chain prev validation + stale-head retry (#19
     expect(fx.dag.getOwnerHead(OWNER)).toBe(requeued.tx_id);
   });
 
-  test("gate off: a stale-prev tx is NOT rejected (owner-chain enforcement disabled)", () => {
-    const fx = _setup({ enforce: false });
-    const tx1 = _contentTx(fx.dag, fx.authorKp, "off-first");
-    const tx2 = _contentTx(fx.dag, fx.authorKp, "off-second");
-    const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
-    expect(res.committed).toBe(2);   // both commit; no owner-chain gating
-    expect(fx.dag.getTxRejection(tx2.tx_id)).toBeNull();
-  });
 });

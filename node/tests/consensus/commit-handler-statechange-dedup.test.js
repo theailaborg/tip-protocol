@@ -26,6 +26,7 @@ const {
   TX_TYPES, CONTENT_STATUS, PRESCAN_REVIEW_STATES, RECUSAL_REASONS,
   DOMAIN_UNBIND_REASONS, DOMAIN_BINDING_STATUS, TIP_ID_TYPES,
 } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initDAG }     = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -77,7 +78,7 @@ function _setup() {
   const mkIdentity = (tip_id, kp, extra = {}) => dag.saveIdentity({
     tip_id, region: "US", public_key: kp.publicKey, root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: T0, tx_id: shake256(`id:${tip_id}`), ...extra,
+    registered_at: T0, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id }), ...extra,
   });
   mkIdentity(AUTHOR_TIP, authorKp);
   mkIdentity(VERIFIER_TIP, verifierKp);
@@ -126,7 +127,7 @@ function _makeAutoDisputeTx(fx, ctid, sourceReviewId, timestamp) {
   const txBody = {
     tx_type: TX_TYPES.CONTENT_DISPUTED,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       ctid,
       reason: "creator_decision_window_expired",
@@ -136,6 +137,7 @@ function _makeAutoDisputeTx(fx, ctid, sourceReviewId, timestamp) {
       suggested_origin: "AG",
     },
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, fx.nodeKp.privateKey);
 }
@@ -162,8 +164,14 @@ describe("GH #87 HIGH — CONTENT_DISPUTED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -176,7 +184,7 @@ function _makeTriggeredTx(fx, { reviewId, ctid, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       review_id: reviewId,
       ctid,
@@ -186,6 +194,7 @@ function _makeTriggeredTx(fx, { reviewId, ctid, timestamp }) {
       triggered_at_round: 1,
     },
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, fx.nodeKp.privateKey);
 }
@@ -196,8 +205,9 @@ function _makeDismissedTx(fx, { reviewId, timestamp }) {
   const signature = dismissedSchema.sign(payload, fx.reviewerKp.privateKey);
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
-    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+    timestamp, prev: [], data: { ...fields }, signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -211,8 +221,9 @@ function _makeConfirmedTx(fx, { reviewId, timestamp }) {
   const signature = confirmedSchema.sign(payload, fx.reviewerKp.privateKey);
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
-    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+    timestamp, prev: [], data: { ...fields }, signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -221,7 +232,7 @@ function _makeAutoRecusedTx(fx, { reviewId, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       review_id: reviewId,
       auto: true,
@@ -229,6 +240,7 @@ function _makeAutoRecusedTx(fx, { reviewId, timestamp }) {
       recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
     },
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, fx.nodeKp.privateKey);
 }
@@ -277,8 +289,14 @@ describe("GH #87 HIGH — PRESCAN_REVIEW_TRIGGERED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -328,8 +346,14 @@ describe("GH #87 HIGH — prescan terminal decisions: one per review_id per batc
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 3);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 4);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -353,8 +377,9 @@ function _makeKeyRotatedTx(fx, { tipId, oldKp, timestamp }) {
   const signature = keyRotatedSchema.sign(payload, oldKp.privateKey);
   const txBody = {
     tx_type: TX_TYPES.KEY_ROTATED,
-    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+    timestamp, prev: [], data: { ...fields }, signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -376,7 +401,7 @@ function _makeKeyRecoveryTx(fx, { tipId, replacesPubkey, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.KEY_RECOVERY,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       ...core,
       effective_at: timestamp,          // chain-stamped: must equal tx.timestamp
@@ -384,6 +409,7 @@ function _makeKeyRecoveryTx(fx, { tipId, replacesPubkey, timestamp }) {
     },
     signature: vpSignature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -448,10 +474,11 @@ function _makeRevokeTx(fx, { txType, tipId, timestamp }) {
   const txBody = {
     tx_type: txType,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: { tx_type: txType, tip_id: tipId, issuing_vp_id: VP_ID },
     signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -503,8 +530,14 @@ describe("GH #87 MED — REVOKE_*: one revocation per tip_id per batch (cross-ty
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
     expect(fx.dag.isRevoked(AUTHOR_TIP)).toBe(true);
     expect(fx.dag.isRevoked(TARGET_2_TIP)).toBe(true);
   });
@@ -524,13 +557,14 @@ function _makeVerifyTx(fx, { ctid, verifierTipId, verifierKp, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.CONTENT_VERIFIED,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       ctid, verifier_tip_id: verifierTipId, verdict: "ORIGIN_CONFIRMED",
       weighted_delta: 2, author_tip_id: AUTHOR_TIP,
     },
     signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -543,10 +577,11 @@ function _makeUpdateOriginTx(fx, { ctid, newOrigin, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.UPDATE_ORIGIN,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: { ctid, old_origin_code: "OH", new_origin_code: newOrigin, author_tip_id: AUTHOR_TIP },
     signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -559,10 +594,11 @@ function _makeRetractTx(fx, { ctid, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.CONTENT_RETRACTED,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: { ctid, author_tip_id: AUTHOR_TIP, origin_code: "OH", pre_retract_status: "registered" },
     signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -588,8 +624,14 @@ describe("GH #87 MED — UPDATE_ORIGIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -613,8 +655,14 @@ describe("GH #87 MED — CONTENT_RETRACTED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -671,7 +719,7 @@ function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
   const txBody = {
     tx_type: TX_TYPES.BIND_DOMAIN,
     timestamp,
-    prev: fx.dag.getRecentPrev(),
+    prev: [],
     data: {
       binding_state: binding.binding_state,
       claimed_at: binding.claimed_at,
@@ -689,6 +737,7 @@ function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
     },
     signature: bindingSig,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -704,8 +753,9 @@ function _makeUnbindDomainTx(fx, { domain, timestamp }) {
   const signature = bindDomainSchema.signUnbind(payload, fx.nodeKp.privateKey);
   const txBody = {
     tx_type: TX_TYPES.UNBIND_DOMAIN,
-    timestamp, prev: fx.dag.getRecentPrev(), data: { ...fields }, signature,
+    timestamp, prev: [], data: { ...fields }, signature,
   };
+  txBody.prev = fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return txBody;
 }
@@ -756,8 +806,14 @@ describe("GH #87 LOW — BIND_DOMAIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 
@@ -783,8 +839,14 @@ describe("GH #87 LOW — UNBIND_DOMAIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    const res2 = fx.handler.commitOrderedTxs([requeued], 2);
+    expect(res2.committed).toBe(1);
   });
 });
 

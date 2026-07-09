@@ -115,7 +115,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
       timestamp: completedAt,
-      prev: dag.getRecentPrev(),
+      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         ctid,
         probability,
@@ -137,6 +137,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         failure_reason: "prescan_pending_past_fail_open_deadline",
       },
     };
+    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
     return signTransaction(txBody, _nodePrivateKey);
   }

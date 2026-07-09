@@ -30,6 +30,7 @@ const SRC    = path.resolve(__dirname, "../../src");
 const { initCrypto, generateMLDSAKeypair, signTransaction, computeTxId, shake256 } =
   require(path.join(SHARED, "crypto"));
 const { TX_TYPES, SIGNED_BY_KIND } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { SOCIAL_LINK } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG }     = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
@@ -64,7 +65,7 @@ function _setup() {
     tip_id: AUTHOR_TIP, region: "US", public_key: nodeKp.publicKey,
     root_public_key: "00", vp_id: "tip://vp/v1",
     verification_tier: "T1", founding: false, status: "active",
-    registered_at: BASE_TS, tx_id: shake256("id:author-cap"),
+    registered_at: BASE_TS, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: AUTHOR_TIP }),
   });
   // Use SCORE.INITIAL_IDENTITY (500) so computeScore replay from tx
   // history matches the commit-time score table (both start from 500).
@@ -124,9 +125,10 @@ function _buildLinkTx(dag, nodeKp, platform, { tipId = AUTHOR_TIP, tsOffset = 0 
     tx_type:   TX_TYPES.LINK_PLATFORM,
     timestamp: ts,
     signature: nodeSig,
-    prev:      dag.getRecentPrev(),
+    prev:      [],
     data:      txData,
   };
+  body.prev = dag.prevFor(body.tx_type, body.data);
   body.tx_id = computeTxId(body);
   return body;
 }
@@ -232,7 +234,7 @@ describe("Issue #86 — LINK_PLATFORM inline scoring at consensus", () => {
       tip_id: OTHER_TIP, region: "US", public_key: nodeKp.publicKey,
       root_public_key: "00", vp_id: "tip://vp/v1",
       verification_tier: "T1", founding: false, status: "active",
-      registered_at: BASE_TS, tx_id: shake256("id:other-86"),
+      registered_at: BASE_TS, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: OTHER_TIP }),
     });
     dag.setScore(OTHER_TIP, 750, 0, BASE_TS);
 
@@ -284,10 +286,11 @@ describe("Issue #86 — LINK_PLATFORM inline scoring at consensus", () => {
       const body = {
         tx_type:   TX_TYPES.SCORE_UPDATE,
         timestamp: BASE_TS + 20_000_000,
-        prev:      dag.getRecentPrev(),
+        prev:      [],
         data: { tip_id: AUTHOR_TIP, delta: 10, reason: "clean_record_bonus", node_id: NODE_ID },
       };
-      body.tx_id = computeTxId(body);
+      body.prev = dag.prevFor(body.tx_type, body.data);
+  body.tx_id = computeTxId(body);
       return signTransaction(body, nodeKp.privateKey);
     })();
 

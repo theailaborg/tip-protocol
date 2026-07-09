@@ -135,7 +135,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review?.ctid || null,
       relatedTxId: tx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -240,7 +239,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: updateTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -254,7 +252,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: updateTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -345,7 +342,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: disputeTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 

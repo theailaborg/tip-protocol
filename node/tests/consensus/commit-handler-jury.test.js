@@ -30,6 +30,7 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, signTransaction, computeTxId, shake256 } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, VERDICT, VOTE, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { JURY, APPEAL, DISPUTE } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
@@ -78,7 +79,7 @@ function _setupDisputeFixture(opts = {}) {
     dag.saveIdentity({
       tip_id: tipId, region: "US", public_key: kp.publicKey, root_public_key: "00", vp_id: "tip://vp/v1",
       verification_tier: "T1", founding: false, status: "active",
-      registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+      registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
     });
     dag.setScore(tipId, 750, 0, 1767225600000);
   }
@@ -135,9 +136,9 @@ function _setupDisputeFixture(opts = {}) {
 // resolved at build-time from the live DAG ring.
 function _signByNode(fx, nodeIndex, txBody) {
   const node = fx.nodes[nodeIndex];
-  txBody.prev = txBody.prev && txBody.prev.length ? txBody.prev : fx.dag.getRecentPrev();
   txBody.data = txBody.data || {};
   txBody.data.node_id = node.nodeId;
+  txBody.prev = txBody.prev && txBody.prev.length ? txBody.prev : fx.dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, node.privateKey);
 }
@@ -249,8 +250,13 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     });
 
     const result = fx.handler.commitOrderedTxs([tx1, tx2], 100);
-    expect(result.committed).toBe(2);
-    expect(result.dropped).toBe(0);
+    // Same node signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // rebuilt + re-signed against the new head, requeued, commits next round.
+    expect(result.committed).toBe(1);
+    expect(result.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    expect(fx.handler.commitOrderedTxs([requeued], 101).committed).toBe(1);
   });
 
   test("dedup applies across rounds — same SCORE_UPDATE arriving in round R+1 is dropped", () => {
@@ -684,7 +690,7 @@ describe("commit-handler JURY_VOTE_REVEAL: reveal-window enforcement", () => {
     const txBody = {
       tx_type: TX_TYPES.JURY_VOTE_REVEAL,
       timestamp: timestampISO,
-      prev: fx.dag.getRecentPrev(),
+      prev: fx.dag.prevFor(TX_TYPES.JURY_VOTE_REVEAL, data),
       data,
       signature,
     };

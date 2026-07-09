@@ -55,7 +55,7 @@ const { ownerOf, ownerKey } = require("./tx-owner");
 // the registry can wire in here cleanly.
 void registerDomainSchema; void prescanReviewAcceptCorrectionSchema; void prescanReviewDisputeSchema;
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
-const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256, computeTxId } = require("../../../shared/crypto");
+const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256, computeTxId, signTransaction } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
@@ -199,13 +199,6 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   // duplicates excluded to match the metric's intent.
   const _metrics = { committee_rotation_failures: 0 };
 
-  // Owner-chain STRICT prev[0] enforcement. Must be UNIFORM across the federation
-  // (it decides which txs commit), so it rides on the genesis/config as a
-  // fresh-chain property — the owner-chain "bundled reset" (#199/#193) turns it
-  // on; legacy chains and existing tests leave it off. Head-tracking (setOwnerHead)
-  // runs regardless; only the reject-on-mismatch is gated.
-  const _enforceOwnerChain = !!(config && config.enforceOwnerChainPrev);
-
   // Owner-chain stale-head retry state (per-node, in-memory). Keyed by the tx's
   // CONTENT signature — stable across prev rebuilds — so the bound survives the
   // tx_id changing each retry. Not consensus state; a best-effort local liveness
@@ -224,15 +217,23 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     }
     _staleRetry.set(key, n);
     // Rebuild prev against the now-current head, recompute the content-addressed
-    // tx_id. The content signature is unchanged (it never covered prev), so the
-    // rebuilt tx re-verifies for client-signed txs; if it doesn't (e.g. a node
-    // sig scoped over the tx_id we can't re-sign here), drop instead of requeue.
-    const rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
+    // tx_id. Body-scope (client) signatures never covered prev, so they re-verify
+    // as-is. Envelope (node) signatures DO cover prev (canonicalTx), so a rebuilt
+    // tx signed by THIS node must be re-signed — without this, all but the first
+    // of a same-owner node batch (jury summons, verdict batches) would be lost.
+    // Foreign envelope txs drop here; their owning node re-signs its own copy.
+    let rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
     rebuilt.tx_id = computeTxId(rebuilt);
     if (rebuilt.tx_id === tx.tx_id) return;   // head didn't actually change; nothing to gain
     if (!_verifyTxSignature(rebuilt)) {
-      log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) — dropping`);
-      return;
+      const owner = ownerOf(tx);
+      const selfOwned = owner && owner.entityType === "node" && owner.entityId === droppingNodeId;
+      if (!selfOwned || !(config && config.nodePrivateKey)) {
+        log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) — dropping (foreign-signed)`);
+        return;
+      }
+      const { tx_id, signature, ...body } = rebuilt;
+      rebuilt = signTransaction(body, config.nodePrivateKey);
     }
     dag.saveMempoolTx(rebuilt);
   }
@@ -336,7 +337,7 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
             // node used to ASSIGN prev). A mismatch means a concurrent same-owner
             // tx committed first → OWNER_HEAD_STALE: skip it (do NOT apply, do NOT
             // advance the head); it's rebuilt + requeued after the transaction.
-            if (_enforceOwnerChain && owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
+            if (owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
               staleTxs.push(tx);
               continue;
             }
@@ -361,6 +362,9 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         committed = 0;
         dropped += validated.length;
+        // The whole batch rolled back — every validated tx (stale ones included)
+        // is already recorded above; the stale retry path below must not run.
+        staleTxs.length = 0;
       }
     }
 
@@ -691,8 +695,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // after the node's last update. Equal timestamps are also rejected —
         // ambiguous ordering on the same ms.
         if (existingNode.updated_at !== null &&
-            existingNode.updated_at !== undefined &&
-            tx.timestamp <= existingNode.updated_at) {
+          existingNode.updated_at !== undefined &&
+          tx.timestamp <= existingNode.updated_at) {
           return {
             valid: false,
             error: `NODE_ENDPOINT_UPDATED rejected: tx.timestamp ${tx.timestamp} is not strictly after updated_at ${existingNode.updated_at}`,

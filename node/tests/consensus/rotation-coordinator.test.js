@@ -849,7 +849,7 @@ describe("#68 rotation coordinator", () => {
   // exact failure that broke n4 mid-flight on 2026-05-05 when one node's
   // DB held only the old genesis row and rotation tx prev pointed to the
   // current genesis tx_id.
-  test("buildRotationTx output passes validateTransaction with empty prev", () => {
+  test("buildRotationTx carries owner-chain prev (rotation:committee chain) and passes validateTransaction", () => {
     const { buildRotationTx } = require(path.join(SRC, "consensus", "rotation-coordinator"));
     const { validateTransaction } = require(path.join(SRC, "validators", "tx-validator"));
 
@@ -867,7 +867,9 @@ describe("#68 rotation coordinator", () => {
     const aSig = mldsaSign(aMsg, a.privateKey);
     const tx = buildRotationTx(dag, proposal, [ids[0].node_id], [aSig]);
 
-    expect(tx.prev).toEqual([]);
+    // Owner-chain (#199): rotation txs chain on rotation:committee; the first
+    // rotation anchors at genesis, later ones at the previous rotation tx.
+    expect(tx.prev).toEqual(dag.prevFor(tx.tx_type, tx.data));
     const result = validateTransaction(tx, dag, { skipState: true });
     expect(result).toEqual({ valid: true, errors: [], layer: null });
   });

@@ -165,7 +165,6 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         reason: `Dispute filing stake on ${ctid}`,
         ctid, relatedTxId: disputeTx.tx_id,
         timestamp: disputeTx.timestamp,
-        getRecentPrev: () => dag.getRecentPrev(),
         config,
       }));
 
@@ -407,7 +406,6 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       reason: `Appeal filing stake on ${ctid}`,
       ctid, relatedTxId: appealTx.tx_id,
       timestamp: appealTx.timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     }));
 

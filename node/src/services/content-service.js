@@ -594,7 +594,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         reason: `Content verified (${ctid})`,
         ctid, relatedTxId: signedTx.tx_id,
         timestamp: verifyTxTimestamp,
-        getRecentPrev: () => dag.getRecentPrev(),
         config,
       });
       submitTx(scoreTx);
@@ -673,7 +672,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       reason: `Content retracted (${ctid})`,
       ctid, relatedTxId: retractTx.tx_id,
       timestamp: retractTimestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
     submitTx(scoreTx);
