@@ -165,7 +165,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const founding = false;
 
     const txBody = {
-      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: [],
       data: {
         // ── Server-derived / tx-level fields ──────────────────────
         tip_id: tipId,
@@ -475,7 +475,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tx_type: TX_TYPES.LINK_PLATFORM,
       timestamp: verifiedAt,
       signature: nodeSig,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: txData,
     });
 
@@ -527,7 +527,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const unlinkTx = withTxId({
       tx_type: TX_TYPES.UNLINK_PLATFORM,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         tip_id: tipId,
         platform,

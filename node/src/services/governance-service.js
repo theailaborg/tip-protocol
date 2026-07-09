@@ -68,7 +68,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     const registeredAt = nowMs();
 
     const vpTx = withTxId({
-      tx_type: TX_TYPES.VP_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.VP_REGISTERED, timestamp: registeredAt, prev: [],
       data: { vp_id: vpId, name, jurisdiction, jurisdiction_tier, public_key, algorithm, approving_vp_id },
       // GH #51 — approving VP's council signature lives at tx.signature.
       signature: council_signature,
@@ -146,7 +146,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     const registeredAt = nowMs();
 
     const nodeTx = withTxId({
-      tx_type: TX_TYPES.NODE_REGISTERED, timestamp: registeredAt, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.NODE_REGISTERED, timestamp: registeredAt, prev: [],
       data: {
         node_id: nodeId, name: resolvedName,
         public_key, algorithm, approving_vp_id,
@@ -226,7 +226,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     const tx = nodeSignedAuto({
       tx_type: TX_TYPES.NODE_ENDPOINT_UPDATED,
       timestamp: nowMs(),
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: { node_id: nodeId, api_endpoint: normalised },
     }, config);
 
@@ -261,7 +261,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
     const tx = withTxId({
       tx_type:   TX_TYPES.INTEREST_REGISTERED,
       timestamp: registeredAt,
-      prev:      dag.getRecentPrev(),
+      prev:      [],
       data:      { slug, label, category, approving_vp_id },
       signature,
     });

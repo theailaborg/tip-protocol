@@ -19,9 +19,8 @@ const {
 } = require("../../../shared/constants");
 const { log } = require("../logger");
 
-// Owner-chain prev source. Injected by initDAG (_buildDagHandle) so every
-// tx sealed here carries canonical prev , services' getRecentPrev()
-// placeholders are overwritten at sealing time.
+// Owner-chain prev source. Injected by initDAG (_buildDagHandle); sealing
+// assigns canonical prev here, so builders pass a bare `prev: []` placeholder.
 let _prevDag = null;
 function initTxPrev(dag) { _prevDag = dag; }
 

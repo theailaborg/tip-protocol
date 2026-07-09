@@ -59,7 +59,7 @@ function createKeyService({ dag, submitTx }) {
     }
 
     const txBody = {
-      tx_type: TX_TYPES.KEY_ROTATED, timestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.KEY_ROTATED, timestamp, prev: [],
       data: _pickTxData(canonicalPayload, KEY_ROTATED_FIELDS),
       signature: normalised.signature,
     };
@@ -137,7 +137,7 @@ function createKeyService({ dag, submitTx }) {
     const timestamp = nowMs();
 
     const txBody = {
-      tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: [],
       data: {
         ..._pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
         effective_at: timestamp,

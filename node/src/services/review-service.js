@@ -107,7 +107,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -157,7 +157,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
       timestamp: nowMs(),
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -190,7 +190,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -216,7 +216,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         ctid: review.ctid,
         old_origin_code: content.origin_code,
@@ -298,7 +298,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const disputeTx = nodeSignedAuto({
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         ctid: review.ctid,
         reason: "creator_disagrees_with_reviewer",
@@ -366,7 +366,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       const summonsTx = nodeSignedAuto({
         tx_type: TX_TYPES.JURY_SUMMONS,
         timestamp: nowMs(),
-        prev: dag.getRecentPrev(),
+        prev: [],
         data: {
           ctid: review.ctid,
           dispute_tx_id: disputeTx.tx_id,
