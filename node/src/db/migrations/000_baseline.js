@@ -6,6 +6,23 @@
 function _id(t, col) { return t.string(col, 512); }
 function _pk(t, col) { return t.string(col, 512).primary(); }
 
+// Idempotency guard: create `name` only when absent. On a file-SQLite node
+// the tables can pre-exist WITHOUT knex_migrations bookkeeping — the sync
+// initDAG path (and the Knex-init-failure fallback) construct SQLiteStore
+// directly, whose _migrate() execs the generated schema.sql; the first
+// _runSqliteMigrations over such a file then re-runs this baseline, and a
+// bare createTable throws "table ... already exists" and crashes the boot
+// (initDAGAsync has no catch around the migration run). Guarded creates emit
+// byte-identical DDL on a fresh DB, so schema.sql regenerates unchanged
+// (drift-guarded by tests/db/migration-baseline-schema.test.js); skipping
+// pre-existing tables mirrors schema.sql's own CREATE ... IF NOT EXISTS
+// semantics. No-op for nodes that already recorded this migration.
+async function _createTable(knex, name, cb) {
+  if (!(await knex.schema.hasTable(name))) {
+    await knex.schema.createTable(name, cb);
+  }
+}
+
 exports.up = async (knex) => {
   // Node-local bookkeeping timestamps (local_inserted_at, mempool.received_at)
   // auto-stamp the current epoch-ms when a row is inserted WITHOUT the column —
@@ -18,7 +35,7 @@ exports.up = async (knex) => {
     ? knex.raw("(unixepoch() * 1000)")
     : 0);
 
-  await knex.schema.createTable("transactions", t => {
+  await _createTable(knex, "transactions", t => {
     _pk(t, "tx_id");
     t.string("tx_type", 64).notNullable();
     t.text("data").notNullable();
@@ -40,7 +57,7 @@ exports.up = async (knex) => {
 
   // GH #60: public_key + algorithm live in entity_keys (DID-style
   // single source of truth). root_public_key dropped (orphaned scaffold).
-  await knex.schema.createTable("identities", t => {
+  await _createTable(knex, "identities", t => {
     _pk(t, "tip_id");
     t.string("region", 8).notNullable().defaultTo("US");
     _id(t, "vp_id").nullable();
@@ -77,7 +94,7 @@ exports.up = async (knex) => {
   // verification reads the row whose validity range covers
   // tx.timestamp; API-time verification reads the active row
   // (valid_to_ts IS NULL).
-  await knex.schema.createTable("entity_keys", t => {
+  await _createTable(knex, "entity_keys", t => {
     t.string("entity_type", 32).notNullable();           // 'identity' | 'node' | 'vp'
     // 128 chars: sufficient for all TIP IDs (~30 chars) and avoids
     // Oracle ORA-02329 (CLOB cannot be PK) and MSSQL nvarchar(max) PK error.
@@ -93,7 +110,7 @@ exports.up = async (knex) => {
     // Oracle (ORA-01408) and some engines reject a redundant index on the same column list.
   });
 
-  await knex.schema.createTable("content", t => {
+  await _createTable(knex, "content", t => {
     // `tip_ctid` on every backend: Postgres reserves "ctid", so we use one
     // consistent column name across all DBs. The SQLiteStore reads it as
     // "tip_ctid AS ctid"; the in-memory mirror and all callers use `ctid`.
@@ -132,14 +149,14 @@ exports.up = async (knex) => {
     t.index("prescan_status", "idx_content_prescan_status");
   });
 
-  await knex.schema.createTable("scores", t => {
+  await _createTable(knex, "scores", t => {
     _pk(t, "tip_id");
     t.integer("score").notNullable().defaultTo(500);
     t.integer("offense_count").notNullable().defaultTo(0);
     t.bigInteger("last_updated").notNullable();
   });
 
-  await knex.schema.createTable("dedup_registry", t => {
+  await _createTable(knex, "dedup_registry", t => {
     t.string("dedup_hash", 512).primary();
     t.bigInteger("created_at").notNullable();
     // Denormalized for fast hash→tip_id lookup (recovery pivot from
@@ -147,7 +164,7 @@ exports.up = async (knex) => {
     t.string("tip_id", 128);
   });
 
-  await knex.schema.createTable("revocations", t => {
+  await _createTable(knex, "revocations", t => {
     _pk(t, "tip_id");
     t.string("tx_type", 64).notNullable();
     t.bigInteger("timestamp").notNullable();
@@ -158,7 +175,7 @@ exports.up = async (knex) => {
   // expires_at + consecutive_failures are v2 renewal prep slots — set at
   // BIND commit to (verified_at + DOMAIN_HEALTHY_EXPIRY_MS, 0) and
   // untouched until the adaptive-expiry RENEW_DOMAIN scheduler ships.
-  await knex.schema.createTable("domain_bindings", t => {
+  await _createTable(knex, "domain_bindings", t => {
     t.string("domain", 253).primary();
     _id(t, "tip_id").notNullable();
     t.string("binding_state", 32).notNullable();
@@ -182,7 +199,7 @@ exports.up = async (knex) => {
   // at tx.signature).
   // Final schema: unlinked_at / unlink_tx_id present;
   // expires_at / consecutive_failures absent (those were a hotfix — baseline uses final shape).
-  await knex.schema.createTable("platform_links", t => {
+  await _createTable(knex, "platform_links", t => {
     _id(t, "id").primary();
     _id(t, "tip_id").notNullable();
     t.string("platform", 50).notNullable();
@@ -202,7 +219,7 @@ exports.up = async (knex) => {
 
   // Pending domain claims (NOT canonical; per-node storage between
   // POST /register and POST /verify).
-  await knex.schema.createTable("pending_domain_claims", t => {
+  await _createTable(knex, "pending_domain_claims", t => {
     t.string("domain", 253).primary();
     _id(t, "tip_id").notNullable();
     t.string("method", 16).notNullable();
@@ -213,7 +230,7 @@ exports.up = async (knex) => {
   });
 
   // GH #60: public_key + algorithm live in entity_keys.
-  await knex.schema.createTable("verification_providers", t => {
+  await _createTable(knex, "verification_providers", t => {
     _pk(t, "vp_id");
     t.string("name", 256).notNullable();
     t.string("jurisdiction", 8).notNullable().defaultTo("US");
@@ -223,7 +240,7 @@ exports.up = async (knex) => {
   });
 
   // GH #60: public_key + algorithm live in entity_keys.
-  await knex.schema.createTable("nodes", t => {
+  await _createTable(knex, "nodes", t => {
     _pk(t, "node_id");
     t.text("name").nullable();
     t.string("status", 32).notNullable().defaultTo("active");
@@ -232,7 +249,7 @@ exports.up = async (knex) => {
     t.bigInteger("registered_at").notNullable();
   });
 
-  await knex.schema.createTable("certificates", t => {
+  await _createTable(knex, "certificates", t => {
     t.string("hash", 128).primary();
     t.integer("round").notNullable();
     _id(t, "author_node_id").notNullable();
@@ -248,7 +265,7 @@ exports.up = async (knex) => {
     t.index(["author_node_id", "round"], "idx_cert_author");
   });
 
-  await knex.schema.createTable("commits", t => {
+  await _createTable(knex, "commits", t => {
     t.integer("round").primary();
     t.string("anchor_cert_hash", 128).notNullable();
     _id(t, "leader_node_id").notNullable();
@@ -269,7 +286,7 @@ exports.up = async (knex) => {
     t.unique(["consensus_index"], "idx_commits_index");
   });
 
-  await knex.schema.createTable("votes_seen", t => {
+  await _createTable(knex, "votes_seen", t => {
     t.integer("round").notNullable();
     _id(t, "author").notNullable();
     t.string("batch_hash", 128).notNullable();
@@ -280,7 +297,7 @@ exports.up = async (knex) => {
     t.index("round", "idx_votes_round");
   });
 
-  await knex.schema.createTable("mempool", t => {
+  await _createTable(knex, "mempool", t => {
     t.string("tx_id", 128).primary();
     t.text("tx_data").notNullable();
     _id(t, "subject_tip_id").nullable();
@@ -288,7 +305,7 @@ exports.up = async (knex) => {
     t.index("subject_tip_id", "idx_mempool_subject");
   });
 
-  await knex.schema.createTable("tx_rejections", t => {
+  await _createTable(knex, "tx_rejections", t => {
     t.string("tx_id", 128).primary();
     t.string("reason", 64).notNullable();
     t.text("reason_detail").nullable();
@@ -305,12 +322,12 @@ exports.up = async (knex) => {
     t.index("subject_tip_id", "idx_tx_rej_subject");
   });
 
-  await knex.schema.createTable("consensus_meta", t => {
+  await _createTable(knex, "consensus_meta", t => {
     t.string("key", 128).primary();
     t.text("value").notNullable();
   });
 
-  await knex.schema.createTable("committee_history", t => {
+  await _createTable(knex, "committee_history", t => {
     t.integer("rotation_number").primary();
     t.integer("effective_round").notNullable();
     t.text("committee").notNullable();
@@ -330,7 +347,7 @@ exports.up = async (knex) => {
   // Seeded at first boot from INITIAL_INTERESTS_SEED; extended at
   // runtime by INTEREST_REGISTERED txs (VP-attested). Slug PK enforces
   // uniqueness at the DB layer.
-  await knex.schema.createTable("interests_registry", t => {
+  await _createTable(knex, "interests_registry", t => {
     t.string("slug", 40).primary();
     t.string("label", 80).notNullable();
     t.string("category", 32).notNullable();
@@ -352,7 +369,7 @@ exports.up = async (knex) => {
   // `value` is JSON-encoded so the scalar's type round-trips (int / string /
   // bool / array). `update_tx_id` is the genesis tx for seed rows, the
   // governance tx otherwise.
-  await knex.schema.createTable("protocol_params", t => {
+  await _createTable(knex, "protocol_params", t => {
     t.string("param_key", 128).notNullable();
     t.text("value").notNullable();
     t.bigInteger("effective_from_height").notNullable();
@@ -362,7 +379,7 @@ exports.up = async (knex) => {
 
   // Prescan reviews (Phase 2 — human reviewing AI prescan flag).
   // See dag.js CREATE TABLE prescan_reviews for full schema rationale.
-  await knex.schema.createTable("prescan_reviews", t => {
+  await _createTable(knex, "prescan_reviews", t => {
     t.string("review_id", 128).primary();
     // `tip_ctid` on every backend (same as `content` above).
     const ctidCol2 = "tip_ctid";
@@ -382,7 +399,7 @@ exports.up = async (knex) => {
     t.index("assigned_reviewer", "idx_prescan_reviews_reviewer");
   });
 
-  await knex.schema.createTable("rotation_participation", t => {
+  await _createTable(knex, "rotation_participation", t => {
     _id(t, "node_id").notNullable();
     t.integer("rotation_number").notNullable();
     // Presence bucket: which time slice of the epoch this credit landed in.
@@ -398,7 +415,7 @@ exports.up = async (knex) => {
   // Off-chain dispute body store. Per-node, NOT consensus state — see
   // MemoryStore.saveDisputeDetails for the rationale. Excluded from
   // iterateCanonicalState / state_merkle_root.
-  await knex.schema.createTable("dispute_details", t => {
+  await _createTable(knex, "dispute_details", t => {
     t.string("evidence_hash", 128).primary();
     _id(t, "disputer_tip_id").notNullable();
     t.text("payload_json").notNullable();
@@ -411,7 +428,7 @@ exports.up = async (knex) => {
   // Prescan jobs — node-local async classifier queue. NOT consensus
   // state. Worker on the API node polls this table; result lands on
   // chain as a PRESCAN_COMPLETED tx that every node applies.
-  await knex.schema.createTable("prescan_jobs", t => {
+  await _createTable(knex, "prescan_jobs", t => {
     t.string("job_id", 128).primary();
     // `tip_ctid` on every backend (same as `content`).
     const ctidCol3 = "tip_ctid";
@@ -433,7 +450,7 @@ exports.up = async (knex) => {
   // `tip_ctid` on every backend (same as `content` / `prescan_jobs`).
   const fpCtidCol = "tip_ctid";
 
-  await knex.schema.createTable("perceptual_fingerprint", t => {
+  await _createTable(knex, "perceptual_fingerprint", t => {
     t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
     t.string("modality", 16).notNullable();    // text|image|video|audio
@@ -445,7 +462,7 @@ exports.up = async (knex) => {
     t.primary([fpCtidCol, "component_idx"]);
   });
 
-  await knex.schema.createTable("minhash_band", t => {
+  await _createTable(knex, "minhash_band", t => {
     t.string("profile", 64).notNullable();
     t.integer("band_idx").notNullable();
     t.bigInteger("band_hash").notNullable();
@@ -454,7 +471,7 @@ exports.up = async (knex) => {
     t.index(["profile", "band_idx", "band_hash"], "idx_minhash_band_lookup");
   });
 
-  await knex.schema.createTable("phash_code", t => {
+  await _createTable(knex, "phash_code", t => {
     t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
     t.integer("frame").notNullable();            // 0 for image, frame index for video
@@ -470,7 +487,7 @@ exports.up = async (knex) => {
 
   // Audio uses a surrogate clip_id: the landmark index explodes (~20k rows/song),
   // so rows reference a compact BIGINT clip_id instead of TEXT(512) ctid.
-  await knex.schema.createTable("audio_clip", t => {
+  await _createTable(knex, "audio_clip", t => {
     t.bigIncrements("clip_id");
     t.string(fpCtidCol, 512).notNullable();
     t.integer("component_idx").notNullable();
@@ -478,7 +495,7 @@ exports.up = async (knex) => {
     t.unique([fpCtidCol, "component_idx"], "idx_audio_clip_ctid");
   });
 
-  await knex.schema.createTable("audio_landmark", t => {
+  await _createTable(knex, "audio_landmark", t => {
     t.string("profile", 64).notNullable();
     t.integer("hash").notNullable();      // 24-bit packed landmark
     t.bigInteger("clip_id").notNullable(); // -> audio_clip(clip_id)
