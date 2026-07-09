@@ -185,7 +185,7 @@ function _actorTipId(tx) {
   }
 }
 
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
+function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -207,13 +207,18 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   }
   function _requeueOwnerStale(tx, round) {
     const key = _staleKey(tx);
-    const n = (_staleRetry.get(key) || 0) + 1;
+    // The cap bounds LIVELOCK, not progress: a deep same-owner backlog drains one
+    // tx per round and every sibling burns an attempt each round, so count only
+    // consecutive attempts against the SAME head and reset when the head advances.
+    const head = dag.expectedOwnerHead(ownerOf(tx));
+    const prevEntry = _staleRetry.get(key);
+    const n = prevEntry && prevEntry.head === head ? prevEntry.count + 1 : 1;
     if (n > OWNER_HEAD_STALE_MAX_RETRIES) {
       _staleRetry.delete(key);
-      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted (${tx.tx_type}) , dropping`);
+      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted with no head progress (${tx.tx_type}) , dropping`);
       return;
     }
-    _staleRetry.set(key, n);
+    _staleRetry.set(key, { count: n, head });
     // Body-scope signatures never covered prev, so the rebuilt tx re-verifies as-is.
     // Envelope signatures cover prev (canonicalTx): re-sign our own, or all but the
     // first of a same-owner node batch (jury summons) would be lost; foreign ones drop.
@@ -230,7 +235,10 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       const { tx_id, signature, ...body } = rebuilt;
       rebuilt = signTransaction(body, config.nodePrivateKey);
     }
-    dag.saveMempoolTx(rebuilt);
+    // Requeue through the consensus mempool (narwhal drains its in-memory queue;
+    // dag.saveMempoolTx alone is persistence-only and invisible until restart).
+    if (mempool && typeof mempool.add === "function") mempool.add(rebuilt);
+    else dag.saveMempoolTx(rebuilt);
   }
   const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
   const _persistRejection = (tx, reason, detail, opts) => {

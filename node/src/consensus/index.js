@@ -185,7 +185,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({
-    dag, scoring, config,
+    dag, scoring, config, mempool,
     verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger,
     isLocallyVerified: _consumeLocallyVerified,
   });
