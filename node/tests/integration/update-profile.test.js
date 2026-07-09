@@ -29,6 +29,7 @@ const {
   initCrypto, generateMLDSAKeypair, shake256,
 } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createProfileService } = require(path.join(SRC, "services", "profile-service"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -79,7 +80,7 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     // way SQLite does. Production identities always have this set via
     // CREATE TABLE DEFAULT 0.
     reviewer_consent: false,
-    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
   });
   dag.setScore(tipId, score, 0, 1767225600000);
 }

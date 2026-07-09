@@ -27,6 +27,7 @@ const { nowMs, nowIso, toIso } = require(path.join(SHARED, "time"));
 const {
   TIP_ID_TYPES, DOMAIN_BINDING_STATUS, DOMAIN_HEALTHY_EXPIRY_MS,
 } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { createDomainService } = require(path.join(SRC, "services", "domain-service"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -100,7 +101,7 @@ function seedOrgIdentity(dag, tipId, kp) {
     tip_id_type: TIP_ID_TYPES.ORGANIZATION,
     founding: false, status: "active",
     registered_at: 1767225600000,
-    tx_id: shake256(`id:${tipId}`),
+    tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
     creator_name: "Acme News",
   });
 }
@@ -113,7 +114,7 @@ function seedPersonalIdentity(dag, tipId, kp) {
     tip_id_type: TIP_ID_TYPES.PERSONAL,
     founding: false, status: "active",
     registered_at: 1767225600000,
-    tx_id: shake256(`id:${tipId}`),
+    tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
     creator_name: "Some Person",
   });
 }

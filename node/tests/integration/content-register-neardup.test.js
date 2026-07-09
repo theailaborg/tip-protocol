@@ -36,6 +36,7 @@ const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
 const schema = require(path.join(SRC, "schemas", "content-register"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -74,7 +75,7 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     tip_id: tipId, region: "US",
     public_key: kp.publicKey, root_public_key: kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }),
   });
   dag.setScore(tipId, score, 0, 1767225600000);
 }

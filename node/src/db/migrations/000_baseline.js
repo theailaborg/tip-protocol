@@ -540,6 +540,7 @@ exports.down = async (knex) => {
   await knex.schema.dropTableIfExists("domain_bindings");
   await knex.schema.dropTableIfExists("revocations");
   await knex.schema.dropTableIfExists("dedup_registry");
+  await knex.schema.dropTableIfExists("owner_heads");
   await knex.schema.dropTableIfExists("scores");
   await knex.schema.dropTableIfExists("content");
   await knex.schema.dropTableIfExists("entity_keys");

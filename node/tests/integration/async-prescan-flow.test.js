@@ -26,6 +26,7 @@ const SRC    = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256, tipNormalize } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, ORIGIN, CONTENT_STATUS, MEDIA_LIMITS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const PC = require(path.join(SHARED, "protocol-constants"));
 const { getGenesisPayload } = require(path.join(SRC, "genesis"));
 
@@ -101,7 +102,7 @@ function setup({ now, classifierHandler }) {
     public_key: authorKp.publicKey, root_public_key: authorKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: 1767225600000, tx_id: shake256("author"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: AUTHOR }),
   });
 
   const config = {

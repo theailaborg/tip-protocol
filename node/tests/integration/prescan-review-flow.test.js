@@ -47,6 +47,7 @@ const confirmedSchema = require(path.join(SRC, "schemas", "prescan-review-confir
 const {
   TX_TYPES, PRESCAN_REVIEW_STATES, CONTENT_STATUS,
 } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { CONTENT_GRACE, REVIEWER } = require(path.join(SHARED, "protocol-constants"));
 
 beforeAll(async () => { await initCrypto(); });
@@ -76,14 +77,14 @@ function _setup() {
     public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: 1767225600000, tx_id: shake256("creator"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: CREATOR }),
   });
   dag.saveIdentity({
     tip_id: REVIEWER_TIP, region: "US",
     public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: 1767225600000, tx_id: shake256("reviewer"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: REVIEWER_TIP }),
   });
 
   const config = {
