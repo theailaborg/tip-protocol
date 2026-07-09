@@ -42,6 +42,7 @@ const { DISPUTE, JURY, REVIEWER } = require(path.join(SHARED, "protocol-constant
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { buildAdjudicationBatch, buildAppealBatch } = require(path.join(SRC, "jury"));
+const { seedAnchorTx } = require(path.resolve(__dirname, "../helpers/seed-anchor-tx"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -79,7 +80,8 @@ function _seedIdentity(dag, tipId, score = 750) {
   dag.saveIdentity({
     tip_id: tipId, region: "US", public_key: "00", root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: tipId }),
   });
   dag.setScore(tipId, score, 0, 1767225600000);
 }
@@ -190,7 +192,8 @@ describe("PRESCAN_REVIEW_DISMISSED → reviewer paired bonus", () => {
       public_key: reviewerKp.publicKey, root_public_key: reviewerKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
       reviewer_consent: true,
-      registered_at: 1767225600000, tx_id: shake256(`id:${reviewerTipId}`),
+      registered_at: 1767225600000,
+      tx_id: seedAnchorTx(fx.dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: reviewerTipId }),
     });
     fx.dag.setScore(reviewerTipId, 800, 0, 1767225600000);
     fx.dag.saveContent({
@@ -252,7 +255,8 @@ describe("acceptCorrection → reviewer paired bonus", () => {
       tip_id: creatorTipId, region: "US",
       public_key: creatorKp.publicKey, root_public_key: creatorKp.publicKey,
       vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-      registered_at: 1767225600000, tx_id: shake256(`id:${creatorTipId}`),
+      registered_at: 1767225600000,
+      tx_id: seedAnchorTx(fx.dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: creatorTipId }),
     });
     fx.dag.setScore(creatorTipId, 700, 0, 1767225600000);
     _seedIdentity(fx.dag, reviewerTipId, 800);
