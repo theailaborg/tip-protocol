@@ -186,7 +186,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       // GH #51 — VP signature lives at tx.signature (unified storage).
       signature: vp_signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -477,7 +477,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       signature: nodeSig,
       prev: [],
       data: txData,
-    });
+    }, dag);
 
     const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });
     if (!validation.valid) {
@@ -535,7 +535,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         claimed_at: claimedAt,
       },
       signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(unlinkTx, dag, { skipPrevCheck: true });
     if (!validation.valid) {

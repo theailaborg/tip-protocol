@@ -118,7 +118,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         decision_note: safeBody.decision_note ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -167,7 +167,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         decision_note: safeBody.decision_note ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -199,7 +199,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         recusal_reason: safeBody.recusal_reason ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -224,7 +224,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         author_tip_id: body.author_tip_id,
       },
       signature: body.signature,
-    });
+    }, dag);
 
     // Score penalty batched atomically with the origin update. Accepting
     // the reviewer's CONFIRM still costs the creator
@@ -329,7 +329,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         author_tip_id: review.creator_tip_id,
         stake: DISPUTE.DISPUTER_STAKE,
       },
-    }, config);
+    }, config, dag);
 
     // Reviewer's filing-time stake (escrow). Mirrors what
     // dispute-service.fileDispute does for a user-filed dispute —
@@ -377,7 +377,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
           commit_deadline: commitDeadline,
           reveal_deadline: revealDeadline,
         },
-      }, config);
+      }, config, dag);
       batch.push(summonsTx);
     }
 

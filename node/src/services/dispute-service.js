@@ -146,7 +146,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
           pre_dispute_status: rec.status, stake: DISPUTE.DISPUTER_STAKE,
         },
         signature,
-      });
+      }, dag);
       const validation = validateTransaction(disputeTx, dag, {});
       if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
 
@@ -176,7 +176,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
       const classifierTx = nodeSignedAuto({
         tx_type: TX_TYPES.AI_CLASSIFIER_RESULT, timestamp: nowMs(), prev: [],
         data: { ctid, dispute_tx_id: disputeTx.tx_id, confidence, routing },
-      }, config);
+      }, config, dag);
       batchTxs.push(classifierTx);
 
       // Stage 2: Jury Selection
@@ -190,7 +190,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
         const summonsTx = nodeSignedAuto({
           tx_type: TX_TYPES.JURY_SUMMONS, timestamp: nowMs(), prev: [],
           data: { ctid, dispute_tx_id: disputeTx.tx_id, juror_tip_id: jurorTipId, stake: JURY.JUROR_STAKE, seed: jury.seed, identity_count: jury.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline },
-        }, config);
+        }, config, dag);
         batchTxs.push(summonsTx);
       }
 
@@ -235,7 +235,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const commitData = { ...body, ctid, is_appeal: false };
     if (!verifyCanonicalPayload(_signedPayloadFor(TX_TYPES.JURY_VOTE_COMMIT, commitData), signature, juror.public_key)) throw { status: 403, error: "Juror signature verification failed" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, commitment, is_appeal: false }, signature });
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, commitment, is_appeal: false }, signature }, dag);
     submitTx(commitTx);
     return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
@@ -258,7 +258,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const revealData = { ...body, ctid, is_appeal: false };
     if (!verifyCanonicalPayload(_signedPayloadFor(TX_TYPES.JURY_VOTE_REVEAL, revealData), signature, juror.public_key)) throw { status: 403, error: "Juror signature verification failed" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: false }, signature });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: false }, signature }, dag);
     submitTx(revealTx);
 
     // Verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.
@@ -392,7 +392,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     // so the non-appellant party also sees the appeal. They are OUTSIDE the
     // appellant's signed payload (which is just {appellant_tip_id, ctid} — see
     // _registry APPEAL_FILED contract), so the user signature still verifies.
-    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: [], data: { ctid, appellant_tip_id, author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature });
+    const appealTx = withTxId({ tx_type: TX_TYPES.APPEAL_FILED, timestamp: nowMs(), prev: [], data: { ctid, appellant_tip_id, author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: adjTxs[0].data.verdict, stake: APPEAL.APPELLANT_STAKE }, signature }, dag);
 
     // Collect batch: appeal + stake + expert summons
     const batchTxs = [appealTx];
@@ -414,7 +414,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const revealDeadline = nowPlusMs((APPEAL.COMMIT_WINDOW_HOURS + APPEAL.REVEAL_WINDOW_HOURS) * 3600000);
 
     for (const expertTipId of experts.experts) {
-      const summonsTx = nodeSignedAuto({ tx_type: TX_TYPES.JURY_SUMMONS, timestamp: nowMs(), prev: [], data: { ctid, dispute_tx_id: appealTx.tx_id, juror_tip_id: expertTipId, stake: JURY.JUROR_STAKE, seed: experts.seed, identity_count: experts.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline, is_appeal: true } }, config);
+      const summonsTx = nodeSignedAuto({ tx_type: TX_TYPES.JURY_SUMMONS, timestamp: nowMs(), prev: [], data: { ctid, dispute_tx_id: appealTx.tx_id, juror_tip_id: expertTipId, stake: JURY.JUROR_STAKE, seed: experts.seed, identity_count: experts.identityCount, commit_deadline: commitDeadline, reveal_deadline: revealDeadline, is_appeal: true } }, config, dag);
       batchTxs.push(summonsTx);
     }
 
@@ -443,7 +443,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const expertCommitData = { ...body, ctid, is_appeal: true };
     if (!verifyCanonicalPayload(_signedPayloadFor(TX_TYPES.JURY_VOTE_COMMIT, expertCommitData), signature, juror.public_key)) throw { status: 403, error: "Expert signature verification failed" };
 
-    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, commitment, is_appeal: true }, signature });
+    const commitTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_COMMIT, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, commitment, is_appeal: true }, signature }, dag);
     submitTx(commitTx);
     return { success: true, tx_id: commitTx.tx_id, confirmation: "proposed" };
   }
@@ -469,7 +469,7 @@ function createDisputeService({ dag, scoring, config, submitTx, submitBatch, dis
     const expertRevealData = { ...body, ctid, is_appeal: true };
     if (!verifyCanonicalPayload(_signedPayloadFor(TX_TYPES.JURY_VOTE_REVEAL, expertRevealData), signature, juror.public_key)) throw { status: 403, error: "Expert signature verification failed" };
 
-    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true }, signature });
+    const revealTx = withTxId({ tx_type: TX_TYPES.JURY_VOTE_REVEAL, timestamp: nowMs(), prev: [], data: { ctid, juror_tip_id, vote, salt, confirmed_origin: vote === VOTE.MISMATCH ? confirmed_origin : null, is_appeal: true }, signature }, dag);
     submitTx(revealTx);
 
     // Appeal verdict triggered post-round by verdict-trigger when reveal_deadline crosses cert.timestamp.

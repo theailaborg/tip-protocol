@@ -289,7 +289,7 @@ function _buildSummonsTx({ ctid, disputeTxId, jurorTipId, seed, identityCount, c
       reveal_deadline: revealDeadline,
       is_appeal: isAppeal,
     },
-  }, config);
+  }, config, dag);
 }
 
 /**
@@ -387,7 +387,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       // author/disputer embedded for activity-feed attribution (#40) — both
       // parties see the appeal in their feed, not just the appellant.
       data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
-    }, config);
+    }, config, dag);
     const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
     const canEscalate = experts.experts.length >= APPEAL.MIN_VOTES;
 
@@ -417,7 +417,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         abstain_count: abstainCount,
         juror_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
       },
-    }, config);
+    }, config, dag);
     txs.push(noQuorumResultTx);
 
     // No-show penalties always apply: the absent jurors are the ones who
@@ -519,7 +519,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       abstain_count: abstainCount,
       juror_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
     },
-  }, config);
+  }, config, dag);
   txs.push(resultTx);
 
   // Author penalty as a paired SCORE_UPDATE — single channel for every
@@ -748,7 +748,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         pre_dispute_status: preStatus,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
       },
-    }, config);
+    }, config, dag);
     txs.push(resultTx);
 
     for (const s of summons) {
@@ -848,7 +848,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
       expert_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
     },
-  }, config);
+  }, config, dag);
   txs.push(resultTx);
 
   // ── Appellant outcome ─────────────────────────────────────────────────────

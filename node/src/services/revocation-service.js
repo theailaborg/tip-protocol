@@ -37,7 +37,7 @@ function createRevocationService({ dag, submitTx }) {
       tx_type, timestamp, prev: [],
       data: txData,
       signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(revokeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };

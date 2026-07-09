@@ -63,7 +63,7 @@ function createKeyService({ dag, submitTx }) {
       data: _pickTxData(canonicalPayload, KEY_ROTATED_FIELDS),
       signature: normalised.signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -145,7 +145,7 @@ function createKeyService({ dag, submitTx }) {
       },
       signature: normalised.signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");

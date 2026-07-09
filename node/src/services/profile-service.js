@@ -54,7 +54,7 @@ function createProfileService({ dag, config, submitTx }) {
       prev: [],
       data,
       signature: safeBody.signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");

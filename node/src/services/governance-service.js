@@ -72,7 +72,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       data: { vp_id: vpId, name, jurisdiction, jurisdiction_tier, public_key, algorithm, approving_vp_id },
       // GH #51 — approving VP's council signature lives at tx.signature.
       signature: council_signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(vpTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
@@ -154,7 +154,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       },
       // GH #51 — approving VP's council signature lives at tx.signature.
       signature: council_signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(nodeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
@@ -228,7 +228,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       timestamp: nowMs(),
       prev: [],
       data: { node_id: nodeId, api_endpoint: normalised },
-    }, config);
+    }, config, dag);
 
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
@@ -264,7 +264,7 @@ function createGovernanceService({ dag, scoring, config, submitTx, fetchImpl }) 
       prev:      [],
       data:      { slug, label, category, approving_vp_id },
       signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
