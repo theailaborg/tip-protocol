@@ -10,7 +10,7 @@ const { VERIFY_CAPS, SCORE_EVENTS, PRESCAN_WORKER } = require("../../../shared/p
 const contentRegisterSchema = require("../schemas/content-register");
 const contentListSchema = require("../schemas/content-list");
 const { ingestFingerprint } = require("../perceptual/ingest");
-const { findSimilarCtids } = require("../perceptual/similar");
+const { findSimilarCtids, matchFingerprintItems } = require("../perceptual/similar");
 const { schemaError } = require("../schemas/_common");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
@@ -94,6 +94,99 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         }
       })
       .catch((err) => log.warn(`perceptual ingest failed for ${ctid}: ${err.message}`));
+  }
+
+  // One warning card, same shape as _similarCard so the FE reuses one component;
+  // match_type is "exact_normalized" (score 1 by definition) or "perceptual".
+  function _nearDupCard(match, matchType) {
+    const rec = dag.getContent(match.ctid);
+    if (!rec) return null;
+    const author = dag.getIdentity(rec.author_tip_id);
+    return {
+      ctid: match.ctid,
+      match_type: matchType,
+      origin_code: rec.origin_code,
+      origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
+      author_tip_id: rec.author_tip_id,
+      author_name: (author && author.creator_name) || null,
+      status: rec.status,
+      registered_at: rec.registered_at,
+      similarity: matchType === "exact_normalized"
+        ? { score: 1 }
+        : {
+          ...match.metric, // raw per-modality figures; spread FIRST so the fields below always win
+          score: Math.round(match.score * 1000) / 1000,
+          modality: match.modality,
+          component_idx: match.component_idx,
+        },
+    };
+  }
+
+  // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
+  // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
+  // Never blocks: every failure degrades to "no warning".
+  async function _findNearDuplicates({ ctid, contentHash, fingerprints }) {
+    const out = [];
+    const seen = new Set([ctid]); // never report the registration itself
+    // step 0a , committed exact matches (indexed content_hash lookup;
+    // Promise.resolve because the store may be sync (SQLite/Memory) or async).
+    try {
+      const exact = (await Promise.resolve(dag.getContentByHash(contentHash))) || [];
+      for (const rec of exact) {
+        if (seen.has(rec.ctid)) continue;
+        seen.add(rec.ctid);
+        const card = _nearDupCard({ ctid: rec.ctid }, "exact_normalized");
+        if (card) out.push(card);
+      }
+    } catch (err) {
+      log.warn(`near-dup exact check failed for ${ctid}: ${err.message || err}`);
+    }
+    // step 0b: mempool-pending exact matches close the same-round race (mirrors
+    // _pendingUrlConflict); no row exists yet, so the card builds from tx.data.
+    try {
+      if (typeof dag.getMempoolTxs === "function") {
+        for (const t of dag.getMempoolTxs()) {
+          if (t.tx_type !== TX_TYPES.REGISTER_CONTENT || !t.data) continue;
+          if (t.data.content_hash !== contentHash || seen.has(t.data.ctid)) continue;
+          seen.add(t.data.ctid);
+          // Derive the author exactly as commit-handler will (authors[0].tip_id,
+          // not signer_tip_id) so the card names the same author post-commit.
+          const authorTipId = (Array.isArray(t.data.authors) && t.data.authors[0] && t.data.authors[0].tip_id)
+            || t.data.signer_tip_id;
+          const author = dag.getIdentity(authorTipId);
+          out.push({
+            ctid: t.data.ctid,
+            match_type: "exact_normalized",
+            origin_code: t.data.origin_code,
+            origin_label: ORIGIN_LABELS[t.data.origin_code] || t.data.origin_code,
+            author_tip_id: authorTipId,
+            author_name: (author && author.creator_name) || null,
+            status: "pending_commit",
+            registered_at: t.timestamp,
+            similarity: { score: 1 },
+          });
+        }
+      }
+    } catch (err) {
+      log.warn(`near-dup mempool check failed for ${ctid}: ${err.message || err}`);
+    }
+    // step 1 , perceptual near-dups from the request's own envelope.
+    if (fingerprints != null) {
+      try {
+        const items = contentRegisterSchema.parseFingerprintItems(fingerprints);
+        const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid });
+        for (const hit of hits) {
+          // An exact hit is the stronger signal , don't double-report.
+          if (seen.has(hit.ctid)) continue;
+          seen.add(hit.ctid);
+          const card = _nearDupCard(hit, "perceptual");
+          if (card) out.push(card);
+        }
+      } catch (err) {
+        log.warn(`near-dup perceptual check failed for ${ctid}: ${err.message || err}`);
+      }
+    }
+    return out;
   }
 
   // True if this signer already has a REGISTER_CONTENT for this exact ctid in
@@ -275,6 +368,15 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     submitTx(signedTx);
 
+    // Near-dup advisory rides the register response; computed before this
+    // registration's own ingest, so only pre-existing content can surface.
+    const nearDuplicates = await _findNearDuplicates({
+      ctid, contentHash: contentHashFull, fingerprints: body.fingerprints,
+    });
+    if (nearDuplicates.length > 0) {
+      log.info(`Near-duplicate warning for ${ctid}: ${nearDuplicates.length} match(es), best: ${nearDuplicates[0].ctid} (${nearDuplicates[0].match_type})`);
+    }
+
     // Perceptual fingerprints: ingest locally into the off-DAG index. The blob
     // lives only in the request body (validated + commit-checked in
     // validateRequest), never on tx.data — so only this receiving node indexes
@@ -304,6 +406,9 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       content_hash: contentHashFull, signer_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
+      // Advisory near-duplicate cards; empty = no matches. Never blocks the
+      // registration and never affects the matched content's ctid.
+      near_duplicates: nearDuplicates,
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
       // ── Async prescan ─────────────────────────────────────────────

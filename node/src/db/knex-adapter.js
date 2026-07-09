@@ -846,6 +846,7 @@ class KnexAdapter {
   getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }
   listContent(opts) { return this.mirror.listContent(opts); }
   getContentByAuthor(id) { return this.mirror.getContentByAuthor(id); }
+  getContentByHash(h) { return this.mirror.getContentByHash(h); }
   getCleanRecordEligible(cutoff) { return this.mirror.getCleanRecordEligible(cutoff); }
   hasVerification(ctid, tipId) { return this.mirror.hasVerification(ctid, tipId); }
   hasDispute(ctid, tipId) { return this.mirror.hasDispute(ctid, tipId); }
