@@ -1885,6 +1885,10 @@ class MemoryStore {
     const queued = [];
     const stuck = [];
     for (const row of this._prescanJobs.values()) {
+      // Hold jobs until REGISTER_CONTENT commits: a verdict emitted before
+      // the content row exists no-ops at apply and the real verdict is lost
+      // to the 1h fail-open valve.
+      if (!this._content.get(row.ctid)) continue;
       if (row.status === "queued") queued.push(row);
       else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
     }
@@ -2723,12 +2727,15 @@ class SQLiteStore {
         "SELECT * FROM prescan_jobs WHERE tip_ctid=?"
       ),
       claimPrescanJob: this.db.prepare(
+        // EXISTS guard: hold jobs until REGISTER_CONTENT commits, else the
+        // verdict no-ops at apply and is lost to the 1h fail-open valve.
         `UPDATE prescan_jobs
             SET status='claimed', claimed_at=?, claimed_by=?
           WHERE job_id = (
             SELECT job_id FROM prescan_jobs
-             WHERE status='queued'
-                OR (status='claimed' AND claimed_at < ?)
+             WHERE (status='queued'
+                OR (status='claimed' AND claimed_at < ?))
+               AND EXISTS (SELECT 1 FROM content WHERE content.tip_ctid = prescan_jobs.tip_ctid)
              ORDER BY created_at
              LIMIT 1
           )

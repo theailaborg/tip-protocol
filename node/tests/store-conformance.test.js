@@ -321,6 +321,9 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     const dag = await makeDag();
     const older = prescanJob(uniq("job"), T0);
     const newer = prescanJob(uniq("job"), T0 + 100);
+    // Claims are gated on the content row existing (REGISTER_CONTENT committed)
+    dag.saveContent(contentRec(older.ctid, uniq("a")));
+    dag.saveContent(contentRec(newer.ctid, uniq("a")));
 
     expect(dag.enqueuePrescanJob(older)).toBe(true);
     expect(dag.enqueuePrescanJob(older)).toBe(false);
@@ -350,6 +353,7 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
   test("claim is single-winner: one queued job is never handed to two claimants", async () => {
     const dag = await makeDag();
     const job = prescanJob(uniq("job"), T0);
+    dag.saveContent(contentRec(job.ctid, uniq("a")));
     dag.enqueuePrescanJob(job);
 
     const claims = await Promise.all(
