@@ -81,17 +81,11 @@ async function findSimilarCtids(dag, ctid, opts = {}) {
     .slice(0, limit);
 }
 
-// Register-time near-duplicate check: the same per-component match + best-hit
-// aggregation as findSimilarCtids, but driven by the REQUEST's parsed
-// fingerprint envelope items (the content being registered isn't in the index
-// yet), not by stored rows. `items` is contentRegisterSchema
-// .parseFingerprintItems() output — each entry carries the verbatim
-// tip-content-fingerprint object at `.perceptual`, whose `kind` is the
-// modality (ingest stores it 1:1 as `modality`). `excludeCtid` is
-// belt-and-braces against self-matching if this ctid's ingest ever races the
-// check.
+// Register-time variant of findSimilarCtids: matches the REQUEST's parsed
+// fingerprint items (this content isn't indexed yet) instead of stored rows;
+// same per-component match, best-hit-per-ctid aggregation, and ordering.
 async function matchFingerprintItems(dag, items, opts = {}) {
-  // Advisory + optional — same escape hatch as findSimilarCtids for stores
+  // Advisory + optional , same escape hatch as findSimilarCtids for stores
   // without the perceptual index (test doubles, minimal backends).
   if (typeof dag.getPerceptualFingerprint !== "function") return [];
   if (!Array.isArray(items) || items.length === 0) return [];

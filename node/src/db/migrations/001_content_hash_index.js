@@ -1,28 +1,17 @@
 // node-local (index-only DDL on `content`: no new columns, no data changes,
-// state_merkle_root is unaffected — nodes can apply this independently)
+// state_merkle_root is unaffected , nodes can apply this independently)
 
 "use strict";
 
-// Register-time near-duplicate warning, step 0 (exact match): the register
-// path looks up existing content by exact normalized content_hash to warn
-// when byte-different but normalization-identical content is already
-// registered ("I am Vishal" vs "i am VISHAL." both normalize to "iamvishal").
-// The ctid primary key can't serve this lookup — the ctid embeds
-// origin_code + signer, so the same content registered by a different
-// author or under a different origin always has a different ctid.
+// Step-0 exact near-dup lookup: register queries content by normalized
+// content_hash, which the ctid PK cannot serve (ctid embeds origin + signer,
+// so identical content by another author has a different ctid).
 
 const INDEX_NAME = "idx_content_content_hash";
 
-// True if idx_content_content_hash already exists. Idempotency guard for up():
-// on a file-SQLite node the SQLiteStore constructor execs the generated
-// schema.sql (CREATE INDEX IF NOT EXISTS) — so the index can pre-exist WITHOUT
-// a knex_migrations row for this migration (e.g. a DB first opened through the
-// sync initDAG path, or the Knex-init-failure SQLite fallback). Re-running the
-// bare `t.index()` there would throw "index already exists" and, since
-// _runSqliteMigrations has no catch, crash-loop the boot. Checking first also
-// makes a re-run safe on the non-transactional-DDL engines (mysql/oracle).
-// Catalog query is per-dialect; unknown clients fall through to "not present"
-// so the create still attempts (matches prior behavior).
+// Idempotency guard: schema.sql (CREATE INDEX IF NOT EXISTS) can pre-create
+// this index without a knex_migrations row (sync initDAG / SQLite fallback
+// paths), and a bare re-create would crash the boot. Per-dialect catalog check.
 async function _indexExists(knex) {
   const client = knex.client.config.client;
   try {
@@ -57,14 +46,14 @@ async function _indexExists(knex) {
       return !!(rows && rows.length);
     }
   } catch {
-    // Catalog probe failed (permissions / unexpected dialect shape) — fall
+    // Catalog probe failed (permissions / unexpected dialect shape) , fall
     // through and let the create attempt run as it did before this guard.
   }
   return false;
 }
 
 exports.up = async (knex) => {
-  if (await _indexExists(knex)) return; // idempotent — see _indexExists
+  if (await _indexExists(knex)) return; // idempotent , see _indexExists
   await knex.schema.alterTable("content", t => {
     t.index(["content_hash"], INDEX_NAME);
   });

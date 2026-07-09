@@ -96,12 +96,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       .catch((err) => log.warn(`perceptual ingest failed for ${ctid}: ${err.message}`));
   }
 
-  // One near-duplicate warning card. Same enrichment as _similarCard so the
-  // FE renders both shapes with one component, plus `match_type`:
-  //   "exact_normalized" — same content_hash (identical after tipNormalize +
-  //                        CNA-MIX-1 media hash); score is 1 by definition.
-  //   "perceptual"       — near-dup via the off-DAG fingerprint index; carries
-  //                        the normalised score + raw per-modality metric.
+  // One warning card, same shape as _similarCard so the FE reuses one component;
+  // match_type is "exact_normalized" (score 1 by definition) or "perceptual".
   function _nearDupCard(match, matchType) {
     const rec = dag.getContent(match.ctid);
     if (!rec) return null;
@@ -126,29 +122,13 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  // Register-time near-duplicate warning (advisory — NEVER blocks and never
-  // touches the existing content's ctid; the new registration proceeds and
-  // keeps its own ctid). Two layers, per the register-time near-dup spec:
-  //
-  //   step 0 — exact: committed content rows (plus mempool-pending
-  //     REGISTER_CONTENT txs, mirroring _pendingUrlConflict) whose
-  //     content_hash equals this registration's. Different author/origin ⇒
-  //     different ctid, so this is the ONLY check that catches
-  //     normalization-identical content ("I am Vishal" vs "i am VISHAL." both
-  //     normalize to "iamvishal") — including micro texts (<50 chars) that the
-  //     perceptual index deliberately doesn't band.
-  //
-  //   step 1 — perceptual: the request's fingerprint envelope queried against
-  //     the off-DAG index (MinHash / PDQ / frame sets / audio landmarks),
-  //     self-excluded. Runs BEFORE this ctid's own ingest, so it can only
-  //     surface pre-existing content.
-  //
-  // Every failure degrades to "no warning" — a warning must never break or
-  // delay-fail a registration.
+  // Advisory two-layer near-dup lookup: step 0 exact content_hash (committed +
+  // mempool-pending), step 1 perceptual via the request's fingerprint envelope.
+  // Never blocks: every failure degrades to "no warning".
   async function _findNearDuplicates({ ctid, contentHash, fingerprints }) {
     const out = [];
     const seen = new Set([ctid]); // never report the registration itself
-    // step 0a — committed exact matches (indexed content_hash lookup;
+    // step 0a , committed exact matches (indexed content_hash lookup;
     // Promise.resolve because the store may be sync (SQLite/Memory) or async).
     try {
       const exact = (await Promise.resolve(dag.getContentByHash(contentHash))) || [];
@@ -161,20 +141,16 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     } catch (err) {
       log.warn(`near-dup exact check failed for ${ctid}: ${err.message || err}`);
     }
-    // step 0b — mempool-pending exact matches (submitted, not yet committed):
-    // closes the race where two users register the same content within one
-    // consensus round. No content row exists yet, so the card is built from
-    // tx.data with status "pending_commit".
+    // step 0b: mempool-pending exact matches close the same-round race (mirrors
+    // _pendingUrlConflict); no row exists yet, so the card builds from tx.data.
     try {
       if (typeof dag.getMempoolTxs === "function") {
         for (const t of dag.getMempoolTxs()) {
           if (t.tx_type !== TX_TYPES.REGISTER_CONTENT || !t.data) continue;
           if (t.data.content_hash !== contentHash || seen.has(t.data.ctid)) continue;
           seen.add(t.data.ctid);
-          // Match the committed-row author derivation (commit-handler sets
-          // author_tip_id = authors[0].tip_id, the primary byline — which
-          // differs from signer_tip_id under employed/hosted attribution). A
-          // pending card must name the same author it will show once committed.
+          // Derive the author exactly as commit-handler will (authors[0].tip_id,
+          // not signer_tip_id) so the card names the same author post-commit.
           const authorTipId = (Array.isArray(t.data.authors) && t.data.authors[0] && t.data.authors[0].tip_id)
             || t.data.signer_tip_id;
           const author = dag.getIdentity(authorTipId);
@@ -194,13 +170,13 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     } catch (err) {
       log.warn(`near-dup mempool check failed for ${ctid}: ${err.message || err}`);
     }
-    // step 1 — perceptual near-dups from the request's own envelope.
+    // step 1 , perceptual near-dups from the request's own envelope.
     if (fingerprints != null) {
       try {
         const items = contentRegisterSchema.parseFingerprintItems(fingerprints);
         const hits = await matchFingerprintItems(dag, items, { excludeCtid: ctid });
         for (const hit of hits) {
-          // An exact hit is the stronger signal — don't double-report.
+          // An exact hit is the stronger signal , don't double-report.
           if (seen.has(hit.ctid)) continue;
           seen.add(hit.ctid);
           const card = _nearDupCard(hit, "perceptual");
@@ -392,11 +368,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     submitTx(signedTx);
 
-    // Register-time near-duplicate warning (advisory). Awaited — the warning
-    // rides the register response — but computed BEFORE this registration's
-    // own fingerprints are ingested below, so it can only surface
-    // pre-existing content (excludeCtid inside is belt-and-braces). Strictly
-    // non-fatal: any failure returns [].
+    // Near-dup advisory rides the register response; computed before this
+    // registration's own ingest, so only pre-existing content can surface.
     const nearDuplicates = await _findNearDuplicates({
       ctid, contentHash: contentHashFull, fingerprints: body.fingerprints,
     });
@@ -433,11 +406,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       content_hash: contentHashFull, signer_tip_id, tx_id: signedTx.tx_id,
       registered_at: registeredAt, status,
       confirmation: "proposed",
-      // ── Register-time near-duplicate warning (advisory) ───────────
-      // Empty array = no matches. Registration is NEVER blocked by this
-      // and the existing content's ctid is never affected; the FE renders
-      // a "nearly identical content already registered" warning from
-      // these cards. See _findNearDuplicates for the two match layers.
+      // Advisory near-duplicate cards; empty = no matches. Never blocks the
+      // registration and never affects the matched content's ctid.
       near_duplicates: nearDuplicates,
       author_name: identity?.creator_name || null,
       registered_urls: canonicalPayload.registered_urls,
