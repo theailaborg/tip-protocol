@@ -703,6 +703,13 @@ class MemoryStore {
   getContentByAuthor(tipId) {
     return [...this._content.values()].filter(c => c.author_tip_id === tipId);
   }
+  // Register-time near-duplicate warning: all content rows sharing an exact
+  // (normalized) content_hash. Same content by a different author/origin gets
+  // a different ctid, so a ctid lookup can never surface these.
+  getContentByHash(contentHash) {
+    if (!contentHash) return [];
+    return [...this._content.values()].filter(c => c.content_hash === contentHash);
+  }
 
   hasVerification(ctid, tipId) {
     for (const tx of this._txs.values()) {
@@ -2162,6 +2169,9 @@ class SQLiteStore {
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
       contentByStatus: this.db.prepare("SELECT * FROM content WHERE status=?"),
+      // Register-time near-duplicate warning (exact normalized match).
+      // content_hash is indexed (001_content_hash_index).
+      contentByHash: this.db.prepare("SELECT * FROM content WHERE content_hash=?"),
       // M6 retention — content rows with media[] that pre-date a cutoff,
       // so the sweep walks only what could possibly be expired. Empty
       // `media` (JSON-encoded "[]" or NULL) is filtered out at the SQL
@@ -2891,6 +2901,10 @@ class SQLiteStore {
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
   getContentByStatus(status) { return this._stmts.contentByStatus.all(status).map(r => this._hydrateContent(r)); }
+  getContentByHash(contentHash) {
+    if (!contentHash) return [];
+    return this._stmts.contentByHash.all(contentHash).map(r => this._hydrateContent(r));
+  }
   // Explorer list — see MemoryStore.listContent for the contract.
   // Filters vary per call, so the statement is built dynamically; the
   // (status, author, origin) columns are indexed.
@@ -3959,6 +3973,8 @@ function _buildDagHandle(store, config) {
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
     getContentByStatus: (s) => store.getContentByStatus(s),
+    // Register-time near-duplicate warning (exact normalized content_hash).
+    getContentByHash: (h) => store.getContentByHash(h),
     listContent: (opts) => store.listContent(opts),
     // M6 — used by the periodic media-retention sweep.
     getContentWithMediaBefore: (cutoffMs) => store.getContentWithMediaBefore(cutoffMs),

@@ -81,4 +81,35 @@ async function findSimilarCtids(dag, ctid, opts = {}) {
     .slice(0, limit);
 }
 
-module.exports = { findSimilarCtids };
+// Register-time variant of findSimilarCtids: matches the REQUEST's parsed
+// fingerprint items (this content isn't indexed yet) instead of stored rows;
+// same per-component match, best-hit-per-ctid aggregation, and ordering.
+async function matchFingerprintItems(dag, items, opts = {}) {
+  // Advisory + optional , same escape hatch as findSimilarCtids for stores
+  // without the perceptual index (test doubles, minimal backends).
+  if (typeof dag.getPerceptualFingerprint !== "function") return [];
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = opts.limit != null ? opts.limit : 5;
+  const best = new Map(); // candidate ctid -> { score, modality, component_idx, metric }
+
+  for (let i = 0; i < items.length; i++) {
+    const fp = items[i] && items[i].perceptual;
+    if (!fp || typeof fp.kind !== "string") continue;
+    const hits = await _matchFor(dag, fp.kind, fp, opts.excludeCtid || null);
+    for (const hit of hits) {
+      const score = _normScore(fp.kind, hit);
+      const prev = best.get(hit.ctid);
+      if (!prev || score > prev.score) {
+        best.set(hit.ctid, { score, modality: fp.kind, component_idx: i, metric: _rawMetric(fp.kind, hit) });
+      }
+    }
+  }
+
+  return [...best.entries()]
+    .map(([id, m]) => ({ ctid: id, ...m }))
+    // Same reproducible ordering contract as findSimilarCtids.
+    .sort((a, b) => (b.score - a.score) || (a.ctid < b.ctid ? -1 : a.ctid > b.ctid ? 1 : 0))
+    .slice(0, limit);
+}
+
+module.exports = { findSimilarCtids, matchFingerprintItems };
