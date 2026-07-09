@@ -599,6 +599,11 @@ const DISPUTE_EVENT_PRIORITY = Object.freeze({
 //
 // Adding a new reason: keep the value snake_case and stable forever — old
 // rows will outlive any rename. Removing one is a wire-compat break.
+// Owner-chain stale-head retry cap: how many times the accepting node will
+// rebuild prev + requeue a tx that lost the OWNER_HEAD_STALE race before giving
+// up. Per-node local liveness bound (mempool is not consensus state).
+const OWNER_HEAD_STALE_MAX_RETRIES = 8;
+
 const TX_REJECTION_REASON = Object.freeze({
   // Site 1 — mempool admission (post-API, pre-batch)
   MEMPOOL_FULL: "mempool_full",
@@ -612,6 +617,10 @@ const TX_REJECTION_REASON = Object.freeze({
   BATCH_EQUIVOCATION: "batch_equivocation",
   BATCH_DECODE_FAILED: "batch_decode_failed",
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
+  // Owner-chain prev[0] no longer matches the owner's committed head — a
+  // concurrent same-owner tx committed first. The accepting node rebuilds prev
+  // and requeues (bounded); invisible to the client.
+  OWNER_HEAD_STALE: "owner_head_stale",
   IDENTITY_ALREADY_REGISTERED: "identity_already_registered",
   CONTENT_ALREADY_REGISTERED: "content_already_registered",
   DOMAIN_ALREADY_CLAIMED: "domain_already_claimed",
@@ -847,6 +856,7 @@ module.exports = {
   DISPUTE_EPISODE_TX_TYPES,
   DISPUTE_EVENT_PRIORITY,
   TX_REJECTION_REASON,
+  OWNER_HEAD_STALE_MAX_RETRIES,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,

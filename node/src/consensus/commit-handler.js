@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, OWNER_HEAD_STALE_MAX_RETRIES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -55,7 +55,7 @@ const { ownerOf, ownerKey } = require("./tx-owner");
 // the registry can wire in here cleanly.
 void registerDomainSchema; void prescanReviewAcceptCorrectionSchema; void prescanReviewDisputeSchema;
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
-const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
+const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256, computeTxId } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
@@ -198,6 +198,44 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   // O(1) counter for /metrics (was a per-scrape 10k-row scan); benign re-broadcast
   // duplicates excluded to match the metric's intent.
   const _metrics = { committee_rotation_failures: 0 };
+
+  // Owner-chain STRICT prev[0] enforcement. Must be UNIFORM across the federation
+  // (it decides which txs commit), so it rides on the genesis/config as a
+  // fresh-chain property — the owner-chain "bundled reset" (#199/#193) turns it
+  // on; legacy chains and existing tests leave it off. Head-tracking (setOwnerHead)
+  // runs regardless; only the reject-on-mismatch is gated.
+  const _enforceOwnerChain = !!(config && config.enforceOwnerChainPrev);
+
+  // Owner-chain stale-head retry state (per-node, in-memory). Keyed by the tx's
+  // CONTENT signature — stable across prev rebuilds — so the bound survives the
+  // tx_id changing each retry. Not consensus state; a best-effort local liveness
+  // path (deterministic tx_id keeps nodes convergent regardless).
+  const _staleRetry = new Map();
+  function _staleKey(tx) {
+    return (tx.data && tx.data.signature) || tx.signature || tx.tx_id;
+  }
+  function _requeueOwnerStale(tx, round) {
+    const key = _staleKey(tx);
+    const n = (_staleRetry.get(key) || 0) + 1;
+    if (n > OWNER_HEAD_STALE_MAX_RETRIES) {
+      _staleRetry.delete(key);
+      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted (${tx.tx_type}) — dropping`);
+      return;
+    }
+    _staleRetry.set(key, n);
+    // Rebuild prev against the now-current head, recompute the content-addressed
+    // tx_id. The content signature is unchanged (it never covered prev), so the
+    // rebuilt tx re-verifies for client-signed txs; if it doesn't (e.g. a node
+    // sig scoped over the tx_id we can't re-sign here), drop instead of requeue.
+    const rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
+    rebuilt.tx_id = computeTxId(rebuilt);
+    if (rebuilt.tx_id === tx.tx_id) return;   // head didn't actually change; nothing to gain
+    if (!_verifyTxSignature(rebuilt)) {
+      log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) — dropping`);
+      return;
+    }
+    dag.saveMempoolTx(rebuilt);
+  }
   const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
   const _persistRejection = (tx, reason, detail, opts) => {
     if (reason === TX_REJECTION_REASON.REVALIDATION_FAILED
@@ -287,21 +325,29 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
 
     // Phase 2: Write all validated txs in one atomic SQLite transaction
     let committed = 0;
+    const staleTxs = [];
     if (validated.length > 0) {
       try {
         dag.runInTransaction(() => {
           for (const tx of validated) {
+            const owner = ownerOf(tx);
+            // Owner-chain STRICT prev[0]: must equal the owner's committed head,
+            // which advances in commit order below (same single-source rule the
+            // node used to ASSIGN prev). A mismatch means a concurrent same-owner
+            // tx committed first → OWNER_HEAD_STALE: skip it (do NOT apply, do NOT
+            // advance the head); it's rebuilt + requeued after the transaction.
+            if (_enforceOwnerChain && owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
+              staleTxs.push(tx);
+              continue;
+            }
             dag.addTx(tx);
             _applyDerivedState(tx, certTimestamp, round);
-            // Owner-chain head advances in commit order , canonical state,
-            // same rule on every node.
-            const owner = ownerOf(tx);
             if (owner) dag.setOwnerHead(ownerKey(owner), tx.tx_id);
             committed++;
           }
-          // Remove committed txs from mempool in the same transaction
-          const txIds = validated.map(t => t.tx_id);
-          dag.deleteMempoolTxs(txIds);
+          // Remove every processed tx (committed AND stale) from the mempool;
+          // stale ones are re-added below under a fresh tx_id.
+          dag.deleteMempoolTxs(validated.map(t => t.tx_id));
         });
       } catch (err) {
         log.error(`Round ${round}: transaction commit failed — rolled back ${validated.length} txs: ${err.message}`);
@@ -316,6 +362,19 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         committed = 0;
         dropped += validated.length;
       }
+    }
+
+    // Owner-chain stale-head retry (outside the txn): rebuild prev against the
+    // now-current head → fresh tx_id, re-verify (the content signature is
+    // unchanged by prev), and requeue to the local mempool, bounded. Best-effort
+    // local liveness (mempool is not consensus state; deterministic tx_id keeps
+    // nodes convergent). Invisible to clients — prev is node-assigned.
+    for (const tx of staleTxs) {
+      const cur = (dag.expectedOwnerHead(ownerOf(tx)) || "").slice(0, 12);
+      _persistRejection(tx, TX_REJECTION_REASON.OWNER_HEAD_STALE,
+        `owner head moved: prev[0]=${((tx.prev && tx.prev[0]) || "").slice(0, 12)} head=${cur}`, { round });
+      _requeueOwnerStale(tx, round);
+      dropped++;
     }
 
     // Phase 3 (Commit 3): post-round triggers. Run once per round,
