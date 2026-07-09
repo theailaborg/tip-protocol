@@ -171,13 +171,19 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
           if (t.tx_type !== TX_TYPES.REGISTER_CONTENT || !t.data) continue;
           if (t.data.content_hash !== contentHash || seen.has(t.data.ctid)) continue;
           seen.add(t.data.ctid);
-          const author = dag.getIdentity(t.data.signer_tip_id);
+          // Match the committed-row author derivation (commit-handler sets
+          // author_tip_id = authors[0].tip_id, the primary byline — which
+          // differs from signer_tip_id under employed/hosted attribution). A
+          // pending card must name the same author it will show once committed.
+          const authorTipId = (Array.isArray(t.data.authors) && t.data.authors[0] && t.data.authors[0].tip_id)
+            || t.data.signer_tip_id;
+          const author = dag.getIdentity(authorTipId);
           out.push({
             ctid: t.data.ctid,
             match_type: "exact_normalized",
             origin_code: t.data.origin_code,
             origin_label: ORIGIN_LABELS[t.data.origin_code] || t.data.origin_code,
-            author_tip_id: t.data.signer_tip_id,
+            author_tip_id: authorTipId,
             author_name: (author && author.creator_name) || null,
             status: "pending_commit",
             registered_at: t.timestamp,
