@@ -3860,6 +3860,43 @@ class SQLiteStore {
 // DAG FACADE  —  single interface over either store
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Owner-chain slot0: the tx_id that a tx from `owner` MUST reference in prev[0].
+// SINGLE SOURCE OF TRUTH for both prev ASSIGNMENT (prevFor, submit time) and
+// prev VALIDATION (commit-handler, commit time). If these two computed it
+// differently the chain would fork on every concurrent tx — so they share this.
+// = the owner's current committed head, else the entity's registration anchor
+// (chain-open points at the registrar's tx), else genesis.
+function _computeExpectedOwnerHead(store, owner) {
+  const { ownerKey } = require("./consensus/tx-owner");
+  const { GENESIS_TX_ID } = require("./genesis");
+  if (!owner) return GENESIS_TX_ID;
+  const anchor =
+    owner.entityType === "identity" ? (store.getIdentity(owner.entityId)?.tx_id || null)
+      : owner.entityType === "vp" ? (store.getVP(owner.entityId)?.tx_id || null)
+        : owner.entityType === "node" ? (store.getNode(owner.entityId)?.tx_id || null)
+          : null;   // rotation chain opens at genesis
+  return store.getOwnerHead(ownerKey(owner)) || anchor || GENESIS_TX_ID;
+}
+
+// Owner-chain prev pair assigned at submit time. slot0 = the owner's required
+// head (single source above); slot1 = advisory subject anchor. Shared by the
+// initDAG facade and the Knex adapter so both stores assign prev identically.
+function _computePrevFor(store, txType, data) {
+  const { ownerOf } = require("./consensus/tx-owner");
+  const { subjectTipId } = require("./tx-attribution");
+  const { GENESIS_TX_ID } = require("./genesis");
+  const owner = ownerOf({ tx_type: txType, data });
+  const slot0 = _computeExpectedOwnerHead(store, owner);
+  let slot1 = GENESIS_TX_ID;
+  const subject = subjectTipId({ tx_type: txType, data });
+  if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
+    slot1 = store.getOwnerHead(`identity:${subject}`)
+      || store.getIdentity(subject)?.tx_id
+      || GENESIS_TX_ID;
+  }
+  return [slot0, slot1];
+}
+
 // ─── Shared post-store-selection init (sync) ─────────────────────────────────
 // Called by both initDAG (SQLite/Memory) and initDAGAsync (Knex).
 // Returns the public dag API object.
@@ -3952,35 +3989,12 @@ function _buildDagHandle(store, config) {
      *   prev[1] , advisory subject anchor (subject identity's head when it
      *             differs from the owner), else GENESIS_TX_ID.
      */
-    prevFor: (txType, data) => {
-      // Lazy requires: tx-owner pulls the schema map; loading it at module
-      // scope would cycle through consensus at dag load time.
-      const { ownerOf, ownerKey } = require("./consensus/tx-owner");
-      const { subjectTipId } = require("./tx-attribution");
-      const { GENESIS_TX_ID } = require("./genesis");
+    prevFor: (txType, data) => _computePrevFor(store, txType, data),
 
-      const _registrationAnchor = (owner) => {
-        if (!owner) return null;
-        if (owner.entityType === "identity") return store.getIdentity(owner.entityId)?.tx_id || null;
-        if (owner.entityType === "vp") return store.getVP(owner.entityId)?.tx_id || null;
-        if (owner.entityType === "node") return store.getNode(owner.entityId)?.tx_id || null;
-        return null;   // rotation chain opens at genesis
-      };
-
-      const owner = ownerOf({ tx_type: txType, data });
-      const slot0 = (owner && store.getOwnerHead(ownerKey(owner)))
-        || _registrationAnchor(owner)
-        || GENESIS_TX_ID;
-
-      let slot1 = GENESIS_TX_ID;
-      const subject = subjectTipId({ tx_type: txType, data });
-      if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
-        slot1 = store.getOwnerHead(`identity:${subject}`)
-          || store.getIdentity(subject)?.tx_id
-          || GENESIS_TX_ID;
-      }
-      return [slot0, slot1];
-    },
+    // Owner-chain prev[0] the given owner MUST reference at commit time (same
+    // computation prevFor used at submit time). Commit-handler compares tx.prev[0]
+    // against this; a mismatch means the head moved (OWNER_HEAD_STALE).
+    expectedOwnerHead: (owner) => _computeExpectedOwnerHead(store, owner),
 
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
@@ -4536,4 +4550,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, _computeExpectedOwnerHead, _computePrevFor };
