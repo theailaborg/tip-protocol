@@ -120,6 +120,7 @@ function initScoring(dag, config) {
     };
     txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
+    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, config.nodePrivateKey);
   }
 

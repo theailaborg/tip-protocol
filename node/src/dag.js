@@ -29,7 +29,7 @@ const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
 const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
@@ -1491,9 +1491,39 @@ class MemoryStore {
   // ── Owner-chain heads (canonical) ─────────────────────────────────────────
   setOwnerHead(entityKey, txId) {
     this._ownerHeads.set(entityKey, txId);
+    // A committed head supersedes the pending chain base it confirms.
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (p && p.txId === txId) this._pendingOwnerHeads.delete(entityKey);
   }
   getOwnerHead(entityKey) {
     return this._ownerHeads.get(entityKey) || null;
+  }
+  // ── Pending owner heads (LOCAL, ephemeral , same-owner burst chaining) ────
+  // Last SEALED (not yet committed) tx per owner, so a burst chains
+  // tx1<-tx2<-tx3 in one round instead of serializing one per round via the
+  // stale-requeue path (the 2026-07-09 prescan-flood halt). Never canonical.
+  notePendingOwnerHead(entityKey, txId) {
+    if (!this._pendingOwnerHeads) this._pendingOwnerHeads = new Map();
+    if (!this._recentSealedTxIds) this._recentSealedTxIds = new Map();
+    this._pendingOwnerHeads.set(entityKey, { txId, at: nowMs() });
+    this._recentSealedTxIds.set(txId, nowMs());
+    if (this._recentSealedTxIds.size > 10_000) {
+      const cut = nowMs() - PENDING_OWNER_HEAD_TTL_MS;
+      for (const [id, at] of this._recentSealedTxIds) if (at < cut) this._recentSealedTxIds.delete(id);
+    }
+  }
+  getPendingOwnerHead(entityKey) {
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (!p) return null;
+    if (nowMs() - p.at > PENDING_OWNER_HEAD_TTL_MS) { this._pendingOwnerHeads.delete(entityKey); return null; }
+    return p.txId;
+  }
+  isPendingSealedTx(txId) {
+    const at = this._recentSealedTxIds && this._recentSealedTxIds.get(txId);
+    return !!at && nowMs() - at <= PENDING_OWNER_HEAD_TTL_MS;
+  }
+  resetPendingOwnerHead(entityKey) {
+    if (this._pendingOwnerHeads) this._pendingOwnerHeads.delete(entityKey);
   }
 
   // ── #88 incremental state tree ────────────────────────────────────────────
@@ -3537,10 +3567,31 @@ class SQLiteStore {
   // primary-key index, so sorting is free (no temp table / external sort).
   setOwnerHead(entityKey, txId) {
     this._stmts.setOwnerHead.run(entityKey, txId);
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (p && p.txId === txId) this._pendingOwnerHeads.delete(entityKey);
   }
   getOwnerHead(entityKey) {
     const r = this._stmts.getOwnerHead.get(entityKey);
     return r ? r.tx_id : null;
+  }
+  notePendingOwnerHead(entityKey, txId) {
+    if (!this._pendingOwnerHeads) this._pendingOwnerHeads = new Map();
+    if (!this._recentSealedTxIds) this._recentSealedTxIds = new Map();
+    this._pendingOwnerHeads.set(entityKey, { txId, at: nowMs() });
+    this._recentSealedTxIds.set(txId, nowMs());
+  }
+  getPendingOwnerHead(entityKey) {
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (!p) return null;
+    if (nowMs() - p.at > PENDING_OWNER_HEAD_TTL_MS) { this._pendingOwnerHeads.delete(entityKey); return null; }
+    return p.txId;
+  }
+  isPendingSealedTx(txId) {
+    const at = this._recentSealedTxIds && this._recentSealedTxIds.get(txId);
+    return !!at && nowMs() - at <= PENDING_OWNER_HEAD_TTL_MS;
+  }
+  resetPendingOwnerHead(entityKey) {
+    if (this._pendingOwnerHeads) this._pendingOwnerHeads.delete(entityKey);
   }
 
   stateRoot() {
@@ -3918,11 +3969,15 @@ function _computeExpectedOwnerHead(store, owner) {
 // head (single source above); slot1 = advisory subject anchor. Shared by the
 // initDAG facade and the Knex adapter so both stores assign prev identically.
 function _computePrevFor(store, txType, data) {
-  const { ownerOf } = require("./consensus/tx-owner");
+  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
   const { subjectTipId } = require("./tx-attribution");
   const { GENESIS_TX_ID } = require("./genesis");
   const owner = ownerOf({ tx_type: txType, data });
-  const slot0 = _computeExpectedOwnerHead(store, owner);
+  // Chain onto our own SEALED-but-pending tx first (burst chaining); the
+  // committed head is the base only when no fresh pending link exists.
+  const pending = owner && typeof store.getPendingOwnerHead === "function"
+    ? store.getPendingOwnerHead(ownerKey(owner)) : null;
+  const slot0 = pending || _computeExpectedOwnerHead(store, owner);
   let slot1 = GENESIS_TX_ID;
   const subject = subjectTipId({ tx_type: txType, data });
   if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
@@ -3931,6 +3986,14 @@ function _computePrevFor(store, txType, data) {
       || GENESIS_TX_ID;
   }
   return [slot0, slot1];
+}
+
+// Record a freshly-sealed tx as its owner's pending chain base (burst chaining).
+function _noteSealedTx(store, txType, data, txId) {
+  if (typeof store.notePendingOwnerHead !== "function") return;
+  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
+  const owner = ownerOf({ tx_type: txType, data });
+  if (owner) store.notePendingOwnerHead(ownerKey(owner), txId);
 }
 
 // ─── Shared post-store-selection init (sync) ─────────────────────────────────
@@ -4027,6 +4090,11 @@ function _buildDagHandle(store, config) {
     // computation prevFor used at submit time). Commit-handler compares tx.prev[0]
     // against this; a mismatch means the head moved (OWNER_HEAD_STALE).
     expectedOwnerHead: (owner) => _computeExpectedOwnerHead(store, owner),
+    // Burst chaining hooks: sealers record each sealed tx; the stale path
+    // resets a broken chain so rebuilds restart from the committed head.
+    noteSealedTx: (txType, data, txId) => _noteSealedTx(store, txType, data, txId),
+    isPendingSealedTx: (txId) => typeof store.isPendingSealedTx === "function" ? store.isPendingSealedTx(txId) : false,
+    resetPendingOwnerHead: (entityKey) => typeof store.resetPendingOwnerHead === "function" ? store.resetPendingOwnerHead(entityKey) : undefined,
 
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
@@ -4592,4 +4660,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, _computeExpectedOwnerHead, _computePrevFor };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx };

@@ -31,6 +31,15 @@ function _finalizePrev(txBody) {
   return txBody;
 }
 
+// Burst chaining: record the sealed tx as its owner's pending chain base so
+// the next same-owner seal chains onto it instead of racing it.
+function _noteSealed(txBody) {
+  if (_prevDag && typeof _prevDag.noteSealedTx === "function" && txBody.tx_id) {
+    _prevDag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
+  }
+  return txBody;
+}
+
 /**
  * Assign content-addressed tx_id (no node signature). Finalizes owner-chain
  * prev first , prev participates in tx_id, so it must be last-write.
@@ -38,7 +47,7 @@ function _finalizePrev(txBody) {
 function withTxId(txBody) {
   _finalizePrev(txBody);
   txBody.tx_id = computeTxId(txBody);
-  return txBody;
+  return _noteSealed(txBody);
 }
 
 /**
@@ -48,6 +57,7 @@ function nodeSignedAuto(txBody, config) {
   txBody.data.node_id = config.nodeRegisteredId || config.nodeId;
   _finalizePrev(txBody);
   txBody.tx_id = computeTxId(txBody);
+  _noteSealed(txBody);
   return signTransaction(txBody, config.nodePrivateKey);
 }
 

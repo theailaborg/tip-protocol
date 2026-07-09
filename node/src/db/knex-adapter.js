@@ -19,7 +19,7 @@
 // MemoryStore is exported from dag.js. dag.js does NOT require knex-adapter at
 // load time (only inside initDAGAsync), so by the time knex-adapter.js first
 // loads, dag.js is fully cached — no circular-dep hazard.
-const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead } = require("../dag");
+const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
@@ -1071,6 +1071,9 @@ class KnexAdapter {
   // assigned and validated identically on every store.
   prevFor(txType, data) { return _computePrevFor(this.mirror, txType, data); }
   expectedOwnerHead(owner) { return _computeExpectedOwnerHead(this.mirror, owner); }
+  noteSealedTx(txType, data, txId) { return _noteSealedTx(this.mirror, txType, data, txId); }
+  isPendingSealedTx(txId) { return this.mirror.isPendingSealedTx(txId); }
+  resetPendingOwnerHead(entityKey) { return this.mirror.resetPendingOwnerHead(entityKey); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
   clearCanonicalState() {

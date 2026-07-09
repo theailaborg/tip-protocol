@@ -99,4 +99,63 @@ describe("commit-handler — owner-chain prev validation + stale-head retry (#19
     expect(fx.dag.getOwnerHead(OWNER)).toBe(requeued.tx_id);
   });
 
+  test("burst chaining: three same-owner txs sealed in a burst commit in ONE round", () => {
+    const fx = _setup();
+    const txs = [];
+    for (let i = 0; i < 3; i++) {
+      const tx = _contentTx(fx.dag, fx.authorKp, `burst-${i}`);
+      fx.dag.noteSealedTx(tx.tx_type, tx.data, tx.tx_id);   // what withTxId does at seal
+      txs.push(tx);
+    }
+    // Each seal chained onto the previous pending tx, not the committed head.
+    expect(txs[1].prev[0]).toBe(txs[0].tx_id);
+    expect(txs[2].prev[0]).toBe(txs[1].tx_id);
+
+    const res = fx.handler.commitOrderedTxs(txs, 1);
+    expect(res.committed).toBe(3);
+    expect(res.dropped).toBe(0);
+    expect(fx.dag.getOwnerHead(OWNER)).toBe(txs[2].tx_id);
+  });
+
+  test("broken chain: whole tail stales, requeues re-chained, commits next round", () => {
+    const fx = _setup();
+    // A foreign-view tx commits first and moves the head.
+    const winner = _contentTx(fx.dag, fx.authorKp, "winner");
+    fx.dag.noteSealedTx(winner.tx_type, winner.data, winner.tx_id);
+    // A chained burst sealed against the SAME base (before winner committed
+    // elsewhere) arrives after the winner in the ordered batch.
+    const t1 = _contentTx(fx.dag, fx.authorKp, "chain-1");
+    fx.dag.noteSealedTx(t1.tx_type, t1.data, t1.tx_id);
+    const t2 = _contentTx(fx.dag, fx.authorKp, "chain-2");
+    fx.dag.noteSealedTx(t2.tx_type, t2.data, t2.tx_id);
+    expect(t1.prev[0]).toBe(winner.tx_id);   // chained onto pending winner
+
+    // Round 1: winner commits; t1/t2 follow the chain and also commit
+    // (chain intact since winner won). Now break a chain for real:
+    const res1 = fx.handler.commitOrderedTxs([winner, t1, t2], 1);
+    expect(res1.committed).toBe(3);
+
+    // Seal two txs chained on a base that will lose the race.
+    const loserBase = _contentTx(fx.dag, fx.authorKp, "loser-base");
+    // do NOT note it (simulates a competing node's seal we never saw), then
+    // seal a local chain against the stale committed head:
+    const s1 = { ...loserBase };   // same prev base as head
+    const s2 = _contentTx(fx.dag, fx.authorKp, "local-2", { prev: [s1.tx_id, s1.prev[1]] });
+    // Competing tx from the same owner commits first (head moves):
+    const competitor = _contentTx(fx.dag, fx.authorKp, "competitor");
+    const resA = fx.handler.commitOrderedTxs([competitor], 2);
+    expect(resA.committed).toBe(1);
+
+    // Now the stale chain arrives: both stale, both requeue re-chained.
+    const resB = fx.handler.commitOrderedTxs([s1, s2], 3);
+    expect(resB.committed).toBe(0);
+    const requeued = fx.dag.getMempoolTxs();
+    expect(requeued.length).toBe(2);
+    expect(requeued[0].prev[0]).toBe(competitor.tx_id);        // rebuilt from new head
+    expect(requeued[1].prev[0]).toBe(requeued[0].tx_id);       // re-chained onto sibling
+
+    // Next round: the re-chained pair commits together.
+    const resC = fx.handler.commitOrderedTxs(requeued, 4);
+    expect(resC.committed).toBe(2);
+  });
 });

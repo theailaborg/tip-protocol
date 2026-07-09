@@ -733,11 +733,15 @@ const CASES = [
       const vote = "MATCH";
       const salt = "salt-reveal";
       const commitment = shake256(`${vote}:${salt}`);
-      // The juror's prior sealed commitment the reveal must match.
-      h.dag.addTx(withTxId({
+      // The juror's prior sealed commitment the reveal must match. Seeded
+      // directly (no commit-handler), so advance the owner head the way its
+      // commit would have , otherwise the reveal chains onto it and stales.
+      const commitTx = withTxId({
         tx_type: "JURY_VOTE_COMMIT", timestamp: nowMs() - 1_800_000, prev: h.dag.getRecentPrev(),
         data: { ctid, juror_tip_id: jurorTipId, commitment, is_appeal: false },
-      }));
+      });
+      h.dag.addTx(commitTx);
+      h.dag.setOwnerHead(`identity:${jurorTipId}`, commitTx.tx_id);
       return { ctid, jurorTipId, jurorKp, vote, salt };
     },
     submit: (h, ctx) => {

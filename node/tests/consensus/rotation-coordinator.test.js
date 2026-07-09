@@ -865,11 +865,12 @@ describe("#68 rotation coordinator", () => {
     };
     const aMsg = `rotation:${proposal.payload_hash}:${ids[0].node_id}`;
     const aSig = mldsaSign(aMsg, a.privateKey);
-    const tx = buildRotationTx(dag, proposal, [ids[0].node_id], [aSig]);
-
     // Owner-chain (#199): rotation txs chain on rotation:committee; the first
     // rotation anchors at genesis, later ones at the previous rotation tx.
-    expect(tx.prev).toEqual(dag.prevFor(tx.tx_type, tx.data));
+    // Capture the expectation BEFORE building , sealing notes the pending head.
+    const expectedPrev = dag.prevFor("COMMITTEE_ROTATION", { rotation_number: 2 });
+    const tx = buildRotationTx(dag, proposal, [ids[0].node_id], [aSig]);
+    expect(tx.prev).toEqual(expectedPrev);
     const result = validateTransaction(tx, dag, { skipState: true });
     expect(result).toEqual({ valid: true, errors: [], layer: null });
   });
