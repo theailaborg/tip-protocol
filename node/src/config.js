@@ -40,22 +40,31 @@ function loadNodeKeypair() {
     let doc;
     try { doc = JSON.parse(fs.readFileSync(credFile, "utf8")); }
     catch (e) { throw new Error(`TIP_NODE_CREDENTIALS_FILE "${credFile}" is unreadable or not valid JSON: ${e.message}`); }
-    return { privateKey: doc.private_key || null, publicKey: doc.public_key || null };
+    return { privateKey: doc.private_key || null, publicKey: doc.public_key || null, nodeId: doc.node_id || null };
   }
   return {
     privateKey: secretFromEnvOrFile("TIP_NODE_PRIVATE_KEY"),
     publicKey: secretFromEnvOrFile("TIP_NODE_PUBLIC_KEY"),
+    nodeId: null,
   };
 }
 
 function loadConfig() {
-  // Generate a stable node ID from hostname + a fixed seed if not set
+  const nodeKeys = loadNodeKeypair();
+
+  // Node id: prefer the credential file's node_id (the key IS the identity),
+  // fall back to TIP_NODE_ID, then a hostname hash. A mismatch between an
+  // explicit TIP_NODE_ID and the credential node_id is fatal , a node
+  // announcing an id its key doesn't back is rejected by every peer as
+  // "not in registry" and runs as a silent spectator at zero fault
+  // tolerance (2026-07-10 incident).
+  if (nodeKeys.nodeId && process.env.TIP_NODE_ID && process.env.TIP_NODE_ID !== nodeKeys.nodeId) {
+    throw new Error(`TIP_NODE_ID (${process.env.TIP_NODE_ID}) does not match the credential file node_id (${nodeKeys.nodeId}). The signing key defines the identity; fix TIP_NODE_ID or point TIP_NODE_CREDENTIALS_FILE at the right key.`);
+  }
   const { shake256: _shake } = require("../../shared/crypto");
-  const defaultNodeId = process.env.TIP_NODE_ID ||
+  const defaultNodeId = nodeKeys.nodeId || process.env.TIP_NODE_ID ||
     _shake(require("os").hostname() + "tip-node-v2")
       .slice(0, 16);
-
-  const nodeKeys = loadNodeKeypair();
 
   return {
     // ── Node identity ──────────────────────────────────────────────────────────
