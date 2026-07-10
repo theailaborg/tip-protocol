@@ -1654,9 +1654,20 @@ class KnexAdapter {
       // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const conflictTarget = pks.length === 1 ? pks[0] : pks;
+      // Merge buffers can carry repeated writes to one key (stream row +
+      // install-progress markers, e.g. consensus_meta). Postgres rejects a
+      // single INSERT..ON CONFLICT DO UPDATE touching the same key twice
+      // ("cannot affect row a second time"), so collapse to the LAST write
+      // per key , identical to applying the buffered upserts in order.
+      let rowsOut = rows;
+      if (onConflict === "merge") {
+        const byPk = new Map();
+        for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
+        rowsOut = [...byPk.values()];
+      }
       try {
-        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          const chunk = rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+        for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
           const q = this._k(table).insert(chunk).onConflict(conflictTarget);
           await (onConflict === "merge" ? q.merge() : q.ignore())
             .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
