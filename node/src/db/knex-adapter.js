@@ -23,7 +23,7 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/constants");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -304,6 +304,64 @@ class KnexAdapter {
     this._isOracleDB = (driver === "oracle" || driver === "oracledb");
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
     this._noOnConflict = this._isOracleDB || driver === "mssql" || driver === "sqlserver";
+
+    // Persistence watchdog. The _ff chain fail-stops on write ERRORS, but a
+    // HANG froze it silently while the mirror ran ahead (2026-07-10 incident:
+    // a raw-pool write deadlocked against its own commit batch's row lock;
+    // all three nodes ran split-brained for 30+ minutes with green metrics).
+    // A wedged chain queues every later write behind it, so fail-stop and
+    // let the restart resume from the consistent DB.
+    this._ffPendingSince = [];
+    this._ffLastSettledMs = nowMs();
+    this._ffWatchdog = setInterval(() => {
+      const s = this.persistenceStats();
+      if (s.oldest_pending_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
+        this.log.error(`KnexAdapter: oldest pending DB write stalled for ${Math.round(s.oldest_pending_ms / 1000)}s (queue depth ${s.queue_depth}), persistence wedged, fail-stop`);
+        process.exit(78);
+      }
+    }, DB_WATCHDOG_TICK_MS);
+    this._ffWatchdog.unref?.();
+
+    // Memory-vs-DB parity: mirror-first writes + a FIFO chain mean the DB
+    // must EXACTLY equal the mirror once the chain drains. Probing through
+    // the chain makes the check race-free.
+    this._parityTimer = setInterval(() => this._enqueueParityProbe(), DB_PARITY_PROBE_INTERVAL_MS);
+    this._parityTimer.unref?.();
+  }
+
+  persistenceStats() {
+    const now = nowMs();
+    return {
+      queue_depth: this._ffPendingSince.length,
+      oldest_pending_ms: this._ffPendingSince.length ? now - this._ffPendingSince[0] : 0,
+      last_settled_age_ms: now - this._ffLastSettledMs,
+    };
+  }
+
+  // Snapshot mirror counts synchronously, then compare against the DB from
+  // inside the write chain: by the time the probe runs, the DB holds exactly
+  // the writes enqueued before the snapshot (every mutator writes the mirror
+  // and enqueues its DB write in the same synchronous step).
+  _enqueueParityProbe() {
+    if (this._bulkInstall || this._txBuffer || !this.mirror) return;
+    const expected = {
+      transactions: this.mirror._txs.size,
+      content: this.mirror._content.size,
+      identities: this.mirror._identities.size,
+      nodes: this.mirror._nodes.size,
+      owner_heads: this.mirror._ownerHeads.size,
+      commits: this.mirror._commits.size,
+    };
+    this._ff(async () => {
+      for (const [table, want] of Object.entries(expected)) {
+        const row = await this._k(table).count({ n: "*" }).first();
+        const got = Number(row && row.n);
+        if (got !== want) {
+          this.log.error(`KnexAdapter parity probe: ${table} mirror=${want} db=${got}, memory and DB diverged, fail-stop`);
+          process.exit(78);
+        }
+      }
+    });
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────
@@ -602,6 +660,7 @@ class KnexAdapter {
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
+    this._ffPendingSince.push(nowMs());
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
       .catch(err => {
@@ -612,6 +671,10 @@ class KnexAdapter {
         // now; restart + anti-entropy resync self-heal from peers.
         this.log.error(`KnexAdapter write failed , persistence lost, fail-stop: ${err.message}`);
         process.exit(78);
+      })
+      .finally(() => {
+        this._ffPendingSince.shift();
+        this._ffLastSettledMs = nowMs();
       });
   }
 
@@ -1444,6 +1507,7 @@ class KnexAdapter {
     // A synchronous throw above propagates here (buffer discarded, nothing
     // flushed) — all-or-nothing, matching the SQLite path.
     if (buffer.length > 0) {
+      this._ffPendingSince.push(nowMs());
       this._ffChain = (this._ffChain || Promise.resolve())
         .then(() => this.knex.transaction(async (trx) => {
           const prevTrx = this._activeTrx;
@@ -1454,7 +1518,11 @@ class KnexAdapter {
             this._activeTrx = prevTrx;
           }
         }))
-        .catch(err => this.log.warn(`KnexAdapter transaction rolled back: ${err.message}`));
+        .catch(err => this.log.warn(`KnexAdapter transaction rolled back: ${err.message}`))
+        .finally(() => {
+          this._ffPendingSince.shift();
+          this._ffLastSettledMs = nowMs();
+        });
     }
     return result;
   }
@@ -1684,6 +1752,8 @@ class KnexAdapter {
   endBulkInstall() { this._bulkInstall = null; }
 
   close() {
+    clearInterval(this._ffWatchdog);
+    clearInterval(this._parityTimer);
     try { this.knex.destroy(); } catch { /* ignore */ }
   }
 }

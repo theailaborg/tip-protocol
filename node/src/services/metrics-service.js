@@ -110,9 +110,17 @@ function dagSection(dag) {
   let txCount = 0, certCount = 0;
   try { txCount = dag.count?.() ?? 0; } catch { /* ignore */ }
   try { certCount = dag.certificateCount?.() ?? 0; } catch { /* ignore */ }
+  // Memory-to-disk distance. Every other gauge reads the in-memory mirror;
+  // these are the only signal when persistence wedges while memory runs on
+  // (2026-07-10 incident: DB frozen 30+ min behind, dashboards all green).
+  let ps = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 };
+  try { ps = dag.persistenceStats?.() ?? ps; } catch { /* ignore */ }
   return [
     gauge("tip_dag_tx_count", "Total transactions committed to the DAG", txCount),
     gauge("tip_dag_cert_count", "Certificates currently in the DAG (bounded by cert GC)", certCount),
+    gauge("tip_db_write_queue_depth", "Pending writes in the fire-and-forget persistence chain", ps.queue_depth),
+    gauge("tip_db_oldest_pending_write_ms", "Age of the oldest unsettled DB write; alert threshold well below the 60s fail-stop", ps.oldest_pending_ms),
+    gauge("tip_db_last_write_settled_age_ms", "Time since the persistence chain last settled a write", ps.last_settled_age_ms),
   ].join("\n");
 }
 

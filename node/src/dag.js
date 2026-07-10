@@ -4149,6 +4149,9 @@ function _buildDagHandle(store, config) {
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
+    persistenceStats: () => (typeof store.persistenceStats === "function"
+      ? store.persistenceStats()
+      : { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 }),
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
     setOwnerHead: (entityKey, txId) => store.setOwnerHead(entityKey, txId),
