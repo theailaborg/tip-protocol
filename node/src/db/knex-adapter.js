@@ -505,6 +505,16 @@ class KnexAdapter {
       this.mirror._certs.set(cert.hash, cert);
     }
 
+    // Owner-chain heads , canonical (in state_merkle_root). Without this
+    // hydration a restarted node boots with EMPTY heads while peers hold the
+    // real ones: commit validation diverges on the first tx from any
+    // pre-restart owner. Caught by the parity probe on 2026-07-10, minutes
+    // after the probe shipped.
+    const ownerHeadRows = await this.knex("owner_heads").select("*");
+    for (const row of ownerHeadRows) {
+      this.mirror._ownerHeads.set(row.entity_key, row.tx_id);
+    }
+
     // Commits
     const commitRows = await this.knex("commits").select("*");
     for (const row of commitRows) {

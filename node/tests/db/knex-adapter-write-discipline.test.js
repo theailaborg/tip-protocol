@@ -83,6 +83,23 @@ describe("persistenceStats + parity probe", () => {
     }
   });
 
+  test("owner_heads survive an adapter restart (hydration)", async () => {
+    // 2026-07-10: setOwnerHead persisted but _hydrate never loaded the rows
+    // back, so every Postgres restart silently wiped the in-memory heads
+    // while peers kept theirs , asymmetric restarts would fork commit
+    // validation. Found live by the parity probe crash-looping node1.
+    a.setOwnerHead("identity:tip://id/US-hydrate-test", "txid-head-1");
+    await a._ffChain;
+    const b = new KnexAdapter("better-sqlite3", { dbName: path.join(tmpDir, "parity.db") }, logStub);
+    try {
+      await b.migrate();
+      expect(b.getOwnerHead("identity:tip://id/US-hydrate-test")).toBe("txid-head-1");
+    } finally {
+      b.close();
+      try { await b.knex.destroy(); } catch { /* ignore */ }
+    }
+  });
+
   test("parity probe fail-stops when a DB row silently disappears", async () => {
     await a.knex("content").where("tip_ctid", "parity-ct").del();   // simulate a lost write
     const exit = jest.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit-78"); });
