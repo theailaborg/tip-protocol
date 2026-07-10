@@ -110,9 +110,8 @@ function dagSection(dag) {
   let txCount = 0, certCount = 0;
   try { txCount = dag.count?.() ?? 0; } catch { /* ignore */ }
   try { certCount = dag.certificateCount?.() ?? 0; } catch { /* ignore */ }
-  // Memory-to-disk distance. Every other gauge reads the in-memory mirror;
-  // these are the only signal when persistence wedges while memory runs on
-  // (2026-07-10 incident: DB frozen 30+ min behind, dashboards all green).
+  // Memory-to-disk distance: the only gauges not fed by the mirror, so the
+  // only signal when persistence wedges while memory runs on (2026-07-10).
   let ps = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 };
   try { ps = dag.persistenceStats?.() ?? ps; } catch { /* ignore */ }
   return [

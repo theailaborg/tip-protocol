@@ -4152,6 +4152,7 @@ function _buildDagHandle(store, config) {
     persistenceStats: () => (typeof store.persistenceStats === "function"
       ? store.persistenceStats()
       : { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 }),
+    startPersistenceGuards: () => { if (typeof store.startPersistenceGuards === "function") store.startPersistenceGuards(); },
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
     setOwnerHead: (entityKey, txId) => store.setOwnerHead(entityKey, txId),

@@ -305,14 +305,15 @@ class KnexAdapter {
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
     this._noOnConflict = this._isOracleDB || driver === "mssql" || driver === "sqlserver";
 
-    // Persistence watchdog. The _ff chain fail-stops on write ERRORS, but a
-    // HANG froze it silently while the mirror ran ahead (2026-07-10 incident:
-    // a raw-pool write deadlocked against its own commit batch's row lock;
-    // all three nodes ran split-brained for 30+ minutes with green metrics).
-    // A wedged chain queues every later write behind it, so fail-stop and
-    // let the restart resume from the consistent DB.
     this._ffPendingSince = [];
     this._ffLastSettledMs = nowMs();
+  }
+
+  // Armed at node boot, not construction: constructor timers leak into test
+  // and tooling processes and fail-stop them spuriously. The _ff chain
+  // fail-stops on errors but a HANG runs split-brained (2026-07-10), hence both.
+  startPersistenceGuards() {
+    if (this._ffWatchdog) return;
     this._ffWatchdog = setInterval(() => {
       const s = this.persistenceStats();
       if (s.oldest_pending_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
@@ -321,10 +322,6 @@ class KnexAdapter {
       }
     }, DB_WATCHDOG_TICK_MS);
     this._ffWatchdog.unref?.();
-
-    // Memory-vs-DB parity: mirror-first writes + a FIFO chain mean the DB
-    // must EXACTLY equal the mirror once the chain drains. Probing through
-    // the chain makes the check race-free.
     this._parityTimer = setInterval(() => this._enqueueParityProbe(), DB_PARITY_PROBE_INTERVAL_MS);
     this._parityTimer.unref?.();
   }
@@ -338,19 +335,27 @@ class KnexAdapter {
     };
   }
 
-  // Snapshot mirror counts synchronously, then compare against the DB from
-  // inside the write chain: by the time the probe runs, the DB holds exactly
-  // the writes enqueued before the snapshot (every mutator writes the mirror
-  // and enqueues its DB write in the same synchronous step).
+  // Mirror counts snapshotted synchronously, compared from inside the FIFO
+  // chain: the DB then holds exactly the writes enqueued before the snapshot.
   _enqueueParityProbe() {
     if (this._bulkInstall || this._txBuffer || !this.mirror) return;
+    // Every SMT-backed canonical table plus the chain itself; counts catch
+    // lost or extra rows, boot rehydration re-establishes exact equality.
     const expected = {
       transactions: this.mirror._txs.size,
-      content: this.mirror._content.size,
-      identities: this.mirror._identities.size,
-      nodes: this.mirror._nodes.size,
-      owner_heads: this.mirror._ownerHeads.size,
       commits: this.mirror._commits.size,
+      identities: this.mirror._identities.size,
+      content: this.mirror._content.size,
+      scores: this.mirror._scores.size,
+      revocations: this.mirror._revocations.size,
+      verification_providers: this.mirror._vps.size,
+      nodes: this.mirror._nodes.size,
+      entity_keys: this.mirror._entityKeys.size,
+      interests_registry: this.mirror._interestsRegistry.size,
+      prescan_reviews: this.mirror._prescanReviews.size,
+      domain_bindings: this.mirror._domainBindings.size,
+      owner_heads: this.mirror._ownerHeads.size,
+      platform_links: this.mirror._platformLinks.size,
     };
     this._ff(async () => {
       for (const [table, want] of Object.entries(expected)) {
@@ -505,11 +510,8 @@ class KnexAdapter {
       this.mirror._certs.set(cert.hash, cert);
     }
 
-    // Owner-chain heads , canonical (in state_merkle_root). Without this
-    // hydration a restarted node boots with EMPTY heads while peers hold the
-    // real ones: commit validation diverges on the first tx from any
-    // pre-restart owner. Caught by the parity probe on 2026-07-10, minutes
-    // after the probe shipped.
+    // Owner-chain heads: without hydration a restarted node boots with empty
+    // heads while peers hold the real ones, forking commit validation.
     const ownerHeadRows = await this.knex("owner_heads").select("*");
     for (const row of ownerHeadRows) {
       this.mirror._ownerHeads.set(row.entity_key, row.tx_id);
@@ -1732,11 +1734,8 @@ class KnexAdapter {
       // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const conflictTarget = pks.length === 1 ? pks[0] : pks;
-      // Merge buffers can carry repeated writes to one key (stream row +
-      // install-progress markers, e.g. consensus_meta). Postgres rejects a
-      // single INSERT..ON CONFLICT DO UPDATE touching the same key twice
-      // ("cannot affect row a second time"), so collapse to the LAST write
-      // per key , identical to applying the buffered upserts in order.
+      // Postgres rejects one upsert statement touching a key twice; collapse
+      // merge buffers to the last write per key (same as applying in order).
       let rowsOut = rows;
       if (onConflict === "merge") {
         const byPk = new Map();

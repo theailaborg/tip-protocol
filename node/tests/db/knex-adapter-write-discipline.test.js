@@ -52,6 +52,22 @@ describe("persistenceStats + parity probe", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test("guards are armed only by startPersistenceGuards, not construction", () => {
+    // Constructor-armed timers leak into test/tool processes and fail-stop them.
+    expect(a._ffWatchdog).toBeUndefined();
+    expect(a._parityTimer).toBeUndefined();
+    a.startPersistenceGuards();
+    try {
+      expect(a._ffWatchdog).toBeDefined();
+      expect(a._parityTimer).toBeDefined();
+    } finally {
+      clearInterval(a._ffWatchdog);
+      clearInterval(a._parityTimer);
+      a._ffWatchdog = undefined;
+      a._parityTimer = undefined;
+    }
+  });
+
   test("stats track a hanging write and recover when it settles", async () => {
     expect(a.persistenceStats().queue_depth).toBe(0);
     let release;
@@ -84,10 +100,7 @@ describe("persistenceStats + parity probe", () => {
   });
 
   test("owner_heads survive an adapter restart (hydration)", async () => {
-    // 2026-07-10: setOwnerHead persisted but _hydrate never loaded the rows
-    // back, so every Postgres restart silently wiped the in-memory heads
-    // while peers kept theirs , asymmetric restarts would fork commit
-    // validation. Found live by the parity probe crash-looping node1.
+    // Unhydrated heads after a restart fork commit validation across nodes.
     a.setOwnerHead("identity:tip://id/US-hydrate-test", "txid-head-1");
     await a._ffChain;
     const b = new KnexAdapter("better-sqlite3", { dbName: path.join(tmpDir, "parity.db") }, logStub);

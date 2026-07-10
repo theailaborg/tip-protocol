@@ -118,15 +118,10 @@ const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 // throttled because the walk is O(state).
 const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 
-// Persistence watchdog (Knex/Postgres): the fire-and-forget write chain
-// fail-stops on ERRORS, but a HANG (2026-07-10: raw-pool write deadlocked
-// against its own commit batch's row lock) froze it silently while the
-// in-memory mirror ran ahead. Fail-stop when the oldest pending write
-// stalls; restart resumes from the consistent DB.
+// Persistence guards: fail-stop when the oldest pending DB write stalls (a
+// hung chain runs split-brained, 2026-07-10), and probe mirror-vs-DB parity.
 const DB_WRITE_STALL_FAIL_STOP_MS = 60_000;
 const DB_WATCHDOG_TICK_MS = 5_000;
-// Memory-vs-DB parity probe cadence: with the write chain drained, the DB
-// must exactly equal the mirror; a mismatch means writes were lost.
 const DB_PARITY_PROBE_INTERVAL_MS = 60_000;
 
 // Install crash marker in consensus_meta: set before the wipe, cleared on

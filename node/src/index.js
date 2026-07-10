@@ -103,6 +103,7 @@ async function main() {
   }
 
   const dag = await initDAGAsync(config);
+  dag.startPersistenceGuards();
   log.notice(`DB          : connected (${effectiveDriver})`);
   log.info(`DAG initialised. Transactions: ${dag.count()}`);
 

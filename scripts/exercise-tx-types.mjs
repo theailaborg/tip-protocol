@@ -1,5 +1,5 @@
 /**
- * exercise-tx-types.mjs — drive every API-reachable tx type against the live
+ * exercise-tx-types.mjs, drive every API-reachable tx type against the live
  * local cluster and report which types landed on chain.
  *
  * Uses genesis-data/backups key material: founding VP (registrations,
