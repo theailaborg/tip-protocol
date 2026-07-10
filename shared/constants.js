@@ -847,10 +847,18 @@ const MLDSA65_PUBKEY_BYTES = 1952;
 const CLASSIFIER_BREAK_AFTER = 3;
 const CLASSIFIER_COOLDOWN_MS = 60000;
 
+// Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid. A dropped
+// fail-open (an OWNER_HEAD_STALE rebuild of a node-signed tx drops as
+// foreign-signed) leaves the content stuck, and re-emitting on every anchor
+// turned recovery into a self-flood: hundreds of ML-DSA signings per minute
+// starved the event loop cluster-wide (2026-07-10).
+const PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS = 5 * 60_000;
+
 module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
   CLASSIFIER_BREAK_AFTER,
   CLASSIFIER_COOLDOWN_MS,
+  PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
   ORIGIN,
