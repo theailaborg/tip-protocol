@@ -104,4 +104,28 @@ describe("#91 KnexAdapter.runInTransaction atomicity (file-SQLite via Knex)", ()
     const rows = await a.knex("committee_history").where("rotation_number", 9).select("*");
     expect(rows).toHaveLength(0);
   });
+
+  test("row updates inside a failed batch roll back too (no raw-pool escape)", async () => {
+    // Live incident 2026-07-10: updateContentOrigin wrote via this.knex (raw
+    // pool) instead of this._k (transaction routing). Inside a commit batch
+    // that had already locked the same content row, the escaped write sat on
+    // a second connection waiting for the batch's row lock while the batch
+    // waited on the flush: a client-side deadlock Postgres cannot detect.
+    // All three cluster nodes froze persistence mid-transaction for 30+ min.
+    // Atomicity is the observable contract: a failed batch must revert the
+    // update; an escaped raw-pool write would survive.
+    a.saveContent({
+      ctid: "trx-escape-ct", origin_code: "OH", content_hash: "h",
+      author_tip_id: "a", signer_tip_id: "a", cna_version: "CNA-2.2",
+      status: "registered", registered_at: 1,
+    });
+    await drain();
+    a.runInTransaction(() => {
+      a.updateContentOrigin("trx-escape-ct", "AG", "registered");
+      a._ff(() => { throw new Error("forced mid-batch failure"); });
+    });
+    await drain();
+    const row = await a.knex("content").where("tip_ctid", "trx-escape-ct").first();
+    expect(row.origin_code).toBe("OH");
+  });
 });

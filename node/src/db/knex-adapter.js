@@ -872,7 +872,7 @@ class KnexAdapter {
   deleteDisputeDetails(hash) {
     const removed = this.mirror.deleteDisputeDetails(hash);
     if (removed) {
-      this._ff(() => this.knex("dispute_details").where("evidence_hash", hash).del());
+      this._ff(() => this._k("dispute_details").where("evidence_hash", hash).del());
     }
     return removed;
   }
@@ -982,7 +982,7 @@ class KnexAdapter {
   claimPrescanJob(opts) {
     const claimed = this.mirror.claimPrescanJob(opts);
     if (claimed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", claimed.job_id)
         .update({
           status: "claimed",
@@ -995,14 +995,14 @@ class KnexAdapter {
   markPrescanJobDone(jobId, opts) {
     const changed = this.mirror.markPrescanJobDone(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs").where("job_id", jobId).del());
+      this._ff(() => this._k("prescan_jobs").where("job_id", jobId).del());
     }
     return changed;
   }
   markPrescanJobFailed(jobId, opts) {
     const changed = this.mirror.markPrescanJobFailed(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", jobId)
         .update({ status: "failed", completed_at: opts.completedAt, last_error: opts.lastError || null }));
     }
@@ -1011,7 +1011,7 @@ class KnexAdapter {
   releasePrescanJobForRetry(jobId, opts) {
     const changed = this.mirror.releasePrescanJobForRetry(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", jobId)
         .update({
           status: "queued",
@@ -1019,7 +1019,7 @@ class KnexAdapter {
           claimed_by: null,
           last_error: opts.lastError || null,
         })
-        .then(() => this.knex("prescan_jobs")
+        .then(() => this._k("prescan_jobs")
           .where("job_id", jobId)
           .increment("retries", 1)));
     }
@@ -1028,12 +1028,12 @@ class KnexAdapter {
 
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);
-    this._ff(() => this.knex("content").where("tip_ctid", ctid).update({ status }));
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ status }));
   }
 
   updateContentOrigin(ctid, originCode, status) {
     this.mirror.updateContentOrigin(ctid, originCode, status);
-    this._ff(() => this.knex("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
   }
 
   // ── Scores ─────────────────────────────────────────────────────────────────
@@ -1110,7 +1110,7 @@ class KnexAdapter {
     // reflects the same state as the in-memory mirror (which tracks revocations
     // separately). Without this, nodes that didn't originate the REVOKE_* tx
     // would show status='active' even after a revocation committed.
-    this._ff(() => this.knex("identities").where({ tip_id: id }).update({ status: "revoked" }));
+    this._ff(() => this._k("identities").where({ tip_id: id }).update({ status: "revoked" }));
   }
 
   isRevoked(id) { return this.mirror.isRevoked(id); }
@@ -1165,7 +1165,7 @@ class KnexAdapter {
 
   updatePlatformLinkStatus(tipId, platform, update) {
     this.mirror.updatePlatformLinkStatus(tipId, platform, update);
-    this._ff(() => this.knex("platform_links").where({ tip_id: tipId, platform }).update(update));
+    this._ff(() => this._k("platform_links").where({ tip_id: tipId, platform }).update(update));
   }
 
   getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
@@ -1189,7 +1189,7 @@ class KnexAdapter {
   deletePendingDomainClaim(domain) {
     const removed = this.mirror.deletePendingDomainClaim(domain);
     if (removed) {
-      this._ff(() => this.knex("pending_domain_claims").where("domain", domain).del());
+      this._ff(() => this._k("pending_domain_claims").where("domain", domain).del());
     }
     return removed;
   }
@@ -1251,7 +1251,7 @@ class KnexAdapter {
 
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     this.mirror.updateNodeEndpoint(nodeId, apiEndpoint, timestamp);
-    this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({
+    this._ff(() => this._k("nodes").where({ node_id: nodeId }).update({
       api_endpoint: apiEndpoint || null,
       updated_at: timestamp ?? null,
     }));
@@ -1294,7 +1294,7 @@ class KnexAdapter {
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
-    this._ff(() => this.knex("certificates").where("round", "<", cutoffRound).delete());
+    this._ff(() => this._k("certificates").where("round", "<", cutoffRound).delete());
     return n;
   }
 
@@ -1352,7 +1352,7 @@ class KnexAdapter {
 
   pruneVotesSeenBefore(cutoffRound) {
     const n = this.mirror.pruneVotesSeenBefore(cutoffRound);
-    this._ff(() => this.knex("votes_seen").where("round", "<", cutoffRound).delete());
+    this._ff(() => this._k("votes_seen").where("round", "<", cutoffRound).delete());
     return n;
   }
 
@@ -1374,19 +1374,19 @@ class KnexAdapter {
 
   deleteMempoolTx(txId) {
     this.mirror.deleteMempoolTx(txId);
-    this._ff(() => this.knex("mempool").where("tx_id", txId).delete());
+    this._ff(() => this._k("mempool").where("tx_id", txId).delete());
   }
 
   deleteMempoolTxs(txIds) {
     this.mirror.deleteMempoolTxs(txIds);
     if (txIds.length > 0) {
-      this._ff(() => this.knex("mempool").whereIn("tx_id", txIds).delete());
+      this._ff(() => this._k("mempool").whereIn("tx_id", txIds).delete());
     }
   }
 
   clearStaleMempoolTxs(beforeUnixSec) {
     // MemoryStore is a no-op; for DB we clean expired rows
-    this._ff(() => this.knex("mempool").where("received_at", "<", beforeUnixSec).delete());
+    this._ff(() => this._k("mempool").where("received_at", "<", beforeUnixSec).delete());
   }
 
   mempoolCount() { return this.mirror.mempoolCount(); }
@@ -1601,7 +1601,7 @@ class KnexAdapter {
 
   pruneRotationParticipationBefore(n) {
     const removed = this.mirror.pruneRotationParticipationBefore(n);
-    this._ff(() => this.knex("rotation_participation").where("rotation_number", "<", n).delete());
+    this._ff(() => this._k("rotation_participation").where("rotation_number", "<", n).delete());
     return removed;
   }
 
@@ -1616,7 +1616,7 @@ class KnexAdapter {
 
   deleteRotationParticipationByRotation(rotationNumber) {
     const removed = this.mirror.deleteRotationParticipationByRotation(rotationNumber);
-    this._ff(() => this.knex("rotation_participation").where("rotation_number", rotationNumber).delete());
+    this._ff(() => this._k("rotation_participation").where("rotation_number", rotationNumber).delete());
     return removed;
   }
 
