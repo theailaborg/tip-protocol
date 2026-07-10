@@ -94,7 +94,7 @@ const PLATFORM_CONTENT_TYPE = Object.freeze({
   "substack.com":       "TEXT_DOMINANT",
   // beehiiv newsletters: root key covers www.beehiiv.com (www-strip) and
   // every <publication>.beehiiv.com via the subdomain walk in
-  // content-type.js resolvePlatformStrategy — same mechanism as substack.
+  // content-type.js resolvePlatformStrategy , same mechanism as substack.
   "beehiiv.com":        "TEXT_DOMINANT",
   "scribd.com":         "TEXT_DOMINANT",
   "slideshare.net":     "TEXT_DOMINANT",

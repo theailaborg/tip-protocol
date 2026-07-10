@@ -127,7 +127,6 @@ function createCleanRecordTrigger({ dag, scoring, config, submitBatch, getCommit
       ctid: null,
       relatedTxId: null,
       timestamp: proposedTimestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     }));
 

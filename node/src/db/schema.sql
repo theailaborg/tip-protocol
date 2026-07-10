@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS `minhash_band` (`profile` varchar(64) not null, `band
 
 CREATE TABLE IF NOT EXISTS `nodes` (`node_id` varchar(512), `name` text null, `status` varchar(32) not null default 'active', `api_endpoint` text null, `updated_at` bigint null, `registered_at` bigint not null, primary key (`node_id`));
 
+CREATE TABLE IF NOT EXISTS `owner_heads` (`entity_key` text, `tx_id` text not null, primary key (`entity_key`));
+
 CREATE TABLE IF NOT EXISTS `pending_domain_claims` (`domain` varchar(253), `tip_id` varchar(512) not null, `method` varchar(16) not null, `claimed_at` bigint not null, `signature` text not null, `received_at` bigint not null, primary key (`domain`));
 
 CREATE TABLE IF NOT EXISTS `perceptual_fingerprint` (`tip_ctid` varchar(512) not null, `component_idx` integer not null, `modality` varchar(16) not null, `profile` varchar(64) not null, `pipeline` text not null, `quality` integer, `fingerprint` text not null, `created_at` bigint not null, primary key (`tip_ctid`, `component_idx`));

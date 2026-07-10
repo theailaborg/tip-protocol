@@ -165,7 +165,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const founding = false;
 
     const txBody = {
-      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp: registeredAt, prev: [],
       data: {
         // ── Server-derived / tx-level fields ──────────────────────
         tip_id: tipId,
@@ -186,7 +186,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       // GH #51 — VP signature lives at tx.signature (unified storage).
       signature: vp_signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -475,9 +475,9 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
       tx_type: TX_TYPES.LINK_PLATFORM,
       timestamp: verifiedAt,
       signature: nodeSig,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: txData,
-    });
+    }, dag);
 
     const validation = validateTransaction(linkTx, dag, { skipPrevCheck: true });
     if (!validation.valid) {
@@ -527,7 +527,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
     const unlinkTx = withTxId({
       tx_type: TX_TYPES.UNLINK_PLATFORM,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         tip_id: tipId,
         platform,
@@ -535,7 +535,7 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         claimed_at: claimedAt,
       },
       signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(unlinkTx, dag, { skipPrevCheck: true });
     if (!validation.valid) {

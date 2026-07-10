@@ -58,13 +58,9 @@ const log = getLogger("tip.consensus");
 function getNodeKey(dag, nodeId) {
   const n = dag.getNode(nodeId);
   if (n?.public_key) return n.public_key;
-  // Genesis founding nodes are the immutable trust anchor: authorize them even
-  // when the local registry is empty/incomplete. Without this, a node that
-  // wiped canonical state for a #132 streaming snapshot install
-  // (clearCanonicalState empties the nodes table) deadlocks , empty registry
-  // means it can't authorize the founding peer it must fetch the snapshot from,
-  // and that snapshot is what would refill the registry. Single source of truth
-  // in genesis.js (the network-handshake getNodeKey defers to the same helper).
+  // Founding nodes stay authorized even with an empty registry: a snapshot install
+  // wipes the nodes table, and without this fallback the node can't authorize the
+  // very peer the refilling snapshot must come from (bootstrap deadlock).
   return foundingNodeKey(nodeId);
 }
 
@@ -189,7 +185,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
 
   // ── Create commit handler ─────────────────────────────────────────────────
   const commitHandler = createCommitHandler({
-    dag, scoring, config,
+    dag, scoring, config, mempool,
     verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger,
     isLocallyVerified: _consumeLocallyVerified,
   });
@@ -555,7 +551,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       await snapshotHandler.registerProtocol();
       // #132: a snapshot install crash-interrupted mid-stream leaves partial
       // canonical state under an `in_progress` marker. Wipe it and force
-      // syncing so we resync from a peer before producing — never come up
+      // syncing so we resync from a peer before producing , never come up
       // `ready` on unverified partial state.
       const interruptedInstall = typeof snapshotHandler.recoverInterruptedInstall === "function"
         ? await snapshotHandler.recoverInterruptedInstall()
@@ -674,15 +670,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     });
   }, 3000);
 
-  // D1 runtime integrity invariant: the committed state_merkle_root is the O(1)
-  // incremental SMT (dag.stateRoot()). A deterministic bug that desyncs it from
-  // the canonical state makes EVERY node agree on the same WRONG root (consensus
-  // checks agreement, not correctness) — invisible until a fresh joiner does an
-  // independent recompute (that is how the dedup drift was found). This periodic
-  // guard IS that independent recompute: on divergence it halts loudly instead
-  // of continuing to sign a root that no longer attests to state. Skipped while
-  // syncing (state is mid-install and legitimately partial) and while already
-  // halted. Throttled because the reference walk is O(state).
+  // Integrity invariant: a deterministic SMT desync makes every node agree on the
+  // same wrong root (consensus checks agreement, not correctness; the dedup drift
+  // hid this way). Periodically recompute the reference walk and halt on divergence.
   _stateRootIntegrityTimer = setInterval(() => {
     const nw = narwhalRef.current;
     if (!nw) return;
@@ -695,7 +685,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       const tables = (perTable || []).map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
       log.error(
         `INTEGRITY HALT: committed incremental state root ${String(incremental).slice(0, 16)} != ` +
-        `independent reference walk ${String(reference).slice(0, 16)} — this node's committed root no ` +
+        `independent reference walk ${String(reference).slice(0, 16)} , this node's committed root no ` +
         `longer attests to its state; refusing to keep signing it. Diverging tables: ${tables}`
       );
       if (typeof nw.haltDueToByzantineFork === "function") {

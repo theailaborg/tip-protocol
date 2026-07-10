@@ -112,7 +112,7 @@ function _replaceRotation0(dbPath, committee) {
 // signerNodeIds defaults to ALL of prevCommittee — caller can restrict.
 function _buildRotationTx({
   rotation_number, effective_round, new_committee, prevCommittee, prevKeys,
-  signerNodeIds, payloadHashOverride, signatureMutator,
+  signerNodeIds, payloadHashOverride, signatureMutator, dag,
 }) {
   const payload_hash = payloadHashOverride || shake256(canonicalJson({
     rotation_number,
@@ -140,10 +140,9 @@ function _buildRotationTx({
   const tx = {
     tx_type: TX_TYPES.COMMITTEE_ROTATION,
     timestamp: 1777507200000,
-    // Genesis-bridged prev so validateTransaction's "non-genesis must have
-    // prev references" rule passes. genesis tx is in the DAG already from
-    // bootstrap so prev-existence check resolves.
-    prev: [GENESIS_TX_ID, GENESIS_TX_ID],
+    // Owner-chain prev when a dag is supplied (rotation 2+ must reference the
+    // rotation:committee head); genesis-bridged for first rotations.
+    prev: dag ? dag.prevFor(TX_TYPES.COMMITTEE_ROTATION, data) : [GENESIS_TX_ID, GENESIS_TX_ID],
     data,
   };
   // Compute tx_id deterministically from canonical body
@@ -591,6 +590,7 @@ describe("commit-handler — COMMITTEE_ROTATION (§4 + #34)", () => {
           new_committee: rot2Committee,
           prevCommittee: rot1Committee,
           prevKeys: rot1Keys,
+          dag,
         });
         expect(handler.commitOrderedTxs([tx2], 350).committed).toBe(1);
 

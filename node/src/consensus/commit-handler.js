@@ -20,7 +20,7 @@
 
 const { nowMs } = require("../../../shared/time");
 
-const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES } = require("../../../shared/constants");
+const { TX_TYPES, CONTENT_STATUS, VERDICT, TX_REJECTION_REASON, DOMAIN_HEALTHY_EXPIRY_MS, PRESCAN_REVIEW_STATES, OWNER_HEAD_STALE_MAX_RETRIES } = require("../../../shared/constants");
 const { validateTransaction } = require("../validators/tx-validator");
 const rules = require("../validators/business-rules");
 const contentRegisterSchema = require("../schemas/content-register");
@@ -47,33 +47,15 @@ const { TX_SIGNATURE_REGISTRY } = require("../schemas/_registry");
 // GH #51 — tx_type to schema-module map for the unified signature
 // dispatcher. tx types without a schema fall through to the registry
 // (schemas/_registry.js) via verifyTxSignature's resolveSignatureContract.
-const SCHEMA_FOR_TX_TYPE = Object.freeze({
-  [TX_TYPES.REGISTER_CONTENT]: contentRegisterSchema,
-  [TX_TYPES.REGISTER_IDENTITY]: registerIdentitySchema,
-  [TX_TYPES.BIND_DOMAIN]: bindDomainSchema,
-  [TX_TYPES.UPDATE_PROFILE]: updateProfileSchema,
-  [TX_TYPES.PRESCAN_REVIEW_TRIGGERED]: prescanReviewTriggeredSchema,
-  [TX_TYPES.PRESCAN_REVIEW_DISMISSED]: prescanReviewDismissedSchema,
-  [TX_TYPES.PRESCAN_REVIEW_CONFIRMED]: prescanReviewConfirmedSchema,
-  [TX_TYPES.PRESCAN_REVIEW_RECUSED]: prescanReviewRecusedSchema,
-  [TX_TYPES.PRESCAN_COMPLETED]: prescanCompletedSchema,
-  // GH #60 — key rotation + VP-attested recovery. Both append a new
-  // entity_keys row + close the prior one atomically.
-  [TX_TYPES.KEY_ROTATED]: keyRotatedSchema,
-  [TX_TYPES.KEY_RECOVERY]: keyRecoverySchema,
-  // Interest taxonomy registry — VP-attested.
-  [TX_TYPES.INTEREST_REGISTERED]: interestRegisteredSchema,
-  // Social account linking/unlinking — node-attested (SIGNED_BY=NODE, SCOPE=BODY).
-  [TX_TYPES.LINK_PLATFORM]: linkPlatformSchema,
-  [TX_TYPES.UNLINK_PLATFORM]: unlinkPlatformSchema,
-});
+const { SCHEMA_FOR_TX_TYPE } = require("../schemas/_schema-map");
+const { ownerOf, ownerKey } = require("./tx-owner");
 // Sister schemas exist but their tx_type lives elsewhere or they share
 // dispatch with another schema's TX_TYPE — keep imports so they're not
 // orphaned by the linter, and so future tx_types that promote out of
 // the registry can wire in here cleanly.
 void registerDomainSchema; void prescanReviewAcceptCorrectionSchema; void prescanReviewDisputeSchema;
 const { applyScoreEffect, scoreTargetTipId, initialState } = require("../score-effects");
-const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256 } = require("../../../shared/crypto");
+const { verifyBodySignature, mldsaVerify, canonicalTx, canonicalJson, shake256, computeTxId, signTransaction } = require("../../../shared/crypto");
 const { createRejectionSink } = require("./tx-rejection-sink");
 const { getLogger } = require("../logger");
 
@@ -203,7 +185,7 @@ function _actorTipId(tx) {
   }
 }
 
-function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
+function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecordTrigger, prescanReviewTrigger, prescanCompletionTrigger, config, nodeId, isLocallyVerified }) {
   // tx_rejections sink (#64) — every drop site below records to the
   // shared sink so commit-handler rejections share the same row shape
   // as mempool rejections. nodeId precedence: explicit option →
@@ -216,6 +198,49 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
   // O(1) counter for /metrics (was a per-scrape 10k-row scan); benign re-broadcast
   // duplicates excluded to match the metric's intent.
   const _metrics = { committee_rotation_failures: 0 };
+
+  // Stale-head retry state (per-node, in-memory). Keyed by content signature,
+  // which is stable across prev rebuilds while tx_id changes each retry.
+  const _staleRetry = new Map();
+  function _staleKey(tx) {
+    return (tx.data && tx.data.signature) || tx.signature || tx.tx_id;
+  }
+  function _requeueOwnerStale(tx, round) {
+    const key = _staleKey(tx);
+    // The cap bounds LIVELOCK, not progress: a deep same-owner backlog drains one
+    // tx per round and every sibling burns an attempt each round, so count only
+    // consecutive attempts against the SAME head and reset when the head advances.
+    const head = dag.expectedOwnerHead(ownerOf(tx));
+    const prevEntry = _staleRetry.get(key);
+    const n = prevEntry && prevEntry.head === head ? prevEntry.count + 1 : 1;
+    if (n > OWNER_HEAD_STALE_MAX_RETRIES) {
+      _staleRetry.delete(key);
+      log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted with no head progress (${tx.tx_type}) , dropping`);
+      return;
+    }
+    _staleRetry.set(key, { count: n, head });
+    // Body-scope signatures never covered prev, so the rebuilt tx re-verifies as-is.
+    // Envelope signatures cover prev (canonicalTx): re-sign our own, or all but the
+    // first of a same-owner node batch (jury summons) would be lost; foreign ones drop.
+    let rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
+    rebuilt.tx_id = computeTxId(rebuilt);
+    if (rebuilt.tx_id === tx.tx_id) return;   // head didn't actually change; nothing to gain
+    if (!_verifyTxSignature(rebuilt)) {
+      const owner = ownerOf(tx);
+      const selfOwned = owner && owner.entityType === "node" && owner.entityId === droppingNodeId;
+      if (!selfOwned || !(config && config.nodePrivateKey)) {
+        log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) , dropping (foreign-signed)`);
+        return;
+      }
+      const { tx_id, signature, ...body } = rebuilt;
+      rebuilt = signTransaction(body, config.nodePrivateKey);
+    }
+    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(rebuilt.tx_type, rebuilt.data, rebuilt.tx_id);
+    // Requeue through the consensus mempool (narwhal drains its in-memory queue;
+    // dag.saveMempoolTx alone is persistence-only and invisible until restart).
+    if (mempool && typeof mempool.add === "function") mempool.add(rebuilt);
+    else dag.saveMempoolTx(rebuilt);
+  }
   const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
   const _persistRejection = (tx, reason, detail, opts) => {
     if (reason === TX_REJECTION_REASON.REVALIDATION_FAILED
@@ -253,12 +278,19 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     // is admitted).
     const validated = [];
     let dropped = 0;
+    // Stale/ghost-chained txs collected across BOTH phases; rebuilt + requeued
+    // after the commit transaction.
+    const staleTxs = [];
+    // Prior tx_ids in this ordered batch: burst chains reference in-batch
+    // predecessors, valid or not; Phase-2's owner check settles the rest.
+    const _priorBatchIds = new Set();
 
     for (const tx of orderedTxs) {
       if (!tx || !tx.tx_id || !tx.tx_type) {
         dropped++;
         continue;
       }
+      _priorBatchIds.add(tx.tx_id);
 
       // Skip if already in DAG
       if (dag.getTx(tx.tx_id)) continue;
@@ -267,10 +299,19 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       // that touches the `_prev` ring now flows through consensus (#13),
       // so by the time a replaying node processes tx N, all txs N's prev
       // references point at have already been committed in earlier rounds.
-      const validation = validateTransaction(tx, dag, { skipState: true });
+      const validation = validateTransaction(tx, dag, { skipState: true, pendingTxIds: _priorBatchIds });
       if (!validation.valid) {
         const detail = validation.errors.join("; ");
-        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — ${detail}`);
+        // Ghost chain base: an owned tx whose ONLY failure is a missing prev ref
+        // was sealed onto a sibling that never landed (rejected post-seal, or a
+        // batch this node missed). Rebuild + requeue from the committed head
+        // instead of dropping , a client tx must not die to a broken local chain.
+        const owner = ownerOf(tx);
+        if (owner && validation.errors.every(e => String(e).startsWith("prev reference not found"))) {
+          staleTxs.push(tx);
+          continue;
+        }
+        log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) , ${detail}`);
         _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, detail, { round });
         dropped++;
         continue;
@@ -309,13 +350,22 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
       try {
         dag.runInTransaction(() => {
           for (const tx of validated) {
+            const owner = ownerOf(tx);
+            // Strict prev[0]: must equal the owner's committed head (same single-source
+            // rule prevFor used to assign it). A mismatch means a concurrent same-owner
+            // tx won the race: skip without applying, rebuild + requeue after the txn.
+            if (owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
+              staleTxs.push(tx);
+              continue;
+            }
             dag.addTx(tx);
             _applyDerivedState(tx, certTimestamp, round);
+            if (owner) dag.setOwnerHead(ownerKey(owner), tx.tx_id);
             committed++;
           }
-          // Remove committed txs from mempool in the same transaction
-          const txIds = validated.map(t => t.tx_id);
-          dag.deleteMempoolTxs(txIds);
+          // Remove every processed tx (committed AND stale) from the mempool;
+          // stale ones are re-added below under a fresh tx_id.
+          dag.deleteMempoolTxs(validated.map(t => t.tx_id));
         });
       } catch (err) {
         log.error(`Round ${round}: transaction commit failed — rolled back ${validated.length} txs: ${err.message}`);
@@ -329,7 +379,29 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         }
         committed = 0;
         dropped += validated.length;
+        // The whole batch rolled back , every validated tx (stale ones included)
+        // is already recorded above; the stale retry path below must not run.
+        staleTxs.length = 0;
       }
+    }
+
+    // Stale-head retry (outside the txn): rebuild prev against the new head and
+    // requeue locally, bounded. Client-invisible, since prev is node-assigned.
+    const _resetOwners = new Set();
+    for (const tx of staleTxs) {
+      const owner = ownerOf(tx);
+      const key = owner ? ownerKey(owner) : null;
+      // The pending chain is broken: rebuild the first stale tx from the
+      // committed head, and let each rebuild re-chain via noteSealedTx.
+      if (key && !_resetOwners.has(key)) {
+        if (typeof dag.resetPendingOwnerHead === "function") dag.resetPendingOwnerHead(key);
+        _resetOwners.add(key);
+      }
+      const cur = (dag.expectedOwnerHead(owner) || "").slice(0, 12);
+      _persistRejection(tx, TX_REJECTION_REASON.OWNER_HEAD_STALE,
+        `owner head moved: prev[0]=${((tx.prev && tx.prev[0]) || "").slice(0, 12)} head=${cur}`, { round });
+      _requeueOwnerStale(tx, round);
+      dropped++;
     }
 
     // Phase 3 (Commit 3): post-round triggers. Run once per round,
@@ -431,6 +503,22 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
     }
 
     switch (tx.tx_type) {
+
+      case TX_TYPES.PRESCAN_COMPLETED: {
+        // First-wins per ctid at VALIDATION, not just apply: fail-open
+        // re-emissions were committing as no-ops (228 for 40 contents,
+        // 2026-07-09 halt) and wedging the node's serialized owner lane.
+        if (!d.ctid) return { valid: false, error: "missing ctid" };
+        const rec = dag.getContent(d.ctid);
+        if (rec && rec.prescan_status === "completed") {
+          return { valid: false, error: `prescan already completed for ${d.ctid}` };
+        }
+        const inBatch = validated.find(t =>
+          t.tx_type === TX_TYPES.PRESCAN_COMPLETED && t.data?.ctid === d.ctid
+        );
+        if (inBatch) return { valid: false, error: `PRESCAN_COMPLETED already in this batch for ${d.ctid}` };
+        return { valid: true };
+      }
 
       case TX_TYPES.ADJUDICATION_RESULT: {
         if (!d.ctid) return { valid: false, error: "missing ctid" };
@@ -646,8 +734,8 @@ function createCommitHandler({ dag, scoring, verdictTrigger, cleanRecordTrigger,
         // after the node's last update. Equal timestamps are also rejected —
         // ambiguous ordering on the same ms.
         if (existingNode.updated_at !== null &&
-            existingNode.updated_at !== undefined &&
-            tx.timestamp <= existingNode.updated_at) {
+          existingNode.updated_at !== undefined &&
+          tx.timestamp <= existingNode.updated_at) {
           return {
             valid: false,
             error: `NODE_ENDPOINT_UPDATED rejected: tx.timestamp ${tx.timestamp} is not strictly after updated_at ${existingNode.updated_at}`,

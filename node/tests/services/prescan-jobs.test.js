@@ -21,9 +21,17 @@ function makeClock(start = 1779800000000) {
   };
 }
 
+function seedContent(dag, ctid) {
+  dag.saveContent({ ctid, origin_code: "OH", content_hash: "h", author_tip_id: "a", signer_tip_id: "a", cna_version: "v1", registered_at: 1 });
+}
+
+// Claims are gated on the content row existing (REGISTER_CONTENT committed),
+// so setup seeds content for both fixture ctids.
 function setup({ now }) {
   const dag = initDAG({ dbPath: ":memory-test:" });
   const jobs = createPrescanJobs({ dag, now });
+  seedContent(dag, CTID_A);
+  seedContent(dag, CTID_B);
   return { dag, jobs };
 }
 
@@ -123,6 +131,39 @@ describe("claim", () => {
     const clock = makeClock();
     const { jobs } = setup(clock);
     expect(() => jobs.claim()).toThrow(/workerId required/);
+  });
+});
+
+// ── claim content gate ─────────────────────────────────────────────────────
+// A verdict emitted before REGISTER_CONTENT commits no-ops at apply and the
+// real verdict is lost to the fail-open valve, so unregistered ctids must
+// not be claimable.
+describe("claim gated on content existence", () => {
+  const CTID_UNREGISTERED = "tip://c/OH-deadbeef000000-0000";
+
+  test("job for unregistered ctid is not claimable", () => {
+    const clock = makeClock();
+    const { jobs } = setup(clock);
+    jobs.enqueue({ ctid: CTID_UNREGISTERED, payload: { x: 1 } });
+    expect(jobs.claim("worker-1")).toBeNull();
+  });
+
+  test("becomes claimable once the content row exists", () => {
+    const clock = makeClock();
+    const { dag, jobs } = setup(clock);
+    const { job_id } = jobs.enqueue({ ctid: CTID_UNREGISTERED, payload: { x: 1 } });
+    expect(jobs.claim("worker-1")).toBeNull();
+    seedContent(dag, CTID_UNREGISTERED);
+    expect(jobs.claim("worker-1").job_id).toBe(job_id);
+  });
+
+  test("FIFO skips an older unregistered job in favor of a registered one", () => {
+    const clock = makeClock();
+    const { jobs } = setup(clock);
+    jobs.enqueue({ ctid: CTID_UNREGISTERED, payload: { x: 1 } });
+    clock.advance(100);
+    const registered = jobs.enqueue({ ctid: CTID_A, payload: { x: 2 } });
+    expect(jobs.claim("worker-1").job_id).toBe(registered.job_id);
   });
 });
 

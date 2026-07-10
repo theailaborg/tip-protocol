@@ -311,7 +311,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 
     const txBody = {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: [],
       data: {
         // ── Server-derived / informational fields ─────────────────
         // origin_code + content_hash mirror the canonical signed values
@@ -362,7 +362,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       // GH #51 — signer's ML-DSA-65 signature lives at tx.signature.
       signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -680,11 +680,11 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const verifyTxTimestamp = nowMs();
     const verifyTxBody = {
-      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: [],
       data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId },
       signature,
     };
-    const signedTx = withTxId(verifyTxBody);
+    const signedTx = withTxId(verifyTxBody, dag);
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -699,7 +699,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
         reason: `Content verified (${ctid})`,
         ctid, relatedTxId: signedTx.tx_id,
         timestamp: verifyTxTimestamp,
-        getRecentPrev: () => dag.getRecentPrev(),
         config,
       });
       submitTx(scoreTx);
@@ -736,10 +735,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     }
 
     const updateTx = withTxId({
-      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(), prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(), prev: [],
       data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id },
       signature,
-    });
+    }, dag);
     submitTx(updateTx);
 
     log.info(`Origin update proposed: ${ctid} ${rec.origin_code} → ${new_origin_code} (by ${author_tip_id})`);
@@ -764,10 +763,10 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const retractTimestamp = nowMs();
     const retractTx = withTxId({
-      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: [],
       data: { ctid, author_tip_id, origin_code: rec.origin_code, pre_retract_status: rec.status },
       signature,
-    });
+    }, dag);
     submitTx(retractTx);
 
     // Paired score-effect (single-channel rule): retraction record on
@@ -778,7 +777,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       reason: `Content retracted (${ctid})`,
       ctid, relatedTxId: retractTx.tx_id,
       timestamp: retractTimestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
     submitTx(scoreTx);

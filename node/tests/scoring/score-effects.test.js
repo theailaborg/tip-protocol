@@ -30,6 +30,7 @@ const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
 const registerIdentitySchema = require(path.join(SRC, "schemas", "register-identity"));
 const { applyScoreEffect, scoreTargetTipId, initialState, adjudicationDelta } = require(path.join(SRC, "score-effects"));
+const { seedAnchorTx } = require(path.resolve(__dirname, "../helpers/seed-anchor-tx"));
 const { SCORE, SCORE_EVENTS } = require(SHARED + "/protocol-constants");
 
 beforeAll(async () => { await initCrypto(); });
@@ -400,7 +401,8 @@ describe("commit-handler vs computeScore — same final score for any tx history
     dag.saveVP({
       vp_id: "tip://vp/v1", name: "VP", jurisdiction: "US", jurisdiction_tier: "green",
       public_key: vpKp.publicKey, root_public_key: "00", status: "active",
-      registered_at: 1767225600000, tx_id: shake256("vp:v1"),
+      registered_at: 1767225600000,
+      tx_id: seedAnchorTx(dag, TX_TYPES.VP_REGISTERED, { vp_id: "tip://vp/v1" }),
     });
     const config = {
       nodeId: "tip://node/n1", nodeRegisteredId: "tip://node/n1",
@@ -426,24 +428,25 @@ describe("commit-handler vs computeScore — same final score for any tx history
     };
     const canonicalPayload = registerIdentitySchema.buildSigningPayload(sigBody);
     const vp_signature = registerIdentitySchema.sign(canonicalPayload, fx.vpKp.privateKey);
+    const data = {
+      tip_id, root_public_key: "00", founding: false,
+      vp_signature,
+      // Mirror canonical payload fields onto tx.data so commit-handler
+      // can replay buildSigningPayload(d) deterministically.
+      creator_name: canonicalPayload.creator_name,
+      dedup_hash: canonicalPayload.dedup_hash,
+      public_key: canonicalPayload.public_key,
+      region: canonicalPayload.region,
+      social_attested: canonicalPayload.social_attested,
+      tip_id_type: canonicalPayload.tip_id_type,
+      verification_tier: canonicalPayload.verification_tier,
+      vp_id: canonicalPayload.vp_id,
+      zk_proof: canonicalPayload.zk_proof,
+    };
     const txBody = {
       tx_type: TX_TYPES.REGISTER_IDENTITY, timestamp,
-      prev: fx.dag.getRecentPrev(),
-      data: {
-        tip_id, root_public_key: "00", founding: false,
-        vp_signature,
-        // Mirror canonical payload fields onto tx.data so commit-handler
-        // can replay buildSigningPayload(d) deterministically.
-        creator_name: canonicalPayload.creator_name,
-        dedup_hash: canonicalPayload.dedup_hash,
-        public_key: canonicalPayload.public_key,
-        region: canonicalPayload.region,
-        social_attested: canonicalPayload.social_attested,
-        tip_id_type: canonicalPayload.tip_id_type,
-        verification_tier: canonicalPayload.verification_tier,
-        vp_id: canonicalPayload.vp_id,
-        zk_proof: canonicalPayload.zk_proof,
-      },
+      prev: fx.dag.prevFor(TX_TYPES.REGISTER_IDENTITY, data),
+      data,
     };
     txBody.tx_id = computeTxId(txBody);
     txBody.signature = vp_signature;
@@ -451,9 +454,11 @@ describe("commit-handler vs computeScore — same final score for any tx history
   }
 
   function _scoreUpdateTx(fx, { tip_id, delta, reason, timestamp, ctid = null }) {
+    const data = { tip_id, delta, reason, ctid, node_id: "tip://node/n1" };
     const txBody = {
-      tx_type: TX_TYPES.SCORE_UPDATE, timestamp, prev: fx.dag.getRecentPrev(),
-      data: { tip_id, delta, reason, ctid, node_id: "tip://node/n1" },
+      tx_type: TX_TYPES.SCORE_UPDATE, timestamp,
+      prev: fx.dag.prevFor(TX_TYPES.SCORE_UPDATE, data),
+      data,
     };
     txBody.tx_id = computeTxId(txBody);
     return signTransaction(txBody, fx.nodeKp.privateKey);

@@ -277,7 +277,7 @@ function _buildSummonsTx({ ctid, disputeTxId, jurorTipId, seed, identityCount, c
   return nodeSignedAuto({
     tx_type: TX_TYPES.JURY_SUMMONS,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data: {
       ctid,
       dispute_tx_id: disputeTxId,
@@ -289,7 +289,7 @@ function _buildSummonsTx({ ctid, disputeTxId, jurorTipId, seed, identityCount, c
       reveal_deadline: revealDeadline,
       is_appeal: isAppeal,
     },
-  }, config);
+  }, config, dag);
 }
 
 /**
@@ -352,7 +352,6 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
 
   const timestamp = nowMs();
   const txs = [];
-  const getRecentPrev = () => dag.getRecentPrev();
 
   const rec = dag.getContent(ctid);
   const disputeTxs = dag.getTxsByTypeAndCtid(TX_TYPES.CONTENT_DISPUTED, ctid);
@@ -384,11 +383,11 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     const appealTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_FILED,
       timestamp,
-      prev: getRecentPrev(),
+      prev: [],
       // author/disputer embedded for activity-feed attribution (#40) — both
       // parties see the appeal in their feed, not just the appellant.
       data: { ctid, appellant_tip_id: "SYSTEM_AUTO_ESCALATION", author_tip_id: authorTipId, disputer_tip_id: disputerTipId, stage2_verdict: VERDICT.NO_QUORUM, stake: 0 },
-    }, config);
+    }, config, dag);
     const experts = selectExperts(dag, scoring, appealTx.tx_id, authorTipId, disputerTipId, ctid);
     const canEscalate = experts.experts.length >= APPEAL.MIN_VOTES;
 
@@ -400,7 +399,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     const noQuorumResultTx = nodeSignedAuto({
       tx_type: TX_TYPES.ADJUDICATION_RESULT,
       timestamp,
-      prev: getRecentPrev(),
+      prev: [],
       data: {
         ctid,
         verdict: VERDICT.NO_QUORUM,
@@ -418,7 +417,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         abstain_count: abstainCount,
         juror_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
       },
-    }, config);
+    }, config, dag);
     txs.push(noQuorumResultTx);
 
     // No-show penalties always apply: the absent jurors are the ones who
@@ -433,7 +432,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: s.data.juror_tip_id, delta,
           reason, ctid, relatedTxId: noShowRelatedTxId,
-          timestamp, getRecentPrev, config,
+          timestamp, config,
         }));
       }
     }
@@ -449,7 +448,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
           tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
           reason: `Dispute refunded (terminal no-quorum) on ${ctid}`,
           ctid, relatedTxId: noQuorumResultTx.tx_id,
-          timestamp, getRecentPrev, config,
+          timestamp, config,
         }));
       }
       log.info(`Jury NO_QUORUM on ${ctid} — terminal (no expert panel formable, ${experts.experts.length} eligible < ${APPEAL.MIN_VOTES}); disputer refunded`);
@@ -501,7 +500,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
   const resultTx = nodeSignedAuto({
     tx_type: TX_TYPES.ADJUDICATION_RESULT,
     timestamp,
-    prev: getRecentPrev(),
+    prev: [],
     data: {
       ctid,
       verdict,
@@ -520,7 +519,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       abstain_count: abstainCount,
       juror_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
     },
-  }, config);
+  }, config, dag);
   txs.push(resultTx);
 
   // Author penalty as a paired SCORE_UPDATE — single channel for every
@@ -533,7 +532,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     txs.push(scoring.buildScoreUpdateTx({
       tipId: authorTipId, delta: authorScoreDelta,
       reason: `Author penalty: UPHELD on ${ctid}`,
-      ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+      ctid, relatedTxId: resultTx.tx_id, timestamp, config,
     }));
   }
 
@@ -550,7 +549,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         tipId: jurorTipId,
         delta: isMajority ? JURY.JUROR_MAJORITY_BONUS : -JURY.JUROR_MINORITY_PENALTY,
         reason: `Jury ${isMajority ? "majority" : "minority"} vote on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
     }
   }
@@ -564,7 +563,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: s.data.juror_tip_id, delta,
         reason, ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
   }
@@ -584,13 +583,13 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
         reason: `Dispute upheld on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     } else if (verdict === VERDICT.CONSERVATIVE_LABEL) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
         reason: `Dispute conservative-label on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
     // DISMISSED: no disputer event — filing-time stake deduction is the forfeit.
@@ -627,7 +626,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
       delta: REVIEWER.CORRECT_BONUS,
       reason: `review_correct_bonus:${escalatedReview.review_id}`,
       ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
+      timestamp, config,
     }));
   }
 
@@ -650,7 +649,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
         delta: REVIEWER.WRONG_DISMISS_CLAWBACK,
         reason: `review_wrong_dismiss_clawback:${dismissedReview.review_id}`,
         ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
   }
@@ -669,7 +668,7 @@ function buildAdjudicationBatch(ctid, reveals, summons, dag, scoring, config) {
     txs.push(scoring.buildScoreUpdateTx({
       tipId: authorTipId, delta: DISPUTE.VINDICATION_BONUS,
       reason: `Dispute vindication on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
+      timestamp, config,
     }));
   }
 
@@ -705,7 +704,6 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
 
   const timestamp = nowMs();
   const txs = [];
-  const getRecentPrev = () => dag.getRecentPrev();
 
   const adjTxs = dag.getTxsByTypeAndCtid(TX_TYPES.ADJUDICATION_RESULT, ctid);
   const stage2Verdict = adjTxs[0]?.data?.verdict;
@@ -739,7 +737,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     const resultTx = nodeSignedAuto({
       tx_type: TX_TYPES.APPEAL_RESULT,
       timestamp,
-      prev: getRecentPrev(),
+      prev: [],
       data: {
         ctid, verdict: VERDICT.DISMISSED, overturned: false, defaulted: true,
         tie: appealDeadlock,
@@ -750,7 +748,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         pre_dispute_status: preStatus,
         match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
       },
-    }, config);
+    }, config, dag);
     txs.push(resultTx);
 
     for (const s of summons) {
@@ -761,7 +759,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: s.data.juror_tip_id, delta,
           reason, ctid, relatedTxId: resultTx.tx_id,
-          timestamp, getRecentPrev, config,
+          timestamp, config,
         }));
       }
     }
@@ -778,7 +776,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
         reason: `Dispute refunded (terminal no-quorum) on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
 
@@ -791,7 +789,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         tipId: appellantTipId, delta: APPEAL.APPELLANT_STAKE,
         reason: `Appeal stake refunded (no result) on ${ctid}`,
         ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
 
@@ -833,7 +831,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
   const resultTx = nodeSignedAuto({
     tx_type: TX_TYPES.APPEAL_RESULT,
     timestamp,
-    prev: getRecentPrev(),
+    prev: [],
     data: {
       ctid, verdict, overturned,
       stage2_verdict: stage2Verdict,
@@ -850,7 +848,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       match_count: matchCount, mismatch_count: mismatchCount, abstain_count: abstainCount,
       expert_votes: filteredReveals.map(r => ({ juror_tip_id: r.data.juror_tip_id, vote: r.data.vote })),
     },
-  }, config);
+  }, config, dag);
   txs.push(resultTx);
 
   // ── Appellant outcome ─────────────────────────────────────────────────────
@@ -862,7 +860,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
     txs.push(scoring.buildScoreUpdateTx({
       tipId: appellantTipId, delta: APPEAL.APPELLANT_STAKE + APPEAL.OVERTURN_BONUS,
       reason: `Appeal overturned on ${ctid}`, ctid, relatedTxId: resultTx.tx_id,
-      timestamp, getRecentPrev, config,
+      timestamp, config,
     }));
 
     // Reverse Stage-2 disputer effect under the stake-on-file model.
@@ -877,13 +875,13 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: -(DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS),
         reason: `Appeal overturned: Stage 2 settlement reversed on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
     } else if (stage2Verdict === VERDICT.DISMISSED && disputerTipId) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
         reason: `Appeal overturned: stake refunded + bonus on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
     }
 
@@ -895,7 +893,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: authorTipId, delta: -stage2AuthorDelta,
         reason: `Appeal overturned: Stage 2 penalty reversed on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
       // Stage-3 cleared the author — credit the vindication bonus that
       // Stage-2 didn't emit (because Stage-2 incorrectly UPHELD). Mirrors
@@ -905,14 +903,14 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: authorTipId, delta: DISPUTE.VINDICATION_BONUS,
           reason: `Appeal overturned: vindication on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
     } else if (stage2Verdict === VERDICT.DISMISSED && authorTipId && overturnAuthorDelta < 0) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: authorTipId, delta: overturnAuthorDelta,
         reason: `Appeal overturned: mismatch confirmed on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
       // Retract the Stage-2 vindication — the author wasn't actually
       // right after all. Symmetric with the disputer-stake reversal a
@@ -922,7 +920,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: authorTipId, delta: -DISPUTE.VINDICATION_BONUS,
           reason: `Appeal overturned: vindication retracted on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
     }
@@ -947,14 +945,14 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: reviewerTipId, delta: -REVIEWER.CORRECT_BONUS,
           reason: `Appeal overturned: Stage 2 review_correct_bonus reversed on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
       if (stage3PaysBonus) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: reviewerTipId, delta: REVIEWER.CORRECT_BONUS,
           reason: `review_correct_bonus_on_appeal:${escalatedReview.review_id}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
     }
@@ -981,7 +979,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
           tipId: dismissedReview.assigned_reviewer,
           delta: -REVIEWER.WRONG_DISMISS_CLAWBACK,
           reason: `Appeal overturned: wrong_dismiss_clawback reversed on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
     }
@@ -1005,21 +1003,21 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE + DISPUTE.UPHELD_BONUS,
           reason: `Stage 3 verdict UPHELD: stake refunded + bonus on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
       if (authorTipId && overturnAuthorDelta < 0) {
         txs.push(scoring.buildScoreUpdateTx({
           tipId: authorTipId, delta: overturnAuthorDelta,
           reason: `Stage 3 verdict UPHELD: author penalty on ${ctid}`,
-          ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+          ctid, relatedTxId: resultTx.tx_id, timestamp, config,
         }));
       }
     } else if (verdict === VERDICT.CONSERVATIVE_LABEL && disputerTipId) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: disputerTipId, delta: DISPUTE.DISPUTER_STAKE,
         reason: `Stage 3 verdict CONSERVATIVE_LABEL: stake refunded on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
     }
     // DISMISSED on NO_QUORUM: stake stays forfeited (no event), matches
@@ -1042,7 +1040,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         delta: REVIEWER.CORRECT_BONUS,
         reason: `review_correct_bonus_no_quorum:${noQuorumEscalatedReview.review_id}`,
         ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
 
@@ -1063,7 +1061,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
           delta: REVIEWER.WRONG_DISMISS_CLAWBACK,
           reason: `review_wrong_dismiss_clawback_no_quorum:${noQuorumDismissedReview.review_id}`,
           ctid, relatedTxId: resultTx.tx_id,
-          timestamp, getRecentPrev, config,
+          timestamp, config,
         }));
       }
     }
@@ -1080,7 +1078,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
         tipId: reveal.data.juror_tip_id,
         delta: isMajority ? JURY.EXPERT_MAJORITY_BONUS : -JURY.EXPERT_MINORITY_PENALTY,
         reason: `Expert ${isMajority ? "majority" : "minority"} vote on ${ctid}`,
-        ctid, relatedTxId: resultTx.tx_id, timestamp, getRecentPrev, config,
+        ctid, relatedTxId: resultTx.tx_id, timestamp, config,
       }));
     }
   }
@@ -1094,7 +1092,7 @@ function buildAppealBatch(ctid, reveals, summons, dag, scoring, config) {
       txs.push(scoring.buildScoreUpdateTx({
         tipId: s.data.juror_tip_id, delta,
         reason, ctid, relatedTxId: resultTx.tx_id,
-        timestamp, getRecentPrev, config,
+        timestamp, config,
       }));
     }
   }

@@ -35,6 +35,7 @@ const dismissedSchema = require(path.join(SRC, "schemas", "prescan-review-dismis
 const confirmedSchema = require(path.join(SRC, "schemas", "prescan-review-confirmed"));
 const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
 const { TX_TYPES, PRESCAN_REVIEW_STATES, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.resolve(__dirname, "../helpers/seed-anchor-tx"));
 
 beforeAll(async () => { await initCrypto(); });
 
@@ -64,7 +65,8 @@ function _setup() {
     tip_id: CREATOR, region: "US", public_key: nodeKp.publicKey, root_public_key: "00",
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: false,
-    registered_at: 1767225600000, tx_id: shake256("creator"),
+    registered_at: 1767225600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: CREATOR }),
   });
   // Reviewer 1 (the legitimately-assigned reviewer)
   dag.saveIdentity({
@@ -72,7 +74,8 @@ function _setup() {
     public_key: reviewer1Kp.publicKey, root_public_key: reviewer1Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: 1767225600000, tx_id: shake256("reviewer1"),
+    registered_at: 1767225600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: REVIEWER_1 }),
   });
   // Reviewer 2 (NOT assigned — used to test wrong-reviewer rejection)
   dag.saveIdentity({
@@ -80,7 +83,8 @@ function _setup() {
     public_key: reviewer2Kp.publicKey, root_public_key: reviewer2Kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
     reviewer_consent: true,
-    registered_at: 1767225600000, tx_id: shake256("reviewer2"),
+    registered_at: 1767225600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: REVIEWER_2 }),
   });
   // Seed the content row so business-rules ctid existence check passes
   dag.saveContent({
@@ -120,7 +124,7 @@ function _buildTriggeredTx(fx, opts) {
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
     timestamp: nowMs(),
-    prev: fx.dag.getRecentPrev(),
+    prev: fx.dag.prevFor(TX_TYPES.PRESCAN_REVIEW_TRIGGERED, data),
     data,
   };
   txBody.tx_id = computeTxId(txBody);
@@ -144,7 +148,7 @@ function _buildDismissedTx(fx, opts) {
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
     timestamp: nowMs(),
-    prev: fx.dag.getRecentPrev(),
+    prev: fx.dag.prevFor(TX_TYPES.PRESCAN_REVIEW_DISMISSED, data),
     data,
     signature,
   };
@@ -171,7 +175,7 @@ function _buildConfirmedTx(fx, opts) {
   const txBody = {
     tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
     timestamp: nowMs(),
-    prev: fx.dag.getRecentPrev(),
+    prev: fx.dag.prevFor(TX_TYPES.PRESCAN_REVIEW_CONFIRMED, data),
     data,
     signature,
   };
@@ -271,16 +275,17 @@ describe("PRESCAN_REVIEW_CONFIRMED — reviewer says AI was right", () => {
     const fx = _setup();
     fx.commit([_buildTriggeredTx(fx, { review_id: "rv_c2" })]);
     // buildSigningPayload throws on OH — build the tx manually with bad data
+    const data = {
+      review_id: "rv_c2",
+      reviewer_tip_id: REVIEWER_1,
+      suggested_origin: "OH",
+      decision_note: null,
+    };
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
       timestamp: nowMs(),
-      prev: fx.dag.getRecentPrev(),
-      data: {
-        review_id: "rv_c2",
-        reviewer_tip_id: REVIEWER_1,
-        suggested_origin: "OH",
-        decision_note: null,
-      },
+      prev: fx.dag.prevFor(TX_TYPES.PRESCAN_REVIEW_CONFIRMED, data),
+      data,
       signature: "dummy",
     };
     txBody.tx_id = computeTxId(txBody);
@@ -326,7 +331,7 @@ describe("PRESCAN_REVIEW_RECUSED — reviewer bows out", () => {
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
-      prev: fx.dag.getRecentPrev(),
+      prev: fx.dag.prevFor(TX_TYPES.PRESCAN_REVIEW_RECUSED, data),
       data,
       signature,
     };
@@ -410,7 +415,7 @@ describe("Phase 2.3 — content status transitions", () => {
     const txBody = {
       tx_type: TX_TYPES.REGISTER_CONTENT,
       timestamp: nowMs(),
-      prev: fx.dag.getRecentPrev(),
+      prev: fx.dag.prevFor(TX_TYPES.REGISTER_CONTENT, data),
       data,
       signature,
     };

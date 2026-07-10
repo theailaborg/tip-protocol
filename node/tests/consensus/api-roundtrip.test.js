@@ -62,6 +62,7 @@ const { createDisputeDetailsService } = require(path.join(SRC, "services", "disp
 const bioFetcher = require(path.join(SRC, "services", "bio-fetcher"));
 
 const registerIdentitySchema = require(path.join(SRC, "schemas", "register-identity"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const contentRegisterSchema = require(path.join(SRC, "schemas", "content-register"));
 const registerDomainSchema = require(path.join(SRC, "schemas", "register-domain"));
 const bindDomainSchema = require(path.join(SRC, "schemas", "bind-domain"));
@@ -117,7 +118,7 @@ function seedIdentity(dag, tipId, kp, { score = 750, type = TIP_ID_TYPES.PERSONA
     vp_id: VP_ID, verification_tier: "T1", tip_id_type: type,
     founding: false, status: "active",
     reviewer_consent: false, juror_consent: false, expert_consent: false,
-    registered_at: T0, tx_id: shake256(`id:${tipId}`),
+    registered_at: T0, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: tipId }, T0),
     creator_name: creatorName,
   });
   dag.setScore(tipId, score, 0, T0);
@@ -732,11 +733,15 @@ const CASES = [
       const vote = "MATCH";
       const salt = "salt-reveal";
       const commitment = shake256(`${vote}:${salt}`);
-      // The juror's prior sealed commitment the reveal must match.
-      h.dag.addTx(withTxId({
+      // The juror's prior sealed commitment the reveal must match. Seeded
+      // directly (no commit-handler), so advance the owner head the way its
+      // commit would have , otherwise the reveal chains onto it and stales.
+      const commitTx = withTxId({
         tx_type: "JURY_VOTE_COMMIT", timestamp: nowMs() - 1_800_000, prev: h.dag.getRecentPrev(),
         data: { ctid, juror_tip_id: jurorTipId, commitment, is_appeal: false },
-      }));
+      });
+      h.dag.addTx(commitTx);
+      h.dag.setOwnerHead(`identity:${jurorTipId}`, commitTx.tx_id);
       return { ctid, jurorTipId, jurorKp, vote, salt };
     },
     submit: (h, ctx) => {

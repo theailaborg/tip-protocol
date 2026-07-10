@@ -33,6 +33,7 @@ const { VERIFY_CAPS } = require(path.join(SHARED, "protocol-constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createContentService } = require(path.join(SRC, "services", "content-service"));
+const { seedAnchorTx } = require(path.resolve(__dirname, "../helpers/seed-anchor-tx"));
 
 const PROTO_CONSTANTS = require(path.resolve(__dirname, "../../../genesis-data/genesis.json")).protocol_constants;
 
@@ -71,7 +72,8 @@ function _seedIdentity(dag, tipId, kp, score = 750) {
     tip_id: tipId, region: "US",
     public_key: kp.publicKey, root_public_key: kp.publicKey,
     vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active",
-    registered_at: 1767225600000, tx_id: shake256(`id:${tipId}`),
+    registered_at: 1767225600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: tipId }),
   });
   dag.setScore(tipId, score, 0, 1767225600000);
 }
@@ -84,7 +86,8 @@ function _seedContent(dag, ctid, authorTipId, origin = ORIGIN.OH) {
   dag.saveContent({
     ctid, origin_code: origin, content_hash: shake256(`c:${ctid}`),
     author_tip_id: authorTipId, status: CONTENT_STATUS.REGISTERED,
-    registered_at: 1775001600000, tx_id: shake256(`reg:${ctid}`),
+    registered_at: 1775001600000,
+    tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_CONTENT, { ctid }, 1775001600000),
   });
 }
 

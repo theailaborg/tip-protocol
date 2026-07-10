@@ -73,14 +73,9 @@ const CLASSIFIER_CLIENT = Object.freeze({
 // install-once guard). Long-term scale fix is a streaming length-prefix parser
 // (deferred, see snapshot-handler).
 const SNAPSHOT_DOWNLOAD = Object.freeze({
-  // A snapshot is the whole-chain state (full tx/cert history + state), whose
-  // size and transfer time grow with the federation , unknowable in advance.
-  // So we do NOT cap total bytes/time (any fixed number is wrong at some scale).
-  // Instead: a STALL timeout. The timer resets on every byte received AND every
-  // frame installed, so a large-but-flowing download never trips it; only a
-  // genuine hang (silent peer / dead connection) does. Memory stays bounded by
-  // the streaming install-in-place, not by a byte cap. MAX_BYTES remains only as
-  // a generous last-resort flood guard against an unbounded/hostile stream.
+  // Snapshot size is unknowable in advance, so no total byte/time cap: a STALL
+  // timeout resets on every byte and installed frame, tripping only on a genuine
+  // hang. MAX_BYTES stays as a last-resort flood guard.
   MAX_BYTES: 16 * 1024 * 1024 * 1024,  // 16 GB last-resort flood guard (not a normal-operation cap)
   STALL_MS: 60_000,                     // abort only after 60s with zero download/install progress
 });
@@ -93,13 +88,9 @@ const SNAPSHOT_REQUEST = Object.freeze({
   MAX_MS: 5000,
 });
 
-// #132 streaming snapshot: every response frame carries a 1-byte kind tag as
-// its first body byte so the receiver routes each frame as it streams (no
-// pre-count, no positional slicing). The byte doubles as a format
-// discriminator , an old-format frame (raw protobuf) starts with a protobuf
-// field tag (0x08 for SnapshotHeader.round), never one of these values, so a
-// version-mixed pair fails cleanly and retries instead of mis-parsing.
-// Divergent values cannot fork the chain (a mismatch just fails the sync).
+// #132: 1-byte kind tag as each frame's first body byte routes frames as they
+// stream. Doubles as a format discriminator (a raw-protobuf frame starts 0x08),
+// so a version-mixed pair fails cleanly; a mismatch cannot fork the chain.
 const SNAPSHOT_FRAME_KIND = Object.freeze({
   HEADER: 0x01,
   STATE: 0x02,
@@ -112,36 +103,30 @@ const SNAPSHOT_FRAME_KIND = Object.freeze({
   END: 0x09,
 });
 
-// Rows per DB transaction while streaming a snapshot install (#132). The
-// receiver installs in-place in batches of this size, awaiting each batch's
-// flush before reading more frames , this bounds the pending-write queue (and
-// thus peak memory) instead of buffering the whole response. Larger = fewer
-// transactions but more rows held in flight; 2000 keeps a batch well under a
-// megabyte of thunks while amortizing transaction overhead.
+// Rows per DB transaction during a streaming install; each batch's flush is
+// awaited before reading more frames, bounding peak memory instead of buffering
+// the whole response.
 const SNAPSHOT_INSTALL_BATCH_ROWS = 2000;
 
-// Rows per multi-row INSERT when a snapshot install flushes its per-table
-// buffer via batchInsert (#132). The install streams into freshly-cleared
-// tables (no conflicts), so a plain bulk INSERT replaces the per-row path:
-// ~100x fewer round-trips, which is what lets a large, WAN-served snapshot
-// (tens of thousands of tx rows) finish inside the download deadline instead
-// of timing out. Kept well under Postgres's ~65535 bind-parameter cap even
-// for the widest rows.
+// Rows per multi-row INSERT when the install flushes a table buffer: ~100x fewer
+// round-trips than per-row (a WAN-served snapshot finishes instead of timing out),
+// kept well under Postgres's ~65535 bind-parameter cap.
 const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 
-// D1 runtime integrity invariant: how often each node recomputes the reference
-// state-root walk and compares it to the committed incremental SMT, halting on
-// divergence. Local self-check cadence only (never hashed, never signed, cannot
-// fork the chain), so it lives here, not in genesis/protocol-constants. The
-// reference walk is O(state), so this is throttled rather than per-commit.
+// Cadence of the state-root integrity self-check (reference walk vs incremental
+// SMT, halt on divergence). Local-only, cannot fork the chain, hence not genesis;
+// throttled because the walk is O(state).
 const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 
-// Persisted install-marker key in consensus_meta (#132). Set to
-// `in_progress:<round>` before clearCanonicalState begins a streaming install,
-// cleared on successful go-live. A node that boots and finds it still
-// in_progress knows its canonical state is a partially-installed snapshot
-// (crash mid-stream), so it wipes and re-enters syncing instead of coming up
-// `ready` on unverified partial state (which would fork the chain).
+// Persistence guards: fail-stop when the oldest pending DB write stalls (a
+// hung chain runs split-brained, 2026-07-10), and probe mirror-vs-DB parity.
+const DB_WRITE_STALL_FAIL_STOP_MS = 60_000;
+const DB_WATCHDOG_TICK_MS = 5_000;
+const DB_PARITY_PROBE_INTERVAL_MS = 60_000;
+
+// Install crash marker in consensus_meta: set before the wipe, cleared on
+// verified go-live. Still in_progress at boot means partial state, so wipe and
+// re-enter syncing rather than come up ready on it.
 const SNAPSHOT_INSTALL_MARKER_KEY = "snapshot_install_state";
 
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
@@ -658,6 +643,16 @@ const DISPUTE_EVENT_PRIORITY = Object.freeze({
 //
 // Adding a new reason: keep the value snake_case and stable forever — old
 // rows will outlive any rename. Removing one is a wire-compat break.
+// Owner-chain stale-head retry cap: how many times the accepting node will
+// rebuild prev + requeue a tx that lost the OWNER_HEAD_STALE race before giving
+// up. Per-node local liveness bound (mempool is not consensus state).
+const OWNER_HEAD_STALE_MAX_RETRIES = 8;
+
+// Pending-head freshness bound for same-owner burst chaining: a sealed-but-
+// uncommitted tx older than this stops being a chain base (falls back to the
+// committed head), so a lost tx cannot wedge its owner's sealing forever.
+const PENDING_OWNER_HEAD_TTL_MS = 30_000;
+
 const TX_REJECTION_REASON = Object.freeze({
   // Site 1 — mempool admission (post-API, pre-batch)
   MEMPOOL_FULL: "mempool_full",
@@ -671,6 +666,10 @@ const TX_REJECTION_REASON = Object.freeze({
   BATCH_EQUIVOCATION: "batch_equivocation",
   BATCH_DECODE_FAILED: "batch_decode_failed",
   // Site 4 — commit-handler revalidation (business-rules check at commit time)
+  // Owner-chain prev[0] no longer matches the owner's committed head , a
+  // concurrent same-owner tx committed first. The accepting node rebuilds prev
+  // and requeues (bounded); invisible to the client.
+  OWNER_HEAD_STALE: "owner_head_stale",
   IDENTITY_ALREADY_REGISTERED: "identity_already_registered",
   CONTENT_ALREADY_REGISTERED: "content_already_registered",
   DOMAIN_ALREADY_CLAIMED: "domain_already_claimed",
@@ -867,6 +866,9 @@ module.exports = {
   SNAPSHOT_INSTALL_MARKER_KEY,
   SNAPSHOT_INSTALL_BATCH_ROWS,
   SNAPSHOT_BULK_CHUNK_ROWS,
+  DB_WRITE_STALL_FAIL_STOP_MS,
+  DB_WATCHDOG_TICK_MS,
+  DB_PARITY_PROBE_INTERVAL_MS,
   STATE_ROOT_INTEGRITY_CHECK_MS,
   PRESCAN_TIERS,
   PRESCAN_TIER_VALUES,
@@ -911,6 +913,8 @@ module.exports = {
   DISPUTE_EPISODE_TX_TYPES,
   DISPUTE_EVENT_PRIORITY,
   TX_REJECTION_REASON,
+  OWNER_HEAD_STALE_MAX_RETRIES,
+  PENDING_OWNER_HEAD_TTL_MS,
   SCORE_DISPLAY,
   JURISDICTION_TIERS,
   MEDIA_LIMITS,

@@ -606,7 +606,7 @@ function validateCryptography(tx, authorPublicKey) {
 // during sync replay: the tx's authenticity is already guaranteed by the BFT
 // cert wrapping it, and some non-consensus writers (scheduler, scoring, jury)
 // insert txs directly into the DAG without broadcasting them — see issue #13.
-function validateDAGIntegrity(tx, dag, skipPrevCheck = false) {
+function validateDAGIntegrity(tx, dag, skipPrevCheck = false, pendingTxIds = null) {
   const errors = [];
 
   // tx_id must match content — detects any field-level tampering
@@ -631,9 +631,14 @@ function validateDAGIntegrity(tx, dag, skipPrevCheck = false) {
   if (!skipPrevCheck) {
     for (const prevId of tx.prev) {
       if (!prevId) { errors.push("Empty prev reference"); continue; }
-      if (!dag.getTx(prevId)) {
-        errors.push(`prev reference not found in DAG: ${prevId}`);
-      }
+      // A prev may reference a PENDING tx: an earlier tx in the same ordered
+      // batch (burst chaining) or one still in the local mempool. Commit-time
+      // owner validation enforces the real chain; this is existence only.
+      if (dag.getTx(prevId)) continue;
+      if (pendingTxIds && pendingTxIds.has(prevId)) continue;
+      if (typeof dag.getMempoolTx === "function" && dag.getMempoolTx(prevId)) continue;
+      if (typeof dag.isPendingSealedTx === "function" && dag.isPendingSealedTx(prevId)) continue;
+      errors.push(`prev reference not found in DAG: ${prevId}`);
     }
   }
 
@@ -808,7 +813,7 @@ function validateState(tx, dag) {
  * @returns {{ valid: boolean, errors: string[], warnings: string[] }}
  */
 function validateTransaction(tx, dag, options = {}) {
-  const { authorPublicKey, skipCrypto = false, skipState = false, skipPrevCheck = false } = options;
+  const { authorPublicKey, skipCrypto = false, skipState = false, skipPrevCheck = false, pendingTxIds = null } = options;
 
   // Layer 1: Structure
   const structResult = validateStructure(tx);
@@ -833,7 +838,7 @@ function validateTransaction(tx, dag, options = {}) {
   // Node auth is at the gossip transport layer (challenge-response).
 
   // Layer 5: DAG integrity
-  const dagResult = validateDAGIntegrity(tx, dag, skipPrevCheck);
+  const dagResult = validateDAGIntegrity(tx, dag, skipPrevCheck, pendingTxIds);
   if (!dagResult.valid) {
     return { valid: false, errors: dagResult.errors, layer: "dag_integrity" };
   }

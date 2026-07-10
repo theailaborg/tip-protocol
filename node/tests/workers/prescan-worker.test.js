@@ -105,6 +105,14 @@ async function setup({ now, classifierHandler, mediaService }) {
     nodePrivateKey: kp.privateKey,
   };
   const jobs = createPrescanJobs({ dag, now });
+  // Claims are gated on the content row existing (REGISTER_CONTENT
+  // committed); worker tests treat that as fixture background, so enqueue
+  // seeds the row.
+  const rawEnqueue = jobs.enqueue;
+  jobs.enqueue = (args) => {
+    dag.saveContent({ ctid: args.ctid, origin_code: "OH", content_hash: "h", author_tip_id: "a", signer_tip_id: "a", cna_version: "v1", registered_at: 1 });
+    return rawEnqueue(args);
+  };
   const submitter = makeSubmitter();
   const classifier = makeClassifier(classifierHandler);
   const worker = createPrescanWorker({

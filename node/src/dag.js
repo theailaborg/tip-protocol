@@ -29,7 +29,7 @@ const { shake256 } = require("../../shared/crypto");
 const { createSMT } = require("../../shared/smt");
 const { STATE_PK, stateLeafKey } = require("./consensus/state-root");
 const { nowMs } = require("../../shared/time");
-const { TX_TYPES, PRESCAN_REVIEW_STATES } = require("../../shared/constants");
+const { TX_TYPES, PRESCAN_REVIEW_STATES, PENDING_OWNER_HEAD_TTL_MS } = require("../../shared/constants");
 const { SCORE, CONTENT_GRACE, REVIEWER, CONSENSUS } = require("../../shared/protocol-constants");
 const { subjectTipId, subjectTipIds } = require("./tx-attribution");
 const { log } = require("./logger");
@@ -69,6 +69,10 @@ async function _runSqliteMigrations(dbPath) {
 // Every column of each table IS included. This is only safe because every
 // field is populated from tx data (tx.timestamp, tx.tx_id, tx.data.*) —
 // never from nowMs() / unixepoch() / other local-clock sources.
+function _canonOwnerHead(r) {
+  return { entity_key: r.entity_key, tx_id: r.tx_id };
+}
+
 // See setScore() and addDedupHash() for the determinism contract.
 function _canonIdentity(r) {
   // GH #60: public_key, algorithm, root_public_key removed.
@@ -96,12 +100,9 @@ function _canonIdentity(r) {
     tx_id: r.tx_id || null,
   };
 }
-// prescan_probability is a float4 (32-bit) DB column but a float64 in live
-// memory: hydration reads the lossy-rounded float32 (0.1 -> 0.10000000149),
-// live commit holds the exact float64 (0.1). Hashing the raw float forks the
-// state root between restarted and live nodes (live incident 2026-07-06).
-// Quantize to integer basis-points (4 dp): float32 error (~1e-7) can never
-// cross a 1e-4 boundary, so both representations collapse to one value.
+// prescan_probability is float4 in the DB but float64 live; hashing the raw float
+// forked the state root between restarted and live nodes (incident 2026-07-06).
+// Basis-point quantization collapses both representations to one value.
 function _quantizeProb(p) {
   return typeof p === "number" && Number.isFinite(p) ? Math.round(p * 10000) : 0;
 }
@@ -427,6 +428,10 @@ const SMT_READ = {
   entity_keys: (st, pk) => { const r = st._entityKeys.get(pk); return r ? _canonEntityKey(r) : null; },
   prescan_reviews: (st, pk) => { const r = st._prescanReviews.get(pk); return r ? _canonPrescanReview(r) : null; },
   interests_registry: (st, pk) => { const r = st._interestsRegistry.get(pk); return r ? _canonInterest(r) : null; },
+  owner_heads: (st, pk) => {
+    const tx_id = st._ownerHeads.get(pk);
+    return tx_id ? _canonOwnerHead({ entity_key: pk, tx_id }) : null;
+  },
   protocol_params: (st, pk) => {
     const sep = pk.lastIndexOf("\x00");
     const arr = st._protocolParams.get(pk.slice(0, sep));
@@ -440,10 +445,8 @@ class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
   delete(k) { const r = super.delete(k); if (r) this._owner._smtSync(this._table, k); return r; }
-  // Map.clear() would drop the entries but leave every leaf stale in the
-  // incremental SMT (the row is gone yet its leaf survives → state-root drift).
-  // Re-sync each removed key so its leaf is pruned. Used by the snapshot
-  // install reset (clearCanonicalState).
+  // Map.clear() alone leaves every removed row's leaf stale in the incremental
+  // SMT (state-root drift); re-sync each key so its leaf is pruned.
   clear() {
     const keys = [...super.keys()];
     super.clear();
@@ -489,7 +492,8 @@ class MemoryStore {
     this._txRejections = new Map();  // tx_id -> rejection record (no-loss invariant)
     this._disputeDetails = new Map();  // evidence_hash -> dispute details record (off-chain dispute body, NOT consensus state)
     this._prescanJobs = new Map();     // job_id -> prescan-job row (node-local async classifier queue, NOT consensus state)
-    this._domainBindings = new SmtMap(this, "domain_bindings");  // domain -> binding record (canonical, in state_merkle_root)
+    this._domainBindings = new SmtMap(this, "domain_bindings");  // domain
+    this._ownerHeads = new SmtMap(this, "owner_heads");  // entity_key -> tx_id (owner-chain heads, canonical) -> binding record (canonical, in state_merkle_root)
     // Off-DAG perceptual similarity index (advisory; NOT consensus state, NOT in
     // state_merkle_root). Source of truth + derived candidate indexes.
     this._perceptualFingerprints = new Map(); // `${ctid}|${component_idx}` -> fingerprint row
@@ -1022,6 +1026,7 @@ class MemoryStore {
     this._prescanReviews.clear();
     this._interestsRegistry.clear();
     this._protocolParams.clear();
+    this._ownerHeads.clear();
     this._smt.clear();
   }
 
@@ -1483,6 +1488,44 @@ class MemoryStore {
   // suspended nodes, etc. are part of consensus state — two nodes that have
   // applied the same tx sequence must agree on the full set, including
   // terminal states. Filtering is a view concern, not a state concern.
+  // ── Owner-chain heads (canonical) ─────────────────────────────────────────
+  setOwnerHead(entityKey, txId) {
+    this._ownerHeads.set(entityKey, txId);
+    // A committed head supersedes the pending chain base it confirms.
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (p && p.txId === txId) this._pendingOwnerHeads.delete(entityKey);
+  }
+  getOwnerHead(entityKey) {
+    return this._ownerHeads.get(entityKey) || null;
+  }
+  // ── Pending owner heads (LOCAL, ephemeral , same-owner burst chaining) ────
+  // Last SEALED (not yet committed) tx per owner, so a burst chains
+  // tx1<-tx2<-tx3 in one round instead of serializing one per round via the
+  // stale-requeue path (the 2026-07-09 prescan-flood halt). Never canonical.
+  notePendingOwnerHead(entityKey, txId) {
+    if (!this._pendingOwnerHeads) this._pendingOwnerHeads = new Map();
+    if (!this._recentSealedTxIds) this._recentSealedTxIds = new Map();
+    this._pendingOwnerHeads.set(entityKey, { txId, at: nowMs() });
+    this._recentSealedTxIds.set(txId, nowMs());
+    if (this._recentSealedTxIds.size > 10_000) {
+      const cut = nowMs() - PENDING_OWNER_HEAD_TTL_MS;
+      for (const [id, at] of this._recentSealedTxIds) if (at < cut) this._recentSealedTxIds.delete(id);
+    }
+  }
+  getPendingOwnerHead(entityKey) {
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (!p) return null;
+    if (nowMs() - p.at > PENDING_OWNER_HEAD_TTL_MS) { this._pendingOwnerHeads.delete(entityKey); return null; }
+    return p.txId;
+  }
+  isPendingSealedTx(txId) {
+    const at = this._recentSealedTxIds && this._recentSealedTxIds.get(txId);
+    return !!at && nowMs() - at <= PENDING_OWNER_HEAD_TTL_MS;
+  }
+  resetPendingOwnerHead(entityKey) {
+    if (this._pendingOwnerHeads) this._pendingOwnerHeads.delete(entityKey);
+  }
+
   // ── #88 incremental state tree ────────────────────────────────────────────
   _smtSync(table, pk) {
     const row = SMT_READ[table](this, pk);
@@ -1506,7 +1549,7 @@ class MemoryStore {
 
   // #132: `contentRaw` ships the RAW content row (not the hash projection).
   // _canonContent quantizes prescan_probability (float determinism, #195) and
-  // drops derived counters — fine for hashing, WRONG as the snapshot transfer
+  // drops derived counters , fine for hashing, WRONG as the snapshot transfer
   // form: the receiver would store the quantized value and re-quantize it,
   // forking the state root. The snapshot serve sets contentRaw:true; the
   // receiver re-derives the root via computeStateMerkleRoot after install, so
@@ -1540,6 +1583,10 @@ class MemoryStore {
     for (const r of [...this._platformLinks.values()]
       .sort((a, b) => cmpBin(a.id, b.id))) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
+    }
+    for (const [entity_key, tx_id] of [...this._ownerHeads.entries()]
+      .sort((a, b) => cmpBin(a[0], b[0]))) {
+      yield { table: "owner_heads", row: _canonOwnerHead({ entity_key, tx_id }) };
     }
     for (const r of [...this._vps.values()]
       .sort((a, b) => cmpBin(a.vp_id, b.vp_id))) {
@@ -1838,6 +1885,10 @@ class MemoryStore {
     const queued = [];
     const stuck = [];
     for (const row of this._prescanJobs.values()) {
+      // Hold jobs until REGISTER_CONTENT commits: a verdict emitted before
+      // the content row exists no-ops at apply and the real verdict is lost
+      // to the 1h fail-open valve.
+      if (!this._content.get(row.ctid)) continue;
       if (row.status === "queued") queued.push(row);
       else if (row.status === "claimed" && row.claimed_at < now - claimTimeoutMs) stuck.push(row);
     }
@@ -2235,6 +2286,8 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getDomainBinding: this.db.prepare("SELECT * FROM domain_bindings WHERE domain=?"),
+      setOwnerHead: this.db.prepare("INSERT OR REPLACE INTO owner_heads (entity_key, tx_id) VALUES (?,?)"),
+      getOwnerHead: this.db.prepare("SELECT tx_id FROM owner_heads WHERE entity_key=?"),
       getDomainBindingsByTipId: this.db.prepare("SELECT * FROM domain_bindings WHERE tip_id=?"),
       getAllDomainBindings: this.db.prepare("SELECT * FROM domain_bindings"),
 
@@ -2674,12 +2727,15 @@ class SQLiteStore {
         "SELECT * FROM prescan_jobs WHERE tip_ctid=?"
       ),
       claimPrescanJob: this.db.prepare(
+        // EXISTS guard: hold jobs until REGISTER_CONTENT commits, else the
+        // verdict no-ops at apply and is lost to the 1h fail-open valve.
         `UPDATE prescan_jobs
             SET status='claimed', claimed_at=?, claimed_by=?
           WHERE job_id = (
             SELECT job_id FROM prescan_jobs
-             WHERE status='queued'
-                OR (status='claimed' AND claimed_at < ?)
+             WHERE (status='queued'
+                OR (status='claimed' AND claimed_at < ?))
+               AND EXISTS (SELECT 1 FROM content WHERE content.tip_ctid = prescan_jobs.tip_ctid)
              ORDER BY created_at
              LIMIT 1
           )
@@ -3516,6 +3572,35 @@ class SQLiteStore {
   // uses prepared-statement cursors (better-sqlite3 iterate()) so rows flow
   // one at a time without loading the whole table. `ORDER BY <pk>` uses the
   // primary-key index, so sorting is free (no temp table / external sort).
+  setOwnerHead(entityKey, txId) {
+    this._stmts.setOwnerHead.run(entityKey, txId);
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (p && p.txId === txId) this._pendingOwnerHeads.delete(entityKey);
+  }
+  getOwnerHead(entityKey) {
+    const r = this._stmts.getOwnerHead.get(entityKey);
+    return r ? r.tx_id : null;
+  }
+  notePendingOwnerHead(entityKey, txId) {
+    if (!this._pendingOwnerHeads) this._pendingOwnerHeads = new Map();
+    if (!this._recentSealedTxIds) this._recentSealedTxIds = new Map();
+    this._pendingOwnerHeads.set(entityKey, { txId, at: nowMs() });
+    this._recentSealedTxIds.set(txId, nowMs());
+  }
+  getPendingOwnerHead(entityKey) {
+    const p = this._pendingOwnerHeads && this._pendingOwnerHeads.get(entityKey);
+    if (!p) return null;
+    if (nowMs() - p.at > PENDING_OWNER_HEAD_TTL_MS) { this._pendingOwnerHeads.delete(entityKey); return null; }
+    return p.txId;
+  }
+  isPendingSealedTx(txId) {
+    const at = this._recentSealedTxIds && this._recentSealedTxIds.get(txId);
+    return !!at && nowMs() - at <= PENDING_OWNER_HEAD_TTL_MS;
+  }
+  resetPendingOwnerHead(entityKey) {
+    if (this._pendingOwnerHeads) this._pendingOwnerHeads.delete(entityKey);
+  }
+
   stateRoot() {
     const smt = createSMT();
     for (const { table, row } of this.iterateCanonicalState()) {
@@ -3555,6 +3640,9 @@ class SQLiteStore {
     for (const r of db.prepare("SELECT * FROM platform_links ORDER BY id").iterate()) {
       yield { table: "platform_links", row: _canonPlatformLink(r) };
     }
+    for (const r of db.prepare("SELECT * FROM owner_heads ORDER BY entity_key").iterate()) {
+      yield { table: "owner_heads", row: _canonOwnerHead(r) };
+    }
     for (const r of db.prepare("SELECT * FROM verification_providers ORDER BY vp_id").iterate()) {
       yield { table: "verification_providers", row: _canonVP(r) };
     }
@@ -3588,6 +3676,7 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM content").run();
       this.db.prepare("DELETE FROM scores").run();
       this.db.prepare("DELETE FROM dedup_registry").run();
+      this.db.prepare("DELETE FROM owner_heads").run();
       this.db.prepare("DELETE FROM revocations").run();
       this.db.prepare("DELETE FROM verification_providers").run();
       this.db.prepare("DELETE FROM nodes").run();
@@ -3868,6 +3957,52 @@ class SQLiteStore {
 // DAG FACADE  —  single interface over either store
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Owner-chain slot0: committed head, else registration anchor (chain-open points
+// at the registrar's tx), else genesis. Single source for both prev ASSIGNMENT
+// (prevFor) and commit-time VALIDATION, so the two can never disagree and fork.
+function _computeExpectedOwnerHead(store, owner) {
+  const { ownerKey } = require("./consensus/tx-owner");
+  const { GENESIS_TX_ID } = require("./genesis");
+  if (!owner) return GENESIS_TX_ID;
+  const anchor =
+    owner.entityType === "identity" ? (store.getIdentity(owner.entityId)?.tx_id || null)
+      : owner.entityType === "vp" ? (store.getVP(owner.entityId)?.tx_id || null)
+        : owner.entityType === "node" ? (store.getNode(owner.entityId)?.tx_id || null)
+          : null;   // rotation chain opens at genesis
+  return store.getOwnerHead(ownerKey(owner)) || anchor || GENESIS_TX_ID;
+}
+
+// Owner-chain prev pair assigned at submit time. slot0 = the owner's required
+// head (single source above); slot1 = advisory subject anchor. Shared by the
+// initDAG facade and the Knex adapter so both stores assign prev identically.
+function _computePrevFor(store, txType, data) {
+  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
+  const { subjectTipId } = require("./tx-attribution");
+  const { GENESIS_TX_ID } = require("./genesis");
+  const owner = ownerOf({ tx_type: txType, data });
+  // Chain onto our own SEALED-but-pending tx first (burst chaining); the
+  // committed head is the base only when no fresh pending link exists.
+  const pending = owner && typeof store.getPendingOwnerHead === "function"
+    ? store.getPendingOwnerHead(ownerKey(owner)) : null;
+  const slot0 = pending || _computeExpectedOwnerHead(store, owner);
+  let slot1 = GENESIS_TX_ID;
+  const subject = subjectTipId({ tx_type: txType, data });
+  if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
+    slot1 = store.getOwnerHead(`identity:${subject}`)
+      || store.getIdentity(subject)?.tx_id
+      || GENESIS_TX_ID;
+  }
+  return [slot0, slot1];
+}
+
+// Record a freshly-sealed tx as its owner's pending chain base (burst chaining).
+function _noteSealedTx(store, txType, data, txId) {
+  if (typeof store.notePendingOwnerHead !== "function") return;
+  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
+  const owner = ownerOf({ tx_type: txType, data });
+  if (owner) store.notePendingOwnerHead(ownerKey(owner), txId);
+}
+
 // ─── Shared post-store-selection init (sync) ─────────────────────────────────
 // Called by both initDAG (SQLite/Memory) and initDAGAsync (Knex).
 // Returns the public dag API object.
@@ -3952,6 +4087,22 @@ function _buildDagHandle(store, config) {
     getTxsBySubject: (tipId) => store.getTxsBySubject(tipId),
     getRecentPrev: () => [..._prev],
 
+    /**
+     * Owner-chain prev: prev[0] = owner's head, else registration anchor, else
+     * genesis; prev[1] = advisory subject anchor (else genesis).
+     */
+    prevFor: (txType, data) => _computePrevFor(store, txType, data),
+
+    // Owner-chain prev[0] the given owner MUST reference at commit time (same
+    // computation prevFor used at submit time). Commit-handler compares tx.prev[0]
+    // against this; a mismatch means the head moved (OWNER_HEAD_STALE).
+    expectedOwnerHead: (owner) => _computeExpectedOwnerHead(store, owner),
+    // Burst chaining hooks: sealers record each sealed tx; the stale path
+    // resets a broken chain so rebuilds restart from the committed head.
+    noteSealedTx: (txType, data, txId) => _noteSealedTx(store, txType, data, txId),
+    isPendingSealedTx: (txId) => typeof store.isPendingSealedTx === "function" ? store.isPendingSealedTx(txId) : false,
+    resetPendingOwnerHead: (entityKey) => typeof store.resetPendingOwnerHead === "function" ? store.resetPendingOwnerHead(entityKey) : undefined,
+
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
     // snapshot history. Receiver installs each row via addTx; addTx's
@@ -3998,8 +4149,14 @@ function _buildDagHandle(store, config) {
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
+    persistenceStats: () => (typeof store.persistenceStats === "function"
+      ? store.persistenceStats()
+      : { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 }),
+    startPersistenceGuards: () => { if (typeof store.startPersistenceGuards === "function") store.startPersistenceGuards(); },
     stateRoot: () => store.stateRoot(),
     rebuildStateTree: () => store.rebuildStateTree(),
+    setOwnerHead: (entityKey, txId) => store.setOwnerHead(entityKey, txId),
+    getOwnerHead: (entityKey) => store.getOwnerHead(entityKey),
 
     // ── Revocations (v2 FIX-05) ───────────────────────────────────────────
     addRevocation: (id, type, ts, txId) => store.addRevocation(id, type, ts, txId),
@@ -4205,6 +4362,11 @@ function _buildDagHandle(store, config) {
     flush: () => store.flush(),
     close: () => store.close(),
   };
+
+  // Owner-chain prev source for tx sealing (services/helpers withTxId /
+  // nodeSignedAuto). Last-initialized dag wins , one dag per process in
+  // every real deployment.
+  require("./services/helpers").initTxPrev(dag);
 
   // Snapshot bulk install (#132): only the knex/Postgres store batches inserts.
   // Exposed conditionally so the snapshot handler can feature-detect it and the
@@ -4509,4 +4671,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx };

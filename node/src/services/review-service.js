@@ -107,7 +107,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_DISMISSED,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -118,7 +118,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         decision_note: safeBody.decision_note ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -135,7 +135,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review?.ctid || null,
       relatedTxId: tx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -158,7 +157,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_CONFIRMED,
       timestamp: nowMs(),
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -168,7 +167,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         decision_note: safeBody.decision_note ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -191,7 +190,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const tx = withTxId({
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         review_id: reviewId,
         reviewer_tip_id: safeBody.reviewer_tip_id,
@@ -200,7 +199,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         recusal_reason: safeBody.recusal_reason ?? null,
       },
       signature: safeBody.signature,
-    });
+    }, dag);
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
 
@@ -217,7 +216,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const updateTx = withTxId({
       tx_type: TX_TYPES.UPDATE_ORIGIN,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         ctid: review.ctid,
         old_origin_code: content.origin_code,
@@ -225,7 +224,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         author_tip_id: body.author_tip_id,
       },
       signature: body.signature,
-    });
+    }, dag);
 
     // Score penalty batched atomically with the origin update. Accepting
     // the reviewer's CONFIRM still costs the creator
@@ -240,7 +239,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: updateTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -254,7 +252,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: updateTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -301,7 +298,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
     const disputeTx = nodeSignedAuto({
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         ctid: review.ctid,
         reason: "creator_disagrees_with_reviewer",
@@ -332,7 +329,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
         author_tip_id: review.creator_tip_id,
         stake: DISPUTE.DISPUTER_STAKE,
       },
-    }, config);
+    }, config, dag);
 
     // Reviewer's filing-time stake (escrow). Mirrors what
     // dispute-service.fileDispute does for a user-filed dispute —
@@ -345,7 +342,6 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       ctid: review.ctid,
       relatedTxId: disputeTx.tx_id,
       timestamp,
-      getRecentPrev: () => dag.getRecentPrev(),
       config,
     });
 
@@ -370,7 +366,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
       const summonsTx = nodeSignedAuto({
         tx_type: TX_TYPES.JURY_SUMMONS,
         timestamp: nowMs(),
-        prev: dag.getRecentPrev(),
+        prev: [],
         data: {
           ctid: review.ctid,
           dispute_tx_id: disputeTx.tx_id,
@@ -381,7 +377,7 @@ function createReviewService({ dag, scoring, submitTx, submitBatch, config }) {
           commit_deadline: commitDeadline,
           reveal_deadline: revealDeadline,
         },
-      }, config);
+      }, config, dag);
       batch.push(summonsTx);
     }
 

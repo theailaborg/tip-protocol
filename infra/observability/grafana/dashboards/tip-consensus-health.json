@@ -2240,6 +2240,192 @@
         "w": 12,
         "h": 8
       }
+    },
+    {
+      "id": 45,
+      "type": "row",
+      "title": "Persistence , memory vs DB",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 186
+      },
+      "panels": []
+    },
+    {
+      "id": 46,
+      "type": "stat",
+      "title": "Memory = DB (parity verified age)",
+      "description": "Seconds since the parity probe last verified all 14 canonical tables equal between the in-memory mirror and Postgres. Probe runs every 60s; a mismatch fail-stops the node. -1 = probe has not completed yet (boot).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 187
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 150
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-tip"
+          },
+          "expr": "tip_db_parity_last_ok_age_ms / 1000",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "type": "timeseries",
+      "title": "DB write queue depth",
+      "description": "Pending writes in the fire-and-forget persistence chain. Should hover near 0; sustained growth means the DB is falling behind memory.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 187
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-tip"
+          },
+          "expr": "tip_db_write_queue_depth",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Oldest pending DB write",
+      "description": "Age of the write at the head of the persistence chain. The node fail-stops at 60s; alert at 10s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 195
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-tip"
+          },
+          "expr": "tip_db_oldest_pending_write_ms",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "type": "timeseries",
+      "title": "Last write settled age",
+      "description": "Time since Postgres last acknowledged a write. High while queue depth is 0 just means an idle chain.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 195
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-tip"
+          },
+          "expr": "tip_db_last_write_settled_age_ms",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "links": [

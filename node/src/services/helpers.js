@@ -19,20 +19,50 @@ const {
 } = require("../../../shared/constants");
 const { log } = require("../logger");
 
-/**
- * Assign content-addressed tx_id (no node signature).
- */
-function withTxId(txBody) {
-  txBody.tx_id = computeTxId(txBody);
+// Owner-chain prev fallback. Injected by initDAG (_buildDagHandle). Callers
+// that hold a dag MUST pass it, the singleton is re-pointed by every
+// initDAG() call, so in a multi-dag process (tests, tooling) it can be a
+// different store than the one the tx is validated and committed against,
+// sealing a wrong prev[0] that goes owner-head-stale at commit.
+let _prevDag = null;
+function initTxPrev(dag) { _prevDag = dag; }
+
+function _finalizePrev(txBody, dag) {
+  const src = dag || _prevDag;
+  if (src && txBody.tx_type && txBody.data) {
+    txBody.prev = src.prevFor(txBody.tx_type, txBody.data);
+  }
   return txBody;
+}
+
+// Burst chaining: record the sealed tx as its owner's pending chain base so
+// the next same-owner seal chains onto it instead of racing it.
+function _noteSealed(txBody, dag) {
+  const src = dag || _prevDag;
+  if (src && typeof src.noteSealedTx === "function" && txBody.tx_id) {
+    src.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
+  }
+  return txBody;
+}
+
+/**
+ * Assign content-addressed tx_id (no node signature). Finalizes owner-chain
+ * prev first , prev participates in tx_id, so it must be last-write.
+ */
+function withTxId(txBody, dag) {
+  _finalizePrev(txBody, dag);
+  txBody.tx_id = computeTxId(txBody);
+  return _noteSealed(txBody, dag);
 }
 
 /**
  * Sign a tx with the node's registered key (for auto/system txs only).
  */
-function nodeSignedAuto(txBody, config) {
+function nodeSignedAuto(txBody, config, dag) {
   txBody.data.node_id = config.nodeRegisteredId || config.nodeId;
+  _finalizePrev(txBody, dag);
   txBody.tx_id = computeTxId(txBody);
+  _noteSealed(txBody, dag);
   return signTransaction(txBody, config.nodePrivateKey);
 }
 
@@ -360,6 +390,7 @@ function buildPrescanDescriptor({ preScan, originCode, registeredAt, originChang
 }
 
 module.exports = {
+  initTxPrev,
   withTxId,
   nodeSignedAuto,
   createTxSubmitter,

@@ -177,11 +177,12 @@ describe("dag.updateNodeEndpoint", () => {
 // ─── Commit-handler: monotonic timestamp guard (PR #120) ──────────────────
 
 function _buildEndpointTx(dag, kp, nodeId, endpoint, timestamp) {
+  const data = { node_id: nodeId, api_endpoint: endpoint };
   const body = {
     tx_type: TX_TYPES.NODE_ENDPOINT_UPDATED,
     timestamp,
-    prev: dag.getRecentPrev(),
-    data: { node_id: nodeId, api_endpoint: endpoint },
+    prev: dag.prevFor(TX_TYPES.NODE_ENDPOINT_UPDATED, data),
+    data,
   };
   body.tx_id = computeTxId(body);
   return signTransaction(body, kp.privateKey);

@@ -82,7 +82,16 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
     }
     if (!stuck || stuck.length === 0) return;
 
+    // One in-flight PRESCAN_COMPLETED per ctid: re-emitting while the previous
+    // one waits in the mempool floods the node's serialized owner lane.
+    const pending = new Set();
+    if (typeof dag.getMempoolTxs === "function") {
+      for (const t of dag.getMempoolTxs()) {
+        if (t.tx_type === TX_TYPES.PRESCAN_COMPLETED && t.data?.ctid) pending.add(t.data.ctid);
+      }
+    }
     for (const content of stuck) {
+      if (pending.has(content.ctid)) continue;
       try {
         const tx = _buildFailOpenTx({ ctid: content.ctid, contentType: content.prescan_content_type });
         try {
@@ -115,7 +124,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
       timestamp: completedAt,
-      prev: dag.getRecentPrev(),
+      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         ctid,
         probability,
@@ -137,7 +146,9 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         failure_reason: "prescan_pending_past_fail_open_deadline",
       },
     };
+    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
+    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 

@@ -106,16 +106,14 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
   //              consensus moment — not a synthetic round-derived value.
   //              Fallback to GENESIS_TIMESTAMP for the very first rotation
   //              when no commits exist yet.
-  //   prev:      [] — no user-tx prev refs. Anchoring to GENESIS_TX_ID
-  //              would require every node to share the EXACT same genesis
-  //              tx_id, which is not true in practice across DB-drifted
-  //              federations. Treating rotation as a system tx avoids
-  //              that coupling entirely.
-  //
-  // tx-validator.js permits empty prev for the system-tx set (GENESIS,
-  // COMMITTEE_ROTATION). Both timestamp and prev fall OUTSIDE the
-  // chain-of-trust signature payload (`rotation:${payload_hash}:${signer}`),
-  // so the change has no impact on signature verification.
+  //   prev:      owner-chain (#199) , the rotation:committee chain head
+  //              (previous rotation tx), GENESIS_TX_ID for rotation 1.
+  //              Deterministic across nodes: prevFor reads only committed
+  //              state, and every node shares the genesis (hash-checked at
+  //              handshake). Both timestamp and prev fall OUTSIDE the
+  //              chain-of-trust signature payload
+  //              (`rotation:${payload_hash}:${signer}`), so prev has no
+  //              impact on signature verification.
   const latestCommit = dag && typeof dag.getLatestCommit === "function"
     ? dag.getLatestCommit()
     : null;
@@ -128,7 +126,11 @@ function buildRotationTx(dag, proposal, signer_node_ids, signatures) {
     prev: [],
     data,
   };
+  if (dag && typeof dag.prevFor === "function") {
+    tx.prev = dag.prevFor(tx.tx_type, tx.data);
+  }
   tx.tx_id = computeTxId(tx);
+  if (dag && typeof dag.noteSealedTx === "function") dag.noteSealedTx(tx.tx_type, tx.data, tx.tx_id);
   return tx;
 }
 

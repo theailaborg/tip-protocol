@@ -162,7 +162,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     const txBody = {
       tx_type: TX_TYPES.BIND_DOMAIN,
       timestamp: verifiedAt,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data: {
         // canonical fields mirrored onto tx.data so commit-handler can
         // replay buildSigningPayload(d) deterministically
@@ -188,7 +188,7 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
       // Node's ML-DSA-65 attestation over the canonical binding payload.
       signature: bindingSignature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, { skipState: true });
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");

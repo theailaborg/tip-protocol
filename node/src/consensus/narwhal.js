@@ -817,12 +817,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // ── Certificate creation ─────────────────────────────────────────────────
 
   function _tryCreateCertificate() {
-    // Production must stay suppressed whenever we can't produce (syncing /
-    // byzantine-halt). _beginRound guards this on entry, but retry timers and
-    // reconcile paths call _tryCreateCertificate directly , without this guard a
-    // node that briefly flipped to ready, set _myBatch, then reverted to syncing
-    // keeps trying to seal a cert with no committee acks and crashes in
-    // computeMedianTimestamp. Robust suppression across ALL entry points.
+    // Retry/reconcile timers call this directly, bypassing _beginRound's guard;
+    // a node that reverted to syncing would keep sealing with no committee acks
+    // and crash in computeMedianTimestamp. Suppress at every entry point.
     if (!_canProduce()) return;
     if (_myCertificateCreated || !_myBatch) return;
 
@@ -845,10 +842,8 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     const acks = allAcks.filter(a => committeeSet.has(a.acker_node_id));
     const quorum = _getQuorum();
 
-    // quorum < 1 means no committee is known yet (e.g. a node forced to `ready`
-    // by the stuck-sync escape before its snapshot state installed). Sealing a
-    // cert then feeds an empty ack/timestamp set into computeMedianTimestamp and
-    // crashes. No committee -> never produce.
+    // quorum < 1 means no committee is known (e.g. forced ready before the state
+    // installed); sealing would crash computeMedianTimestamp on an empty ack set.
     if (quorum < 1 || acks.length < quorum) return;
 
     // §1 Own-cert equivocation defense (no new storage — reuses the
@@ -1279,7 +1274,7 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
       log.debug(`markCaughtUp ignored — joinState=${_joinState}`);
       return;
     }
-    if (_exitToReady(peerLatestRound)) log.notice(`Caught up — ready at round ${_currentRound}`);
+    if (_exitToReady(peerLatestRound)) log.notice(`Caught up , ready at round ${_currentRound}`);
   }
 
   // Public override: forces a direct transition to ready from any state.
@@ -1288,19 +1283,17 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
   // Live happy-path callers should prefer markSnapshotInstalled +
   // markCaughtUp so the AE state-root assertion gates the transition.
   function exitSyncMode(peerLatestRound = 0) {
-    if (_exitToReady(peerLatestRound)) log.notice(`Exiting sync mode — ready at round ${_currentRound}`);
+    if (_exitToReady(peerLatestRound)) log.notice(`Exiting sync mode , ready at round ${_currentRound}`);
   }
 
   function _exitToReady(peerLatestRound) {
-    // NEVER go ready while a snapshot install is pending. The persisted marker is
-    // set at install start and cleared only on verified go-live (snapshot-handler),
-    // so a set marker means this node's state is partial — promoting now would sign
-    // a committed root it cannot reproduce (fake-ready). Stay in the current join
-    // state; the install completes and the gated catching_up→ready path promotes.
+    // Never go ready while a snapshot install is pending: the marker clears only on
+    // verified go-live, so a set marker means partial state and promoting would sign
+    // a root this node cannot reproduce (the node3 fake-ready incident, 2026-07-08).
     const installMarker = typeof dag.getConsensusMeta === "function"
       ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null;
     if (installMarker && String(installMarker).startsWith("in_progress")) {
-      log.warn(`Refusing ready: snapshot install still pending (${installMarker}) — staying ${_joinState}`);
+      log.warn(`Refusing ready: snapshot install still pending (${installMarker}) , staying ${_joinState}`);
       return false;
     }
     const fromDag = dag.getLatestRound();

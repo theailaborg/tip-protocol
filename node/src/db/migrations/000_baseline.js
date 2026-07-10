@@ -156,6 +156,14 @@ exports.up = async (knex) => {
     t.bigInteger("last_updated").notNullable();
   });
 
+  // Owner-chain heads: last committed tx per signing entity. Canonical
+  // state (participates in state_merkle_root); updated deterministically
+  // in commit order by commit-handler.
+  await _createTable(knex, "owner_heads", t => {
+    t.text("entity_key").primary();   // `${entity_type}:${entity_id}`
+    t.text("tx_id").notNullable();
+  });
+
   await _createTable(knex, "dedup_registry", t => {
     t.string("dedup_hash", 512).primary();
     t.bigInteger("created_at").notNullable();
@@ -532,6 +540,7 @@ exports.down = async (knex) => {
   await knex.schema.dropTableIfExists("domain_bindings");
   await knex.schema.dropTableIfExists("revocations");
   await knex.schema.dropTableIfExists("dedup_registry");
+  await knex.schema.dropTableIfExists("owner_heads");
   await knex.schema.dropTableIfExists("scores");
   await knex.schema.dropTableIfExists("content");
   await knex.schema.dropTableIfExists("entity_keys");

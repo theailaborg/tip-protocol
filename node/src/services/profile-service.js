@@ -51,10 +51,10 @@ function createProfileService({ dag, config, submitTx }) {
     const tx = withTxId({
       tx_type: TX_TYPES.UPDATE_PROFILE,
       timestamp,
-      prev: dag.getRecentPrev(),
+      prev: [],
       data,
       signature: safeBody.signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(tx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");

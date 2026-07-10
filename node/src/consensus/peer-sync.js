@@ -303,18 +303,16 @@ async function onPeerAuthorized(peerId, tipNodeId, deps) {
           if (st) peerRoot = st.state_merkle_root || st.stateMerkleRoot || "";
         } catch { /* leave null → don't promote */ }
       }
-      // Promote only when we CONFIRMED the peer's root and our committed state
-      // matches it. Both-genesis counts as a match (fresh cluster bootstrap); a
-      // genesis/empty joiner vs an established peer does NOT (its counter caught
-      // up via cert-sync but it never installed the state). Can't confirm → stay
-      // syncing and let anti-entropy trigger a snapshot resync.
+      // Promote only on a CONFIRMED state-root match. Both-genesis matches (fresh
+      // bootstrap); genesis-vs-established does not (counter caught up, state never
+      // installed). Can't confirm: stay syncing, AE triggers the resync.
       if (peerRoot !== null && selfRoot === peerRoot) {
         const targetRound = result.peerLatestRound || effectiveSnapRound || 0;
         narwhal.exitSyncMode(targetRound);
       } else {
         log.warn(
           `Sync: cert-synced from ${peerId.slice(0, 12)} but state ${peerRoot === null ? "unconfirmed" : "diverges"} ` +
-          `(self=${(selfRoot || "∅").slice(0, 12)} peer=${(peerRoot == null ? "?" : (peerRoot || "∅")).slice(0, 12)}) — ` +
+          `(self=${(selfRoot || "∅").slice(0, 12)} peer=${(peerRoot == null ? "?" : (peerRoot || "∅")).slice(0, 12)}) , ` +
           `staying in syncing, snapshot resync will run (a node without matching state must not go ready)`
         );
       }

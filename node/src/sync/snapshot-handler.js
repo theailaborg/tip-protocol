@@ -70,11 +70,9 @@ const log = getLogger("tip.snapshot");
 
 const K = SNAPSHOT_FRAME_KIND;
 
-// Prefix a frame body with its 1-byte SNAPSHOT_FRAME_KIND tag (#132). The tag
-// lets a streaming receiver route each frame the moment it arrives, with no
-// pre-count and no positional slicing. It also doubles as a format
-// discriminator: an old-format frame is raw protobuf whose first byte is a
-// field tag (never a kind value), so a version-mixed pair fails cleanly.
+// Prefix each frame body with its 1-byte kind tag so the receiver routes frames
+// as they stream; doubles as a format discriminator (raw protobuf never starts
+// with a kind value), so a version-mixed pair fails cleanly.
 function _frameKind(kind, body) {
   return _frame(Buffer.concat([Buffer.from([kind]), body]));
 }
@@ -140,13 +138,13 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   // #132 boot recovery. A streaming install writes canonical state in-place
-  // across many batches (no single covering transaction — the state is far
+  // across many batches (no single covering transaction , the state is far
   // larger than one txn can hold), guarded by the persisted install marker.
   // If a crash interrupts it, the node reboots with PARTIAL canonical state
   // and the marker still `in_progress`. Coming up `ready` on that partial
   // state would fork the chain. So: wipe it and signal the caller to force
-  // syncing. The marker is LEFT SET (not cleared) — only a fully-verified
-  // install clears it at finalize — so a second crash during recovery still
+  // syncing. The marker is LEFT SET (not cleared) , only a fully-verified
+  // install clears it at finalize , so a second crash during recovery still
   // resyncs rather than trusting the wipe. Returns true if it recovered.
   async function recoverInterruptedInstall() {
     let marker = null;
@@ -154,14 +152,14 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     catch { return false; }
     if (!marker || !String(marker).startsWith("in_progress")) return false;
     log.warn(
-      `Snapshot: interrupted install detected (marker=${marker}) — wiping partial canonical ` +
+      `Snapshot: interrupted install detected (marker=${marker}) , wiping partial canonical ` +
       `state; node stays in syncing and resyncs from a peer before producing anything`
     );
     try {
       dag.clearCanonicalState();
       if (typeof dag.flush === "function") await dag.flush();
     } catch (err) {
-      log.error(`Snapshot: interrupted-install wipe failed: ${err.message} — node may need a manual reset`);
+      log.error(`Snapshot: interrupted-install wipe failed: ${err.message} , node may need a manual reset`);
     }
     resetInstallState();
     return true;
@@ -234,11 +232,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   }
 
   async function _handleIncomingSnapshot(stream, remotePeer) {
-    // Read one SnapshotRequest from the stream. A 0-byte body is proto3's empty
-    // message = all defaults (minRound 0): a joiner asking for "your latest" on
-    // an idle network encodes to zero bytes, so treat a falsy read as an empty
-    // request object rather than rejecting it. (Rejecting it stalled fresh
-    // joiners whose min_round-0 request serialized to nothing.)
+    // A 0-byte body is proto3's all-defaults message ("send your latest"), so a
+    // falsy read is an empty request, not an error; rejecting it stalled joiners.
     const request = (await _readOneMessage(stream, "SnapshotRequest")) || {};
 
     const minRound = Number(request.minRound || 0);
@@ -319,10 +314,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       ? Number((bullshark.stats() || {}).consensusIndex || 0)
       : Number(latest.consensus_index || 0);
 
-    // Total rows across all phases, for the joiner's install % (advisory /
-    // display-only, never hashed or signed). state + txs + certs dominate; the
-    // tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
-    // Counted from the in-memory mirror before the header goes out.
+    // Total rows for the joiner's install % (display-only, never hashed/signed);
+    // the tiny commit/rotation/rp phases are absorbed by the receiver's 100% cap.
     let _snapTotalRows = 0;
     for (const _r of dag.iterateCanonicalState({ contentRaw: true })) _snapTotalRows++;
     if (typeof dag.transactionCount === "function") _snapTotalRows += dag.transactionCount();
@@ -383,14 +376,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     _activeServes++;
-    // Serve-side STALL guard, symmetric with the client's _boundedFrameStream:
-    // stream.sink() blocks on backpressure while the joiner reads. If the joiner
-    // abandons the stream (crash/restart/its own stall), sink() would wait
-    // FOREVER holding this node's single serve slot — every later request then
-    // declines "serve capacity reached". Re-arm on each emitted frame; if no
-    // frame flows for STALL_MS, abort the stream so sink() throws → the finally
-    // releases the slot. (Live: node3 restarts during rejoin left node1/node2's
-    // slot pinned on a dead stream with 0 bytes served.)
+    // Serve-side stall guard (mirrors the client's): an abandoned stream leaves
+    // sink() blocked forever holding the single serve slot, declining all later
+    // requests with "serve capacity reached" (node3 rejoin incident, 2026-07-08).
     let _serveStalled = false;
     let _serveStallTimer = null;
     const _armServeStall = () => {
@@ -398,7 +386,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (_serveStallTimer) clearTimeout(_serveStallTimer);
       _serveStallTimer = setTimeout(() => {
         _serveStalled = true;
-        _abortStream(stream, new Error("snapshot serve stalled — joiner stopped reading"));
+        _abortStream(stream, new Error("snapshot serve stalled , joiner stopped reading"));
       }, SNAPSHOT_DOWNLOAD.STALL_MS);
       _serveStallTimer.unref?.();
     };
@@ -590,31 +578,20 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // Write the request (one frame, length-prefixed for symmetry with the
       // server-side framing — server reads exactly one message).
       const reqBuf = encode("SnapshotRequest", { minRound, requesterNodeId });
-      // Bidirectional request-response: write the framed request, then
-      // closeWrite() , flush-then-half-close the WRITE direction only, in
-      // guaranteed order , while the READ side stays open for the response.
-      //   - sink([x]) alone lets the implicit whole-stream close race the
-      //     data flush on Node 24 -> server reads 0 bytes.
-      //   - holding the write open never flushes (sink only flushes when its
-      //     source ends) -> also 0 bytes.
-      // closeWrite is the correct primitive for exactly this pattern.
+      // Write the framed request then closeWrite(): half-close WRITE while READ
+      // stays open. sink([x]) alone races the flush on Node 24 (server reads 0
+      // bytes) and holding the write open never flushes.
       await stream.sink([_frame(reqBuf)]);
       if (typeof stream.closeWrite === "function") {
         await stream.closeWrite();
       }
 
-      // Stream the response frame-by-frame, installing each row in-place as it
-      // arrives (#132). Bounded memory: only the current frame + one install
-      // batch are held, never the whole ~400MB response (the buffer-then-verify
-      // path OOM'd large joiners). Per-phase integrity roots verify at each
-      // SnapshotPhaseEnd; ack-quorum + chain-of-trust gate go-live at END.
-      //
-      // FORK TRAP: state installs BEFORE its ack attestation is verified (acks
-      // ride the header; the chain-of-trust that anchors them arrives in the
-      // rotation phase, LATER on the wire). Safe ONLY because the node stays in
-      // `syncing` (invisible to consensus) and a persisted crash marker guards
-      // the partial state until END verification passes and markSnapshotInstalled
-      // promotes it. Nothing unverified is ever visible or durable-as-trusted.
+      // Install each frame in-place as it arrives, bounded memory (the old
+      // buffer-then-verify path OOM'd ~400MB joiners); phase roots verify at each
+      // trailer, ack-quorum + chain-of-trust gate go-live at END.
+      // FORK TRAP: state installs before its ack attestation verifies (the anchoring
+      // chain-of-trust arrives later on the wire). Safe only because the node stays
+      // syncing and the crash marker guards the partial state until END passes.
       const txsRoot = createTxsFullRootBuilder();
       const commitsRoot = createCommitsFullRootBuilder();
       const rotationsRoot = createRotationsFullRootBuilder();
@@ -644,12 +621,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const enqueue = (w) => { batch.push(w); };
       const maybeFlush = async () => { if (batch.length >= SNAPSHOT_INSTALL_BATCH_ROWS) await flushBatch(); };
 
-      // Bounds: a byte cap trips on a flood, an overall deadline on a hang /
-      // slow-trickle. _boundedFrameStream aborts the stream and throws on
-      // either breach so the fetch fails fast and retries another peer.
-      // Live progress: a periodic log line (visible in `docker logs`) plus a
-      // gauge (tip_snapshot_install_in_progress_bytes / _rows) so an operator
-      // can watch a large install advance instead of guessing whether it hung.
+      // Byte cap trips on a flood, stall timeout on a hang; either aborts so the
+      // fetch retries another peer. Progress rides a periodic log + gauges.
       let loggedMB = 0;
       let snapTotalRows = 0;   // from header.total_rows, set on the HEADER frame below
       const onProgress = (total) => {
@@ -766,16 +739,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             switch (pe.kind) {
               case K.STATE: {
                 if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
-                // Re-derive from the just-installed mirror (canonicalizes: the raw
-                // content rows on the wire become their _canonContent hash form
-                // here), so the ack-signed state_merkle_root verifies while the
-                // stored rows keep their true storable values (#132).
+                // Re-derive from the installed mirror: raw wire rows canonicalize
+                // here, so the ack-signed root verifies while stored rows keep
+                // their true storable values.
                 derivedState = computeStateMerkleRoot(dag);
                 const expected = bytesToHex(header.stateMerkleRoot);
                 if (derivedState !== expected) {
                   const perTable = computeStateMerkleRootPerTable(dag)
                     .map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
-                  log.error(`Snapshot: state-root mismatch per-table (installed) — ${perTable}`);
+                  log.error(`Snapshot: state-root mismatch per-table (installed) , ${perTable}`);
                   throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
                 }
                 if (peRoot && peRoot !== expected) {
@@ -841,7 +813,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       if (!end) throw new Error("response missing SnapshotEnd terminator");
       await flushBatch();
 
-      // Every phase must have delivered its trailer — a peer that omitted one
+      // Every phase must have delivered its trailer , a peer that omitted one
       // (to skip that phase's integrity root) is rejected. The serve always
       // emits all six, even for empty phases.
       for (const k of [K.STATE, K.TX, K.COMMIT, K.ROTATION, K.CERT, K.RP]) {
@@ -953,7 +925,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       // row is written LAST, only now that ack-quorum + chain-of-trust + every
       // phase root have verified. Clearing the crash marker (durably, AFTER the
       // header commit is durable) is the instant the partial install becomes a
-      // trusted checkpoint — before this, a crash would wipe and resync.
+      // trusted checkpoint , before this, a crash would wipe and resync.
       dag.runInTransaction(() => { _installHeaderCommitRow(header); });
       await dag.flush();
       dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
@@ -1030,12 +1002,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         certs_full_root: derivedCerts,
       };
     } catch (err) {
-      // A streaming install that got past the header wiped local canonical
-      // state, so an abort here leaves it partial. Leave the crash marker SET
-      // (a restart re-enters syncing and resyncs) and wipe the partial rows for
-      // cleanliness. The node was never promoted out of `syncing`, so nothing
-      // unverified was ever visible to consensus. A fresh joiner loses only
-      // genesis; a resyncing node self-heals from another peer.
+      // Past-the-header abort leaves canonical state partial: wipe the rows but
+      // leave the crash marker SET so a restart re-enters syncing and resyncs.
+      // The node never left syncing, so nothing unverified was visible.
       if (installBegun) {
         try { dag.clearCanonicalState(); await dag.flush(); } catch { /* ignore */ }
       }
@@ -1046,10 +1015,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
-      // Always leave bulk mode: on success buffers are already flushed; on
-      // error the mirror + DB were wiped and any un-flushed buffered rows are
-      // discarded with it (the next resync re-clears from a clean bulk-off
-      // state before re-installing).
+      // Always leave bulk mode: flushed on success, and on error the wipe
+      // discards any un-flushed buffered rows with the mirror.
       if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
@@ -1059,12 +1026,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // Shared by the atomic _installSnapshot (buffer path) and the streaming
   // install-in-place path (#132). Each writes via the DAG's public
   // save*/addTx methods, so it respects any active runInTransaction buffer
-  // (batched flush) exactly as a direct call would — the streaming path calls
+  // (batched flush) exactly as a direct call would , the streaming path calls
   // them inside per-batch transactions, _installSnapshot inside one big one.
 
   // GH #32 dedup gate + addTx. Skips a COMMITTEE_ROTATION tx whose
   // rotation_number already exists in committee_history with the SAME
-  // payload_hash (same logical rotation — keep the canonical physical row so
+  // payload_hash (same logical rotation , keep the canonical physical row so
   // computeTxsMerkleRoot's ordered set doesn't gain a duplicate). A divergent
   // payload_hash is logged and installed anyway (upstream chain-of-trust is
   // the authoritative gate; this layer is defense-in-depth). committee_history
@@ -1093,7 +1060,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // rotation_number, so it overwrites any prior local divergent row without a
   // destructive pre-clear. committed_at is the time-epoch boundary marker:
   // trust the shipped value only when sane (>= BFT genesis), else fall back to
-  // the header's BFT ts — a marker in the current bucket can only suppress a
+  // the header's BFT ts , a marker in the current bucket can only suppress a
   // boundary fire until the next real one, never fabricate an ancient bucket.
   function _installRotationRows(rotations, header) {
     const markerFloor = CONSENSUS.BFT_TIME_GENESIS_MS;
@@ -1130,7 +1097,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     return n;
   }
 
-  // Header's commit row — the freshly-attested checkpoint whose
+  // Header's commit row , the freshly-attested checkpoint whose
   // state_merkle_root the ack quorum signed. #50: persist anchor_batch_hash so
   // the joiner stays serve-capable after the anchor cert is GC'd. BFT-Time
   // int64 fields coerce protobuf Long → Number.
@@ -1212,7 +1179,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           _tickProgress("state");
         }
 
-        // txs — dedup gate reads pre-snapshot committee_history (rotations
+        // txs , dedup gate reads pre-snapshot committee_history (rotations
         // install below), skipping a same-payload rotation duplicate.
         let txN = 0;
         let rotationSkipped = 0;
@@ -1459,6 +1426,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // it through so the sink's row matches the source byte-for-byte.
         dag.addDedupHash(row.dedup_hash, row.created_at, row.tip_id || null);
         break;
+      case "owner_heads":
+        dag.setOwnerHead(row.entity_key, row.tx_id);
+        break;
       case "revocations":
         dag.addRevocation(row.tip_id, row.tx_type, row.timestamp, row.tx_id);
         break;
@@ -1542,11 +1512,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
  * single-message request path).
  */
 async function _readOneMessage(stream, typeName) {
-  // Framed read: the request arrives as [4-byte BE length][body] , read
-  // exactly that many bytes, no EOF dependency (the sender may hold its
-  // write side open). Legacy fallback: pre-framing nodes send raw protobuf
-  // and half-close; a raw SnapshotRequest never starts with 0x00, a 4-byte
-  // prefix for any sane request always does.
+  // [4-byte BE length][body], no EOF dependency (sender may hold write open).
+  // Legacy raw-protobuf never starts 0x00; a sane 4-byte prefix always does.
   const widthBytes = 4;
   const chunks = [];
   let total = 0;
@@ -1621,15 +1588,9 @@ function _abortStream(stream, err) {
   } catch { /* ignore */ }
 }
 
-// #94 + #132: yield each length-prefixed frame off a stream, bounded by a STALL
-// timeout (not an absolute deadline) plus a generous byte flood-guard. The stall
-// timer is re-armed on every byte received AND every frame handed to the
-// installer, so a large-but-steadily-progressing snapshot never trips it , only
-// a genuine hang (silent peer, dead link, or a wedged install) does. This makes
-// the guard scale to any snapshot size without a magic total-time number.
-// maxBytes/stallMs are parameters so the guard is unit-testable; onProgress(total)
-// reports running bytes for the install progress meter. Streaming replacement
-// for the old read-whole-body-into-one-Buffer path (which OOM'd on large snapshots).
+// Yield each length-prefixed frame, bounded by a STALL timeout (re-armed on every
+// byte and every installed frame, so only a genuine hang trips it, at any snapshot
+// size) plus a byte flood-guard. Replaces the buffer-whole-body path that OOM'd.
 async function* _boundedFrameStream(stream, maxBytes, stallMs, onProgress) {
   let stalled = false;
   let timer = null;
@@ -1658,7 +1619,7 @@ async function* _boundedFrameStream(stream, maxBytes, stallMs, onProgress) {
   } finally {
     if (timer) clearTimeout(timer);
   }
-  if (stalled) throw new Error(`snapshot download stalled — no progress for ${stallMs}ms`);
+  if (stalled) throw new Error(`snapshot download stalled , no progress for ${stallMs}ms`);
 }
 
 module.exports = { createSnapshotHandler, _boundedFrameStream };

@@ -33,6 +33,7 @@ const {
   initCrypto, generateMLDSAKeypair, signTransaction, computeTxId, shake256,
 } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, TX_REJECTION_REASON, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initDAG }     = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -68,7 +69,7 @@ function _setup() {
     tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey,
     root_public_key: "00", vp_id: VP_ID, verification_tier: "T1",
     founding: false, status: "active",
-    registered_at: 1767225600000, tx_id: shake256("id:author"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: AUTHOR_TIP }),
   });
   dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
 
@@ -91,10 +92,11 @@ function _makeRegisterIdentityTx(dag, vpKp, data, timestamp) {
   const tx = {
     tx_type: TX_TYPES.REGISTER_IDENTITY,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data,
     signature: sig,
   };
+  tx.prev = dag.prevFor(tx.tx_type, tx.data);
   tx.tx_id = computeTxId(tx);
   return tx;
 }
@@ -117,10 +119,11 @@ function _makeRegisterContentTx(dag, authorKp, data, timestamp) {
   const tx = {
     tx_type: TX_TYPES.REGISTER_CONTENT,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data,
     signature: sig,
   };
+  tx.prev = dag.prevFor(tx.tx_type, tx.data);
   tx.tx_id = computeTxId(tx);
   return tx;
 }
@@ -135,10 +138,11 @@ function _makeInterestRegisteredTx(dag, vpKp, data, timestamp) {
   const tx = {
     tx_type: TX_TYPES.INTEREST_REGISTERED,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data,
     signature: sig,
   };
+  tx.prev = dag.prevFor(tx.tx_type, tx.data);
   tx.tx_id = computeTxId(tx);
   return tx;
 }
@@ -156,10 +160,11 @@ function _makeVpRegisteredTx(dag, vpKp, data, timestamp) {
   const tx = {
     tx_type: TX_TYPES.VP_REGISTERED,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data,
     signature: sig,
   };
+  tx.prev = dag.prevFor(tx.tx_type, tx.data);
   tx.tx_id = computeTxId(tx);
   return tx;
 }
@@ -175,10 +180,11 @@ function _makeNodeRegisteredTx(dag, vpKp, data, timestamp) {
   const tx = {
     tx_type: TX_TYPES.NODE_REGISTERED,
     timestamp,
-    prev: dag.getRecentPrev(),
+    prev: [],
     data,
     signature: sig,
   };
+  tx.prev = dag.prevFor(tx.tx_type, tx.data);
   tx.tx_id = computeTxId(tx);
   return tx;
 }
@@ -330,8 +336,13 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    expect(fx.handler.commitOrderedTxs([requeued], 3).committed).toBe(1);
     expect(fx.dag.getContent(data1.ctid)).not.toBeNull();
     expect(fx.dag.getContent(data2.ctid)).not.toBeNull();
   });
@@ -432,8 +443,13 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 6);
 
-    expect(res.committed).toBe(2);
-    expect(res.dropped).toBe(0);
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
+    // rebuilt against the new head, requeued, and commits next round.
+    expect(res.committed).toBe(1);
+    expect(res.dropped).toBe(1);
+    const [requeued] = fx.dag.getMempoolTxs();
+    expect(requeued.prev[0]).toBe(tx1.tx_id);
+    expect(fx.handler.commitOrderedTxs([requeued], 7).committed).toBe(1);
     expect(fx.dag.getIdentity("tip://id/US-1111111111111111")).not.toBeNull();
     expect(fx.dag.getIdentity("tip://id/US-2222222222222222")).not.toBeNull();
   });

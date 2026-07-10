@@ -24,12 +24,9 @@ const { foundingNodeKey } = require("./genesis");
 const { log } = require("./logger");
 
 /**
- * Look up a node's public key for the handshake: registry first, then the
- * genesis founding-node trust anchor. The founding fallback is what lets a node
- * with an EMPTY registry (fresh boot, or post-clearCanonicalState snapshot
- * install) authorize the founding peer it must handshake to fetch the snapshot
- * that refills the registry , without it the handshake deadlocks. Mirrors the
- * consensus-side getNodeKey; both now defer to genesis.foundingNodeKey.
+ * Node public key for the handshake: registry first, then the genesis founding
+ * anchor. The fallback lets an empty-registry node authorize the founding peer
+ * it must fetch the snapshot from (see genesis.foundingNodeKey).
  */
 function getNodeKey(dag, nodeId) {
   const node = dag.getNode(nodeId);

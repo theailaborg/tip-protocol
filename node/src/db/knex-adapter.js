@@ -19,11 +19,11 @@
 // MemoryStore is exported from dag.js. dag.js does NOT require knex-adapter at
 // load time (only inside initDAGAsync), so by the time knex-adapter.js first
 // loads, dag.js is fully cached — no circular-dep hazard.
-const { MemoryStore } = require("../dag");
+const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx } = require("../dag");
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
+const { SNAPSHOT_BULK_CHUNK_ROWS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/constants");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
@@ -304,6 +304,72 @@ class KnexAdapter {
     this._isOracleDB = (driver === "oracle" || driver === "oracledb");
     // SQL Server also doesn't support Knex's .onConflict() — use INSERT + catch duplicate-key
     this._noOnConflict = this._isOracleDB || driver === "mssql" || driver === "sqlserver";
+
+    this._ffPendingSince = [];
+    this._ffLastSettledMs = nowMs();
+    this._parityLastOkMs = 0;
+  }
+
+  // Armed at node boot, not construction: constructor timers leak into test
+  // and tooling processes and fail-stop them spuriously. The _ff chain
+  // fail-stops on errors but a HANG runs split-brained (2026-07-10), hence both.
+  startPersistenceGuards() {
+    if (this._ffWatchdog) return;
+    this._ffWatchdog = setInterval(() => {
+      const s = this.persistenceStats();
+      if (s.oldest_pending_ms > DB_WRITE_STALL_FAIL_STOP_MS) {
+        this.log.error(`KnexAdapter: oldest pending DB write stalled for ${Math.round(s.oldest_pending_ms / 1000)}s (queue depth ${s.queue_depth}), persistence wedged, fail-stop`);
+        process.exit(78);
+      }
+    }, DB_WATCHDOG_TICK_MS);
+    this._ffWatchdog.unref?.();
+    this._parityTimer = setInterval(() => this._enqueueParityProbe(), DB_PARITY_PROBE_INTERVAL_MS);
+    this._parityTimer.unref?.();
+  }
+
+  persistenceStats() {
+    const now = nowMs();
+    return {
+      queue_depth: this._ffPendingSince.length,
+      oldest_pending_ms: this._ffPendingSince.length ? now - this._ffPendingSince[0] : 0,
+      last_settled_age_ms: now - this._ffLastSettledMs,
+      parity_last_ok_age_ms: this._parityLastOkMs ? now - this._parityLastOkMs : -1,
+    };
+  }
+
+  // Mirror counts snapshotted synchronously, compared from inside the FIFO
+  // chain: the DB then holds exactly the writes enqueued before the snapshot.
+  _enqueueParityProbe() {
+    if (this._bulkInstall || this._txBuffer || !this.mirror) return;
+    // Every SMT-backed canonical table plus the chain itself; counts catch
+    // lost or extra rows, boot rehydration re-establishes exact equality.
+    const expected = {
+      transactions: this.mirror._txs.size,
+      commits: this.mirror._commits.size,
+      identities: this.mirror._identities.size,
+      content: this.mirror._content.size,
+      scores: this.mirror._scores.size,
+      revocations: this.mirror._revocations.size,
+      verification_providers: this.mirror._vps.size,
+      nodes: this.mirror._nodes.size,
+      entity_keys: this.mirror._entityKeys.size,
+      interests_registry: this.mirror._interestsRegistry.size,
+      prescan_reviews: this.mirror._prescanReviews.size,
+      domain_bindings: this.mirror._domainBindings.size,
+      owner_heads: this.mirror._ownerHeads.size,
+      platform_links: this.mirror._platformLinks.size,
+    };
+    this._ff(async () => {
+      for (const [table, want] of Object.entries(expected)) {
+        const row = await this._k(table).count({ n: "*" }).first();
+        const got = Number(row && row.n);
+        if (got !== want) {
+          this.log.error(`KnexAdapter parity probe: ${table} mirror=${want} db=${got}, memory and DB diverged, fail-stop`);
+          process.exit(78);
+        }
+      }
+      this._parityLastOkMs = nowMs();
+    });
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────
@@ -447,6 +513,13 @@ class KnexAdapter {
       this.mirror._certs.set(cert.hash, cert);
     }
 
+    // Owner-chain heads: without hydration a restarted node boots with empty
+    // heads while peers hold the real ones, forking commit validation.
+    const ownerHeadRows = await this.knex("owner_heads").select("*");
+    for (const row of ownerHeadRows) {
+      this.mirror._ownerHeads.set(row.entity_key, row.tx_id);
+    }
+
     // Commits
     const commitRows = await this.knex("commits").select("*");
     for (const row of commitRows) {
@@ -579,15 +652,9 @@ class KnexAdapter {
       });
     }
 
-    // Rebuild the incremental state SMT from the canonical walk. Hydration
-    // populates dedup_registry via `_dedup.add()` (a Set, not an SmtMap) and
-    // never calls its manual `_smtSync`, so those leaves would be absent from
-    // the incremental tree — dag.stateRoot() (the committed root) would then
-    // drift from computeStateMerkleRoot (a fresh joiner's snapshot verify).
-    // All nodes drift identically so consensus never notices, but a rejoining
-    // node can never reproduce the drifted root. Rebuilding here makes the
-    // committed root equal the canonical state, closing this and any future
-    // hydration sync gap. O(state), once per boot.
+    // Rebuild the incremental SMT from the canonical walk: hydration fills
+    // dedup_registry via a plain Set (no _smtSync), silently drifting the
+    // committed root from the reference (prod incident 2026-07-08). O(state), once per boot.
     this.mirror.rebuildStateTree();
   }
 
@@ -602,14 +669,13 @@ class KnexAdapter {
   // final SQL state matches the mirror. Failures are swallowed per-write so a
   // single bad write doesn't poison the chain for everyone behind it.
   _ff(fn) {
-    // Snapshot bulk install: run the write NOW so _dbInsert can buffer its row
-    // for a multi-row batchInsert (see beginBulkInstall). The install loop is
-    // inserts-only into freshly-cleared tables, so running synchronously here
-    // carries no ordering hazard vs the normal _ffChain.
+    // Bulk install: run the write NOW so _dbInsert buffers the row for batchInsert.
+    // Inserts-only into cleared tables, so no ordering hazard vs the _ffChain.
     if (this._bulkInstall) { fn(); return; }
     // Inside runInTransaction(fn): buffer the write so it joins the single
     // transaction flushed afterwards, instead of firing on its own connection.
     if (this._txBuffer) { this._txBuffer.push(fn); return; }
+    this._ffPendingSince.push(nowMs());
     this._ffChain = (this._ffChain || Promise.resolve())
       .then(() => fn())
       .catch(err => {
@@ -620,6 +686,10 @@ class KnexAdapter {
         // now; restart + anti-entropy resync self-heal from peers.
         this.log.error(`KnexAdapter write failed , persistence lost, fail-stop: ${err.message}`);
         process.exit(78);
+      })
+      .finally(() => {
+        this._ffPendingSince.shift();
+        this._ffLastSettledMs = nowMs();
       });
   }
 
@@ -635,7 +705,7 @@ class KnexAdapter {
   // a second UPDATE so our value still wins.
   async _dbInsert(table, pkCols, row, onConflict) {
     // Snapshot bulk install: collect the row (with its pk + conflict mode) for a
-    // per-table chunked INSERT in _flushBulkBuffers — ~100x fewer round-trips than
+    // per-table chunked INSERT in _flushBulkBuffers , ~100x fewer round-trips than
     // the per-row path (the difference between finishing inside the download
     // deadline and timing out on a large, WAN-served snapshot). Conflict handling
     // is preserved there because non-state tables (transactions/certs/commits)
@@ -880,7 +950,7 @@ class KnexAdapter {
   deleteDisputeDetails(hash) {
     const removed = this.mirror.deleteDisputeDetails(hash);
     if (removed) {
-      this._ff(() => this.knex("dispute_details").where("evidence_hash", hash).del());
+      this._ff(() => this._k("dispute_details").where("evidence_hash", hash).del());
     }
     return removed;
   }
@@ -990,7 +1060,7 @@ class KnexAdapter {
   claimPrescanJob(opts) {
     const claimed = this.mirror.claimPrescanJob(opts);
     if (claimed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", claimed.job_id)
         .update({
           status: "claimed",
@@ -1003,14 +1073,14 @@ class KnexAdapter {
   markPrescanJobDone(jobId, opts) {
     const changed = this.mirror.markPrescanJobDone(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs").where("job_id", jobId).del());
+      this._ff(() => this._k("prescan_jobs").where("job_id", jobId).del());
     }
     return changed;
   }
   markPrescanJobFailed(jobId, opts) {
     const changed = this.mirror.markPrescanJobFailed(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", jobId)
         .update({ status: "failed", completed_at: opts.completedAt, last_error: opts.lastError || null }));
     }
@@ -1019,7 +1089,7 @@ class KnexAdapter {
   releasePrescanJobForRetry(jobId, opts) {
     const changed = this.mirror.releasePrescanJobForRetry(jobId, opts);
     if (changed) {
-      this._ff(() => this.knex("prescan_jobs")
+      this._ff(() => this._k("prescan_jobs")
         .where("job_id", jobId)
         .update({
           status: "queued",
@@ -1027,7 +1097,7 @@ class KnexAdapter {
           claimed_by: null,
           last_error: opts.lastError || null,
         })
-        .then(() => this.knex("prescan_jobs")
+        .then(() => this._k("prescan_jobs")
           .where("job_id", jobId)
           .increment("retries", 1)));
     }
@@ -1036,12 +1106,12 @@ class KnexAdapter {
 
   updateContentStatus(ctid, status) {
     this.mirror.updateContentStatus(ctid, status);
-    this._ff(() => this.knex("content").where("tip_ctid", ctid).update({ status }));
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ status }));
   }
 
   updateContentOrigin(ctid, originCode, status) {
     this.mirror.updateContentOrigin(ctid, originCode, status);
-    this._ff(() => this.knex("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
+    this._ff(() => this._k("content").where("tip_ctid", ctid).update({ origin_code: originCode, status }));
   }
 
   // ── Scores ─────────────────────────────────────────────────────────────────
@@ -1069,6 +1139,19 @@ class KnexAdapter {
 
   *iterateCanonicalState(opts) { yield* this.mirror.iterateCanonicalState(opts); }
   stateRoot() { return this.mirror.stateRoot(); }
+  setOwnerHead(entityKey, txId) {
+    this.mirror.setOwnerHead(entityKey, txId);
+    this._ff(() => this._dbInsert("owner_heads", "entity_key", { entity_key: entityKey, tx_id: txId }, "merge"));
+  }
+  getOwnerHead(entityKey) { return this.mirror.getOwnerHead(entityKey); }
+  // Owner-chain prev assignment + validation , delegate to the SAME shared
+  // helpers the initDAG facade uses, over this adapter's mirror, so prev is
+  // assigned and validated identically on every store.
+  prevFor(txType, data) { return _computePrevFor(this.mirror, txType, data); }
+  expectedOwnerHead(owner) { return _computeExpectedOwnerHead(this.mirror, owner); }
+  noteSealedTx(txType, data, txId) { return _noteSealedTx(this.mirror, txType, data, txId); }
+  isPendingSealedTx(txId) { return this.mirror.isPendingSealedTx(txId); }
+  resetPendingOwnerHead(entityKey) { return this.mirror.resetPendingOwnerHead(entityKey); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
   clearCanonicalState() {
@@ -1105,7 +1188,7 @@ class KnexAdapter {
     // reflects the same state as the in-memory mirror (which tracks revocations
     // separately). Without this, nodes that didn't originate the REVOKE_* tx
     // would show status='active' even after a revocation committed.
-    this._ff(() => this.knex("identities").where({ tip_id: id }).update({ status: "revoked" }));
+    this._ff(() => this._k("identities").where({ tip_id: id }).update({ status: "revoked" }));
   }
 
   isRevoked(id) { return this.mirror.isRevoked(id); }
@@ -1160,7 +1243,7 @@ class KnexAdapter {
 
   updatePlatformLinkStatus(tipId, platform, update) {
     this.mirror.updatePlatformLinkStatus(tipId, platform, update);
-    this._ff(() => this.knex("platform_links").where({ tip_id: tipId, platform }).update(update));
+    this._ff(() => this._k("platform_links").where({ tip_id: tipId, platform }).update(update));
   }
 
   getPlatformLink(tipId, platform) { return this.mirror.getPlatformLink(tipId, platform); }
@@ -1184,7 +1267,7 @@ class KnexAdapter {
   deletePendingDomainClaim(domain) {
     const removed = this.mirror.deletePendingDomainClaim(domain);
     if (removed) {
-      this._ff(() => this.knex("pending_domain_claims").where("domain", domain).del());
+      this._ff(() => this._k("pending_domain_claims").where("domain", domain).del());
     }
     return removed;
   }
@@ -1246,7 +1329,7 @@ class KnexAdapter {
 
   updateNodeEndpoint(nodeId, apiEndpoint, timestamp) {
     this.mirror.updateNodeEndpoint(nodeId, apiEndpoint, timestamp);
-    this._ff(() => this.knex("nodes").where({ node_id: nodeId }).update({
+    this._ff(() => this._k("nodes").where({ node_id: nodeId }).update({
       api_endpoint: apiEndpoint || null,
       updated_at: timestamp ?? null,
     }));
@@ -1289,7 +1372,7 @@ class KnexAdapter {
 
   pruneCertificatesBefore(cutoffRound) {
     const n = this.mirror.pruneCertificatesBefore(cutoffRound);
-    this._ff(() => this.knex("certificates").where("round", "<", cutoffRound).delete());
+    this._ff(() => this._k("certificates").where("round", "<", cutoffRound).delete());
     return n;
   }
 
@@ -1347,7 +1430,7 @@ class KnexAdapter {
 
   pruneVotesSeenBefore(cutoffRound) {
     const n = this.mirror.pruneVotesSeenBefore(cutoffRound);
-    this._ff(() => this.knex("votes_seen").where("round", "<", cutoffRound).delete());
+    this._ff(() => this._k("votes_seen").where("round", "<", cutoffRound).delete());
     return n;
   }
 
@@ -1369,19 +1452,19 @@ class KnexAdapter {
 
   deleteMempoolTx(txId) {
     this.mirror.deleteMempoolTx(txId);
-    this._ff(() => this.knex("mempool").where("tx_id", txId).delete());
+    this._ff(() => this._k("mempool").where("tx_id", txId).delete());
   }
 
   deleteMempoolTxs(txIds) {
     this.mirror.deleteMempoolTxs(txIds);
     if (txIds.length > 0) {
-      this._ff(() => this.knex("mempool").whereIn("tx_id", txIds).delete());
+      this._ff(() => this._k("mempool").whereIn("tx_id", txIds).delete());
     }
   }
 
   clearStaleMempoolTxs(beforeUnixSec) {
     // MemoryStore is a no-op; for DB we clean expired rows
-    this._ff(() => this.knex("mempool").where("received_at", "<", beforeUnixSec).delete());
+    this._ff(() => this._k("mempool").where("received_at", "<", beforeUnixSec).delete());
   }
 
   mempoolCount() { return this.mirror.mempoolCount(); }
@@ -1439,6 +1522,7 @@ class KnexAdapter {
     // A synchronous throw above propagates here (buffer discarded, nothing
     // flushed) — all-or-nothing, matching the SQLite path.
     if (buffer.length > 0) {
+      this._ffPendingSince.push(nowMs());
       this._ffChain = (this._ffChain || Promise.resolve())
         .then(() => this.knex.transaction(async (trx) => {
           const prevTrx = this._activeTrx;
@@ -1449,7 +1533,11 @@ class KnexAdapter {
             this._activeTrx = prevTrx;
           }
         }))
-        .catch(err => this.log.warn(`KnexAdapter transaction rolled back: ${err.message}`));
+        .catch(err => this.log.warn(`KnexAdapter transaction rolled back: ${err.message}`))
+        .finally(() => {
+          this._ffPendingSince.shift();
+          this._ffLastSettledMs = nowMs();
+        });
     }
     return result;
   }
@@ -1596,7 +1684,7 @@ class KnexAdapter {
 
   pruneRotationParticipationBefore(n) {
     const removed = this.mirror.pruneRotationParticipationBefore(n);
-    this._ff(() => this.knex("rotation_participation").where("rotation_number", "<", n).delete());
+    this._ff(() => this._k("rotation_participation").where("rotation_number", "<", n).delete());
     return removed;
   }
 
@@ -1611,7 +1699,7 @@ class KnexAdapter {
 
   deleteRotationParticipationByRotation(rotationNumber) {
     const removed = this.mirror.deleteRotationParticipationByRotation(rotationNumber);
-    this._ff(() => this.knex("rotation_participation").where("rotation_number", rotationNumber).delete());
+    this._ff(() => this._k("rotation_participation").where("rotation_number", rotationNumber).delete());
     return removed;
   }
 
@@ -1637,27 +1725,29 @@ class KnexAdapter {
     if (this._bulkInstall && this._bulkInstall.size > 0) await this._flushBulkBuffers();
   }
 
-  // Snapshot bulk install: batchInsert each table's buffered rows (chunked so
-  // no single INSERT blows the driver's bind-parameter cap), then clear. A
-  // failed chunk fail-stops like any other lost persistence write: a partial
-  // snapshot rehydrates a divergent mirror on restart. The whole install stays
-  // gated by the crash marker, so a throw here leaves the node in `syncing`.
+  // batchInsert each table's buffer (chunked under the bind-parameter cap). A
+  // failed chunk fail-stops: a partial snapshot rehydrates a divergent mirror on
+  // restart, and the crash marker keeps the node in syncing either way.
   async _flushBulkBuffers() {
     for (const [table, buf] of this._bulkInstall) {
       const { pkCols, onConflict, rows } = buf;
       if (rows.length === 0) continue;
-      // NOT every bulk-installed table is freshly cleared: clearCanonicalState
-      // wipes the derived-state tables, but transactions/certs/commits are not,
-      // and a fresh joiner's genesis seed already wrote the genesis rows — so the
-      // full-history tx stream collides on tx_id. Insert with ON CONFLICT DO
-      // NOTHING (per-row skip, keeps the non-conflicting rows) to stay idempotent
-      // like the per-row path, instead of a plain batchInsert that fail-stops on
-      // the first genesis duplicate.
+      // transactions/certs/commits are not cleared before install and the joiner's
+      // genesis seed already wrote the genesis rows, so the full-history stream
+      // collides on tx_id: insert with ON CONFLICT (skip the dupes), never fail-stop.
       const pks = Array.isArray(pkCols) ? pkCols : [pkCols];
       const conflictTarget = pks.length === 1 ? pks[0] : pks;
+      // Postgres rejects one upsert statement touching a key twice; collapse
+      // merge buffers to the last write per key (same as applying in order).
+      let rowsOut = rows;
+      if (onConflict === "merge") {
+        const byPk = new Map();
+        for (const r of rows) byPk.set(JSON.stringify(pks.map(c => r[c])), r);
+        rowsOut = [...byPk.values()];
+      }
       try {
-        for (let i = 0; i < rows.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
-          const chunk = rows.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
+        for (let i = 0; i < rowsOut.length; i += SNAPSHOT_BULK_CHUNK_ROWS) {
+          const chunk = rowsOut.slice(i, i + SNAPSHOT_BULK_CHUNK_ROWS);
           const q = this._k(table).insert(chunk).onConflict(conflictTarget);
           await (onConflict === "merge" ? q.merge() : q.ignore())
             .catch(err => { if (!_isDuplicateKeyError(err)) throw err; });
@@ -1674,6 +1764,8 @@ class KnexAdapter {
   endBulkInstall() { this._bulkInstall = null; }
 
   close() {
+    clearInterval(this._ffWatchdog);
+    clearInterval(this._parityTimer);
     try { this.knex.destroy(); } catch { /* ignore */ }
   }
 }

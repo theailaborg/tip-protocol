@@ -258,16 +258,16 @@ describe("timestamp schema invariants — Knex parity", () => {
 // the knex schema). Both directions checked — adds to either store without
 // the mirror trip the test.
 
-// Parse `await knex.schema.createTable("<table>", t => { ... })` blocks in the
-// migration baseline file and return a Map<tableName, Set<columnName>> of every
-// bigInteger column. (PR #118 moved schema from knex-adapter.js _ensureSchema()
-// to node/src/db/migrations/000_baseline.js — this function was updated to match.)
+// Parse the baseline migration's create-table blocks and return a
+// Map<tableName, Set<columnName>> of every bigInteger column. Matches both the
+// bare `knex.schema.createTable("<table>", t => {` form and the hasTable-guarded
+// `_createTable(knex, "<table>", t => {` wrapper the baseline uses now.
 function _parseKnexBigIntegerColumns() {
   const src = fs.readFileSync(
     path.join(NODE_SRC, "db", "migrations", "000_baseline.js"), "utf8",
   );
   const result = new Map();
-  const createRe = /await\s+knex\.schema\.createTable\(\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
+  const createRe = /await\s+(?:knex\.schema\.createTable\(|_createTable\(\s*knex\s*,)\s*["']([a-z_][a-z0-9_]*)["']\s*,\s*\(?t\)?\s*=>\s*\{/g;
   let m;
   while ((m = createRe.exec(src)) !== null) {
     const tableName = m[1];

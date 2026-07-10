@@ -59,11 +59,11 @@ function createKeyService({ dag, submitTx }) {
     }
 
     const txBody = {
-      tx_type: TX_TYPES.KEY_ROTATED, timestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.KEY_ROTATED, timestamp, prev: [],
       data: _pickTxData(canonicalPayload, KEY_ROTATED_FIELDS),
       signature: normalised.signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");
@@ -137,7 +137,7 @@ function createKeyService({ dag, submitTx }) {
     const timestamp = nowMs();
 
     const txBody = {
-      tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: dag.getRecentPrev(),
+      tx_type: TX_TYPES.KEY_RECOVERY, timestamp, prev: [],
       data: {
         ..._pickTxData(canonicalPayload, KEY_RECOVERY_FIELDS),
         effective_at: timestamp,
@@ -145,7 +145,7 @@ function createKeyService({ dag, submitTx }) {
       },
       signature: normalised.signature,
     };
-    const signedTx = withTxId(txBody);
+    const signedTx = withTxId(txBody, dag);
 
     const validation = validateTransaction(signedTx, dag, {});
     if (!validation.valid) throw schemaError(400, validation.errors, "tx_validation_failed");

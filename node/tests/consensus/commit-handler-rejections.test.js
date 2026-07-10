@@ -36,6 +36,7 @@ const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, signTransaction, computeTxId, shake256, signBody } = require(path.join(SHARED, "crypto"));
 const { TX_TYPES, TX_REJECTION_REASON, CONTENT_STATUS } = require(path.join(SHARED, "constants"));
+const { seedAnchorTx } = require(path.join(__dirname, "..", "helpers", "seed-anchor-tx"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createCommitHandler } = require(path.join(SRC, "consensus", "commit-handler"));
@@ -73,7 +74,7 @@ function _setup() {
   dag.saveIdentity({
     tip_id: authorTipId, region: "US", public_key: authorKp.publicKey, root_public_key: "00",
     vp_id: "tip://vp/v1", verification_tier: "T1", founding: false, status: "active",
-    registered_at: 1767225600000, tx_id: shake256("id:author"),
+    registered_at: 1767225600000, tx_id: seedAnchorTx(dag, "REGISTER_IDENTITY", { tip_id: authorTipId }),
   });
   dag.setScore(authorTipId, 750, 0, 1767225600000);
 
@@ -114,11 +115,12 @@ function _signRegisterContent(authorKp, data) {
 }
 
 function _signByNode(dag, nodeKp, txBody) {
-  // Auto-fill prev from the live DAG ring — non-genesis txs require
-  // valid prev[] refs at structural-validation time. Without this,
-  // every test below would short-circuit on a "missing prev" error
-  // before reaching the drop site we're actually trying to exercise.
-  txBody.prev = txBody.prev && txBody.prev.length ? txBody.prev : dag.getRecentPrev();
+  // Owner-chain prev (#199): non-genesis txs must carry the owner's chain
+  // head in prev[0] or commit-time validation rejects them before reaching
+  // the drop site each test actually exercises.
+  txBody.data = txBody.data || {};
+  if (!txBody.data.node_id) txBody.data.node_id = NODE_ID;
+  txBody.prev = txBody.prev && txBody.prev.length ? txBody.prev : dag.prevFor(txBody.tx_type, txBody.data);
   txBody.tx_id = computeTxId(txBody);
   return signTransaction(txBody, nodeKp.privateKey);
 }

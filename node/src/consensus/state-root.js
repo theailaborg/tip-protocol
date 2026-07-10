@@ -83,6 +83,7 @@ const STATE_PK = {
   prescan_reviews: r => r.review_id,
   interests_registry: r => r.slug,
   protocol_params: r => `${r.param_key}\x00${r.effective_from_height}`,
+  owner_heads: r => r.entity_key,
 };
 
 function stateLeafKey(table, pk) {
@@ -174,14 +175,10 @@ function computeStateMerkleRootPerTable(dag) {
 }
 
 /**
- * D1 runtime integrity invariant: the committed state_merkle_root is the O(1)
- * incremental SMT (dag.stateRoot()); this recomputes the independent reference
- * walk and compares. A DETERMINISTIC bug that desyncs the incremental tree from
- * the canonical state makes every node agree on the same WRONG root (consensus
- * checks agreement, not correctness) — the ONLY thing that catches it is this
- * independent recompute. On divergence the caller must HALT: a node whose root
- * doesn't attest to its state must not keep signing it. perTable is populated
- * only on mismatch (it names the diverging table). O(state) — call it throttled.
+ * Compare the committed incremental SMT root against the independent reference
+ * walk. A deterministic desync makes every node agree on the same wrong root, so
+ * only this recompute catches it; the caller must halt on divergence. perTable is
+ * set only on mismatch. O(state), call it throttled.
  * @param {Object} dag  exposes stateRoot() + iterateCanonicalState()
  * @returns {{consistent:boolean, incremental:string, reference:string, perTable:(Array|null)}}
  */

@@ -34,10 +34,10 @@ function createRevocationService({ dag, submitTx }) {
     if (reason_code !== undefined && reason_code !== null) txData.reason_code = reason_code;
     if (evidence_hash !== undefined && evidence_hash !== null) txData.evidence_hash = evidence_hash;
     const revokeTx = withTxId({
-      tx_type, timestamp, prev: dag.getRecentPrev(),
+      tx_type, timestamp, prev: [],
       data: txData,
       signature,
-    });
+    }, dag);
 
     const validation = validateTransaction(revokeTx, dag, {});
     if (!validation.valid) throw { status: 400, error: validation.errors, layer: validation.layer };
