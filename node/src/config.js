@@ -40,22 +40,28 @@ function loadNodeKeypair() {
     let doc;
     try { doc = JSON.parse(fs.readFileSync(credFile, "utf8")); }
     catch (e) { throw new Error(`TIP_NODE_CREDENTIALS_FILE "${credFile}" is unreadable or not valid JSON: ${e.message}`); }
-    return { privateKey: doc.private_key || null, publicKey: doc.public_key || null };
+    return { privateKey: doc.private_key || null, publicKey: doc.public_key || null, nodeId: doc.node_id || null };
   }
   return {
     privateKey: secretFromEnvOrFile("TIP_NODE_PRIVATE_KEY"),
     publicKey: secretFromEnvOrFile("TIP_NODE_PUBLIC_KEY"),
+    nodeId: null,
   };
 }
 
 function loadConfig() {
-  // Generate a stable node ID from hostname + a fixed seed if not set
+  const nodeKeys = loadNodeKeypair();
+
+  // The signing key defines the identity: credential node_id wins, and a
+  // contradicting TIP_NODE_ID is fatal, a node announcing an id its key
+  // does not back runs as a peer-rejected silent spectator (2026-07-10).
+  if (nodeKeys.nodeId && process.env.TIP_NODE_ID && process.env.TIP_NODE_ID !== nodeKeys.nodeId) {
+    throw new Error(`TIP_NODE_ID (${process.env.TIP_NODE_ID}) does not match the credential file node_id (${nodeKeys.nodeId}). The signing key defines the identity; fix TIP_NODE_ID or point TIP_NODE_CREDENTIALS_FILE at the right key.`);
+  }
   const { shake256: _shake } = require("../../shared/crypto");
-  const defaultNodeId = process.env.TIP_NODE_ID ||
+  const defaultNodeId = nodeKeys.nodeId || process.env.TIP_NODE_ID ||
     _shake(require("os").hostname() + "tip-node-v2")
       .slice(0, 16);
-
-  const nodeKeys = loadNodeKeypair();
 
   return {
     // ── Node identity ──────────────────────────────────────────────────────────

@@ -918,16 +918,21 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           continue;
         }
 
-        // Verify this candidate still holds the expected majority root before
-        // installing. During concurrent multi-node churn, a peer that was on the
-        // majority root when _isUnanimousMinority fired may have since installed a
-        // snapshot from a different source and moved to a different root. Installing
-        // from such a peer would propagate a wrong root and fragment the cluster.
-        if (expectedRoot) {
+        // Fresh-check before installing: a syncing peer holds partial state and
+        // must never be a snapshot source (parity with the primary resync path),
+        // and a root drifted since majority detection would propagate a fork.
+        {
           let freshStatus = null;
           try { freshStatus = await queryPeer(libp2pPeerId); } catch { /* best-effort */ }
+          const freshJoin = String(freshStatus?.join_state || "ready");
+          if (freshStatus && (freshJoin === "syncing" || freshJoin === "catching_up")) {
+            _log.warn(
+              `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)}: peer is ${freshJoin}, not a valid snapshot source`
+            );
+            continue;
+          }
           const freshRoot = String(freshStatus?.state_merkle_root || "");
-          if (freshStatus && freshRoot && freshRoot !== expectedRoot) {
+          if (expectedRoot && freshStatus && freshRoot && freshRoot !== expectedRoot) {
             _log.warn(
               `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)} — root drifted ` +
               `from expected ${expectedRoot.slice(0, 16)} to ${freshRoot.slice(0, 16)} since majority detection`

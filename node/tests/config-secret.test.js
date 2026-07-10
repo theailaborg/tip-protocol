@@ -60,6 +60,7 @@ describe("node key: .tip.json credentials file", () => {
   let cred;
   afterEach(() => {
     delete process.env.TIP_NODE_CREDENTIALS_FILE;
+    delete process.env.TIP_NODE_ID;
     delete process.env[KEY];
     if (cred) { try { fs.unlinkSync(cred); } catch { /* ignore */ } cred = null; }
   });
@@ -84,5 +85,28 @@ describe("node key: .tip.json credentials file", () => {
     fs.writeFileSync(cred, "not json {{{");
     process.env.TIP_NODE_CREDENTIALS_FILE = cred;
     expect(() => loadConfig()).toThrow(/not valid JSON/);
+  });
+
+  test("nodeId comes from the credential file's node_id", () => {
+    cred = path.join(os.tmpdir(), `tip-cred-${process.pid}-${_n++}.tip.json`);
+    fs.writeFileSync(cred, JSON.stringify({ private_key: "P", public_key: "K", node_id: "tip://node/abc123def456" }));
+    process.env.TIP_NODE_CREDENTIALS_FILE = cred;
+    expect(loadConfig().nodeId).toBe("tip://node/abc123def456");
+  });
+
+  test("fails fast when TIP_NODE_ID contradicts the credential node_id", () => {
+    cred = path.join(os.tmpdir(), `tip-cred-${process.pid}-${_n++}.tip.json`);
+    fs.writeFileSync(cred, JSON.stringify({ private_key: "P", public_key: "K", node_id: "tip://node/abc123def456" }));
+    process.env.TIP_NODE_CREDENTIALS_FILE = cred;
+    process.env.TIP_NODE_ID = "tip://node/deadbeef00000000";   // phantom identity
+    expect(() => loadConfig()).toThrow(/does not match the credential file node_id/);
+  });
+
+  test("a TIP_NODE_ID that matches the credential node_id is fine", () => {
+    cred = path.join(os.tmpdir(), `tip-cred-${process.pid}-${_n++}.tip.json`);
+    fs.writeFileSync(cred, JSON.stringify({ private_key: "P", public_key: "K", node_id: "tip://node/abc123def456" }));
+    process.env.TIP_NODE_CREDENTIALS_FILE = cred;
+    process.env.TIP_NODE_ID = "tip://node/abc123def456";
+    expect(loadConfig().nodeId).toBe("tip://node/abc123def456");
   });
 });
