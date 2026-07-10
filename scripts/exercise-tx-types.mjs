@@ -34,8 +34,8 @@ const updateProfileSchema = require(path.join(ROOT, 'node/src/schemas/update-pro
 const keyRotatedSchema = require(path.join(ROOT, 'node/src/schemas/key-rotated'));
 const linkPlatformSchema = require(path.join(ROOT, 'node/src/schemas/link-platform'));
 
-const N1 = 'http://localhost:4000';
-const N2 = 'http://localhost:4100';
+const N1 = process.env.TIP_N1 || 'http://localhost:4000';
+const N2 = process.env.TIP_N2 || 'http://localhost:4100';
 
 await initCrypto();
 try { PC._resetForTesting(); } catch { /* not yet init */ }
@@ -60,7 +60,8 @@ async function post(url, body) {
 }
 
 function psql(q) {
-  return execSync(`docker exec shared-postgres psql -U root -d tip_node1 -tAc "${q.replace(/"/g, '\\"')}"`).toString().trim();
+  const cmd = process.env.TIP_PSQL_CMD || 'docker exec shared-postgres psql -U root -d tip_node1 -tAc';
+  return execSync(`${cmd} "${q.replace(/"/g, '\\"')}"`).toString().trim();
 }
 
 async function waitFor(desc, checkFn, timeoutMs = 30000) {
