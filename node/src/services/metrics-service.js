@@ -57,12 +57,14 @@ function processSection(config) {
     gauge("tip_process_uptime_seconds", "Seconds since this node process started", Math.floor(process.uptime()), idLabels),
     ...(() => {
       // Disk visibility (2026-07-04 incident: silent disk-full caused state
-      // divergence). statfs on the data dir's filesystem.
+      // divergence). statfs on the process root: same filesystem as the data
+      // dir in every deploy layout, and never a host-mounted virtiofs path
+      // that fabricates totals (macOS Docker showed 126TB for a 452GB disk).
       try {
-        const st = require("fs").statfsSync(process.env.TIP_DATA_DIR || "/");
+        const st = require("fs").statfsSync("/");
         return [
-          gauge("tip_disk_free_bytes", "Free bytes on the data filesystem", st.bavail * st.bsize),
-          gauge("tip_disk_total_bytes", "Total bytes on the data filesystem", st.blocks * st.bsize),
+          gauge("tip_disk_free_bytes", "Free bytes on the node's root filesystem", st.bavail * st.bsize),
+          gauge("tip_disk_total_bytes", "Total bytes on the node's root filesystem", st.blocks * st.bsize),
         ];
       } catch { return []; }
     })(),

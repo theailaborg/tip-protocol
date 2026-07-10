@@ -14,7 +14,7 @@ services:
       # Comma-separated list of `host:port` to scrape. Edit in .env, no
       # need to touch prometheus.yml. The entrypoint below converts this
       # into the file_sd_configs targets file at container startup.
-      - TIP_NODE_TARGETS=${TIP_NODE_TARGETS:-host.docker.internal:4000,host.docker.internal:4100,host.docker.internal:4200,host.docker.internal:4300,host.docker.internal:4400}
+      - TIP_NODE_TARGETS=${TIP_NODE_TARGETS:-host.docker.internal:4000,host.docker.internal:4100,host.docker.internal:4200}
       - PROM_RETENTION=${PROM_RETENTION:-7d}
     entrypoint:
       - /bin/sh
