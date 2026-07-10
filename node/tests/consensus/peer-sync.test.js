@@ -180,6 +180,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     await Promise.all([
       runServer(sourceHandler, server),
       onPeerAuthorized("peer-123", "TIP_NODE_A", {
+        queryPeerStatus: async () => ({ committed_round: 999999 }),
         syncHandler,
         snapshotHandler: destHandler,
         commitHandler, dag: destDag, narwhal, bullshark,
@@ -269,6 +270,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
 
     await onPeerAuthorized("peer-gc-pruned", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
       syncHandler, snapshotHandler,
       commitHandler, dag: destDag, narwhal, bullshark,
       nodeId: "OUR_NODE",
@@ -346,6 +348,7 @@ describe("§14 Part 3 — onPeerAuthorized join-flow orchestration", () => {
     const commitHandler = { commitOrderedTxs: () => ({ committed: 0, dropped: 0 }) };
 
     await onPeerAuthorized("peer-no-snap", "TIP_NODE_A", {
+      queryPeerStatus: async () => ({ committed_round: 999999 }),
       syncHandler, snapshotHandler,
       commitHandler, dag: destDag, narwhal, bullshark,
       nodeId: "OUR_NODE",
@@ -452,24 +455,28 @@ describe("shouldSyncFromPeer (asymmetric pre-flight)", () => {
     expect(result).toBe(true);
   });
 
-  test("queryPeerStatus returns null (peer no-response) → true (conservative)", async () => {
+  // Failure paths SKIP the bootstrap sync: a timed-out probe used to stop
+  // production on every re-handshake with a busy peer and the churn
+  // compounded itself (2026-07-10 flip-flap). AE detects a genuinely-needed
+  // sync within one tick and escalates on its own.
+  test("queryPeerStatus returns null (peer no-response) → false (AE decides)", async () => {
     const queryPeerStatus = async () => null;
     const bullshark = { lastCommittedRound: () => 100 };
     const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
-    expect(result).toBe(true);
+    expect(result).toBe(false);
   });
 
-  test("queryPeerStatus throws → true (conservative, falls through to sync)", async () => {
+  test("queryPeerStatus throws → false (AE decides)", async () => {
     const queryPeerStatus = async () => { throw new Error("rpc timeout"); };
     const bullshark = { lastCommittedRound: () => 100 };
     const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark, queryPeerStatus });
-    expect(result).toBe(true);
+    expect(result).toBe(false);
   });
 
-  test("no queryPeerStatus dep wired → true (backward compat)", async () => {
+  test("no queryPeerStatus dep wired → false (AE decides)", async () => {
     const bullshark = { lastCommittedRound: () => 100 };
     const result = await shouldSyncFromPeer("peer-id", "TIP_NODE", { bullshark });
-    expect(result).toBe(true);
+    expect(result).toBe(false);
   });
 
   test("bullshark.lastCommittedRound missing → treats self as 0; a far-ahead peer triggers sync", async () => {
@@ -614,7 +621,7 @@ describe("onPeerAuthorized — pre-flight skip", () => {
     expect(syncHandler.calls.length).toBe(1);
   });
 
-  test("queryPeerStatus failure → falls through to legacy unconditional sync (backward safety)", async () => {
+  test("queryPeerStatus failure → bootstrap skipped entirely (AE owns recovery)", async () => {
     const destDag = initDAG({ dbPath: ":memory:" });
     const syncHandler = buildSyncStub();
     const narwhal = buildNarwhalStub();
@@ -629,7 +636,7 @@ describe("onPeerAuthorized — pre-flight skip", () => {
       queryPeerStatus,
     });
 
-    expect(narwhal.events[0]).toBe("enter");
-    expect(syncHandler.calls.length).toBe(1);
+    expect(narwhal.events).toHaveLength(0);
+    expect(syncHandler.calls.length).toBe(0);
   });
 });

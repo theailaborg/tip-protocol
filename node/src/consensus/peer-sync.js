@@ -182,17 +182,21 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
  */
 /**
  * Decide whether sync is needed by comparing self vs peer's committed_round
- * via the /tip/sync-status/1.0.0 RPC. Returns false (skip sync) only when
- * we have a confirmed peer status AND we're at or beyond peer's head.
- * All failure paths (no RPC wired, peer no-response, RPC throws) return
- * true — entering sync mode unnecessarily is recoverable; skipping a
- * needed sync is not.
+ * via the /tip/sync-status/1.0.0 RPC. Failure paths (no RPC wired, peer
+ * no-response, RPC throws) SKIP the sync: entering sync mode on a timed-out
+ * status probe turned every re-handshake with a busy peer into a full
+ * production stop, and the churn compounded itself (2026-07-10 flip-flap).
+ * A genuinely-needed sync is recovered by anti-entropy within one tick ,
+ * behind/diverged/log-behind detection all escalate on their own.
  */
 async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus }) {
-  if (typeof queryPeerStatus !== "function") return true;
+  if (typeof queryPeerStatus !== "function") return false;
   try {
     const peerStatus = await queryPeerStatus(peerId);
-    if (!peerStatus) return true;
+    if (!peerStatus) {
+      log.info(`Peer ${tipNodeId} status probe failed — skipping bootstrap sync, AE will decide`);
+      return false;
+    }
     const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
       ? Number(bullshark.lastCommittedRound() || 0) : 0;
     const peerCommitted = Number(peerStatus.committed_round || 0);
@@ -205,8 +209,8 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
     log.info(`Peer ${tipNodeId} far ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
     return true;
   } catch (err) {
-    log.debug(`Peer ${tipNodeId} sync-status query failed (${err.message}) — proceeding with sync`);
-    return true;
+    log.info(`Peer ${tipNodeId} sync-status query failed (${err.message}) — skipping bootstrap sync, AE will decide`);
+    return false;
   }
 }
 
