@@ -307,6 +307,7 @@ class KnexAdapter {
 
     this._ffPendingSince = [];
     this._ffLastSettledMs = nowMs();
+    this._parityLastOkMs = 0;
   }
 
   // Armed at node boot, not construction: constructor timers leak into test
@@ -332,6 +333,7 @@ class KnexAdapter {
       queue_depth: this._ffPendingSince.length,
       oldest_pending_ms: this._ffPendingSince.length ? now - this._ffPendingSince[0] : 0,
       last_settled_age_ms: now - this._ffLastSettledMs,
+      parity_last_ok_age_ms: this._parityLastOkMs ? now - this._parityLastOkMs : -1,
     };
   }
 
@@ -366,6 +368,7 @@ class KnexAdapter {
           process.exit(78);
         }
       }
+      this._parityLastOkMs = nowMs();
     });
   }
 

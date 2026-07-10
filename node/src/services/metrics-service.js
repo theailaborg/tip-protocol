@@ -112,7 +112,7 @@ function dagSection(dag) {
   try { certCount = dag.certificateCount?.() ?? 0; } catch { /* ignore */ }
   // Memory-to-disk distance: the only gauges not fed by the mirror, so the
   // only signal when persistence wedges while memory runs on (2026-07-10).
-  let ps = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 };
+  let ps = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0, parity_last_ok_age_ms: -1 };
   try { ps = dag.persistenceStats?.() ?? ps; } catch { /* ignore */ }
   return [
     gauge("tip_dag_tx_count", "Total transactions committed to the DAG", txCount),
@@ -120,6 +120,7 @@ function dagSection(dag) {
     gauge("tip_db_write_queue_depth", "Pending writes in the fire-and-forget persistence chain", ps.queue_depth),
     gauge("tip_db_oldest_pending_write_ms", "Age of the oldest unsettled DB write; alert threshold well below the 60s fail-stop", ps.oldest_pending_ms),
     gauge("tip_db_last_write_settled_age_ms", "Time since the persistence chain last settled a write", ps.last_settled_age_ms),
+    gauge("tip_db_parity_last_ok_age_ms", "Time since the memory-vs-DB parity probe last verified all canonical tables equal; -1 = not yet run, alert when > 3x probe interval", ps.parity_last_ok_age_ms),
   ].join("\n");
 }
 
