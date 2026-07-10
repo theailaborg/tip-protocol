@@ -918,22 +918,16 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           continue;
         }
 
-        // Fresh-check the candidate before installing from it. Same live RPC
-        // the primary resync path uses, for two reasons:
-        //   1. join_state: a syncing peer holds partial/stale state and must
-        //      never be a snapshot source (2026-07-10: two half-cleared nodes
-        //      agreed on a stale root, the healthy node nearly recovered FROM
-        //      them). The primary path already defers on this; parity here.
-        //   2. root drift: a peer that held the majority root at detection may
-        //      have since installed a different one; pulling it would propagate
-        //      a wrong root and fragment the cluster.
+        // Fresh-check before installing: a syncing peer holds partial state and
+        // must never be a snapshot source (parity with the primary resync path),
+        // and a root drifted since majority detection would propagate a fork.
         {
           let freshStatus = null;
           try { freshStatus = await queryPeer(libp2pPeerId); } catch { /* best-effort */ }
           const freshJoin = String(freshStatus?.join_state || "ready");
           if (freshStatus && (freshJoin === "syncing" || freshJoin === "catching_up")) {
             _log.warn(
-              `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)} — peer is ${freshJoin}, not a valid snapshot source`
+              `anti-entropy: auto-recovery: skipping ${libp2pPeerId.slice(0, 12)}: peer is ${freshJoin}, not a valid snapshot source`
             );
             continue;
           }

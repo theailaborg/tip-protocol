@@ -52,12 +52,9 @@ function loadNodeKeypair() {
 function loadConfig() {
   const nodeKeys = loadNodeKeypair();
 
-  // Node id: prefer the credential file's node_id (the key IS the identity),
-  // fall back to TIP_NODE_ID, then a hostname hash. A mismatch between an
-  // explicit TIP_NODE_ID and the credential node_id is fatal , a node
-  // announcing an id its key doesn't back is rejected by every peer as
-  // "not in registry" and runs as a silent spectator at zero fault
-  // tolerance (2026-07-10 incident).
+  // The signing key defines the identity: credential node_id wins, and a
+  // contradicting TIP_NODE_ID is fatal, a node announcing an id its key
+  // does not back runs as a peer-rejected silent spectator (2026-07-10).
   if (nodeKeys.nodeId && process.env.TIP_NODE_ID && process.env.TIP_NODE_ID !== nodeKeys.nodeId) {
     throw new Error(`TIP_NODE_ID (${process.env.TIP_NODE_ID}) does not match the credential file node_id (${nodeKeys.nodeId}). The signing key defines the identity; fix TIP_NODE_ID or point TIP_NODE_CREDENTIALS_FILE at the right key.`);
   }
