@@ -20,7 +20,7 @@ const {
 const { log } = require("../logger");
 
 // Owner-chain prev fallback. Injected by initDAG (_buildDagHandle). Callers
-// that hold a dag MUST pass it — the singleton is re-pointed by every
+// that hold a dag MUST pass it, the singleton is re-pointed by every
 // initDAG() call, so in a multi-dag process (tests, tooling) it can be a
 // different store than the one the tx is validated and committed against,
 // sealing a wrong prev[0] that goes owner-head-stale at commit.

@@ -336,7 +336,7 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -443,7 +443,7 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 6);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);

@@ -250,7 +250,7 @@ describe("commit-handler SCORE_UPDATE: first-wins dedup", () => {
     });
 
     const result = fx.handler.commitOrderedTxs([tx1, tx2], 100);
-    // Same node signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same node signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt + re-signed against the new head, requeued, commits next round.
     expect(result.committed).toBe(1);
     expect(result.dropped).toBe(1);

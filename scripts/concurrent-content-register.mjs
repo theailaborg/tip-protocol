@@ -1,6 +1,6 @@
 
 /**
- * concurrent-content-register.mjs — register content on node1 (:4000) and
+ * concurrent-content-register.mjs, register content on node1 (:4000) and
  * node2 (:4100) at the same time and watch how consensus handles it.
  *
  * Fires three waves with Promise.all so the POSTs hit both nodes concurrently:
@@ -123,7 +123,7 @@ const w2 = await Promise.all([
 ]);
 w2.forEach(r => console.log(line(r)));
 const w2ctids = [...new Set(w2.map(r => r.ctid).filter(Boolean))];
-console.log(`  -> distinct ctids produced: ${w2ctids.length} (expect 1 — same content_hash)`);
+console.log(`  -> distinct ctids produced: ${w2ctids.length} (expect 1, same content_hash)`);
 
 // Wave 3: burst of distinct content split across both nodes, all concurrent.
 console.log('\nWave 3: burst of 8 distinct, split across both nodes, all at once');
@@ -139,8 +139,8 @@ const allCtids = [...new Set([...w1, ...w2, ...burst].map(r => r.ctid).filter(Bo
 console.log(`\nConvergence: waiting for ${allCtids.length} ctids to resolve on BOTH nodes...`);
 const stillPending = await waitConverge(allCtids);
 if (stillPending.size === 0) {
-  console.log(`  CONVERGED — all ${allCtids.length} ctids present on node1 AND node2`);
+  console.log(`  CONVERGED, all ${allCtids.length} ctids present on node1 AND node2`);
 } else {
-  console.log(`  NOT converged — ${stillPending.size} ctid(s) missing on a node: ${[...stillPending].join(', ')}`);
+  console.log(`  NOT converged, ${stillPending.size} ctid(s) missing on a node: ${[...stillPending].join(', ')}`);
 }
 process.exit(stillPending.size === 0 ? 0 : 1);

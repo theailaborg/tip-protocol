@@ -164,7 +164,7 @@ describe("GH #87 HIGH — CONTENT_DISPUTED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -289,7 +289,7 @@ describe("GH #87 HIGH — PRESCAN_REVIEW_TRIGGERED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -346,7 +346,7 @@ describe("GH #87 HIGH — prescan terminal decisions: one per review_id per batc
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 3);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -530,7 +530,7 @@ describe("GH #87 MED — REVOKE_*: one revocation per tip_id per batch (cross-ty
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -624,7 +624,7 @@ describe("GH #87 MED — UPDATE_ORIGIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -655,7 +655,7 @@ describe("GH #87 MED — CONTENT_RETRACTED in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -806,7 +806,7 @@ describe("GH #87 LOW — BIND_DOMAIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);
@@ -839,7 +839,7 @@ describe("GH #87 LOW — UNBIND_DOMAIN in-batch dedup", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 1);
 
-    // Same owner signs both: owner-chain serializes — tx2 is OWNER_HEAD_STALE,
+    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
     // rebuilt against the new head, requeued, and commits next round.
     expect(res.committed).toBe(1);
     expect(res.dropped).toBe(1);

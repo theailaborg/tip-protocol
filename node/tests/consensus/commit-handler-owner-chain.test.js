@@ -62,7 +62,7 @@ function _contentTx(dag, authorKp, text, opts = {}) {
   return tx;
 }
 
-describe("commit-handler — owner-chain prev validation + stale-head retry (#199)", () => {
+describe("commit-handler: owner-chain prev validation + stale-head retry", () => {
   test("valid owner-chain prev commits and advances the owner head", () => {
     const fx = _setup();
     const tx = _contentTx(fx.dag, fx.authorKp, "oc-solo");
