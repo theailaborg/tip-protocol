@@ -435,7 +435,33 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     };
   }
 
-  async function resolve(ctid) {
+  // Stored perceptual fingerprints (off-DAG, immutable once ingested), shaped
+  // for verifiers: envelope parsed, optional modality filter, optional video
+  // frame thinning so a long video's reference stays small on the wire.
+  async function _projectFingerprints(ctid, opts) {
+    const rows = await dag.getPerceptualFingerprints(ctid);
+    const out = [];
+    for (const r of rows) {
+      if (opts.modalities && !opts.modalities.includes(r.modality)) continue;
+      let fp = r.fingerprint;
+      if (typeof fp === "string") {
+        try { fp = JSON.parse(fp); } catch { continue; }
+      }
+      if (r.modality === "video" && opts.videoEvery > 1 && Array.isArray(fp.features)) {
+        fp = { ...fp, features: fp.features.filter((_, i) => i % opts.videoEvery === 0), thinned_every: opts.videoEvery };
+      }
+      out.push({
+        component_idx: r.component_idx,
+        modality: r.modality,
+        profile: r.profile,
+        quality: r.quality ?? null,
+        fingerprint: fp,
+      });
+    }
+    return out;
+  }
+
+  async function resolve(ctid, opts = {}) {
     const rec = dag.getContent(ctid);
     if (!rec) throw schemaError(404, "Content record not found", "content_not_found");
 
@@ -505,7 +531,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       log.warn(`similar-content lookup failed for ${ctid}: ${err.message || err}`);
     }
 
-    return {
+    const out = {
       ...rec,
       media: enrichedMedia,
       origin_label: ORIGIN_LABELS[rec.origin_code] || rec.origin_code,
@@ -536,6 +562,8 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       consensus: { available: false, status: "not_requested" },
       similar,
     };
+    if (opts.includeFingerprints) out.fingerprints = await _projectFingerprints(ctid, opts);
+    return out;
   }
 
   // Slim, read-only projection for the Open Graph card renderer. Reuses

@@ -3,6 +3,20 @@
 const express = require("express");
 const { asyncHandler } = require("../middleware/error-handler");
 
+// GET /content/:ctid?include=fingerprints[.modality,...]&video_every=N
+// Fingerprints are opt-in so the default response (browser-extension
+// contract) is byte-identical without the param.
+function _fingerprintOpts(q) {
+  const include = String(q.include || "");
+  if (!include.startsWith("fingerprints")) return {};
+  const dot = include.indexOf(".");
+  return {
+    includeFingerprints: true,
+    modalities: dot >= 0 ? include.slice(dot + 1).split(",").filter(Boolean) : null,
+    videoEvery: Math.max(1, Number(q.video_every) || 1),
+  };
+}
+
 function createRouter({ contentService }) {
   const router = express.Router();
 
@@ -18,7 +32,7 @@ function createRouter({ contentService }) {
   }));
 
   router.get("/content/:ctid", asyncHandler(async (req, res) => {
-    res.json(await contentService.resolve(req.params.ctid));
+    res.json(await contentService.resolve(req.params.ctid, _fingerprintOpts(req.query)));
   }));
 
   // OG card read — slim, crawler-cacheable projection used by the Open

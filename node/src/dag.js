@@ -1909,6 +1909,14 @@ class MemoryStore {
   getPerceptualFingerprint(ctid, componentIdx = 0) {
     return this._perceptualFingerprints.get(`${ctid}|${componentIdx}`) || null;
   }
+  getPerceptualFingerprints(ctid) {
+    const rows = [];
+    for (const r of this._perceptualFingerprints.values()) {
+      if (r.ctid === ctid) rows.push({ ...r });
+    }
+    rows.sort((a, b) => a.component_idx - b.component_idx);
+    return rows;
+  }
   // LSH candidate-gen: ctids that share >= 1 band bucket with the query's bands.
   findMinhashCandidates(profile, bandHashes) {
     const want = new Set(bandHashes.map((h, i) => i + "|" + h));
@@ -2867,6 +2875,9 @@ class SQLiteStore {
       ),
       getPerceptualFingerprint: this.db.prepare(
         "SELECT tip_ctid AS ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at FROM perceptual_fingerprint WHERE tip_ctid=? AND component_idx=?"
+      ),
+      getPerceptualFingerprints: this.db.prepare(
+        "SELECT tip_ctid AS ctid, component_idx, modality, profile, pipeline, quality, fingerprint, created_at FROM perceptual_fingerprint WHERE tip_ctid=? ORDER BY component_idx"
       ),
       findMinhashByBand: this.db.prepare(
         "SELECT tip_ctid AS ctid FROM minhash_band WHERE profile=? AND band_idx=? AND band_hash=?"
@@ -3993,6 +4004,9 @@ class SQLiteStore {
   getPerceptualFingerprint(ctid, componentIdx = 0) {
     return this._stmts.getPerceptualFingerprint.get(ctid, componentIdx) || null;
   }
+  getPerceptualFingerprints(ctid) {
+    return this._stmts.getPerceptualFingerprints.all(ctid);
+  }
   findMinhashCandidates(profile, bandHashes) {
     const ctids = new Set();
     for (let i = 0; i < bandHashes.length; i++) {
@@ -4484,6 +4498,7 @@ function _buildDagHandle(store, config) {
     saveMinhashBands: (rows) => store.saveMinhashBands(rows),
     savePhashCodes: (rows) => store.savePhashCodes(rows),
     getPerceptualFingerprint: (ctid, idx) => store.getPerceptualFingerprint(ctid, idx),
+    getPerceptualFingerprints: (ctid) => store.getPerceptualFingerprints(ctid),
     findMinhashCandidates: (profile, bandHashes) => store.findMinhashCandidates(profile, bandHashes),
     findPhashCandidates: (profile, modality, queryKeys) => store.findPhashCandidates(profile, modality, queryKeys),
     getPhashCodesByCtid: (ctid) => store.getPhashCodesByCtid(ctid),
