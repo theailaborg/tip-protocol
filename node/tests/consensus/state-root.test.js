@@ -27,6 +27,7 @@ const { initCrypto } = require(path.join(SHARED, "crypto"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const {
   computeStateMerkleRoot, computeTxsMerkleRoot, createStateRootBuilder, verifyStateRootConsistency,
+  verifyStateRootConsistencyAsync,
   EMPTY_STATE_ROOT, EMPTY_TXS_ROOT,
 } = require(path.join(SRC, "consensus", "state-root"));
 
@@ -88,6 +89,47 @@ describe("state_merkle_root", () => {
     expect(bad.reference).not.toBe(staleRoot);
     expect(bad.perTable).not.toBeNull();
     expect(bad.perTable.some(t => t.table === "nodes")).toBe(true);
+  });
+
+  test("verifyStateRootConsistencyAsync: agrees with the sync walk and detects the same drift", async () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    dag.saveNode({ node_id: "N1", name: "n1", public_key: "abc", status: "active", registered_at: 1767225600000 });
+
+    const ok = await verifyStateRootConsistencyAsync(dag, { yieldEvery: 2 });
+    expect(ok.skipped).toBe(false);
+    expect(ok.consistent).toBe(true);
+    expect(ok.reference).toBe(verifyStateRootConsistency(dag).reference);
+
+    const staleRoot = dag.stateRoot();
+    dag.saveNode({ node_id: "N2", name: "n2", public_key: "def", status: "active", registered_at: 1767225600001 });
+    const drifted = {
+      stateRoot: () => staleRoot,
+      iterateCanonicalState: (o) => dag.iterateCanonicalState(o),
+    };
+    const bad = await verifyStateRootConsistencyAsync(drifted, { yieldEvery: 2 });
+    expect(bad.skipped).toBe(false);
+    expect(bad.consistent).toBe(false);
+    expect(bad.perTable.some(t => t.table === "nodes")).toBe(true);
+  });
+
+  test("verifyStateRootConsistencyAsync: skips (no verdict) when state mutates mid-walk", async () => {
+    const dag = initDAG({ dbPath: ":memory:" });
+    for (let i = 0; i < 10; i++) {
+      dag.saveNode({ node_id: `M${i}`, name: `m${i}`, public_key: "aa", status: "active", registered_at: 1767225600000 + i });
+    }
+    // Mutate DURING the walk via the first yield: the incremental root moves
+    // between the pre- and post-walk reads, so the cycle must be discarded.
+    let mutated = false;
+    const origSetImmediate = global.setImmediate;
+    const p = verifyStateRootConsistencyAsync(dag, { yieldEvery: 2 });
+    await new Promise((r) => origSetImmediate(r));
+    if (!mutated) {
+      mutated = true;
+      dag.saveNode({ node_id: "MID_WALK", name: "mw", public_key: "bb", status: "active", registered_at: 1767225700000 });
+    }
+    const res = await p;
+    expect(res.skipped).toBe(true);
+    expect(res.consistent).toBe(true);   // skip is not a failure verdict
   });
 
   test("createStateRootBuilder and computeStateMerkleRoot agree on the same DAG", () => {

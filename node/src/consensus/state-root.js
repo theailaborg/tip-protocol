@@ -189,6 +189,27 @@ function verifyStateRootConsistency(dag) {
   return { consistent, incremental, reference, perTable: consistent ? null : computeStateMerkleRootPerTable(dag) };
 }
 
+// Sliced variant of verifyStateRootConsistency for the periodic integrity
+// timer: the synchronous walk is O(state) in ONE event-loop task (~0.5s at
+// a few hundred rows, measured idle-stall spikes 2026-07-11). Yields every
+// `yieldEvery` rows; state mutating mid-walk makes the reference meaningless,
+// so the O(1) incremental root is read before and after and a mismatch
+// returns { skipped: true } , the next cycle retries.
+async function verifyStateRootConsistencyAsync(dag, { yieldEvery = 256 } = {}) {
+  const before = dag.stateRoot();
+  const b = createStateRootBuilder();
+  let n = 0;
+  for (const { table, row } of dag.iterateCanonicalState()) {
+    b.addRowObject(table, row);
+    if ((++n % yieldEvery) === 0) await new Promise((r) => setImmediate(r));
+  }
+  const reference = b.finalize();
+  const incremental = dag.stateRoot();
+  if (incremental !== before) return { skipped: true, consistent: true, incremental, reference: null, perTable: null };
+  const consistent = incremental === reference;
+  return { skipped: false, consistent, incremental, reference, perTable: consistent ? null : computeStateMerkleRootPerTable(dag) };
+}
+
 function computeTxsMerkleRoot(orderedTxs) {
   if (!orderedTxs || orderedTxs.length === 0) return EMPTY_TXS_ROOT;
   return merkle.computeRoot(orderedTxs.map(t => t.tx_id));
@@ -198,6 +219,7 @@ module.exports = {
   computeStateMerkleRoot,
   computeStateMerkleRootPerTable,
   verifyStateRootConsistency,
+  verifyStateRootConsistencyAsync,
   STATE_PK,
   stateLeafKey,
   computeTxsMerkleRoot,
