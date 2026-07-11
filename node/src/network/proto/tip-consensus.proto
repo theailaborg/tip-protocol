@@ -323,9 +323,8 @@ message SyncStatusResponse {
   // running, which historically meant ready).
   string join_state = 10;
   // Newest 2f+1-acked commit row this node holds (commits-table head).
-  // Unlike committed_round (a live counter that nodes adopt from each
-  // other), this is backed by a locally-stored attested commit — the
-  // trustworthy "last signed page" for ahead/behind and ready-promotion
+  // committed_round is an adopted live counter; this is backed by a stored
+  // attested commit, the trustworthy signal for ahead/behind and promotion
   // decisions. 0/empty = legacy peer (fall back to counter semantics).
   uint64 attested_head_round = 11;
   bytes attested_head_root = 12;

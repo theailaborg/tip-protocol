@@ -87,11 +87,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   // REST endpoint and the loop's decision logic. Key: TIP node_id.
   const _lastStatus = new Map();
 
-  // Before any syncing-escape promotion: a stale install marker (interrupted
-  // install whose kept state caught back up via the cert tail) makes narwhal
-  // refuse the exit forever and 2 of 3 wedged nodes halt the cluster (live
-  // repro 2026-07-10). The handler self-verifies the state root against an
-  // attested commit and never clears mid-install, so calling it here is safe.
+  // Stale install markers make narwhal refuse every syncing-escape forever
+  // (2-of-3 wedged halted the cluster, 2026-07-10). The handler self-verifies
+  // against an attested commit and never clears mid-install: safe to call.
   async function _resolveStaleInstallMarker() {
     if (snapshotHandler && typeof snapshotHandler.resolveStaleInstallMarker === "function") {
       try { return await snapshotHandler.resolveStaleInstallMarker(); } catch { /* stays syncing */ }
@@ -99,9 +97,8 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     return "none";
   }
 
-  // "inconsistent" verdicts recur every AE tick while wedged; without a
-  // cooldown the retries stack against the peers' single serve slot and the
-  // node DoSes its own recovery (2026-07-10 self-DoS loop).
+  // "inconsistent" recurs every AE tick while wedged; without a cooldown the
+  // retries stack on the peers' single serve slot (self-DoS loop, 2026-07-10).
   let _lastInconsistentResyncAt = 0;
   let _lastAttestedPullAt = 0;
   async function _escalateInconsistent(selfCommitted) {
@@ -112,10 +109,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     return await triggerSnapshotResync(selfCommitted, 0);
   }
 
-  // Node id of any cached peer whose attested commit is newer than ours: our
-  // LOG is behind even when every live counter and root matches (counters
-  // equalize by adoption; a regressed cluster's live roots all matched while
-  // two nodes' logs were 20 commits ahead, 2026-07-10).
+  // Any cached peer whose attested commit is newer than ours: the LOG can be
+  // behind while every live counter and root matches (counters equalize by
+  // adoption; regressed-cluster wedge, 2026-07-10).
   function _peerWithHigherAttestedHead(selfState) {
     const selfHead = Number((selfState && selfState.attested_head_round) || 0);
     for (const [nodeId, cached] of _lastStatus.entries()) {
@@ -1124,10 +1120,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
           );
           return await triggerSnapshotResync(selfCommitted, 0);
         }
-        // Promotion evidence must come from a peer that is itself ready , a
-        // syncing/mid-install peer's live root is a partial blend (node1 was
-        // promoted off the reflection of a peer mid-install of node1's own
-        // stale snapshot, 2026-07-10).
+        // Promotion evidence must come from a ready peer: a mid-install peer's
+        // live root is a partial blend (node1 got promoted off the reflection
+        // of its own stale snapshot mid-install on a peer, 2026-07-10).
         if (String(peerStatus.join_state || "ready") !== "ready") {
           _log.info(
             `anti-entropy: stuck-syncing escape deferred , witness ${peerStatus.node_id || peerId.slice(0, 12)} ` +
@@ -1194,14 +1189,10 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       return "behind";
     }
 
-    // Log-behind: peer holds attested commits newer than ours even though the
-    // live counters match (counters equalize by adoption, so the branch above
-    // is blind to it , node1 sat "ready" 20 attested commits behind while all
-    // three live roots matched, 2026-07-10). Pull the commit gap from OUR
-    // attested head. The peer's join_state doesn't matter here: attested
-    // commit rows are 2f+1-signed and verify on import regardless of who
-    // serves them , and in the live wedge the newer logs were held ONLY by
-    // syncing nodes.
+    // Log-behind: the peer holds newer attested commits while the counters
+    // match, invisible to the branch above (node1 sat ready 20 commits behind,
+    // 2026-07-10). Pull from OUR attested head; the peer's join_state doesn't
+    // matter, attested rows are 2f+1-signed and verify on import.
     const selfAttestedHead = Number(selfState.attested_head_round || 0);
     const peerAttestedHead = Number(peerStatus.attested_head_round || 0);
     if (
@@ -1409,13 +1400,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
       && selfRoot && peerRoot && selfRoot === peerRoot
       && narwhal
       && typeof narwhal.joinState === "function"
-      // Witness must be ready: a syncing/mid-install peer's live root is a
-      // partial blend and cannot vouch for anyone (2026-07-10 wedge).
+      // Witness must be ready: a mid-install peer's live root is a partial
+      // blend and cannot vouch for anyone (2026-07-10 wedge).
       && String(peerStatus.join_state || "ready") === "ready"
     ) {
-      // Never promote while anyone provably holds a newer attested commit ,
-      // matching live roots at matching counters can still be a regressed
-      // cluster whose logs are ahead (2026-07-10).
+      // Never promote while anyone holds a newer attested commit: matching
+      // live roots can still be a regressed cluster (2026-07-10).
       const aheadWitness = _peerWithHigherAttestedHead(selfState);
       if (aheadWitness) {
         _log.info(`anti-entropy: promotion deferred , ${aheadWitness.slice(-12)} holds a newer attested commit`);
@@ -1424,11 +1414,11 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         if (state === "catching_up" && typeof narwhal.markCaughtUp === "function") {
           const target = typeof narwhal.catchUpTarget === "function" ? narwhal.catchUpTarget() : 0;
           if (selfCommitted >= target) {
-            _log.info(`anti-entropy: catch-up confirmed by peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted} — promoting to ready`);
+            _log.info(`anti-entropy: catch-up confirmed by peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted}, promoting to ready`);
             narwhal.markCaughtUp(selfCommitted);
           }
         } else if (state === "syncing" && typeof narwhal.exitSyncMode === "function") {
-          _log.info(`anti-entropy: caught up while in syncing (no install needed) — peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted}, exiting via override`);
+          _log.info(`anti-entropy: caught up while in syncing (no install needed), peer ${peerStatus.node_id || peerId.slice(0, 12)} at round=${selfCommitted}, exiting via override`);
           const resolved = await _resolveStaleInstallMarker();
           if (resolved === "inconsistent" && !_snapshotResyncInFlight) {
             await _escalateInconsistent(selfCommitted);
@@ -1440,12 +1430,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     }
 
     // Attested-head stuck-syncing escape: self-consistent at the newest
-    // attested head anyone holds, yet parked in syncing. Every counter-based
-    // escape is blind here (counters equalize by adoption) and the matching-
-    // root-witness promotion can never fire , every peer's LOG is behind, so
-    // their live roots legitimately differ (node2 wedge, 16+ min, 2026-07-10).
-    // Being self-consistent at the network's newest attested commit IS the
-    // strongest possible evidence of head-parity.
+    // attested head anyone holds is the strongest head-parity evidence, yet
+    // every counter/witness escape is blind to it (node2 sat syncing 16+ min
+    // while being the most advanced node, 2026-07-10).
     if (
       narwhal && typeof narwhal.joinState === "function"
       && narwhal.joinState() === "syncing"
@@ -1779,11 +1766,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const _selfByzHaltResync = narwhal && typeof narwhal.byzantineForkHalt === "function"
       ? narwhal.byzantineForkHalt() : null;
     let _selfCommittedNow = 0;
-    // Mixed-state exception: when our live state does NOT reproduce our own
-    // attested head, a "regressing" install is the repair, not a bug , it
-    // lands us at the source's checkpoint and our own log replays forward.
-    // Without it every resync is skipped once counters equalize (2026-07-10
-    // wedge: all counters equal, all live roots equal, two mixed states).
+    // Mixed-state exception: when live state does not reproduce our attested
+    // head, a regressing install IS the repair (own log replays forward), and
+    // without it every resync is skipped once counters equalize (2026-07-10).
     let _selfStateInconsistent = false;
     try {
       const _s = getConsensusState ? getConsensusState() : {};
@@ -1916,10 +1901,9 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
     const freshPeerStatus = await queryPeer(bestPeerId);
     if (freshPeerStatus) {
       const freshJoinState = freshPeerStatus.join_state || "ready";
-      // A syncing primary defers only a READY node (serialization: don't drop
-      // quorum). A node already in syncing loses nothing by proceeding to the
-      // candidate loop, which skips non-ready sources itself , two syncing
-      // nodes deferring on each other deadlocked recovery (2026-07-10).
+      // A syncing primary defers only a READY node: one already in syncing
+      // drops no quorum by proceeding, and two syncing nodes deferring on each
+      // other deadlocked recovery (2026-07-10).
       if ((freshJoinState === "syncing" || freshJoinState === "catching_up") && currentState === "ready") {
         const jitterMs = 8000 + Math.floor(Math.random() * 12000); // 8-20s
         _log.warn(
@@ -1994,12 +1978,12 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         {
           let freshCandidate = null;
           try { freshCandidate = await queryPeer(candidatePeer); } catch { /* best-effort */ }
-          // A syncing/mid-install source serves a mixed blend (its live state
-          // no longer pairs with its attested header) — never install from it.
+          // A syncing source serves a mixed blend (live state no longer
+          // pairs with its attested header); never install from it.
           const candJoin = String(freshCandidate?.join_state || "ready");
           if (freshCandidate && (candJoin === "syncing" || candJoin === "catching_up")) {
             _log.warn(
-              `anti-entropy: triggerSnapshotResync: skipping ${candidatePeer.slice(0, 12)} — ` +
+              `anti-entropy: triggerSnapshotResync: skipping ${candidatePeer.slice(0, 12)}: ` +
               `source is ${candJoin}, not a valid snapshot source`
             );
             continue;

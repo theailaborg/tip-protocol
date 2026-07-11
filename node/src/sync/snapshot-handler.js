@@ -139,15 +139,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     _installProgress = null;
   }
 
-  // #132 boot recovery. A streaming install writes canonical state in-place
-  // across many batches (no single covering transaction , the state is far
-  // larger than one txn can hold), guarded by the persisted install marker.
-  // If a crash interrupts it, the node reboots with MIXED canonical state
-  // (old rows + the upserted prefix) and the marker still `in_progress`.
-  // Coming up `ready` on that would fork the chain, so signal the caller to
-  // force syncing. The state is KEPT and the marker LEFT SET , cleared only
-  // by a verified install at finalize, or by resolveStaleInstallMarker once
-  // the state provably matches an attested commit. Returns true if recovered.
+  // #132 boot recovery: a crash mid-install reboots with MIXED state and the
+  // marker still in_progress; going ready on it would fork, so force syncing.
+  // State is KEPT and the marker LEFT SET, cleared only by a verified install
+  // or by resolveStaleInstallMarker. Returns true if recovery was signalled.
   async function recoverInterruptedInstall() {
     let marker = null;
     try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
@@ -164,19 +159,11 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     return true;
   }
 
-  // Clear a stale in_progress marker WITHOUT a re-install, iff the full state
-  // root reproduces the ack-attested root of our own latest commit , the same
-  // 2f+1 anchor a completed install's go-live uses. Covers the node whose
-  // interrupted install left the marker set but whose kept state caught back
-  // up via the normal cert tail: only a completed install clears the marker,
-  // so without this it can never pass _exitToReady and wedges in syncing ,
-  // with 2 of 3 wedged the cluster halts (live repro 2026-07-10).
-  // Returns "cleared" | "none" | "installing" | "no_commit" | "inconsistent".
-  // "inconsistent" (marker set, state does not reproduce our own attested
-  // head) is the definitive resync signal: the state is a mixed blend only a
-  // fresh install + own-log tail replay can repair , the caller must act on
-  // it, not just retry (live wedge 2026-07-10: both healthy-log nodes sat
-  // logging it forever because every counter-based resync trigger was blind).
+  // Clears a stale in_progress marker without a re-install iff the state root
+  // reproduces our own attested commit (the same 2f+1 anchor as install go-live);
+  // kept-state nodes otherwise wedge in syncing forever (2-of-3 halted 2026-07-10).
+  // Returns "cleared"|"none"|"installing"|"no_commit"|"inconsistent"; callers must
+  // treat "inconsistent" as the resync-now signal, not just retry.
   async function resolveStaleInstallMarker() {
     if (_snapInstallInProgress) return "installing";
     let marker = null;
@@ -289,10 +276,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
 
     if (_activeServes >= MAX_CONCURRENT_SERVES) {
-      // A re-request from the peer HOLDING the slot means its previous
-      // download was abandoned , reap that serve now so the peer's next retry
-      // lands instead of bouncing off its own ghost for the full stall
-      // timeout (client self-DoS retry loop, 2026-07-10).
+      // A re-request from the peer holding the slot means its previous download
+      // was abandoned: reap it now so the retry lands instead of bouncing off
+      // its own ghost until the stall timeout (self-DoS loop, 2026-07-10).
       const staleServe = _activeServeStreams.get(remotePeer);
       if (staleServe) {
         _abortStream(staleServe, new Error("superseded by a new snapshot request from the same peer"));
@@ -703,12 +689,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             header = decode("SnapshotHeader", proto);
             if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
             snapTotalRows = Number(header.totalRows) || 0;
-            // A 2f+1-attested commit cannot fork, so a snapshot OLDER than our
-            // own attested head while our state reproduces that head is pure
-            // regression (node3 accepted node1's stale snapshot, 2026-07-10) ,
-            // refuse and let AE pick a fresher peer. With a broken/mixed state
-            // the older snapshot IS accepted: regress-then-replay-own-log is
-            // exactly how recovery works.
+            // Attested commits cannot fork, so an older snapshot while we are
+            // self-consistent is pure regression (node3 took node1's stale
+            // snapshot, 2026-07-10): refuse. With a broken state it IS
+            // accepted: regress-then-replay-own-log is the recovery.
             {
               const latestOwn = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
               if (latestOwn && Number(header.round) < Number(latestOwn.round)
@@ -719,14 +703,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
                 );
               }
             }
-            // Begin install: persist the crash marker BEFORE the first row
-            // lands so a reboot mid-install re-enters syncing (mixed state
-            // must never go live unverified). NO wipe: rows upsert over the
-            // existing state; stale local rows are pruned only after full
-            // attestation at END. An aborted install therefore always leaves
-            // a full state with entity_keys intact. Wiping them deadlocked
-            // recovery, the node rejected the very peers it had to resync
-            // from (prod 2026-07-10).
+            // Crash marker BEFORE the first row: a reboot mid-install re-enters
+            // syncing. NO wipe: rows upsert over existing state and stale rows are
+            // pruned only after attestation at END, so an abort keeps entity_keys
+            // intact (wiping them deadlocked recovery, prod 2026-07-10).
             _installProgress = { phase: "syncing", installed: 0, total: snapTotalRows, bytes: totalBytes, percent: 0 };
             dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
             await dag.flush();
@@ -812,11 +792,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             switch (pe.kind) {
               case K.STATE: {
                 if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
-                // Derive the root over the STREAMED rows only, read back
-                // through the mirror so raw wire rows canonicalize. Local
-                // rows the peer didn't stream are still present (upsert, no
-                // wipe) and must not contribute; they're pruned only after
-                // full attestation at END.
+                // Root over the STREAMED rows only, read back through the mirror
+                // so wire rows canonicalize. Local-only rows (no wipe) must not
+                // contribute; they're pruned only after attestation at END.
                 const rootAll = createStateRootBuilder();
                 const rootByTable = new Map();
                 for (const { table: t, row: r } of dag.iterateCanonicalState()) {
@@ -1006,11 +984,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       }
 
       // ── Reconcile ─────────────────────────────────────────────────────
-      // Delete local canonical rows the peer didn't stream (fork artifacts /
-      // peer-side deletions): the deletion exactness the old wipe bought,
-      // without its destructive window. Runs ONLY after ack-quorum +
-      // chain-of-trust attested the snapshot: pruning earlier would let an
-      // unattested stream destroy honest auth material (nodes/entity_keys).
+      // Delete local rows the peer didn't stream: the old wipe's deletion
+      // exactness without its destructive window. Runs ONLY after attestation,
+      // else an unattested stream could destroy honest auth material.
       const prunedRows = dag.pruneCanonicalStateExcept(streamedPks);
       if (prunedRows.length > 0) {
         await dag.flush();

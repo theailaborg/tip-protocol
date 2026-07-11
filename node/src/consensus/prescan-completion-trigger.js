@@ -96,10 +96,9 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
     const cooldownFloor = certTimestamp - PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS;
     for (const content of stuck) {
       if (pending.has(content.ctid)) continue;
-      // The mempool guard alone can't stop the flood: a dropped fail-open
-      // (OWNER_HEAD_STALE rebuild of a node-signed tx drops as foreign-signed)
-      // leaves the mempool AND the content stuck, so every anchor re-emitted
-      // the full batch , hundreds of ML-DSA signings/min (2026-07-10).
+      // The mempool guard can't stop the flood alone: a dropped fail-open
+      // leaves mempool AND content stuck, so every anchor re-emitted the full
+      // batch, hundreds of ML-DSA signings/min (2026-07-10).
       const lastAt = _lastEmittedAt.get(content.ctid) || 0;
       if (lastAt > cooldownFloor) continue;
       try {

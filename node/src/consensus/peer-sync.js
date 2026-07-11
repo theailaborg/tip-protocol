@@ -180,21 +180,16 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
  * @param {Object} deps          { syncHandler, snapshotHandler, commitHandler,
  *                                 dag, narwhal, bullshark, nodeId }
  */
-/**
- * Decide whether sync is needed by comparing self vs peer's committed_round
- * via the /tip/sync-status/1.0.0 RPC. Failure paths (no RPC wired, peer
- * no-response, RPC throws) SKIP the sync: entering sync mode on a timed-out
- * status probe turned every re-handshake with a busy peer into a full
- * production stop, and the churn compounded itself (2026-07-10 flip-flap).
- * A genuinely-needed sync is recovered by anti-entropy within one tick ,
- * behind/diverged/log-behind detection all escalate on their own.
- */
+// Compares self vs peer committed_round via /tip/sync-status. Failure paths
+// SKIP the sync: probe timeouts turned every re-handshake into a production
+// stop and the churn compounded (2026-07-10 flip-flap); anti-entropy detects
+// and escalates a genuinely-needed sync within one tick anyway.
 async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus }) {
   if (typeof queryPeerStatus !== "function") return false;
   try {
     const peerStatus = await queryPeerStatus(peerId);
     if (!peerStatus) {
-      log.info(`Peer ${tipNodeId} status probe failed — skipping bootstrap sync, AE will decide`);
+      log.info(`Peer ${tipNodeId} status probe failed, skipping bootstrap sync, AE will decide`);
       return false;
     }
     const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
@@ -209,7 +204,7 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
     log.info(`Peer ${tipNodeId} far ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
     return true;
   } catch (err) {
-    log.info(`Peer ${tipNodeId} sync-status query failed (${err.message}) — skipping bootstrap sync, AE will decide`);
+    log.info(`Peer ${tipNodeId} sync-status query failed (${err.message}), skipping bootstrap sync, AE will decide`);
     return false;
   }
 }
