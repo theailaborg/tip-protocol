@@ -1132,6 +1132,7 @@ class KnexAdapter {
   }
 
   hasDedupHash(h) { return this.mirror.hasDedupHash(h); }
+  getDedupEntry(h) { return this.mirror.getDedupEntry(h); }
   getDedupRegistration(h) { return this.mirror.getDedupRegistration(h); }
   dedupCount() { return this.mirror.dedupCount(); }
 
@@ -1173,10 +1174,57 @@ class KnexAdapter {
       "entity_keys", // GH #60 — entity_keys is canonical state too.
       "platform_links", "domain_bindings", "prescan_reviews", "interests_registry",
       "protocol_params", // #39 — canonical state, cleared + rebuilt on install
+      "owner_heads",
     ];
     this._ff(async () => {
       for (const t of CANONICAL_TABLES) await this._k(t).delete();
     });
+  }
+
+  // DB where-clause for one canonical row; DB pk columns differ from the
+  // mirror pk string (content: tip_ctid vs ctid; composites split back out).
+  _canonicalWhere(table, row) {
+    switch (table) {
+      case "identities": return { tip_id: row.tip_id };
+      case "content": return { tip_ctid: row.ctid };
+      case "scores": return { tip_id: row.tip_id };
+      case "dedup_registry": return { dedup_hash: row.dedup_hash };
+      case "revocations": return { tip_id: row.tip_id };
+      case "domain_bindings": return { domain: row.domain };
+      case "platform_links": return { id: row.id };
+      case "verification_providers": return { vp_id: row.vp_id };
+      case "nodes": return { node_id: row.node_id };
+      case "entity_keys": return {
+        entity_type: row.entity_type, entity_id: row.entity_id, valid_from_ts: row.valid_from_ts,
+      };
+      case "prescan_reviews": return { review_id: row.review_id };
+      case "interests_registry": return { slug: row.slug };
+      case "owner_heads": return { entity_key: row.entity_key };
+      case "protocol_params": return {
+        param_key: String(row.param_key), effective_from_height: Number(row.effective_from_height),
+      };
+      default: return null;
+    }
+  }
+
+  deleteCanonicalRow(table, row) {
+    const removed = this.mirror.deleteCanonicalRow(table, row);
+    const where = this._canonicalWhere(table, row);
+    if (where) this._ff(() => this._k(table).where(where).del());
+    return removed;
+  }
+
+  pruneCanonicalStateExcept(keepByTable) {
+    const doomed = this.mirror.pruneCanonicalStateExcept(keepByTable);
+    if (doomed.length > 0) {
+      this._ff(async () => {
+        for (const { table, row } of doomed) {
+          const where = this._canonicalWhere(table, row);
+          if (where) await this._k(table).where(where).del();
+        }
+      });
+    }
+    return doomed;
   }
 
   // ── Revocations ────────────────────────────────────────────────────────────
@@ -1631,6 +1679,7 @@ class KnexAdapter {
     this._ff(() => this._dbInsert("protocol_params", ["param_key", "effective_from_height"], row, "ignore"));
   }
   getProtocolParam(key, height) { return this.mirror.getProtocolParam(key, height); }
+  getProtocolParamAt(key, height) { return this.mirror.getProtocolParamAt(key, height); }
   getActiveProtocolParams(height) { return this.mirror.getActiveProtocolParams(height); }
 
   // ── Prescan reviews ────────────────────────────────────────────────────────

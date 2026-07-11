@@ -124,9 +124,9 @@ const DB_WRITE_STALL_FAIL_STOP_MS = 60_000;
 const DB_WATCHDOG_TICK_MS = 5_000;
 const DB_PARITY_PROBE_INTERVAL_MS = 60_000;
 
-// Install crash marker in consensus_meta: set before the wipe, cleared on
-// verified go-live. Still in_progress at boot means partial state, so wipe and
-// re-enter syncing rather than come up ready on it.
+// Install crash marker in consensus_meta: set at the install's first row,
+// cleared on verified go-live or by resolveStaleInstallMarker. Still
+// in_progress at boot means mixed state: keep it and re-enter syncing.
 const SNAPSHOT_INSTALL_MARKER_KEY = "snapshot_install_state";
 
 // ─── Prescan tiers ──────────────────────────────────────────────────────────
@@ -847,10 +847,16 @@ const MLDSA65_PUBKEY_BYTES = 1952;
 const CLASSIFIER_BREAK_AFTER = 3;
 const CLASSIFIER_COOLDOWN_MS = 60000;
 
+// Fail-open PRESCAN_COMPLETED re-emission cooldown per ctid: a dropped
+// fail-open leaves the content stuck, and re-emitting on every anchor turned
+// recovery into a cluster-wide signing self-flood (2026-07-10).
+const PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS = 5 * 60_000;
+
 module.exports = {
   LOCALLY_VERIFIED_TX_CACHE_CAP,
   CLASSIFIER_BREAK_AFTER,
   CLASSIFIER_COOLDOWN_MS,
+  PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
   ORIGIN,

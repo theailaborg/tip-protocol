@@ -34,8 +34,8 @@ const _backupFile = fs.readdirSync(_backupDir).find(n => n.startsWith('tip-id-')
 if (!_backupFile) throw new Error('no tip-id backup found in genesis-data/backups');
 const SIGNER = JSON.parse(fs.readFileSync(path.join(_backupDir, _backupFile), 'utf8'));
 
-const N1 = 'http://localhost:4000';
-const N2 = 'http://localhost:4100';
+const N1 = process.env.TIP_N1 || 'http://localhost:4000';
+const N2 = process.env.TIP_N2 || 'http://localhost:4100';
 
 await initCrypto();
 try { PC._resetForTesting(); } catch { /* not yet init */ }

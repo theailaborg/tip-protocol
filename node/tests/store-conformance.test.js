@@ -22,7 +22,9 @@
  *       boundary semantics
  *   10. Domain bindings + platform links — round-trip, partial update merge
  *   11. Canonical state — clearCanonicalState completeness (incl. the dedup
- *       tip_id registry), cross-store deterministic iteration
+ *       tip_id registry), reconcile primitives (deleteCanonicalRow /
+ *       pruneCanonicalStateExcept exactness + root sync), cross-store
+ *       deterministic iteration
  *   12. runInTransaction — rollback-on-throw. Implementations that are
  *       known no-ops are pinned with test.failing so the gap stays visible
  *       in CI output and flips to a hard failure the moment a fix lands
@@ -47,7 +49,8 @@ const path = require("path");
 
 const SRC = path.resolve(__dirname, "../src");
 const SHARED = path.resolve(__dirname, "../../shared");
-const { initDAG, initDAGAsync } = require(path.join(SRC, "dag"));
+const { initDAG, initDAGAsync, canonicalPk } = require(path.join(SRC, "dag"));
+const { computeStateMerkleRoot } = require(path.join(SRC, "consensus", "state-root"));
 const { canonicalJson } = require(path.join(SHARED, "crypto"));
 const { nowMs } = require(path.join(SHARED, "time"));
 
@@ -493,6 +496,56 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     // a leaked mapping here diverges state_merkle_root across peers.
     dag.addDedupHash(hash, 1111, null);
     expect(dag.getDedupRegistration(hash).tip_id).toBeNull();
+  });
+
+  test("getDedupEntry / getProtocolParamAt return exact canonical rows or null", async () => {
+    const dag = await makeDag();
+    const hash = uniq("dedup");
+    dag.addDedupHash(hash, 1234, "tip://id/US-x");
+    expect(dag.getDedupEntry(hash)).toEqual({ dedup_hash: hash, created_at: "1234", tip_id: "tip://id/US-x" });
+    expect(dag.getDedupEntry(uniq("missing"))).toBeNull();
+
+    const key = uniq("pp");
+    dag.saveProtocolParam({ param_key: key, value: 7, effective_from_height: 3, update_tx_id: "aa" });
+    expect(dag.getProtocolParamAt(key, 3)).toEqual({ param_key: key, value: "7", effective_from_height: 3, update_tx_id: "aa" });
+    expect(dag.getProtocolParamAt(key, 4)).toBeNull();
+  });
+
+  test("pruneCanonicalStateExcept deletes exactly the rows absent from the keep-set", async () => {
+    const dag = await makeDag();
+    const keepId = uniq("US-keep");
+    const dropId = uniq("US-drop");
+    dag.saveIdentity(identityRec(keepId));
+
+    // Baseline = genesis bootstrap + keepId. Everything added after this
+    // point simulates diverged-fork rows the reconcile must remove.
+    const baseline = [...dag.iterateCanonicalState()];
+    const baselineRoot = computeStateMerkleRoot(dag);
+
+    dag.saveIdentity(identityRec(dropId));
+    dag.saveContent(contentRec(uniq("ct"), dropId));
+    dag.addDedupHash(uniq("dedup"), T0, dropId);
+    dag.saveProtocolParam({ param_key: uniq("pp"), value: 7, effective_from_height: 3, update_tx_id: "aa" });
+
+    // Surgical single-row delete round-trips.
+    expect(dag.deleteCanonicalRow("identities", { tip_id: dropId })).toBe(true);
+    expect(dag.getIdentity(dropId)).toBeNull();
+    dag.saveIdentity(identityRec(dropId));
+
+    const keep = new Map();
+    for (const { table, row } of baseline) {
+      if (!keep.has(table)) keep.set(table, new Set());
+      keep.get(table).add(canonicalPk(table, row));
+    }
+    const pruned = dag.pruneCanonicalStateExcept(keep);
+    expect(pruned.length).toBeGreaterThan(0);
+    expect(dag.getIdentity(dropId)).toBeNull();
+    expect(dag.getIdentity(keepId)).toBeTruthy();
+
+    // Post-prune state is byte-identical to the baseline, proving every
+    // delete kept the SMT/root in sync.
+    expect([...dag.iterateCanonicalState()]).toEqual(baseline);
+    expect(computeStateMerkleRoot(dag)).toBe(baselineRoot);
   });
 
   // ── 12. runInTransaction ─────────────────────────────────────────────────

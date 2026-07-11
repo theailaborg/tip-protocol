@@ -5,10 +5,11 @@
  * The streaming install writes canonical state in-place across many batches
  * (no single covering transaction), so it can't rely on transaction rollback
  * for crash-safety. Instead a persisted `snapshot_install_state` marker guards
- * the partial state: set `in_progress` before the wipe, cleared only when the
- * fully-verified install goes live. A node that boots and finds the marker
- * still `in_progress` wipes its partial canonical state and re-enters syncing
- * rather than coming up `ready` on unverified state (which would fork).
+ * the mixed state: set `in_progress` before the first row lands, cleared only
+ * when the fully-verified install goes live. A node that boots and finds the
+ * marker still `in_progress` keeps its state (entity_keys must stay live so
+ * peers still authorize) and re-enters syncing rather than coming up `ready`
+ * on unverified state (which would fork); the next install reconciles.
  *
  * © 2026 The AI Lab Intelligence Unobscured, Inc.
  * License: TIPCL-1.0
@@ -68,7 +69,7 @@ describe("#132 streaming install crash marker", () => {
     expect(await destHandler.recoverInterruptedInstall()).toBe(false);
   });
 
-  test("boot recovery wipes partial state and keeps the marker set for re-crash safety", async () => {
+  test("boot recovery keeps state and the marker set for re-crash safety", async () => {
     const destDag = initDAG({ dbPath: ":memory:" });
     const destHandler = createSnapshotHandler({
       dag: destDag,
@@ -76,7 +77,7 @@ describe("#132 streaming install crash marker", () => {
       isAuthorizedPeer: () => true,
     });
 
-    // Simulate a crash mid-install: partial canonical row present + marker set.
+    // Simulate a crash mid-install: canonical row present + marker set.
     destDag.saveIdentity({
       tip_id: "tip://id/US-partialdeadbeef01",
       public_key: "ab".repeat(32),
@@ -89,11 +90,12 @@ describe("#132 streaming install crash marker", () => {
     const recovered = await destHandler.recoverInterruptedInstall();
     expect(recovered).toBe(true);
 
-    // Partial canonical state wiped.
-    expect(destDag.getIdentity("tip://id/US-partialdeadbeef01")).toBeFalsy();
+    // Mixed state kept: the retry's upsert+prune reconciles it; wiping here
+    // destroyed entity_keys and deadlocked recovery (prod 2026-07-10).
+    expect(destDag.getIdentity("tip://id/US-partialdeadbeef01")).toBeTruthy();
 
     // Marker LEFT set — a second crash during recovery must still resync, so
-    // only a fully-verified install (not the wipe) is allowed to clear it.
+    // only a fully-verified install is allowed to clear it.
     expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY))).toMatch(/^in_progress/);
   });
 

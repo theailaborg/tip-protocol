@@ -180,19 +180,18 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
  * @param {Object} deps          { syncHandler, snapshotHandler, commitHandler,
  *                                 dag, narwhal, bullshark, nodeId }
  */
-/**
- * Decide whether sync is needed by comparing self vs peer's committed_round
- * via the /tip/sync-status/1.0.0 RPC. Returns false (skip sync) only when
- * we have a confirmed peer status AND we're at or beyond peer's head.
- * All failure paths (no RPC wired, peer no-response, RPC throws) return
- * true — entering sync mode unnecessarily is recoverable; skipping a
- * needed sync is not.
- */
+// Compares self vs peer committed_round via /tip/sync-status. Failure paths
+// SKIP the sync: probe timeouts turned every re-handshake into a production
+// stop and the churn compounded (2026-07-10 flip-flap); anti-entropy detects
+// and escalates a genuinely-needed sync within one tick anyway.
 async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus }) {
-  if (typeof queryPeerStatus !== "function") return true;
+  if (typeof queryPeerStatus !== "function") return false;
   try {
     const peerStatus = await queryPeerStatus(peerId);
-    if (!peerStatus) return true;
+    if (!peerStatus) {
+      log.info(`Peer ${tipNodeId} status probe failed, skipping bootstrap sync, AE will decide`);
+      return false;
+    }
     const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
       ? Number(bullshark.lastCommittedRound() || 0) : 0;
     const peerCommitted = Number(peerStatus.committed_round || 0);
@@ -205,8 +204,8 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
     log.info(`Peer ${tipNodeId} far ahead (self=${selfCommitted}, peer=${peerCommitted}) — running sync`);
     return true;
   } catch (err) {
-    log.debug(`Peer ${tipNodeId} sync-status query failed (${err.message}) — proceeding with sync`);
-    return true;
+    log.info(`Peer ${tipNodeId} sync-status query failed (${err.message}), skipping bootstrap sync, AE will decide`);
+    return false;
   }
 }
 

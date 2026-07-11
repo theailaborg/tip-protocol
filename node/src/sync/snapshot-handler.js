@@ -49,7 +49,8 @@ const {
 } = require("../../../shared/constants");
 const { NETWORK } = require("../../../shared/protocol-constants");
 const { computeQuorum } = require("../consensus/certificate");
-const { computeStateMerkleRoot, computeStateMerkleRootPerTable } = require("../consensus/state-root");
+const { computeStateMerkleRoot, computeStateMerkleRootPerTable, createStateRootBuilder } = require("../consensus/state-root");
+const { canonicalPk } = require("../dag");
 const {
   createTxsFullRootBuilder,
   createCommitsFullRootBuilder,
@@ -124,6 +125,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
   // several at once starves this node's own consensus loop (the rejoin-halt root
   // cause). Excess joiners are declined and pick another helper.
   let _activeServes = 0;
+  const _activeServeStreams = new Map();  // remotePeer → live serve stream (stale-serve replacement)
   const MAX_CONCURRENT_SERVES = 1;
 
   // Live install progress for operators to poll (surfaced via stats()). null
@@ -137,32 +139,54 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     _installProgress = null;
   }
 
-  // #132 boot recovery. A streaming install writes canonical state in-place
-  // across many batches (no single covering transaction , the state is far
-  // larger than one txn can hold), guarded by the persisted install marker.
-  // If a crash interrupts it, the node reboots with PARTIAL canonical state
-  // and the marker still `in_progress`. Coming up `ready` on that partial
-  // state would fork the chain. So: wipe it and signal the caller to force
-  // syncing. The marker is LEFT SET (not cleared) , only a fully-verified
-  // install clears it at finalize , so a second crash during recovery still
-  // resyncs rather than trusting the wipe. Returns true if it recovered.
+  // #132 boot recovery: a crash mid-install reboots with MIXED state and the
+  // marker still in_progress; going ready on it would fork, so force syncing.
+  // State is KEPT and the marker LEFT SET, cleared only by a verified install
+  // or by resolveStaleInstallMarker. Returns true if recovery was signalled.
   async function recoverInterruptedInstall() {
     let marker = null;
     try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
     catch { return false; }
     if (!marker || !String(marker).startsWith("in_progress")) return false;
+    // Keep the mixed state: it stays behind the syncing gate until a verified
+    // install clears the marker, and keeping entity_keys/nodes is what lets
+    // this node authorize the peers it must now resync from.
     log.warn(
-      `Snapshot: interrupted install detected (marker=${marker}) , wiping partial canonical ` +
-      `state; node stays in syncing and resyncs from a peer before producing anything`
+      `Snapshot: interrupted install detected (marker=${marker}) , keeping state; ` +
+      `node stays in syncing and reconciles on the next install`
     );
-    try {
-      dag.clearCanonicalState();
-      if (typeof dag.flush === "function") await dag.flush();
-    } catch (err) {
-      log.error(`Snapshot: interrupted-install wipe failed: ${err.message} , node may need a manual reset`);
-    }
     resetInstallState();
     return true;
+  }
+
+  // Clears a stale in_progress marker without a re-install iff the state root
+  // reproduces our own attested commit (the same 2f+1 anchor as install go-live);
+  // kept-state nodes otherwise wedge in syncing forever (2-of-3 halted 2026-07-10).
+  // Returns "cleared"|"none"|"installing"|"no_commit"|"inconsistent"; callers must
+  // treat "inconsistent" as the resync-now signal, not just retry.
+  async function resolveStaleInstallMarker() {
+    if (_snapInstallInProgress) return "installing";
+    let marker = null;
+    try { marker = typeof dag.getConsensusMeta === "function" ? dag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY) : null; }
+    catch { return "none"; }
+    if (!marker || !String(marker).startsWith("in_progress")) return "none";
+    const latest = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
+    if (!latest || !latest.state_merkle_root) return "no_commit";
+    const selfRoot = computeStateMerkleRoot(dag);
+    if (selfRoot !== latest.state_merkle_root) {
+      log.warn(
+        `Snapshot: stale marker NOT resolvable , state root ${selfRoot.slice(0, 12)}... != ` +
+        `attested commit ${latest.round} root ${String(latest.state_merkle_root).slice(0, 12)}... (resync required)`
+      );
+      return "inconsistent";
+    }
+    dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
+    if (typeof dag.flush === "function") await dag.flush();
+    log.notice(
+      `Snapshot: stale install marker cleared , state root matches attested commit ${latest.round} ` +
+      `(${selfRoot.slice(0, 12)}...), no re-install needed`
+    );
+    return "cleared";
   }
 
   // ── #49 full-history frame helpers ───────────────────────────────────────
@@ -239,9 +263,9 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const minRound = Number(request.minRound || 0);
 
     // ISSUE_47 Option C: decline to serve only while _snapServing is true — i.e.,
-    // during the synchronous DB-write phase of our own install (clearCanonicalState +
-    // row rebuild). That is the only window where iterateCanonicalState() returns
-    // partial data. _snapInstallInProgress (client receive-path flag) is NOT checked
+    // while our own install is mutating canonical state (upserts + reconcile).
+    // That is the only window where iterateCanonicalState() returns mixed
+    // data. _snapInstallInProgress (client receive-path flag) is NOT checked
     // here so stable majority peers can serve multiple minority nodes concurrently even
     // if they themselves installed a snapshot in a prior recovery cycle.
     if (_snapServing) {
@@ -252,6 +276,15 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     }
 
     if (_activeServes >= MAX_CONCURRENT_SERVES) {
+      // A re-request from the peer holding the slot means its previous download
+      // was abandoned: reap it now so the retry lands instead of bouncing off
+      // its own ghost until the stall timeout (self-DoS loop, 2026-07-10).
+      const staleServe = _activeServeStreams.get(remotePeer);
+      if (staleServe) {
+        _abortStream(staleServe, new Error("superseded by a new snapshot request from the same peer"));
+        _activeServeStreams.delete(remotePeer);
+        log.warn(`Snapshot: aborted stale serve for ${remotePeer} , superseded by its new request`);
+      }
       const errHeader = encode("SnapshotHeader", _emptyHeader("serve capacity reached, try another peer"));
       await stream.sink([_frameKind(K.HEADER, errHeader)]);
       log.info(`Snapshot: declined ${remotePeer}: ${_activeServes} serve(s) already active`);
@@ -376,6 +409,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     const certFromRound = Math.max(1, peerCommittedRound - (CONSENSUS.GC_DEPTH || 500));
     const certToRound = peerCommittedRound;
     _activeServes++;
+    _activeServeStreams.set(remotePeer, stream);
     // Serve-side stall guard (mirrors the client's): an abandoned stream leaves
     // sink() blocked forever holding the single serve slot, declining all later
     // requests with "serve capacity reached" (node3 rejoin incident, 2026-07-08).
@@ -527,6 +561,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     } finally {
       if (_serveStallTimer) clearTimeout(_serveStallTimer);
       _activeServes--;
+      if (_activeServeStreams.get(remotePeer) === stream) _activeServeStreams.delete(remotePeer);
     }
 
     _metrics.serves_completed = (_metrics.serves_completed || 0) + 1;
@@ -572,7 +607,6 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     // openStream is inside the try so any connection failure clears
     // _snapInstallInProgress via the catch below instead of leaking it.
     let stream;
-    let installBegun = false;   // set once the crash marker + wipe have run
     try {
       stream = await network.openStream(peerId, SNAPSHOT_PROTOCOL);
       // Write the request (one frame, length-prefixed for symmetry with the
@@ -597,6 +631,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       const rotationsRoot = createRotationsFullRootBuilder();
       const certsRoot = createCertsFullRootBuilder();
       const nodePubKeys = new Map();            // node_id → public_key (hex)
+      const streamedPks = new Map();            // table → Set(pk): reconcile keep-set
       const rotationRows = [];                  // few + tiny; chain-of-trust needs all
       const rpRows = [];                        // few; installed at RP boundary
       const seen = { state: 0, tx: 0, commit: 0, rotation: 0, cert: 0, rp: 0 };
@@ -654,20 +689,32 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             header = decode("SnapshotHeader", proto);
             if (header.error) throw new Error(`peer declined snapshot: ${header.error}`);
             snapTotalRows = Number(header.totalRows) || 0;
-            // Begin install: persist the crash marker BEFORE wiping so a
-            // mid-stream crash is always recoverable (restart sees the marker
-            // → re-enters syncing → resyncs), then clear canonical state.
+            // Attested commits cannot fork, so an older snapshot while we are
+            // self-consistent is pure regression (node3 took node1's stale
+            // snapshot, 2026-07-10): refuse. With a broken state it IS
+            // accepted: regress-then-replay-own-log is the recovery.
+            {
+              const latestOwn = typeof dag.getLatestCommit === "function" ? dag.getLatestCommit() : null;
+              if (latestOwn && Number(header.round) < Number(latestOwn.round)
+                && computeStateMerkleRoot(dag) === latestOwn.state_merkle_root) {
+                throw new Error(
+                  `peer snapshot round ${Number(header.round)} < our attested head ${latestOwn.round} ` +
+                  `with consistent state , refusing regression`
+                );
+              }
+            }
+            // Crash marker BEFORE the first row: a reboot mid-install re-enters
+            // syncing. NO wipe: rows upsert over existing state and stale rows are
+            // pruned only after attestation at END, so an abort keeps entity_keys
+            // intact (wiping them deadlocked recovery, prod 2026-07-10).
             _installProgress = { phase: "syncing", installed: 0, total: snapTotalRows, bytes: totalBytes, percent: 0 };
             dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, `in_progress:${Number(header.round)}`);
             await dag.flush();
             _snapServing = true;
-            dag.clearCanonicalState();
-            await dag.flush();
-            // From here the install is inserts-only into freshly-cleared tables,
-            // so route DB writes through per-table batchInsert (Postgres only;
-            // no-op where unsupported). endBulkInstall() runs in the finally.
+            // Route DB writes through per-table batchInsert with per-row
+            // conflict semantics (Postgres only; no-op where unsupported).
+            // endBulkInstall() runs in the finally.
             if (typeof dag.beginBulkInstall === "function") dag.beginBulkInstall();
-            installBegun = true;
             break;
           }
           case K.STATE: {
@@ -685,6 +732,12 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
               && parsed.valid_to_ts == null
               && parsed.public_key) {
               nodePubKeys.set(parsed.entity_id, parsed.public_key);
+            }
+            const rowPk = canonicalPk(table, parsed);
+            if (rowPk != null) {
+              let pkSet = streamedPks.get(table);
+              if (!pkSet) { pkSet = new Set(); streamedPks.set(table, pkSet); }
+              pkSet.add(rowPk);
             }
             enqueue(() => _installOneRow(table, parsed));
             seen.state++;
@@ -739,15 +792,25 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
             switch (pe.kind) {
               case K.STATE: {
                 if (Number(pe.count) !== seen.state) throw new Error(`state phase count mismatch: trailer=${pe.count} seen=${seen.state}`);
-                // Re-derive from the installed mirror: raw wire rows canonicalize
-                // here, so the ack-signed root verifies while stored rows keep
-                // their true storable values.
-                derivedState = computeStateMerkleRoot(dag);
+                // Root over the STREAMED rows only, read back through the mirror
+                // so wire rows canonicalize. Local-only rows (no wipe) must not
+                // contribute; they're pruned only after attestation at END.
+                const rootAll = createStateRootBuilder();
+                const rootByTable = new Map();
+                for (const { table: t, row: r } of dag.iterateCanonicalState()) {
+                  const set = streamedPks.get(t);
+                  if (!set || !set.has(canonicalPk(t, r))) continue;
+                  rootAll.addRowObject(t, r);
+                  let tb = rootByTable.get(t);
+                  if (!tb) { tb = { b: createStateRootBuilder(), n: 0 }; rootByTable.set(t, tb); }
+                  tb.b.addRowObject(t, r); tb.n++;
+                }
+                derivedState = rootAll.finalize();
                 const expected = bytesToHex(header.stateMerkleRoot);
                 if (derivedState !== expected) {
-                  const perTable = computeStateMerkleRootPerTable(dag)
-                    .map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
-                  log.error(`Snapshot: state-root mismatch per-table (installed) , ${perTable}`);
+                  const perTable = [...rootByTable]
+                    .map(([t, v]) => `${t}(${v.n}):${v.b.finalize()}`).join(" ");
+                  log.error(`Snapshot: state-root mismatch per-table (streamed rows) , ${perTable}`);
                   throw new Error(`state_merkle_root mismatch: expected ${expected?.slice(0, 16)}..., derived ${derivedState.slice(0, 16)}...`);
                 }
                 if (peRoot && peRoot !== expected) {
@@ -920,12 +983,31 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         throw new Error(`peer_consensus_index (${peerConsensusIndex}) < snapshot consensus_index (${snapshotConsensusIndex}) — peer is lying about its anchor count`);
       }
 
+      // ── Reconcile ─────────────────────────────────────────────────────
+      // Delete local rows the peer didn't stream: the old wipe's deletion
+      // exactness without its destructive window. Runs ONLY after attestation,
+      // else an unattested stream could destroy honest auth material.
+      const prunedRows = dag.pruneCanonicalStateExcept(streamedPks);
+      if (prunedRows.length > 0) {
+        await dag.flush();
+        log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
+      }
+      // Full-table root must now equal the attested streamed-set root;
+      // that proves the reconcile left exactly the peer's state.
+      const fullStateRoot = computeStateMerkleRoot(dag);
+      if (fullStateRoot !== derivedState) {
+        const perTable = computeStateMerkleRootPerTable(dag)
+          .map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
+        log.error(`Snapshot: post-reconcile state-root mismatch per-table , ${perTable}`);
+        throw new Error(`post-reconcile state root ${fullStateRoot.slice(0, 16)}... != attested ${derivedState.slice(0, 16)}...`);
+      }
+
       // ── Finalize: header commit row + clear marker → go-live ──────────
       // Every other row installed in-place as it streamed. The header's commit
       // row is written LAST, only now that ack-quorum + chain-of-trust + every
       // phase root have verified. Clearing the crash marker (durably, AFTER the
-      // header commit is durable) is the instant the partial install becomes a
-      // trusted checkpoint , before this, a crash would wipe and resync.
+      // header commit is durable) is the instant the install becomes a
+      // trusted checkpoint , before this, a crash stays in syncing and resyncs.
       dag.runInTransaction(() => { _installHeaderCommitRow(header); });
       await dag.flush();
       dag.setConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY, "");
@@ -1002,12 +1084,10 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         certs_full_root: derivedCerts,
       };
     } catch (err) {
-      // Past-the-header abort leaves canonical state partial: wipe the rows but
-      // leave the crash marker SET so a restart re-enters syncing and resyncs.
-      // The node never left syncing, so nothing unverified was visible.
-      if (installBegun) {
-        try { dag.clearCanonicalState(); await dag.flush(); } catch { /* ignore */ }
-      }
+      // Past-the-header abort leaves canonical state mixed (old rows + the
+      // upserted prefix). Keep it: the marker + syncing gate keep it invisible
+      // to consensus, entity_keys stay live so the retry can still authorize
+      // peers, and the next install's upsert+prune reconciles it exactly.
       _snapInstallInProgress = false;
       _snapServing = false;
       _installProgress = null;
@@ -1015,8 +1095,8 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       _metrics.install_in_progress_rows = 0;
       throw err;
     } finally {
-      // Always leave bulk mode: flushed on success, and on error the wipe
-      // discards any un-flushed buffered rows with the mirror.
+      // Always leave bulk mode: buffers are drained at every batch flush, so
+      // on error this only drops rows the retry will re-stream anyway.
       if (typeof dag.endBulkInstall === "function") dag.endBulkInstall();
       if (stream) { try { stream.close(); } catch { /* ignore */ } }
     }
@@ -1420,18 +1500,34 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         // the sender so it's deterministic across nodes (#31).
         dag.setScore(row.tip_id, row.score, row.offense_count, row.last_updated);
         break;
-      case "dedup_registry":
+      case "dedup_registry": {
         // tip_id is denormalised in the canonical row (used for fast
         // hash→tip_id lookups + included in state_merkle_root). Pass
         // it through so the sink's row matches the source byte-for-byte.
+        // addDedupHash is first-write-wins: a stale same-hash local row
+        // would survive re-apply and fail the root check on every retry,
+        // so force the peer's row when the bytes differ.
+        const cur = typeof dag.getDedupEntry === "function" ? dag.getDedupEntry(row.dedup_hash) : null;
+        if (cur && (cur.created_at !== (row.created_at != null ? String(row.created_at) : null)
+          || (cur.tip_id || null) !== (row.tip_id || null))) {
+          dag.deleteCanonicalRow("dedup_registry", cur);
+        }
         dag.addDedupHash(row.dedup_hash, row.created_at, row.tip_id || null);
         break;
+      }
       case "owner_heads":
         dag.setOwnerHead(row.entity_key, row.tx_id);
         break;
-      case "revocations":
+      case "revocations": {
+        // DB write is insert-ignore: delete a stale differing row first so
+        // Postgres takes the peer's row like the mirror does.
+        const cur = typeof dag.getRevocation === "function" ? dag.getRevocation(row.tip_id) : null;
+        if (cur && (cur.tx_type !== row.tx_type || cur.timestamp !== row.timestamp || cur.tx_id !== row.tx_id)) {
+          dag.deleteCanonicalRow("revocations", cur);
+        }
         dag.addRevocation(row.tip_id, row.tx_type, row.timestamp, row.tx_id);
         break;
+      }
       case "verification_providers":
         dag.saveVP(row);
         break;
@@ -1463,12 +1559,19 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
       case "platform_links":
         dag.savePlatformLink(row);
         break;
-      case "protocol_params":
+      case "protocol_params": {
         // The canonical row's `value` is the canonical-JSON string; parse it
         // back to the raw scalar so saveProtocolParam re-encodes to the
         // identical string. INSERT OR IGNORE means re-applying a genesis-seeded
         // height-0 row (already written by _writeGenesisBlock on first boot) is
         // idempotent; height>0 governance rows arrive only via snapshot. (#39)
+        // First-write-wins, so a stale differing row at the same
+        // (param_key, height) must be deleted for the peer's row to land.
+        const cur = typeof dag.getProtocolParamAt === "function"
+          ? dag.getProtocolParamAt(row.param_key, row.effective_from_height) : null;
+        if (cur && (cur.value !== String(row.value) || cur.update_tx_id !== String(row.update_tx_id))) {
+          dag.deleteCanonicalRow("protocol_params", cur);
+        }
         dag.saveProtocolParam({
           param_key: row.param_key,
           value: JSON.parse(row.value),
@@ -1476,6 +1579,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
           update_tx_id: row.update_tx_id,
         });
         break;
+      }
       default:
         // Unknown tables are tolerated so adding a new canonical table on
         // the server doesn't hard-fail older joiners — they'll just skip
@@ -1489,6 +1593,7 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
     requestSnapshotFromPeer,
     resetInstallState,
     recoverInterruptedInstall,
+    resolveStaleInstallMarker,
     /** True while a snapshot download+install is actively running on this node.
      *  Lets anti-entropy avoid interrupting an in-flight install (which would
      *  leave partial state and fail the state-root verify). */

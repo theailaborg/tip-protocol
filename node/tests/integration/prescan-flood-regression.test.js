@@ -18,7 +18,7 @@ const SHARED = path.resolve(__dirname, "../../../shared");
 const SRC = path.resolve(__dirname, "../../src");
 
 const { initCrypto, generateMLDSAKeypair, shake256, computeTxId } = require(path.join(SHARED, "crypto"));
-const { TX_TYPES } = require(path.join(SHARED, "constants"));
+const { TX_TYPES, PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS } = require(path.join(SHARED, "constants"));
 const { initDAG } = require(path.join(SRC, "dag"));
 const { initScoring } = require(path.join(SRC, "scoring"));
 const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
@@ -95,14 +95,15 @@ test("duplicate PRESCAN_COMPLETED is rejected at validation, in-batch and vs com
   // First emission, drained but NOT yet committed.
   fx.trigger.checkPending(NOW, 1);
   const [tx1] = fx.mempool.drain(10);
-  // Mempool is now empty and the content is still pending, so a re-tick
-  // legitimately emits a second, properly signed tx for the same ctid.
-  fx.trigger.checkPending(NOW + 1000, 2);
+  // Mempool is now empty and the content is still pending; once the per-ctid
+  // re-emission cooldown elapses (consensus time), a re-tick legitimately
+  // emits a second, properly signed tx for the same ctid.
+  fx.trigger.checkPending(NOW + PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS + 1000, 2);
   const [tx2] = fx.mempool.drain(10);
   expect(tx2).toBeTruthy();
   expect(tx2.data.ctid).toBe(tx1.data.ctid);
   // Third copy, held back for the committed-state check.
-  fx.trigger.checkPending(NOW + 2000, 3);
+  fx.trigger.checkPending(NOW + 2 * PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS + 2000, 3);
   const [tx3] = fx.mempool.drain(10);
 
   // In-batch first-wins: only one commits.

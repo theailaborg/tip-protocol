@@ -32,57 +32,13 @@ const { computeStateMerkleRoot } = require(path.join(SRC, "consensus", "state-ro
 const { loadTypes } = require(path.join(SRC, "network", "proto"));
 const { SNAPSHOT_INSTALL_MARKER_KEY } = require(path.join(SHARED, "constants"));
 
-const { createStreamPair } = require("../helpers/stream-pair");
 const { buildCommittedDag } = require("../helpers/commit-builder");
+const { attemptInstall } = require("../helpers/snapshot-install");
 
 beforeAll(async () => {
   await initCrypto();
   await loadTypes();
 });
-
-// Run one install attempt over a stream whose server→client bytes are
-// re-fragmented into `chunkSize`-byte pieces and optionally truncated at
-// `truncateAfterFraction` of the total (a fraction, so the cut lands past the
-// header regardless of absolute size). Returns the result (or throws).
-async function attemptInstall(sourceDag, destDag, { chunkSize = 8, truncateAfterFraction = 1 } = {}) {
-  const { client, server } = createStreamPair();
-
-  // Re-fragment (and optionally truncate) the server's outbound byte stream.
-  const origServerSink = server.sink;
-  server.sink = async (src) => {
-    await origServerSink((async function* () {
-      const parts = [];
-      for await (const f of src) parts.push(Buffer.from(f));
-      const whole = Buffer.concat(parts);
-      const limit = Math.floor(whole.length * Math.min(1, truncateAfterFraction));
-      for (let off = 0; off < limit; off += chunkSize) {
-        yield whole.subarray(off, Math.min(off + chunkSize, limit));
-      }
-      // Returning here ends the sink → client.source sees EOF. A truncated
-      // stream therefore ends mid-frame / before END, which the receiver
-      // rejects (exactly a dropped connection mid-download).
-    })());
-  };
-
-  const sourceHandler = createSnapshotHandler({
-    dag: sourceDag,
-    network: { node: {}, handle: async () => { } },
-    isAuthorizedPeer: () => true,
-  });
-  const destHandler = createSnapshotHandler({
-    dag: destDag,
-    network: { node: {}, openStream: async () => client },
-    isAuthorizedPeer: () => true,
-  });
-
-  const results = await Promise.allSettled([
-    sourceHandler._handleIncomingSnapshot(server, "test-client"),
-    destHandler.requestSnapshotFromPeer("test-server", {}),
-  ]);
-  const clientResult = results[1];
-  if (clientResult.status === "rejected") throw clientResult.reason;
-  return clientResult.value;
-}
 
 describe("#132 streaming install under fragmentation", () => {
   test.each([13, 7, 1])("fragmented delivery (%i-byte chunks) installs byte-identically to source", async (chunkSize) => {
@@ -105,7 +61,7 @@ describe("#132 streaming install crash mid-stream", () => {
     const fx = buildCommittedDag({ committeeSize: 2, seedTxs: 3 });
     const destDag = initDAG({ dbPath: ":memory:" });
 
-    // Truncate at a point past the header (so the install has begun and wiped)
+    // Truncate at a point past the header (so the install has begun)
     // but well before END.
     await expect(
       attemptInstall(fx.sourceDag, destDag, { chunkSize: 8, truncateAfterFraction: 0.6 })
@@ -116,7 +72,7 @@ describe("#132 streaming install crash mid-stream", () => {
     const latest = fx.sourceDag.getLatestCommit();
     expect(destDag.getCommit(latest.round)).toBeNull();
 
-    // Crash marker is still in_progress → a reboot will wipe + resync.
+    // Crash marker is still in_progress → a reboot stays in syncing + resyncs.
     expect(String(destDag.getConsensusMeta(SNAPSHOT_INSTALL_MARKER_KEY))).toMatch(/^in_progress/);
   });
 

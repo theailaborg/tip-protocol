@@ -415,6 +415,15 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
         return latest?.txs_merkle_root || "";
       })(),
       cert_merkle_root: syncHandler.merkleRoot(),
+      // Commits-table head: committed_round above is an adopted live counter
+      // that cannot tell whose LOG is ahead (counters equalize); these can.
+      ...(() => {
+        const latest = dag.getLatestCommit && dag.getLatestCommit();
+        return {
+          attested_head_round: Number(latest?.round || 0),
+          attested_head_root: latest?.state_merkle_root || "",
+        };
+      })(),
     }),
     // Bug 3: cancel any deferred anchor timer on snapshot install failure.
     // On success, onSnapshotInstalled (in snapshotHandler) calls cancelPendingCommit.
@@ -549,10 +558,9 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     async start({ awaitPeers = false } = {}) {
       await syncHandler.registerProtocol();
       await snapshotHandler.registerProtocol();
-      // #132: a snapshot install crash-interrupted mid-stream leaves partial
-      // canonical state under an `in_progress` marker. Wipe it and force
-      // syncing so we resync from a peer before producing , never come up
-      // `ready` on unverified partial state.
+      // #132: a crash-interrupted install leaves mixed state under the
+      // in_progress marker. State is kept (auth material must survive), but
+      // force syncing so we reconcile before producing on unverified state.
       const interruptedInstall = typeof snapshotHandler.recoverInterruptedInstall === "function"
         ? await snapshotHandler.recoverInterruptedInstall()
         : false;

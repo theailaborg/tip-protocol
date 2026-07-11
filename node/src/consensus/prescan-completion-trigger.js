@@ -31,7 +31,7 @@
 
 const { computeTxId, signTransaction } = require("../../../shared/crypto");
 const { nowMs } = require("../../../shared/time");
-const { TX_TYPES } = require("../../../shared/constants");
+const { TX_TYPES, PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS } = require("../../../shared/constants");
 const { PRESCAN_WORKER } = require("../../../shared/protocol-constants");
 const { getLogger } = require("../logger");
 const prescanCompletedSchema = require("../schemas/prescan-completed");
@@ -52,6 +52,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
 
   const _myNodeId = config?.nodeRegisteredId || config?.nodeId;
   const _nodePrivateKey = config?.nodePrivateKey;
+  const _lastEmittedAt = new Map();  // ctid → last fail-open emission (re-emit cooldown)
 
   function _isMyRoundLeader(round) {
     if (typeof getCommittee !== "function") return true;
@@ -90,12 +91,21 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         if (t.tx_type === TX_TYPES.PRESCAN_COMPLETED && t.data?.ctid) pending.add(t.data.ctid);
       }
     }
+    // Cooldown runs on consensus time (certTimestamp), not wall clock:
+    // deterministic across nodes and testable with virtual time.
+    const cooldownFloor = certTimestamp - PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS;
     for (const content of stuck) {
       if (pending.has(content.ctid)) continue;
+      // The mempool guard can't stop the flood alone: a dropped fail-open
+      // leaves mempool AND content stuck, so every anchor re-emitted the full
+      // batch, hundreds of ML-DSA signings/min (2026-07-10).
+      const lastAt = _lastEmittedAt.get(content.ctid) || 0;
+      if (lastAt > cooldownFloor) continue;
       try {
         const tx = _buildFailOpenTx({ ctid: content.ctid, contentType: content.prescan_content_type });
         try {
           submitTx(tx);
+          _lastEmittedAt.set(content.ctid, certTimestamp);
           log.warn(
             `Fail-open PRESCAN_COMPLETED emitted for ${content.ctid} ` +
             `(stuck ${certTimestamp - content.registered_at}ms past registered_at, round=${round})`,
@@ -107,6 +117,10 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
       } catch (err) {
         log.warn(`Fail-open build failed for ${content.ctid}: ${err.message}`);
       }
+    }
+    // Completed content stays out of `stuck` forever; drop its cooldown entry.
+    for (const [ctid, at] of _lastEmittedAt) {
+      if (at <= cooldownFloor) _lastEmittedAt.delete(ctid);
     }
   }
 

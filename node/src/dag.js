@@ -441,6 +441,44 @@ const SMT_READ = {
   },
 };
 
+// Mirror-map primary key of a canonical row: the same key SMT_READ is
+// dispatched with. Single source of truth for the snapshot reconcile
+// (install-on-top keep-sets + pruneCanonicalStateExcept).
+const CANONICAL_PK = {
+  identities: r => r.tip_id,
+  content: r => r.ctid,
+  scores: r => r.tip_id,
+  dedup_registry: r => r.dedup_hash,
+  revocations: r => r.tip_id,
+  domain_bindings: r => r.domain,
+  platform_links: r => r.id,
+  verification_providers: r => r.vp_id,
+  nodes: r => r.node_id,
+  entity_keys: r => `${r.entity_type}:${r.entity_id}:${r.valid_from_ts}`,
+  prescan_reviews: r => r.review_id,
+  interests_registry: r => r.slug,
+  owner_heads: r => r.entity_key,
+  protocol_params: r => `${r.param_key}\x00${r.effective_from_height}`,
+};
+
+function canonicalPk(table, row) {
+  const fn = CANONICAL_PK[table];
+  return fn ? fn(row) : null;
+}
+
+// Shared by MemoryStore / SQLiteStore: delete every canonical row whose
+// (table, pk) is absent from keepByTable (Map<table, Set<pk>>). Returns the
+// deleted rows so DB-backed adapters can mirror the deletes.
+function _pruneCanonicalStateExcept(store, keepByTable) {
+  const doomed = [];
+  for (const { table, row } of store.iterateCanonicalState()) {
+    const keep = keepByTable.get(table);
+    if (!keep || !keep.has(canonicalPk(table, row))) doomed.push({ table, row });
+  }
+  for (const { table, row } of doomed) store.deleteCanonicalRow(table, row);
+  return doomed;
+}
+
 class SmtMap extends Map {
   constructor(owner, table) { super(); this._owner = owner; this._table = table; }
   set(k, v) { super.set(k, v); this._owner._smtSync(this._table, k); return this; }
@@ -768,6 +806,14 @@ class MemoryStore {
     this._smtSync("dedup_registry", hash);
   }
   hasDedupHash(hash) { return this._dedup.has(hash); }
+  getDedupEntry(hash) {
+    if (!this._dedup.has(hash)) return null;
+    return _canonDedup(
+      hash,
+      this._dedupCreated ? this._dedupCreated.get(hash) : null,
+      this._dedupTipId ? this._dedupTipId.get(hash) : null,
+    );
+  }
   dedupCount() { return this._dedup.size; }
   getDedupRegistration(hash) {
     if (!this._dedup.has(hash)) return null;
@@ -1030,6 +1076,48 @@ class MemoryStore {
     this._smt.clear();
   }
 
+  deleteCanonicalRow(table, row) {
+    const pk = canonicalPk(table, row);
+    if (pk == null) return false;
+    switch (table) {
+      case "identities": return this._identities.delete(pk);
+      case "content": return this._content.delete(pk);
+      case "scores": return this._scores.delete(pk);
+      case "revocations": return this._revocations.delete(pk);
+      case "domain_bindings": return this._domainBindings.delete(pk);
+      case "platform_links": return this._platformLinks.delete(pk);
+      case "verification_providers": return this._vps.delete(pk);
+      case "nodes": return this._nodes.delete(pk);
+      case "entity_keys": return this._entityKeys.delete(pk);
+      case "prescan_reviews": return this._prescanReviews.delete(pk);
+      case "interests_registry": return this._interestsRegistry.delete(pk);
+      case "owner_heads": return this._ownerHeads.delete(pk);
+      case "dedup_registry": {
+        const had = this._dedup.delete(pk);
+        if (this._dedupCreated) this._dedupCreated.delete(pk);
+        if (this._dedupTipId) this._dedupTipId.delete(pk);
+        if (had) this._smtSync("dedup_registry", pk);
+        return had;
+      }
+      case "protocol_params": {
+        const key = String(row.param_key);
+        const h = Number(row.effective_from_height);
+        const arr = this._protocolParams.get(key);
+        const idx = arr ? arr.findIndex(r => r.effective_from_height === h) : -1;
+        if (idx < 0) return false;
+        arr.splice(idx, 1);
+        if (arr.length === 0) this._protocolParams.delete(key);
+        this._smtSync("protocol_params", `${key}\x00${h}`);
+        return true;
+      }
+      default: return false;
+    }
+  }
+
+  pruneCanonicalStateExcept(keepByTable) {
+    return _pruneCanonicalStateExcept(this, keepByTable);
+  }
+
   // ── Certificates (Narwhal consensus) ──────────────────────────────────
   saveCertificate(cert) { this._certs.set(cert.hash, { ...cert }); }
   getCertificate(hash) { return this._certs.get(hash) || null; }
@@ -1268,6 +1356,13 @@ class MemoryStore {
       if (r.effective_from_height <= height) chosen = r; else break;
     }
     return chosen ? JSON.parse(chosen.value) : undefined;
+  }
+  // Exact-height row (canonical form) or null. Unlike getProtocolParam,
+  // which resolves the ACTIVE value at a height.
+  getProtocolParamAt(param_key, effective_from_height) {
+    const arr = this._protocolParams.get(String(param_key));
+    const r = arr && arr.find(x => x.effective_from_height === Number(effective_from_height));
+    return r ? _canonProtocolParam(r) : null;
   }
   // All active values as of `height`, as a flat { param_key: value } map.
   // Used to build the in-memory active view at boot / snapshot install.
@@ -3091,6 +3186,10 @@ class SQLiteStore {
     this._stmts.addDedupHash.run(hash, createdAt, tipId || null);
   }
   hasDedupHash(hash) { return !!this._stmts.hasDedupHash.get(hash); }
+  getDedupEntry(hash) {
+    const r = this.db.prepare("SELECT * FROM dedup_registry WHERE dedup_hash=?").get(hash);
+    return r ? _canonDedup(r.dedup_hash, r.created_at, r.tip_id) : null;
+  }
   getDedupRegistration(hash) {
     const row = this._stmts.getDedupRegistration.get(hash);
     return row ? { dedup_hash: row.dedup_hash, created_at: row.created_at, tip_id: row.tip_id || null } : null;
@@ -3431,6 +3530,14 @@ class SQLiteStore {
     const row = this._stmts.getProtocolParam.get(String(param_key), Number(height));
     return row ? JSON.parse(row.value) : undefined;
   }
+  // Exact-height row (canonical form) or null. Unlike getProtocolParam,
+  // which resolves the ACTIVE value at a height.
+  getProtocolParamAt(param_key, effective_from_height) {
+    const r = this.db.prepare(
+      "SELECT * FROM protocol_params WHERE param_key=? AND effective_from_height=?",
+    ).get(String(param_key), Number(effective_from_height));
+    return r ? _canonProtocolParam(r) : null;
+  }
   getActiveProtocolParams(height = Number.MAX_SAFE_INTEGER) {
     const h = Number(height);
     const out = {};
@@ -3691,6 +3798,37 @@ class SQLiteStore {
       this.db.prepare("DELETE FROM interests_registry").run();
       this.db.prepare("DELETE FROM protocol_params").run();
     })();
+  }
+
+  deleteCanonicalRow(table, row) {
+    const del = (sql, ...args) => this.db.prepare(sql).run(...args).changes > 0;
+    switch (table) {
+      case "identities": return del("DELETE FROM identities WHERE tip_id=?", row.tip_id);
+      case "content": return del("DELETE FROM content WHERE tip_ctid=?", row.ctid);
+      case "scores": return del("DELETE FROM scores WHERE tip_id=?", row.tip_id);
+      case "dedup_registry": return del("DELETE FROM dedup_registry WHERE dedup_hash=?", row.dedup_hash);
+      case "revocations": return del("DELETE FROM revocations WHERE tip_id=?", row.tip_id);
+      case "domain_bindings": return del("DELETE FROM domain_bindings WHERE domain=?", row.domain);
+      case "platform_links": return del("DELETE FROM platform_links WHERE id=?", row.id);
+      case "verification_providers": return del("DELETE FROM verification_providers WHERE vp_id=?", row.vp_id);
+      case "nodes": return del("DELETE FROM nodes WHERE node_id=?", row.node_id);
+      case "entity_keys": return del(
+        "DELETE FROM entity_keys WHERE entity_type=? AND entity_id=? AND valid_from_ts=?",
+        row.entity_type, row.entity_id, row.valid_from_ts,
+      );
+      case "prescan_reviews": return del("DELETE FROM prescan_reviews WHERE review_id=?", row.review_id);
+      case "interests_registry": return del("DELETE FROM interests_registry WHERE slug=?", row.slug);
+      case "owner_heads": return del("DELETE FROM owner_heads WHERE entity_key=?", row.entity_key);
+      case "protocol_params": return del(
+        "DELETE FROM protocol_params WHERE param_key=? AND effective_from_height=?",
+        String(row.param_key), Number(row.effective_from_height),
+      );
+      default: return false;
+    }
+  }
+
+  pruneCanonicalStateExcept(keepByTable) {
+    return this.db.transaction(() => _pruneCanonicalStateExcept(this, keepByTable))();
   }
 
   // RP-snapshot iterator — see MemoryStore.iterateRotationParticipationForSnapshot.
@@ -4141,6 +4279,7 @@ function _buildDagHandle(store, config) {
     // ── Dedup registry ────────────────────────────────────────────────────
     addDedupHash: (h, createdAt, tipId) => store.addDedupHash(h, createdAt, tipId),
     hasDedupHash: (h) => store.hasDedupHash(h),
+    getDedupEntry: (h) => store.getDedupEntry(h),
     getDedupRegistration: (h) => store.getDedupRegistration(h),
     dedupCount: () => store.dedupCount(),
 
@@ -4149,6 +4288,8 @@ function _buildDagHandle(store, config) {
     // order. Consumed by consensus/state-root.js to hash row-by-row.
     iterateCanonicalState: (opts) => store.iterateCanonicalState(opts),
     clearCanonicalState: () => store.clearCanonicalState(),
+    deleteCanonicalRow: (t, r) => store.deleteCanonicalRow(t, r),
+    pruneCanonicalStateExcept: (keep) => store.pruneCanonicalStateExcept(keep),
     persistenceStats: () => (typeof store.persistenceStats === "function"
       ? store.persistenceStats()
       : { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0 }),
@@ -4276,6 +4417,7 @@ function _buildDagHandle(store, config) {
     // ── Protocol params (#39) ──────────────────────────────────────────────
     saveProtocolParam: (rec) => store.saveProtocolParam(rec),
     getProtocolParam: (key, height) => store.getProtocolParam(key, height),
+    getProtocolParamAt: (key, height) => store.getProtocolParamAt(key, height),
     getActiveProtocolParams: (height) => store.getActiveProtocolParams(height),
 
     // ── Prescan reviews (Phase 2 — human reviewing AI prescan flag) ─────
@@ -4671,4 +4813,4 @@ function _writeGenesisBlock(store, config) {
   if (ringKeys.length > 0) log.info(`Genesis ring: ${ringKeys.length} founding identities`);
 }
 
-module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx };
+module.exports = { initDAG, initDAGAsync, MemoryStore, SQLiteStore, canonicalPk, _computeExpectedOwnerHead, _computePrevFor, _noteSealedTx };
