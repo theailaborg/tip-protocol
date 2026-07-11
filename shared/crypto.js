@@ -88,12 +88,49 @@ async function initCrypto() {
   _initNativeMlDsa();
 }
 
-// Native ML-DSA-65 verify via OpenSSL >= 3.5 (Node 24+): same FIPS 204 bytes
-// as noble, ~5x faster. Noble remains the signer and the fallback runtime.
+// Native ML-DSA-65 via OpenSSL >= 3.5 (Node 24+): same FIPS 204 bytes as
+// noble. Verify ~5x faster; hedged sign ~23x faster (26ms -> 1.1ms, profiled
+// as the dominant burst cost, 2026-07-11). Deterministic sign stays noble
+// (OpenSSL is hedged-only); noble is also the fallback runtime everywhere.
 let _nativeSpkiTemplate = null;      // DER template; raw pubkey is the tail
 let _nativeInitAttempted = false;
 const _nativeKeyCache = new Map();   // pubkeyHex -> KeyObject
-const { NATIVE_MLDSA_KEY_CACHE_CAP, MLDSA65_PUBKEY_BYTES } = require("./constants");
+const _nativeSkCache = new Map();    // privkeyHex -> KeyObject
+const { NATIVE_MLDSA_KEY_CACHE_CAP, MLDSA65_PUBKEY_BYTES, MLDSA65_PRIVKEY_BYTES } = require("./constants");
+
+// PKCS8 prefix for the RFC 9881 bare expandedKey form , the only form we can
+// build from stored keys (noble's 4032-byte secretKey; seeds are not kept).
+const _nativePkcs8Prefix = (() => {
+  const algId = Buffer.from("300b0609608648016503040312", "hex");
+  const pkHeader = Buffer.from([0x04, 0x82, (MLDSA65_PRIVKEY_BYTES >> 8) & 0xff, MLDSA65_PRIVKEY_BYTES & 0xff]);
+  const bodyLen = 3 + algId.length + pkHeader.length + MLDSA65_PRIVKEY_BYTES;
+  return Buffer.concat([
+    Buffer.from([0x30, 0x82, (bodyLen >> 8) & 0xff, bodyLen & 0xff, 0x02, 0x01, 0x00]),
+    algId,
+    pkHeader,
+  ]);
+})();
+
+function _nativeSignKeyFor(privateKeyHex) {
+  let key = _nativeSkCache.get(privateKeyHex);
+  if (key) return key;
+  const raw = Buffer.from(privateKeyHex, "hex");
+  if (raw.length !== MLDSA65_PRIVKEY_BYTES) return null;
+  try {
+    key = crypto.createPrivateKey({
+      key: Buffer.concat([_nativePkcs8Prefix, raw]),
+      format: "der",
+      type: "pkcs8",
+    });
+  } catch {
+    return null;
+  }
+  if (_nativeSkCache.size >= NATIVE_MLDSA_KEY_CACHE_CAP) {
+    _nativeSkCache.delete(_nativeSkCache.keys().next().value);
+  }
+  _nativeSkCache.set(privateKeyHex, key);
+  return key;
+}
 
 function _initNativeMlDsa() {
   if (_nativeInitAttempted) return;
@@ -177,9 +214,16 @@ function generateMLDSAKeypair() {
  * @returns {string} signature hex
  */
 function mldsaSign(data, privateKeyHex, { deterministic = false } = {}) {
+  const msg = typeof data === "string" ? Buffer.from(data) : data;
+  // Deterministic (genesis reproducibility) stays noble: OpenSSL only hedges.
+  if (!deterministic && _nativeSpkiTemplate) {
+    try {
+      const key = _nativeSignKeyFor(privateKeyHex);
+      if (key) return crypto.sign(null, msg, key).toString("hex");
+    } catch { /* fall through to noble */ }
+  }
   const mlDsa = _requirePQ();
   const secretKey = new Uint8Array(Buffer.from(privateKeyHex, "hex"));
-  const msg = typeof data === "string" ? Buffer.from(data) : data;
   const signOpts = deterministic ? { extraEntropy: false } : {};
   return Buffer.from(mlDsa.sign(msg, secretKey, signOpts)).toString("hex");
 }
