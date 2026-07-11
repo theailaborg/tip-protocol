@@ -69,7 +69,35 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     const res = fx.handler.commitOrderedTxs([tx], 1);
     expect(res.committed).toBe(1);
     expect(fx.dag.getOwnerHead(OWNER)).toBe(tx.tx_id);
-    expect(fx.dag.getTxRejection(tx.tx_id)).toBeNull();
+    expect(fx.dag.getTxRejection(fx.dag.getOwnerHead(OWNER))).toBeNull();
+  });
+
+  test("an out-of-order same-owner chain commits FULLY in one round (multi-pass)", () => {
+    const fx = _setup();
+    const head0 = fx.dag.expectedOwnerHead(require(path.join(SRC, "consensus", "tx-owner")).ownerOf({ tx_type: TX_TYPES.REGISTER_CONTENT, data: { signer_tip_id: AUTHOR_TIP, authors: [{ tip_id: AUTHOR_TIP }] } }));
+    const s1 = _contentTx(fx.dag, fx.authorKp, "oo-1", { prev: [head0, head0] });
+    const s2 = _contentTx(fx.dag, fx.authorKp, "oo-2", { prev: [s1.tx_id, head0] });
+    const s3 = _contentTx(fx.dag, fx.authorKp, "oo-3", { prev: [s2.tx_id, head0] });
+
+    // Present the valid chain SCRAMBLED (s2, s3, s1) , the live bug: Bullshark
+    // ordering delivered same-owner txs out of chain order and only the head
+    // committed per round, the rest churned as OWNER_HEAD_STALE.
+    const res = fx.handler.commitOrderedTxs([s2, s3, s1], 1);
+    expect(res.committed).toBe(3);                 // all three, one round
+    expect(fx.dag.getOwnerHead(OWNER)).toBe(s3.tx_id);
+    expect(fx.dag.getContent(s1.data.ctid)).toBeTruthy();
+    expect(fx.dag.getContent(s2.data.ctid)).toBeTruthy();
+    expect(fx.dag.getContent(s3.data.ctid)).toBeTruthy();
+  });
+
+  test("a genuinely stale tx (no in-batch dependency) still stales, not committed", () => {
+    const fx = _setup();
+    const base = _contentTx(fx.dag, fx.authorKp, "gs-base");
+    expect(fx.handler.commitOrderedTxs([base], 1).committed).toBe(1);
+    // Points at a head that never commits in this batch , must NOT commit.
+    const orphan = _contentTx(fx.dag, fx.authorKp, "gs-orphan", { prev: ["deadbeef".repeat(8), base.tx_id] });
+    const res = fx.handler.commitOrderedTxs([orphan], 2);
+    expect(res.committed).toBe(0);
   });
 
   test("two same-owner txs in one batch serialize: first commits, second is OWNER_HEAD_STALE + requeued", () => {

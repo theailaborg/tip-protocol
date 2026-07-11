@@ -289,16 +289,19 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     // Stale/ghost-chained txs collected across BOTH phases; rebuilt + requeued
     // after the commit transaction.
     const staleTxs = [];
-    // Prior tx_ids in this ordered batch: burst chains reference in-batch
-    // predecessors, valid or not; Phase-2's owner check settles the rest.
+    // Every tx_id in this ordered batch, collected UPFRONT so a same-owner
+    // chain member's prev-existence check passes regardless of the batch's
+    // order (Bullshark can deliver s2 before s1). Phase-2's strict owner-head
+    // check settles the actual chain order; this only satisfies structural
+    // "prev must exist somewhere" so out-of-order chains reach Phase 2.
     const _priorBatchIds = new Set();
+    for (const tx of orderedTxs) if (tx && tx.tx_id) _priorBatchIds.add(tx.tx_id);
 
     for (const tx of orderedTxs) {
       if (!tx || !tx.tx_id || !tx.tx_type) {
         dropped++;
         continue;
       }
-      _priorBatchIds.add(tx.tx_id);
 
       // Skip if already in DAG
       if (dag.getTx(tx.tx_id)) continue;
@@ -357,19 +360,36 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     if (validated.length > 0) {
       try {
         dag.runInTransaction(() => {
-          for (const tx of validated) {
-            const owner = ownerOf(tx);
-            // Strict prev[0]: must equal the owner's committed head (same single-source
-            // rule prevFor used to assign it). A mismatch means a concurrent same-owner
-            // tx won the race: skip without applying, rebuild + requeue after the txn.
-            if (owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
-              staleTxs.push(tx);
-              continue;
+          // Multi-pass over the batch: each pass commits every tx whose prev[0]
+          // now equals its owner's head, then repeats while progress is made.
+          // Bullshark can deliver a same-owner chain OUT OF chain order (its
+          // total order is by cert round/author, not owner-chain depth), and a
+          // single pass would commit only the head and churn the rest as
+          // OWNER_HEAD_STALE (one tx/round, 2026-07-11). Committing in
+          // dependency order lands the whole chain in one round. Deterministic:
+          // every node runs the same fixpoint over the same ordered batch.
+          let pending = validated;
+          while (pending.length > 0) {
+            const stillStale = [];
+            let progressed = false;
+            for (const tx of pending) {
+              const owner = ownerOf(tx);
+              // Strict prev[0]: must equal the owner's committed head (same
+              // single-source rule prevFor used to assign it).
+              if (owner && ((tx.prev && tx.prev[0]) || null) !== dag.expectedOwnerHead(owner)) {
+                stillStale.push(tx);
+                continue;
+              }
+              dag.addTx(tx);
+              _applyDerivedState(tx, certTimestamp, round);
+              if (owner) dag.setOwnerHead(ownerKey(owner), tx.tx_id);
+              committed++;
+              progressed = true;
             }
-            dag.addTx(tx);
-            _applyDerivedState(tx, certTimestamp, round);
-            if (owner) dag.setOwnerHead(ownerKey(owner), tx.tx_id);
-            committed++;
+            // No tx advanced this pass: the rest are genuinely stale (their
+            // prev is not satisfiable within this batch), not just out of order.
+            if (!progressed) { for (const tx of stillStale) staleTxs.push(tx); break; }
+            pending = stillStale;
           }
           // Remove every processed tx (committed AND stale) from the mempool;
           // stale ones are re-added below under a fresh tx_id.
