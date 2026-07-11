@@ -1005,6 +1005,10 @@ class KnexAdapter {
     const { tip_ctid, ...rest } = row;
     return { ctid: tip_ctid, ...rest };
   }
+  async getPerceptualFingerprints(ctid) {
+    const rows = await this.knex("perceptual_fingerprint").where({ tip_ctid: ctid }).orderBy("component_idx");
+    return rows.map(({ tip_ctid, ...rest }) => ({ ctid: tip_ctid, ...rest }));
+  }
   async findMinhashCandidates(profile, bandHashes) {
     const ctids = new Set();
     for (let i = 0; i < bandHashes.length; i++) {
