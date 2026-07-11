@@ -160,27 +160,60 @@ function createMempool(dag, options = {}) {
     const drained = [];
     const drainedIds = [];
     let bytes = 0;
-    // Lane-aware chain-prefix: per owner lane, take the FRONT tx plus any that
-    // chain onto it (prev[0] == previously-taken tx_id). Siblings (same stale
-    // prev) are held back , loading them just churns as OWNER_HEAD_STALE and,
-    // with a round-timeout scramble, rotates the queue forever (livelock repro
-    // 2026-07-11, 76k cycles). A sealed burst chain (b8b7418) still commits
-    // whole in one round because its txs genuinely chain. Owner-less txs
-    // (system/genesis) are never lane-restricted.
-    const laneTail = new Map();   // lane -> last tx_id taken this drain
+
+    // Lane-aware chain-following: per owner lane, emit the chain in prev-link
+    // DEPENDENCY order, independent of mempool insertion order. Order can't be
+    // trusted: concurrent submission interleaves lanes, and the stale-requeue
+    // rebuilds base-first but addFront-prepends each tx, leaving the chain
+    // REVERSED , a front-order drain then ships the tail alone and every tx
+    // churns ~11x as OWNER_HEAD_STALE before landing (live repro 2026-07-12).
+    // Siblings (same prev0) are held back: first in insertion order wins, the
+    // rest re-chain via the commit-side rebuild. Owner-less txs (system/
+    // genesis) are never lane-restricted.
+    const laneMembers = new Map();   // lane -> Set<tx_id>
+    const laneByPrev = new Map();    // lane -> Map<prev0, [txId, entry]>
     for (const [txId, entry] of _pending) {
-      if (drained.length >= limit) break;
       const lane = _laneOf(entry);
-      if (lane !== null && laneTail.has(lane)) {
-        const prev0 = (entry.tx.prev && entry.tx.prev[0]) || null;
-        if (prev0 !== laneTail.get(lane)) continue;   // sibling, not a continuation
-      }
+      if (lane === null) continue;
+      if (!laneMembers.has(lane)) { laneMembers.set(lane, new Set()); laneByPrev.set(lane, new Map()); }
+      laneMembers.get(lane).add(txId);
+      const prev0 = (entry.tx.prev && entry.tx.prev[0]) || null;
+      const byPrev = laneByPrev.get(lane);
+      if (!byPrev.has(prev0)) byPrev.set(prev0, [txId, entry]);   // later siblings held
+    }
+
+    const _take = (txId, entry) => {
+      if (drained.length >= limit) return false;
       const sz = entry.tx?._wireBytes || Buffer.byteLength(JSON.stringify(entry.tx));
-      if (drained.length > 0 && bytes + sz > byteBudget) break;
+      if (drained.length > 0 && bytes + sz > byteBudget) return false;
       drained.push(entry.tx);
       drainedIds.push(txId);
       bytes += sz;
-      if (lane !== null) laneTail.set(lane, txId);
+      return true;
+    };
+
+    const laneDone = new Set();
+    let stop = false;
+    for (const [txId, entry] of _pending) {
+      if (stop) break;
+      const lane = _laneOf(entry);
+      if (lane === null) { if (!_take(txId, entry)) stop = true; continue; }
+      if (laneDone.has(lane)) continue;
+      laneDone.add(lane);
+      // Chain base: the member whose prev0 is NOT another member's tx_id ,
+      // it hangs off already-committed (or in-flight) state, so it's the only
+      // tx in the lane that can possibly commit this round.
+      const members = laneMembers.get(lane);
+      const byPrev = laneByPrev.get(lane);
+      let cur = null;
+      for (const [p0, pair] of byPrev) { if (!members.has(p0)) { cur = pair; break; } }
+      // No base (members only reference each other): hold the lane this round.
+      const seen = new Set();
+      while (cur && !seen.has(cur[0])) {
+        seen.add(cur[0]);
+        if (!_take(cur[0], cur[1])) { stop = true; break; }
+        cur = byPrev.get(cur[0]) || null;   // continuation chains onto the taken tx
+      }
     }
 
     // Remove from memory

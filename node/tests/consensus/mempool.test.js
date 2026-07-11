@@ -104,6 +104,38 @@ describe("mempool.drain — lane-aware chain-prefix (owner-chain burst liveness)
     mp.add(laneTx("n2", null, null));
     expect(ids(mp.drain(25))).toEqual(["n1", "n2"]);
   });
+
+  test("a chain inserted REVERSED (stale-requeue addFront order) drains whole, in dependency order", () => {
+    const mp = laneMempool();
+    // Stale requeue rebuilds base-first but addFront-prepends each, leaving
+    // the chain TAIL at the mempool front (live churn repro 2026-07-12:
+    // ~11 OWNER_HEAD_STALE bounces per tx). Drain must follow prev links,
+    // not mempool order.
+    mp.add(laneTx("r3", "bob", "r2"));
+    mp.add(laneTx("r2", "bob", "r1"));
+    mp.add(laneTx("r1", "bob", "HEAD"));
+    expect(ids(mp.drain(25))).toEqual(["r1", "r2", "r3"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("a scrambled chain drains whole, in dependency order", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("m2", "bob", "m1"));
+    mp.add(laneTx("m4", "bob", "m3"));
+    mp.add(laneTx("m1", "bob", "HEAD"));
+    mp.add(laneTx("m3", "bob", "m2"));
+    expect(ids(mp.drain(25))).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("drain limit cuts a chain to a committable PREFIX, remainder drains next round", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("p1", "bob", "HEAD"));
+    mp.add(laneTx("p2", "bob", "p1"));
+    mp.add(laneTx("p3", "bob", "p2"));
+    expect(ids(mp.drain(2))).toEqual(["p1", "p2"]);
+    expect(ids(mp.drain(2))).toEqual(["p3"]);
+  });
 });
 
 describe("mempool — baseline FIFO drain order (addFront's substrate)", () => {
