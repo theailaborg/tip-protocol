@@ -60,6 +60,52 @@ function ids(txs) { return txs.map(t => t.tx_id); }
 //    orphan-tx starvation bug returns. This is the seal.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Owner-bearing tx for lane tests: `owner` field + explicit `prev`. The stub
+// ownerOf below reads `tx.owner`, so these unit tests exercise lane logic
+// without the full signature-resolution machinery.
+function laneTx(id, owner, prev) {
+  return { tx_id: id, tx_type: "REGISTER_CONTENT", owner, prev: prev ? [prev] : [], data: {} };
+}
+function laneMempool() {
+  return createMempool(initDAG({ dbPath: ":memory:" }), { ownerOf: (tx) => (tx.owner ? { entityType: "id", entityId: tx.owner } : null) });
+}
+
+describe("mempool.drain — lane-aware chain-prefix (owner-chain burst liveness)", () => {
+  test("client sibling burst (same owner, same stale prev) drains only the lane FRONT", () => {
+    const mp = laneMempool();
+    for (const id of ["s1", "s2", "s3", "s4", "s5"]) mp.add(laneTx(id, "alice", "H0"));
+    expect(ids(mp.drain(25))).toEqual(["s1"]);
+    expect(mp.size()).toBe(4);
+  });
+
+  test("sealed burst chain (each prev == previous tx_id) drains the WHOLE chain in one round", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("c1", "bob", "HEAD"));
+    mp.add(laneTx("c2", "bob", "c1"));
+    mp.add(laneTx("c3", "bob", "c2"));
+    expect(ids(mp.drain(25))).toEqual(["c1", "c2", "c3"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("multiple lanes each contribute their committable prefix, siblings held back", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("a1", "alice", "HA"));
+    mp.add(laneTx("a2", "alice", "HA"));
+    mp.add(laneTx("b1", "bob", "HB"));
+    mp.add(laneTx("b2", "bob", "b1"));
+    mp.add(laneTx("x1", "carol", "HC"));
+    expect(ids(mp.drain(25))).toEqual(["a1", "b1", "b2", "x1"]);
+    expect(mp.size()).toBe(1);
+  });
+
+  test("owner-less txs (system / genesis) are not lane-restricted", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("n1", null, null));
+    mp.add(laneTx("n2", null, null));
+    expect(ids(mp.drain(25))).toEqual(["n1", "n2"]);
+  });
+});
+
 describe("mempool — baseline FIFO drain order (addFront's substrate)", () => {
   test("drain returns txs in add() order", () => {
     const dag = initDAG({ dbPath: ":memory:" });

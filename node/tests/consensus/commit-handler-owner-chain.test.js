@@ -178,6 +178,47 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(dropBounce).toBeLessThanOrEqual(81);
   });
 
+  test("deep same-owner sibling burst drains to completion without rotation (lane-aware drain + front requeue)", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    // 15 siblings all built against the same pre-burst head (a client burst).
+    const N = 15;
+    const wanted = new Set();
+    const head0 = dag.prevFor(TX_TYPES.REGISTER_CONTENT, {});
+    for (let i = 0; i < N; i++) {
+      const tx = _contentTx(dag, authorKp, `burst-${i}`, { prev: [...head0] });
+      wanted.add(tx.data.ctid);
+      mempool.add(tx);
+    }
+
+    // Drain->commit loop: lane-aware drain takes one committable tx/round,
+    // front-requeue keeps the rebuilt tx ahead of siblings. Bounded rounds
+    // prove there is no rotation.
+    let round = 1, committedTotal = 0;
+    for (; round < 200 && committedTotal < N; round++) {
+      const batch = mempool.drain(25);
+      if (batch.length === 0) break;
+      committedTotal += handler.commitOrderedTxs(batch, round).committed;
+    }
+
+    expect(committedTotal).toBe(N);
+    expect(round).toBeLessThan(60);
+    for (const ctid of wanted) expect(dag.getContent(ctid)).toBeTruthy();
+    expect(mempool.size()).toBe(0);
+  });
+
   test("broken chain: whole tail stales, requeues re-chained, commits next round", () => {
     const fx = _setup();
     // A foreign-view tx commits first and moves the head.

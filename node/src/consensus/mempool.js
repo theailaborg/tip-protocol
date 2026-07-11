@@ -24,6 +24,7 @@ const { nowMs } = require("../../../shared/time");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { TX_REJECTION_REASON } = require("../../../shared/constants");
 const { createRejectionSink } = require("./tx-rejection-sink");
+const { ownerOf: _defaultOwnerOf, ownerKey } = require("./tx-owner");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.mempool");
@@ -41,6 +42,9 @@ const log = getLogger("tip.mempool");
 function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
+  // Injectable so unit tests can stub owner resolution without full signature
+  // machinery; production uses the real signer-entity resolver.
+  const _ownerOf = typeof options.ownerOf === "function" ? options.ownerOf : _defaultOwnerOf;
 
   // tx_rejections sink (#64) — shared with commit-handler so every
   // drop site in the codebase produces identically-shaped rows.
@@ -136,6 +140,19 @@ function createMempool(dag, options = {}) {
   // peers reject the cert, stalling consensus (live halt, 2026-07-04).
   const _batchByteBudget = () => Math.floor(CONSENSUS.CERTIFICATE_MAX_BYTES * 0.85);
 
+  // Owner-lane resolution memoized on the entry: drain scans the whole
+  // mempool each round and ownerOf parses signer fields, so recomputing per
+  // scan is wasteful (owner is immutable per tx).
+  function _laneOf(entry) {
+    if (entry._laneComputed) return entry._lane;
+    let lane = null;
+    try { const o = _ownerOf(entry.tx); lane = o ? ownerKey(o) : null; }
+    catch { lane = null; }
+    entry._lane = lane;
+    entry._laneComputed = true;
+    return lane;
+  }
+
   function drain(limit = CONSENSUS.MAX_TXS_PER_CERTIFICATE) {
     _evictStale();
 
@@ -143,13 +160,27 @@ function createMempool(dag, options = {}) {
     const drained = [];
     const drainedIds = [];
     let bytes = 0;
+    // Lane-aware chain-prefix: per owner lane, take the FRONT tx plus any that
+    // chain onto it (prev[0] == previously-taken tx_id). Siblings (same stale
+    // prev) are held back , loading them just churns as OWNER_HEAD_STALE and,
+    // with a round-timeout scramble, rotates the queue forever (livelock repro
+    // 2026-07-11, 76k cycles). A sealed burst chain (b8b7418) still commits
+    // whole in one round because its txs genuinely chain. Owner-less txs
+    // (system/genesis) are never lane-restricted.
+    const laneTail = new Map();   // lane -> last tx_id taken this drain
     for (const [txId, entry] of _pending) {
       if (drained.length >= limit) break;
+      const lane = _laneOf(entry);
+      if (lane !== null && laneTail.has(lane)) {
+        const prev0 = (entry.tx.prev && entry.tx.prev[0]) || null;
+        if (prev0 !== laneTail.get(lane)) continue;   // sibling, not a continuation
+      }
       const sz = entry.tx?._wireBytes || Buffer.byteLength(JSON.stringify(entry.tx));
       if (drained.length > 0 && bytes + sz > byteBudget) break;
       drained.push(entry.tx);
       drainedIds.push(txId);
       bytes += sz;
+      if (lane !== null) laneTail.set(lane, txId);
     }
 
     // Remove from memory

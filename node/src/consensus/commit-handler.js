@@ -242,7 +242,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(rebuilt.tx_type, rebuilt.data, rebuilt.tx_id);
     // Requeue through the consensus mempool (narwhal drains its in-memory queue;
     // dag.saveMempoolTx alone is persistence-only and invisible until restart).
-    if (mempool && typeof mempool.add === "function") mempool.add(rebuilt);
+    // Front-load: the rebuilt tx chains onto the fresh head, so it must drain
+    // BEFORE this lane's still-stale siblings , appending to the back rotates
+    // the lane forever (livelock repro 2026-07-11).
+    if (mempool && typeof mempool.addFront === "function") mempool.addFront(rebuilt);
+    else if (mempool && typeof mempool.add === "function") mempool.add(rebuilt);
     else dag.saveMempoolTx(rebuilt);
   }
   const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
