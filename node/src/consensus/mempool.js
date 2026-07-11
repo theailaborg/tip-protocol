@@ -53,6 +53,15 @@ function createMempool(dag, options = {}) {
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
 
+  // Dead tx_ids (rebuilt-away, foreign-signed stale, revalidation-failed).
+  // Gossip has no drop memory: without tombstones, peers re-add a dead copy
+  // every exchange and it churns drain -> stale -> drop forever, burning batch
+  // slots (live repro 2026-07-12: ~3.2k foreign-signed drops per peer for one
+  // 100-tx burst). Pruned on the eviction sweep after maxTxAgeSec , by then
+  // every live copy of the id has aged out of all peers' mempools too.
+  /** @type {Map<string, number>} */
+  const _tombstones = new Map();
+
   /** @type {Function|null} Callback when a tx is added (used by Narwhal to wake from idle) */
   let _onTxAdded = null;
 
@@ -89,6 +98,11 @@ function createMempool(dag, options = {}) {
     if (!tx || !tx.tx_id) {
       _counters.rejected_total++;
       return { added: false, reason: "tx missing tx_id" };
+    }
+
+    if (_tombstones.has(tx.tx_id)) {
+      _counters.rejected_total++;
+      return { added: false, reason: "tombstoned" };
     }
 
     if (_pending.has(tx.tx_id)) {
@@ -301,8 +315,31 @@ function createMempool(dag, options = {}) {
    * Remove txs that have been in the mempool too long.
    * Cleans both memory and disk.
    */
+  /**
+   * Mark a tx_id permanently dead: rebuilt under a new id, dropped as
+   * foreign-signed stale, or failed revalidation at commit. Copies arriving
+   * later (mempool gossip, peer batches) are rejected at add.
+   * @param {string} txId
+   */
+  function tombstone(txId) {
+    if (typeof txId !== "string" || txId.length === 0) return;
+    _tombstones.set(txId, nowMs());
+    if (_pending.delete(txId) && dag && typeof dag.deleteMempoolTxs === "function") {
+      try { dag.deleteMempoolTxs([txId]); } catch (err) {
+        log.warn(`Mempool tombstone disk cleanup failed: ${err.message}`);
+      }
+    }
+  }
+
+  function isTombstoned(txId) {
+    return _tombstones.has(txId);
+  }
+
   function _evictStale() {
     const cutoff = nowMs() - (maxTxAgeSec * 1000);
+    for (const [txId, at] of _tombstones) {
+      if (at < cutoff) _tombstones.delete(txId);
+    }
     const evicted = [];  // [{ txId, tx }] — keep the body for tx_rejections
     for (const [txId, entry] of _pending) {
       if (entry.receivedAt < cutoff) {
@@ -387,6 +424,10 @@ function createMempool(dag, options = {}) {
       _counters.rejected_total++;
       return { added: false, reason: "tx missing tx_id" };
     }
+    if (_tombstones.has(tx.tx_id)) {
+      _counters.rejected_total++;
+      return { added: false, reason: "tombstoned" };
+    }
     if (_pending.has(tx.tx_id)) {
       // Already in mempool — common after partial requeue or double-submit.
       // Not an error; just leave the existing entry in place.
@@ -435,7 +476,7 @@ function createMempool(dag, options = {}) {
     return null;
   }
 
-  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded, peekRotationTx };
+  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded, peekRotationTx, tombstone, isTombstoned };
 }
 
 module.exports = { createMempool };

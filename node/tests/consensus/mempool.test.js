@@ -138,6 +138,28 @@ describe("mempool.drain — lane-aware chain-prefix (owner-chain burst liveness)
   });
 });
 
+describe("mempool.tombstone — dead tx_ids stay dead (gossip resurrection guard)", () => {
+  test("a tombstoned id is rejected by add and addFront", () => {
+    const mp = laneMempool();
+    mp.tombstone("dead-1");
+    expect(mp.add(laneTx("dead-1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+    expect(mp.addFront(laneTx("dead-1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+    expect(mp.size()).toBe(0);
+    // A different id is unaffected.
+    expect(mp.add(laneTx("alive-1", "bob", "HEAD"))).toEqual({ added: true });
+  });
+
+  test("tombstoning a pending tx removes it from the mempool", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("t1", "bob", "HEAD"));
+    mp.add(laneTx("t2", "bob", "t1"));
+    mp.tombstone("t1");
+    expect(mp.has("t1")).toBe(false);
+    expect(mp.size()).toBe(1);
+    expect(mp.add(laneTx("t1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+  });
+});
+
 describe("mempool — baseline FIFO drain order (addFront's substrate)", () => {
   test("drain returns txs in add() order", () => {
     const dag = initDAG({ dbPath: ":memory:" });
@@ -483,7 +505,7 @@ describe("mempool — tx_rejections wiring on TTL eviction", () => {
 
     const stale1 = makeTx("STALE-1", { tx_type: "REGISTER_IDENTITY" });
     const stale2 = makeTx("STALE-2", { tx_type: "REGISTER_CONTENT" });
-    const fresh  = makeTx("FRESH",   { tx_type: "REGISTER_IDENTITY" });
+    const fresh = makeTx("FRESH", { tx_type: "REGISTER_IDENTITY" });
 
     // Both planted with receivedAt 5s in the past — well past 1s TTL.
     mempool.addFront(stale1, nowMs() - 5000);

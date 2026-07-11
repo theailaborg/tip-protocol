@@ -168,34 +168,38 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     const _clearMempool = () => fx.dag.deleteMempoolTxs(fx.dag.getMempoolTxs().map(t => t.tx_id));
     const _requeued = (tx) => fx.dag.getMempoolTxs().some(t => t.data && t.data.content_hash === tx.data.content_hash);
 
-    // Land a head, move past it, then craft a permanently stale tx against the old head.
+    // Land a head, move past it.
     const base = _contentTx(fx.dag, fx.authorKp, "sr-base");
     expect(fx.handler.commitOrderedTxs([base], 1).committed).toBe(1);
     const mover = _contentTx(fx.dag, fx.authorKp, "sr-mover");
     expect(fx.handler.commitOrderedTxs([mover], 2).committed).toBe(1);
-    const stale = _contentTx(fx.dag, fx.authorKp, "sr-stale", { prev: [base.tx_id, base.prev[0]] });
 
-    // 12 sterile bounces (> MAX_RETRIES=8): nothing commits, no head can move,
-    // so the budget must NOT be charged and the tx keeps being requeued.
+    // A tx whose predecessor is unknown-but-alive rides the WAIT path:
+    // sterile rounds (nothing commits) must not charge the budget, so it
+    // keeps being requeued UNCHANGED far past MAX_RETRIES=8.
+    const waiting = _contentTx(fx.dag, fx.authorKp, "sr-wait", { prev: ["77".repeat(32), base.prev[0]] });
     for (let r = 3; r < 15; r++) {
       _clearMempool();
-      const res = fx.handler.commitOrderedTxs([stale], r);
+      const res = fx.handler.commitOrderedTxs([waiting], r);
       expect(res.committed).toBe(0);
-      expect(_requeued(stale)).toBe(true);
+      expect(_requeued(waiting)).toBe(true);
+      expect(fx.dag.getMempoolTxs()[0].tx_id).toBe(waiting.tx_id);   // unchanged, not rebuilt
     }
 
-    // Charged bounces: a sibling owner commits each round (committed > 0)
-    // while owner1's head stays put , the 9th charge exhausts and drops.
-    for (let i = 0; i < 9; i++) {
-      _clearMempool();
-      const res = fx.handler.commitOrderedTxs([_content2(`sr-sib-${i}`), stale], 20 + i);
-      expect(res.committed).toBe(1);
-    }
-    expect(_requeued(stale)).toBe(false);
+    // A superseded-by-rebuild copy is silently dropped, so the old
+    // permanently-stale re-feed can no longer churn: first pass rebuilds it,
+    // the re-fed original is recognized as dead and NOT requeued again.
+    const stale = _contentTx(fx.dag, fx.authorKp, "sr-stale", { prev: [base.tx_id, base.prev[0]] });
+    _clearMempool();
+    fx.handler.commitOrderedTxs([_content2("sr-sib-0"), stale], 20);
+    expect(_requeued(stale)).toBe(true);    // rebuilt generation requeued
+    _clearMempool();
+    fx.handler.commitOrderedTxs([_content2("sr-sib-1"), stale], 21);
+    expect(_requeued(stale)).toBe(false);   // copy superseded, no new generation
 
-    // Absolute backstop: even pure sterile bounces stop at 10x the cap
-    // (ghost-tx livelock bound on an otherwise quiet lane).
-    const ghost = _contentTx(fx.dag, fx.authorKp, "sr-ghost", { prev: [base.tx_id, base.prev[0]] });
+    // Absolute backstop: a permanently-waiting tx (predecessor never commits,
+    // never dies) stops at 10x the cap , ghost-tx livelock bound.
+    const ghost = _contentTx(fx.dag, fx.authorKp, "sr-ghost", { prev: ["88".repeat(32), base.prev[0]] });
     let dropBounce = null;
     for (let i = 0; i < 85; i++) {
       _clearMempool();
@@ -244,6 +248,137 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(committedTotal).toBe(N);
     expect(round).toBeLessThan(60);
     for (const ctid of wanted) expect(dag.getContent(ctid)).toBeTruthy();
+    expect(mempool.size()).toBe(0);
+  });
+
+  test("a rebuilt stale tx's OLD id is tombstoned: a gossiped copy cannot re-enter and churn", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    // Two siblings against the same committed head: first commits, second
+    // stales and gets rebuilt under a fresh id.
+    const a = _contentTx(dag, authorKp, "ts-a");
+    const b = _contentTx(dag, authorKp, "ts-b");
+    expect(a.prev[0]).toBe(b.prev[0]);
+    expect(handler.commitOrderedTxs([a, b], 1).committed).toBe(1);
+
+    // b was rebuilt (new id) and requeued; the OLD id must be tombstoned.
+    expect(mempool.size()).toBe(1);
+    expect(mempool.has(b.tx_id)).toBe(false);
+    expect(mempool.add(b)).toEqual({ added: false, reason: "tombstoned" });
+
+    // The rebuilt tx commits next round; the dead copy never re-entered.
+    expect(handler.commitOrderedTxs(mempool.drain(25), 2).committed).toBe(1);
+    expect(dag.getContent(b.data.ctid)).toBeTruthy();
+    expect(mempool.size()).toBe(0);
+  });
+
+  test("an EARLY tx (predecessor in flight) waits unchanged instead of rebuilding into a sibling", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    // A sealed chain c1 -> c2; c2's cert arrives a round before c1's.
+    const c1 = _contentTx(dag, authorKp, "early-1");
+    dag.noteSealedTx(c1.tx_type, c1.data, c1.tx_id);
+    const c2 = _contentTx(dag, authorKp, "early-2");
+    expect(c2.prev[0]).toBe(c1.tx_id);
+
+    // c2 alone: predecessor uncommitted and NOT dead , must wait UNCHANGED.
+    expect(handler.commitOrderedTxs([c2], 1).committed).toBe(0);
+    expect(mempool.has(c2.tx_id)).toBe(true);             // same id, no rebuild
+    expect(dag.getTxRejection(c2.tx_id)).toBeNull();      // a wait is not a rejection
+
+    // c1 lands; the waiting c2 drains and commits as-is.
+    expect(handler.commitOrderedTxs([c1], 2).committed).toBe(1);
+    expect(handler.commitOrderedTxs(mempool.drain(25), 3).committed).toBe(1);
+    expect(dag.getOwnerHead(OWNER)).toBe(c2.tx_id);
+    expect(dag.getContent(c2.data.ctid)).toBeTruthy();
+  });
+
+  test("a tx whose predecessor was rebuilt away (tombstoned) rebuilds immediately, no futile wait", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    const c1 = _contentTx(dag, authorKp, "dead-1");
+    dag.noteSealedTx(c1.tx_type, c1.data, c1.tx_id);
+    const c2 = _contentTx(dag, authorKp, "dead-2");
+    expect(c2.prev[0]).toBe(c1.tx_id);
+
+    // c1's id died (rebuilt away elsewhere). c2 must NOT wait for it.
+    mempool.tombstone(c1.tx_id);
+    dag.resetPendingOwnerHead(OWNER);
+    expect(handler.commitOrderedTxs([c2], 1).committed).toBe(0);
+    expect(mempool.has(c2.tx_id)).toBe(false);            // rebuilt under a new id
+    expect(mempool.size()).toBe(1);
+    expect(handler.commitOrderedTxs(mempool.drain(25), 2).committed).toBe(1);
+    expect(dag.getContent(c2.data.ctid)).toBeTruthy();
+  });
+
+  test("a cross-cert COPY of an already-rebuilt stale tx is dropped, not rebuilt again", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    // Cert 1: sibling b stales and is rebuilt (b' now in mempool).
+    const a = _contentTx(dag, authorKp, "cc-a");
+    const b = _contentTx(dag, authorKp, "cc-b");
+    expect(handler.commitOrderedTxs([a, b], 1).committed).toBe(1);
+    expect(mempool.size()).toBe(1);
+    const rebuiltId = mempool.getAll()[0].tx_id;
+
+    // Cert 2 (same round wave): a COPY of the original b arrives. It must be
+    // dropped as superseded , NOT rebuilt into a second in-flight duplicate.
+    const res2 = handler.commitOrderedTxs([b], 1);
+    expect(res2.committed).toBe(0);
+    expect(mempool.size()).toBe(1);
+    expect(mempool.getAll()[0].tx_id).toBe(rebuiltId);
+
+    // The single rebuilt tx commits; no duplicate ever existed.
+    expect(handler.commitOrderedTxs(mempool.drain(25), 2).committed).toBe(1);
+    expect(dag.getContent(b.data.ctid)).toBeTruthy();
     expect(mempool.size()).toBe(0);
   });
 

@@ -205,7 +205,28 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
   function _staleKey(tx) {
     return (tx.data && tx.data.signature) || tx.signature || tx.tx_id;
   }
-  function _requeueOwnerStale(tx, round, charge = true) {
+  // Dead tx_ids must be tombstoned in the mempool or gossip resurrects them
+  // and they churn drain -> stale -> drop forever, occupying batch slots.
+  // Mirrored locally so the patience check works even when no mempool is
+  // wired (fallback dag.saveMempoolTx path). Cleared when large: worst case
+  // a dead-prev tx waits out its bounce cap, then rebuilds anyway.
+  const _deadIds = new Set();
+  function _tombstone(txId) {
+    if (_deadIds.size > 20_000) _deadIds.clear();
+    _deadIds.add(txId);
+    if (mempool && typeof mempool.tombstone === "function") mempool.tombstone(txId);
+  }
+
+  function _requeueOwnerStale(tx, round, charge = true, resetOwners = null) {
+    // Copies of an already-rebuilt tx arrive from OTHER certs in the same
+    // round (all nodes' batches overlap). Rebuilding a copy again appends a
+    // duplicate onto the pending chain; the duplicate later commit-collides
+    // and snaps the chain , 52 rebuild generations for one completion, live
+    // repro 2026-07-12. The replacement is already in flight: drop the copy.
+    if (_deadIds.has(tx.tx_id)
+      || (mempool && typeof mempool.isTombstoned === "function" && mempool.isTombstoned(tx.tx_id))) {
+      return "superseded";
+    }
     const key = _staleKey(tx);
     // The cap bounds LIVELOCK, not progress: count only attempts against the
     // SAME head, reset when it advances. A STERILE round (nothing committed)
@@ -217,28 +238,64 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     const sameHead = prevEntry && prevEntry.head === head;
     const n = charge ? (sameHead ? prevEntry.count + 1 : 1) : (sameHead ? prevEntry.count : 0);
     const bounces = (sameHead ? prevEntry.bounces : 0) + 1;
+
+    // Patience: a tx whose predecessor is merely IN FLIGHT (not committed,
+    // not rebuilt away) is EARLY, not conflicted , it becomes valid the
+    // moment the predecessor lands. Rewriting its prev here would turn it
+    // into a sibling of its own in-flight chain, and each such rebuild
+    // cascades into the next (2,402 distinct single-bounce rebuilds for one
+    // 100-tx burst, 2026-07-12). Requeue UNCHANGED and let it ride.
+    const prev0 = (tx.prev && tx.prev[0]) || null;
+    const predUncommitted = !!prev0 && !dag.getTx(prev0);
+    const predDead = predUncommitted && (_deadIds.has(prev0)
+      || (mempool && typeof mempool.isTombstoned === "function" && mempool.isTombstoned(prev0)));
+    if (predUncommitted && !predDead && bounces <= OWNER_HEAD_STALE_MAX_RETRIES * 10) {
+      _staleRetry.set(key, { count: n, head, bounces });
+      if (mempool && typeof mempool.addFront === "function") mempool.addFront(tx);
+      else if (mempool && typeof mempool.add === "function") mempool.add(tx);
+      else dag.saveMempoolTx(tx);
+      return "waited";
+    }
+
     if (n > OWNER_HEAD_STALE_MAX_RETRIES || bounces > OWNER_HEAD_STALE_MAX_RETRIES * 10) {
       _staleRetry.delete(key);
+      _tombstone(tx.tx_id);
       log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted with no head progress (${tx.tx_type}) , dropping`);
-      return;
+      return "dropped";
     }
     _staleRetry.set(key, { count: n, head, bounces });
+    // Rebuilding rebases the lane onto the committed head, so the pending
+    // chain base must reset first , once per owner per round. Kept out of
+    // the patient path: resetting for a merely-early chain would make the
+    // next SUBMISSION a sibling of the in-flight chain.
+    const _owner = ownerOf(tx);
+    const _key = _owner ? ownerKey(_owner) : null;
+    if (_key && resetOwners && !resetOwners.has(_key)) {
+      if (typeof dag.resetPendingOwnerHead === "function") dag.resetPendingOwnerHead(_key);
+      resetOwners.add(_key);
+    }
     // Body-scope signatures never covered prev, so the rebuilt tx re-verifies as-is.
     // Envelope signatures cover prev (canonicalTx): re-sign our own, or all but the
     // first of a same-owner node batch (jury summons) would be lost; foreign ones drop.
     let rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
     rebuilt.tx_id = computeTxId(rebuilt);
-    if (rebuilt.tx_id === tx.tx_id) return;   // head didn't actually change; nothing to gain
+    if (rebuilt.tx_id === tx.tx_id) return "noop";   // head didn't actually change; nothing to gain
     if (!_verifyTxSignature(rebuilt)) {
       const owner = ownerOf(tx);
       const selfOwned = owner && owner.entityType === "node" && owner.entityId === droppingNodeId;
       if (!selfOwned || !(config && config.nodePrivateKey)) {
+        // Only the signing node can rebuild an envelope-signed tx; this copy
+        // is dead here forever. Tombstone it so gossip can't re-add it.
+        _tombstone(tx.tx_id);
         log.warn(`Round ${round}: OWNER_HEAD_STALE rebuilt tx failed re-verify (${tx.tx_type}) , dropping (foreign-signed)`);
-        return;
+        return "dropped";
       }
       const { tx_id, signature, ...body } = rebuilt;
       rebuilt = signTransaction(body, config.nodePrivateKey);
     }
+    // The rebuild supersedes the old id everywhere , stray copies of it in
+    // peer batches / gossip can only churn as stale.
+    _tombstone(tx.tx_id);
     if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(rebuilt.tx_type, rebuilt.data, rebuilt.tx_id);
     // Requeue through the consensus mempool (narwhal drains its in-memory queue;
     // dag.saveMempoolTx alone is persistence-only and invisible until restart).
@@ -248,6 +305,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     if (mempool && typeof mempool.addFront === "function") mempool.addFront(rebuilt);
     else if (mempool && typeof mempool.add === "function") mempool.add(rebuilt);
     else dag.saveMempoolTx(rebuilt);
+    return "rebuilt";
   }
   const _benignRotation = /already (exists|in this batch)|non-monotonic/i;
   const _persistRejection = (tx, reason, detail, opts) => {
@@ -324,6 +382,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         }
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) , ${detail}`);
         _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, detail, { round });
+        _tombstone(tx.tx_id);
         dropped++;
         continue;
       }
@@ -334,6 +393,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       if (!_preVerified && !_verifyTxSignature(tx)) {
         log.warn(`Round ${round}: rejected tx ${tx.tx_id.slice(0, 16)} (${tx.tx_type}) — signature failed`);
         _persistRejection(tx, TX_REJECTION_REASON.REVALIDATION_FAILED, "signature failed", { round });
+        _tombstone(tx.tx_id);
         dropped++;
         continue;
       }
@@ -413,22 +473,18 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       }
     }
 
-    // Stale-head retry (outside the txn): rebuild prev against the new head and
-    // requeue locally, bounded. Client-invisible, since prev is node-assigned.
+    // Stale-head retry (outside the txn): early txs (predecessor in flight)
+    // wait unchanged; superseded ones rebuild against the new head. Bounded,
+    // client-invisible , prev is node-assigned.
     const _resetOwners = new Set();
     for (const tx of staleTxs) {
-      const owner = ownerOf(tx);
-      const key = owner ? ownerKey(owner) : null;
-      // The pending chain is broken: rebuild the first stale tx from the
-      // committed head, and let each rebuild re-chain via noteSealedTx.
-      if (key && !_resetOwners.has(key)) {
-        if (typeof dag.resetPendingOwnerHead === "function") dag.resetPendingOwnerHead(key);
-        _resetOwners.add(key);
-      }
-      const cur = (dag.expectedOwnerHead(owner) || "").slice(0, 12);
+      const outcome = _requeueOwnerStale(tx, round, committed > 0, _resetOwners);
+      // Not rejections: a waited tx commits once its predecessor lands; a
+      // superseded copy's replacement is already in flight.
+      if (outcome === "waited" || outcome === "superseded") continue;
+      const cur = (dag.expectedOwnerHead(ownerOf(tx)) || "").slice(0, 12);
       _persistRejection(tx, TX_REJECTION_REASON.OWNER_HEAD_STALE,
         `owner head moved: prev[0]=${((tx.prev && tx.prev[0]) || "").slice(0, 12)} head=${cur}`, { round });
-      _requeueOwnerStale(tx, round, committed > 0);
       dropped++;
     }
 

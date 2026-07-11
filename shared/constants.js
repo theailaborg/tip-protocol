@@ -658,7 +658,13 @@ const OWNER_HEAD_STALE_MAX_RETRIES = 8;
 // Pending-head freshness bound for same-owner burst chaining: a sealed-but-
 // uncommitted tx older than this stops being a chain base (falls back to the
 // committed head), so a lost tx cannot wedge its owner's sealing forever.
-const PENDING_OWNER_HEAD_TTL_MS = 30_000;
+// Must exceed worst-case commit latency of a deep lane under load: expiring
+// while the chain is in flight makes the next seal a SIBLING of the whole
+// chain, and one collision cascades into a cross-node rebuild storm (~3.2k
+// foreign-signed drops per peer per 100-tx burst, 2026-07-12). A genuinely
+// lost tx still unblocks via the commit-side ghost rebuild, so the long TTL
+// only delays fallback for the rare dropped-pending case.
+const PENDING_OWNER_HEAD_TTL_MS = 180_000;
 
 const TX_REJECTION_REASON = Object.freeze({
   // Site 1 — mempool admission (post-API, pre-batch)
