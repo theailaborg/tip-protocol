@@ -91,7 +91,9 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         if (t.tx_type === TX_TYPES.PRESCAN_COMPLETED && t.data?.ctid) pending.add(t.data.ctid);
       }
     }
-    const cooldownFloor = nowMs() - PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS;
+    // Cooldown runs on consensus time (certTimestamp), not wall clock:
+    // deterministic across nodes and testable with virtual time.
+    const cooldownFloor = certTimestamp - PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS;
     for (const content of stuck) {
       if (pending.has(content.ctid)) continue;
       // The mempool guard alone can't stop the flood: a dropped fail-open
@@ -104,7 +106,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         const tx = _buildFailOpenTx({ ctid: content.ctid, contentType: content.prescan_content_type });
         try {
           submitTx(tx);
-          _lastEmittedAt.set(content.ctid, nowMs());
+          _lastEmittedAt.set(content.ctid, certTimestamp);
           log.warn(
             `Fail-open PRESCAN_COMPLETED emitted for ${content.ctid} ` +
             `(stuck ${certTimestamp - content.registered_at}ms past registered_at, round=${round})`,
