@@ -207,13 +207,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
   }
   function _requeueOwnerStale(tx, round, charge = true) {
     const key = _staleKey(tx);
-    // The cap bounds LIVELOCK, not progress: a deep same-owner backlog drains one
-    // tx per round and every sibling burns an attempt each round, so count only
-    // consecutive attempts against the SAME head and reset when the head advances.
-    // A STERILE round (nothing committed) can't move any head, so bouncing off it
-    // says nothing about this lane: charge=false skips the budget (churn rounds
-    // executed whole queues at 8 bounces each, 2026-07-11). The absolute bounce
-    // backstop still bounds ghost-tx livelock on quiet lanes.
+    // The cap bounds LIVELOCK, not progress: count only attempts against the
+    // SAME head, reset when it advances. A STERILE round (nothing committed)
+    // cannot move any head, so charge=false skips the budget there (churn
+    // rounds executed whole queues at 8 bounces each, 2026-07-11); the
+    // absolute bounce backstop still bounds ghost-tx livelock.
     const head = dag.expectedOwnerHead(ownerOf(tx));
     const prevEntry = _staleRetry.get(key);
     const sameHead = prevEntry && prevEntry.head === head;

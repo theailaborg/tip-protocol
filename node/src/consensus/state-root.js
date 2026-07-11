@@ -189,12 +189,10 @@ function verifyStateRootConsistency(dag) {
   return { consistent, incremental, reference, perTable: consistent ? null : computeStateMerkleRootPerTable(dag) };
 }
 
-// Sliced variant of verifyStateRootConsistency for the periodic integrity
-// timer: the synchronous walk is O(state) in ONE event-loop task (~0.5s at
-// a few hundred rows, measured idle-stall spikes 2026-07-11). Yields every
-// `yieldEvery` rows; state mutating mid-walk makes the reference meaningless,
-// so the O(1) incremental root is read before and after and a mismatch
-// returns { skipped: true } , the next cycle retries.
+// Sliced variant for the periodic integrity timer: the synchronous walk is
+// O(state) in one event-loop task (measured idle-stall spikes, 2026-07-11).
+// State mutating mid-walk makes the reference meaningless, so the O(1)
+// incremental root brackets the walk; a mismatch returns skipped:true.
 async function verifyStateRootConsistencyAsync(dag, { yieldEvery = 256 } = {}) {
   const before = dag.stateRoot();
   const b = createStateRootBuilder();

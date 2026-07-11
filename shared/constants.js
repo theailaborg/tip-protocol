@@ -118,12 +118,11 @@ const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 // throttled because the walk is O(state).
 const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 
-// Local (non-genesis) cap on txs drained into one batch. The genesis
-// max_txs_per_certificate (500) is the protocol validity limit; this is the
-// scheduling limit: a round's commit applies synchronously in ONE event-loop
-// task at ~12ms/tx, so a 200-tx round stalled the loop 2.5s and starved
-// heartbeats (2026-07-11). 25 bounds the task near ~300ms; excess txs just
-// ride later rounds. Raise as per-tx commit cost drops.
+// Local (non-genesis) scheduling cap on txs per batch: a round's commit
+// applies synchronously in ONE event-loop task at ~12ms/tx, so a 200-tx round
+// stalled the loop 2.5s and starved heartbeats (2026-07-11). Raise as the
+// per-tx commit cost drops; the genesis max_txs_per_certificate stays the
+// protocol validity limit.
 const BATCH_TX_SOFT_CAP = 25;
 
 // Persistence guards: fail-stop when the oldest pending DB write stalls (a
