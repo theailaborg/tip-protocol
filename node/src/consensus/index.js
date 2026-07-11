@@ -27,7 +27,7 @@ const { createCryptoPool } = require("../lib/crypto-pool");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { foundingNodeKey } = require("../genesis");
 const { computeHaltStatus } = require("./halt-status");
-const { verifyStateRootConsistency } = require("./state-root");
+const { verifyStateRootConsistencyAsync } = require("./state-root");
 const { getActiveCommittee, getNodeCount } = require("./participants");
 const { onPeerAuthorized } = require("./peer-sync");
 const { createConsensusSummary } = require("./summary");
@@ -681,15 +681,19 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   // Integrity invariant: a deterministic SMT desync makes every node agree on the
   // same wrong root (consensus checks agreement, not correctness; the dedup drift
   // hid this way). Periodically recompute the reference walk and halt on divergence.
-  _stateRootIntegrityTimer = setInterval(() => {
+  let _integrityCheckRunning = false;
+  _stateRootIntegrityTimer = setInterval(async () => {
     const nw = narwhalRef.current;
-    if (!nw) return;
+    if (!nw || _integrityCheckRunning) return;
+    _integrityCheckRunning = true;
     try {
       if (typeof nw.byzantineForkHalt === "function" && nw.byzantineForkHalt()) return;
       const joinState = typeof nw.joinState === "function" ? String(nw.joinState() || "ready") : "ready";
       if (joinState === "syncing") return;
-      const { consistent, incremental, reference, perTable } = verifyStateRootConsistency(dag);
-      if (consistent) return;
+      // Sliced walk: the synchronous O(state) version was the recurring
+      // ~0.5s idle event-loop stall (2026-07-11).
+      const { skipped, consistent, incremental, reference, perTable } = await verifyStateRootConsistencyAsync(dag);
+      if (skipped || consistent) return;
       const tables = (perTable || []).map(t => `${t.table}(${t.count}):${t.root}`).join(" ");
       log.error(
         `INTEGRITY HALT: committed incremental state root ${String(incremental).slice(0, 16)} != ` +
@@ -704,6 +708,8 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
       }
     } catch (err) {
       log.warn(`state-root integrity check errored: ${err.message}`);
+    } finally {
+      _integrityCheckRunning = false;
     }
   }, STATE_ROOT_INTEGRITY_CHECK_MS);
 

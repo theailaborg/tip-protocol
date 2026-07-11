@@ -30,7 +30,7 @@ const { nowMs } = require("../../../shared/time");
 const { safeSetInterval } = require("../safe-timer");
 
 const { CONSENSUS } = require("../../../shared/protocol-constants");
-const { SNAPSHOT_INSTALL_MARKER_KEY } = require("../../../shared/constants");
+const { SNAPSHOT_INSTALL_MARKER_KEY, BATCH_TX_SOFT_CAP } = require("../../../shared/constants");
 const {
   createBatch, verifyBatch,
   createBatchAck, verifyBatchAck,
@@ -263,7 +263,9 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
     // normal batches: production never pauses ahead of a rotation's
     // activation (time-targeted, round-executed model), so the old
     // pause/carve-out deadlocks cannot form.
-    const txs = mempool.drain(CONSENSUS.MAX_TXS_PER_CERTIFICATE);
+    // Soft cap under the genesis validity limit: a round's commit applies in
+    // one synchronous event-loop task, so batch size bounds the stall.
+    const txs = mempool.drain(Math.min(CONSENSUS.MAX_TXS_PER_CERTIFICATE || BATCH_TX_SOFT_CAP, BATCH_TX_SOFT_CAP));
 
     _myBatch = createBatch(_currentRound, nodeId, txs, privateKey);
     _peerBatches.set(nodeId, _myBatch);

@@ -117,6 +117,67 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(fx.dag.getOwnerHead(OWNER)).toBe(txs[2].tx_id);
   });
 
+  test("sterile rounds do not charge the stale retry budget; committing rounds do; absolute bounce cap backstops", () => {
+    const fx = _setup();
+    const AUTHOR2 = "tip://id/US-owner-chain-02";
+    const author2Kp = generateMLDSAKeypair();
+    fx.dag.saveIdentity({ tip_id: AUTHOR2, region: "US", public_key: author2Kp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(fx.dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR2 }) });
+    fx.dag.setScore(AUTHOR2, 750, 0, 1767225600000);
+    const _content2 = (text) => {
+      const content_hash = shake256(text);
+      const data = {
+        ctid: `tip://c/OH-${content_hash.slice(0, 14)}-0002`,
+        origin_code: "OH", content_hash, signer_tip_id: AUTHOR2,
+        authors: [{ key_mode: "attribution", role: "byline", signed: false, tip_id: AUTHOR2, tip_id_type: "personal" }],
+        attribution_mode: "self", extras: {}, registered_urls: [],
+        cna_version: contentRegisterSchema.CURRENT_CNA_VERSION,
+      };
+      const sig = contentRegisterSchema.sign(contentRegisterSchema.buildSigningPayload(data, content_hash), author2Kp.privateKey);
+      const tx = { tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: 1777507200000, data, signature: sig, prev: fx.dag.prevFor(TX_TYPES.REGISTER_CONTENT, data) };
+      tx.tx_id = computeTxId(tx);
+      return tx;
+    };
+    const _clearMempool = () => fx.dag.deleteMempoolTxs(fx.dag.getMempoolTxs().map(t => t.tx_id));
+    const _requeued = (tx) => fx.dag.getMempoolTxs().some(t => t.data && t.data.content_hash === tx.data.content_hash);
+
+    // Land a head, move past it, then craft a permanently stale tx against the old head.
+    const base = _contentTx(fx.dag, fx.authorKp, "sr-base");
+    expect(fx.handler.commitOrderedTxs([base], 1).committed).toBe(1);
+    const mover = _contentTx(fx.dag, fx.authorKp, "sr-mover");
+    expect(fx.handler.commitOrderedTxs([mover], 2).committed).toBe(1);
+    const stale = _contentTx(fx.dag, fx.authorKp, "sr-stale", { prev: [base.tx_id, base.prev[0]] });
+
+    // 12 sterile bounces (> MAX_RETRIES=8): nothing commits, no head can move,
+    // so the budget must NOT be charged and the tx keeps being requeued.
+    for (let r = 3; r < 15; r++) {
+      _clearMempool();
+      const res = fx.handler.commitOrderedTxs([stale], r);
+      expect(res.committed).toBe(0);
+      expect(_requeued(stale)).toBe(true);
+    }
+
+    // Charged bounces: a sibling owner commits each round (committed > 0)
+    // while owner1's head stays put , the 9th charge exhausts and drops.
+    for (let i = 0; i < 9; i++) {
+      _clearMempool();
+      const res = fx.handler.commitOrderedTxs([_content2(`sr-sib-${i}`), stale], 20 + i);
+      expect(res.committed).toBe(1);
+    }
+    expect(_requeued(stale)).toBe(false);
+
+    // Absolute backstop: even pure sterile bounces stop at 10x the cap
+    // (ghost-tx livelock bound on an otherwise quiet lane).
+    const ghost = _contentTx(fx.dag, fx.authorKp, "sr-ghost", { prev: [base.tx_id, base.prev[0]] });
+    let dropBounce = null;
+    for (let i = 0; i < 85; i++) {
+      _clearMempool();
+      fx.handler.commitOrderedTxs([ghost], 100 + i);
+      if (!_requeued(ghost)) { dropBounce = i + 1; break; }
+    }
+    expect(dropBounce).not.toBeNull();
+    expect(dropBounce).toBeLessThanOrEqual(81);
+  });
+
   test("broken chain: whole tail stales, requeues re-chained, commits next round", () => {
     const fx = _setup();
     // A foreign-view tx commits first and moves the head.

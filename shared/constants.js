@@ -118,6 +118,13 @@ const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 // throttled because the walk is O(state).
 const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 
+// Local (non-genesis) scheduling cap on txs per batch: a round's commit
+// applies synchronously in ONE event-loop task at ~12ms/tx, so a 200-tx round
+// stalled the loop 2.5s and starved heartbeats (2026-07-11). Raise as the
+// per-tx commit cost drops; the genesis max_txs_per_certificate stays the
+// protocol validity limit.
+const BATCH_TX_SOFT_CAP = 25;
+
 // Persistence guards: fail-stop when the oldest pending DB write stalls (a
 // hung chain runs split-brained, 2026-07-10), and probe mirror-vs-DB parity.
 const DB_WRITE_STALL_FAIL_STOP_MS = 60_000;
@@ -842,6 +849,7 @@ const LOCALLY_VERIFIED_TX_CACHE_CAP = 20000;
 // Native ML-DSA verify fast-path (shared/crypto.js).
 const NATIVE_MLDSA_KEY_CACHE_CAP = 2000;
 const MLDSA65_PUBKEY_BYTES = 1952;
+const MLDSA65_PRIVKEY_BYTES = 4032;
 
 // Classifier fallback circuit breaker (services/classifier-local.js).
 const CLASSIFIER_BREAK_AFTER = 3;
@@ -859,6 +867,8 @@ module.exports = {
   PRESCAN_FAIL_OPEN_REEMIT_COOLDOWN_MS,
   NATIVE_MLDSA_KEY_CACHE_CAP,
   MLDSA65_PUBKEY_BYTES,
+  MLDSA65_PRIVKEY_BYTES,
+  BATCH_TX_SOFT_CAP,
   ORIGIN,
   ORIGIN_LABELS,
   VOTE,

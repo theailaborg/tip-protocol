@@ -44,6 +44,40 @@ describe("ML-DSA verify (native fast-path + noble fallback)", () => {
   });
 
   const nativeOnly = hasNativeMlDsa() ? test : test.skip;
+
+  nativeOnly("native-signed (hedged) signature verifies through noble directly", async () => {
+    const noble = await import("@noble/post-quantum/ml-dsa.js");
+    const kp = generateMLDSAKeypair();
+    const sig = mldsaSign("native sign interop", kp.privateKey);
+    expect(noble.ml_dsa65.verify(
+      new Uint8Array(Buffer.from(sig, "hex")),
+      Buffer.from("native sign interop"),
+      new Uint8Array(Buffer.from(kp.publicKey, "hex")),
+    )).toBe(true);
+    expect(mldsaVerify("native sign interop", sig, kp.publicKey)).toBe(true);
+  });
+
+  nativeOnly("deterministic mode stays noble: byte-identical signatures on repeat", () => {
+    const kp = generateMLDSAKeypair();
+    const a = mldsaSign("genesis msg", kp.privateKey, { deterministic: true });
+    const b = mldsaSign("genesis msg", kp.privateKey, { deterministic: true });
+    expect(a).toBe(b);
+    expect(mldsaVerify("genesis msg", a, kp.publicKey)).toBe(true);
+  });
+
+  nativeOnly("hedged signatures differ per call but all verify", () => {
+    const kp = generateMLDSAKeypair();
+    const a = mldsaSign("hedged msg", kp.privateKey);
+    const b = mldsaSign("hedged msg", kp.privateKey);
+    expect(a).not.toBe(b);
+    expect(mldsaVerify("hedged msg", a, kp.publicKey)).toBe(true);
+    expect(mldsaVerify("hedged msg", b, kp.publicKey)).toBe(true);
+  });
+
+  test("malformed private key length falls through and throws like noble", () => {
+    expect(() => mldsaSign("msg", "deadbeef")).toThrow();
+  });
+
   nativeOnly("native and noble agree on 20 random accept/reject cases", async () => {
     const noble = await import("@noble/post-quantum/ml-dsa.js");
     for (let i = 0; i < 20; i++) {

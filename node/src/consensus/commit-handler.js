@@ -205,20 +205,24 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
   function _staleKey(tx) {
     return (tx.data && tx.data.signature) || tx.signature || tx.tx_id;
   }
-  function _requeueOwnerStale(tx, round) {
+  function _requeueOwnerStale(tx, round, charge = true) {
     const key = _staleKey(tx);
-    // The cap bounds LIVELOCK, not progress: a deep same-owner backlog drains one
-    // tx per round and every sibling burns an attempt each round, so count only
-    // consecutive attempts against the SAME head and reset when the head advances.
+    // The cap bounds LIVELOCK, not progress: count only attempts against the
+    // SAME head, reset when it advances. A STERILE round (nothing committed)
+    // cannot move any head, so charge=false skips the budget there (churn
+    // rounds executed whole queues at 8 bounces each, 2026-07-11); the
+    // absolute bounce backstop still bounds ghost-tx livelock.
     const head = dag.expectedOwnerHead(ownerOf(tx));
     const prevEntry = _staleRetry.get(key);
-    const n = prevEntry && prevEntry.head === head ? prevEntry.count + 1 : 1;
-    if (n > OWNER_HEAD_STALE_MAX_RETRIES) {
+    const sameHead = prevEntry && prevEntry.head === head;
+    const n = charge ? (sameHead ? prevEntry.count + 1 : 1) : (sameHead ? prevEntry.count : 0);
+    const bounces = (sameHead ? prevEntry.bounces : 0) + 1;
+    if (n > OWNER_HEAD_STALE_MAX_RETRIES || bounces > OWNER_HEAD_STALE_MAX_RETRIES * 10) {
       _staleRetry.delete(key);
       log.warn(`Round ${round}: OWNER_HEAD_STALE retries exhausted with no head progress (${tx.tx_type}) , dropping`);
       return;
     }
-    _staleRetry.set(key, { count: n, head });
+    _staleRetry.set(key, { count: n, head, bounces });
     // Body-scope signatures never covered prev, so the rebuilt tx re-verifies as-is.
     // Envelope signatures cover prev (canonicalTx): re-sign our own, or all but the
     // first of a same-owner node batch (jury summons) would be lost; foreign ones drop.
@@ -400,7 +404,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       const cur = (dag.expectedOwnerHead(owner) || "").slice(0, 12);
       _persistRejection(tx, TX_REJECTION_REASON.OWNER_HEAD_STALE,
         `owner head moved: prev[0]=${((tx.prev && tx.prev[0]) || "").slice(0, 12)} head=${cur}`, { round });
-      _requeueOwnerStale(tx, round);
+      _requeueOwnerStale(tx, round, committed > 0);
       dropped++;
     }
 
