@@ -175,16 +175,23 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(fx.handler.commitOrderedTxs([mover], 2).committed).toBe(1);
 
     // A tx whose predecessor is unknown-but-alive rides the WAIT path:
-    // sterile rounds (nothing commits) must not charge the budget, so it
-    // keeps being requeued UNCHANGED far past MAX_RETRIES=8.
+    // requeued UNCHANGED for up to MAX_RETRIES=8 bounces (sterile rounds
+    // never charge the head-retry budget), then the predecessor is presumed
+    // lost and the rebuild path recovers it against the committed head.
     const waiting = _contentTx(fx.dag, fx.authorKp, "sr-wait", { prev: ["77".repeat(32), base.prev[0]] });
-    for (let r = 3; r < 15; r++) {
+    for (let r = 3; r < 11; r++) {
       _clearMempool();
       const res = fx.handler.commitOrderedTxs([waiting], r);
       expect(res.committed).toBe(0);
       expect(_requeued(waiting)).toBe(true);
       expect(fx.dag.getMempoolTxs()[0].tx_id).toBe(waiting.tx_id);   // unchanged, not rebuilt
     }
+    _clearMempool();
+    fx.handler.commitOrderedTxs([waiting], 11);   // 9th bounce: recovery rebuild
+    expect(_requeued(waiting)).toBe(true);
+    const recovered = fx.dag.getMempoolTxs()[0];
+    expect(recovered.tx_id).not.toBe(waiting.tx_id);
+    expect(recovered.prev[0]).toBe(mover.tx_id);   // rebased onto the committed head
 
     // A superseded-by-rebuild copy is silently dropped, so the old
     // permanently-stale re-feed can no longer churn: first pass rebuilds it,

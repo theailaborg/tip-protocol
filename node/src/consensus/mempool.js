@@ -53,12 +53,10 @@ function createMempool(dag, options = {}) {
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
 
-  // Dead tx_ids (rebuilt-away, foreign-signed stale, revalidation-failed).
-  // Gossip has no drop memory: without tombstones, peers re-add a dead copy
-  // every exchange and it churns drain -> stale -> drop forever, burning batch
-  // slots (live repro 2026-07-12: ~3.2k foreign-signed drops per peer for one
-  // 100-tx burst). Pruned on the eviction sweep after maxTxAgeSec , by then
-  // every live copy of the id has aged out of all peers' mempools too.
+  // Dead tx_ids (rebuilt-away, foreign-signed stale, revalidation-failed):
+  // gossip has no drop memory, so without tombstones peers re-add dead copies
+  // forever (~3.2k foreign drops per peer per burst, 2026-07-12). Pruned after
+  // maxTxAgeSec, when every live copy has aged out of peers' mempools too.
   /** @type {Map<string, number>} */
   const _tombstones = new Map();
 
@@ -175,15 +173,10 @@ function createMempool(dag, options = {}) {
     const drainedIds = [];
     let bytes = 0;
 
-    // Lane-aware chain-following: per owner lane, emit the chain in prev-link
-    // DEPENDENCY order, independent of mempool insertion order. Order can't be
-    // trusted: concurrent submission interleaves lanes, and the stale-requeue
-    // rebuilds base-first but addFront-prepends each tx, leaving the chain
-    // REVERSED , a front-order drain then ships the tail alone and every tx
-    // churns ~11x as OWNER_HEAD_STALE before landing (live repro 2026-07-12).
-    // Siblings (same prev0) are held back: first in insertion order wins, the
-    // rest re-chain via the commit-side rebuild. Owner-less txs (system/
-    // genesis) are never lane-restricted.
+    // Lane-aware chain-following: emit each owner lane in prev-link DEPENDENCY
+    // order , insertion order can't be trusted (requeue addFront reverses
+    // chains; each tx then churned ~11x as stale, 2026-07-12). Siblings (same
+    // prev0): first wins, rest held. Owner-less txs are never lane-restricted.
     const laneMembers = new Map();   // lane -> Set<tx_id>
     const laneByPrev = new Map();    // lane -> Map<prev0, [txId, entry]>
     for (const [txId, entry] of _pending) {

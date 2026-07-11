@@ -494,10 +494,15 @@ describe("prescan-review end-to-end flow", () => {
     fx.submitted.length = 0;
     fx.commit([secondTrigger], slaExpiryTs + 1000);
     // The trigger tick sealed sibling txs this test deliberately discards, so
-    // secondTrigger chains onto a ghost and requeues (rebuilt against the
-    // committed head). Commit the requeue , the real-world next round.
-    const requeued = fx.dag.getMempoolTxs();
-    if (requeued.length > 0) fx.commit(requeued, slaExpiryTs + 2000);
+    // secondTrigger chains onto a lost predecessor: it WAITS unchanged for up
+    // to MAX_RETRIES bounces, then rebuilds against the committed head and
+    // commits. Run those rounds out , bounded by the wait cap plus one.
+    for (let r = 0; r < 12; r++) {
+      const requeued = fx.dag.getMempoolTxs();
+      if (requeued.length === 0) break;
+      fx.commit(requeued, slaExpiryTs + 2000 + r);
+      if (fx.dag.getOpenPrescanReviewByCtid(CTID)) break;
+    }
     const r2 = fx.dag.getOpenPrescanReviewByCtid(CTID);
     expect(r2).not.toBeNull();
     expect(r2.review_id).toBe(secondTrigger.data.review_id);
