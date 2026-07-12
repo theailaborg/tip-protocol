@@ -20,6 +20,7 @@ const { Worker } = require("worker_threads");
 const os = require("os");
 const path = require("path");
 const { verifyCertificate } = require("../consensus/certificate");
+const { verifyWithAlgorithm } = require("../../../shared/crypto");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.crypto-pool");
@@ -27,6 +28,12 @@ const log = getLogger("tip.crypto-pool");
 function _syncVerify(cert, pubkeyMap, quorum) {
   const getKey = (id) => pubkeyMap[id] || null;
   return verifyCertificate(cert, getKey, quorum);
+}
+
+function _syncVerifyRaw(items) {
+  try {
+    return (items || []).every(it => verifyWithAlgorithm(it.message, it.signature, it.publicKey, it.algorithm));
+  } catch { return false; }
 }
 
 /**
@@ -77,11 +84,23 @@ function createCryptoPool({ size, enabled = true } = {}) {
     }).then((result) => result || _syncVerify(cert, pubkeyMap, quorum));
   }
 
+  // Raw pre-resolved signature tuples (tx pre-verification). null from a dead
+  // worker falls back to sync , a pool failure can never produce a false pass.
+  function verifyRaw(items) {
+    if (N === 0) return Promise.resolve(_syncVerifyRaw(items));
+    const id = nextId++;
+    const w = workers[rr++ % N];
+    return new Promise((resolve) => {
+      pending.set(id, { resolve });
+      w.postMessage({ id, type: "verifyRaw", items });
+    }).then((result) => (result === null ? _syncVerifyRaw(items) : result === true));
+  }
+
   function shutdown() {
     for (const w of workers) { try { w.terminate(); } catch { /* ignore */ } }
   }
 
-  return { verifyCert, shutdown, size: N };
+  return { verifyCert, verifyRaw, shutdown, size: N };
 }
 
 module.exports = { createCryptoPool };

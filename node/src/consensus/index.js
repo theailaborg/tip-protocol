@@ -24,6 +24,8 @@ const { createRotationCoordinator } = require("./rotation-coordinator");
 const { createCommitHandler } = require("./commit-handler");
 const { createSyncHandler } = require("../sync/sync-handler");
 const { createCryptoPool } = require("../lib/crypto-pool");
+const { collectTxSignatureInputs } = require("../schemas/_common");
+const { SCHEMA_FOR_TX_TYPE } = require("../schemas/_schema-map");
 const { createSnapshotHandler } = require("../sync/snapshot-handler");
 const { foundingNodeKey } = require("../genesis");
 const { computeHaltStatus } = require("./halt-status");
@@ -300,8 +302,26 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const _poolSize = process.env.TIP_CRYPTO_POOL_SIZE;
   const cryptoPool = createCryptoPool({ size: (_poolSize != null && _poolSize !== "") ? Number(_poolSize) : undefined });
 
+  // Pre-verify gossip-batch txs on the pool at arrival (a round before commit),
+  // feeding the API path's consume-once registry. Sync verify was 98% of per-tx
+  // commit cost (2026-07-12); unresolvable inputs stay on the sync path.
+  async function _preVerifyIncomingTxs(txs) {
+    let marked = 0, skipped = 0, unresolvable = 0, failed = 0;
+    for (const tx of txs) {
+      try {
+        if (!tx || !tx.tx_id || !tx.tx_type || dag.getTx(tx.tx_id)) { skipped++; continue; }
+        const collected = collectTxSignatureInputs(tx, SCHEMA_FOR_TX_TYPE[tx.tx_type] ?? null, dag);
+        if (!collected.ok) { unresolvable++; continue; }
+        if (await cryptoPool.verifyRaw(collected.inputs)) { _markLocallyVerified(tx.tx_id); marked++; }
+        else failed++;
+      } catch { unresolvable++; }
+    }
+    log.debug(`preverify: marked=${marked} skipped=${skipped} unresolvable=${unresolvable} failed=${failed} of ${txs.length}`);
+  }
+
   const narwhal = createNarwhal({
     dag, mempool, network, config, cryptoPool,
+    preVerifyTxs: (txs) => { _preVerifyIncomingTxs(txs); },
     getNodeKey: (nId) => getNodeKey(dag, nId),
     getNodeCount: () => getNodeCount(dag),
     getCommittee,
