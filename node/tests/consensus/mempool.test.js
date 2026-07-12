@@ -70,7 +70,7 @@ function laneMempool() {
   return createMempool(initDAG({ dbPath: ":memory:" }), { ownerOf: (tx) => (tx.owner ? { entityType: "id", entityId: tx.owner } : null) });
 }
 
-describe("mempool.drain — lane-aware chain-prefix (owner-chain burst liveness)", () => {
+describe("mempool.drain: lane-aware chain-following (owner-chain burst liveness)", () => {
   test("client sibling burst (same owner, same stale prev) drains only the lane FRONT", () => {
     const mp = laneMempool();
     for (const id of ["s1", "s2", "s3", "s4", "s5"]) mp.add(laneTx(id, "alice", "H0"));
@@ -138,7 +138,7 @@ describe("mempool.drain — lane-aware chain-prefix (owner-chain burst liveness)
   });
 });
 
-describe("mempool.tombstone — dead tx_ids stay dead (gossip resurrection guard)", () => {
+describe("mempool.tombstone: dead tx_ids stay dead (gossip resurrection guard)", () => {
   test("a tombstoned id is rejected by add and addFront", () => {
     const mp = laneMempool();
     mp.tombstone("dead-1");

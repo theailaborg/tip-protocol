@@ -53,10 +53,9 @@ function createMempool(dag, options = {}) {
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
 
-  // Dead tx_ids (rebuilt-away, foreign-signed stale, revalidation-failed):
-  // gossip has no drop memory, so without tombstones peers re-add dead copies
-  // forever (~3.2k foreign drops per peer per burst, 2026-07-12). Pruned after
-  // maxTxAgeSec, when every live copy has aged out of peers' mempools too.
+  // Gossip has no drop memory: without tombstones peers re-add dead copies
+  // forever (~3.2k foreign drops per peer per burst, 2026-07-12). Pruned
+  // after maxTxAgeSec, once every live copy has aged out of peers' mempools.
   /** @type {Map<string, number>} */
   const _tombstones = new Map();
 
@@ -173,10 +172,9 @@ function createMempool(dag, options = {}) {
     const drainedIds = [];
     let bytes = 0;
 
-    // Lane-aware chain-following: emit each owner lane in prev-link DEPENDENCY
-    // order , insertion order can't be trusted (requeue addFront reverses
-    // chains; each tx then churned ~11x as stale, 2026-07-12). Siblings (same
-    // prev0): first wins, rest held. Owner-less txs are never lane-restricted.
+    // Emit each owner lane in prev-link DEPENDENCY order: insertion order lies
+    // (requeue addFront reverses chains; ~11x stale churn per tx, 2026-07-12).
+    // Siblings: first wins, rest held. Owner-less txs are never restricted.
     const laneMembers = new Map();   // lane -> Set<tx_id>
     const laneByPrev = new Map();    // lane -> Map<prev0, [txId, entry]>
     for (const [txId, entry] of _pending) {
@@ -309,9 +307,8 @@ function createMempool(dag, options = {}) {
    * Cleans both memory and disk.
    */
   /**
-   * Mark a tx_id permanently dead: rebuilt under a new id, dropped as
-   * foreign-signed stale, or failed revalidation at commit. Copies arriving
-   * later (mempool gossip, peer batches) are rejected at add.
+   * Mark a tx_id permanently dead (rebuilt away, foreign-signed stale, or
+   * revalidation-failed); late copies from gossip/peer batches are rejected.
    * @param {string} txId
    */
   function tombstone(txId) {
