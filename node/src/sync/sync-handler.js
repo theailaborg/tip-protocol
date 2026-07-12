@@ -50,7 +50,7 @@ const SYNC_PROTOCOL = "/tip/sync/1.0.0";
  * @param {Object} options.network     libp2p network node
  * @param {Function} options.isAuthorizedPeer  (peerId) => boolean
  */
-function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null }) {
+function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCertsImported = null, preVerifyTxs = null }) {
   // Build Merkle tree from existing certificates
   let _merkle = _buildMerkleFromDAG();
 
@@ -409,6 +409,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
       let imported = 0;
       let maxRound = fromRound;
       const importedHashes = [];
+      const importedTxs = [];
       for (const certFrame of certFrames) {
         try {
           const msg = decode("Certificate", certFrame);
@@ -418,6 +419,7 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
             dag.saveCertificate(cert);
             imported++;
             importedHashes.push(cert.hash);
+            if (Array.isArray(cert.batch?.txs)) importedTxs.push(...cert.batch.txs);
             if (cert.round > maxRound) maxRound = cert.round;
           }
         } catch (err) {
@@ -430,6 +432,13 @@ function createSyncHandler({ dag, network, isAuthorizedPeer = () => false, onCer
       if (importedHashes.length > 0) _merkle.addBatch(importedHashes);
 
       log.info(`Sync: imported ${imported}/${certFrames.length} certificates (up to round ${maxRound}, peer latest: ${peerLatestRound})`);
+      // Pool-verify the imported txs BEFORE driving commit: catch-up replay
+      // never passes batch arrival, and an unmarked backlog would pay full
+      // sync verify inside the commit task (the restart/catch-up stall case).
+      if (typeof preVerifyTxs === "function" && importedTxs.length > 0) {
+        try { await preVerifyTxs(importedTxs); }
+        catch (err) { log.warn(`Sync: pre-verify of imported txs failed: ${err.message}`); }
+      }
       // Drive bullshark to commit up to the peer's frontier (gossip certs commit
       // via onCertSaved, synced ones don't). Drive even when imported is 0: a
       // behind node that already holds the certs must still advance committed.

@@ -119,9 +119,10 @@ const SNAPSHOT_BULK_CHUNK_ROWS = 500;
 const STATE_ROOT_INTEGRITY_CHECK_MS = 60_000;
 
 // Local (non-genesis) scheduling cap on txs per batch, bounding the one
-// synchronous commit task. Verify (98% of ~3.3ms/tx) moved to the crypto pool
-// at batch arrival (2026-07-12); genesis max_txs_per_certificate stays the limit.
-const BATCH_TX_SOFT_CAP = 100;
+// synchronous commit task. Verify is pooled at every arrival path (gossip,
+// cert import, boot-restored mempool, 2026-07-12); the certificate byte
+// budget self-limits content txs near this count anyway.
+const BATCH_TX_SOFT_CAP = 250;
 
 // Persistence guards: fail-stop when the oldest pending DB write stalls (a
 // hung chain runs split-brained, 2026-07-10), and probe mirror-vs-DB parity.
