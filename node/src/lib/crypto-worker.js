@@ -12,7 +12,7 @@
 "use strict";
 
 const { parentPort } = require("worker_threads");
-const { initCrypto } = require("../../../shared/crypto");
+const { initCrypto, verifyWithAlgorithm } = require("../../../shared/crypto");
 const { verifyCertificate } = require("../consensus/certificate");
 
 let _ready = false;
@@ -27,9 +27,17 @@ function _run(msg) {
       parentPort.postMessage({ id: msg.id, result });
       return;
     }
+    if (msg.type === "verifyRaw") {
+      // Pre-resolved {message, signature, publicKey, algorithm} tuples , the
+      // main thread owns key/contract resolution; this is pure verification.
+      const ok = (msg.items || []).every(it =>
+        verifyWithAlgorithm(it.message, it.signature, it.publicKey, it.algorithm));
+      parentPort.postMessage({ id: msg.id, result: ok });
+      return;
+    }
     parentPort.postMessage({ id: msg.id, result: { valid: false, error: `unknown task ${msg.type}` } });
   } catch (err) {
-    parentPort.postMessage({ id: msg.id, result: { valid: false, error: `worker error: ${err.message}` } });
+    parentPort.postMessage({ id: msg.id, result: msg.type === "verifyRaw" ? false : { valid: false, error: `worker error: ${err.message}` } });
   }
 }
 

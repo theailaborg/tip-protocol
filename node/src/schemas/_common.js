@@ -267,7 +267,10 @@ function bodyMessageHex(tx, contractOrSchema) {
  *                        SIGNATURE_FIELDS?, SIGNED_BY)
  * @param {Object} dag    DAG facade for identity / node / vp lookups
  */
-function verifyTxSignature(tx, schema, dag) {
+// Resolve the primary signature's raw verify input WITHOUT verifying.
+// Single source of truth for message construction: verifyTxSignature and the
+// worker-pool pre-verifier both consume this, so the bytes can never drift.
+function _primarySignatureInput(tx, schema, dag) {
   if (!tx || typeof tx !== "object") {
     return { ok: false, error: "tx is required", code: "tx_missing" };
   }
@@ -282,25 +285,27 @@ function verifyTxSignature(tx, schema, dag) {
   if (!signer) {
     return { ok: false, error: "signer not registered or not resolvable", code: "signer_unknown" };
   }
-  // Compute the message bytes this scope signs over, then dispatch via
-  // the algorithm declared on the signer's record (today always
-  // ML-DSA-65). The algorithm is bound to the key — not the signature —
-  // for crypto agility without per-sig overhead. See GH #51.
+  // Message bytes per scope; the algorithm is bound to the signer's key,
+  // not the signature (crypto agility, GH #51).
   let message;
   if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.ENVELOPE) {
-    // Outer signature: covers the canonical tx envelope. tx.signature is
-    // NOT part of canonicalTx (signTransaction's contract), so the
-    // signature doesn't sign itself. mldsaSign treats the input as raw
-    // UTF-8 bytes — matches signTransaction's exact wire format.
+    // tx.signature is NOT part of canonicalTx (signTransaction's contract),
+    // so the signature doesn't sign itself.
     message = canonicalTx(tx);
   } else if (contract.SIGNATURE_SCOPE === SIGNATURE_SCOPE.BODY) {
     message = bodyMessageHex(tx, contract);
   } else {
     return { ok: false, error: `unknown SIGNATURE_SCOPE ${contract.SIGNATURE_SCOPE}`, code: "schema_invalid" };
   }
+  return { ok: true, input: { message, signature: tx.signature, publicKey: signer.public_key, algorithm: signer.algorithm } };
+}
+
+function verifyTxSignature(tx, schema, dag) {
+  const r = _primarySignatureInput(tx, schema, dag);
+  if (!r.ok) return r;
   let ok;
   try {
-    ok = verifyWithAlgorithm(message, tx.signature, signer.public_key, signer.algorithm);
+    ok = verifyWithAlgorithm(r.input.message, r.input.signature, r.input.publicKey, r.input.algorithm);
   } catch (e) {
     return { ok: false, error: `algorithm dispatch failed: ${e.message}`, code: "algorithm_unsupported" };
   }
@@ -457,6 +462,58 @@ function verifyCosignatures(tx, contracts, dag) {
   return { ok: true };
 }
 
+/**
+ * Collect every raw verify input for a tx (primary signature + declared
+ * cosignatures) WITHOUT verifying: [{message, signature, publicKey,
+ * algorithm}]. Built from the same resolvers verifyTxSignature /
+ * verifyCosignatures use, so the bytes cannot drift; the worker pool
+ * verifies these off the consensus thread. { ok:false } when any input
+ * cannot be resolved , callers fall back to the sync path's full errors.
+ */
+function collectTxSignatureInputs(tx, schema, dag) {
+  const primary = _primarySignatureInput(tx, schema, dag);
+  if (!primary.ok) return primary;
+  const inputs = [primary.input];
+
+  // Same source priority as the commit-side dispatcher: schema first, then
+  // registry. Pre-verified txs skip the sync path ENTIRELY (cosigs included),
+  // so missing a source here would commit unverified cosignatures.
+  const { TX_SIGNATURE_REGISTRY } = require("./_registry");
+  const cosigSource = schema && typeof schema.getCosignatureContract === "function"
+    ? schema
+    : (TX_SIGNATURE_REGISTRY[tx?.tx_type] && typeof TX_SIGNATURE_REGISTRY[tx?.tx_type].getCosignatureContract === "function"
+      ? TX_SIGNATURE_REGISTRY[tx?.tx_type]
+      : null);
+  const contracts = cosigSource ? (cosigSource.getCosignatureContract(tx) || []) : [];
+  if (contracts.length > 0) {
+    const cosigs = tx?.data?.cosignatures;
+    if (!Array.isArray(cosigs) || cosigs.length !== contracts.length) {
+      return { ok: false, error: "cosignatures missing or length mismatch", code: "cosignatures_missing" };
+    }
+    const timestamp = Number(tx?.timestamp);
+    for (const c of contracts) {
+      const entityType = COSIGNER_ENTITY_TYPE[c.kind];
+      const entry = cosigs.find(e => e?.signer_kind === c.kind && e?.signer_ref === c.ref);
+      if (!entityType || !entry || typeof entry.signature !== "string" || entry.signature.length === 0) {
+        return { ok: false, error: `cosignature unresolvable for ${c.kind}:${c.ref}`, code: "cosignature_invalid" };
+      }
+      const key = (typeof dag.getKeyValidAt === "function" && Number.isFinite(timestamp) && timestamp > 0)
+        ? dag.getKeyValidAt(entityType, c.ref, timestamp)
+        : (typeof dag.getActiveKey === "function" ? dag.getActiveKey(entityType, c.ref) : null);
+      if (!key || typeof key.public_key !== "string") {
+        return { ok: false, error: `cosigner not resolvable: ${c.kind}:${c.ref}`, code: "cosigner_unknown" };
+      }
+      inputs.push({
+        message: payloadHashHex(c.body),
+        signature: entry.signature,
+        publicKey: key.public_key,
+        algorithm: key.algorithm || SIGNATURE_ALGORITHM_DEFAULT,
+      });
+    }
+  }
+  return { ok: true, inputs };
+}
+
 module.exports = {
   payloadHashHex,
   signPayload,
@@ -479,4 +536,6 @@ module.exports = {
   sortCosignatures,
   signCosignature,
   verifyCosignatures,
+  // Worker-pool pre-verification (raw inputs, no verification)
+  collectTxSignatureInputs,
 };

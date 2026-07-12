@@ -65,7 +65,7 @@ const LATE_BATCH_LOG_INTERVAL_ROUNDS = 60;
  * @param {Function} options.onCommit     (certificates, round) => called when round commits
  * @returns {Object} Narwhal instance
  */
-function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool }) {
+function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount, getCommittee, onCommit, onCertSaved, isPeerDivergent, peerJoinState, divergentPeers, cryptoPool, preVerifyTxs }) {
   const _getCommittee = typeof getCommittee === "function" ? getCommittee : () => [];
   const _onCertSaved = typeof onCertSaved === "function" ? onCertSaved : () => { };
   let _currentRound;
@@ -644,6 +644,13 @@ function createNarwhal({ dag, mempool, network, config, getNodeKey, getNodeCount
 
     _peerBatches.set(batch.author_node_id, batch);
     _metrics.batches_received++;
+
+    // Fire-and-forget tx pre-verification on the crypto pool: these txs reach
+    // commit a round-plus later, so their client signatures are already checked
+    // off-thread by then (commit's sync verify remains the correctness path).
+    if (preVerifyTxs && Array.isArray(batch.txs) && batch.txs.length > 0) {
+      try { preVerifyTxs(batch.txs); } catch { /* pre-verification is advisory */ }
+    }
 
     // Persist the commitment BEFORE signing + broadcasting. If we crash
     // after persist but before broadcast, restart is safe: peer re-sends

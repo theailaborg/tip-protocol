@@ -334,6 +334,8 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     // Stale/ghost-chained txs collected across BOTH phases; rebuilt + requeued
     // after the commit transaction.
     const staleTxs = [];
+    // In-batch duplicate copies held for a post-txn verdict (see below).
+    const dupHeld = [];
     // Batch ids collected UPFRONT: Bullshark can deliver a chain out of order,
     // and the prev-existence check must still pass. Phase-2's strict owner-head
     // check settles the actual order.
@@ -391,6 +393,13 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       // duplicates and their score-update effects are dropped silently).
       const business = _validateBusinessRules(tx, validated, certTimestamp, round);
       if (!business.valid) {
+        // In-batch duplicate: only safe to drop if the WINNING copy commits
+        // this round , it can instead stale out and die later, orphaning the
+        // content (244 registrations lost traceless, 2026-07-12). Hold it.
+        if (business.duplicateOf) {
+          dupHeld.push({ tx, winnerId: business.duplicateOf, error: business.error });
+          continue;
+        }
         log.debug(`Round ${round}: dropped ${tx.tx_type} ${tx.tx_id.slice(0, 16)} — ${business.error}`);
         _persistRejection(tx, _mapBusinessRuleReason(business.error), business.error, { round });
         dropped++;
@@ -451,6 +460,20 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         // is already recorded above; the stale retry path below must not run.
         staleTxs.length = 0;
       }
+    }
+
+    // Held in-batch duplicates: a true duplicate only if its winner COMMITTED
+    // this round; otherwise the winner staled/waited and this copy may be the
+    // content's only survivor , requeue it unchanged.
+    for (const { tx, winnerId, error } of dupHeld) {
+      if (dag.getTx(winnerId)) {
+        _persistRejection(tx, _mapBusinessRuleReason(error), error, { round });
+        dropped++;
+        continue;
+      }
+      if (mempool && typeof mempool.addFront === "function") mempool.addFront(tx);
+      else if (mempool && typeof mempool.add === "function") mempool.add(tx);
+      else dag.saveMempoolTx(tx);
     }
 
     // Stale-head retry (outside the txn): early txs (predecessor in flight)
@@ -580,7 +603,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.PRESCAN_COMPLETED && t.data?.ctid === d.ctid
         );
-        if (inBatch) return { valid: false, error: `PRESCAN_COMPLETED already in this batch for ${d.ctid}` };
+        if (inBatch) return { valid: false, error: `PRESCAN_COMPLETED already in this batch for ${d.ctid}`, duplicateOf: inBatch.tx_id };
         return { valid: true };
       }
 
@@ -591,7 +614,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.ADJUDICATION_RESULT && t.data?.ctid === d.ctid
         );
-        if (inBatch) return { valid: false, error: `ADJUDICATION_RESULT already in this batch for ${d.ctid}` };
+        if (inBatch) return { valid: false, error: `ADJUDICATION_RESULT already in this batch for ${d.ctid}`, duplicateOf: inBatch.tx_id };
         return { valid: true };
       }
 
@@ -602,7 +625,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.APPEAL_RESULT && t.data?.ctid === d.ctid
         );
-        if (inBatch) return { valid: false, error: `APPEAL_RESULT already in this batch for ${d.ctid}` };
+        if (inBatch) return { valid: false, error: `APPEAL_RESULT already in this batch for ${d.ctid}`, duplicateOf: inBatch.tx_id };
         return { valid: true };
       }
 
@@ -732,7 +755,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
         const inBatch = validated.find(t =>
           t.tx_type === TX_TYPES.REGISTER_CONTENT && t.data?.ctid === d.ctid
         );
-        if (inBatch) return { valid: false, error: `REGISTER_CONTENT already in this batch for ${d.ctid}` };
+        if (inBatch) return { valid: false, error: `REGISTER_CONTENT already in this batch for ${d.ctid}`, duplicateOf: inBatch.tx_id };
         // In-batch URL exclusivity. The committed-history half lives in
         // rules.canRegisterContent (via _statefulCheck); two same-round
         // registrations claiming the same registered_url both see clean

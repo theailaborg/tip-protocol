@@ -389,6 +389,74 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(mempool.size()).toBe(0);
   });
 
+  test("in-batch duplicate whose WINNER fails to commit is requeued, not orphaned", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    // Two copies of ONE content (same ctid, divergent rebuilt ids): the
+    // "winner" passes Phase 1 but STALES in Phase 2 (superseded head); the
+    // copy hits in-batch dedup. Old behavior dropped the copy forever , if
+    // the winner then dies too, the content is lost with no trace.
+    const base = _contentTx(dag, authorKp, "dup-base");
+    expect(handler.commitOrderedTxs([base], 1).committed).toBe(1);
+    const winner = _contentTx(dag, authorKp, "dup-orphan", { prev: [base.prev[0], base.prev[1]] });   // superseded head
+    const copy = { ...winner, prev: [base.tx_id, winner.prev[1]] };   // current head
+    copy.tx_id = computeTxId(copy);
+
+    const res = handler.commitOrderedTxs([winner, copy], 2);
+    expect(res.committed).toBe(0);
+    // The copy must be requeued (winner did not commit), not rejected.
+    expect(mempool.has(copy.tx_id)).toBe(true);
+    expect(dag.getTxRejection(copy.tx_id)).toBeNull();
+
+    // The content survives within bounded rounds (either surviving copy).
+    let landed = false;
+    for (let r = 3; r < 10 && !landed; r++) {
+      handler.commitOrderedTxs(mempool.drain(25), r);
+      landed = !!dag.getContent(winner.data.ctid);
+    }
+    expect(landed).toBe(true);
+  });
+
+  test("in-batch duplicate whose winner COMMITS is dropped as a true duplicate", () => {
+    const { createMempool } = require(path.join(SRC, "consensus", "mempool"));
+    const dag = initDAG({ dbPath: ":memory:" });
+    const nodeKp = generateMLDSAKeypair();
+    const vpKp = generateMLDSAKeypair();
+    const authorKp = generateMLDSAKeypair();
+    dag.saveNode({ node_id: NODE_ID, name: "n", public_key: nodeKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveVP({ vp_id: VP_ID, name: "vp", jurisdiction: "US", jurisdiction_tier: "green", public_key: vpKp.publicKey, status: "active", registered_at: 1767225600000 });
+    dag.saveIdentity({ tip_id: AUTHOR_TIP, region: "US", public_key: authorKp.publicKey, root_public_key: "00", vp_id: VP_ID, verification_tier: "T1", founding: false, status: "active", registered_at: 1767225600000, tx_id: seedAnchorTx(dag, TX_TYPES.REGISTER_IDENTITY, { tip_id: AUTHOR_TIP }) });
+    dag.setScore(AUTHOR_TIP, 750, 0, 1767225600000);
+    const config = { nodeId: NODE_ID, nodeRegisteredId: NODE_ID, nodePrivateKey: nodeKp.privateKey };
+    const scoring = initScoring(dag, config);
+    const mempool = createMempool(dag, { nodeId: NODE_ID });
+    const handler = createCommitHandler({ dag, scoring, mempool, config });
+
+    const winner = _contentTx(dag, authorKp, "dup-true");
+    const copy = { ...winner, prev: [...winner.prev] };
+    copy.data = { ...winner.data };
+    copy.timestamp = winner.timestamp + 1;   // distinct id, same ctid
+    copy.tx_id = computeTxId(copy);
+
+    const res = handler.commitOrderedTxs([winner, copy], 1);
+    expect(res.committed).toBe(1);
+    expect(mempool.has(copy.tx_id)).toBe(false);
+    expect(dag.getTxRejection(copy.tx_id)).not.toBeNull();
+    expect(dag.getContent(winner.data.ctid)).toBeTruthy();
+  });
+
   test("broken chain: whole tail stales, requeues re-chained, commits next round", () => {
     const fx = _setup();
     // A foreign-view tx commits first and moves the head.
