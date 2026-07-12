@@ -1512,6 +1512,11 @@ class KnexAdapter {
     this._ff(() => this._k("mempool").where("tx_id", txId).delete());
   }
 
+  pruneSupersededContentTxs() {
+    const ids = this.mirror.pruneSupersededContentTxs();
+    if (ids.length > 0) this._ff(() => this._k("transactions").whereIn("tx_id", ids).delete());
+    return ids;
+  }
   deleteMempoolTxs(txIds) {
     this.mirror.deleteMempoolTxs(txIds);
     if (txIds.length > 0) {

@@ -60,6 +60,21 @@ describe("KnexAdapter pending-owner-head primitives (handle-level burst chaining
     expect(_computePrevFor(a, TT, { node_id: NODE, ctid: "c4" })[0]).toBe("T2");
   });
 
+  test("pruneSupersededContentTxs drops non-canonical same-ctid history rows (install-union artifact)", () => {
+    const CT = "tip://c/OH-prunetest000000-0001";
+    // Superseded copy T1 and canonical T2 (content.tx_id points at T2).
+    a.mirror._txs.set("T1", { tx_id: "T1", tx_type: "REGISTER_CONTENT", data: { ctid: CT }, prev: [], timestamp: 1 });
+    a.mirror._txs.set("T2", { tx_id: "T2", tx_type: "REGISTER_CONTENT", data: { ctid: CT }, prev: [], timestamp: 2 });
+    a.mirror.saveContent({ ctid: CT, origin_code: "OH", content_hash: "aa", author_tip_id: "tip://id/US-x", signer_tip_id: "tip://id/US-x", status: "registered", registered_at: 2, tx_id: "T2" });
+
+    const pruned = a.pruneSupersededContentTxs();
+    expect(pruned).toEqual(["T1"]);
+    expect(a.mirror._txs.has("T1")).toBe(false);
+    expect(a.mirror._txs.has("T2")).toBe(true);
+    // Idempotent: second call finds nothing.
+    expect(a.pruneSupersededContentTxs()).toEqual([]);
+  });
+
   test("resetPendingOwnerHead rebases the lane onto the committed head", () => {
     _noteSealedTx(a, TT, { node_id: NODE, ctid: "c5" }, "T5");
     expect(a.getPendingOwnerHead(LANE)).toBe("T5");

@@ -184,7 +184,7 @@ async function tryFastSyncSnapshot(peerId, tipNodeId, { snapshotHandler, bullsha
 // SKIP the sync: probe timeouts turned every re-handshake into a production
 // stop and the churn compounded (2026-07-10 flip-flap); anti-entropy detects
 // and escalates a genuinely-needed sync within one tick anyway.
-async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus }) {
+async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatus, dag }) {
   if (typeof queryPeerStatus !== "function") return false;
   try {
     const peerStatus = await queryPeerStatus(peerId);
@@ -195,6 +195,13 @@ async function shouldSyncFromPeer(peerId, tipNodeId, { bullshark, queryPeerStatu
     const selfCommitted = (bullshark && typeof bullshark.lastCommittedRound === "function")
       ? Number(bullshark.lastCommittedRound() || 0) : 0;
     const peerCommitted = Number(peerStatus.committed_round || 0);
+    // Boot race: an unhydrated counter reads 0 while the DAG holds history , a
+    // spurious heavy sync here tears down a healthy node. Defer to AE, which
+    // compares attested heads instead of this counter.
+    if (selfCommitted === 0 && dag && typeof dag.getLatestRound === "function" && dag.getLatestRound() > 0) {
+      log.info(`Peer ${tipNodeId}: self counter unhydrated (0) with non-empty DAG , skipping bootstrap sync, AE will decide`);
+      return false;
+    }
     // A small lag heals via gossip + the light AE cert-pull; only a gap beyond the
     // tolerance warrants the heavy enterSyncMode (avoids self-suppression on jitter).
     if (peerCommitted - selfCommitted <= CONSENSUS.SYNC_FROM_PEER_TOLERANCE_ROUNDS) {

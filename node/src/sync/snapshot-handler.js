@@ -992,6 +992,16 @@ function createSnapshotHandler({ dag, network, isAuthorizedPeer = () => false, b
         await dag.flush();
         log.notice(`Snapshot: reconcile pruned ${prunedRows.length} stale local row(s) absent from the snapshot`);
       }
+      // Tx history is a union of local + peer rows: local REGISTER_CONTENT
+      // copies superseded by the canonical registration (content.tx_id) are
+      // pruned, or same-ctid duplicates accumulate across resyncs (2026-07-12).
+      if (typeof dag.pruneSupersededContentTxs === "function") {
+        const dupes = dag.pruneSupersededContentTxs();
+        if (dupes.length > 0) {
+          await dag.flush();
+          log.notice(`Snapshot: pruned ${dupes.length} superseded content tx row(s) from history`);
+        }
+      }
       // Full-table root must now equal the attested streamed-set root;
       // that proves the reconcile left exactly the peer's state.
       const fullStateRoot = computeStateMerkleRoot(dag);
