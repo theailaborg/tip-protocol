@@ -60,6 +60,106 @@ function ids(txs) { return txs.map(t => t.tx_id); }
 //    orphan-tx starvation bug returns. This is the seal.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Owner-bearing tx for lane tests: `owner` field + explicit `prev`. The stub
+// ownerOf below reads `tx.owner`, so these unit tests exercise lane logic
+// without the full signature-resolution machinery.
+function laneTx(id, owner, prev) {
+  return { tx_id: id, tx_type: "REGISTER_CONTENT", owner, prev: prev ? [prev] : [], data: {} };
+}
+function laneMempool() {
+  return createMempool(initDAG({ dbPath: ":memory:" }), { ownerOf: (tx) => (tx.owner ? { entityType: "id", entityId: tx.owner } : null) });
+}
+
+describe("mempool.drain: lane-aware chain-following (owner-chain burst liveness)", () => {
+  test("client sibling burst (same owner, same stale prev) drains only the lane FRONT", () => {
+    const mp = laneMempool();
+    for (const id of ["s1", "s2", "s3", "s4", "s5"]) mp.add(laneTx(id, "alice", "H0"));
+    expect(ids(mp.drain(25))).toEqual(["s1"]);
+    expect(mp.size()).toBe(4);
+  });
+
+  test("sealed burst chain (each prev == previous tx_id) drains the WHOLE chain in one round", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("c1", "bob", "HEAD"));
+    mp.add(laneTx("c2", "bob", "c1"));
+    mp.add(laneTx("c3", "bob", "c2"));
+    expect(ids(mp.drain(25))).toEqual(["c1", "c2", "c3"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("multiple lanes each contribute their committable prefix, siblings held back", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("a1", "alice", "HA"));
+    mp.add(laneTx("a2", "alice", "HA"));
+    mp.add(laneTx("b1", "bob", "HB"));
+    mp.add(laneTx("b2", "bob", "b1"));
+    mp.add(laneTx("x1", "carol", "HC"));
+    expect(ids(mp.drain(25))).toEqual(["a1", "b1", "b2", "x1"]);
+    expect(mp.size()).toBe(1);
+  });
+
+  test("owner-less txs (system / genesis) are not lane-restricted", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("n1", null, null));
+    mp.add(laneTx("n2", null, null));
+    expect(ids(mp.drain(25))).toEqual(["n1", "n2"]);
+  });
+
+  test("a chain inserted REVERSED (stale-requeue addFront order) drains whole, in dependency order", () => {
+    const mp = laneMempool();
+    // Stale requeue rebuilds base-first but addFront-prepends each, leaving
+    // the chain TAIL at the mempool front (live churn repro 2026-07-12:
+    // ~11 OWNER_HEAD_STALE bounces per tx). Drain must follow prev links,
+    // not mempool order.
+    mp.add(laneTx("r3", "bob", "r2"));
+    mp.add(laneTx("r2", "bob", "r1"));
+    mp.add(laneTx("r1", "bob", "HEAD"));
+    expect(ids(mp.drain(25))).toEqual(["r1", "r2", "r3"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("a scrambled chain drains whole, in dependency order", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("m2", "bob", "m1"));
+    mp.add(laneTx("m4", "bob", "m3"));
+    mp.add(laneTx("m1", "bob", "HEAD"));
+    mp.add(laneTx("m3", "bob", "m2"));
+    expect(ids(mp.drain(25))).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(mp.size()).toBe(0);
+  });
+
+  test("drain limit cuts a chain to a committable PREFIX, remainder drains next round", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("p1", "bob", "HEAD"));
+    mp.add(laneTx("p2", "bob", "p1"));
+    mp.add(laneTx("p3", "bob", "p2"));
+    expect(ids(mp.drain(2))).toEqual(["p1", "p2"]);
+    expect(ids(mp.drain(2))).toEqual(["p3"]);
+  });
+});
+
+describe("mempool.tombstone: dead tx_ids stay dead (gossip resurrection guard)", () => {
+  test("a tombstoned id is rejected by add and addFront", () => {
+    const mp = laneMempool();
+    mp.tombstone("dead-1");
+    expect(mp.add(laneTx("dead-1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+    expect(mp.addFront(laneTx("dead-1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+    expect(mp.size()).toBe(0);
+    // A different id is unaffected.
+    expect(mp.add(laneTx("alive-1", "bob", "HEAD"))).toEqual({ added: true });
+  });
+
+  test("tombstoning a pending tx removes it from the mempool", () => {
+    const mp = laneMempool();
+    mp.add(laneTx("t1", "bob", "HEAD"));
+    mp.add(laneTx("t2", "bob", "t1"));
+    mp.tombstone("t1");
+    expect(mp.has("t1")).toBe(false);
+    expect(mp.size()).toBe(1);
+    expect(mp.add(laneTx("t1", "bob", "HEAD"))).toEqual({ added: false, reason: "tombstoned" });
+  });
+});
+
 describe("mempool — baseline FIFO drain order (addFront's substrate)", () => {
   test("drain returns txs in add() order", () => {
     const dag = initDAG({ dbPath: ":memory:" });
@@ -405,7 +505,7 @@ describe("mempool — tx_rejections wiring on TTL eviction", () => {
 
     const stale1 = makeTx("STALE-1", { tx_type: "REGISTER_IDENTITY" });
     const stale2 = makeTx("STALE-2", { tx_type: "REGISTER_CONTENT" });
-    const fresh  = makeTx("FRESH",   { tx_type: "REGISTER_IDENTITY" });
+    const fresh = makeTx("FRESH", { tx_type: "REGISTER_IDENTITY" });
 
     // Both planted with receivedAt 5s in the past — well past 1s TTL.
     mempool.addFront(stale1, nowMs() - 5000);

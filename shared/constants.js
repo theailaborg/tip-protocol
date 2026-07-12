@@ -656,9 +656,10 @@ const DISPUTE_EVENT_PRIORITY = Object.freeze({
 const OWNER_HEAD_STALE_MAX_RETRIES = 8;
 
 // Pending-head freshness bound for same-owner burst chaining: a sealed-but-
-// uncommitted tx older than this stops being a chain base (falls back to the
-// committed head), so a lost tx cannot wedge its owner's sealing forever.
-const PENDING_OWNER_HEAD_TTL_MS = 30_000;
+// uncommitted tx older than this stops being a chain base. Must exceed a deep
+// lane's worst-case commit latency , expiry mid-flight makes the next seal a
+// SIBLING and cascades (2026-07-12); a lost tx still unblocks via ghost rebuild.
+const PENDING_OWNER_HEAD_TTL_MS = 180_000;
 
 const TX_REJECTION_REASON = Object.freeze({
   // Site 1 — mempool admission (post-API, pre-batch)

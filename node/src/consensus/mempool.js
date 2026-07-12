@@ -24,6 +24,7 @@ const { nowMs } = require("../../../shared/time");
 const { CONSENSUS } = require("../../../shared/protocol-constants");
 const { TX_REJECTION_REASON } = require("../../../shared/constants");
 const { createRejectionSink } = require("./tx-rejection-sink");
+const { ownerOf: _defaultOwnerOf, ownerKey } = require("./tx-owner");
 const { getLogger } = require("../logger");
 
 const log = getLogger("tip.mempool");
@@ -41,6 +42,9 @@ const log = getLogger("tip.mempool");
 function createMempool(dag, options = {}) {
   const maxSize = options.maxSize || CONSENSUS.MEMPOOL_MAX_SIZE;
   const maxTxAgeSec = options.maxTxAgeSec || CONSENSUS.MEMPOOL_TX_TTL_SECONDS;
+  // Injectable so unit tests can stub owner resolution without full signature
+  // machinery; production uses the real signer-entity resolver.
+  const _ownerOf = typeof options.ownerOf === "function" ? options.ownerOf : _defaultOwnerOf;
 
   // tx_rejections sink (#64) — shared with commit-handler so every
   // drop site in the codebase produces identically-shaped rows.
@@ -48,6 +52,12 @@ function createMempool(dag, options = {}) {
 
   /** @type {Map<string, { tx: Object, receivedAt: number }>} */
   const _pending = new Map();
+
+  // Gossip has no drop memory: without tombstones peers re-add dead copies
+  // forever (~3.2k foreign drops per peer per burst, 2026-07-12). Pruned
+  // after maxTxAgeSec, once every live copy has aged out of peers' mempools.
+  /** @type {Map<string, number>} */
+  const _tombstones = new Map();
 
   /** @type {Function|null} Callback when a tx is added (used by Narwhal to wake from idle) */
   let _onTxAdded = null;
@@ -85,6 +95,11 @@ function createMempool(dag, options = {}) {
     if (!tx || !tx.tx_id) {
       _counters.rejected_total++;
       return { added: false, reason: "tx missing tx_id" };
+    }
+
+    if (_tombstones.has(tx.tx_id)) {
+      _counters.rejected_total++;
+      return { added: false, reason: "tombstoned" };
     }
 
     if (_pending.has(tx.tx_id)) {
@@ -136,6 +151,19 @@ function createMempool(dag, options = {}) {
   // peers reject the cert, stalling consensus (live halt, 2026-07-04).
   const _batchByteBudget = () => Math.floor(CONSENSUS.CERTIFICATE_MAX_BYTES * 0.85);
 
+  // Owner-lane resolution memoized on the entry: drain scans the whole
+  // mempool each round and ownerOf parses signer fields, so recomputing per
+  // scan is wasteful (owner is immutable per tx).
+  function _laneOf(entry) {
+    if (entry._laneComputed) return entry._lane;
+    let lane = null;
+    try { const o = _ownerOf(entry.tx); lane = o ? ownerKey(o) : null; }
+    catch { lane = null; }
+    entry._lane = lane;
+    entry._laneComputed = true;
+    return lane;
+  }
+
   function drain(limit = CONSENSUS.MAX_TXS_PER_CERTIFICATE) {
     _evictStale();
 
@@ -143,13 +171,54 @@ function createMempool(dag, options = {}) {
     const drained = [];
     const drainedIds = [];
     let bytes = 0;
+
+    // Emit each owner lane in prev-link DEPENDENCY order: insertion order lies
+    // (requeue addFront reverses chains; ~11x stale churn per tx, 2026-07-12).
+    // Siblings: first wins, rest held. Owner-less txs are never restricted.
+    const laneMembers = new Map();   // lane -> Set<tx_id>
+    const laneByPrev = new Map();    // lane -> Map<prev0, [txId, entry]>
     for (const [txId, entry] of _pending) {
-      if (drained.length >= limit) break;
+      const lane = _laneOf(entry);
+      if (lane === null) continue;
+      if (!laneMembers.has(lane)) { laneMembers.set(lane, new Set()); laneByPrev.set(lane, new Map()); }
+      laneMembers.get(lane).add(txId);
+      const prev0 = (entry.tx.prev && entry.tx.prev[0]) || null;
+      const byPrev = laneByPrev.get(lane);
+      if (!byPrev.has(prev0)) byPrev.set(prev0, [txId, entry]);   // later siblings held
+    }
+
+    const _take = (txId, entry) => {
+      if (drained.length >= limit) return false;
       const sz = entry.tx?._wireBytes || Buffer.byteLength(JSON.stringify(entry.tx));
-      if (drained.length > 0 && bytes + sz > byteBudget) break;
+      if (drained.length > 0 && bytes + sz > byteBudget) return false;
       drained.push(entry.tx);
       drainedIds.push(txId);
       bytes += sz;
+      return true;
+    };
+
+    const laneDone = new Set();
+    let stop = false;
+    for (const [txId, entry] of _pending) {
+      if (stop) break;
+      const lane = _laneOf(entry);
+      if (lane === null) { if (!_take(txId, entry)) stop = true; continue; }
+      if (laneDone.has(lane)) continue;
+      laneDone.add(lane);
+      // Chain base: the member whose prev0 is NOT another member's tx_id ,
+      // it hangs off already-committed (or in-flight) state, so it's the only
+      // tx in the lane that can possibly commit this round.
+      const members = laneMembers.get(lane);
+      const byPrev = laneByPrev.get(lane);
+      let cur = null;
+      for (const [p0, pair] of byPrev) { if (!members.has(p0)) { cur = pair; break; } }
+      // No base (members only reference each other): hold the lane this round.
+      const seen = new Set();
+      while (cur && !seen.has(cur[0])) {
+        seen.add(cur[0]);
+        if (!_take(cur[0], cur[1])) { stop = true; break; }
+        cur = byPrev.get(cur[0]) || null;   // continuation chains onto the taken tx
+      }
     }
 
     // Remove from memory
@@ -237,8 +306,30 @@ function createMempool(dag, options = {}) {
    * Remove txs that have been in the mempool too long.
    * Cleans both memory and disk.
    */
+  /**
+   * Mark a tx_id permanently dead (rebuilt away, foreign-signed stale, or
+   * revalidation-failed); late copies from gossip/peer batches are rejected.
+   * @param {string} txId
+   */
+  function tombstone(txId) {
+    if (typeof txId !== "string" || txId.length === 0) return;
+    _tombstones.set(txId, nowMs());
+    if (_pending.delete(txId) && dag && typeof dag.deleteMempoolTxs === "function") {
+      try { dag.deleteMempoolTxs([txId]); } catch (err) {
+        log.warn(`Mempool tombstone disk cleanup failed: ${err.message}`);
+      }
+    }
+  }
+
+  function isTombstoned(txId) {
+    return _tombstones.has(txId);
+  }
+
   function _evictStale() {
     const cutoff = nowMs() - (maxTxAgeSec * 1000);
+    for (const [txId, at] of _tombstones) {
+      if (at < cutoff) _tombstones.delete(txId);
+    }
     const evicted = [];  // [{ txId, tx }] — keep the body for tx_rejections
     for (const [txId, entry] of _pending) {
       if (entry.receivedAt < cutoff) {
@@ -323,6 +414,10 @@ function createMempool(dag, options = {}) {
       _counters.rejected_total++;
       return { added: false, reason: "tx missing tx_id" };
     }
+    if (_tombstones.has(tx.tx_id)) {
+      _counters.rejected_total++;
+      return { added: false, reason: "tombstoned" };
+    }
     if (_pending.has(tx.tx_id)) {
       // Already in mempool — common after partial requeue or double-submit.
       // Not an error; just leave the existing entry in place.
@@ -371,7 +466,7 @@ function createMempool(dag, options = {}) {
     return null;
   }
 
-  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded, peekRotationTx };
+  return { add, addFront, drain, remove, has, getAll, size, clear, stats, onTxAdded, peekRotationTx, tombstone, isTombstoned };
 }
 
 module.exports = { createMempool };

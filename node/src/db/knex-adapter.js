@@ -1157,6 +1157,11 @@ class KnexAdapter {
   noteSealedTx(txType, data, txId) { return _noteSealedTx(this.mirror, txType, data, txId); }
   isPendingSealedTx(txId) { return this.mirror.isPendingSealedTx(txId); }
   resetPendingOwnerHead(entityKey) { return this.mirror.resetPendingOwnerHead(entityKey); }
+  // Pending-head primitives: _buildDagHandle's helpers probe these directly
+  // with silent no-op fallbacks , missing them killed burst chaining on
+  // Postgres (every seal fell back to the committed head, 2026-07-12).
+  notePendingOwnerHead(entityKey, txId) { return this.mirror.notePendingOwnerHead(entityKey, txId); }
+  getPendingOwnerHead(entityKey) { return this.mirror.getPendingOwnerHead(entityKey); }
   rebuildStateTree() { return this.mirror.rebuildStateTree(); }
 
   clearCanonicalState() {
