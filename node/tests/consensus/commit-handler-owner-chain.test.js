@@ -457,6 +457,24 @@ describe("commit-handler: owner-chain prev validation + stale-head retry", () =>
     expect(dag.getContent(winner.data.ctid)).toBeTruthy();
   });
 
+  test("a duplicate copy resurfacing in a LATER wave after its winner committed is rejected, never double-registered", () => {
+    const fx = _setup();
+    const winner = _contentTx(fx.dag, fx.authorKp, "cross-wave-dup");
+    expect(fx.handler.commitOrderedTxs([winner], 1).committed).toBe(1);
+
+    // A divergent copy (same ctid, different tx_id, valid prev) arrives in a
+    // later wave , e.g. a held dup requeued on another node. Phase B's
+    // canRegisterContent (committed-state getContent) must reject it.
+    const copy = { ...winner, prev: [winner.tx_id, winner.prev[1]] };
+    copy.timestamp = winner.timestamp + 1;
+    copy.tx_id = computeTxId(copy);
+    const res = fx.handler.commitOrderedTxs([copy], 2);
+    expect(res.committed).toBe(0);
+    const rej = fx.dag.getTxRejection(copy.tx_id);
+    expect(rej).not.toBeNull();
+    expect(rej.reason).toBe(TX_REJECTION_REASON.CONTENT_ALREADY_REGISTERED);
+  });
+
   test("broken chain: whole tail stales, requeues re-chained, commits next round", () => {
     const fx = _setup();
     // A foreign-view tx commits first and moves the head.

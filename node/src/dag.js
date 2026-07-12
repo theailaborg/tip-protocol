@@ -1773,6 +1773,19 @@ class MemoryStore {
   }
   deleteMempoolTx(txId) { this._mempool.delete(txId); }
   deleteMempoolTxs(txIds) { for (const id of txIds) this._mempool.delete(id); }
+  // Snapshot install-on-top unions local + peer tx history; local REGISTER_CONTENT
+  // copies superseded by the canonical registration (content.tx_id) are dropped.
+  pruneSupersededContentTxs() {
+    const removed = [];
+    for (const [txId, tx] of this._txs) {
+      if (tx.tx_type !== "REGISTER_CONTENT") continue;
+      const ctid = tx.data && tx.data.ctid;
+      if (!ctid) continue;
+      const rec = this._content.get(ctid);
+      if (rec && rec.tx_id && rec.tx_id !== txId) { this._txs.delete(txId); removed.push(txId); }
+    }
+    return removed;
+  }
   clearStaleMempoolTxs() { /* no-op for in-memory tests */ }
   mempoolCount() { return this._mempool.size; }
 
@@ -3889,6 +3902,15 @@ class SQLiteStore {
     const batch = this.db.transaction((ids) => { for (const id of ids) del.run(id); });
     batch(txIds);
   }
+  pruneSupersededContentTxs() {
+    const rows = this.db.prepare(
+      `SELECT t.tx_id FROM transactions t JOIN content c ON c.tip_ctid = json_extract(t.data,'$.ctid')
+       WHERE t.tx_type='REGISTER_CONTENT' AND c.tx_id != t.tx_id`
+    ).all();
+    const del = this.db.prepare("DELETE FROM transactions WHERE tx_id=?");
+    for (const r of rows) del.run(r.tx_id);
+    return rows.map(r => r.tx_id);
+  }
   clearStaleMempoolTxs(beforeUnixSec) {
     this._stmts.clearMempoolBefore.run(beforeUnixSec);
   }
@@ -4471,6 +4493,7 @@ function _buildDagHandle(store, config) {
     getMempoolTxsByTipId: (tipId) => store.getMempoolTxsByTipId(tipId),
     deleteMempoolTx: (txId) => store.deleteMempoolTx(txId),
     deleteMempoolTxs: (txIds) => store.deleteMempoolTxs(txIds),
+    pruneSupersededContentTxs: () => typeof store.pruneSupersededContentTxs === "function" ? store.pruneSupersededContentTxs() : [],
     clearStaleMempoolTxs: (before) => store.clearStaleMempoolTxs(before),
     mempoolCount: () => store.mempoolCount(),
 

@@ -270,7 +270,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
     let rebuilt = { ...tx, prev: dag.prevFor(tx.tx_type, tx.data) };
     rebuilt.tx_id = computeTxId(rebuilt);
     if (rebuilt.tx_id === tx.tx_id) return "noop";   // head didn't actually change; nothing to gain
-    if (!_verifyTxSignature(rebuilt)) {
+    if (!_verifyTxSignature(rebuilt, { quiet: true })) {
       const owner = ownerOf(tx);
       const selfOwned = owner && owner.entityType === "node" && owner.entityId === droppingNodeId;
       if (!selfOwned || !(config && config.nodePrivateKey)) {
@@ -1996,7 +1996,7 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
    *     BIND_DOMAIN (user's claim sig) and CONTENT_DISPUTED auto+manual
    *     (creator's escalation authorisation).
    */
-  function _verifyTxSignature(tx) {
+  function _verifyTxSignature(tx, { quiet = false } = {}) {
     const tt = tx.tx_type;
     const d = tx.data || {};
 
@@ -2008,7 +2008,11 @@ function createCommitHandler({ dag, scoring, mempool, verdictTrigger, cleanRecor
       const schema = SCHEMA_FOR_TX_TYPE[tt] ?? null;
       const result = unifiedVerifyTxSignature(tx, schema, dag);
       if (!result.ok) {
-        log.warn(`Round-replay signature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${result.error}`);
+        // quiet: the requeue rebuild PROBES whether the old envelope signature
+        // survives a prev rewrite , failure there is the expected outcome
+        // (re-sign or tombstone follows), not an integrity event. Hundreds of
+        // probe warns per burst drowned real failures (2026-07-12).
+        if (!quiet) log.warn(`Round-replay signature check failed for ${tt} tx ${tx.tx_id?.slice(0, 16)}: ${result.error}`);
         return false;
       }
 

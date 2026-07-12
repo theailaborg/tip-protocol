@@ -161,6 +161,7 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
   let _lastSnapshotResyncCompletedAt = 0;
   let _minorityRecoveryPending = false;
   let _snapshotResyncInFlight = false;  // Bug 1: prevents concurrent calls on this node
+  let _attestedPullEmpty = 0;           // consecutive attested-gap pulls that imported nothing
   // Deterministic stagger offset for _autoRecoverFromMinority scheduling.
   // Computed once from node_id so different nodes fire at different times,
   // preventing all 5 from entering snapshot-install simultaneously.
@@ -1214,6 +1215,17 @@ function createAntiEntropy({ network, syncHandler, snapshotHandler, narwhal, get
         const pulled = await syncHandler.syncFromPeer(peerId, { fromRound: selfAttestedHead + 1 });
         if (pulled?.imported > 0 && narwhal && typeof narwhal.reconcileCurrentRound === "function") {
           narwhal.reconcileCurrentRound();
+          _attestedPullEmpty = 0;
+        } else {
+          // Cert import can't materialize past commit ROWS: repeated empty
+          // pulls with the gap persisting mean the history is unfetchable ,
+          // escalate to snapshot deterministically instead of ticking forever.
+          _attestedPullEmpty++;
+          if (_attestedPullEmpty >= 3) {
+            _log.warn(`anti-entropy: ${_attestedPullEmpty} attested-gap pulls landed nothing (head still ${selfAttestedHead} < ${peerAttestedHead}) , escalating to snapshot resync`);
+            _attestedPullEmpty = 0;
+            return await triggerSnapshotResync(selfCommitted, 0);
+          }
         }
         _metrics.gaps_pulled++;
       } catch (err) {

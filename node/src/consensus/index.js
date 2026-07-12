@@ -199,6 +199,7 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
   const syncHandler = createSyncHandler({
     dag, network, isAuthorizedPeer,
     onCertsImported: (round) => { if (_driveCommitAfterSync) _driveCommitAfterSync(round); },
+    preVerifyTxs: (txs) => _preVerifyIncomingTxs(txs),
   });
 
   // ── Create snapshot handler (§14 state-snapshot fast-sync) ─────────────────
@@ -318,6 +319,10 @@ function initConsensus({ dag, scoring, config, network, isAuthorizedPeer = () =>
     }
     log.debug(`preverify: marked=${marked} skipped=${skipped} unresolvable=${unresolvable} failed=${failed} of ${txs.length}`);
   }
+
+  // Restart closes the registry (in-memory): restored mempool txs would pay
+  // full sync verify at their first commit. Pre-verify them at boot.
+  if (mempool.size() > 0) _preVerifyIncomingTxs(mempool.getAll());
 
   const narwhal = createNarwhal({
     dag, mempool, network, config, cryptoPool,

@@ -350,15 +350,22 @@ function createBullshark({ dag, getNodeIds, onOrderedTxs, proposer, onMissingCer
           // produces a different tx set than honest peers → byzantine_fork halt.
           // Trigger a snapshot resync instead so we pull the correct committed
           // state from a peer rather than writing divergent state locally.
-          if (stillMissing > 0 && typeof onMissingCertsTimeout === "function") {
-            log.warn(
-              `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
-              `missing — triggering snapshot resync instead of force-committing divergent state`
-            );
+          if (stillMissing > 0) {
+            // NEVER force-commit a truncated wave: it produces a different tx
+            // set than peers (byzantine_fork). Resync when wired; otherwise
+            // leave the anchor unparked for gossip/AE to retry with full certs.
             _pendingAnchorCommit = null;
-            onMissingCertsTimeout(voteRound, stillMissing);
+            if (typeof onMissingCertsTimeout === "function") {
+              log.warn(
+                `Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) permanently ` +
+                `missing , triggering snapshot resync instead of force-committing divergent state`
+              );
+              onMissingCertsTimeout(voteRound, stillMissing);
+            } else {
+              log.error(`Round ${voteRound}: deferred anchor timed out with ${stillMissing} cert(s) missing and no resync handler , holding commit, retrying on next cert/round`);
+            }
           } else {
-            log.warn(`Round ${voteRound}: deferred anchor timed out — committing with available certs (${stillMissing} still missing)`);
+            log.warn(`Round ${voteRound}: deferred anchor timed out , committing (certs arrived)`);
             _pendingAnchorCommit = null;
             _checkAnchorCommit(voteRound, { force: true });
           }
