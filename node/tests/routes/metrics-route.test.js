@@ -216,6 +216,25 @@ describe("GET /metrics — Prometheus exposition format", () => {
     expect(res.text).toMatch(/^tip_dag_tx_count/m);
   });
 
+  test("identity + content counts emitted from the DAG", async () => {
+    const app = makeApp({
+      consensus: { current: null },
+      dag: { count: () => 12, certificateCount: () => 4, identityCount: () => 57, contentCount: () => 231 },
+    });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/^tip_dag_identity_count\{node="tip:\/\/node\/self"\} 57$/m);
+    expect(res.text).toMatch(/^tip_dag_content_count\{node="tip:\/\/node\/self"\} 231$/m);
+  });
+
+  test("identity + content counts default to 0 when the store lacks the accessors", async () => {
+    // defaultDag has neither identityCount nor contentCount — the scrape
+    // must still succeed and emit defensible zeros.
+    const app = makeApp({ consensus: { current: null } });
+    const res = await request(app).get("/metrics");
+    expect(res.text).toMatch(/^tip_dag_identity_count\{node="tip:\/\/node\/self"\} 0$/m);
+    expect(res.text).toMatch(/^tip_dag_content_count\{node="tip:\/\/node\/self"\} 0$/m);
+  });
+
   test("network metrics appear when network is running", async () => {
     const app = makeApp({
       consensus: { current: { stats: () => fakeStats(), isConsensusHalted: () => ({ halted: false, reason: "healthy" }) } },

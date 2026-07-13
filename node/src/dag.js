@@ -640,10 +640,12 @@ class MemoryStore {
       return key ? { ...row, public_key: key.public_key, algorithm: key.algorithm } : { ...row };
     });
   }
+  identityCount() { return this._identities.size; }
 
   // ── Content ───────────────────────────────────────────────────────────────
   saveContent(rec) { this._content.set(rec.ctid, { ...rec }); }
   getContent(ctid) { return this._content.get(ctid) || null; }
+  contentCount() { return this._content.size; }
   updateContentStatus(ctid, status) {
     const rec = this._content.get(ctid);
     if (rec) this._content.set(ctid, { ...rec, status });
@@ -2320,6 +2322,7 @@ class SQLiteStore {
            ON k.entity_type='identity' AND k.entity_id=i.tip_id AND k.valid_to_ts IS NULL
          WHERE i.status='active'`
       ),
+      identityCount: this.db.prepare("SELECT COUNT(*) AS n FROM identities"),
 
       saveContent: this.db.prepare(
         `INSERT OR REPLACE INTO content
@@ -2332,6 +2335,7 @@ class SQLiteStore {
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ),
       getContent: this.db.prepare("SELECT * FROM content WHERE tip_ctid=?"),
+      contentCount: this.db.prepare("SELECT COUNT(*) AS n FROM content"),
       updateContentStatus: this.db.prepare("UPDATE content SET status=? WHERE tip_ctid=?"),
       updateContentOrigin: this.db.prepare("UPDATE content SET origin_code=?, status=? WHERE tip_ctid=?"),
       contentByAuthor: this.db.prepare("SELECT * FROM content WHERE author_tip_id=?"),
@@ -3003,6 +3007,7 @@ class SQLiteStore {
   getAllIdentities() {
     return this._stmts.getAllIdentities.all().map(r => this._parseIdentityRow(r));
   }
+  identityCount() { return this._stmts.identityCount.get().n; }
   _parseIdentityRow(row) {
     let interests = [];
     if (typeof row.interests === "string" && row.interests.length > 0) {
@@ -3072,6 +3077,7 @@ class SQLiteStore {
     };
   }
   getContent(ctid) { return this._hydrateContent(this._stmts.getContent.get(ctid)); }
+  contentCount() { return this._stmts.contentCount.get().n; }
   updateContentStatus(ctid, status) { this._stmts.updateContentStatus.run(status, ctid); }
   updateContentOrigin(ctid, originCode, status) { this._stmts.updateContentOrigin.run(originCode, status, ctid); }
   getContentByAuthor(tipId) { return this._stmts.contentByAuthor.all(tipId).map(r => this._hydrateContent(r)); }
@@ -4290,10 +4296,12 @@ function _buildDagHandle(store, config) {
     saveIdentity: (rec) => store.saveIdentity(rec),
     getIdentity: (id) => store.getIdentity(id),
     getAllIdentities: () => store.getAllIdentities(),
+    identityCount: () => store.identityCount(),
 
     // ── Content ───────────────────────────────────────────────────────────
     saveContent: (rec) => store.saveContent(rec),
     getContent: (ctid) => store.getContent(ctid),
+    contentCount: () => store.contentCount(),
     updateContentStatus: (ctid, s) => store.updateContentStatus(ctid, s),
     updateContentOrigin: (ctid, o, s) => store.updateContentOrigin(ctid, o, s),
     getContentByAuthor: (id) => store.getContentByAuthor(id),
