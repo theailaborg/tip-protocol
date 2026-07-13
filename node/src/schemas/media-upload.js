@@ -81,7 +81,12 @@ function detectMime(bytes) {
 
   // audio
   if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return "audio/mpeg";            // ID3-tagged MP3
-  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return "audio/mpeg";                    // raw MP3 frame sync
+  // Raw MPEG audio frame sync: 11 sync bits, plus a non-reserved version
+  // (bits != 01) and layer (bits != 00). The reserved-bit checks reject
+  // ADTS AAC (layer bits 00), which otherwise false-matches as mp3.
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 0x18) !== 0x08 && (b[1] & 0x06) !== 0x00) {
+    return "audio/mpeg";
+  }
   if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return "audio/ogg";
   if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return "audio/flac";
 
@@ -92,10 +97,10 @@ function detectMime(bytes) {
     return _isobmffMime(b);
   }
 
-  // Matroska / WebM. The EBML magic is shared by video and audio-only
-  // (.mka/.weba) streams; splitting them needs a DocType + track parse
-  // beyond the sniff window, so audio-only Matroska/WebM is not resolved.
-  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
+  // Matroska / WebM (EBML). The DocType element separates matroska from
+  // webm; audio-only EBML (.mka/.weba) still can't be split from video
+  // without a Tracks parse, so both resolve to a video mime.
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return _ebmlMime(b);
 
   return null;
 }
@@ -117,6 +122,26 @@ function _isobmffMime(b) {
   if (brands.some((x) => HEIF_BRANDS.has(x))) return "image/heif";
   if (brands.some((x) => x.startsWith("M4A") || x.startsWith("M4B"))) return "audio/mp4";
   return "video/mp4";
+}
+
+// Resolve an EBML container (Matroska/WebM) by its DocType. The header
+// carries a DocType element (id 0x4282) holding "webm" or "matroska"; scan
+// the sniffed bytes for it. Audio-only EBML (.mka/.weba) is NOT split from
+// video here (that needs a Tracks/TrackType parse deeper in the file), so
+// both resolve to a video mime, the permissive and safe default.
+function _ebmlMime(b) {
+  const end = Math.min(b.length, 64);
+  for (let i = 4; i + 2 < end; i++) {
+    if (b[i] === 0x42 && b[i + 1] === 0x82) {
+      const len = b[i + 2] & 0x7f; // EBML vint: strip the length-descriptor bit
+      const start = i + 3;
+      if (len > 0 && start + len <= b.length && b.slice(start, start + len).toString("latin1") === "matroska") {
+        return "video/x-matroska";
+      }
+      break;
+    }
+  }
+  return "video/webm";
 }
 
 /**

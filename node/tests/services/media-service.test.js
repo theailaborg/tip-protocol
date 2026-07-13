@@ -66,6 +66,18 @@ function _ftyp(major, compat = []) {
   return Buffer.concat([size, box]);
 }
 
+// Minimal EBML header: magic, then a DocType element (id 0x4282, 1-byte
+// vint length, string). `null` doctype omits the element (fallback path).
+function _ebml(doctype) {
+  const parts = [Buffer.from([0x1a, 0x45, 0xdf, 0xa3])];
+  if (doctype != null) {
+    const dt = Buffer.from(doctype);
+    parts.push(Buffer.from([0x42, 0x82, 0x80 | dt.length]), dt);
+  }
+  parts.push(Buffer.alloc(16));
+  return Buffer.concat(parts);
+}
+
 function _signedUpload(bytes, mime, signerTipId, kp, timestamp = nowMs()) {
   const content_hash = shake256(bytes);
   const challenge = mediaUploadSchema.buildChallenge({ content_hash, mime, timestamp, signer_tip_id: signerTipId });
@@ -739,7 +751,7 @@ describe("media-service.fetchForReviewer — idx + cross-node", () => {
   });
 });
 
-describe("detectMime — ISO-BMFF brand resolution", () => {
+describe("detectMime: ISO-BMFF brand resolution", () => {
   const { detectMime } = mediaUploadSchema;
 
   test("HEIC major brand resolves to image/heic (prod shape: heic + mif1)", () => {
@@ -780,5 +792,30 @@ describe("detectMime — ISO-BMFF brand resolution", () => {
     expect(detectMime(_ftyp("isom", ["mp42"]))).toBe("video/mp4");
     expect(detectMime(_ftyp("M4V "))).toBe("video/mp4");
     expect(detectMime(_ftyp("qt  "))).toBe("video/mp4");
+  });
+});
+
+describe("detectMime: audio/video magic hardening", () => {
+  const { detectMime } = mediaUploadSchema;
+  const _pad = (head) => Buffer.concat([Buffer.from(head), Buffer.alloc(12)]);
+
+  test("real MPEG frame sync (non-reserved version + layer) is audio/mpeg", () => {
+    expect(detectMime(_pad([0xff, 0xfb]))).toBe("audio/mpeg"); // MPEG1 Layer III
+    expect(detectMime(_pad([0xff, 0xf3]))).toBe("audio/mpeg"); // MPEG2 Layer III
+    expect(detectMime(_pad([0xff, 0xe3]))).toBe("audio/mpeg"); // MPEG2.5 Layer III
+  });
+
+  test("ADTS AAC (reserved layer bits) is rejected, not mislabeled as mp3", () => {
+    expect(detectMime(_pad([0xff, 0xf1]))).toBe(null);
+    expect(detectMime(_pad([0xff, 0xf9]))).toBe(null);
+  });
+
+  test("EBML DocType splits matroska from webm", () => {
+    expect(detectMime(_ebml("webm"))).toBe("video/webm");
+    expect(detectMime(_ebml("matroska"))).toBe("video/x-matroska");
+  });
+
+  test("EBML without a readable DocType falls back to video/webm", () => {
+    expect(detectMime(_ebml(null))).toBe("video/webm");
   });
 });
