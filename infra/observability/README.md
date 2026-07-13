@@ -136,6 +136,8 @@ The landing page (set as Grafana default home). Six headline health stats plus a
 | Quorum margin (min) | Active participants beyond quorum on the weakest node. 0 = one drop halts. | `tip_consensus_quorum_margin` |
 | Committed round (max) | Highest committed round across the fleet. | `tip_bullshark_last_committed_round` |
 | Rotation number | Current committee rotation number. | `tip_committee_current_rotation_number` |
+| Verified identities (TIP IDs) | Total verified identities in canonical state, all statuses (fleet max). | `tip_dag_identity_count` |
+| Registered content (CTIDs) | Total registered content items in canonical state, all statuses (fleet max). | `tip_dag_content_count` |
 | All TIP dashboards | navigation list (links to the other dashboards) | `n/a` |
 
 ### TIP Consensus Health (`tip-consensus-health`)
@@ -205,6 +207,8 @@ Fleet overview: registry vs online state, committee size and quorum, per-node co
 | DAG transactions | Total transactions committed to the DAG (fleet max). | `tip_dag_tx_count` |
 | DAG certificates | Certificates currently in the DAG, bounded by cert GC (fleet max). | `tip_dag_cert_count` |
 | Registered nodes (DAG) | Nodes in the DAG registry, active + inactive (fleet max). | `tip_dag_registered_nodes` |
+| Verified identities (TIP IDs) | Total verified identities in canonical state, all statuses (fleet max). | `tip_dag_identity_count` |
+| Registered content (CTIDs) | Total registered content items in canonical state, all statuses (fleet max). | `tip_dag_content_count` |
 | Cert-DAG merkle root per node | Current certificate-DAG merkle root per node. All nodes should show the SAME root; a divergent root is a fork before anti-entropy flags it. | `tip_cert_merkle_root_info, tip_node_registry_info` |
 | Mempool size vs capacity | Per-node mempool depth against its capacity ceiling. Size approaching capacity is back-pressure. | `tip_mempool_size, tip_node_registry_info` |
 | Producer-pause per node (rotation boundary) | Milliseconds each node has been producer-paused at a rotation boundary. Sustained > 0 is a stuck boundary. | `tip_consensus_producer_paused_ms, tip_node_registry_info` |

@@ -368,13 +368,113 @@
       "description": "Current committee rotation number."
     },
     {
+      "id": 3009,
+      "type": "stat",
+      "title": "Verified identities (TIP IDs)",
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_identity_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Total verified identities (TIP IDs) in canonical state, all statuses (fleet max)."
+    },
+    {
+      "id": 3010,
+      "type": "stat",
+      "title": "Registered content (CTIDs)",
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_content_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Total registered content items (CTIDs) in canonical state, all statuses (fleet max)."
+    },
+    {
       "id": 3020,
       "type": "row",
       "title": "Process health & errors (observe-only \u2014 never halts the node)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 13,
         "w": 24,
         "h": 1
       }
@@ -385,7 +485,7 @@
       "title": "Fatal-severity errors",
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 14,
         "w": 8,
         "h": 4
       },
@@ -439,7 +539,7 @@
       "title": "safeTimer throws",
       "gridPos": {
         "x": 8,
-        "y": 10,
+        "y": 14,
         "w": 8,
         "h": 4
       },
@@ -493,7 +593,7 @@
       "title": "Process errors (uncaught + rejections)",
       "gridPos": {
         "x": 16,
-        "y": 10,
+        "y": 14,
         "w": 8,
         "h": 4
       },
@@ -547,7 +647,7 @@
       "title": "Process errors by category / label (over window)",
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 18,
         "w": 24,
         "h": 6
       },
@@ -611,7 +711,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 24,
         "w": 24,
         "h": 1
       }
@@ -623,7 +723,7 @@
       "datasource": null,
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 25,
         "w": 24,
         "h": 12
       },

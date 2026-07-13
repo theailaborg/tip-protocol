@@ -109,9 +109,11 @@ function processErrorSection() {
 }
 
 function dagSection(dag) {
-  let txCount = 0, certCount = 0;
+  let txCount = 0, certCount = 0, identityCount = 0, contentCount = 0;
   try { txCount = dag.count?.() ?? 0; } catch { /* ignore */ }
   try { certCount = dag.certificateCount?.() ?? 0; } catch { /* ignore */ }
+  try { identityCount = dag.identityCount?.() ?? 0; } catch { /* ignore */ }
+  try { contentCount = dag.contentCount?.() ?? 0; } catch { /* ignore */ }
   // Memory-to-disk distance: the only gauges not fed by the mirror, so the
   // only signal when persistence wedges while memory runs on (2026-07-10).
   let ps = { queue_depth: 0, oldest_pending_ms: 0, last_settled_age_ms: 0, parity_last_ok_age_ms: -1 };
@@ -119,6 +121,8 @@ function dagSection(dag) {
   return [
     gauge("tip_dag_tx_count", "Total transactions committed to the DAG", txCount),
     gauge("tip_dag_cert_count", "Certificates currently in the DAG (bounded by cert GC)", certCount),
+    gauge("tip_dag_identity_count", "Verified identities (total TIP IDs) in canonical state, all statuses", identityCount),
+    gauge("tip_dag_content_count", "Registered content items (total CTIDs) in canonical state, all statuses", contentCount),
     gauge("tip_db_write_queue_depth", "Pending writes in the fire-and-forget persistence chain", ps.queue_depth),
     gauge("tip_db_oldest_pending_write_ms", "Age of the oldest unsettled DB write; alert threshold well below the 60s fail-stop", ps.oldest_pending_ms),
     gauge("tip_db_last_write_settled_age_ms", "Time since the persistence chain last settled a write", ps.last_settled_age_ms),

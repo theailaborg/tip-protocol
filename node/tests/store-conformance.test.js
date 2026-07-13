@@ -240,6 +240,19 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     expect(rowsAfter).toBe(rowsBefore);
   });
 
+  test("identityCount reflects saved identities (metrics accessor)", async () => {
+    const dag = await makeDag();
+    const before = dag.identityCount();
+    dag.saveIdentity(identityRec(uniq("US-cnt")));
+    dag.saveIdentity(identityRec(uniq("US-cnt")));
+    expect(dag.identityCount()).toBe(before + 2);
+    // Re-saving an existing tip_id is an upsert, not a new row.
+    const tipId = uniq("US-cnt");
+    dag.saveIdentity(identityRec(tipId));
+    dag.saveIdentity(identityRec(tipId, { registered_at: T0 + 1 }));
+    expect(dag.identityCount()).toBe(before + 3);
+  });
+
   // ── 3. Scores / dedup determinism guards ─────────────────────────────────
 
   test("setScore requires a caller-supplied timestamp and clamps to [0, 1000]", async () => {
@@ -299,6 +312,20 @@ describe.each(STORES)("store contract: %s", (storeName, makeDag, caps) => {
     dag.updateContentStatus(ctid, "disputed");
     expect(dag.getContent(ctid).status).toBe("disputed");
     expect(dag.getContentByStatus("disputed").map(c => c.ctid)).toContain(ctid);
+  });
+
+  test("contentCount reflects saved content rows (metrics accessor)", async () => {
+    const dag = await makeDag();
+    const before = dag.contentCount();
+    const author = uniq("US-auth");
+    dag.saveContent(contentRec(uniq("ct-cnt"), author));
+    dag.saveContent(contentRec(uniq("ct-cnt"), author));
+    expect(dag.contentCount()).toBe(before + 2);
+    // Re-saving an existing ctid is an upsert, not a new row.
+    const ctid = uniq("ct-cnt");
+    dag.saveContent(contentRec(ctid, author));
+    dag.saveContent(contentRec(ctid, author, { status: "disputed" }));
+    expect(dag.contentCount()).toBe(before + 3);
   });
 
   // ── 6. Mempool ───────────────────────────────────────────────────────────

@@ -829,6 +829,7 @@ class KnexAdapter {
 
   getIdentity(id) { return this.mirror.getIdentity(id); }
   getAllIdentities() { return this.mirror.getAllIdentities(); }
+  identityCount() { return this.mirror.identityCount(); }
 
   // ── entity_keys (GH #60) ─────────────────────────────────────────────────
   // Insert-only write for initial entity registration (REGISTER_IDENTITY,
@@ -919,6 +920,7 @@ class KnexAdapter {
   }
 
   getContent(ctid) { return this.mirror.getContent(ctid); }
+  contentCount() { return this.mirror.contentCount(); }
   getContentByStatus(s) { return this.mirror.getContentByStatus(s); }
   getContentWithMediaBefore(cutoffMs) { return this.mirror.getContentWithMediaBefore(cutoffMs); }
   getReferencedMediaIds() { return this.mirror.getReferencedMediaIds(); }

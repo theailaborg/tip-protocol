@@ -1729,12 +1729,112 @@
       "description": "Nodes in the DAG registry, active + inactive (fleet max)."
     },
     {
+      "id": 1031,
+      "type": "stat",
+      "title": "Verified identities (TIP IDs)",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_identity_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Total verified identities (TIP IDs) in canonical state, all statuses (fleet max)."
+    },
+    {
+      "id": 1032,
+      "type": "stat",
+      "title": "Registered content (CTIDs)",
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prom-tip"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(tip_dag_content_count)"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "description": "Total registered content items (CTIDs) in canonical state, all statuses (fleet max)."
+    },
+    {
       "id": 1023,
       "type": "stat",
       "title": "Consensus state agreement",
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 51,
         "w": 8,
         "h": 6
       },
@@ -1813,7 +1913,7 @@
       "description": "Latest committed (2f+1-signed) state_merkle_root per node. Unlike the old cert-DAG root, this MUST be identical across nodes at the same committed round; a divergent root at the same round is a real byzantine fork. A transient difference only means a node is one commit behind (see committed round on the Federation status table).",
       "gridPos": {
         "x": 8,
-        "y": 47,
+        "y": 51,
         "w": 16,
         "h": 6
       },
@@ -1919,7 +2019,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 57,
         "w": 12,
         "h": 11
       }
@@ -1971,7 +2071,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 53,
+        "y": 57,
         "w": 12,
         "h": 11
       }
@@ -1983,7 +2083,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 68,
         "w": 24,
         "h": 1
       }
@@ -2035,7 +2135,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 69,
         "w": 12,
         "h": 11
       }
@@ -2046,7 +2146,7 @@
       "title": "Narwhal current round",
       "gridPos": {
         "x": 12,
-        "y": 65,
+        "y": 69,
         "w": 12,
         "h": 11
       },
@@ -2092,7 +2192,7 @@
       "title": "Txs committed (cumulative)",
       "gridPos": {
         "x": 0,
-        "y": 76,
+        "y": 80,
         "w": 12,
         "h": 11
       },
