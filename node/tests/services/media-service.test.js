@@ -54,6 +54,18 @@ function _png(content) { return Buffer.concat([PNG_MAGIC, Buffer.from(content), 
 function _jpeg(content) { return Buffer.concat([JPEG_MAGIC, Buffer.from(content), Buffer.alloc(8)]); }
 function _mp4(content) { return Buffer.concat([MP4_MAGIC, Buffer.from(content), Buffer.alloc(8)]); }
 
+// ISO-BMFF ftyp box: [u32 size]['ftyp'][major brand][minor version][compat…].
+// Brands are 4 ASCII bytes each. Used to exercise the HEIC/AVIF-vs-video split.
+function _ftyp(major, compat = []) {
+  const box = Buffer.concat([
+    Buffer.from("ftyp"), Buffer.from(major), Buffer.from([0, 0, 0, 0]),
+    ...compat.map((c) => Buffer.from(c)),
+  ]);
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(box.length + 4);
+  return Buffer.concat([size, box]);
+}
+
 function _signedUpload(bytes, mime, signerTipId, kp, timestamp = nowMs()) {
   const content_hash = shake256(bytes);
   const challenge = mediaUploadSchema.buildChallenge({ content_hash, mime, timestamp, signer_tip_id: signerTipId });
@@ -139,6 +151,20 @@ describe("media-service.upload — validation", () => {
     } else {
       await expect(service.upload(input)).rejects.toMatchObject({ code: "mime_disabled" });
     }
+  });
+
+  // HEIC/AVIF stills share the mp4 `ftyp` container; they must store as
+  // image (image cap + image classifier routing), never as video.
+  test("HEIC bytes store as image/heic, not video", async () => {
+    const input = _signedUpload(_ftyp("heic", ["mif1"]), "image/heic", identity.tip_id, kp);
+    const r = await service.upload(input);
+    expect(r.mime).toBe("image/heic");
+  });
+
+  test("AVIF bytes store as image/avif, not video", async () => {
+    const input = _signedUpload(_ftyp("avif"), "image/avif", identity.tip_id, kp);
+    const r = await service.upload(input);
+    expect(r.mime).toBe("image/avif");
   });
 
   test("rejects malformed signer_tip_id", async () => {
@@ -710,5 +736,49 @@ describe("media-service.fetchForReviewer — idx + cross-node", () => {
 
     await expect(service.fetchForReviewer(_signedAccess(CTID, 0, identity.tip_id, kp)))
       .rejects.toMatchObject({ status: 410, code: "media_unavailable" });
+  });
+});
+
+describe("detectMime — ISO-BMFF brand resolution", () => {
+  const { detectMime } = mediaUploadSchema;
+
+  test("HEIC major brand resolves to image/heic (prod shape: heic + mif1)", () => {
+    expect(detectMime(_ftyp("heic", ["mif1"]))).toBe("image/heic");
+  });
+
+  test("HEVC image-sequence brands resolve to image/heic", () => {
+    expect(detectMime(_ftyp("heix"))).toBe("image/heic");
+    expect(detectMime(_ftyp("hevc"))).toBe("image/heic");
+  });
+
+  test("generic HEIF (mif1/msf1) resolves to image/heif", () => {
+    expect(detectMime(_ftyp("mif1"))).toBe("image/heif");
+    expect(detectMime(_ftyp("msf1"))).toBe("image/heif");
+  });
+
+  test("AVIF brands resolve to image/avif", () => {
+    expect(detectMime(_ftyp("avif"))).toBe("image/avif");
+    expect(detectMime(_ftyp("avis"))).toBe("image/avif");
+  });
+
+  test("image brand in the compatible list wins over a video-ish major brand", () => {
+    expect(detectMime(_ftyp("mp42", ["heic"]))).toBe("image/heic");
+    expect(detectMime(_ftyp("isom", ["avif"]))).toBe("image/avif");
+  });
+
+  test("major brand alone classifies when no compatible brands are present", () => {
+    // 16-byte buffer: major brand readable, compat list absent.
+    expect(detectMime(_ftyp("heic").subarray(0, 16))).toBe("image/heic");
+  });
+
+  test("M4A/M4B brands stay audio/mp4", () => {
+    expect(detectMime(_ftyp("M4A "))).toBe("audio/mp4");
+    expect(detectMime(_ftyp("M4B "))).toBe("audio/mp4");
+  });
+
+  test("plain mp4 / m4v / mov brands stay video/mp4", () => {
+    expect(detectMime(_ftyp("isom", ["mp42"]))).toBe("video/mp4");
+    expect(detectMime(_ftyp("M4V "))).toBe("video/mp4");
+    expect(detectMime(_ftyp("qt  "))).toBe("video/mp4");
   });
 });

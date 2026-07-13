@@ -31,6 +31,13 @@ const TIP_ID_RE = /^tip:\/\/id\/[A-Z]{2}-[0-9a-f]{16}$/;
 const HEX_RE = /^[0-9a-f]+$/i;
 const MIME_RE = /^(image|audio|video)\/[a-z0-9.+\-]+$/i;
 
+// ISO-BMFF `ftyp` brands that mark the mp4 container as carrying a still
+// image, not audio/video. HEIC/AVIF/HEIF reuse the mp4 `ftyp` box, so a
+// bare "ftyp -> video/mp4" sniff mislabels them as video.
+const HEIC_BRANDS = new Set(["heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs"]);
+const AVIF_BRANDS = new Set(["avif", "avis"]);
+const HEIF_BRANDS = new Set(["mif1", "msf1", "heif", "miaf"]);
+
 // Replay window: signed timestamps from clients must fall within ±N ms of
 // server clock. Tight enough to defeat replay; loose enough to forgive
 // honest NTP-level clock skew.
@@ -51,8 +58,9 @@ function _resolveSizeLimit(mime) {
  * and dedup can never produce conflicting labels because the stored mime
  * is a pure function of the bytes.
  *
- * Needs at most the first 16 bytes. Returns null for any format outside
- * the supported set — callers reject those with 415.
+ * Reads the first 16 bytes for the base magic numbers, and further into the
+ * `ftyp` box when present to resolve the mp4-container brand. Returns null
+ * for any format outside the supported set; callers reject those with 415.
  */
 function detectMime(bytes) {
   if (!bytes || bytes.length < 12) return null;
@@ -77,17 +85,38 @@ function detectMime(bytes) {
   if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return "audio/ogg";
   if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return "audio/flac";
 
-  // ISO-BMFF (ftyp at offset 4): mp4 family. M4A brand is audio-only.
+  // ISO-BMFF (`ftyp` at offset 4): the brand, not the bare box, decides
+  // image (HEIC/AVIF/HEIF) vs audio (M4A) vs video (mp4/mov). HEIC/AVIF
+  // stills share this container, so brand inspection is mandatory.
   if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
-    const brand = b.slice(8, 12).toString("ascii");
-    if (brand.startsWith("M4A")) return "audio/mp4";
-    return "video/mp4";
+    return _isobmffMime(b);
   }
 
-  // Matroska / WebM
+  // Matroska / WebM. The EBML magic is shared by video and audio-only
+  // (.mka/.weba) streams; splitting them needs a DocType + track parse
+  // beyond the sniff window, so audio-only Matroska/WebM is not resolved.
   if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "video/webm";
 
   return null;
+}
+
+// Resolve an ISO-BMFF `ftyp` file to its mime by brand. Collects the major
+// brand (bytes 8-11) plus every compatible brand in the box (4-byte slots
+// from offset 16 to the box end, bounded by the sniff buffer so a bogus box
+// size can't over-read). Image brands win first: a HEIC/AVIF that also lists
+// `mp42`/`isom` must not fall through to video, while a real mp4 (no image
+// brand) still resolves to video, so no mislabeled upload can dodge a cap.
+function _isobmffMime(b) {
+  const brands = [b.slice(8, 12).toString("latin1")];
+  const boxSize = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+  const end = Math.min(b.length, boxSize >= 16 ? boxSize : b.length);
+  for (let o = 16; o + 4 <= end; o += 4) brands.push(b.slice(o, o + 4).toString("latin1"));
+
+  if (brands.some((x) => HEIC_BRANDS.has(x))) return "image/heic";
+  if (brands.some((x) => AVIF_BRANDS.has(x))) return "image/avif";
+  if (brands.some((x) => HEIF_BRANDS.has(x))) return "image/heif";
+  if (brands.some((x) => x.startsWith("M4A") || x.startsWith("M4B"))) return "audio/mp4";
+  return "video/mp4";
 }
 
 /**
@@ -96,7 +125,7 @@ function detectMime(bytes) {
  */
 function limitForDetectedMime(mime) {
   if (mime === null) {
-    throw schemaError(415, "Unrecognized file format — supported: png, jpeg, gif, webp, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
+    throw schemaError(415, "Unrecognized file format; supported: png, jpeg, gif, webp, heic, heif, avif, mp3, wav, ogg, flac, mp4, webm", "format_unsupported");
   }
   const limit = _resolveSizeLimit(mime);
   if (limit <= 0) {
