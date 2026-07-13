@@ -896,20 +896,6 @@ This software implements inventions that are the subject of pending U.S. patent 
 | General Contact | tip@theailab.org |
 
 ---
-
-## Genesis Block
-The TIP Protocol network was founded on a genesis block signed by The AI Lab's SLH-DSA-128s root keypair. Every transaction on every node everywhere traces back to this genesis block. The genesis hash is compiled into every conforming node implementation.
-
-**Chain ID:** `tip-mainnet-v2`  
-**Founding Organisation:** The AI Lab Intelligence Unobscured, Inc.  
-**Founded by:** Dinesh Mendhe  
-**Genesis Ring:**  
-· Dinesh Mendhe  
-· Tushar Bhendarkar  
-· The AI Lab Executive Leadership Members  
-· [External validators to be confirmed at launch]
-
----
 <div align="center">
 
 **Copyright 2026 The AI Lab Intelligence Unobscured, Inc.**  
