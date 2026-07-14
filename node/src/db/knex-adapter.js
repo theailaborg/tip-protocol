@@ -23,8 +23,8 @@ const { MemoryStore, _computePrevFor, _computeExpectedOwnerHead, _noteSealedTx }
 const { subjectTipId } = require("../tx-attribution");
 const { nowMs } = require("../../../shared/time");
 const { canonicalJson } = require("../../../shared/crypto");
-const { SNAPSHOT_BULK_CHUNK_ROWS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/constants");
-const { DB_WRITE_BACKPRESSURE_MS } = require("../../../shared/local-config");
+const { SNAPSHOT_BULK_CHUNK_ROWS } = require("../../../shared/constants");
+const { DB_WRITE_BACKPRESSURE_MS, DB_WRITE_STALL_FAIL_STOP_MS, DB_WATCHDOG_TICK_MS, DB_PARITY_PROBE_INTERVAL_MS } = require("../../../shared/local-config");
 
 // ─── BIGINT → JS Number coercion (driver-agnostic, every Knex backend) ───────
 // Every SQL driver TIP supports returns BIGINT differently in JS land:
