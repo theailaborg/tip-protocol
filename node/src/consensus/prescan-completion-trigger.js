@@ -138,7 +138,6 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
       timestamp: completedAt,
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         ctid,
         probability,

@@ -4219,15 +4219,14 @@ function _buildDagHandle(store, config) {
     addTx(tx) {
       // Order matters:
       // 1. timestamp first (part of canonical form)
-      // 2. prev refs second (part of canonical form — must precede tx_id)
-      // 3. tx_id last — SHAKE-256(canonical{tx_type,data,timestamp,prev})
+      // 2. tx_id last: SHAKE-256(canonical{tx_type,data,timestamp})
       //
       // Auto-fill only fires when tx_id is NOT already set. A caller
       // that has committed to a tx_id has by construction committed to
-      // a specific canonical form (timestamp + prev) — defaulting either
+      // a specific canonical form (timestamp); defaulting it
       // here would change the canonical bytes and break verifyTxId.
-      // Genesis ships with `prev: []` on purpose; snapshot install and
-      // committed-tx replay both pass tx_id and rely on this preservation.
+      // Snapshot install and committed-tx replay both pass tx_id and
+      // rely on this preservation.
       const hadTxId = !!tx.tx_id;
       if (!hadTxId) {
         if (!tx.timestamp) tx.timestamp = nowMs();
@@ -4254,9 +4253,8 @@ function _buildDagHandle(store, config) {
      */
     prevFor: (txType, data) => _computePrevFor(store, txType, data),
 
-    // Owner-chain prev[0] the given owner MUST reference at commit time (same
-    // computation prevFor used at submit time). Commit-handler compares tx.prev[0]
-    // against this; a mismatch means the head moved (OWNER_HEAD_STALE).
+    // Owner-chain head the given owner would reference at submit time (same
+    // computation prevFor uses).
     expectedOwnerHead: (owner) => _computeExpectedOwnerHead(store, owner),
     // Burst chaining hooks: sealers record each sealed tx; the stale path
     // resets a broken chain so rebuilds restart from the committed head.
@@ -4267,8 +4265,8 @@ function _buildDagHandle(store, config) {
     // §14/#49 — streaming iterator over all rows in `transactions`,
     // ordered by tx_id. Used by snapshot sender to ship the full pre-
     // snapshot history. Receiver installs each row via addTx; addTx's
-    // tightened auto-fill (no fill when tx_id is set) preserves
-    // genesis-style `prev: []` correctly, and its per-row _updatePrev
+    // tightened auto-fill (no fill when tx_id is set) preserves the
+    // committed canonical form, and its per-row _updatePrev
     // leaves the ring at [highest_tx_id, second_highest] after the
     // batch — exactly what a fresh re-prime would compute.
     iterateAllTransactions: () => store.iterateAllTransactions(),

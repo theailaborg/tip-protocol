@@ -311,7 +311,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     const assignedNodeId = config.nodeRegisteredId || config.nodeId || null;
 
     const txBody = {
-      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt, prev: [],
+      tx_type: TX_TYPES.REGISTER_CONTENT, timestamp: registeredAt,
       data: {
         // ── Server-derived / informational fields ─────────────────
         // origin_code + content_hash mirror the canonical signed values
@@ -502,7 +502,6 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const tx = rec.tx_id ? dag.getTx(rec.tx_id) : null;
     const txValid = tx ? verifyTxId(tx) : false;
-    const prevValid = tx && tx.prev ? tx.prev.every(p => !!dag.getTx(p)) : false;
     const author = dag.getIdentity(rec.author_tip_id);
     const revocation = dag.getRevocation(rec.author_tip_id);
     const authorValid = !!author && author.status === "active" && !revocation;
@@ -543,7 +542,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
       verify_count: verifyCount,
       dispute_count: disputeCount,
       verification: {
-        tx_exists: !!tx, tx_id_valid: txValid, prev_valid: prevValid,
+        tx_exists: !!tx, tx_id_valid: txValid,
         author_valid: authorValid, author_revocation: authorRevocation, on_dag: true,
       },
       review_history: _projectReviewHistory(ctid),
@@ -708,7 +707,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const verifyTxTimestamp = nowMs();
     const verifyTxBody = {
-      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp, prev: [],
+      tx_type: TX_TYPES.CONTENT_VERIFIED, timestamp: verifyTxTimestamp,
       data: { ctid, verifier_tip_id, verdict: verdict || "ORIGIN_CONFIRMED", weighted_delta: weightedDelta, author_tip_id: authorTipId },
       signature,
     };
@@ -763,7 +762,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
     }
 
     const updateTx = withTxId({
-      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(), prev: [],
+      tx_type: TX_TYPES.UPDATE_ORIGIN, timestamp: nowMs(),
       data: { ctid, old_origin_code: rec.origin_code, new_origin_code, author_tip_id },
       signature,
     }, dag);
@@ -791,7 +790,7 @@ function createContentService({ dag, scoring, config, submitTx, prescanJobs, med
 
     const retractTimestamp = nowMs();
     const retractTx = withTxId({
-      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp, prev: [],
+      tx_type: TX_TYPES.CONTENT_RETRACTED, timestamp: retractTimestamp,
       data: { ctid, author_tip_id, origin_code: rec.origin_code, pre_retract_status: rec.status },
       signature,
     }, dag);

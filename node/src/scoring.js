@@ -108,7 +108,6 @@ function initScoring(dag, config) {
     const txBody = {
       tx_type: TX_TYPES.SCORE_UPDATE,
       timestamp,
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         tip_id: tipId,
         delta,

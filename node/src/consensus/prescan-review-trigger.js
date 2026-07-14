@@ -169,7 +169,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_TRIGGERED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         review_id: reviewId,
         ctid,
@@ -187,7 +186,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.CONTENT_DISPUTED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         ctid,
         reason: "creator_decision_window_expired",
@@ -247,7 +245,6 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_REVIEW_RECUSED,
       timestamp: nowMs(),
-      prev: [],   // owner-chain prev assigned below, once data is complete
       data: {
         review_id: reviewId,
         auto: true,

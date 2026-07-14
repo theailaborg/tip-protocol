@@ -162,7 +162,6 @@ function createDomainService({ dag, config, submitTx, verifier = domainVerifier 
     const txBody = {
       tx_type: TX_TYPES.BIND_DOMAIN,
       timestamp: verifiedAt,
-      prev: [],
       data: {
         // canonical fields mirrored onto tx.data so commit-handler can
         // replay buildSigningPayload(d) deterministically

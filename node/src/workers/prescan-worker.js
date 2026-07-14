@@ -393,7 +393,6 @@ function createPrescanWorker({ dag, jobs, classifierClient, submitTx, config, lo
     const txBody = {
       tx_type: TX_TYPES.PRESCAN_COMPLETED,
       timestamp: now(),
-      prev: [],
       data,
     };
     const signed = nodeSignedAuto(txBody, config, dag);
