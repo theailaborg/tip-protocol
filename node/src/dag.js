@@ -4232,7 +4232,6 @@ function _buildDagHandle(store, config) {
       const hadTxId = !!tx.tx_id;
       if (!hadTxId) {
         if (!tx.timestamp) tx.timestamp = nowMs();
-        if (!tx.prev || tx.prev.length === 0) tx.prev = [..._prev];
       }
       if (hadTxId && !verifyTxId(tx)) throw new Error(`addTx: tx_id mismatch — rejecting tampered tx ${tx.tx_id}`);
 
