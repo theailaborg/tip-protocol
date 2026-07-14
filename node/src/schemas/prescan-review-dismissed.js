@@ -86,8 +86,9 @@ function validateRequest(body, deps) {
 }
 
 /**
- * Build the canonical signed payload. decision_note is always emitted
- * (as null when absent) so the canonical bytes are deterministic.
+ * Build the canonical signed payload. decision_note is OMITTED when
+ * absent (buildSignedPayload strips null/undefined); signer and verifier
+ * both go through this builder so the bytes agree either way.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {

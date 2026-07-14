@@ -59,6 +59,9 @@ function makeFakeDag({ identities = {}, nodes = {}, bindings = {}, revoked = new
 function buildBindTxData(userKp, nodeKp, overrides = {}) {
   const claimedAt = 1778580000000;
   const verifiedAt = 1778580060000;
+  // Real path: user claims `auto`, the node resolves it to a concrete
+  // method (http). The cosig must rebuild from the CLAIMED method (auto),
+  // so claimed_method carries it while method records what verified.
   const claim = registerDomainSchema.buildSigningPayload({
     claimed_at: claimedAt, domain: "example.com", method: "auto", tip_id: ORG_TIP,
   });
@@ -67,8 +70,9 @@ function buildBindTxData(userKp, nodeKp, overrides = {}) {
   const binding = bindSchema.buildSigningPayload({
     binding_state:   DOMAIN_BINDING_STATUS.VERIFIED,
     claimed_at:      claimedAt,
+    claimed_method:  "auto",
     domain:          "example.com",
-    method:          "auto",
+    method:          "http",
     node_id:         NODE_ID,
     tip_id:          ORG_TIP,
     verified_at:     verifiedAt,
@@ -78,6 +82,7 @@ function buildBindTxData(userKp, nodeKp, overrides = {}) {
   return {
     binding_state:     binding.binding_state,
     claimed_at:        binding.claimed_at,
+    claimed_method:    binding.claimed_method,
     domain:            binding.domain,
     method:            binding.method,
     node_id:           binding.node_id,
@@ -108,23 +113,35 @@ describe("module surface", () => {
 
 // ─── buildSigningPayload — exact 7-field shape ──────────────────────────────
 
-describe("buildSigningPayload — exact 7-field canonical shape", () => {
+describe("buildSigningPayload: exact 8-field canonical shape", () => {
   const minimal = (overrides = {}) => bindSchema.buildSigningPayload({
     binding_state: "verified",
     claimed_at: 1778580000000,
+    claimed_method: "auto",
     domain: "example.com",
-    method: "auto",
+    method: "http",
     node_id: NODE_ID,
     tip_id: ORG_TIP,
     verified_at: 1778580060000,
     ...overrides,
   });
 
-  test("emits exactly the 7 spec fields, alphabetical", () => {
+  test("emits exactly the 8 spec fields, alphabetical", () => {
     expect(Object.keys(minimal()).sort()).toEqual([
-      "binding_state", "claimed_at", "domain", "method",
+      "binding_state", "claimed_at", "claimed_method", "domain", "method",
       "node_id", "tip_id", "verified_at",
     ]);
+  });
+
+  test("method (resolved) and claimed_method (requested) are independent signed fields", () => {
+    const p = minimal({ method: "dns", claimed_method: "auto" });
+    expect(p.method).toBe("dns");
+    expect(p.claimed_method).toBe("auto");
+  });
+
+  test("claimed_method outside the enum rejected", () => {
+    expect(() => minimal({ claimed_method: "ftp" }))
+      .toThrow(expect.objectContaining({ status: 400, code: "claimed_method_invalid" }));
   });
 
   test("reject-on-extra — junk fields stripped", () => {
@@ -166,8 +183,9 @@ describe("sign / verify round-trip (node key)", () => {
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
       claimed_at: 1778580000000,
+      claimed_method: "auto",
       domain: "example.com",
-      method: "auto",
+      method: "http",
       node_id: NODE_ID,
       tip_id: ORG_TIP,
       verified_at: 1778580060000,
@@ -181,8 +199,9 @@ describe("sign / verify round-trip (node key)", () => {
     const payload = bindSchema.buildSigningPayload({
       binding_state: "verified",
       claimed_at: 1778580000000,
+      claimed_method: "auto",
       domain: "example.com",
-      method: "auto",
+      method: "http",
       node_id: NODE_ID,
       tip_id: ORG_TIP,
       verified_at: 1778580060000,
@@ -216,6 +235,23 @@ describe("verifyTx", () => {
   test("happy path returns { ok: true }", () => {
     const { dag, data } = setup();
     expect(bindSchema.verifyTx({ data }, dag)).toEqual({ ok: true });
+  });
+
+  // Regression: an `auto` claim resolves to a concrete method (http) at bind
+  // time. The user signed `auto`, so the cosignature must rebuild from
+  // claimed_method, not the resolved method, or every default-path binding
+  // fails to verify.
+  test("auto claim resolved to http still verifies the cosignature", () => {
+    const { dag, data } = setup();
+    expect(data.method).toBe("http");        // node's resolved method
+    expect(data.claimed_method).toBe("auto"); // what the user signed
+    expect(bindSchema.verifyTx({ data }, dag)).toEqual({ ok: true });
+  });
+
+  test("claimed_method not matching the user's signed claim fails the cosignature", () => {
+    const { dag, data } = setup();
+    data.claimed_method = "http"; // user actually signed "auto"
+    expect(bindSchema.verifyTx({ data }, dag)).toMatchObject({ ok: false });
   });
 
   test("missing node_id → 400 node_id_missing", () => {

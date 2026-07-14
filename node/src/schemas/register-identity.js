@@ -11,20 +11,20 @@
  *
  * Quick summary of the 9 signed fields (alphabetical):
  *
- *   creator_name      string|null,  default null (VP-attested display name)
+ *   algorithm         string,       new key's algorithm (default ml-dsa-65)
+ *   creator_name      string,       optional (VP-attested display name)
  *   dedup_hash        string,       required (Poseidon field element from ZK proof)
  *   public_key        string,       required (raw ML-DSA-65 hex, 3904 chars)
  *   region            string,       default "US", uppercased
- *   social_attested   boolean,      default false
  *   tip_id_type       string,       default "personal" (enum: personal/organization)
  *   verification_tier string,       default "T1" (T1/T2/T3/T4)
  *   vp_id             string,       required (tip://vp/...)
  *   zk_proof          object,       required (Groth16 {pi_a, pi_b, pi_c, ...})
  *
- * Every field is always present in the canonical payload — defaults
- * fill in for omitted optionals. creator_name is emitted as `null`
- * (not omitted) when the VP didn't attest a name, so the canonical
- * payload shape is deterministic regardless of whether a name is set.
+ * Required fields are always present in the canonical payload; the
+ * optional creator_name is OMITTED (not emitted as null) when the VP
+ * didn't attest a name: buildSignedPayload strips null/undefined, and
+ * signer and verifier both go through this builder so the bytes agree.
  *
  * NOTE: No `cna` field on this payload. CNA is the Canonical Content
  * Normalization Algorithm — it operates on raw content bytes for
@@ -209,7 +209,6 @@ function buildSigningPayload(input) {
     dedup_hash: input.dedup_hash,
     public_key: input.public_key,
     region: typeof input.region === "string" ? input.region.toUpperCase() : "US",
-    social_attested: !!input.social_attested,
     tip_id_type: tipIdType,
     verification_tier: verificationTier,
     vp_id: input.vp_id,
@@ -218,7 +217,7 @@ function buildSigningPayload(input) {
   };
   return buildSignedPayload(normalised, {
     required: [
-      "algorithm", "dedup_hash", "public_key", "region", "social_attested",
+      "algorithm", "dedup_hash", "public_key", "region",
       "tip_id_type", "verification_tier", "vp_id", "zk_proof",
     ],
     optional: ["creator_name"],

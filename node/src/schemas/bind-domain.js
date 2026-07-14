@@ -5,10 +5,13 @@
  *
  * Trust model:
  *   - The USER signs a claim {claimed_at, domain, method, tip_id}
- *     (schemas/register-domain.js) — proves they own the TIP-ID.
+ *     (schemas/register-domain.js), proving they own the TIP-ID. `method`
+ *     here is what the user requested (http | dns | auto).
  *   - The NODE independently verifies DNS / well-known proof, then signs
- *     {binding_state, claimed_at, domain, method, node_id, tip_id,
- *      verified_at} (this module) — proves a node observed proof at time T.
+ *     {binding_state, claimed_at, claimed_method, domain, method, node_id,
+ *      tip_id, verified_at} (this module), proving a node observed proof at
+ *      time T. `method` is what the node actually verified with (http|dns);
+ *      `claimed_method` echoes the user's request so the cosig rebuilds.
  *   - The user's claim sig rides on the BIND_DOMAIN tx as a cosignature
  *     entry in `tx.data.cosignatures` (signer_kind="subject",
  *     signer_ref=tip_id). Replicating nodes verify both the node's
@@ -16,12 +19,13 @@
  *     they do NOT re-perform DNS / HTTP (non-deterministic). Periodic
  *     re-verification lands as its own consensus-emitted tx.
  *
- * Quick summary of the 7 signed fields (alphabetical):
+ * Quick summary of the 8 signed fields (alphabetical):
  *
  *   binding_state    string,  required (verified | revoked)
  *   claimed_at       number,  required (epoch ms — from the original claim)
+ *   claimed_method   string,  required (http | dns | auto; user's request)
  *   domain           string,  required (lowercased)
- *   method           string,  required (http | dns | auto)
+ *   method           string,  required (http | dns; node's resolved method)
  *   node_id          string,  required (verifying node's TIP node_id)
  *   tip_id           string,  required (claimant)
  *   verified_at      number,  required (epoch ms — when this node observed proof)
@@ -62,10 +66,15 @@ const BIND_DOMAIN_STATES = Object.freeze([
 ]);
 
 /**
- * Build the canonical 7-field signed payload for a BIND_DOMAIN tx. All
- * fields always present, reject-on-extra: picks exactly these 7 keys.
+ * Build the canonical 8-field signed payload for a BIND_DOMAIN tx. All
+ * fields always present, reject-on-extra: picks exactly these 8 keys.
  * The user's claim signature is NOT in the canonical body — it rides as
  * a cosignature on tx.data and is verified independently.
+ *
+ * `method` is the method the node actually verified with (http|dns);
+ * `claimed_method` is what the user signed in their REGISTER_DOMAIN claim
+ * (http|dns|auto). They differ when the claim was `auto`, so the cosig
+ * must be rebuilt from `claimed_method`, not `method`.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
@@ -89,6 +98,9 @@ function buildSigningPayload(input) {
   if (!DOMAIN_VERIFICATION_METHOD_VALUES.includes(input.method)) {
     throw schemaError(400, "method must be http | dns | auto", "method_invalid");
   }
+  if (!DOMAIN_VERIFICATION_METHOD_VALUES.includes(input.claimed_method)) {
+    throw schemaError(400, "claimed_method must be http | dns | auto", "claimed_method_invalid");
+  }
   if (!BIND_DOMAIN_STATES.includes(input.binding_state)) {
     throw schemaError(
       400,
@@ -100,6 +112,7 @@ function buildSigningPayload(input) {
   return {
     binding_state: input.binding_state,
     claimed_at: input.claimed_at,
+    claimed_method: input.claimed_method,
     domain: input.domain,
     method: input.method,
     node_id: input.node_id,
@@ -181,10 +194,13 @@ function getCosignatureContract(tx) {
   return [{
     kind: SIGNED_BY_KIND.SUBJECT,
     ref:  d.tip_id,
+    // Rebuild with the method the user CLAIMED (claimed_method), not the
+    // node's resolved method: an `auto` claim signs `auto`, so verifying
+    // against the resolved http/dns would fail the cosignature.
     body: registerDomainSchema.buildSigningPayload({
       claimed_at: d.claimed_at,
       domain:     d.domain,
-      method:     d.method,
+      method:     d.claimed_method,
       tip_id:     d.tip_id,
     }),
   }];

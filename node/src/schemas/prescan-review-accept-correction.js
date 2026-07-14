@@ -141,28 +141,18 @@ function validateRequest(reviewId, body, deps) {
   return { review, content, new_origin_code };
 }
 
-// GH #51 — canonical signed payload for the unified verifier. Picks
-// the exact three fields the signature covers; canonicalJson sorts
-// keys, so this is byte-identical to what the client signed.
-// GH #85: explicit guards — a missing required field must throw rather than
-// serialising as the literal string "undefined" via canonicalJson.
-function buildSigningPayload(input) {
-  if (typeof input.author_tip_id !== "string")   throw schemaError(400, "author_tip_id is required", "author_tip_id_required");
-  if (typeof input.ctid !== "string")            throw schemaError(400, "ctid is required", "ctid_required");
-  if (typeof input.new_origin_code !== "string") throw schemaError(400, "new_origin_code is required", "new_origin_code_required");
-  return {
-    author_tip_id: input.author_tip_id,
-    ctid: input.ctid,
-    new_origin_code: input.new_origin_code,
-  };
-}
+// NOTE: this endpoint mints no new tx_type; it emits UPDATE_ORIGIN, whose
+// canonical signed shape is owned by the UPDATE_ORIGIN registry contract
+// (schemas/_registry.js). API-time verification uses SIGNED_FIELDS above.
+// There is deliberately no buildSigningPayload here: a third copy of the
+// [author_tip_id, ctid, new_origin_code] shape could silently drift from
+// the authoritative contract at freeze.
 
 module.exports = {
   VALID_NEW_ORIGINS,
   SIGNED_FIELDS,
   resolveReview,
   validateRequest,
-  buildSigningPayload,
   // GH #51 — unified signature contract
   SIGNATURE_SCOPE: SIGNATURE_SCOPE_VALUE,
   SIGNED_BY,

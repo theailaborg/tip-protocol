@@ -44,8 +44,10 @@ function stubVerifier(outcome = "ok") {
   return {
     verify: jest.fn(async (method, domain, tipId) => {
       if (outcome === "ok") {
+        // Mirror the real verifier: `auto` resolves to a concrete method
+        // (http), so the binding records http while the claim signed `auto`.
         return {
-          verified: true, method, verified_at: nowMs(),
+          verified: true, method: method === "auto" ? "http" : method, verified_at: nowMs(),
           evidence: { url: null, body: null, txt: [`tip-id=${tipId}`] },
           error: null,
         };

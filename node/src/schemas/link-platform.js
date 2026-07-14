@@ -324,7 +324,7 @@ function verifySignature(payload, signatureHex, publicKeyHex) {
  *   2. Claimant TIP-ID is registered, not revoked
  *   3. No existing active link for (tip_id, platform) — first-wins gate
  *      against gossip-bypass and racing nodes
- *   4. User's cosignature verifies over the 5-field register-social claim
+ *   4. User's cosignature verifies over the 4-field register-social claim
  *   5. For OAuth-required platforms, the VP OAuth bundle is present and
  *      vp_oauth_signature re-verifies against the VP's on-chain key
  *
@@ -378,7 +378,7 @@ function verifyTx(tx, dag) {
     }
   }
 
-  // User's cosignature over the 5-field register-social claim. Same
+  // User's cosignature over the 4-field register-social claim. Same
   // mechanism BIND_DOMAIN uses for the user's domain claim — schema
   // declares the contract, dispatcher verifies.
   const cosigResult = verifyCosignatures(tx, getCosignatureContract(tx), dag);

@@ -268,7 +268,7 @@ async function embedFoundingVPKey() {
     const idFields = {
       region: member.region, public_key: keypair.publicKey, dedup_hash: dedupHash,
       zk_proof: zkProof,
-      verification_tier: "T1", vp_id: vpId, social_attested: true,
+      verification_tier: "T1", vp_id: vpId,
       tip_id_type: tipIdType,
       ...(creatorName ? { creator_name: creatorName } : {}),
     };
@@ -658,7 +658,7 @@ async function createGenesisRing(vpRecord, vpKeypair) {
       const idFields = {
         region: member.region, public_key: keypair.publicKey,
         dedup_hash: dedupHash, zk_proof: zkProof,
-        verification_tier: "T1", vp_id: vpRecord.vp_id, social_attested: true,
+        verification_tier: "T1", vp_id: vpRecord.vp_id,
         tip_id_type: memberType,
         ...(memberCreatorName ? { creator_name: memberCreatorName } : {}),
       };
@@ -678,7 +678,6 @@ async function createGenesisRing(vpRecord, vpKeypair) {
           verification_tier: "T1",
           tip_id_type: memberType,
           creator_name: memberCreatorName,
-          social_attested: true,
           founding: true,
           dedup_hash: dedupHash,
           zk_proof: zkProof,

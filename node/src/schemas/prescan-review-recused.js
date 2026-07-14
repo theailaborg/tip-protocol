@@ -116,8 +116,9 @@ function validateRequest(body, deps) {
 }
 
 /**
- * Canonical signed payload. recusal_reason is always emitted (as null
- * when absent) so the canonical bytes are deterministic.
+ * Canonical signed payload. recusal_reason is OMITTED when absent
+ * (buildSignedPayload strips null/undefined); signer and verifier both
+ * go through this builder so the bytes agree either way.
  */
 function buildSigningPayload(input) {
   if (!input || typeof input !== "object") {
