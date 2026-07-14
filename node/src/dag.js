@@ -4152,27 +4152,10 @@ function _computeExpectedOwnerHead(store, owner) {
   return store.getOwnerHead(ownerKey(owner)) || anchor || GENESIS_TX_ID;
 }
 
-// Owner-chain prev pair assigned at submit time. slot0 = the owner's required
-// head (single source above); slot1 = advisory subject anchor. Shared by the
-// initDAG facade and the Knex adapter so both stores assign prev identically.
-function _computePrevFor(store, txType, data) {
-  const { ownerOf, ownerKey } = require("./consensus/tx-owner");
-  const { subjectTipId } = require("./tx-attribution");
-  const { GENESIS_TX_ID } = require("./genesis");
-  const owner = ownerOf({ tx_type: txType, data });
-  // Chain onto our own SEALED-but-pending tx first (burst chaining); the
-  // committed head is the base only when no fresh pending link exists.
-  const pending = owner && typeof store.getPendingOwnerHead === "function"
-    ? store.getPendingOwnerHead(ownerKey(owner)) : null;
-  const slot0 = pending || _computeExpectedOwnerHead(store, owner);
-  let slot1 = GENESIS_TX_ID;
-  const subject = subjectTipId({ tx_type: txType, data });
-  if (subject && !(owner && owner.entityType === "identity" && owner.entityId === subject)) {
-    slot1 = store.getOwnerHead(`identity:${subject}`)
-      || store.getIdentity(subject)?.tx_id
-      || GENESIS_TX_ID;
-  }
-  return [slot0, slot1];
+// prev removed: the cert DAG is the order, tamper-evidence is the
+// content-addressed tx_id + state_root. Txs carry no prev chain.
+function _computePrevFor() {
+  return [];
 }
 
 // Record a freshly-sealed tx as its owner's pending chain base (burst chaining).

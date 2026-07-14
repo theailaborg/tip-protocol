@@ -118,9 +118,7 @@ function initScoring(dag, config) {
         node_id: config.nodeRegisteredId || config.nodeId,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, config.nodePrivateKey);
   }
 

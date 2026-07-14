@@ -336,13 +336,9 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 2);
 
-    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
-    // rebuilt against the new head, requeued, and commits next round.
-    expect(res.committed).toBe(1);
-    expect(res.dropped).toBe(1);
-    const [requeued] = fx.dag.getMempoolTxs();
-    expect(requeued.prev[0]).toBe(tx1.tx_id);
-    expect(fx.handler.commitOrderedTxs([requeued], 3).committed).toBe(1);
+    // Distinct events: no owner-chain serialization, both commit in one round.
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
     expect(fx.dag.getContent(data1.ctid)).not.toBeNull();
     expect(fx.dag.getContent(data2.ctid)).not.toBeNull();
   });
@@ -443,13 +439,9 @@ describe("AG-7 — in-batch dedup for REGISTER_* tx types", () => {
 
     const res = fx.handler.commitOrderedTxs([tx1, tx2], 6);
 
-    // Same owner signs both: owner-chain serializes, tx2 is OWNER_HEAD_STALE,
-    // rebuilt against the new head, requeued, and commits next round.
-    expect(res.committed).toBe(1);
-    expect(res.dropped).toBe(1);
-    const [requeued] = fx.dag.getMempoolTxs();
-    expect(requeued.prev[0]).toBe(tx1.tx_id);
-    expect(fx.handler.commitOrderedTxs([requeued], 7).committed).toBe(1);
+    // Distinct events: no owner-chain serialization, both commit in one round.
+    expect(res.committed).toBe(2);
+    expect(res.dropped).toBe(0);
     expect(fx.dag.getIdentity("tip://id/US-1111111111111111")).not.toBeNull();
     expect(fx.dag.getIdentity("tip://id/US-2222222222222222")).not.toBeNull();
   });

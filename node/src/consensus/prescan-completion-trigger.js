@@ -160,9 +160,7 @@ function createPrescanCompletionTrigger({ dag, config, submitTx, getCommittee })
         failure_reason: "prescan_pending_past_fail_open_deadline",
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 

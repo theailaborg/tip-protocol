@@ -243,7 +243,7 @@ describe("rotation-deadlock invariants — load-bearing contracts pinned", () =>
         data,
       };
       tx.tx_id = shake256(canonicalJson({
-        tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp, prev: tx.prev,
+        tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp,
       }));
       return tx;
     };

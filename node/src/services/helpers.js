@@ -30,7 +30,6 @@ function initTxPrev(dag) { _prevDag = dag; }
 function _finalizePrev(txBody, dag) {
   const src = dag || _prevDag;
   if (src && txBody.tx_type && txBody.data) {
-    txBody.prev = src.prevFor(txBody.tx_type, txBody.data);
   }
   return txBody;
 }
@@ -40,7 +39,6 @@ function _finalizePrev(txBody, dag) {
 function _noteSealed(txBody, dag) {
   const src = dag || _prevDag;
   if (src && typeof src.noteSealedTx === "function" && txBody.tx_id) {
-    src.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
   }
   return txBody;
 }

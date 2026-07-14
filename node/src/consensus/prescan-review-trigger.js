@@ -179,9 +179,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         triggered_at_round: round,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 
@@ -202,9 +200,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         suggested_origin: suggestedOrigin || null,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 
@@ -264,9 +260,7 @@ function createPrescanReviewTrigger({ dag, scoring, config, submitTx, getCommitt
         recusal_reason: RECUSAL_REASONS.SLA_EXPIRED,
       },
     };
-    txBody.prev = dag.prevFor(txBody.tx_type, txBody.data);
     txBody.tx_id = computeTxId(txBody);
-    if (typeof dag.noteSealedTx === "function") dag.noteSealedTx(txBody.tx_type, txBody.data, txBody.tx_id);
     return signTransaction(txBody, _nodePrivateKey);
   }
 

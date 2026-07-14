@@ -220,7 +220,6 @@ function validateStructure(tx) {
   if (!tx.tx_type) errors.push("tx_type is required");
   if (!tx.timestamp) errors.push("timestamp is required");
   if (!tx.data || typeof tx.data !== "object") errors.push("data must be a non-null object");
-  if (!Array.isArray(tx.prev)) errors.push("prev must be an array");
 
   if (errors.length) return fail(...errors);
 
@@ -612,34 +611,6 @@ function validateDAGIntegrity(tx, dag, skipPrevCheck = false, pendingTxIds = nul
   // tx_id must match content — detects any field-level tampering
   if (!verifyTxId(tx)) {
     errors.push(`tx_id does not match transaction content — transaction may have been tampered with`);
-  }
-
-  // Only system txs can have empty prev. GENESIS bootstraps the chain;
-  // COMMITTEE_ROTATION is a system event — its tamper-evidence is the
-  // 2f+1 committee sigs over payload_hash + chain-of-trust walker over
-  // committee_history.prev_rotation, NOT user-tx prev refs. Coupling
-  // rotation to a specific genesis tx_id breaks across DB-drifted
-  // federations where peer DBs disagree on the genesis row.
-  if (!tx.prev || tx.prev.length === 0) {
-    if (tx.tx_type !== "GENESIS" && tx.tx_type !== TX_TYPES.COMMITTEE_ROTATION) {
-      errors.push("Non-system tx must have prev references");
-    }
-    return errors.length ? { valid: false, errors } : pass();
-  }
-
-  // All prev references must exist in DAG (skipped during sync replay)
-  if (!skipPrevCheck) {
-    for (const prevId of tx.prev) {
-      if (!prevId) { errors.push("Empty prev reference"); continue; }
-      // A prev may reference a PENDING tx: an earlier tx in the same ordered
-      // batch (burst chaining) or one still in the local mempool. Commit-time
-      // owner validation enforces the real chain; this is existence only.
-      if (dag.getTx(prevId)) continue;
-      if (pendingTxIds && pendingTxIds.has(prevId)) continue;
-      if (typeof dag.getMempoolTx === "function" && dag.getMempoolTx(prevId)) continue;
-      if (typeof dag.isPendingSealedTx === "function" && dag.isPendingSealedTx(prevId)) continue;
-      errors.push(`prev reference not found in DAG: ${prevId}`);
-    }
   }
 
   // Duplicate tx_id check

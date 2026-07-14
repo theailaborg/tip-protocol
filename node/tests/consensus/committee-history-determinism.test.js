@@ -118,7 +118,7 @@ function _buildRotationTx({ rotation_number, effective_round, new_committee, sig
     data,
   };
   tx.tx_id = shake256(canonicalJson({
-    tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp, prev: tx.prev,
+    tx_type: tx.tx_type, data: tx.data, timestamp: tx.timestamp,
   }));
   return tx;
 }
