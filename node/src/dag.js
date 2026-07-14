@@ -4758,7 +4758,7 @@ function _writeGenesisBlock(store, config) {
         creator_name: memberCreatorName,
         founding: true,
         dedup_hash: member.dedup_hash,
-        zk_proof: mockZkProof,
+        zk_proof: member.zk_proof || mockZkProof,
       },
       // GH #51 — founding VP attestation lives at tx.signature.
       signature: member.vp_signature,
