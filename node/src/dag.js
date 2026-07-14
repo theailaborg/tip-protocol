@@ -4756,7 +4756,6 @@ function _writeGenesisBlock(store, config) {
         verification_tier: "T1",
         tip_id_type: memberType,
         creator_name: memberCreatorName,
-        social_attested: true,
         founding: true,
         dedup_hash: member.dedup_hash,
         zk_proof: mockZkProof,

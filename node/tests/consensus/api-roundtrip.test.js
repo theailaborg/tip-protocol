@@ -319,10 +319,10 @@ const CASES = [
     txType: "REGISTER_IDENTITY",
     name: "VP-attested identity persists its signed fields on the identity row",
     schema: registerIdentitySchema,
-    // dedup_hash + zk_proof are verification inputs, not state. social_attested
-    // and algorithm have no identities column yet (algorithm column deferred to
-    // the key-rotation PR); they ride the signed payload but aren't persisted.
-    notPersisted: ["dedup_hash", "zk_proof", "social_attested", "algorithm"],
+    // dedup_hash + zk_proof are verification inputs, not state. algorithm has
+    // no identities column yet (deferred to the key-rotation PR); it rides the
+    // signed payload but isn't persisted.
+    notPersisted: ["dedup_hash", "zk_proof", "algorithm"],
     setup: async (h) => {
       const kp = generateMLDSAKeypair();
       const { dedup_hash, zk_proof } = await makeDedup("reg-identity");
@@ -367,7 +367,9 @@ const CASES = [
     txType: "BIND_DOMAIN",
     name: "node-attested domain binding persists every signed field on the binding row",
     schema: bindDomainSchema,
-    notPersisted: [],
+    // claimed_method rides the signed payload only to rebuild the user's claim
+    // cosignature; the resolved `method` is what lands on the binding row.
+    notPersisted: ["claimed_method"],
     setup: (h) => {
       const kp = generateMLDSAKeypair();
       const tipId = makeTipId("domain-org");

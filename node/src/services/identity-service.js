@@ -177,7 +177,6 @@ function createIdentityService({ dag, scoring, config, submitTx }) {
         dedup_hash: canonicalPayload.dedup_hash,
         public_key: canonicalPayload.public_key,
         region: canonicalPayload.region,
-        social_attested: canonicalPayload.social_attested,
         tip_id_type: canonicalPayload.tip_id_type,
         verification_tier: canonicalPayload.verification_tier,
         vp_id: canonicalPayload.vp_id,
