@@ -109,7 +109,6 @@ const GENESIS_HASH = computeGenesisHash(GENESIS_PAYLOAD);
 const GENESIS_TX = Object.freeze({
   tx_type: "GENESIS",
   timestamp: GENESIS_TIMESTAMP,
-  prev: [],
   data: GENESIS_PAYLOAD,
 });
 
@@ -301,7 +300,6 @@ function verifyGenesisVPSignature() {
   const vpTxBody = {
     tx_type: "VP_REGISTERED",
     timestamp: GENESIS_TIMESTAMP,
-    prev: [GENESIS_TX_ID, GENESIS_TX_ID],
     data: {
       vp_id: foundingVP.vp_id,
       name: foundingVP.name,
