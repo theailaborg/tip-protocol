@@ -141,7 +141,7 @@ function validateRequest(reviewId, body, deps) {
   return { review, content, new_origin_code };
 }
 
-// NOTE: this endpoint mints no new tx_type — it emits UPDATE_ORIGIN, whose
+// NOTE: this endpoint mints no new tx_type; it emits UPDATE_ORIGIN, whose
 // canonical signed shape is owned by the UPDATE_ORIGIN registry contract
 // (schemas/_registry.js). API-time verification uses SIGNED_FIELDS above.
 // There is deliberately no buildSigningPayload here: a third copy of the

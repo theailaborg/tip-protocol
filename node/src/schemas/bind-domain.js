@@ -5,11 +5,11 @@
  *
  * Trust model:
  *   - The USER signs a claim {claimed_at, domain, method, tip_id}
- *     (schemas/register-domain.js) — proves they own the TIP-ID. `method`
+ *     (schemas/register-domain.js), proving they own the TIP-ID. `method`
  *     here is what the user requested (http | dns | auto).
  *   - The NODE independently verifies DNS / well-known proof, then signs
  *     {binding_state, claimed_at, claimed_method, domain, method, node_id,
- *      tip_id, verified_at} (this module) — proves a node observed proof at
+ *      tip_id, verified_at} (this module), proving a node observed proof at
  *      time T. `method` is what the node actually verified with (http|dns);
  *      `claimed_method` echoes the user's request so the cosig rebuilds.
  *   - The user's claim sig rides on the BIND_DOMAIN tx as a cosignature
@@ -23,9 +23,9 @@
  *
  *   binding_state    string,  required (verified | revoked)
  *   claimed_at       number,  required (epoch ms — from the original claim)
- *   claimed_method   string,  required (http | dns | auto — user's request)
+ *   claimed_method   string,  required (http | dns | auto; user's request)
  *   domain           string,  required (lowercased)
- *   method           string,  required (http | dns — node's resolved method)
+ *   method           string,  required (http | dns; node's resolved method)
  *   node_id          string,  required (verifying node's TIP node_id)
  *   tip_id           string,  required (claimant)
  *   verified_at      number,  required (epoch ms — when this node observed proof)
@@ -195,7 +195,7 @@ function getCosignatureContract(tx) {
     kind: SIGNED_BY_KIND.SUBJECT,
     ref:  d.tip_id,
     // Rebuild with the method the user CLAIMED (claimed_method), not the
-    // node's resolved method — an `auto` claim signs `auto`, so verifying
+    // node's resolved method: an `auto` claim signs `auto`, so verifying
     // against the resolved http/dns would fail the cosignature.
     body: registerDomainSchema.buildSigningPayload({
       claimed_at: d.claimed_at,

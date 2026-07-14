@@ -23,7 +23,7 @@
  *
  * Required fields are always present in the canonical payload; the
  * optional creator_name is OMITTED (not emitted as null) when the VP
- * didn't attest a name — buildSignedPayload strips null/undefined, and
+ * didn't attest a name: buildSignedPayload strips null/undefined, and
  * signer and verifier both go through this builder so the bytes agree.
  *
  * NOTE: No `cna` field on this payload. CNA is the Canonical Content

@@ -1,6 +1,6 @@
 /**
  * @file tests/schemas/key-rotated.test.js
- * @description KEY_ROTATED verifyTx — the old_key_fingerprint CAS that
+ * @description KEY_ROTATED verifyTx: the old_key_fingerprint CAS that
  * defends against two rotations racing the same identity: the fingerprint
  * must match the live active key, else the tx is stale and rejected.
  *
@@ -47,7 +47,7 @@ function rotationTx(oldKp, newKp, overrides = {}) {
   };
 }
 
-describe("KEY_ROTATED verifyTx — old_key_fingerprint CAS", () => {
+describe("KEY_ROTATED verifyTx: old_key_fingerprint CAS", () => {
   test("accepts when the fingerprint matches the live active key", () => {
     const oldKp = generateMLDSAKeypair();
     const newKp = generateMLDSAKeypair();

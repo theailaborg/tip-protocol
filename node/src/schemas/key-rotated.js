@@ -168,7 +168,7 @@ function verifyTx(tx, dag) {
   if (typeof d.old_key_fingerprint !== "string" || d.old_key_fingerprint.length === 0) {
     return { ok: false, status: 400, error: "old_key_fingerprint missing", code: "old_key_fingerprint_missing" };
   }
-  // CAS — old_key_fingerprint must match the live active key.
+  // CAS: old_key_fingerprint must match the live active key.
   // Concurrency/replay defense: any rotation or recovery that moved the
   // active key since this tx was signed makes it stale -> reject, so two
   // rotations racing the same identity can't both commit.

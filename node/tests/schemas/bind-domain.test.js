@@ -113,7 +113,7 @@ describe("module surface", () => {
 
 // ─── buildSigningPayload — exact 7-field shape ──────────────────────────────
 
-describe("buildSigningPayload — exact 8-field canonical shape", () => {
+describe("buildSigningPayload: exact 8-field canonical shape", () => {
   const minimal = (overrides = {}) => bindSchema.buildSigningPayload({
     binding_state: "verified",
     claimed_at: 1778580000000,
