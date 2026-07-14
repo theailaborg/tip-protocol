@@ -43,14 +43,14 @@
       "tip_id_type": "personal"
     },
     {
-      "tag": "vishal-kothekar",
-      "name": "Vishal Kothekar",
+      "tag": "tushar-bhendarkar",
+      "name": "Tushar Bhendarkar",
       "region": "IN",
       "tip_id_type": "personal"
     },
     {
-      "tag": "tushar-bhendarkar",
-      "name": "Tushar Bhendarkar",
+      "tag": "vishal-kothekar",
+      "name": "Vishal Kothekar",
       "region": "IN",
       "tip_id_type": "personal"
     },
@@ -94,6 +94,12 @@
       "tag": "prithvi-govindareddy",
       "name": "Prithvi Govindareddy",
       "region": "US",
+      "tip_id_type": "personal"
+    },
+    {
+      "tag": "dhananjay-dogra",
+      "name": "Dhananjay Dogra",
+      "region": "CA",
       "tip_id_type": "personal"
     }
   ]
