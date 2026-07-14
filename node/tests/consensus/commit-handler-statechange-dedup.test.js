@@ -665,7 +665,7 @@ describe("GH #87 LOW — CONTENT_VERIFIED in-batch dedup", () => {
 
 // ─── Builders: domain binding (node-signed binding + claimant cosignature) ──
 // Mirrors domain-service's BIND_DOMAIN tx shape exactly: tx.signature is the
-// node's attestation over the 7-field canonical binding; the claimant's
+// node's attestation over the 8-field canonical binding; the claimant's
 // REGISTER_DOMAIN claim sig rides as a subject cosignature.
 
 function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
@@ -678,8 +678,9 @@ function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
   const binding = bindDomainSchema.buildSigningPayload({
     binding_state: DOMAIN_BINDING_STATUS.VERIFIED,
     claimed_at: claimedAt,
+    claimed_method: "auto",
     domain,
-    method: "auto",
+    method: "http",
     node_id: NODE_ID,
     tip_id: tipId,
     verified_at: timestamp,
@@ -693,6 +694,7 @@ function _makeBindDomainTx(fx, { domain, tipId, claimantKp, timestamp }) {
     data: {
       binding_state: binding.binding_state,
       claimed_at: binding.claimed_at,
+      claimed_method: binding.claimed_method,
       domain: binding.domain,
       method: binding.method,
       node_id: binding.node_id,
